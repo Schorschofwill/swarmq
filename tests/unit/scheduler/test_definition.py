@@ -33,6 +33,16 @@ insert-if-absent vs. update-static branches that live in Python.
 # 8. Gepollter Score != ``fired_ts_ms`` -> kein ``fired_payload``.
 # 9. Ohne Poll -> kein ``fired_payload``.
 # 10. Der Poll-Eintrag gilt nur für einen Commit.
+#
+# Test list (Plan 0.12.0, MR 4, BZ-28 -- zeilenweise dekodieren):
+# 11. Eine kaputte Definition im Poll bricht den Poll nicht ab: die übrigen
+#     Zeilen kommen, die kaputte wird mit ``schedule_def_malformed_parked``
+#     geloggt.
+# 12. Mit ``owner_token`` wird sie geparkt: Commit ohne neuen Score, die
+#     Definition bleibt unverändert (Owner-, Score- und Payload-Prüfung).
+# 13. Scheitert das Parken an Valkey, kommen die übrigen Zeilen trotzdem;
+#     ``scheduler_park_failed`` wird geloggt (wie beim Parken nicht
+#     planbarer Definitionen, R18).
 
 from __future__ import annotations
 
@@ -404,6 +414,35 @@ class TestScheduleStorePollAndCommit:
         assert await store.poll_due(1_700_000_000_001, limit=7) == [("due", 1_700_000_000_000, d)]
         schedules.poll_due.assert_awaited_once_with(1_700_000_000_001, limit=7)
 
+    async def test_poll_due_skips_and_logs_undecodable_definition(self, swarmq_logs):
+        """Liste 11."""
+        good = _def(schedule_name="good")
+        store, schedules = _make_store()
+        schedules.poll_due.return_value = [("bad", 1_000, b"{broken"), ("good", 2_000, msgspec.json.encode(good))]
+        assert await store.poll_due(5_000) == [("good", 2_000, good)]
+        [entry] = [e for e in swarmq_logs if e["event"] == "schedule_def_malformed_parked"]
+        assert entry["log_level"] == "warning" and entry["schedule_name"] == "bad"
+        assert entry["error_type"] == "DecodeError" and entry["error"]
+
+    async def test_poll_due_with_owner_parks_undecodable_definition(self):
+        """Liste 12."""
+        store, schedules = _make_store()
+        schedules.poll_due.return_value = [("bad", 1_000, b"{broken")]
+        assert await store.poll_due(5_000, owner_token="chief") == []
+        schedules.commit_fire.assert_awaited_once_with(
+            "bad", next_fire_ts_ms=None, payload=b"{broken", owner="chief", fired_ts_ms=1_000, fired_payload=b"{broken"
+        )
+
+    async def test_poll_due_park_failure_does_not_abort_the_poll(self, swarmq_logs):
+        """Liste 13."""
+        good = _def(schedule_name="good")
+        store, schedules = _make_store()
+        schedules.poll_due.return_value = [("bad", 1_000, b"{broken"), ("good", 2_000, msgspec.json.encode(good))]
+        schedules.commit_fire.side_effect = BackendConnectionError("down")
+        assert await store.poll_due(5_000, owner_token="chief") == [("good", 2_000, good)]
+        [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_park_failed"]
+        assert entry["schedule_name"] == "bad" and entry["error_type"] == "BackendConnectionError"
+
     async def test_commit_fire_encodes_next_definition(self):
         d = _def(schedule_name="s", last_fire_at=5)
         store, schedules = _make_store()
@@ -460,3 +499,19 @@ class TestScheduleStoreErrorWrapping:
         schedules.add.side_effect = BackendConnectionError("down")
         with pytest.raises(BackendConnectionError):
             await store.add_schedule(_def())
+
+
+# Plan 0.12.0, MR 11 (BZ-11): ``remove_schedule`` nimmt den Namen aus dem Set
+# der je gemeldeten Crons; ein Store ohne die Methode (Q15) bricht nicht.
+
+
+class TestRemoveScheduleForgetsKnown:
+    async def test_remove_schedule_forgets_the_known_name(self):
+        store, schedules = _make_store(hexists_return=1)
+        schedules.forget_known_cron = AsyncMock()
+        assert await store.remove_schedule("drop") is True
+        schedules.forget_known_cron.assert_awaited_once_with("drop")
+
+    async def test_store_without_forget_known_cron_is_tolerated(self):
+        store, _schedules = _make_store(hexists_return=1)  # MagicMock: nicht awaitbar
+        assert await store.remove_schedule("drop") is True

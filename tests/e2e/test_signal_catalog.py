@@ -1095,6 +1095,9 @@ async def test_signal_task_rejected(
 
     async with _running_worker(
         rabbitmq_url, valkey_url, queue,
+        # Gnadenfrist 0 (Plan 0.12.0, MR 11, BZ-06): mit der Standard-Frist
+        # wuerde der unbekannte Task 15 min lang zurueckgestellt.
+        extra_config={"unknown_task_grace_s": 0},
         register_signals={Signal.TASK_REJECTED: _handler},
     ) as (worker_app, _task):
         body = encode_json(

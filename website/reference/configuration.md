@@ -34,10 +34,12 @@ The CLI prints a descriptive error if either is missing; see the
 | `SWARMQ_CONCURRENCY` | `10` (io) / assigned CPUs (cpu) | Maximum tasks in flight per worker process. With `SWARMQ_POOL=cpu` the number of compute slots; see [`--concurrency`](cli.md#options). |
 | `SWARMQ_RESULT_TTL` | `86400` | Seconds that stored results live in Valkey. |
 | `SWARMQ_RETRY_MAX_DELAY` | `3600.0` | Cap on retry backoff in seconds. |
-| `SWARMQ_SHUTDOWN_TIMEOUT` | `30` | Seconds to let in-flight tasks finish on SIGTERM before hard-killing. |
+| `SWARMQ_SHUTDOWN_TIMEOUT` | `30` | Total shutdown budget in seconds from SIGTERM (since 0.12; before, only the drain): draining in-flight tasks, releasing locks, the scheduler handover, closing connections and, under the supervisor, its SIGTERM/SIGKILL escalation all fit in it. The drain ends 5 s (at most half) before the end; under the supervisor the escalation ends 2 s before it. Set Kubernetes `terminationGracePeriodSeconds` and Docker `stop_grace_period` to at least this value plus 15 s ([shutdown budget](../explanation/delivery-semantics.md#shutdown-budget)). |
 | `SWARMQ_PUBLISH_TIMEOUT_S` | `120.0` | Upper bound on a complete publish, including internal retries. A publish that exceeds it fails with a broker connection error instead of waiting indefinitely for a confirm that a silently dead transport will never deliver. During graceful shutdown the shorter of this value and the remaining shutdown grace period applies. |
-| `SWARMQ_DELIVERY_LIMIT` | `20` | Delivery budget for quorum queues (`x-delivery-limit`); ignored for classic queues. Once a message has been delivered this many times, the broker itself dead-letters it — the safety net that stops a task which reliably kills the process (SIGSEGV/OOM) from being redelivered forever without ever reaching `max_retries`. The default covers three to four task-level retries per delivery plus headroom for broker hiccups. That headroom is narrower since the publish deadline: a publish that breaks its deadline inside the worker redelivers the in-flight message instead of acking it, and each round costs one delivery. Raise it if you must ride out longer broker outages; lower it to force a tighter delivery window. |
-| `SWARMQ_QUEUE_TYPE` | `quorum` | `quorum` (recommended) or `classic` RabbitMQ queue type. Only quorum queues carry `x-delivery-limit`; without it a message that keeps hanging workers is redelivered without bound (the worker warns at startup). |
+| `SWARMQ_DELIVERY_LIMIT` | `20` | Delivery budget for quorum queues (`x-delivery-limit`); ignored for classic queues. Once a message has been delivered this many times, the broker itself dead-letters it — the safety net that stops a task which reliably kills the process (SIGSEGV/OOM) from being redelivered forever without ever reaching `max_retries`. The default covers three to four task-level retries per delivery plus headroom for broker hiccups. That headroom is narrower since the publish deadline: a publish that breaks its deadline inside the worker redelivers the in-flight message instead of acking it, and each round costs one delivery. Before each such hand-back the worker waits up to 5 s (growing with the delivery count), so the default budget lasts more than a minute. The worker also counts `x-acquired-count` (RabbitMQ 4.3, which does not count a requeue in `x-delivery-count`). Raise it if you must ride out longer broker outages; lower it to force a tighter delivery window. Existing queues keep the limit they were created with; the worker then dead-letters at the smaller of both values minus one ([effective delivery limit](../explanation/delivery-semantics.md#effective-delivery-limit)). |
+| `SWARMQ_QUEUE_TYPE` | `quorum` | `quorum` (recommended) or `classic` RabbitMQ queue type. Only quorum queues carry `x-delivery-limit`; without it a message that keeps hanging workers is redelivered without bound (the worker warns at startup). Changing it for existing queues fails with `QueueArgumentsMismatch` (exit 78); [migrate](../explanation/delivery-semantics.md#changing-queue-arguments) the queues instead. |
+| `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY` | `auto` | Dead-lettering of quorum queues. `auto`: new queues get `x-dead-letter-strategy=at-least-once` and `x-overflow=reject-publish` (not `{queue}.XQ`), existing queues keep their arguments and one WARNING `queue_dead_letter_at_most_once` per process lists those without at-least-once. `at-least-once`: as `auto`, but an existing queue without at-least-once (strategy and `x-overflow=reject-publish`) fails with `QueueArgumentsMismatch` (exit 78); not allowed with `SWARMQ_QUEUE_TYPE=classic` (`ConfigurationError`). `legacy`: the arguments of 0.11 (at-most-once), no warning ([dead-lettering guarantee](../explanation/delivery-semantics.md#dead-lettering-guarantee)). |
+| `SWARMQ_BROKER_PUBLISH_CONNECTION` | `separate` | `separate`: a worker consumes and acknowledges over a second RabbitMQ connection, opened by its first `consume()`; publishes (retry, dead-letter and deferral copies, workflow steps, cron fires) keep the first one. During a resource alarm (memory, disk) RabbitMQ blocks only connections that publish, so acknowledgements keep flowing. A producer that never consumes keeps one connection. `shared`: one connection as before 0.12. With an injected `connection=`/`connection_pool=` it is always `shared` ([broker resource alarm](../explanation/architecture.md#failure-domains)). |
 | `SWARMQ_POOL` | `io` | `io` or `cpu` — see the [CPU mode guide](../guides/cpu-mode.md). |
 | `SWARMQ_RECYCLE_RSS_MB` | unset (`250` in CPU mode) | Recycle a process after a task once its RSS exceeds this many MB. IO worker: opt-in self-recycling; CPU mode: threshold for reused DI children. |
 | `SWARMQ_RECYCLE_MAX_TASKS` | unset (`1000` in CPU mode) | Recycle a process after this many tasks (second line behind the RSS threshold). |
@@ -50,8 +52,13 @@ The CLI prints a descriptive error if either is missing; see the
 | `SWARMQ_EXECUTION_GUARD_TTL_S` | `60.0` | TTL of the running marker; the worker renews it every third of the TTL while the task runs. After a crash the redelivery runs once the marker expired. Must be `> 0`; raise it if task code may block the event loop for longer. |
 | `SWARMQ_EXECUTION_GUARD_DONE_TTL_S` | `max(retry_max_delay, consumer_timeout_s) + 300` | How long done and superseded markers live. Must be at least `SWARMQ_EXECUTION_GUARD_TTL_S`. |
 | `SWARMQ_EXECUTION_GUARD_MAX_ORPHANS` | `3` | After this many expirations of the same execution without release, the delivery goes into `{queue}.XQ` as `WorkerHungError`. Must be `> 0`. |
+| `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S` | `604800` | Backlog the markers survive: once a redelivery of an execution was deferred (it comes back behind the queue's backlog) or an ack failed, the execution's state lives at least this long (or `max_age + 300`, if longer); the done marker of a replay lives this long when `SWARMQ_DEAD_LETTER_TTL_S` is `none`; and the completed marker of a schedule fire is capped here. Must be `> 0` ([marker retention](../explanation/delivery-semantics.md#execution-guard)). |
 | `SWARMQ_DEAD_LETTER_TTL_S` | `604800` | Seconds a message the worker dead-letters stays in `{queue}.XQ` ([retention](../guides/dead-letter-queues.md#retention-dead-lettered-messages-expire)); reading does not extend it. `none` keeps messages without limit. Must be `> 0`. The `swarmq dlq` CLI keeps each message's own retention (`x-swarmq-dead-letter-ttl-ms`) and uses this variable only for old stock without it. |
 | `SWARMQ_DEAD_LETTER_TERMINAL_FAILURES` | `true` | `false` stores the error result of a terminal task failure (`NoRetry`, exception outside `retry_exceptions`, retries exhausted) and acknowledges the message instead of dead-lettering it ([details](../guides/dead-letter-queues.md#switching-off-dead-lettering-of-task-failures)). `TaskInfo.dead_letter` wins. |
+| `SWARMQ_LOCK_WAIT_MAX_S` | `21600` | Upper limit in seconds for how long a message waits for a held task lock, measured from its first conflict (`x-swarmq-lock-wait-since`); afterwards it is dead-lettered with `LockWaitExceeded`. Before that only a stalled holder (same holder longer than its TTL + 60 s) or `max_age` ends the wait. Must be `> 0` and finite ([lock acquisition](../guides/locking-and-dedup.md#lock-acquisition-behaviour)). |
+| `SWARMQ_VALKEY_EVICTION_CHECK` | `strict` | What a worker does when Valkey may evict swarmq keys ([Valkey requirements](#valkey-requirements)): `strict` refuses to start with exit `78` under an evicting `maxmemory-policy` (anything but `noeviction` with a `maxmemory` limit, or with an unknown limit), `warn` logs `valkey_eviction_policy_unsafe` and starts, `off` does not check at all (no query, no warning). A policy that cannot be read (ACL forbids `CONFIG` and `INFO`) never blocks, it only logs `valkey_eviction_policy_unknown`. Case does not matter. Also read by `swarmq check` and by every other `ValkeyBackend` (CLI, producers), where only `off` changes anything. |
+| `SWARMQ_NAMESPACE` | *unset* | Namespace of this app on a shared Valkey ([namespace](#namespace-several-apps-on-one-valkey)): every Valkey key, Pub/Sub channel, the scheduler leader and the control channel move from `sq:…` to `<namespace>:sq:…`. 1–64 characters `a-z 0-9 _ . -` (lowercase only: Valkey keys are case-sensitive, `App1` and `app1` would be two apps), starting with a letter or digit, not `sq`; anything else is a configuration error (exit `78`). Empty means unset. Queue names stay unchanged. Every `ValkeyBackend` (worker, producer, CLI, control channel) reads it, unless it is built with `namespace=` ([where the namespace comes from](#where-the-namespace-comes-from)). Set it only for a new app or after [moving the app](#moving-an-app-into-a-namespace), and only once every component runs 0.12. |
+| `SWARMQ_UNKNOWN_TASK_GRACE_S` | `900.0` | Grace period in seconds for a task name this worker does not register (rolling deploy: producers ahead of the workers). Within it the worker defers the message with backoff (1 s, then as long as it has waited so far, at most 60 s per round) and keeps the first contact in `x-swarmq-unknown-since`; afterwards it dead-letters the message with an error result and `TASK_REJECTED` (`unregistered_task`). `0` switches the grace period off (dead-letter at first contact). Must be `>= 0` ([unregistered tasks](../guides/dead-letter-queues.md#unregistered-tasks-and-rolling-deploys)). |
 | `SWARMQ_MALLOC_TRIM_THRESHOLD` | `131072` | `MALLOC_TRIM_THRESHOLD_` for compute children (glibc growth). |
 | `SWARMQ_MALLOC_ARENA_MAX` | `2` | `MALLOC_ARENA_MAX` for compute children. |
 | `SWARMQ_COMPUTE_THREAD_LIMIT` | `1` | Threads per compute child (`OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`, `NUMEXPR_NUM_THREADS`, `MAGICK_THREAD_LIMIT`). |
@@ -101,12 +108,14 @@ with exit `78`.
 | `SWARMQ_SCHEDULER_POLL_INTERVAL` | `1.0` | Seconds between scheduler tick polls. |
 | `SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL` | `10.0` | Seconds between leader heartbeat renewals. |
 | `SWARMQ_SCHEDULER_LOCK_TTL` | `30.0` | Leader lock TTL; must be `≥ 2 × heartbeat_interval`. |
-| `SWARMQ_SCHEDULER_DEDUP_TTL` | `max(60, retry_max_delay + 300)` | Dedup TTL for scheduler-originated dispatches. |
+| `SWARMQ_SCHEDULER_DEDUP_TTL` | `max(60, retry_max_delay + 300)` | Dedup TTL for scheduler-originated dispatches; the lower bound of the completed marker, whose TTL follows the time the fire waited in the queue (`2 × wait + 300`, capped at `max_age + 300` and `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S`). |
 | `SWARMQ_SCHEDULER_INFLIGHT_TTL` | `300.0` | TTL of the schedule-fire claim a worker holds while a scheduled task runs. A claim that could not be released blocks a redelivery of the same fire as a duplicate for at most this long. |
 | `SWARMQ_SCHEDULER_TIMEZONE` | *unset* (UTC) | IANA zone for cron expressions of tasks without their own `TaskInfo.timezone`, e.g. `Europe/Berlin`. `UTC` and `Etc/UTC` mean UTC. An unknown zone is a configuration error. Change it in the same deploy as the expressions it affects; prefer the zone per task ([time zones](../guides/scheduling-and-retries.md#time-zones)). |
 | `SWARMQ_SCHEDULER_SEEN_INTERVAL_S` | `60.0` | Seconds between [cron reports](../guides/scheduling-and-retries.md#cron-reports-and-the-leader): every worker reports its static crons at start and then at this interval; the leader adopts reported crons at the same interval. A report stays live for three intervals. Must be `> 0`; use the same value in every app on one Valkey. |
 | `SWARMQ_SCHEDULER_PRUNE` | `on` | What the leader does with a static cron that was reported once and that no worker has reported for `SWARMQ_SCHEDULER_PRUNE_AFTER_S`: `on` removes it, `log` only logs `scheduler_cron_prune_skipped`, `off` does nothing. The scheduler leader's value applies, whichever app it belongs to: set the same value in every app on the Valkey. Requires every app on the Valkey to run 0.10.0 or later ([removing crons](../guides/scheduling-and-retries.md#removing-crons-no-app-reports-anymore)). |
 | `SWARMQ_SCHEDULER_PRUNE_AFTER_S` | `86400.0` | Period in seconds after which a silent static cron is removed. Must be at least `3 × SWARMQ_SCHEDULER_SEEN_INTERVAL_S`. Cron reports are kept for twice this period, at least 7 days. The scheduler leader's value applies: set the same value in every app on the Valkey. |
+| `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S` | `86400.0` | How long, in seconds, the leader keeps retrying a deferred task (`delay=`/`eta=`) whose queue does not exist, counted from the first unroutable attempt; it retries every 60 s and then drops the task with an error result. Must be > 0. The scheduler leader's value applies ([missing queues](../guides/scheduling-and-retries.md#missing-queues)). |
+| `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S` | `SWARMQ_SCHEDULER_LOCK_TTL` | The scheduler leader releases the leader lock after at least 2 failed publishes (`BrokerConnectionError`, not counting `UnroutableMessage`, `MessageHeadersTooLarge`, `BrokerPublishBlocked`, `PublishRejected` and `PublishIndeterminate`) spread over at least this many seconds, with no successful publish in between and no gap longer than this between two failures; a new term as leader starts a new series; it then does not apply again for `2 × SWARMQ_SCHEDULER_LOCK_TTL`, so a worker whose broker works takes over (it emits `SCHEDULER_LEADER_FAILOVER`). `0` disables the step-down. Must be `≥ 0`. Set `0` while apps older than 0.12 share the Valkey without namespace ([namespace](#namespace-several-apps-on-one-valkey)). |
 
 ### Observability
 
@@ -115,7 +124,7 @@ with exit `78`.
 | `SWARMQ_METRICS_PORT` | *unset* | **Base port** for `/metrics`. The worker in slot `s` serves on `SWARMQ_METRICS_PORT + s`; an embedded worker without a slot serves on the base port itself. Requires `pip install swarmq[metrics]`. Must be `1..65535`. |
 | `SWARMQ_METRICS_HOST` | `127.0.0.1` | Bind address for the metrics server. Set `0.0.0.0` when Prometheus scrapes from another host or container. |
 | `SWARMQ_HEALTH_PORT` | *unset* | **Base port** for `/health` and `/ready`, same slot offset. Must be `1..65535`. |
-| `SWARMQ_HEALTH_HOST` | `127.0.0.1` | Bind address for the health server. |
+| `SWARMQ_HEALTH_HOST` | `127.0.0.1` | Bind address for the health server. Set `0.0.0.0` for Kubernetes `httpGet` probes: the kubelet probes the pod IP, not loopback. |
 | `SWARMQ_METRICS_SAMPLE_INTERVAL` | `10.0` | Seconds between samples of the `swarmq_queue_depth`, `swarmq_dlq_messages` and `swarmq_worker_uptime_seconds` gauges; the same tick dispatches `WORKER_HEARTBEAT`. Must be `> 0`. The sampler only runs when metrics are enabled. |
 | `SWARMQ_WORKER_ID` | hostname | Base of the worker identity that appears as `worker_id` in signals, metric labels and the log context. See [worker identity](#worker-identity). |
 
@@ -130,14 +139,24 @@ Every worker with metrics enabled (`--metrics-port`/`SWARMQ_METRICS_PORT`,
 | `swarmq_task_duration_seconds` | histogram | `task_name`, `queue` | Duration of `run()` for completed tasks. Buckets from 5 ms to 300 s. |
 | `swarmq_tasks_active` | gauge | `queue` | Tasks currently in flight. |
 | `swarmq_retries_total` | counter | `task_name`, `queue` | Retries scheduled. |
-| `swarmq_tasks_rejected_total` | counter | `queue`, `reason` | Messages handed to the broker DLX without diagnostic headers (`TASK_REJECTED`), e.g. `body_too_large`, `undecodable`, `unregistered_task`. |
+| `swarmq_tasks_rejected_total` | counter | `queue`, `reason` | Messages handed to the broker DLX without diagnostic headers (`TASK_REJECTED`), e.g. `body_too_large`, `undecodable`; `unregistered_task` counts a task dead-lettered after `SWARMQ_UNKNOWN_TASK_GRACE_S`. |
+| `swarmq_tasks_unknown_deferred_total` | counter | `queue` | Messages the worker deferred because it does not register the task, within `SWARMQ_UNKNOWN_TASK_GRACE_S` (`TASK_UNKNOWN_DEFERRED`; [unregistered tasks](../guides/dead-letter-queues.md#unregistered-tasks-and-rolling-deploys)). |
 | `swarmq_recyclings_total` | counter | `kind`, `reason` | Process recyclings; `kind` is `worker` or `compute_child`. |
-| `swarmq_queue_depth` | gauge | `queue`, `kind` | Broker-reported message count (`kind="pending"`), sampled every `SWARMQ_METRICS_SAMPLE_INTERVAL`. |
+| `swarmq_queue_depth` | gauge | `queue`, `kind` | Broker-reported message count, sampled every `SWARMQ_METRICS_SAMPLE_INTERVAL`: `kind="pending"` is `{queue}` plus all delay queues, `kind="delayed"` (since 0.12) the delay queues only ([delay tiers](../explanation/delivery-semantics.md#delay-tiers)). |
 | `swarmq_dlq_messages` | gauge | `queue` | Messages in `{queue}.XQ`, sampled. |
+| `swarmq_lock_waits` | gauge | `worker_id` | Messages this worker deferred because their task lock was held and saw again within the last 3 minutes. A message that waits longer than that in the main queue (a backlog of more than about 2 minutes on top of the at most 60 s deferral) drops out, so under backlog the gauge undercounts. |
+| `swarmq_lock_wait_oldest_seconds` | gauge | `worker_id` | Seconds the oldest of these messages has waited since its first lock conflict. |
+| `swarmq_supervisor_locked_slots` | gauge | `worker_id` | Worker slots the supervisor has locked after 5 crashes or too many hangs within an hour; each lock lasts a 1 h cooldown (since 0.12). Only under the supervisor (`swarmq worker`); every worker of a supervisor reports the same value. |
+| `swarmq_worker_prefetch_limit` | gauge | `worker_id` | Unacknowledged messages this worker may hold: consumed queues (each priority band counts) × `concurrency`, because prefetch applies per consumer (since 0.12, [prefetch per consumer](../explanation/delivery-semantics.md#prefetch-per-consumer)). |
+| `swarmq_delay_tiers_unavailable` | gauge | `queue` | Delay tiers of the queue the broker refused to declare; their delays use `{queue}.DQ` ([delay tiers](../explanation/delivery-semantics.md#delay-tiers)). |
 | `swarmq_worker_uptime_seconds` | gauge | `worker_id` | Seconds since the worker started, sampled. |
 | `swarmq_scheduler_leader` | gauge | `worker_id` | `1` while this worker holds the scheduler leader lock, else `0`. |
-| `swarmq_scheduler_leader_outdated` | gauge | `worker_id` | `1` while this worker sees a scheduler leader running a swarmq before 0.10.0 without time zone support, else `0` ([leader version](../guides/scheduling-and-retries.md#leader-version)). |
+| `swarmq_scheduler_leader_outdated` | gauge | `worker_id` | `1` while this worker sees a scheduler leader running a swarmq below the minimum leader version (currently 0.12), else `0` ([leader version](../guides/scheduling-and-retries.md#leader-version)). |
 | `swarmq_scheduler_cron_conflicts_total` | counter | `schedule_name` | Leader selection ticks that saw several live definitions of one static cron for more than 10 minutes ([conflicts](../guides/scheduling-and-retries.md#conflicts)). |
+| `swarmq_scheduler_crons_held` | gauge | `worker_id` | Static crons the scheduler leader holds because no live worker reports them and it does not register them itself; `0` when this worker is not leader ([held crons](../guides/scheduling-and-retries.md#crons-nobody-reports-are-held)). |
+| `swarmq_scheduler_queues_orphaned` | gauge | `worker_id` | Reported queues the scheduler leader finds with messages, no consumer and no live worker reporting them (signal `SCHEDULER_QUEUE_ORPHANED`); `0` when this worker is not leader. Alert on `> 0` ([moving a task to another queue](../guides/defining-tasks.md#moving-a-task-to-another-queue)). |
+| `swarmq_valkey_memory_used_ratio` | gauge | `worker_id` | Valkey `used_memory / maxmemory`, measured by the scheduler leader at most once per hour (signal `SCHEDULER_VALKEY_CHECKED`); only with a `maxmemory` limit. Under `noeviction` a full Valkey refuses writes (OOM) for every app on it; alert well before `1` ([Valkey requirements](#valkey-requirements)). |
+| `swarmq_scheduler_fires_unroutable_total` | counter | `queue`, `kind` | Scheduler fires the broker returned because the queue does not exist: `cron_lost` (lost cron fire) or `oneshot_dropped` (deferred task dropped after `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S`) ([missing queues](../guides/scheduling-and-retries.md#missing-queues)). |
 | `swarmq_consumer_reregistrations_total` | counter | `queue` | Consumers the [consumer watch](../explanation/delivery-semantics.md#consumer-timeout) registered again after the broker ended them; the reason is in the log event `consumer_reregistered`. |
 | `swarmq_execution_guard_events_total` | counter | `event` | Events of the [execution guard](../explanation/delivery-semantics.md#execution-guard): `duplicate_skipped` (redelivery acknowledged and skipped), `deferred` (same execution runs elsewhere), `orphan_limit` (dead-lettered as `WorkerHungError`), `lease_lost` (running marker expired or taken over while the task ran), `defer_stalled` (the deferrals of one redelivery exceeded `SWARMQ_CONSUMER_TIMEOUT_S`; the original runs unusually long or hangs). |
 | `swarmq_log_records_dropped_total` | counter | none | Log records dropped because the log queue was full (see [Logging](logging.md#non-blocking-output-and-dropped-records)). |
@@ -220,6 +239,137 @@ All ports are validated at config-time: a bad value raises
 |---|---|---|
 | `SWARMQ_DEFAULT_FORMAT` | *TTY-detect* | Overrides the default `--format` for output-shaped CLI subcommands (`schedule list/add/remove/status`, `dlq list/inspect/retry/purge`, `inspect`). Accepts `table` or `json`; any other value (typo, empty string) is ignored silently and the TTY-aware default applies (`table` on a terminal, `json` on a pipe). An explicit `--format` on the command line always wins. |
 
+### Valkey requirements
+
+swarmq keeps state in Valkey that must never vanish on its own: task
+locks, the scheduler leader lock, the execution guard, unique and fired
+markers, schedules and delayed one-shots. Run Valkey (8 or later) like
+this:
+
+- **`maxmemory-policy noeviction`.** Every other policy lets Valkey
+  evict keys under memory pressure; `volatile-*` evicts exactly the keys
+  with a TTL, which are the locks and markers. The result is tasks
+  running twice. With `noeviction` a full Valkey refuses writes instead
+  (OOM, swarmq treats it as an outage); watch
+  `swarmq_valkey_memory_used_ratio`. Without a `maxmemory` limit
+  (`maxmemory 0`) Valkey never evicts, whatever the policy.
+- **AOF** (`appendonly yes`, `appendfsync everysec`). Without it a
+  restart loses everything since the last RDB snapshot: delayed tasks,
+  CLI crons, and switch-offs by `swarmq schedule remove` (the next
+  report brings such a cron back active).
+- **No cluster mode.** Use a single primary, with replicas if needed.
+- **Managed services:** some fix the policy (ElastiCache Serverless runs
+  `volatile-lru`); they are not suitable. Where `CONFIG` is forbidden by
+  ACL, swarmq reads `INFO memory` instead.
+
+A worker reads `maxmemory-policy` and `maxmemory` when it connects (at
+most 2 s, never fails because of the check) and, with
+`SWARMQ_VALKEY_EVICTION_CHECK=strict` (default), refuses to start with
+exit `78` under an evicting policy. The scheduler leader checks again
+at most once per hour and logs `valkey_eviction_policy_unsafe` if the
+policy changed. Each worker remembers the epoch key `[<namespace>:]sq:{sched}:epoch`;
+if it disappears (Valkey lost its data: restart without persistence,
+`FLUSHALL`, failover with lost writes) it logs
+`valkey_data_loss_detected`. Limits: a data loss while all processes
+restart at the same time goes unnoticed, so does a loss since an RDB
+snapshot that brings the epoch back, and the policy is checked only
+hourly.
+
+**Before upgrading to 0.12,** run `swarmq check` with the new version in
+a separate virtualenv against production (read-only, see
+[CLI](cli.md#swarmq-check)); in Kubernetes optionally as an init
+container. Exit `78` means the new workers would refuse to start. Do not
+find that out by rolling out: under Kubernetes exit `78` puts the pods
+into `CrashLoopBackOff`, under Docker with a `restart:` policy into a
+restart loop. Fix the policy, or set `SWARMQ_VALKEY_EVICTION_CHECK=warn`
+deliberately.
+
+### Namespace (several apps on one Valkey)
+
+Without a namespace all apps on one Valkey share the keys under `sq:`:
+rate limits and task locks with the same name, unique hashes and one
+scheduler leader for all apps. That leader publishes the crons of every
+app through its own broker. Set `SWARMQ_NAMESPACE` per app to separate
+them: every key and Pub/Sub channel, the leader lock and the control
+channel then live under `<namespace>:sq:…` (the hash tags such as
+`{sched}` stay the same). Queue names are not prefixed: give every app
+its own RabbitMQ vhost.
+
+- **Separate vhosts need a namespace.** With one leader for all apps a
+  cron of app B goes through the broker of app A; on another vhost the
+  queue does not exist there and the fire is lost
+  (`scheduler_fire_unroutable_foreign`).
+- **Without namespace** the leader steps down after repeated publish
+  failures (`SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S`), so a leader with a
+  broken broker no longer stops the crons of all apps.
+- **The namespace does not migrate data.** Keys under `sq:` (schedules,
+  CLI crons, delayed tasks, results, locks) are not seen under the new
+  namespace. Set it for a new app, or move the app as described in
+  [moving an app into a namespace](#moving-an-app-into-a-namespace).
+  `swarmq check` shows the namespace and counts keys without it
+  ([CLI](cli.md#swarmq-check)).
+- **Rollout:** first run every component (workers, producers, CLI,
+  control service) on 0.12, then set the namespace everywhere in the
+  same step. Mixed values split the app: a producer without namespace
+  writes results and schedules where the worker does not look.
+- **Rollback:** once the namespace is set, roll back only to 0.12 or
+  later. 0.11.1 refuses to start with `SWARMQ_NAMESPACE` set (see below);
+  0.11.0 would silently ignore it.
+- **While apps older than 0.12 share the Valkey without namespace**, set
+  `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S=0`. Otherwise the leadership can
+  move to a 0.11 app, and the 0.12 features of the leader (stable
+  one-shot IDs, cron dedup, held crons) are off while it leads.
+
+#### Where the namespace comes from
+
+The namespace of the backend applies everywhere: to every key and
+channel, and to the hints in log events and in `swarmq check`.
+
+1. **`ValkeyBackend(..., namespace="app1")`** (or `keys=`) sets it
+   explicitly. `namespace=""` explicitly means *no namespace*.
+2. **Otherwise the configuration applies:** `SWARMQ_NAMESPACE`, or
+   `SwarmQ(broker, backend, namespace="app1")` in code (the environment
+   variable wins over the code value, as for every setting). A backend
+   built without `namespace=` takes this value when it is handed to
+   `SwarmQ(...)`; on its own (CLI, control channel) it reads
+   `SWARMQ_NAMESPACE`.
+3. With an explicit backend parameter and no configured namespace,
+   `SwarmQ(...)` fills `app.config.namespace` from the backend.
+
+If the backend parameter and the configuration are both set and differ
+-- this includes `namespace=""` next to a set `SWARMQ_NAMESPACE` --,
+`SwarmQ(...)` raises `ConfigurationError` (`namespace mismatch`; a
+worker exits with `78`).
+
+#### Moving an app into a namespace
+
+The namespace moves no data, and old and new processes of one app must
+never run side by side. For an existing app without namespace:
+
+1. **Stop the app completely**: every worker and scheduler. On
+   Kubernetes use `strategy: Recreate` or scale the deployment to 0, on
+   Docker stop all its containers. A rolling update would run pods with
+   and without namespace at the same time: two leaders, crons fired
+   twice, results written where the other half does not look.
+2. **Without `SWARMQ_NAMESPACE`**, list the app's schedules with
+   `swarmq schedule list` and delete each of the app's crons and
+   one-shots with `swarmq schedule remove --permanent <name>`. Left
+   under `sq:`, the leader of another app without namespace keeps firing
+   them.
+3. **With `SWARMQ_NAMESPACE`**, create the app's CLI crons and one-shots
+   again (`swarmq schedule add …`). Crons defined in code register
+   themselves when the workers start.
+4. **Move every app on this Valkey to 0.12 first.** A leader older than
+   0.12 keeps firing the old definitions it has seen for up to 24 hours
+   (until it prunes them), so crons run twice.
+5. **Valkey ACLs:** key patterns `~sq:*` become `~<namespace>:sq:*`,
+   channel patterns `&sq:*` become `&<namespace>:sq:*`.
+6. **Tools that read swarmq's keys directly** (dashboards such as
+   swarmv, scripts with `valkey-cli`) must use the namespace too.
+
+Then start the app with the namespace. `swarmq check` with
+`SWARMQ_NAMESPACE` set counts the keys still left without namespace.
+
 ### Namespace requires 0.12
 
 `SWARMQ_NAMESPACE` belongs to swarmq 0.12 and later. 0.11.1 rejects it:
@@ -227,9 +377,10 @@ if it is set and not empty, worker, scheduler and `SwarmQ(...)` stop
 with `ConfigurationError` (`swarmq worker`: exit 78), and so do the CLI
 commands `swarmq schedule`, `swarmq dlq` and `swarmq inspect` (exit 78,
 before any connection). `swarmq worker --check` reports it as an error
-(exit 1). Without that
-check a rollback to 0.11.x would silently run without the namespace,
-on different Valkey keys. Unset the variable or run swarmq >= 0.12.
+(exit 1). Without that check a rollback to 0.11.x would silently run
+without the namespace, on different Valkey keys. From 0.12 on the
+variable is supported, and only an invalid value stops these entry
+points (exit `78`; `swarmq worker --check`: exit 1).
 
 ## `SwarmQConfig` kwargs
 

@@ -14,7 +14,6 @@ unverändert — reine Verschiebung (KTD14).
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import enum
 import os
 import signal
@@ -24,13 +23,16 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-from swarmq.dishka import _Missing, get_registered_container
 from swarmq.logging import _error_fields, get_logger, sanitize_url
+from swarmq.ready_depth import ready_depth_or_none
 from swarmq.scheduler import SchedulerLoop, ScheduleStore
 from swarmq.scheduler.reports import static_definitions
 from swarmq.serialization import decode_result
+from swarmq.shutdown_budget import CLEANUP_RESERVE_S
 from swarmq.signals import Signal
 from swarmq.supervision import ForkSourceRejected, RecycleAckTimeout, current_channel
+from swarmq.worker.eviction_gate import enforce_eviction_policy
+from swarmq.worker.prefetch import prefetch_limit, warn_prefetch_over_consumer_timeout
 from swarmq.workflow_orchestration import (
     WorkflowAdvancer,
     WorkflowStepEnqueuer,
@@ -48,6 +50,7 @@ if TYPE_CHECKING:
     from swarmq.worker.execution import TaskExecutor
     from swarmq.worker.gates import GateDeps, WorkerBackend, WorkerBroker
     from swarmq.worker.gates.execution_guard import ExecutionGuard
+    from swarmq.worker.gates.lock import LockGate
 
 logger = get_logger(__name__)
 
@@ -56,12 +59,13 @@ logger = get_logger(__name__)
 _LIFECYCLE_DISPATCH_TIMEOUT_S = 10.0
 # Rest der Gnadenfrist, den das Herunterfahren NACH dem Drain noch braucht:
 # Sperren freigeben, Scheduler stoppen, Broker- und Backend-Verbindung
-# schliessen. Ohne diese Reserve faellt die Publish-Endfrist exakt mit der
-# Eskalation des Supervisors zusammen — dessen Gnadenfrist ist derselbe
-# ``shutdown_timeout``, den der Drain bereits als eigenes Limit verbraucht
-# (siehe src/swarmq/process_manager/run.py) — und der Deckel brächte im
-# Herunterfahren gar nichts (Plan 2026-08-28-001, KTD9).
-_SHUTDOWN_PUBLISH_RESERVE_S = 5.0
+# schliessen (Plan 2026-08-28-001, KTD9). Seit BZ-18 (Plan 0.12.0, MR 17)
+# gilt sie fuer Drain und Publish-Endfrist gemeinsam und lebt in
+# ``swarmq.shutdown_budget``; dieser Name bleibt als Alias.
+_SHUTDOWN_PUBLISH_RESERVE_S = CLEANUP_RESERVE_S
+# Untergrenze je Aufraeumschritt im Herunterfahren (BZ-18): auch mit
+# ausgeschoepftem Budget bekommt jeder Schritt diesen Versuch.
+_SHUTDOWN_STEP_MIN_S = 1.0
 
 
 
@@ -101,6 +105,7 @@ class WorkerLifecycle:
         _recycle_ack_missing: bool
         _drain_timeout_override: float | None
         _metrics_sampler_task: asyncio.Task[None] | None
+        _lock_gate: LockGate
         _executor: TaskExecutor
         _gate_deps: GateDeps
 
@@ -113,6 +118,13 @@ class WorkerLifecycle:
         def _resolve_workflow_queue(self, task_name: str) -> str: ...
 
         def _get_chain(self) -> MiddlewareChain: ...
+
+        # ``WorkerShutdown`` (shutdown.py, Plan 0.12.0 MR 0)
+        def _request_shutdown(self) -> None: ...
+
+        async def _execute_shutdown(self) -> None: ...
+
+        async def _teardown_on_exit(self) -> None: ...
 
     async def _wire_coordination(self) -> None:
         """Verträge/Advancer/Scheduler nach ``connect()`` verdrahten."""
@@ -167,6 +179,8 @@ class WorkerLifecycle:
                 self._registry.get_all().values(),
                 self._config.scheduler_timezone,
             ),
+            # BZ-14: die konsumierten Queues (mit Prioritaeten je Band).
+            consumed_queues=self._config.consumed_queues,
         )
         await self._scheduler.start()
 
@@ -310,9 +324,9 @@ class WorkerLifecycle:
     def _warn_priority_tasks_without_routing(self) -> None:
         # Warn when a registered task declares
         # priority != "normal" but the worker is not configured for
-        # priority routing. Without the warning, a publish to
-        # {queue}.high is silently dropped into a queue nobody
-        # consumes and get_result() times out with no diagnostic.
+        # priority routing. Without a declared {queue}.high the broker
+        # returns such a publish and the producer gets UnroutableMessage
+        # (BZ-03, 0.12); before 0.12 it was dropped silently.
         if not self._config.priorities:
             priority_tasks: list[str] = []
             for task_name in self._registry.get_all():
@@ -328,9 +342,9 @@ class WorkerLifecycle:
                     tasks=priority_tasks[:20],
                     hint=(
                         "Enable worker priorities (SwarmQConfig.priorities="
-                        "True) or change TaskInfo.priority='normal' to "
-                        "avoid silent message drop into .high/.low queues "
-                        "nobody consumes."
+                        "True) or change TaskInfo.priority='normal'; without "
+                        "a declared .high/.low queue, publishing these tasks "
+                        "raises UnroutableMessage."
                     ),
                 )
 
@@ -343,6 +357,19 @@ class WorkerLifecycle:
                 self._on_message,
                 concurrency=self._config.concurrency,
             )
+        await self._report_queue_declarations()
+
+    async def _report_queue_declarations(self) -> None:
+        # Plan 0.12.0, MR 8 (BZ-19): hoechstens eine Warnung zu at-most-once-
+        # Bestandsqueues. Optionale Broker-Faehigkeit (Q15): fehlt sie oder
+        # scheitert sie, startet der Worker trotzdem.
+        report = getattr(self._broker, "report_queue_declarations", None)
+        if report is None:
+            return
+        try:
+            await report()
+        except Exception as exc:
+            logger.debug("queue_declaration_report_failed", **_error_fields(exc))
 
     def _start_consumer_watch(self) -> None:
         # U6 (R1, KTD3): verlorene Consumer selbst neu anmelden. Optional am
@@ -386,10 +413,19 @@ class WorkerLifecycle:
         # life of the process — plus the broker connection tasks. This used
         # to start only after WORKER_ONLINE (0.9.0 fix).
         try:
+            # BZ-04 (Plan 0.12.0, MR 14): vor Scheduler und Koordination.
+            enforce_eviction_policy(self._backend, self._config.valkey_eviction_check)
             await self._wire_coordination()
             await self._start_observability()
             self._warn_priority_tasks_without_routing()
             self._warn_hard_timeout_over_consumer_timeout()
+            # BZ-20 (Plan 0.12.0, MR 18): Prefetch gilt je Queue-Consumer.
+            warn_prefetch_over_consumer_timeout(
+                self._registry,
+                self._config.consumed_queues,
+                self._config.concurrency,
+                self._config.consumer_timeout_s,
+            )
             self._warn_without_delivery_limit()
             await self._start_executor()
             await self._declare_and_consume_queues()
@@ -501,12 +537,24 @@ class WorkerLifecycle:
         self._metrics.worker_uptime_seconds.labels(
             worker_id=worker_id,
         ).set(uptime)
-        for queue in self._config.queues:
+        # Dieselben Labels wie ``swarmq_delay_tiers_unavailable``: die
+        # konsumierten Queues, mit Prioritaeten also je Band (Review MR 10, P2-6).
+        for queue in self._config.consumed_queues:
             try:
                 depth = await self._broker.queue_depth(queue)
                 self._metrics.queue_depth.labels(
                     queue=queue, kind="pending",
                 ).set(depth)
+                # Plan 0.12.0, MR 10: nur die Delay-Queues (Q15: ohne
+                # ``ready_depth`` bleibt die Serie aus).
+                ready = await ready_depth_or_none(self._broker, queue)
+                if ready is not None:
+                    self._metrics.queue_depth.labels(queue=queue, kind="delayed").set(max(0, depth - ready))
+                else:
+                    # Scheitert ``ready_depth`` in diesem Takt, bliebe der
+                    # letzte Wert stehen: die Serie faellt aus, statt zu
+                    # luegen (Review MR 10, Hinweis).
+                    self._metrics.queue_depth.remove(queue, "delayed")
                 dlq = await self._broker.dead_letter_depth(queue)
                 self._metrics.dlq_messages.labels(queue=queue).set(dlq)
             except Exception as exc:
@@ -519,6 +567,20 @@ class WorkerLifecycle:
                     queue=queue,
                     **_error_fields(exc),
                 )
+        self._sample_delay_tiers_unavailable()
+        # Plan 0.12.0, MR 18 (BZ-20): hoechstens gehaltene unbestaetigte Nachrichten.
+        self._metrics.worker_prefetch_limit.labels(worker_id=worker_id).set(
+            prefetch_limit(self._config.consumed_queues, self._config.concurrency)
+        )
+        # Plan 0.12.0, MR 13 (BZ-05, R11): Lock-Wartezeit je Worker.
+        waiting, oldest_s = self._lock_gate.waits.snapshot(now_ms=int(time.time() * 1000))
+        self._metrics.lock_waits.labels(worker_id=worker_id).set(waiting)
+        self._metrics.lock_wait_oldest_seconds.labels(worker_id=worker_id).set(oldest_s)
+        # Plan 0.12.0, MR 17 (BZ-27): gesperrte Slots des Supervisors.
+        channel = current_channel()
+        locked = None if channel is None else channel.locked_slots_value()
+        if locked is not None:
+            self._metrics.supervisor_locked_slots.labels(worker_id=worker_id).set(locked)
         # Revive WORKER_HEARTBEAT (declared but never dispatched): a
         # per-worker liveness tick complementing the shallow /health probe.
         await self._signal_dispatcher.dispatch(
@@ -528,270 +590,21 @@ class WorkerLifecycle:
             uptime_seconds=uptime,
         )
 
+    def _sample_delay_tiers_unavailable(self) -> None:
+        # Plan 0.12.0, MR 10 (BZ-01): optionale Broker-Faehigkeit (Q15).
+        assert self._metrics is not None
+        count = getattr(self._broker, "delay_tiers_unavailable", None)
+        if count is None:
+            return
+        for queue in self._config.consumed_queues:
+            try:
+                value = count(queue)
+            except Exception:
+                return
+            if isinstance(value, int) and not isinstance(value, bool):
+                self._metrics.delay_tiers_unavailable.labels(queue=queue).set(value)
+
     async def stop(self) -> None:
         """Close broker and backend connections."""
         await self._broker.close()
         await self._backend.close()
-
-    async def _stop_http_surfaces(self) -> None:
-        # Stop auto-wired HTTP surfaces first so scrapers / probes
-        # get a clean connection-close rather than hitting a worker
-        # in mid-drain. Idempotent when not started.
-        if self._metrics_server is not None:
-            try:
-                await self._metrics_server.stop()
-            except Exception:
-                logger.exception("metrics_server_stop_failed")
-        if self._health_server is not None:
-            try:
-                await self._health_server.stop()
-            except Exception:
-                logger.exception("health_server_stop_failed")
-
-    async def _drain_in_flight(self) -> None:
-        # 1. DRAINING: stop accepting new messages. cancel_consume now
-        # isolates per-consumer failures and raises only after attempting
-        # every consumer + clearing its registry; guard it so a partial
-        # cancel cannot abort the rest of the graceful-shutdown sequence
-        # (in-flight drain, lock release, scheduler stop). 2026-06-02 audit.
-        try:
-            await self._broker.cancel_consume()
-        except Exception as exc:
-            logger.warning("cancel_consume_partial_failure", **_error_fields(exc))
-
-        # 2. Wait for in-flight tasks to complete
-        tasks_snapshot = set(self._active_tasks)
-        if tasks_snapshot:
-            # KTD11/R22: ein Recycling-Drain wartet ohne erzwungenen Abbruch
-            # (Frist aus dem groessten hard_timeout), damit ein gesunder
-            # Langlaeufer keinen Retry verliert; SIGTERM behaelt shutdown_timeout.
-            drain_timeout = getattr(self, "_drain_timeout_override", None) or self._config.shutdown_timeout
-            _done, pending = await asyncio.wait(
-                tasks_snapshot,
-                timeout=drain_timeout,
-            )
-
-            # 3. SHUTTING_DOWN: cancel remaining tasks if drain timeout exceeded
-            if pending:
-                self._state = WorkerState.SHUTTING_DOWN
-                for task in pending:
-                    task.cancel()
-                await asyncio.wait(pending, timeout=1)
-
-    async def _release_leftover_locks(self) -> None:
-        # 3b. Await detached lock-release tasks (Phase 3b.3). When a
-        # handler finally block was interrupted by outer-cancel, its
-        # shielded _release_acquired_locks call was detached into
-        # self._detached_releases. We must await them BEFORE
-        # backend.close() — otherwise the detached release would use a
-        # closed Valkey client and the lock would stay held until TTL.
-        if self._detached_releases:
-            await asyncio.wait(
-                self._detached_releases,
-                timeout=max(5.0, float(self._config.shutdown_timeout)),
-            )
-        # Nachgeholte Marker-Abschluesse des Ausfuehrungsschutzes: ein letzter,
-        # begrenzter Versuch, solange Valkey noch offen ist.
-        await self._execution_guard.drain()
-
-        # 3c. Release any leftover handler locks. Runs AFTER the
-        # asyncio.wait above (so cancelled tasks have had a chance to
-        # finish their finally and release their locks themselves) but
-        # BEFORE backend.close (so LockManager.release still has a
-        # working Valkey client). Whatever's still in the registry
-        # corresponds to a handler whose finally never ran (typically
-        # because the task was cancel()ed before reaching it).
-        if self._lock_manager is not None and self._active_handler_locks:
-            for handler_id, locks in list(self._active_handler_locks.items()):  # noqa: B007
-                for token in locks:
-                    try:
-                        await self._lock_manager.release(token)
-                    except Exception as exc:
-                        # KTD11: die Lock-TTL heilt den Fall selbst -> WARNING.
-                        logger.warning(
-                            "shutdown_lock_release_failed",
-                            lock_name=token.name,
-                            **_error_fields(exc),
-                        )
-            self._active_handler_locks.clear()
-
-    async def _stop_scheduler_and_di(self) -> None:
-        # 3d. Stop the embedded scheduler. Must run AFTER in-flight tasks
-        # have drained (otherwise the leader could still fire during
-        # drain and have its commit arrive at a closed backend) and
-        # BEFORE broker/backend close (scheduler.stop() writes a handover
-        # marker + releases the leader lock — both Valkey ops). If this
-        # worker holds the leader lock, the stop() call emits
-        # SCHEDULER_LEADER_HANDOVER and sets the transient marker so
-        # the next standby emits SCHEDULER_LEADER (not FAILOVER).
-        if self._scheduler is not None:
-            try:
-                await self._scheduler.stop()
-            except Exception as exc:
-                # KTD11: Leader-Lock und Marker laufen per TTL ab -> WARNING.
-                logger.warning("scheduler_stop_failed", **_error_fields(exc))
-
-        # 3e. Close the Dishka APP container (if one was registered). Runs
-        # AFTER the in-flight drain + detached-release wait (so live REQUEST
-        # scopes have finalized) and only when DI is active — no-op otherwise.
-        # APP-scoped resources (connection pools etc.) are torn down here; a
-        # close() failure is logged, not raised, so it cannot abort shutdown.
-        _di_container = get_registered_container()
-        if not isinstance(_di_container, _Missing):
-            try:
-                await _di_container.close()
-            except Exception:
-                logger.exception("dishka_container_close_failed")
-
-    def _shutdown_publish_budget(self) -> float:
-        """Wieviel Zeit ein Publish im Herunterfahren noch bekommt (R12, KTD9).
-
-        Die Reserve deckt den Rest der Sequenz nach dem Drain: Sperren
-        freigeben, Scheduler stoppen, Verbindungen schliessen. Sie wird
-        gedeckelt auf die Haelfte der Gnadenfrist, damit eine kurz
-        konfigurierte Frist nicht auf ein Nullbudget faellt — dann scheiterte
-        im Drain jeder Retry- und Dead-Letter-Publish rein rechnerisch, und
-        alle laufenden Tasks kaemen als Redelivery zurueck statt sauber
-        verzoegert oder aussortiert zu werden.
-        """
-        grace = max(0.0, float(self._config.shutdown_timeout))
-        reserve = min(_SHUTDOWN_PUBLISH_RESERVE_S, grace / 2.0)
-        return max(0.0, grace - reserve)
-
-    def _set_publish_deadline(self, at: float | None) -> None:
-        """Setzt die Endfrist, sofern der Broker sie kennt.
-
-        ``Publisher.set_publish_deadline`` kam erst mit diesem Plan dazu. Ein
-        vorher geschriebener Fremdbroker wuerde hier sonst mit AttributeError
-        die gesamte Abbausequenz abbrechen — vor Sperrenfreigabe und
-        Verbindungsschluss. Die Frist ist eine Verbesserung, kein Muss.
-        """
-        setter = getattr(self._broker, "set_publish_deadline", None)
-        if setter is None:
-            return
-        setter(at)
-
-    async def _execute_shutdown(self) -> None:
-        """Execute the graceful shutdown sequence."""
-        # Die Uhr des Supervisors laeuft ab SIGTERM, nicht ab hier: Der
-        # Signal-Dispatch (bis zu _LIFECYCLE_DISPATCH_TIMEOUT_S) und das
-        # Stoppen der HTTP-Oberflaechen zaehlen bereits gegen dieselbe
-        # Gnadenfrist. Ohne diesen frueh genommenen Zeitpunkt laege die
-        # Endfrist hinter der Eskalation des Supervisors (R12, KTD9).
-        started_at = asyncio.get_running_loop().time()
-        try:
-            # Bounded — a hanging handler must not stall
-            # the drain/lock-release/close sequence below.
-            await self._signal_dispatcher.dispatch(
-                Signal.WORKER_SHUTDOWN,
-                handler_timeout=_LIFECYCLE_DISPATCH_TIMEOUT_S,
-                worker_id=self._config.worker_identity,
-            )
-            await self._stop_http_surfaces()
-            # Ab hier darf kein Publish mehr laenger laufen als das
-            # verbleibende Budget. Auch bereits laufende werden nachgezogen.
-            self._set_publish_deadline(started_at + self._shutdown_publish_budget())
-            await self._drain_in_flight()
-            await self._close_executor()
-            await self._release_leftover_locks()
-            await self._stop_scheduler_and_di()
-            # 4. Close connections
-            self._state = WorkerState.SHUTTING_DOWN
-            await self._broker.close()
-            await self._backend.close()
-        finally:
-            # Immer zuruecknehmen, auch wenn oben etwas geworfen hat: Ein
-            # eingebetteter Nutzer darf ueber dieselbe Instanz weiter Tasks
-            # einreihen, und eine liegengebliebene, laengst verstrichene
-            # Endfrist liesse danach jeden Publish sofort scheitern (R12).
-            self._set_publish_deadline(None)
-
-        # 5. STOPPED
-        self._state = WorkerState.STOPPED
-        # Graceful teardown done — start()'s finally _teardown_on_exit is now
-        # a no-op (it only covers the cancel/exception path).
-        self._torn_down = True
-
-    async def _teardown_on_exit(self) -> None:
-        """Crash-path teardown, run from start()'s finally on every exit.
-
-        No-op once _execute_shutdown has completed (graceful path). On the
-        cancel/exception path it tears down what start() spun up so nothing
-        orphans: the burst monitor, the scheduler's election/poll sub-tasks
-        (the root of the leak), the SIGTERM/SIGINT handlers, and the broker +
-        backend connections.
-
-        Runs the work as a shielded child task so it completes even while
-        start() is itself being cancelled — the established detached-shield
-        pattern (cf. _detached_releases / the DI scope-exit in
-        _handle_message): the first CancelledError is absorbed and the child
-        is awaited to completion (retrieving its result, so no "Future
-        exception was never retrieved"), then the cancellation is re-raised.
-        """
-        if self._torn_down:
-            return
-        self._torn_down = True
-        teardown = asyncio.create_task(self._abort_teardown())
-        try:
-            await asyncio.shield(teardown)
-        except asyncio.CancelledError:
-            await teardown
-            raise
-
-    async def _abort_teardown(self) -> None:
-        """Best-effort, non-graceful cleanup of the resources start() itself
-        spun up. Each step is independently guarded so one failure cannot leave
-        a later resource leaked. NOT the graceful path: the scheduler is aborted
-        (no HANDOVER / lock-release — a crashed leader's lock expires by TTL).
-
-        Deliberately does NOT close the broker/backend: those connections are
-        owned by the caller / the SwarmQ context manager (``__aexit__`` closes
-        them), and a caller that cancels start_worker() may keep using them
-        (e.g. to read a cancel flag). Closing them here would pull the client
-        out from under such code. The aio_pika connection tasks are therefore
-        reaped at context-exit, not here."""
-        if self._burst_monitor_task is not None and not self._burst_monitor_task.done():
-            self._burst_monitor_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await self._burst_monitor_task
-        recycle_task = getattr(self, "_recycle_monitor_task", None)
-        if recycle_task is not None and not recycle_task.done():
-            recycle_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await recycle_task
-        # Der Compute-Pool gehoert dem Worker: seine Kinder duerfen einen
-        # abgebrochenen start_worker() nicht ueberleben (Tests, --reload,
-        # eingebettet). Im IO-Modus ein No-op. Siehe
-        # docs/solutions/patterns/worker-cancel-safe-teardown-detached-tasks-2026-06-01.md
-        with contextlib.suppress(Exception):
-            await self._close_executor()
-
-        if (
-            self._metrics_sampler_task is not None
-            and not self._metrics_sampler_task.done()
-        ):
-            self._metrics_sampler_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await self._metrics_sampler_task
-
-        # The leak root: cancel + await the scheduler election/poll sub-tasks.
-        if self._scheduler is not None:
-            with contextlib.suppress(Exception):
-                await self._scheduler.abort()
-
-        # Drop the process-wide signal handlers this worker installed.
-        with contextlib.suppress(Exception):
-            loop = asyncio.get_running_loop()
-            for sig in (signal.SIGTERM, signal.SIGINT):
-                loop.remove_signal_handler(sig)
-
-    def _request_shutdown(self) -> None:
-        """Request a graceful shutdown. Idempotent — safe to call multiple times."""
-        if self._state is not WorkerState.RUNNING:
-            return
-        self._state = WorkerState.DRAINING
-        channel = current_channel()
-        if channel is not None:
-            channel.mark_draining()  # R21/KTD10: laengere Lebenszeichen-Frist im Drain
-        self._shutdown_event.set()
-

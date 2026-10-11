@@ -28,7 +28,6 @@ from swarmq.dishka import (
 )
 from swarmq.exceptions import (
     BackendConnectionError,
-    TaskNotFoundError,
 )
 from swarmq.headers import HEADER_RETRY_COUNT, HEADER_UNIQUE_UNTIL
 from swarmq.logging import _error_fields, _task_log_context, get_logger
@@ -41,8 +40,9 @@ from swarmq.registry import TaskRegistry
 from swarmq.scheduler import SchedulerLoop
 from swarmq.signals import SignalDispatcher
 from swarmq.task import DeliveryMode, Task, TaskInfo
-from swarmq.worker import decode
+from swarmq.worker import decode, redelivery
 from swarmq.worker.execution import TaskExecutor, lifecycle_level, task_logger
+from swarmq.worker.finalize import finalize_schedfire, maybe_release_unique
 from swarmq.worker.gates import (
     GateContext,
     GateDeps,
@@ -51,7 +51,6 @@ from swarmq.worker.gates import (
     redeliver_in_place,
     route_via_dlx,
 )
-from swarmq.worker.gates.backend_defer import bounded_backend_call
 from swarmq.worker.gates.cancel import CancelGate
 from swarmq.worker.gates.delivery_count import DeliveryCountGate
 from swarmq.worker.gates.execution_guard import ExecutionGuard
@@ -59,17 +58,20 @@ from swarmq.worker.gates.expiry import ExpiryGate
 from swarmq.worker.gates.lock import (  # noqa: F401  # Re-Export der Konstanten (Tests)
     LOCK_CONFLICT_BACKOFF_BASE_MS,
     LOCK_CONFLICT_BACKOFF_CAP_MS,
-    LOCK_CONFLICT_DLQ_CAP,
     LockGate,
+    release_acquired_locks,
 )
 from swarmq.worker.gates.rate_limit import RateLimitGate
 from swarmq.worker.gates.schedfire import SchedfireGate
+from swarmq.worker.gates.unknown_task import lookup_task_or_route
 from swarmq.worker.guarded_broker import GuardedBroker
 from swarmq.worker.lifecycle import WorkerLifecycle, WorkerState  # Re-Export (Fassade/Tests)
+from swarmq.worker.lock_keeper import LockKeeper
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered, Terminal
 from swarmq.worker.results import ResultTail
 from swarmq.worker.retry import RetryHandler
 from swarmq.worker.settle import contain_delivery_errors
+from swarmq.worker.shutdown import WorkerShutdown
 from swarmq.workflow_orchestration import (
     WorkflowAdvancer,
 )
@@ -79,7 +81,7 @@ logger = get_logger(__name__)
 
 
 
-class Worker(WorkerLifecycle):
+class Worker(WorkerLifecycle, WorkerShutdown):
     def __init__(
         self,
         broker: WorkerBroker,
@@ -147,20 +149,34 @@ class Worker(WorkerLifecycle):
             maybe_release_unique=self._maybe_release_unique,
             extract_valid_workflow_id=self._extract_valid_workflow_id,
             register_lock=lambda handler_id, entry: self._active_handler_locks.setdefault(handler_id, []).append(entry),
+            # BZ-29: Pause vor ``redeliver``, endet beim Shutdown sofort.
+            redeliver_pause=lambda delay_s: redelivery.wait_unless_shutdown(delay_s, self._shutdown_event),
         )
+        # BZ-25 (Plan 0.12.0, MR 13): verlaengert gehaltene Locks, solange der
+        # Handler lebt; endet mit der letzten Lease oder beim Schliessen.
+        self._lock_keeper = LockKeeper(lambda: self._lock_manager, op_timeout_s=config.backend_op_timeout)
+        gate_deps.keep_lock = lambda token, ttl_ms, ctx: self._lock_keeper.keep(
+            token, ttl_ms, task_id=ctx.task_id, task_name=ctx.task_name)
         self._schedfire_gate = SchedfireGate(gate_deps)
         self._cancel_gate = CancelGate(gate_deps)
         self._expiry_gate = ExpiryGate(gate_deps)
         self._rate_limit_gate = RateLimitGate(gate_deps)
-        self._lock_gate = LockGate(gate_deps)
+        self._lock_gate = LockGate(
+            gate_deps,
+            dead_letter=lambda d, c, m, t, h, f: self._retry_handler.dead_letter(
+                d, c, m, t, extra_headers=h, on_publish_failure=f),
+        )
+        # Am Zustelllimit stellt eine gescheiterte Workflow-Fehlmarkierung
+        # nicht mehr neu zu (MR 3): auf 4.3 zaehlte der ``nack`` nicht.
         self._delivery_count_gate = DeliveryCountGate(
-            gate_deps, dead_letter=lambda d, c, m, t: self._retry_handler.dead_letter(d, c, m, t))
+            gate_deps, dead_letter=lambda d, c, m, t: self._retry_handler.dead_letter(d, c, m, t, may_redeliver=False))
         self._gate_deps = gate_deps  # CPU-Modus tauscht den Executor beim Start (compute.wiring)
         self._executor = TaskExecutor(gate_deps)
         self._lifecycle_level = lifecycle_level(config)  # einmal je Worker (KTD8)
         self._result_tail = ResultTail(gate_deps, workflow_advancer=lambda: self._workflow_advancer)
         self._retry_handler = RetryHandler(
             gate_deps, workflow_advancer=lambda: self._workflow_advancer, finish=self._result_tail.finish)
+        gate_deps.fail_workflow = self._retry_handler.fail_workflow  # BZ-13: terminale Gate-Pfade
         # Ausfuehrungsschutz (KTD5): der Store entsteht in start(); Gates,
         # Retry und Ergebnis-Tail sprechen den protokollierenden Wrapper, der
         # die Marker nach dem ausgefuehrten Verb setzt.
@@ -215,27 +231,12 @@ class Worker(WorkerLifecycle):
         handler_id: uuid.UUID,
         acquired_locks: list[LockToken],
     ) -> None:
-        """Release every lock acquired by this handler. Called in the
-        ``_handle_message`` finally block. Failures are logged and
-        swallowed — the task already produced its result; release
-        problems must not break the worker pipeline. The TTL-recovery
-        path is the safety net for any lock that ends up not released.
-        """
+        """``gates.lock.release_acquired_locks`` mit dem Logger dieses Moduls (Q17)."""
         assert self._lock_manager is not None  # Locks existieren nur nach start()
-        for token in acquired_locks:
-            try:
-                await self._lock_manager.release(token)
-            except Exception as exc:
-                # KTD11: die Lock-TTL heilt den Fall selbst -> WARNING.
-                logger.warning(
-                    "lock_release_failed",
-                    lock_name=token.name,
-                    **_error_fields(exc),
-                )
-        # Drop the worker-wide registry entry whether release succeeded
-        # or not — anything still held will time out via TTL, and we
-        # don't want shutdown-cleanup to double-release.
-        self._active_handler_locks.pop(handler_id, None)
+        await release_acquired_locks(
+            self._lock_manager, self._active_handler_locks, handler_id, acquired_locks, log=logger,
+            drop=self._lock_keeper.drop,
+        )
 
     async def _on_message(self, message: Any) -> None:
         """Consume callback — spawns a task so aio-pika's dispatch loop is not blocked."""
@@ -248,54 +249,10 @@ class Worker(WorkerLifecycle):
         task.add_done_callback(self._active_tasks.discard)
 
     async def _finalize_schedfire(self, ctx: GateContext, *, terminal: bool) -> bool:
-        """Finalize the in-flight schedfire claim of this delivery.
-
-        Called from the ``_handle_message`` finally block (and the
-        pre-start-cancel terminal path). No-ops when the delivery holds no
-        claim (``ctx.schedfire_claim`` is set only by the schedfire gate);
-        the claim is taken off the context first, so it is finalized once.
-
-        * ``terminal=True`` (success, error→DLQ, pre-start cancel): write
-          the long-TTL ``sq:sched:fired:<key>`` completed marker so any
-          redelivery of this fire is ack+skipped.
-        * ``terminal=False`` (retry republish, rate-limit / lock-conflict
-          / shutdown / result-write requeue): the fire is being
-          re-delivered, so DELETE the short-TTL in-flight key instead of
-          writing the completed marker. Writing
-          the completed marker here would make the redelivered/retry copy
-          fail ``is_schedfire_completed`` and get silently dropped.
-
-        Failures are logged and swallowed — an orphan in-flight marker
-        self-heals via its short TTL. Returns ``False`` only when a held
-        claim could not be finalized (``redeliver_in_place`` then copies
-        instead of nacking)."""
-        claim, ctx.schedfire_claim = ctx.schedfire_claim, None
-        if claim is None:
-            return True
-        schedfire_key, owner = claim.key, claim.owner
-        try:
-            finalize: Awaitable[object]
-            if terminal:
-                assert self._config.scheduler_dedup_ttl is not None  # Config-Default
-                ttl_ms = int(self._config.scheduler_dedup_ttl * 1000)
-                finalize = self._backend.schedules.mark_fire_completed(schedfire_key, ttl_ms)
-            else:
-                # Owner-geprueft: hat eine Kopie den Claim schon uebernommen
-                # (verspaetete Freigabe), bleibt er ihr.
-                finalize = self._backend.schedules.release_fire_claim(schedfire_key, owner=owner)
-            # Begrenzt: ein Blackhole darf weder Gate noch finally blockieren.
-            await bounded_backend_call(self._gate_deps, finalize, what="schedfire finalize")
-        except Exception as exc:
-            # Auch eine fremde Ausnahme (Dritt-Store): sie darf weder den
-            # ``nack``/die Kopie eines Requeues noch das finally ueberspringen.
-            logger.warning(
-                "schedfire_finalize_failed",
-                schedfire_key=schedfire_key,
-                terminal=terminal,
-                **_error_fields(exc),
-            )
-            return False
-        return True
+        """``finalize.finalize_schedfire`` mit dem Logger dieses Moduls (Q17)."""
+        return await finalize_schedfire(
+            ctx, terminal=terminal, backend=self._backend, config=self._config, gate_deps=self._gate_deps, log=logger
+        )
 
     async def _release_schedfire_claim(self, ctx: GateContext) -> None:
         await self._finalize_schedfire(ctx, terminal=False)
@@ -311,43 +268,10 @@ class Worker(WorkerLifecycle):
     async def _maybe_release_unique(
         self, message: Any, task_id: str, task_info: TaskInfo | None = None,
     ) -> None:
-        """Release the R3.5 dedup flag if this message carries one.
-
-        Contract:
-          * No-op when the message lacks a valid ``x-swarmq-unique-hash``
-            header (missing, wrong type, not a 64-char lowercase hex
-            digest).
-          * No-op in ``start``-mode at terminal paths — Unit 10 already
-            released at pickup (owner-check would fail here anyway).
-          * ``completion``-mode (default): call ``backend.release_unique``;
-            owner-check protects against TTL-expiry-race (first task's
-            flag was reclaimed by a second task before first finished).
-          * When ``task_info`` is None (task not registered) → treat as
-            completion mode. Better to attempt release than leave an
-            orphan flag until TTL.
-
-        Backend errors are swallowed inside ``release_unique`` — an
-        orphan flag self-heals via TTL and a release failure must not
-        break the worker's terminal-path pipeline (same discipline as
-        ``clear_cancel_flag``). ``op_timeout`` bounds the Valkey call
-        so the finally block can't wedge on a slow backend.
-        """
+        """Siehe ``finalize.maybe_release_unique``."""
         unique_hash = self._extract_valid_unique_hash(message)
-        if unique_hash is None:
-            return
-        # Prefer the header over TaskInfo — per-call overrides from
-        # Client.schedule set the header, and we want those overrides
-        # to flow end-to-end. TaskInfo is the fallback when the header
-        # is absent or malformed.
-        header_mode = (message.headers or {}).get(HEADER_UNIQUE_UNTIL)
-        mode = header_mode or (
-            task_info.unique_until if task_info is not None else "completion"
-        )
-        if mode == "start":
-            return  # Release already happened at pickup (Unit 10).
-        await self._backend.release_unique(
-            unique_hash, task_id,
-            op_timeout=self._config.backend_op_timeout,
+        await maybe_release_unique(
+            message, task_id, task_info, unique_hash=unique_hash, backend=self._backend, config=self._config
         )
 
     async def _publish_workflow_step(self, queue: str, body: bytes, headers: dict[str, Any]) -> PublishReceipt:
@@ -505,23 +429,13 @@ class Worker(WorkerLifecycle):
                 return False
         return True
 
-    async def _lookup_task_or_route(
-        self, message: Any, task_name: str, task_id: str | None = None,
-    ) -> type[Task] | None:
-        """Registry-Lookup; unbekannte Tasks gehen über den DLX-Fallback
-        (``None`` = behandelt). Der Body ist hier dekodiert, also trägt das
-        Signal die Kennung -- ohne sie wäre die Nachricht im ``.XQ`` nicht
-        wiederzufinden (B14 des Loadsuite-Backlogs)."""
-        try:
-            return self._registry.get(task_name)
-        except TaskNotFoundError:
-            logger.error("task_not_found")
-            await route_via_dlx(
-                self._gate_deps, message, reason="unregistered_task",
-                task_id=task_id, task_name=task_name,
-                error=f"task {task_name!r} is not registered",
-            )
-            return None
+    async def _lookup_task_or_route(self, message: Any, ctx: GateContext) -> type[Task] | DeliveryOutcome:
+        """``gates.unknown_task.lookup_task_or_route`` mit dem Logger dieses Moduls (Q17)."""
+        return await lookup_task_or_route(
+            self._registry, self._gate_deps, message, ctx, log=logger,
+            dead_letter=lambda d, c, m, t, h, f: self._retry_handler.dead_letter(
+                d, c, m, t, extra_headers=h, on_publish_failure=f),
+        )
 
     def _log_context(self, message: Any, ctx: GateContext) -> Any:
         """Task-Kontext fuer alle Logaufrufe dieser Zustellung (KTD13)."""
@@ -573,7 +487,7 @@ class Worker(WorkerLifecycle):
         aktuelle Outcome unverändert zurück).
 
         FIRE_AND_FORGET mit Fehler/Cancel überspringt die Result-/Retry-
-        Pipeline (bei Cancel wird das Flag hier gelöscht — der
+        Pipeline (bei Cancel wird das Flag hier auf höchstens 1 h verkürzt — der
         result-ttl-0-Zweig des Tails wird auf diesem Pfad nie erreicht).
         Bewusste (user-approved) Verhaltensänderung von damals:
         ``max_retries=0``-Fehler laufen wie jeder Fehler durch die
@@ -669,10 +583,15 @@ class Worker(WorkerLifecycle):
                 await redeliver_in_place(self._gate_deps, message, ctx)
                 return
 
-            # 4-5. Look up task in registry
-            task_class = await self._lookup_task_or_route(message, task_name, task_id)
-            if task_class is None:
+            # 4-5. Look up task in registry. Ein unbekannter Task wird
+            # innerhalb der Gnadenfrist zurueckgestellt (BZ-06): das Outcome
+            # des Gates gilt, sonst schriebe der finally den
+            # Schedfire-Completed-Marker und gaebe das Unique-Flag frei.
+            resolved = await self._lookup_task_or_route(message, ctx)
+            if isinstance(resolved, DeliveryOutcome):
+                outcome = resolved
                 return
+            task_class = resolved
 
             task_info = task_class.task_info
             ctx.task_info = task_info

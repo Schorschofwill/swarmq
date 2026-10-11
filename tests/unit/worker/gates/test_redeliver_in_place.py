@@ -152,3 +152,18 @@ async def test_failed_copy_logs_the_publish_error(worker, broker, backend, swarm
     assert entry["log_level"] == "warning"
     assert entry["schedfire_key"] == "cron_a:1"
     assert (entry["error_type"], entry["error"]) == ("BrokerConnectionError", "rmq down")
+
+
+async def test_failing_pause_still_redelivers(worker, broker):
+    """BZ-29: Die Pause vor dem ``nack`` darf das ``nack`` nie verhindern --
+    sonst bliebe die Zustellung unbestaetigt bis zum Kanalende."""
+
+    async def broken_pause(_delay_s: float) -> None:
+        raise RuntimeError("pause broken")
+
+    worker._gate_deps.redeliver_pause = broken_pause
+    msg = make_message(_default_payload())
+
+    await redeliver_in_place(worker._gate_deps, msg, GateContext(task_id="abc-123", task_name="add", queue="default"))
+
+    broker.redeliver.assert_awaited_once_with(msg)

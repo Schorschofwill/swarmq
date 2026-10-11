@@ -34,6 +34,9 @@ listings, see the [reference](../reference/index.md).
 
 ## Operations
 
+- [Deploying and upgrading](deployment.md) — rollout order, grace
+  periods, vhost and namespace, permissions and policies, rollback
+  rules; the upgrade path from 0.11 to 0.12.
 - [Dead letter queues](dead-letter-queues.md) — inspect, retry,
   and purge DLQ'd messages with `swarmq dlq`.
 - [CPU mode](cpu-mode.md) — `--pool cpu` runs task bodies in

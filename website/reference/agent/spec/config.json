@@ -151,6 +151,18 @@
       "type": "int"
     },
     {
+      "default": "auto",
+      "env_var": "SWARMQ_QUEUE_DEAD_LETTER_STRATEGY",
+      "name": "queue_dead_letter_strategy",
+      "type": "str"
+    },
+    {
+      "default": "separate",
+      "env_var": "SWARMQ_BROKER_PUBLISH_CONNECTION",
+      "name": "broker_publish_connection",
+      "type": "str"
+    },
+    {
       "default": 1.0,
       "env_var": "SWARMQ_CANCEL_POLL_INTERVAL",
       "name": "cancel_poll_interval",
@@ -227,6 +239,18 @@
       "env_var": "SWARMQ_SCHEDULER_PRUNE_AFTER_S",
       "name": "scheduler_prune_after_s",
       "type": "float"
+    },
+    {
+      "default": 86400.0,
+      "env_var": "SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S",
+      "name": "scheduler_unroutable_oneshot_max_s",
+      "type": "float"
+    },
+    {
+      "default": null,
+      "env_var": "SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S",
+      "name": "scheduler_publish_stepdown_s",
+      "type": "float | None"
     },
     {
       "default": false,
@@ -356,6 +380,12 @@
     },
     {
       "default": 604800.0,
+      "env_var": "SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S",
+      "name": "execution_guard_backlog_ttl_s",
+      "type": "float"
+    },
+    {
+      "default": 604800.0,
       "env_var": "SWARMQ_DEAD_LETTER_TTL_S",
       "name": "dead_letter_ttl_s",
       "type": "float | None"
@@ -365,6 +395,30 @@
       "env_var": "SWARMQ_DEAD_LETTER_TERMINAL_FAILURES",
       "name": "dead_letter_terminal_failures",
       "type": "bool"
+    },
+    {
+      "default": 900.0,
+      "env_var": "SWARMQ_UNKNOWN_TASK_GRACE_S",
+      "name": "unknown_task_grace_s",
+      "type": "float"
+    },
+    {
+      "default": 21600.0,
+      "env_var": "SWARMQ_LOCK_WAIT_MAX_S",
+      "name": "lock_wait_max_s",
+      "type": "float"
+    },
+    {
+      "default": "strict",
+      "env_var": "SWARMQ_VALKEY_EVICTION_CHECK",
+      "name": "valkey_eviction_check",
+      "type": "str"
+    },
+    {
+      "default": null,
+      "env_var": "SWARMQ_NAMESPACE",
+      "name": "namespace",
+      "type": "str | None"
     },
     {
       "default": 131072,

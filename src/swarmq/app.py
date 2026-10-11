@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any, Literal
 
 from swarmq.client import _MISSING, Client, _MissingType
+from swarmq.client.results import _DEFAULT_CANCEL_FLAG_TTL_MS
 
 if TYPE_CHECKING:
     from swarmq.backend.valkey import ValkeyBackend
@@ -53,9 +54,12 @@ class SwarmQ:
             backend_url=backend._url,
             **config_kwargs,
         )
+        self._reconcile_namespace()
         self.broker._queue_type = self.config.queue_type
         self.broker.publish_timeout_s = self.config.publish_timeout_s
         self.broker.delivery_limit = self.config.delivery_limit
+        self.broker.dead_letter_strategy = self.config.queue_dead_letter_strategy
+        self.broker.publish_connection = self.config.broker_publish_connection
         self.broker.dead_letter_ttl_s = self.config.dead_letter_ttl_s
         self.registry = TaskRegistry()
         for task_class in Task._registered_tasks:
@@ -82,6 +86,21 @@ class SwarmQ:
             # R3.5: bound every setnx_unique on the enqueue path.
             backend_op_timeout=self.config.backend_op_timeout,
         )
+
+    def _reconcile_namespace(self) -> None:
+        """Namensraum von Backend und Konfiguration abgleichen (Review MR 15,
+        E1/P1-1); der wirksame Wert steht danach in ``config.namespace``.
+
+        Q15: ein Backend ohne Abgleich (Fake, Mock, fremde Implementierung)
+        laesst die Konfiguration unveraendert; ``ConfigurationError`` geht durch."""
+        try:
+            effective = self.backend.reconcile_namespace(self.config.namespace)
+        except ConfigurationError:
+            raise
+        except Exception:
+            return
+        if effective is None or isinstance(effective, str):
+            self.config.namespace = effective
 
     def add_middleware(self, middleware: Middleware) -> None:
         """Register a middleware to run for every task lifecycle event.
@@ -196,14 +215,15 @@ class SwarmQ:
     async def cancel(self, task_id: str) -> bool:
         """Request cancellation of *task_id*.
 
-        Fire-and-forget delegation to :meth:`Client.cancel`. Computes the
-        flag's TTL from ``config.result_ttl`` so the cancel flag outlives
-        a typical retry window (default: 24 hours).
+        Fire-and-forget delegation to :meth:`Client.cancel`. The flag's
+        base TTL is ``max(24 h, config.result_ttl)`` (BZ-23): a short
+        ``result_ttl`` must not let a cancelled task that waits longer in
+        the queue run anyway.
 
         Returns True when the flag was newly set, False when it already
         existed.
         """
-        ttl_ms = self.config.result_ttl * 1000
+        ttl_ms = max(_DEFAULT_CANCEL_FLAG_TTL_MS, self.config.result_ttl * 1000)
         return await self.client.cancel(task_id, ttl_ms=ttl_ms)
 
     async def apply(

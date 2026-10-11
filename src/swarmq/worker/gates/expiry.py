@@ -1,9 +1,10 @@
 """Expiry-Gate (R4.4 ``max_age``), Plan U7 — verbatim aus ``pipeline.py``.
 
-Abgelaufen → Fehler-Ergebnis speichern, Signal ``TASK_EXPIRED``, an das
-Dead-Letter-Ziel veröffentlichen, bestätigen (``dead_letter``); Outcome
-``Terminal.never_release()`` (das Dedup-Flag bleibt bewusst stehen — heutiges
-Verhalten). Publish-Fehler → ``redeliver`` (Fallback laut KTD3).
+Abgelaufen → Workflow fehlmarkieren (BZ-13), Fehler-Ergebnis speichern,
+Signal ``TASK_EXPIRED``, an das Dead-Letter-Ziel veröffentlichen, bestätigen
+(``dead_letter``); Outcome ``Terminal.release_only()`` (BZ-22: das Dedup-Flag
+wird im ``finally`` owner-geprueft freigegeben). Publish-Fehler →
+``redeliver`` (Fallback laut KTD3), Outcome ``Terminal.never_release()``.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from swarmq.logging import _error_fields, get_logger
 from swarmq.serialization import encode_result
 from swarmq.signals import Signal
 from swarmq.worker.gates import GateContext, GateDeps, redeliver_in_place
-from swarmq.worker.outcome import Continue, DeliveryOutcome, Terminal
+from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered, Terminal
 
 logger = get_logger(__name__)
 
@@ -61,6 +62,13 @@ class ExpiryGate:
             age_s=age,
             max_age_s=task_info.max_age,
         )
+        error_message = f"task expired: age {age}s exceeds max_age {task_info.max_age}s"
+        # BZ-13: ein abgelaufener Workflow-Schritt markiert seinen Workflow
+        # als fehlgeschlagen. Scheitert das voruebergehend, ist die Zustellung
+        # neu zugestellt (nicht terminal) -- vor dem Signal, damit es je
+        # Ablauf einmal feuert.
+        if deps.fail_workflow is not None and not await deps.fail_workflow(delivery, ctx, error_message, True):
+            return Redelivered
         await deps.signals.dispatch(
             Signal.TASK_EXPIRED,
             task_id=ctx.task_id,
@@ -84,7 +92,7 @@ class ExpiryGate:
                         task_name=ctx.task_name,
                         is_error=True,
                         is_cancelled=False,
-                        error_message=f"task expired: age {age}s exceeds max_age {task_info.max_age}s",
+                        error_message=error_message,
                     )),
                     ttl_ms=ttl_ms,
                     op_timeout=deps.config.backend_op_timeout,
@@ -115,4 +123,8 @@ class ExpiryGate:
                 # Double-failure — let the message TTL / broker
                 # redeliver-limit be the safety net.
                 logger.error("task_expired_nack_also_failed", **_error_fields(nack_exc))
-        return Terminal.never_release()
+            return Terminal.never_release()
+        # BZ-22: die Kopie liegt in der DLQ -- das Unique-Flag freigeben
+        # (owner-geprueft im ``finally``), sonst verschluckte es jedes neue
+        # ``schedule()`` bis ``unique_for``.
+        return Terminal.release_only()

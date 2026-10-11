@@ -21,9 +21,13 @@ from swarmq.exceptions import (
     BackendResponseError,
     BrokerConnectionError,
     ConfigurationError,
+    LockWaitExceeded,
     LoggingConfigError,
+    MessageHeadersTooLarge,
     NoRetry,
     PublishIndeterminate,
+    QueueArgumentsMismatch,
+    RedeliveryLimitError,
     ResultExpiredError,
     ResultNotReadyError,
     ResultSerializationError,
@@ -120,9 +124,11 @@ __all__ = [
     # Health
     "HealthChecker",
     "HealthServer",
+    "LockWaitExceeded",
     "LoggingConfigError",
     # Middleware
     "MessageContext",
+    "MessageHeadersTooLarge",
     # Metrics
     "Metrics",
     "MetricsServer",
@@ -131,8 +137,10 @@ __all__ = [
     # Progress
     "ProgressInfo",
     "PublishIndeterminate",
+    "QueueArgumentsMismatch",
     # Heavy lazy surface (resolved via __getattr__)
     "RabbitMQBroker",
+    "RedeliveryLimitError",
     "ResultExpiredError",
     "ResultNotReadyError",
     "ResultSerializationError",

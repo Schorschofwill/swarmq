@@ -138,18 +138,22 @@ SCARD sq:workers:active       # O(1) — Anzahl Worker
 
 ## 2.1 Eviction Policies
 
+> **Korrigiert (Plan 0.12.0, MR 14, BZ-04):** Die fruehere Empfehlung
+> `volatile-lru` war falsch. `volatile-*` verdraengt genau die Keys mit TTL,
+> und das sind Locks, Leader-Lock, Ausfuehrungsschutz sowie Unique- und
+> Fired-Marker; die Folge ist Doppelausfuehrung. Einzige sichere Policy ist
+> `noeviction` (ein volles Valkey verweigert dann Schreibzugriffe, swarmq
+> behandelt das als Ausfall), dazu AOF. Seit 0.12 prueft der Worker die
+> Policy beim Start (`SWARMQ_VALKEY_EVICTION_CHECK`), siehe
+> `website/reference/configuration.md#valkey-requirements`.
+
 | Policy | Fuer SwarmQ? | Grund |
 |---|---|---|
-| `noeviction` | NEIN | Worker koennen keine Results speichern wenn voll |
-| `allkeys-lru` | Riskant | Koennte Locks und Schedule-State loeschen |
-| **`volatile-lru`** | **EMPFOHLEN** | Entfernt nur Keys mit TTL, schuetzt Schedule-State |
-| `volatile-lfu` | Auch gut | LRU ist vorhersehbarer |
-| `volatile-ttl` | Moeglich | Nicht ideal |
+| **`noeviction`** | **EINZIG SICHER** | Nichts wird verdraengt; bei vollem Speicher OOM statt stillem Verlust |
+| `allkeys-*` | NEIN | Verdraengt Locks, Marker und Schedule-State |
+| `volatile-lru` / `volatile-lfu` / `volatile-ttl` / `volatile-random` | NEIN | Verdraengt genau die Keys mit TTL: Locks, Leader-Lock, Ausfuehrungsschutz, Unique- und Fired-Marker |
 
-**Warum volatile-lru:**
-- Results haben **immer TTL** → werden bei Platzmangel entfernt
-- Schedule-State (`sq:s:*:last_run`) hat **keine TTL** → bleibt geschuetzt
-- Scheduler-Lock hat TTL, aber ist immer "frisch" wegen Heartbeat
+~~**Warum volatile-lru:**~~ (ueberholt, siehe oben)
 
 ## 2.2 Memory-Optimierung: Kurze Key-Praefixe
 
@@ -457,7 +461,7 @@ services:
       --save ""
       --appendonly no
       --maxmemory 256mb
-      --maxmemory-policy volatile-lru
+      --maxmemory-policy noeviction  # korrigiert (BZ-04), frueher volatile-lru
     healthcheck:
       test: ["CMD", "valkey-cli", "ping"]
       interval: 10s
@@ -521,7 +525,7 @@ tcp-keepalive 300
 timeout 0
 
 maxmemory 256mb
-maxmemory-policy volatile-lru
+maxmemory-policy noeviction  # korrigiert (BZ-04), frueher volatile-lru
 maxmemory-samples 5
 
 save ""
@@ -553,7 +557,7 @@ timeout 300
 aclfile /etc/valkey/users.acl
 
 maxmemory 1536mb
-maxmemory-policy volatile-lru
+maxmemory-policy noeviction  # korrigiert (BZ-04), frueher volatile-lru
 maxmemory-samples 10
 
 save 300 10
@@ -610,8 +614,8 @@ user swarmq-monitor on >MonitorPassw0rd! ~sq:* +get +mget +hget +hgetall +scard 
 | **Result-Datentyp** | String (SET/GET) | Einfach, atomar (GETDEL/GETEX), effizient mit msgpack |
 | **Scheduler next_run** | Sorted Set | Natuerliches Score-basiertes Sortieren nach Timestamp |
 | **Lock** | SET NX PX + Lua (eingebaute Lock-Klasse) | Bewiesenes Pattern, atomare Ownership-Pruefung |
-| **Eviction Policy** | volatile-lru | Schuetzt non-TTL Keys, entfernt aelteste Results |
-| **Persistenz (Prod)** | RDB (save 300 10) | Genuegt fuer Schedule-State |
+| **Eviction Policy** | noeviction (korrigiert, BZ-04) | volatile-lru verdraengt Locks und Marker mit TTL |
+| **Persistenz (Prod)** | AOF (appendonly yes, everysec), korrigiert BZ-04 | RDB allein verliert Termine, CLI-Crons und Abschaltungen seit dem Snapshot |
 | **Key-Praefix** | sq: (kurz) | Spart ~12 MB bei 1M Keys |
 | **Threading** | io-threads 4 | Guter Kompromiss fuer 4-8 Core Server |
 | **HA** | Sentinel (3 Instanzen) | Automatisches Failover ohne Cluster-Komplexitaet |

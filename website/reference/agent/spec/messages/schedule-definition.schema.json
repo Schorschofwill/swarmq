@@ -68,6 +68,17 @@
             "static"
           ]
         },
+        "task_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "task_name": {
           "type": "string"
         },
@@ -82,12 +93,34 @@
           ],
           "default": null
         },
+        "unique_for": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "unique_until": {
           "default": "completion",
           "enum": [
             "completion",
             "start"
           ]
+        },
+        "unroutable_since": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [

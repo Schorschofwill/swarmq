@@ -14,6 +14,7 @@ import math
 from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import TYPE_CHECKING
 
+from swarmq.cancellation import CANCEL_FLAG_SPENT_TTL_MS
 from swarmq.contracts import (
     ChordStore,
     CronReport,
@@ -21,8 +22,10 @@ from swarmq.contracts import (
     ExecutionGuardStore,
     GuardClaim,
     LeaderInfo,
+    LockObservation,
     LockStore,
     LockToken,
+    QueueReports,
     RateLimitDecision,
     RateLimitStore,
     ResultBackend,
@@ -68,6 +71,26 @@ class _TTLDict[V]:
         self.set(key, value, ttl_ms)
         return True
 
+    def expire_lt(self, key: str, ttl_ms: int) -> None:
+        """Wie ``PEXPIRE … LT``: Ablaufzeit nur verkürzen, nie verlängern."""
+        self._purge()
+        if key not in self._data:
+            return
+        value, expires = self._data[key]
+        new_expires = self._clock.now_ms() + ttl_ms
+        if expires is None or new_expires < expires:
+            self._data[key] = (value, new_expires)
+
+    def expire_gt(self, key: str, ttl_ms: int) -> None:
+        """Wie ``PEXPIRE … GT``: Ablaufzeit nur verlängern, nie verkürzen."""
+        self._purge()
+        if key not in self._data:
+            return
+        value, expires = self._data[key]
+        new_expires = self._clock.now_ms() + ttl_ms
+        if expires is None or new_expires > expires:
+            self._data[key] = (value, new_expires)
+
     def expire_keep(self, key: str, value: V) -> None:
         """Wert ersetzen, Ablaufzeit behalten (wie HSET/HDEL auf einem Hash)."""
         self._purge()
@@ -78,6 +101,14 @@ class _TTLDict[V]:
         self._purge()
         entry = self._data.pop(key, None)
         return None if entry is None else entry[0]
+
+    def pttl(self, key: str) -> int:
+        """Wie ``PTTL``: Rest in ms, -1 ohne Frist, -2 ohne Schluessel."""
+        self._purge()
+        entry = self._data.get(key)
+        if entry is None:
+            return -2
+        return -1 if entry[1] is None else max(entry[1] - self._clock.now_ms(), 0)
 
     def keys(self) -> list[str]:
         self._purge()
@@ -208,7 +239,7 @@ class InMemoryBackend:
         return task_id in self._cancel
 
     async def clear_cancel_flag(self, task_id: str, *, op_timeout: float | None = None) -> None:
-        self._cancel.pop(task_id)
+        self._cancel.expire_lt(task_id, CANCEL_FLAG_SPENT_TTL_MS)
 
     # --- Workflow ---------------------------------------------------------------
 
@@ -318,6 +349,19 @@ class InMemoryLockStore:
             return False
         return self._mutex.expire(token.name, ttl_ms)
 
+    async def extend(self, token: LockToken, ttl_ms: int) -> bool:
+        """Wie ``lock_extend.lua`` (BZ-25): Frist nur verlaengern, nie verkuerzen."""
+        if token.max_concurrency == 1:
+            if self._mutex.get(token.name) != token.owner:
+                return False
+            self._mutex.expire_gt(token.name, ttl_ms)
+            return True
+        slots = self._semaphore.get(token.name)
+        if slots is None or slots.get(token.owner) is None:
+            return False
+        slots.expire_gt(token.owner, ttl_ms)
+        return True
+
     async def force_release(self, name: str, *, max_concurrency: int) -> bool:
         if max_concurrency == 1:
             return self._mutex.pop(name) is not None
@@ -326,6 +370,16 @@ class InMemoryLockStore:
 
     async def current_owner(self, name: str) -> str | None:
         return self._mutex.get(name)
+
+    async def observe(self, name: str, *, max_concurrency: int) -> LockObservation:
+        if max_concurrency == 1:
+            owner = self._mutex.get(name)
+            return LockObservation(frozenset() if owner is None else frozenset({owner}), self._mutex.pttl(name))
+        slots = self._semaphore.get(name)
+        if slots is None or not slots.keys():
+            return LockObservation(frozenset(), -2)
+        # Der Key lebt so lange wie sein langlebigster Slot (wie der ZSET).
+        return LockObservation(frozenset(slots.keys()), max(slots.pttl(owner) for owner in slots.keys()))  # noqa: SIM118 (_TTLDict)
 
 
 class InMemoryRateLimitStore:
@@ -369,6 +423,15 @@ class InMemoryChordStore:
         return await self.record_member(wf_id, chord_id, member_id, expected=expected_n, ttl_ms=ttl_ms)
 
 
+def _is_disabled(payload: bytes) -> bool:
+    """``disabled == true`` in einer JSON-Definition; kein JSON zählt nicht."""
+    try:
+        decoded = json.loads(payload)
+    except ValueError:
+        return False
+    return isinstance(decoded, dict) and decoded.get("disabled") is True
+
+
 class InMemoryScheduleStore:
     def __init__(self, clock: FakeClock, locks: InMemoryLockStore) -> None:
         self._clock = clock
@@ -377,14 +440,22 @@ class InMemoryScheduleStore:
         self._fires: dict[str, int] = {}
         self._completed: _TTLDict[str] = _TTLDict(clock)
         self._inflight: _TTLDict[str] = _TTLDict(clock)
+        # Handover (BZ-07): fester Marker (Wert: Owner) plus Legacy je Owner.
+        self._handover_latest: _TTLDict[str] = _TTLDict(clock)
         self._handover: _TTLDict[str] = _TTLDict(clock)
         # Cron-Meldungen (KTD10): (name, fingerprint) -> [first, last, payload]
         self._reports: dict[tuple[str, str], tuple[int, int, bytes]] = {}
+        # Je gemeldete Namen (BZ-11): bleiben, bis die Definition geht.
+        self._known: set[str] = set()
         # Leader-Version (KTD11): "leader" -> (owner, version)
         self._leader_version: _TTLDict[tuple[str, str]] = _TTLDict(clock)
         self._worker_versions: _TTLDict[str] = _TTLDict(clock)
         # Beim Aufräumen deaktivierte Namen (KTD8)
         self._pruned_disabled: set[str] = set()
+        # Epoch des Datenbestands (BZ-04), ohne TTL.
+        self._epoch: str | None = None
+        # Gemeldete Queues (BZ-14): ein Eintrag, TTL je Meldung erneuert.
+        self._queue_reports: _TTLDict[dict[str, int]] = _TTLDict(clock)
 
     async def add(self, name: str, payload: bytes, fire_ts_ms: int | None) -> bool:
         if name in self._defs:
@@ -405,6 +476,9 @@ class InMemoryScheduleStore:
         self._defs.pop(name, None)
         self._fires.pop(name, None)
         return existed
+
+    async def forget_known_cron(self, name: str) -> None:
+        self._known.discard(name)
 
     async def get(self, name: str) -> bytes | None:
         return self._defs.get(name)
@@ -432,7 +506,12 @@ class InMemoryScheduleStore:
         return True
 
     async def poll_due(self, now_ms: int, *, limit: int = 100) -> list[tuple[str, int, bytes]]:
-        due = sorted(((ts, n) for n, ts in self._fires.items() if ts <= now_ms and n in self._defs))
+        # Wie ``sched_poll.lua`` (BZ-28): Waisen und deaktivierte Einträge
+        # verlassen den Fire-Index, bevor das Limit greift.
+        for name in [n for n, ts in self._fires.items() if ts <= now_ms]:
+            if name not in self._defs or _is_disabled(self._defs[name]):
+                del self._fires[name]
+        due = sorted((ts, n) for n, ts in self._fires.items() if ts <= now_ms)
         return [(n, ts, self._defs[n]) for ts, n in due[:limit]]
 
     async def commit_fire(
@@ -480,13 +559,17 @@ class InMemoryScheduleStore:
         return fire_key in self._completed
 
     async def set_handover_marker(self, owner: str, ttl_ms: int) -> None:
+        self._handover_latest.set("latest", owner, ttl_ms)
         self._handover.set(owner, "1", ttl_ms)
 
-    async def take_handover_marker(self) -> bool:
-        keys = self._handover.keys()
-        for key in keys:
-            self._handover.pop(key)
-        return bool(keys)
+    async def take_handover_marker(self, previous_owner: str | None = None) -> bool:
+        # Wie ``ValkeyScheduleStore``: fester Marker, sonst der Legacy-Marker
+        # des zuletzt gesehenen Leaders (0.11 schreibt nur diesen).
+        owner = self._handover_latest.pop("latest")
+        if owner is not None:
+            self._handover.pop(owner)
+            return True
+        return previous_owner is not None and self._handover.pop(previous_owner) is not None
 
     async def report_cron(
         self, name: str, fingerprint: str, payload: bytes, *, live_window_ms: int,
@@ -497,6 +580,10 @@ class InMemoryScheduleStore:
         alive = previous is not None and previous[1] >= now - live_window_ms
         first = previous[0] if previous is not None and alive else now
         self._reports[(name, fingerprint)] = (first, now, payload)
+        self._known.add(name)
+
+    async def known_cron_names(self) -> frozenset[str]:
+        return frozenset(self._known)
 
     async def prune_cron_reports(self, *, max_age_ms: int) -> int:
         cutoff = self._clock.now_ms() - max_age_ms
@@ -525,6 +612,7 @@ class InMemoryScheduleStore:
         if not prunable:
             return False
         await self.remove(name)
+        self._known.discard(name)
         if remember_disabled:
             self._pruned_disabled.add(name)
         return True
@@ -534,6 +622,27 @@ class InMemoryScheduleStore:
 
     async def forget_pruned_disabled(self, name: str) -> None:
         self._pruned_disabled.discard(name)
+
+    async def ensure_epoch(self, candidate: str) -> str | None:
+        previous = self._epoch
+        if previous is None:
+            self._epoch = candidate
+        return previous
+
+    async def report_queues(self, queues: Sequence[str], *, ttl_ms: int) -> None:
+        reports = dict(self._queue_reports.get("queues") or {})
+        now = self._clock.now_ms()
+        reports.update(dict.fromkeys(queues, now))
+        self._queue_reports.set("queues", reports, ttl_ms)
+
+    async def queue_reports(self) -> QueueReports:
+        return QueueReports(now_ms=self._clock.now_ms(), last_seen_ms=dict(self._queue_reports.get("queues") or {}))
+
+    async def forget_queue_reports(self, queues: Sequence[str]) -> None:
+        reports = self._queue_reports.get("queues")
+        if reports is not None:
+            for queue in queues:
+                reports.pop(queue, None)
 
     async def report_worker_version(self, worker_id: str, version: str, *, ttl_ms: int) -> None:
         self._worker_versions.set(worker_id, version, ttl_ms)
@@ -556,7 +665,7 @@ class InMemoryExecutionGuardStore:
     """Ausfuehrungsschutz (Plan 2026-10-08-1541, U8, KTD5) -- dieselbe
     Semantik wie ``guard_claim.lua``/``guard_finish.lua``: ein Running-Marker
     mit eigener TTL und ein Zustand (``done``, ``sup``, ``orphans``,
-    ``lease``) mit gemeinsamer TTL wie der Valkey-Hash."""
+    ``lease``, ``backlog``) mit gemeinsamer TTL wie der Valkey-Hash."""
 
     def __init__(self, clock: FakeClock) -> None:
         self._clock = clock
@@ -566,10 +675,12 @@ class InMemoryExecutionGuardStore:
     def _update(self, identity: str, state_ttl_ms: int, **fields: object) -> None:
         state = dict(self._state.get(identity) or {})
         state.update(fields)
-        self._state.set(identity, {k: v for k, v in state.items() if v is not None}, state_ttl_ms)
+        # Wie ``guard_claim.lua``: die TTL wird nur verlaengert, nie verkuerzt.
+        self._store(identity, {k: v for k, v in state.items() if v is not None}, state_ttl_ms)
 
     async def claim(
         self, identity: str, *, owner: str, retry_count: int, ttl_ms: int, state_ttl_ms: int, max_orphans: int,
+        backlog_ttl_ms: int | None = None,
     ) -> GuardClaim:
         state = self._state.get(identity) or {}
         if state.get("done"):
@@ -582,6 +693,18 @@ class InMemoryExecutionGuardStore:
             # Wiederholung desselben Claims (Transport-Retry): idempotent.
             return GuardClaim("orphan_limit" if orphans >= max_orphans else "claimed", orphans=orphans)
         if identity in self._running:
+            # BZ-12: die Kopie kann hinter einem Rueckstand zurueckkommen --
+            # der Zustand (und der kommende Done-Marker) lebt mindestens so lange.
+            if backlog_ttl_ms:
+                # Wie ``guard_claim.lua`` (Review MR 12, P2-1): ein eigenes Feld
+                # haelt den Zustand, auch wenn die letzte Lease freigegeben wird
+                # oder der Zustand schon abgelaufen war.
+                current = self._state.get(identity)
+                if current is None:
+                    self._state.set(identity, {"backlog": True}, backlog_ttl_ms)
+                else:
+                    self._state.expire_keep(identity, {**current, "backlog": True})
+                    self._state.expire_gt(identity, backlog_ttl_ms)
             return GuardClaim("running")
         if "lease" in state:
             orphans += 1
@@ -605,8 +728,12 @@ class InMemoryExecutionGuardStore:
     def _store(self, identity: str, state: dict[str, object], state_ttl_ms: int | None) -> None:
         if not state:
             self._state.pop(identity)
-        elif state_ttl_ms is None:
+        elif state_ttl_ms is None or identity in self._state:
+            # Wie ``guard_finish.lua``: der Wert ersetzt, die TTL wird nur
+            # verlaengert, nie verkuerzt (BZ-12).
             self._state.expire_keep(identity, state)
+            if state_ttl_ms is not None:
+                self._state.expire_gt(identity, state_ttl_ms)
         else:
             self._state.set(identity, state, state_ttl_ms)
 

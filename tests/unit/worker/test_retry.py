@@ -50,6 +50,11 @@ Review Phase 2 (2026-10-09):
 21. ``dead_letter`` wirft ``SettleFailedAfterPublish`` (Kopie liegt in der
     XQ, nur das Ack scheiterte): terminal wie ein Erfolg -- ``TASK_DLQ``,
     Unique-Freigabe, kein ``dlq_publish_failed``, kein Requeue.
+
+BZ-17 (Plan 0.12.0, MR 2) -- begrenzter Fehlertext-Header:
+
+22. Die Dead-Letter-Kopie traegt ``x-swarmq-traceback`` hoechstens 8 KiB lang.
+23. Die Retry-Kopie ebenso.
 """
 
 from __future__ import annotations
@@ -479,3 +484,70 @@ async def test_dead_letter_with_failed_ack_after_publish_is_terminal(broker, bac
     worker._gate_deps.maybe_release_unique.assert_awaited_once()
     signals = [c.args[0] for c in worker._signal_dispatcher.dispatch.await_args_list]
     assert Signal.TASK_DLQ in signals
+
+
+_HUGE_ERROR = "E" * (1024 * 1024)
+
+
+async def test_dead_letter_copy_bounds_the_traceback_header(broker, backend, config):
+    """Liste 22 (BZ-17): Ein unbegrenzter Header sprengt ``frame_max``, der
+    Broker schliesst die Verbindung, und alle Nachbar-Zustellungen kommen
+    zurueck."""
+    handler, _ = _handler(broker, backend, config)
+
+    await handler.dead_letter(make_message(_default_payload(name="dlq-task")), _ctx(), _HUGE_ERROR, "RuntimeError")
+
+    traceback_header = broker.dead_letter.await_args.kwargs["headers"]["x-swarmq-traceback"]
+    assert len(traceback_header.encode()) <= 8 * 1024
+
+
+@pytest.mark.timeout(5)
+async def test_retry_copy_bounds_the_traceback_header(broker, backend, config):
+    """Liste 23 (BZ-17): dasselbe fuer die Retry-Kopie (Nachweis
+    ``test_befund_bz17_traceback_header.py`` gegen den echten Broker)."""
+    from swarmq.middleware import MiddlewareChain
+
+    class RetryingTask(Task):
+        task_info = TaskInfo(name="retrying-task", queues=["default"], max_retries=3)
+
+    handler, _ = _handler(broker, backend, config, RetryingTask)
+    await handler.evaluate(
+        make_message(_default_payload(name="retrying-task")),
+        _ctx(RetryingTask),
+        RuntimeError(_HUGE_ERROR),
+        _HUGE_ERROR,
+        {"retry_count": 0},
+        MiddlewareChain([]),
+    )
+
+    traceback_header = broker.retry_later.await_args.kwargs["headers"]["x-swarmq-traceback"]
+    assert len(traceback_header.encode()) <= 8 * 1024
+
+
+async def test_dead_letter_of_a_step_that_already_succeeded_does_not_fail_its_workflow(broker, backend, config):
+    """Plan 0.12.0, MR 3 (BZ-13, Schutz): ein spaetes Duplikat eines
+    erfolgreich erledigten Schritts (etwa am Zustelllimit) kippt den
+    weiterlaufenden Workflow nicht -- auch nicht ueber das eigene
+    Fehlerergebnis, das der Dead-Letter-Pfad speichert."""
+    from swarmq.cancellation import build_result_dict
+    from swarmq.serialization import encode_result
+
+    handler, worker = _handler(broker, backend, config)
+    results = {"abc-123": encode_result(build_result_dict(
+        task_id="abc-123", queue="default", task_name="dlq-task", is_error=False, is_cancelled=False, result="ok",
+    ))}
+
+    async def store(task_id, raw, ttl_ms, **_kw):
+        results[task_id] = raw
+
+    async def get(task_id):
+        return results.get(task_id)
+
+    backend.store_result = AsyncMock(side_effect=store)
+    backend.get_result = AsyncMock(side_effect=get)
+    msg = make_message(_default_payload(name="dlq-task"), headers={HEADER_WORKFLOW_ID: _WF_ID})
+
+    await handler.dead_letter(msg, _ctx(), "WorkerHungError: delivered 19 times", "WorkerHungError")
+
+    worker._workflow_advancer.fail.assert_not_awaited()
+    broker.dead_letter.assert_awaited_once()

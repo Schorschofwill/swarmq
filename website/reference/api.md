@@ -127,6 +127,16 @@ Enqueue a task and return its `task_id`.
 *existing* owner's `task_id` is returned silently; a
 `TASK_DUPLICATE_DETECTED` signal fires for observability.
 
+**Client-only mode (no registry).** Without a registry the client does
+not know the task's `TaskInfo`: `unique_for`, `priority` and the
+delivery mode of the worker's task are not applied. Dedup only happens
+with an explicit `unique_for=`, the message goes to the plain `queue`
+(no `.high`/`.low` suffix), and it is sent `at_least_once`. The client
+logs a WARNING `client_task_defaults_unresolved` (with `task_name`) once
+per task name and client instance, for at most 1000 names. To apply the
+defaults, build the producer with the same tasks registered, e.g. via a
+`SwarmQ` app that imports the task modules.
+
 **Raises.**
 
 - `TaskNotFoundError` — task_name not in the registry (registry mode).
@@ -209,7 +219,7 @@ async def get_result(
 
 Block until the task result is available, or `timeout` elapses.
 
-Internally subscribes to `sq:notify:{task_id}` on Valkey for a
+Internally subscribes to `[<namespace>:]sq:notify:{task_id}` on Valkey for a
 push-based wait, with 5ms-interval polling as a fallback. When
 `timeout=0`, performs a single `GET` without Pub/Sub.
 
@@ -240,20 +250,32 @@ async def cancel(task_id: str) -> bool
 ```
 
 Request cancellation of a task. Fire-and-forget: sets a cancel flag
-with TTL `result_ttl × 1000` ms and returns immediately.
+and returns immediately. The flag lives `max(24 h, result_ttl)`. For a
+deferred task (`schedule(delay=|eta=)`) that has not fired yet, the
+wait until its fire time is added, and its `max_age` + 300 s when the
+client's registry knows the task. A cancelled task that waits longer
+than `result_ttl` in the queue therefore no longer runs.
 
-**Returns.** `True` when the flag was newly set, `False` when a
-prior `cancel()` call is still in flight.
+Once the worker has handled the cancelled delivery (cancelled before
+the start or while running), it does not delete the flag but shortens
+it to at most 1 h (`PEXPIRE … LT`). A duplicate of the same message
+stays cancelled; a flag set with a shorter TTL is never extended.
 
-**Raises.** `ValueError` on empty `task_id`.
+**Returns.** `True` when the flag was newly set, `False` when the flag
+already exists: a prior `cancel()` call is still in flight, or the
+task was cancelled within the last hour.
+
+**Raises.** `ValueError` on empty `task_id`;
+`BackendConnectionError` when Valkey is unreachable.
 
 !!! warning "Stale cancel flag"
-    The flag TTL is 24 h by default. If the same `task_id` is reused
-    within that window (deterministic IDs, redelivery after crash
-    before the worker cleared the flag), the stale flag cancels the
-    next delivery too. Mitigations: let SwarmQ generate UUIDv7 task
-    IDs (the default), or pass a shorter `ttl_ms` directly through
-    the underlying client: `await app.client.cancel(task_id, ttl_ms=...)`.
+    If the same `task_id` is enqueued again while the flag lives
+    (deterministic IDs; at least for 1 h after a cancelled delivery
+    was handled), the new task is cancelled too, and `cancel()` returns
+    `False`. Mitigations: let SwarmQ generate UUIDv7 task IDs (the
+    default), or pass a shorter `ttl_ms` directly through the
+    underlying client: `await app.client.cancel(task_id, ttl_ms=...)`.
+    The worker never extends a shorter flag.
 
 ### `get_progress()` / `watch_progress()`
 
@@ -607,11 +629,12 @@ Lifecycle events emitted by SwarmQ. Register handlers with
 | `TASK_RETRYING` | `task_id`, `task_name`, `queue`, `retry_count`, `delay` | A retry was scheduled; `retry_count` is the new count, `delay` in seconds. |
 | `TASK_CANCELLED` | `task_id`, `task_name`, `queue` | Cancelled before or during execution. |
 | `TASK_EXPIRED` | `task_id`, `task_name`, `queue`, `age_s`, `max_age_s` | Picked up older than `max_age`; routed to the DLQ. |
-| `TASK_LOCKED` | `task_id`, `task_name`, `lock_name`, `lock_conflict_count` | The task's lock was held by another execution (lock conflict); the message is requeued, or dead-lettered at the conflict cap. |
+| `TASK_LOCKED` | `task_id`, `task_name`, `lock_name`, `lock_conflict_count` | The task's lock was held by another execution (lock conflict); the message is requeued, or dead-lettered as `LockWaitExceeded` when the wait ends. |
 | `TASK_RATE_LIMITED` | `task_id`, `task_name`, `retry_after_ms`, `remaining`, `rate_limit_count` | Rate limit hit; message delayed. |
 | `TASK_DUPLICATE_DETECTED` | `existing_task_id`, `task_name`, `dedup_hash`, `source`[, `batch_index`] | `unique_for` dedup hit. |
 | `TASK_DLQ` | `task_id`, `task_name`, `queue`, `error` | Terminal: the task was dead-lettered (retries exhausted or not retryable). Fires once. |
-| `TASK_REJECTED` | `queue`, `reason`, `task_id`, `task_name`, `error` — `task_id`/`task_name` may be `None` | A message went to the broker DLX without diagnostic headers (`body_too_large`, `undecodable`, `unregistered_task`, `middleware_chain_factory`, `dlq_publish_failed`). |
+| `TASK_REJECTED` | `queue`, `reason`, `task_id`, `task_name`, `error` — `task_id`/`task_name` may be `None` | A message went to the broker DLX without diagnostic headers (`body_too_large`, `undecodable`, `middleware_chain_factory`, `dlq_publish_failed`), or an unregistered task was dead-lettered after `SWARMQ_UNKNOWN_TASK_GRACE_S` (`unregistered_task`, after `TASK_DLQ`). |
+| `TASK_UNKNOWN_DEFERRED` | `task_id`, `task_name`, `queue`, `delay`, `unknown_since` | The worker does not register the task and deferred the message within `SWARMQ_UNKNOWN_TASK_GRACE_S`; `delay` in seconds, `unknown_since` the first contact in Unix milliseconds. Once per deferral; counted in `swarmq_tasks_unknown_deferred_total`. |
 | `WORKFLOW_STEP_ENQUEUED` | `task_id`, `task_name`, `queue`, `workflow_id`, `step_path` | After each workflow step publish, in addition to `TASK_ENQUEUED`. |
 | `WORKER_ONLINE` / `WORKER_SHUTDOWN` | `worker_id` | Worker start / graceful shutdown. |
 | `WORKER_HEARTBEAT` | `worker_id`, `uptime_seconds` | Every `SWARMQ_METRICS_SAMPLE_INTERVAL` seconds; only while metrics are enabled. |
@@ -621,6 +644,10 @@ Lifecycle events emitted by SwarmQ. Register handlers with
 | `SCHEDULER_FIRE_SKIPPED` | `worker_id`, `schedule_name`, `skipped_count` | Catch-up after downtime skipped cron occurrences. |
 | `SCHEDULER_CRON_CONFLICT` | `worker_id`, `schedule_name`, `fingerprints` | Several definitions of one static cron have been live for more than 10 minutes; the leader emits it on every adoption tick while the conflict lasts. |
 | `SCHEDULER_LEADER_OUTDATED` | `worker_id`, `leader`, `leader_version`, `outdated` | A non-leader saw a scheduler leader without time zone support (`leader_version` `None` means before 0.10.0); once per leader with `outdated=True`, again with `outdated=False` when a current leader follows. |
+| `SCHEDULER_CRON_UNOWNED` | `worker_id`, `schedule_name`, `task_name`, `held`, `held_count` | The leader holds a static cron no live worker reports and it does not register itself (`held=True`), or releases it (`held=False`); once per transition, `held_count` is the number of held crons afterwards. Sets `swarmq_scheduler_crons_held`. |
+| `SCHEDULER_VALKEY_CHECKED` | `worker_id`, `status`, `policy`, `maxmemory`, `used_memory` | The leader checked Valkey's eviction policy and memory again, at most once per hour; `status` is `safe`, `unsafe` or `unknown`, `maxmemory` `0` means no limit, `None` unknown. Sets `swarmq_valkey_memory_used_ratio` (only with a limit). |
+| `SCHEDULER_QUEUE_ORPHANED` | `worker_id`, `queue`, `orphaned`, `message_count`, `orphaned_count` | The leader found a reported queue with messages, no consumer and no live worker reporting it (`orphaned=True`), or the queue is no longer orphaned (`orphaned=False`: drained, consumed, deleted or reported again); once per transition, `orphaned_count` is the number of orphaned queues afterwards. Sets `swarmq_scheduler_queues_orphaned`. |
+| `SCHEDULER_FIRE_UNROUTABLE` | `worker_id`, `schedule_name`, `queue`, `kind` | The leader's publish was returned (no such queue, BZ-03): `kind="cron_lost"` for a lost cron fire, `"oneshot_dropped"` for a deferred task dropped after `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S`. Counted in `swarmq_scheduler_fires_unroutable_total`. |
 
 Handlers must accept `**kwargs`. Use `kwargs.get("batch_index")` for the
 `TASK_DUPLICATE_DETECTED`-only field, since non-batch sources do

@@ -5,20 +5,19 @@ from __future__ import annotations
 import os
 import socket
 from dataclasses import dataclass, field
-from typing import ClassVar
+from typing import ClassVar, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from swarmq.config_validation import ConfigValidation
 from swarmq.exceptions import ConfigurationError
+from swarmq.keyspace import validate_namespace
 from swarmq.logging_settings import (
     VALID_LOG_FORMATS,
-    VALID_LOG_LEVELS,
     LoggingSettings,
     parse_logger_levels,
     split_csv,
-    valid_drain_timeout,
-    validate_logger_levels,
 )
-from swarmq.namespace_guard import reject_namespace
+from swarmq.valkey_policy import EVICTION_CHECK_MODES
 
 # Credential-free placeholder used as ``broker_url`` / ``backend_url`` when a
 # connection object is injected (RabbitMQBroker(connection=...) /
@@ -132,7 +131,29 @@ def parse_env_value(kind: str, raw: str, env_name: str) -> object:
         return _parse_log_format(raw, env_name)
     if kind == "logger_levels":
         return parse_logger_levels(split_csv(raw), env_name)
+    if kind == "mode":
+        # Schalter mit festen Werten (``strict|warn|off``): Gross/Klein egal.
+        return raw.strip().lower()
     return raw
+
+
+def env_valkey_eviction_check() -> str:
+    """``SWARMQ_VALKEY_EVICTION_CHECK`` fuer Backends ohne ``SwarmQConfig``
+    (CLI, Producer; Plan 0.12.0, MR 14). Ungueltige Werte prueft erst
+    ``SwarmQConfig``; hier gelten sie als ``strict``, die Pruefung laeuft also."""
+    raw = os.environ.get("SWARMQ_VALKEY_EVICTION_CHECK", "")
+    mode = cast("str", parse_env_value("mode", raw, "SWARMQ_VALKEY_EVICTION_CHECK"))
+    return mode if mode in EVICTION_CHECK_MODES else "strict"
+
+
+def env_namespace() -> str | None:
+    """``SWARMQ_NAMESPACE`` fuer Backends ohne ``SwarmQConfig`` (CLI, Producer,
+    Kontrollkanal; Plan 0.12.0, MR 15, BZ-10). Leer oder ungesetzt: kein
+    Namensraum; ein ungueltiger Wert ist ein ``ConfigurationError`` (Exit 78)."""
+    try:
+        return validate_namespace(os.environ.get("SWARMQ_NAMESPACE", ""))
+    except ValueError as exc:
+        raise ConfigurationError(f"SWARMQ_NAMESPACE: {exc}") from exc
 
 
 def observability_port_ranges(
@@ -152,7 +173,7 @@ def observability_port_ranges(
 
 
 @dataclass
-class SwarmQConfig:
+class SwarmQConfig(ConfigValidation):
     broker_url: str = ""
     backend_url: str = ""
     result_ttl: int = 86400
@@ -212,6 +233,17 @@ class SwarmQConfig:
     # Gilt nur fuer ``queue_type = "quorum"`` — klassische Queues kennen
     # das Argument nicht.
     delivery_limit: int = 20
+    # Dead-Lettering neuer Quorum-Queues (BZ-19, Plan 0.12.0, MR 8):
+    # ``auto`` legt neue Queues at-least-once an (mit ``reject-publish``),
+    # Bestandsqueues behalten ihre Argumente (eine Warnung je Prozess);
+    # ``at-least-once`` verlangt es auch von Bestandsqueues (sonst Exit 78);
+    # ``legacy`` nutzt immer die Argumente aus 0.11, ohne Warnung.
+    queue_dead_letter_strategy: str = "auto"
+    # Eigene Verbindung fuer den Konsum (BZ-16, Plan 0.12.0, MR 16): bei einem
+    # Broker-Alarm blockiert RabbitMQ nur publizierende Verbindungen, Acks
+    # laufen dann weiter. ``shared`` = eine Verbindung wie vor 0.12. Bei
+    # injizierter Verbindung oder Pool gilt immer ``shared``.
+    broker_publish_connection: str = "separate"
     cancel_poll_interval: float = 1.0
     # Upper bound for individual Valkey operations used by the cancel
     # pipeline (is_cancelled / store_result / clear_cancel_flag). Slow
@@ -251,6 +283,16 @@ class SwarmQConfig:
     # werden. ``log`` loggt nur, ``off`` schaltet das Aufraeumen ab.
     scheduler_prune: str = "on"
     scheduler_prune_after_s: float = 86400.0
+    # Unroutbare Oneshots (Plan 0.12.0, MR 6, BZ-03): der Leader stellt einen
+    # verzoegerten Task, dessen Queue fehlt, alle 60 s zurueck und verwirft ihn
+    # nach dieser Frist ab dem ersten unroutbaren Versuch (Fehlerergebnis).
+    scheduler_unroutable_oneshot_max_s: float = 86400.0
+    # Ruecktritt des Leaders (Plan 0.12.0, MR 15, BZ-10): nach mindestens 2
+    # Publish-Fehlern (``BrokerConnectionError`` ohne Unroutable/Header zu
+    # gross) ueber mindestens so viele Sekunden gibt er das Lock frei und
+    # bewirbt sich 2 x ``scheduler_lock_ttl`` nicht. ``None``:
+    # ``scheduler_lock_ttl``; 0 schaltet den Ruecktritt ab.
+    scheduler_publish_stepdown_s: float | None = None
     # R4.5 Burst-Mode: when True, the worker exits cleanly once all
     # configured queues have been idle for `burst_idle_timeout` seconds
     # without delivering a single message. Used for batch/cron-style
@@ -316,6 +358,11 @@ class SwarmQConfig:
     # Consumer-Timeout ausgecheckt.
     execution_guard_done_ttl_s: float | None = None
     execution_guard_max_orphans: int = 3
+    # Rueckstand (Plan 0.12.0, MR 12, BZ-12): so lange lebt der Zustand einer
+    # Ausfuehrung mindestens, sobald eine Kopie von ihr zurueckgestellt wurde
+    # (sie kann hinter einem Rueckstand der Queue zurueckkommen) oder sie ein
+    # Replay ist (``dead_letter_ttl_s`` = None); Deckel der Fired-Marker-TTL.
+    execution_guard_backlog_ttl_s: float = 604800.0
     # Verfallsfrist einer von swarmq in die DLQ gelegten Nachricht, gemessen
     # ab dem Dead-Lettering (Plan 2026-10-08-1541, KTD6). Lesen per ``dlq
     # list``/``inspect`` verlaengert sie nicht. None heisst unbegrenzt.
@@ -324,6 +371,28 @@ class SwarmQConfig:
     # Retries ausgeschoepft) in die DLQ legen (KTD7). Aus: Fehlerergebnis
     # speichern und bestaetigen wie vor MR !12. ``TaskInfo.dead_letter`` gewinnt.
     dead_letter_terminal_failures: bool = True
+    # Gnadenfrist fuer unbekannte Task-Namen (Plan 0.12.0, MR 11, BZ-06): ein
+    # Task, den dieser Worker nicht kennt (Rolling Deploy: neuer Producer,
+    # alter Worker), wird so lange mit Backoff zurueckgestellt, gemessen ab
+    # dem ersten Kontakt; danach Dead-Letter mit Fehlerergebnis. 0 schaltet
+    # die Frist ab (sofort Dead-Letter).
+    unknown_task_grace_s: float = 900.0
+    # Obergrenze der Wartezeit bei Lock-Konflikten (Plan 0.12.0, MR 13,
+    # BZ-05), gemessen ab dem ersten Konflikt (``x-swarmq-lock-wait-since``):
+    # danach Dead-Letter mit Fehlerergebnis (``LockWaitExceeded``). Davor
+    # endet die Wartezeit nur, wenn derselbe Halter laenger haelt als seine
+    # TTL + 60 s (Stillstand) oder ``max_age`` greift.
+    lock_wait_max_s: float = 21600.0
+    # Pruefung der Valkey-Eviction-Policy (Plan 0.12.0, MR 14, BZ-04):
+    # ``strict`` beendet den Worker bei einer verdraengenden Policy mit Exit
+    # 78, ``warn`` warnt nur, ``off`` prueft nicht. Ist die Policy nicht
+    # pruefbar, gibt es in jedem Modus nur eine Warnung.
+    valkey_eviction_check: str = "strict"
+    # Namensraum der App auf einem gemeinsamen Valkey (Plan 0.12.0, MR 15,
+    # BZ-10): ``<ns>:`` vor allen Keys, Pub/Sub-Kanaelen, dem Leader und dem
+    # Kontrollkanal. Queue-Namen bleiben ohne Praefix (eigener vhost je App).
+    # ``None`` (Default) heisst ``sq:`` wie bisher.
+    namespace: str | None = None
     malloc_trim_threshold: int = 131072
     malloc_arena_max: int = 2
     compute_thread_limit: int = 1
@@ -372,6 +441,8 @@ class SwarmQConfig:
         ("SWARMQ_PUBLISH_TIMEOUT_S", "publish_timeout_s", "float"),
         ("SWARMQ_DELIVERY_LIMIT", "delivery_limit", "int"),
         ("SWARMQ_QUEUE_TYPE", "queue_type", "str"),
+        ("SWARMQ_QUEUE_DEAD_LETTER_STRATEGY", "queue_dead_letter_strategy", "str"),
+        ("SWARMQ_BROKER_PUBLISH_CONNECTION", "broker_publish_connection", "str"),
         ("SWARMQ_CANCEL_POLL_INTERVAL", "cancel_poll_interval", "float"),
         ("SWARMQ_BACKEND_OP_TIMEOUT", "backend_op_timeout", "float"),
         ("SWARMQ_BACKEND_DEFER_BASE_DELAY", "backend_defer_base_delay", "float"),
@@ -386,6 +457,8 @@ class SwarmQConfig:
         ("SWARMQ_SCHEDULER_SEEN_INTERVAL_S", "scheduler_seen_interval_s", "float"),
         ("SWARMQ_SCHEDULER_PRUNE", "scheduler_prune", "str"),
         ("SWARMQ_SCHEDULER_PRUNE_AFTER_S", "scheduler_prune_after_s", "float"),
+        ("SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S", "scheduler_unroutable_oneshot_max_s", "float"),
+        ("SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S", "scheduler_publish_stepdown_s", "float"),
         ("SWARMQ_MAX_MESSAGE_BODY_BYTES", "max_message_body_bytes", "int"),
         # R4.5 Burst-Mode / R4.3 Priorities / R5.1-R5.2 Metrics+Health.
         # Port-Ranges werden beim Parsen validiert, damit eine kaputte
@@ -409,8 +482,13 @@ class SwarmQConfig:
         ("SWARMQ_EXECUTION_GUARD_TTL_S", "execution_guard_ttl_s", "float"),
         ("SWARMQ_EXECUTION_GUARD_DONE_TTL_S", "execution_guard_done_ttl_s", "float"),
         ("SWARMQ_EXECUTION_GUARD_MAX_ORPHANS", "execution_guard_max_orphans", "int"),
+        ("SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S", "execution_guard_backlog_ttl_s", "float"),
         ("SWARMQ_DEAD_LETTER_TTL_S", "dead_letter_ttl_s", "optional_float"),
         ("SWARMQ_DEAD_LETTER_TERMINAL_FAILURES", "dead_letter_terminal_failures", "bool"),
+        ("SWARMQ_UNKNOWN_TASK_GRACE_S", "unknown_task_grace_s", "float"),
+        ("SWARMQ_LOCK_WAIT_MAX_S", "lock_wait_max_s", "float"),
+        ("SWARMQ_VALKEY_EVICTION_CHECK", "valkey_eviction_check", "mode"),
+        ("SWARMQ_NAMESPACE", "namespace", "str"),
         ("SWARMQ_MALLOC_TRIM_THRESHOLD", "malloc_trim_threshold", "int"),
         ("SWARMQ_MALLOC_ARENA_MAX", "malloc_arena_max", "int"),
         ("SWARMQ_COMPUTE_THREAD_LIMIT", "compute_thread_limit", "int"),
@@ -431,6 +509,7 @@ class SwarmQConfig:
         "scheduler_inflight_ttl",
         "scheduler_seen_interval_s",
         "scheduler_prune_after_s",
+        "scheduler_unroutable_oneshot_max_s",
         "burst_idle_timeout",
         "publish_timeout_s",
         "delivery_limit",
@@ -441,7 +520,9 @@ class SwarmQConfig:
         "consumer_ready_grace_s",
         "execution_guard_ttl_s",
         "execution_guard_max_orphans",
+        "execution_guard_backlog_ttl_s",
         "dead_letter_ttl_s",
+        "lock_wait_max_s",
         "malloc_trim_threshold",
         "malloc_arena_max",
         "compute_thread_limit",
@@ -460,26 +541,6 @@ class SwarmQConfig:
             self.recycle_rss_mb = self.CPU_DEFAULT_RECYCLE_RSS_MB
         if self.recycle_max_tasks is None:
             self.recycle_max_tasks = self.CPU_DEFAULT_RECYCLE_MAX_TASKS
-
-    def _validate_pool(self) -> None:
-        if self.pool not in self._VALID_POOLS:
-            msg = f"pool must be one of {sorted(self._VALID_POOLS)}, got {self.pool!r}"
-            raise ConfigurationError(msg)
-        for field_name in ("recycle_rss_mb", "recycle_max_tasks"):
-            value = getattr(self, field_name)
-            if value is not None and value <= 0:
-                msg = f"{field_name} must be > 0 or unset, got {value}"
-                raise ConfigurationError(msg)
-        if self.heartbeat_timeout_s <= self.heartbeat_interval_s:
-            msg = (
-                "heartbeat_timeout_s must be greater than heartbeat_interval_s, "
-                f"got {self.heartbeat_timeout_s} <= {self.heartbeat_interval_s}"
-            )
-            raise ConfigurationError(msg)
-    # ``shutdown_timeout`` steht bewusst NICHT hier: 0 bedeutet "sofort
-    # abbrechen" und wird so auch genutzt. Dass ein knapper Wert dem
-    # Herunterfahren kein Publish-Budget mehr laesst, faengt stattdessen die
-    # anteilige Reserve in ``WorkerLifecycle._shutdown_publish_budget`` ab.
 
     @property
     def consumed_queues(self) -> list[str]:
@@ -546,129 +607,6 @@ class SwarmQConfig:
         if self.health_port is not None:
             self.health_port += self.worker_slot
 
-    def _validate_core(self) -> None:
-        self._apply_pool_defaults()
-        self._validate_pool()
-        if not self.broker_url:
-            msg = "broker_url must not be empty"
-            raise ConfigurationError(msg)
-
-        if not self.backend_url:
-            msg = "backend_url must not be empty"
-            raise ConfigurationError(msg)
-
-        if self.result_ttl < 0:
-            msg = f"result_ttl must be >= 0, got {self.result_ttl}"
-            raise ConfigurationError(msg)
-
-        if self.concurrency < 1:
-            msg = f"concurrency must be >= 1, got {self.concurrency}"
-            raise ConfigurationError(msg)
-
-        self._validate_logging()
-
-        valid_queue_types = {"quorum", "classic"}
-        if self.queue_type not in valid_queue_types:
-            msg = f"queue_type must be one of {sorted(valid_queue_types)}, got {self.queue_type!r}"
-            raise ConfigurationError(msg)
-
-        for field_name in self._POSITIVE_FIELDS:
-            value = getattr(self, field_name)
-            # None nur bei optionalen Fristen (``dead_letter_ttl_s``: unbegrenzt).
-            if value is not None and value <= 0:
-                msg = f"{field_name} must be > 0, got {value}"
-                raise ConfigurationError(msg)
-
-        if self.backend_defer_max_delay < self.backend_defer_base_delay:
-            msg = (
-                "backend_defer_max_delay must be >= backend_defer_base_delay, "
-                f"got {self.backend_defer_max_delay} < {self.backend_defer_base_delay}"
-            )
-            raise ConfigurationError(msg)
-
-    def _validate_logging(self) -> None:
-        """Logging-Felder pruefen (R13/R14); CRITICAL gilt ueberall (KTD8)."""
-        for field_name in ("log_level", "log_lifecycle_level"):
-            value = getattr(self, field_name)
-            if value not in VALID_LOG_LEVELS:
-                msg = (
-                    f"{field_name} must be one of {sorted(VALID_LOG_LEVELS)}, "
-                    f"got {value!r}"
-                )
-                raise ConfigurationError(msg)
-        self.logger_levels = validate_logger_levels(self.logger_levels, "logger_levels")
-        if not valid_drain_timeout(self.log_drain_timeout):
-            # Nicht unter ``_POSITIVE_FIELDS``: ``inf``/``nan`` bestehen ``<= 0``.
-            msg = (
-                "log_drain_timeout must be > 0 and at most threading.TIMEOUT_MAX "
-                f"seconds, got {self.log_drain_timeout}"
-            )
-            raise ConfigurationError(msg)
-        if self.log_config is not None and not self.configure_logging:
-            msg = (
-                "log_config cannot be combined with configure_logging=False: "
-                "a logging config file needs logging to be configured"
-            )
-            raise ConfigurationError(msg)
-
-    def _validate_scheduler_relations(self) -> None:
-        if self.scheduler_lock_ttl < self.scheduler_heartbeat_interval * 2:
-            msg = (
-                "scheduler_lock_ttl must be at least 2x "
-                "scheduler_heartbeat_interval to survive a missed heartbeat; "
-                f"got lock_ttl={self.scheduler_lock_ttl}, "
-                f"heartbeat_interval={self.scheduler_heartbeat_interval}"
-            )
-            raise ConfigurationError(msg)
-
-        # scheduler_dedup_ttl is guaranteed non-None here (default filled
-        # in __post_init__ before validation).
-        assert self.scheduler_dedup_ttl is not None
-        if self.scheduler_dedup_ttl <= 0:
-            msg = (
-                "scheduler_dedup_ttl must be > 0, got "
-                f"{self.scheduler_dedup_ttl}"
-            )
-            raise ConfigurationError(msg)
-
-        if self.scheduler_dedup_ttl < self.retry_max_delay:
-            msg = (
-                "scheduler_dedup_ttl must be >= retry_max_delay so that a "
-                "retried schedule-fire cannot bypass consumer-side dedup; "
-                f"got dedup_ttl={self.scheduler_dedup_ttl}, "
-                f"retry_max_delay={self.retry_max_delay}"
-            )
-            raise ConfigurationError(msg)
-
-    def _validate_scheduler_prune(self) -> None:
-        """Cron-Aufraeumen (KTD8)."""
-        if self.scheduler_prune not in self._VALID_PRUNE_MODES:
-            msg = (
-                f"scheduler_prune must be one of {list(self._VALID_PRUNE_MODES)}, "
-                f"got {self.scheduler_prune!r}"
-            )
-            raise ConfigurationError(msg)
-        # Eine Meldung lebt drei Meldetakte; eine kuerzere Frist raeumte
-        # Crons lebender Worker ab. Gerundet, damit 3 x 0.1 == 0.3 gilt.
-        if self.scheduler_prune_after_s < round(3 * self.scheduler_seen_interval_s, 9):
-            msg = (
-                "scheduler_prune_after_s must be >= 3x scheduler_seen_interval_s, "
-                f"got prune_after_s={self.scheduler_prune_after_s}, "
-                f"seen_interval_s={self.scheduler_seen_interval_s}"
-            )
-            raise ConfigurationError(msg)
-
-    def _validate_execution_guard(self) -> None:
-        """Done-/Superseded-Marker muessen den Running-Marker ueberdauern
-        (KTD5; Vorbild ``scheduler_dedup_ttl``)."""
-        assert self.execution_guard_done_ttl_s is not None  # Default in __post_init__
-        if self.execution_guard_done_ttl_s < self.execution_guard_ttl_s:
-            msg = (
-                "execution_guard_done_ttl_s must be >= execution_guard_ttl_s, "
-                f"got {self.execution_guard_done_ttl_s} < {self.execution_guard_ttl_s}"
-            )
-            raise ConfigurationError(msg)
-
     def _apply_logging_settings(self) -> None:
         settings = self.logging_settings
         if settings is None:
@@ -683,7 +621,6 @@ class SwarmQConfig:
         self.log_drain_timeout = settings.drain_timeout
 
     def __post_init__(self) -> None:
-        reject_namespace()
         self._apply_env_overrides()
         self._apply_logging_settings()
         self._apply_slot_port_offset()
@@ -693,6 +630,9 @@ class SwarmQConfig:
         # consumer-side SETNX dedup.
         if self.scheduler_dedup_ttl is None:
             self.scheduler_dedup_ttl = max(60.0, self.retry_max_delay + 300.0)
+
+        if self.scheduler_publish_stepdown_s is None:
+            self.scheduler_publish_stepdown_s = self.scheduler_lock_ttl
 
         if self.execution_guard_done_ttl_s is None:
             self.execution_guard_done_ttl_s = max(

@@ -104,26 +104,35 @@ From there the path is identical to the immediate case.
 
 The short answer: **nowhere inside SwarmQ itself**. The library is
 stateless — restart a worker, kill a client, and nothing is lost as
-long as RabbitMQ and Valkey are still there.
+long as RabbitMQ and Valkey keep their data. For Valkey that means
+`maxmemory-policy noeviction` and AOF persistence (see
+[Valkey requirements](../reference/configuration.md#valkey-requirements)
+and the Valkey restart row under [failure domains](#failure-domains)).
+
+`[<namespace>:]` stands for the prefix `SWARMQ_NAMESPACE` sets; without a namespace the keys start with `sq:`.
 
 | State | Lives in | Lifetime |
 |---|---|---|
 | Task messages | RabbitMQ queue | Until ack'd or DLQ'd; in `{queue}.XQ` at most `SWARMQ_DEAD_LETTER_TTL_S` (default 7 days) |
-| Results | Valkey key `sq:result:{task_id}` | `result_ttl` seconds (default 24h) |
-| Progress updates | Valkey HASH `sq:progress:{task_id}` | Same TTL as results |
+| Results | Valkey key `[<namespace>:]sq:result:{task_id}` | `result_ttl` seconds (default 24h) |
+| Progress updates | Valkey HASH `[<namespace>:]sq:progress:{task_id}` | Same TTL as results |
 | Rate-limit counters | Valkey sorted set | Sliding window |
-| Locks | Valkey key `sq:lock:{name}` | `max(30s, 0.25 × hard_timeout)` |
-| Cancel flags | Valkey key `sq:cancel:{task_id}` | `result_ttl × 1000` ms |
-| Dedup markers | Valkey key `sq:unique:{hash}` | `unique_for` seconds |
-| Scheduler entries | Valkey ZSET `sq:{sched}:zset` + HASH `sq:{sched}:defs` | Until fired or removed |
-| Schedule-fire claims | Valkey key `sq:sched:inflight:{fire}` (owner token) | `SWARMQ_SCHEDULER_INFLIGHT_TTL`, at least `hard_timeout` + 30 s |
-| Completed schedule fires | Valkey key `sq:sched:fired:{fire}` | `SWARMQ_SCHEDULER_DEDUP_TTL` |
-| Leader election | Valkey key `sq:lock:{sched}:leader` | Heartbeat-renewed |
-| Leader version | Valkey key `sq:{sched}:leader_version` (owner token and version) | Lock TTL, renewed with the lock |
-| Cron reports | Valkey HASHes `sq:{sched}:report:first_seen`, `:report:last_seen`, `:report:def` (one field per cron name and fingerprint) | Deleted after 7 days without a report (or twice `SWARMQ_SCHEDULER_PRUNE_AFTER_S`, if longer) |
-| Crons disabled when pruned | Valkey SET `sq:{sched}:disabled` | Until a worker reports the cron again |
-| Execution guard | Valkey keys `sq:guard:{<task_id>[\|<replay_id>]}:run` (running marker) and `:state` (done, superseded, orphans) | `SWARMQ_EXECUTION_GUARD_TTL_S`, renewed while the task runs; state `SWARMQ_EXECUTION_GUARD_DONE_TTL_S` |
-| Worker versions | Valkey key `sq:{sched}:worker_version:<worker_id>` | 3 × `SWARMQ_SCHEDULER_SEEN_INTERVAL_S` |
+| Locks | Valkey key `[<namespace>:]sq:lock:{name}` | `hard_timeout + 30 s`; extended in windows while the handler runs longer |
+| Cancel flags | Valkey key `[<namespace>:]sq:cancel:{task_id}` | `max(24 h, result_ttl)` plus the wait until a deferred task fires and its `max_age` + 300 s; at most 1 h once the worker has handled the cancelled delivery |
+| Dedup markers | Valkey key `[<namespace>:]sq:unique:{hash}` | `unique_for` seconds |
+| Scheduler entries | Valkey ZSET `[<namespace>:]sq:{sched}:zset` + HASH `[<namespace>:]sq:{sched}:defs` | Until fired or removed |
+| Schedule-fire claims | Valkey key `[<namespace>:]sq:sched:inflight:{fire}` (owner token) | `SWARMQ_SCHEDULER_INFLIGHT_TTL`, at least `hard_timeout` + 30 s |
+| Completed schedule fires | Valkey key `[<namespace>:]sq:sched:fired:{fire}` | `SWARMQ_SCHEDULER_DEDUP_TTL`, longer the longer the fire waited in the queue (`2 × wait + 300`, capped at `max_age + 300` and `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S`) |
+| Leader election | Valkey key `[<namespace>:]sq:lock:{sched}:leader` | Heartbeat-renewed |
+| Leader version | Valkey key `[<namespace>:]sq:{sched}:leader_version` (owner token and version) | Lock TTL, renewed with the lock |
+| Cron reports | Valkey HASHes `[<namespace>:]sq:{sched}:report:first_seen`, `:report:last_seen`, `:report:def` (one field per cron name and fingerprint) | Deleted after 7 days without a report (or twice `SWARMQ_SCHEDULER_PRUNE_AFTER_S`, if longer) |
+| Crons disabled when pruned | Valkey SET `[<namespace>:]sq:{sched}:disabled` | Until a worker reports the cron again |
+| Execution guard | Valkey keys `[<namespace>:]sq:guard:{<task_id>[\|<replay_id>][#<deaths>]}:run` (running marker) and `:state` (done, superseded, orphans) | `SWARMQ_EXECUTION_GUARD_TTL_S`, renewed while the task runs; state `SWARMQ_EXECUTION_GUARD_DONE_TTL_S`, at least `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S` once a redelivery was deferred or an ack failed, at least `SWARMQ_DEAD_LETTER_TTL_S` for replays |
+| Worker versions | Valkey key `[<namespace>:]sq:{sched}:worker_version:<worker_id>` | 3 × `SWARMQ_SCHEDULER_SEEN_INTERVAL_S` |
+| Crons ever reported by a 0.12 worker | Valkey SET `[<namespace>:]sq:{sched}:report:known` | Removed together with the definition |
+| Consumed queues | Valkey HASH `[<namespace>:]sq:{sched}:report:queues` (queue to last report) | 7 days after the last report; entries of gone or empty queues removed after 7 days |
+| Leader handover marker | Valkey key `[<namespace>:]sq:{sched}:handover` | A few seconds |
+| Data-loss epoch | Valkey key `[<namespace>:]sq:{sched}:epoch` | No TTL (one key) |
 
 In-process state — the task registry, the middleware stack, the signal
 dispatcher — is rebuilt on every worker start from your task module.
@@ -142,12 +151,15 @@ queue actually needs:
   them unconditionally.
 - **Quorum-queue redelivery limits.** `x-delivery-limit=20` caps the
   damage from a pathological redelivery loop without losing the
-  message — the 21st attempt goes to the DLQ.
+  message: the worker dead-letters it one delivery before the limit,
+  with an error result; the broker's own dead-lettering is the safety
+  net ([effective delivery limit](delivery-semantics.md#effective-delivery-limit)).
 - **Native DLQ routing.** Every queue is declared with a dead-letter
-  exchange: a message the worker rejects (undecodable, unregistered
-  task) or that hits the delivery limit lands in `{queue}.XQ` without
-  any worker code. For retry exhaustion, `NoRetry`, `max_age` and
-  lock failures the worker publishes to `{queue}.XQ` itself, with
+  exchange: a message the worker rejects (undecodable) or that hits
+  the delivery limit lands in `{queue}.XQ` without any worker code.
+  For retry exhaustion, `NoRetry`, `max_age`, lock failures and
+  unregistered tasks (after `SWARMQ_UNKNOWN_TASK_GRACE_S`) the worker
+  publishes to `{queue}.XQ` itself, with
   diagnostic headers (`x-swarmq-traceback` and others), and acks the
   original only after the broker confirmed the copy.
 - **Per-consumer prefetch.** Concurrency is a client-side AMQP
@@ -168,10 +180,10 @@ backend all need at once:
 - **Atomic Lua scripts.** Sliding-window rate limiting, owner-checked
   lock release, and dedup SETNX are each a single `EVALSHA` round-trip.
 - **Sorted sets with O(log n) reads.** The scheduler polls
-  `ZRANGEBYSCORE sq:sched:fire 0 <now>` once per second without
+  `ZRANGEBYSCORE [<namespace>:]sq:{sched}:zset 0 <now>` once per second without
   scanning all entries.
 - **Pub/Sub on the same connection.** `get_result(timeout=...)`
-  subscribes to `sq:notify:{task_id}` and wakes up the instant the
+  subscribes to `[<namespace>:]sq:notify:{task_id}` and wakes up the instant the
   worker publishes the completion marker — no polling required at
   low latency, polling fallback at higher latency.
 - **Drop-in Redis protocol.** Running on Redis instead is a URL
@@ -199,9 +211,10 @@ process. See the [CPU mode guide](../guides/cpu-mode.md).
 |---|---|---|
 | Worker process crash | In-flight tasks get redelivered by RabbitMQ as soon as the worker's channel or connection closes | Supervisor restarts the worker (`--processes N` default) |
 | Worker loses broker connection | That worker stops consuming; others continue | `connect_robust()` reconnects; unacked tasks redeliver |
+| Broker resource alarm (memory, disk) | RabbitMQ stops reading from every connection that publishes; publishes wait. Since 0.12 a worker consumes and acknowledges over its own second connection (`SWARMQ_BROKER_PUBLISH_CONNECTION=separate`), so acks and queue-depth reads keep working; a retry or dead-letter copy waits up to `SWARMQ_PUBLISH_TIMEOUT_S`, then the message is handed back (`BrokerPublishBlocked`) | Free memory or disk on the broker; blocked publishes continue on their own once RabbitMQ unblocks |
 | Worker loses backend connection | Checks before execution (schedule-fire dedup, cancel, rate limit, lock) defer the message to the delay queue with growing backoff; a failed result write requeues the message, and the task runs again | `valkey-py` reconnects; deferred messages return after at most `SWARMQ_BACKEND_DEFER_MAX_DELAY` (± 20 %) |
 | RabbitMQ restart | All workers reconnect; unacked messages redeliver | Quorum queues survive single-node loss natively |
-| Valkey restart | Active locks, rate counters, and leader lock expire | Clients and workers re-acquire on next operation |
+| Valkey restart | With AOF (`appendonly yes`): active locks, rate counters and the leader lock expire. Without persistence, or since the last RDB snapshot: delayed tasks, CLI crons, disabled crons, workflow state, results and the execution-guard and fired markers are lost; redeliveries can run twice | Clients and workers re-acquire on next operation; each worker logs `valkey_data_loss_detected` when the epoch key is gone. Run Valkey as in [Valkey requirements](../reference/configuration.md#valkey-requirements) |
 | Client crashes after publish | Task runs anyway; result sits in Valkey for `result_ttl` | Whoever holds `task_id` can still `get_result()` |
 
 The load-bearing assumption is that **RabbitMQ and Valkey outlive any

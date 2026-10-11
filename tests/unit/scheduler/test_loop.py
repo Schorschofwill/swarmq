@@ -52,6 +52,20 @@ API), Poll/Fire, Schedfire-Dedup (``claim_unique``), Stop/Abort."""
 # 20. Ein ``BackendConnectionError`` beim Parken bricht den Batch nicht ab;
 #     ``scheduler_park_failed`` wird geloggt.
 # 21. Ein Owner-Mismatch beim Parken wird geloggt.
+#
+# Test list (Plan 0.12.0, MR 4, BZ-28): kaputte Definition im Poll.
+# 22. Eine nicht dekodierbare Definition blockiert den Poll nicht: der
+#     Leader parkt sie (Fire-Index leer, Definition bleibt), die übrigen
+#     fälligen Crons feuern.
+#
+# Test list (Plan 0.12.0, MR 4, BZ-07): Verlängerung direkt nach der Übernahme.
+# 23. Liefert sie ``False`` (Lock während der Übernahme abgelaufen), bleibt
+#     der Loop Standby: kein Leader-Signal, ``scheduler_lock_lost``.
+# 24. Wirft sie ``BackendConnectionError``, wird er trotzdem Leader (Lock
+#     gerade erworben) und loggt ``scheduler_renew_error``; die folgenden
+#     Wahl-Takte entscheiden wie bei jeder Verlängerung.
+# 25. Der Standby merkt sich den zuletzt gesehenen Leader und reicht ihn an
+#     ``take_handover_marker`` (Handover eines 0.11-Leaders).
 
 from __future__ import annotations
 
@@ -345,7 +359,9 @@ class TestLeaderVersion:
         [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_leader_outdated"]
         assert entry["log_level"] == "warning"
         assert (entry["leader"], entry["leader_version"], entry["version"]) == ("old:1:aa", None, "0.10.0")
-        assert "timezone" in entry["hint"]
+        # KTD11 (Plan 2026-10-09-2314, MR 5): Hinweis nennt die Mindestversion,
+        # nicht mehr nur die Zeitzonen.
+        assert "0.12 or later" in entry["hint"] and "timezone" not in entry["hint"]
         assert signals == [
             {"worker_id": "w-1", "leader": "old:1:aa", "leader_version": None, "outdated": True},
         ]
@@ -360,7 +376,7 @@ class TestLeaderVersion:
             signals.append(kw)
 
         lock_manager.acquire.return_value = None
-        backend.schedules.leader_info.return_value = LeaderInfo(owner="new:1:aa", version="0.10.0")
+        backend.schedules.leader_info.return_value = LeaderInfo(owner="new:1:aa", version="0.12.0")
         loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
 
         for _ in range(3):
@@ -381,7 +397,7 @@ class TestLeaderVersion:
 
         lock_manager.acquire.return_value = None
         backend.schedules.leader_info.return_value = LeaderInfo(owner="old:1:aa", version=None)
-        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher, version="0.12.0")
         await loop._election_tick()
         await loop._election_tick()
         lock_manager.acquire.return_value = _LEADER_TOKEN
@@ -391,7 +407,7 @@ class TestLeaderVersion:
         assert loop.state == "leader"
         assert [kw["outdated"] for kw in signals] == [True, False]
         assert signals[-1] == {
-            "worker_id": "w-1", "leader": "test-owner", "leader_version": "0.10.0", "outdated": False,
+            "worker_id": "w-1", "leader": "test-owner", "leader_version": "0.12.0", "outdated": False,
         }
 
     async def test_version_check_failure_is_logged(
@@ -1313,6 +1329,78 @@ class TestTakeoverBetweenPollAndCommit:
         assert stored == taken_over
         assert await memory.schedules.fire_ts("cron_a") > 1_000
 
+
+
+class TestRenewRightAfterTakeover:
+    """Liste 23-25 (BZ-07)."""
+
+    async def test_renew_false_after_takeover_stays_standby(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher, swarmq_logs
+    ):
+        """Liste 23."""
+        signals: list[Signal] = []
+
+        @signal_dispatcher.on_signal(Signal.SCHEDULER_LEADER)
+        async def _on_leader(**_kw):
+            signals.append(Signal.SCHEDULER_LEADER)
+
+        lock_manager.renew.return_value = False
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
+
+        await loop._election_tick()
+
+        assert loop.state == "standby"
+        assert signals == []
+        assert any(e["event"] == "scheduler_lock_lost" for e in swarmq_logs)
+
+    async def test_renew_error_after_takeover_still_leads(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher, swarmq_logs
+    ):
+        """Liste 24."""
+        lock_manager.renew.side_effect = BackendConnectionError("valkey down")
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
+
+        await loop._election_tick()
+
+        assert loop.state == "leader"
+        [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_renew_error"]
+        assert entry["error_type"] == "BackendConnectionError"
+
+    async def test_takeover_offers_last_seen_leader_for_its_handover_marker(
+        self, backend, broker, config, lock_manager, store, signal_dispatcher
+    ):
+        """Liste 25."""
+        backend.schedules.leader_info.return_value = LeaderInfo(owner="old-leader", version="0.11.0")
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
+        lock_manager.acquire.return_value = None
+        await loop._election_tick()
+
+        lock_manager.acquire.return_value = _LEADER_TOKEN
+        await loop._election_tick()
+
+        backend.schedules.take_handover_marker.assert_awaited_once_with(previous_owner="old-leader")
+
+
+class TestUndecodableDefinitionInPoll:
+    """Liste 22 (BZ-28): echter ScheduleStore ueber dem In-Memory-Backend."""
+
+    async def test_leader_parks_undecodable_definition_and_fires_the_rest(
+        self, broker, config, lock_manager, signal_dispatcher
+    ):
+        memory = InMemoryBackend(FakeClock())
+        await memory.connect()
+        await memory.locks.acquire(SCHEDULER_LOCK_NAME, owner="test-owner", ttl_ms=60_000, max_concurrency=1)
+        await memory.schedules.add("broken", b"{not json", 1_000)
+        await memory.schedules.add("cron_a", msgspec.json.encode(_def(name="cron_a", fire_ts_ms=2_000)), 2_000)
+        loop = _make_loop(memory, broker, config, lock_manager, ScheduleStore(memory), signal_dispatcher)
+        loop._state = "leader"
+
+        await loop._poll_tick()
+
+        fired = [call.kwargs["headers"]["x-swarmq-schedfire"] for call in broker.publish.await_args_list]
+        assert fired == ["cron_a:2000"]
+        assert await memory.schedules.fire_ts("broken") is None
+        assert await memory.schedules.get("broken") == b"{not json"
 
 
 class TestAdoptDuringFire:

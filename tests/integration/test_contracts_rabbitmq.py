@@ -17,6 +17,7 @@ import pytest
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from tests.contracts import publisher_consumer
 from tests.support.inmemory import RealClock
+from tests.support.queues import delete_queue_family
 from tests.support.rabbitmq_faults import publish_failure
 
 
@@ -37,7 +38,7 @@ class TestBrokerRabbitMQ(publisher_consumer.BrokerContract):
         yield broker
         with contextlib.suppress(Exception):
             await broker.cancel_consume()
-        await _delete_triplet(rabbitmq_url, queue)
+        await delete_queue_family(rabbitmq_url, queue)
         await broker.close()
 
     @pytest.fixture
@@ -73,14 +74,3 @@ class TestBrokerRabbitMQ(publisher_consumer.BrokerContract):
     @pytest.fixture
     def publish_failure(self, impl: RabbitMQBroker) -> Callable[[], contextlib.AbstractContextManager[None]]:
         return lambda: publish_failure(impl)
-
-
-async def _delete_triplet(url: str, queue: str) -> None:
-    connection = await aio_pika.connect_robust(url)
-    try:
-        channel = await connection.channel()
-        for suffix in ("", ".DQ", ".XQ"):
-            with contextlib.suppress(Exception):
-                await channel.queue_delete(f"{queue}{suffix}")
-    finally:
-        await connection.close()

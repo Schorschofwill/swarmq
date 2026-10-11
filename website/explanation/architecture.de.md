@@ -110,26 +110,35 @@ Immediate-Fall.
 
 Die kurze Antwort: **nirgendwo in SwarmQ selbst**. Die Library ist
 zustandslos — starte einen Worker neu, kille einen Client, und
-nichts geht verloren, solange RabbitMQ und Valkey noch da sind.
+nichts geht verloren, solange RabbitMQ und Valkey ihre Daten behalten.
+Für Valkey heißt das `maxmemory-policy noeviction` und AOF-Persistenz
+(siehe [Valkey-Anforderungen](../reference/configuration.md#valkey-anforderungen)
+und die Zeile Valkey-Neustart unter [Fehlerdomänen](#fehlerdomanen)).
+
+`[<namensraum>:]` steht für das Präfix, das `SWARMQ_NAMESPACE` setzt; ohne Namensraum beginnen die Keys mit `sq:`.
 
 | State | Lebt in | Lebensdauer |
 |---|---|---|
 | Task-Nachrichten | RabbitMQ-Queue | Bis zum Ack oder DLQ-Route; in `{queue}.XQ` höchstens `SWARMQ_DEAD_LETTER_TTL_S` (Standard 7 Tage) |
-| Ergebnisse | Valkey-Key `sq:result:{task_id}` | `result_ttl` Sekunden (Default 24h) |
-| Progress-Updates | Valkey HASH `sq:progress:{task_id}` | Dieselbe TTL wie Ergebnisse |
+| Ergebnisse | Valkey-Key `[<namensraum>:]sq:result:{task_id}` | `result_ttl` Sekunden (Default 24h) |
+| Progress-Updates | Valkey HASH `[<namensraum>:]sq:progress:{task_id}` | Dieselbe TTL wie Ergebnisse |
 | Rate-Limit-Counter | Valkey Sorted Set | Sliding Window |
-| Locks | Valkey-Key `sq:lock:{name}` | `max(30s, 0.25 × hard_timeout)` |
-| Cancel-Flags | Valkey-Key `sq:cancel:{task_id}` | `result_ttl × 1000` ms |
-| Dedup-Marker | Valkey-Key `sq:unique:{hash}` | `unique_for` Sekunden |
-| Scheduler-Einträge | Valkey ZSET `sq:{sched}:zset` + HASH `sq:{sched}:defs` | Bis gefeuert oder entfernt |
-| Claims von Schedule-Fires | Valkey-Key `sq:sched:inflight:{fire}` (Owner-Token) | `SWARMQ_SCHEDULER_INFLIGHT_TTL`, mindestens `hard_timeout` + 30 s |
-| Erledigte Schedule-Fires | Valkey-Key `sq:sched:fired:{fire}` | `SWARMQ_SCHEDULER_DEDUP_TTL` |
-| Leader-Election | Valkey-Key `sq:lock:{sched}:leader` | Per Heartbeat erneuert |
-| Leader-Version | Valkey-Key `sq:{sched}:leader_version` (Owner-Token und Version) | Lock-TTL, mit dem Lock erneuert |
-| Cron-Meldungen | Valkey-HASHes `sq:{sched}:report:first_seen`, `:report:last_seen`, `:report:def` (ein Feld je Cron-Name und Fingerabdruck) | Gelöscht nach 7 Tagen ohne Meldung (oder nach dem Doppelten von `SWARMQ_SCHEDULER_PRUNE_AFTER_S`, falls länger) |
-| Beim Aufräumen deaktivierte Crons | Valkey-SET `sq:{sched}:disabled` | Bis ein Worker den Cron wieder meldet |
-| Ausführungsschutz | Valkey-Keys `sq:guard:{<task_id>[\|<replay_id>]}:run` (Running-Marker) und `:state` (Done, Superseded, Waisen) | `SWARMQ_EXECUTION_GUARD_TTL_S`, verlängert, solange der Task läuft; Zustand `SWARMQ_EXECUTION_GUARD_DONE_TTL_S` |
-| Worker-Versionen | Valkey-Key `sq:{sched}:worker_version:<worker_id>` | 3 × `SWARMQ_SCHEDULER_SEEN_INTERVAL_S` |
+| Locks | Valkey-Key `[<namensraum>:]sq:lock:{name}` | `hard_timeout + 30 s`; läuft der Handler länger, fensterweise verlängert |
+| Cancel-Flags | Valkey-Key `[<namensraum>:]sq:cancel:{task_id}` | `max(24 h, result_ttl)` plus Wartezeit bis zum Fire eines verzögerten Tasks und dessen `max_age` + 300 s; höchstens 1 h, sobald der Worker die stornierte Zustellung abgeschlossen hat |
+| Dedup-Marker | Valkey-Key `[<namensraum>:]sq:unique:{hash}` | `unique_for` Sekunden |
+| Scheduler-Einträge | Valkey ZSET `[<namensraum>:]sq:{sched}:zset` + HASH `[<namensraum>:]sq:{sched}:defs` | Bis gefeuert oder entfernt |
+| Claims von Schedule-Fires | Valkey-Key `[<namensraum>:]sq:sched:inflight:{fire}` (Owner-Token) | `SWARMQ_SCHEDULER_INFLIGHT_TTL`, mindestens `hard_timeout` + 30 s |
+| Erledigte Schedule-Fires | Valkey-Key `[<namensraum>:]sq:sched:fired:{fire}` | `SWARMQ_SCHEDULER_DEDUP_TTL`, länger, je länger das Fire in der Queue wartete (`2 × Wartezeit + 300`, gedeckelt bei `max_age + 300` und `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S`) |
+| Leader-Election | Valkey-Key `[<namensraum>:]sq:lock:{sched}:leader` | Per Heartbeat erneuert |
+| Leader-Version | Valkey-Key `[<namensraum>:]sq:{sched}:leader_version` (Owner-Token und Version) | Lock-TTL, mit dem Lock erneuert |
+| Cron-Meldungen | Valkey-HASHes `[<namensraum>:]sq:{sched}:report:first_seen`, `:report:last_seen`, `:report:def` (ein Feld je Cron-Name und Fingerabdruck) | Gelöscht nach 7 Tagen ohne Meldung (oder nach dem Doppelten von `SWARMQ_SCHEDULER_PRUNE_AFTER_S`, falls länger) |
+| Beim Aufräumen deaktivierte Crons | Valkey-SET `[<namensraum>:]sq:{sched}:disabled` | Bis ein Worker den Cron wieder meldet |
+| Ausführungsschutz | Valkey-Keys `[<namensraum>:]sq:guard:{<task_id>[\|<replay_id>][#<Tode>]}:run` (Running-Marker) und `:state` (Done, Superseded, Waisen) | `SWARMQ_EXECUTION_GUARD_TTL_S`, verlängert, solange der Task läuft; Zustand `SWARMQ_EXECUTION_GUARD_DONE_TTL_S`, mindestens `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S`, sobald eine Neuzustellung zurückgestellt wurde oder ein Ack scheiterte, mindestens `SWARMQ_DEAD_LETTER_TTL_S` für Wiederholungen |
+| Worker-Versionen | Valkey-Key `[<namensraum>:]sq:{sched}:worker_version:<worker_id>` | 3 × `SWARMQ_SCHEDULER_SEEN_INTERVAL_S` |
+| Von einem 0.12-Worker je gemeldete Crons | Valkey-SET `[<namensraum>:]sq:{sched}:report:known` | Wird mit der Definition entfernt |
+| Konsumierte Queues | Valkey-HASH `[<namensraum>:]sq:{sched}:report:queues` (Queue auf letzte Meldung) | 7 Tage nach der letzten Meldung; Einträge verschwundener oder leerer Queues nach 7 Tagen entfernt |
+| Übergabe-Marker des Leaders | Valkey-Key `[<namensraum>:]sq:{sched}:handover` | Wenige Sekunden |
+| Epoche (Datenverlust) | Valkey-Key `[<namensraum>:]sq:{sched}:epoch` | Ohne TTL (ein Key) |
 
 In-Process-State — die Task-Registry, der Middleware-Stack, der
 Signal-Dispatcher — wird bei jedem Worker-Start aus deinem
@@ -149,12 +158,16 @@ eine Task-Queue tatsächlich braucht:
   schaltet sie unbedingt ein.
 - **Quorum-Queue-Redelivery-Limits.** `x-delivery-limit=20` kappt
   den Schaden einer pathologischen Redelivery-Schleife, ohne die
-  Nachricht zu verlieren — der 21. Versuch landet in der DLQ.
+  Nachricht zu verlieren: Der Worker schickt sie eine Zustellung vor
+  dem Limit mit Fehlerergebnis in die DLQ; das Dead-Lettering des
+  Brokers ist das Sicherheitsnetz
+  ([effektives Delivery-Limit](delivery-semantics.md#effektives-delivery-limit)).
 - **Natives DLQ-Routing.** Jede Queue wird mit einem
   Dead-Letter-Exchange deklariert: Eine Nachricht, die der Worker
-  ablehnt (nicht dekodierbar, unregistrierter Task) oder die das
-  Zustelllimit erreicht, landet ohne Worker-Code in `{queue}.XQ`. Bei
-  Retry-Erschöpfung, `NoRetry`, `max_age` und Lock-Fehlern publiziert
+  ablehnt (nicht dekodierbar) oder die das Zustelllimit erreicht,
+  landet ohne Worker-Code in `{queue}.XQ`. Bei Retry-Erschöpfung,
+  `NoRetry`, `max_age`, Lock-Fehlern und unregistrierten Tasks (nach
+  `SWARMQ_UNKNOWN_TASK_GRACE_S`) publiziert
   der Worker selbst nach `{queue}.XQ`, mit Diagnose-Headern
   (`x-swarmq-traceback` u. a.), und bestätigt das Original erst, wenn
   der Broker die Kopie bestätigt hat.
@@ -177,10 +190,10 @@ Result-Backend gleichzeitig brauchen:
   owner-checked Lock-Release und Dedup-SETNX sind jeweils ein
   einzelner `EVALSHA`-Roundtrip.
 - **Sorted Sets mit O(log n)-Reads.** Der Scheduler pollt
-  `ZRANGEBYSCORE sq:sched:fire 0 <now>` einmal pro Sekunde, ohne
+  `ZRANGEBYSCORE [<namensraum>:]sq:{sched}:zset 0 <now>` einmal pro Sekunde, ohne
   alle Einträge zu scannen.
 - **Pub/Sub auf derselben Verbindung.** `get_result(timeout=...)`
-  abonniert `sq:notify:{task_id}` und wacht sofort auf, sobald der
+  abonniert `[<namensraum>:]sq:notify:{task_id}` und wacht sofort auf, sobald der
   Worker den Completion-Marker publisht — kein Polling bei
   niedriger Latenz, Polling-Fallback bei höherer.
 - **Drop-in-Redis-Protokoll.** Stattdessen Redis laufen zu lassen
@@ -209,9 +222,10 @@ bleiben im Loop-Prozess. Siehe [CPU-Modus](../guides/cpu-mode.md).
 |---|---|---|
 | Worker-Prozess-Crash | In-Flight-Tasks stellt RabbitMQ neu zu, sobald Kanal oder Verbindung des Workers schließen | Supervisor startet Worker neu (`--processes N` Default) |
 | Worker verliert Broker-Verbindung | Dieser Worker konsumiert nicht mehr; andere laufen weiter | `connect_robust()` reconnected; unacknowledgte Tasks redelivern |
+| Ressourcenalarm des Brokers (Speicher, Platte) | RabbitMQ liest von keiner publizierenden Verbindung mehr; Publishes warten. Seit 0.12 konsumiert und bestätigt ein Worker über eine eigene zweite Verbindung (`SWARMQ_BROKER_PUBLISH_CONNECTION=separate`), Acks und das Lesen der Queue-Tiefen laufen also weiter; eine Retry- oder Dead-Letter-Kopie wartet bis `SWARMQ_PUBLISH_TIMEOUT_S`, dann geht die Nachricht zurück (`BrokerPublishBlocked`) | Speicher oder Platte am Broker freimachen; blockierte Publishes laufen von selbst weiter, sobald RabbitMQ freigibt |
 | Worker verliert Backend-Verbindung | Prüfungen vor der Ausführung (Schedule-Fire-Dedup, Cancel, Rate-Limit, Lock) stellen die Nachricht mit wachsendem Backoff über die Delay-Queue zurück; ein gescheiterter Result-Write reiht die Nachricht neu ein, und der Task läuft erneut | `valkey-py` verbindet sich neu; zurückgestellte Nachrichten kommen spätestens nach `SWARMQ_BACKEND_DEFER_MAX_DELAY` (± 20 %) zurück |
 | RabbitMQ-Restart | Alle Worker reconnecten; unacknowledgte Nachrichten redelivern | Quorum-Queues überleben einzelnen Node-Verlust nativ |
-| Valkey-Restart | Aktive Locks, Rate-Counter und Leader-Lock laufen ab | Clients und Worker erwerben sie bei nächster Operation neu |
+| Valkey-Restart | Mit AOF (`appendonly yes`): Aktive Locks, Rate-Counter und Leader-Lock laufen ab. Ohne Persistenz bzw. seit dem letzten RDB-Snapshot: Verzögerte Tasks, CLI-Crons, abgeschaltete Crons, Workflow-State, Ergebnisse sowie Guard- und Fired-Marker gehen verloren; Neuzustellungen können doppelt laufen | Clients und Worker erwerben sie bei nächster Operation neu; jeder Worker loggt `valkey_data_loss_detected`, wenn der Epoch-Key fehlt. Valkey wie unter [Valkey-Anforderungen](../reference/configuration.md#valkey-anforderungen) betreiben |
 | Client crasht nach Publish | Task läuft trotzdem; Ergebnis liegt `result_ttl` in Valkey | Wer die `task_id` hat, kann weiterhin `get_result()` aufrufen |
 
 Die tragende Annahme ist: **RabbitMQ und Valkey überleben jeden

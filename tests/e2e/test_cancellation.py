@@ -17,11 +17,13 @@ import contextlib
 import uuid
 
 import pytest
+import valkey.asyncio as aio_valkey
 
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import TaskCancelledError
+from swarmq.keyspace import KeySpace
 from swarmq.signals import Signal
 from swarmq.task import DeliveryMode, Task, TaskInfo
 
@@ -35,6 +37,16 @@ pytestmark = [pytest.mark.timeout(35)]
 
 def _unique_queue() -> str:
     return f"e2e-cancel-{uuid.uuid4().hex[:10]}"
+
+
+async def _cancel_flag_pttl(valkey_url: str, task_id: str) -> int:
+    """Restlaufzeit des Cancel-Flags in ms (BZ-23: der Worker verkürzt es
+    auf höchstens 1 h statt es zu löschen)."""
+    raw = aio_valkey.Valkey.from_url(valkey_url)
+    try:
+        return int(await raw.pttl(KeySpace(None).cancel(task_id)))
+    finally:
+        await raw.aclose()
 
 
 def _task_name(prefix: str) -> str:
@@ -104,8 +116,10 @@ async def test_e2e_queued_cancel_full_stack(
 
             await _run_worker_until(worker_app, wait_for_result(), timeout=8)
 
-        # Flag should have been cleaned up by the worker.
-        assert await client_backend.is_cancelled(task_id) is False
+        # BZ-23 (Plan 0.12.0, MR 5): der Worker verkürzt das Flag auf
+        # höchstens 1 h, statt es zu löschen.
+        assert await client_backend.is_cancelled(task_id) is True
+        assert 0 < await _cancel_flag_pttl(valkey_url, task_id) <= 3_600_000
 
 
 async def test_e2e_faf_cancel_emits_signal_no_result(

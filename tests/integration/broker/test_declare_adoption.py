@@ -9,10 +9,10 @@ Test-Liste:
 1. 0.12-artige Queues (Haupt-Queue und ``.DQ``) → ``declare_queue`` gelingt,
    WARNING für das Delivery-Limit, Publish-Channel bleibt derselbe und offen.
 2. Publishes, die während der Übernahme laufen, gelingen alle.
-3. Nicht übernehmbarer Konflikt (classic statt quorum) → ``BrokerConnectionError``
-   wie 0.11.0; der Publish-Channel bleibt offen.
+3. Nicht übernehmbarer Konflikt (classic statt quorum) → ab 0.12
+   ``QueueArgumentsMismatch``; der Publish-Channel bleibt offen.
 4. Nach der Übernahme bleiben keine Wegwerf-Channels offen.
-5. Review P2-2a: Queue ohne ``x-delivery-limit`` → ``BrokerConnectionError`` wie 0.11.0.
+5. Queue ohne ``x-delivery-limit`` → ab 0.12 übernommen (Broker-Default 20).
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ import aio_pika
 import pytest
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
-from swarmq.exceptions import BrokerConnectionError
+from swarmq.exceptions import QueueArgumentsMismatch
 from tests.unit._log_capture import capture_swarmq_logs
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(30)]
@@ -130,10 +130,12 @@ async def test_publishes_running_during_adoption_succeed(rabbitmq_url: str, brok
 async def test_other_conflict_fails_and_keeps_publish_channel(
     rabbitmq_url: str, broker: RabbitMQBroker, queue: str
 ) -> None:
+    """0.12 (Plan MR 8, Punkt 3): ein anderer erkannter Konflikt ist ein
+    ``QueueArgumentsMismatch`` (Exit 78) statt ``BrokerConnectionError``."""
     await _declare_raw(rabbitmq_url, queue, {"x-queue-type": "classic"})
     publish_channel = await broker._ensure_publish_channel()
 
-    with pytest.raises(BrokerConnectionError, match="Existing queue"):
+    with pytest.raises(QueueArgumentsMismatch):
         await broker.declare_queue(queue)
 
     assert broker._publish_channel is publish_channel
@@ -160,7 +162,8 @@ async def test_no_probe_channel_stays_open(rabbitmq_url: str, broker: RabbitMQBr
 async def test_queue_without_delivery_limit_fails_as_in_0_11_0(
     rabbitmq_url: str, broker: RabbitMQBroker, queue: str
 ) -> None:
-    """Review P2-2a: eine Quorum-Queue ohne ``x-delivery-limit`` wird nicht übernommen."""
+    """0.12 (Plan MR 8, BZ-15): eine Quorum-Queue ohne ``x-delivery-limit`` wird
+    übernommen (Broker-Default 20); 0.11.1 brach hier noch ab (Review P2-2a)."""
     await _declare_raw(
         rabbitmq_url,
         queue,
@@ -168,7 +171,7 @@ async def test_queue_without_delivery_limit_fails_as_in_0_11_0(
     )
     publish_channel = await broker._ensure_publish_channel()
 
-    with pytest.raises(BrokerConnectionError, match="Existing queue"):
-        await broker.declare_queue(queue)
+    await broker.declare_queue(queue)
 
+    assert broker.effective_delivery_limit(queue) == 20
     assert not publish_channel.is_closed

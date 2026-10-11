@@ -41,9 +41,9 @@ rendert der Worker das Template gegen die tatsächlichen Args —
 `schedule("sync_user", user_id=42)` dispatched wird.
 
 `hard_timeout` ist **pflicht**, wenn `lock` gesetzt ist. Die TTL
-des Locks wird davon abgeleitet (`max(30 s, 0.25 × hard_timeout)`),
-sodass ein Task ohne Hard-Timeout den Lock nach einem Worker-Crash
-sonst unbegrenzt halten könnte.
+des Locks wird davon abgeleitet (`hard_timeout + 30 s`): Sie ist die
+Absturzfrist, sodass ein Task ohne Hard-Timeout den Lock nach einem
+Worker-Crash sonst unbegrenzt halten könnte.
 
 ### Mutex vs Semaphor
 
@@ -69,13 +69,55 @@ rendern, über die ganze Flotte hinweg, unabhängig von
 
 Wenn der Worker eine Nachricht aufnimmt, deren Lock gehalten wird:
 
-- Die Nachricht wird **mit Delay requeued**. Sie blockiert den
-  Worker nicht und scheitert den Task nicht.
-- Der Worker loggt `task_lock_conflict` (INFO, mit `lock_name` und
-  `lock_conflict_count`) und feuert das `TASK_LOCKED`-Signal, damit du
-  es beobachten kannst.
-- Ist `max_age` des Tasks gesetzt, läuft sie irgendwann in die DLQ,
-  statt ewig zu retry'n.
+- Die Nachricht wird **mit Delay requeued** (100 ms, je Konflikt
+  verdoppelt, höchstens 60 s). Sie blockiert den Worker nicht und
+  scheitert den Task nicht.
+- Der Worker feuert bei jedem Konflikt das `TASK_LOCKED`-Signal
+  (`lock_conflict_count` zählt die Konflikte dieser Nachricht) und
+  loggt `task_lock_conflict` (INFO, mit `lock_name`,
+  `lock_conflict_count` und `waited_ms`) beim ersten Konflikt und
+  danach etwa einmal je Minute.
+- Die Nachricht wartet, solange der Lock den Halter wechselt oder sein
+  Halter ihn am Leben hält (ab 0.12 gibt es keinen Deckel von 10
+  Konflikten mehr). In die DLQ geht sie mit `LockWaitExceeded`
+  (Fehlerergebnis, `TASK_DLQ`, ein Workflow-Schritt markiert seinen
+  Workflow als gescheitert) erst, wenn
+  - derselbe Halter den Lock länger hält als die beim letzten
+    Halterwechsel gesehene TTL des Keys plus 60 s (ein hängender
+    Halter, dessen Lock am Leben gehalten wird), oder
+  - seit dem ersten Konflikt `SWARMQ_LOCK_WAIT_MAX_S` (Standard 6 h)
+    vergangen ist.
+- `max_age` bleibt die harte Grenze: Ein Task mit `max_age` läuft in
+  die DLQ, sobald er älter ist, egal wie lange er gewartet hat.
+
+Gemessen wird mit den Wanduhren der Worker
+(`x-swarmq-lock-wait-since`, `x-swarmq-lock-holder-since`); halte die
+Uhren synchron, ein Versatz bis etwa 60 s wird toleriert. Ein
+Lock-Store, der seine Halter nicht melden kann (fremder Store), loggt
+einmal `lock_observe_unsupported` und wartet bis
+`SWARMQ_LOCK_WAIT_MAX_S`; ebenso ein Store, dessen `observe` keine
+`LockObservation` liefert. Die Gauges `swarmq_lock_waits` und
+`swarmq_lock_wait_oldest_seconds` zeigen je Worker, wie viele
+Nachrichten er zuletzt zurückgestellt hat und wie lange die älteste
+schon wartet; eine Nachricht, die er 3 Minuten nicht wieder sieht,
+fällt heraus, bei einem Rückstand von mehr als etwa 2 Minuten in der
+Queue zählen die Gauges also zu wenig.
+
+Eine neue Wartezeit beginnt, wenn der Broker die Nachricht neu
+zustellt (der Worker starb, nachdem er den Lock erworben hatte, oder
+gab die Nachricht beim Herunterfahren zurück), und auf der Kopie einer
+späteren Ausführung (Retry, `dlq retry`; der Header
+`x-swarmq-lock-wait-gen` hält Retry-Zähler und Replay-ID der wartenden
+Ausführung fest). Eine alte Wartezeit beendet eine neu zugestellte
+Nachricht also nie sofort. Klassische Queues führen keinen
+Zustellzähler; dort setzt eine Neuzustellung die alte Wartezeit fort.
+
+Im Mischbetrieb mit 0.11-Workern derselben App: 0.12 erhöht
+`x-swarmq-lock-conflict-count` nicht mehr, ein 0.11-Worker sieht eine
+0.12-Kopie also nie an seinem Deckel von 10. Stellt ein 0.11-Worker
+eine Nachricht selbst zurück, erhöht er diesen Zähler weiter und
+dead-lettert wie bisher beim 10. Konflikt; den Wartezustand von 0.12
+lässt er dabei stehen.
 
 Ist Valkey beim Acquire nicht erreichbar (oder antwortet nicht
 innerhalb von `SWARMQ_BACKEND_OP_TIMEOUT`), ist das kein Konflikt: Die
@@ -87,10 +129,57 @@ erhöhen, und der Worker loggt `task_deferred_backend_unavailable`
 Stelle neu ein. Ein Acquire, der nach Ablauf der Frist in Valkey doch
 noch ausgeführt wurde, lässt den Lock bis zu seiner TTL gehalten.
 
-Der Delay backed off — wiederholte Misses erweitern die Wartezeit.
-Die meisten Lock-nutzenden Tasks wollen `max_age` als
-Sicherheitsnetz, damit ein stuck Holder die Queue nicht dauerhaft
-zurückstaut.
+Setze `max_age` bei Lock-nutzenden Tasks, deren Arbeit veraltet,
+damit eine Nachricht nicht stundenlang hinter einem langen Halter
+wartet.
+
+### Locks während der Ausführung
+
+Der Worker hält einen Lock, den er besitzt, so lange am Leben, wie
+der Handler läuft (ab 0.12). Er beginnt ein Fenster vor der
+ursprünglichen Frist `t0 + TTL` mit dem Verlängern (TTL =
+`hard_timeout + 30 s`; das Fenster sind drei Takte, ein Takt ist
+`min(max(TTL / 3, 50 ms), 20 s)`). Davor passiert nichts. Ab einem
+`hard_timeout` von 30 s ist das Fenster 60 s lang, ein Task, der
+innerhalb von `hard_timeout - 30 s` fertig wird, kostet also keinen
+zusätzlichen Roundtrip. Bei kürzerem `hard_timeout` deckt das Fenster
+die ganze TTL: Ein Handler, der länger als etwa ein Drittel seiner TTL
+läuft, wird ab dem ersten Takt verlängert, ein Roundtrip je Takt. Jede
+Verlängerung gibt ein Fenster dazu, Mutex wie Semaphor-Slot. Ein hart
+beendeter Halter (SIGKILL, OOM) hinterlässt den Lock deshalb wie
+bisher bis `t0 + TTL`, oder höchstens ein Fenster länger, wenn er
+beim Überziehen beendet wurde.
+
+Ein Handler, der seinen Abbruch ignoriert (Task-Code, der
+`CancelledError` schluckt), überlebt `hard_timeout + 30 s` und behält
+seinen Lock; der Worker loggt einmal `task_lock_held_past_hard_timeout`
+(WARNING). Ein blockierter Event-Loop behält den Lock nicht: Er
+blockiert auch die Verlängerung, der Lock kann ablaufen, während der
+Handler läuft, und der Worker meldet das als `task_lock_lost`, sobald
+der Loop wieder läuft. Blockierender Code gehört in den
+[CPU-Modus](cpu-mode.md), dort tötet `hard_timeout` den Kindprozess.
+
+Findet die Verlängerung den Lock weg oder übernommen (verdrängt durch
+`maxmemory-policy`, siehe [Valkey-Anforderungen](../reference/configuration.de.md#valkey-anforderungen), Valkey-Datenverlust oder ein Valkey-Ausfall von
+etwa zwei Takten, sobald die Verlängerungen begonnen haben, bei einem
+Takt von 20 s also etwa 40 s), loggt der Worker `task_lock_lost`
+(WARNING, `stage="running"`): Ein zweiter Halter kann jetzt parallel
+laufen. Dieselbe Warnung mit `stage="release"` kommt, wenn der Lock
+bei der Freigabe schon weg ist. Eine gescheiterte Verlängerung loggt
+`lock_extend_failed` und wird im nächsten Takt wiederholt; gelang vor
+der Frist des Locks keine Verlängerung, loggt der Worker
+`task_lock_lost` mit `stage="expired"`, ohne Valkey zu fragen, und
+verlängert ihn nicht weiter.
+
+Beim Herunterfahren gibt der Worker die Locks von Handlern frei, die
+nach dem Drain noch laufen. Ein Handler, der seinen Abbruch ignoriert
+und weiterläuft, verliert seinen Lock dann.
+
+Grenzen: Ein Erwerber mit kurzer TTL räumt weiterhin Semaphor-Slots
+ab, die älter als seine eigene TTL sind; gemischte
+`hard_timeout`-Werte unter einem Semaphor-Namen werden daher nicht
+unterstützt. Ein 0.11-Worker, der einen Slot erwirbt, verkürzt die
+TTL des Keys weiter auf seine eigene.
 
 ### Lock-Render-Fehler
 
@@ -134,8 +223,9 @@ kwargs)` die task_id des ersten Tasks zurück, ohne zu enqueuen.
 `unique_until` wählt den Freigabepunkt:
 
 - `"completion"` (Default) — das Flag lebt, bis der Task einen
-  Terminalzustand (Success, DLQ, Cancel) erreicht. Das blockiert
-  erneute Schedules während des gesamten Ausführungsfensters.
+  Terminalzustand (Success, DLQ, Cancel oder Ablauf über `max_age`)
+  erreicht. Das blockiert erneute Schedules während des gesamten
+  Ausführungsfensters.
 - `"start"` — das Flag wird in dem Moment freigegeben, in dem ein
   Worker die Nachricht aufnimmt. Ein Folge-`schedule()` während
   der Task läuft, enqueued einen neuen.
@@ -143,6 +233,25 @@ kwargs)` die task_id des ersten Tasks zurück, ohne zu enqueuen.
 Wähle `"completion"` für idempotente Arbeit („Welcome-E-Mail an
 User 42 senden") und `"start"` für Arbeit, bei der überlappende
 Ausführungen ok sind, doppelte pending Messages aber nicht.
+
+### Unique-Crons
+
+Bei einem statischen Cron verhindert `unique_for`, dass ein langer Lauf
+den nächsten Termin überlappt: Der Scheduler-Leader nimmt das Flag,
+bevor er einen Termin veröffentlicht, und ein Termin, dessen Flag noch
+gehalten wird, wird übersprungen (`TASK_DUPLICATE_DETECTED`,
+`source="scheduler.fire"`) und gilt als erledigt. Ab 0.12 gilt das bei
+jedem Leader, auch bei einem, der den Task nicht in seiner Registry
+hat: Worker melden `unique_for` und `unique_until` mit ihren Crons
+([Cron-Meldungen](scheduling-and-retries.de.md#cron-meldungen-und-leader)).
+
+Scheitert der Publish eines Termins, nachdem der Leader das Flag
+genommen hat, gibt er es wieder frei; der Versuch im nächsten Takt gilt
+dann nicht als Duplikat. Das Flag bleibt, wenn der Publish beim Warten
+auf das Confirm des Brokers seine Frist gerissen hat
+(`PublishIndeterminate`), denn die Nachricht kann angekommen sein. Ein
+Flag, das `schedule(delay=|eta=)` genommen hat, gehört dem Producer und
+wird bei einem solchen Fehler nie freigegeben.
 
 ### Per-Call-Override
 

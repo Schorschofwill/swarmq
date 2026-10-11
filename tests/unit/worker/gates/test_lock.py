@@ -18,6 +18,10 @@ Test-Liste 0.9.0 (drittes Review):
       ``lock_acquire_failed`` und Requeue, keine Zurueckstellung
 - [x] die Konflikt-Kopie einer Schedfire-Zustellung mit gewonnenem Claim
       traegt dessen Owner-Token (``x-swarmq-schedfire-claim``)
+
+Test-Liste BZ-17 (Plan 0.12.0, MR 2):
+- [x] ``x-swarmq-lock-render-error`` ist hoechstens 8 KiB lang, auch wenn der
+      Renderfehler einen riesigen Argumentnamen zitiert
 """
 
 from __future__ import annotations
@@ -30,17 +34,19 @@ import pytest
 
 from swarmq.contracts.coordination import LockToken
 from swarmq.exceptions import BackendConnectionError, BrokerConnectionError
+from swarmq.headers import HEADER_LOCK_CONFLICTS, HEADER_LOCK_WAIT_SINCE
 from swarmq.registry import TaskRegistry
 from swarmq.signals import Signal
 from swarmq.task import DeliveryMode, Task, TaskInfo
 from swarmq.worker import Worker
 from swarmq.worker.gates import GateContext
-from swarmq.worker.gates.lock import LOCK_CONFLICT_DLQ_CAP, render_lock_name
+from swarmq.worker.gates.lock import render_lock_name
 from swarmq.worker.outcome import Continue, Redelivered
 from tests.support.messages import make_message
 from tests.unit.worker._helpers import (
     AddTask,
     _default_payload,
+    lock_wait_exceeded_headers,
 )
 
 pytestmark = pytest.mark.timeout(5)
@@ -212,7 +218,7 @@ class TestWorkerLocking:
         await w._handle_message(msg)
 
         broker.retry_later.assert_awaited_once()
-        assert "x-swarmq-lock-conflict-count" not in broker.retry_later.await_args.kwargs["headers"]
+        assert HEADER_LOCK_CONFLICTS not in broker.retry_later.await_args.kwargs["headers"]
         broker.redeliver.assert_not_awaited()
         broker.ack.assert_not_awaited()
 
@@ -284,7 +290,7 @@ class TestLockRequeueCounter:
         await w._handle_message(msg)
 
         _, kwargs = broker.retry_later.call_args
-        assert kwargs["headers"]["x-swarmq-lock-conflict-count"] == 1
+        assert kwargs["headers"][HEADER_LOCK_CONFLICTS] == 1
         # Wedged-lock recovery: DLQ (and requeue) messages must carry the
         # rendered lock name so operators can `valkey-cli DEL sq:lock:<name>`.
         assert kwargs["headers"]["x-swarmq-lock-name"] == "resource"
@@ -301,20 +307,19 @@ class TestLockRequeueCounter:
         w._lock_manager.acquire = AsyncMock(return_value=None)
 
         msg = make_message(_default_payload(name="locked", args=[], kwargs={}))
-        msg.headers = {"x-swarmq-lock-conflict-count": 5}
+        msg.headers = {HEADER_LOCK_CONFLICTS: 5}
 
         await w._handle_message(msg)
 
         _, kwargs = broker.retry_later.call_args
-        assert kwargs["headers"]["x-swarmq-lock-conflict-count"] == 6
+        assert kwargs["headers"][HEADER_LOCK_CONFLICTS] == 6
 
     @pytest.mark.asyncio
-    async def test_counter_reaching_cap_routes_to_dlq(
+    async def test_wait_limit_routes_to_dlq(
         self, broker, backend, config
     ):
-        """When new_count reaches the cap (10), the message routes to DLQ
-        instead of being requeued. Cap is INCLUSIVE — the 10th conflict
-        is the one that DLQs, not the 11th."""
+        """MR 13 (BZ-05): statt des Deckels 10 endet die Wartezeit an
+        ``lock_wait_max_s`` ab dem ersten Konflikt -- dann DLQ."""
         reg = TaskRegistry()
         reg.register(LockedTask)
 
@@ -323,8 +328,7 @@ class TestLockRequeueCounter:
         w._lock_manager.acquire = AsyncMock(return_value=None)
 
         msg = make_message(_default_payload(name="locked", args=[], kwargs={}))
-        # Prior count = 9; new_count = 10 → exactly at cap → DLQ
-        msg.headers = {"x-swarmq-lock-conflict-count": 9}
+        msg.headers = lock_wait_exceeded_headers(config)
 
         await w._handle_message(msg)
 
@@ -333,17 +337,18 @@ class TestLockRequeueCounter:
         # DLQ instead, with diagnostic header
         broker.dead_letter.assert_awaited_once()
         _, kwargs = broker.dead_letter.call_args
-        assert kwargs["headers"]["x-swarmq-lock-conflict-count"] == 10
         assert kwargs["headers"]["x-swarmq-lock-name"] == "resource"
+        assert kwargs["headers"]["x-swarmq-traceback"].startswith("LockWaitExceeded: lock wait limit reached")
         # U8: retry_later/dead_letter bestätigen das Original selbst
         broker.ack.assert_not_awaited()
 
-    async def test_counter_just_below_cap_still_requeues(
+    async def test_wait_just_below_the_limit_still_requeues(
         self, broker, backend, config
     ):
-        """Boundary check: count=8 (becomes new_count=9) is just below the
-        cap and still requeues with backoff. Confirms the cap is
-        inclusive on the DLQ side, exclusive on the requeue side."""
+        """Boundary check: kurz vor ``lock_wait_max_s`` wird weiter
+        zurueckgestellt; die Kopie behaelt den ersten Konflikt."""
+        import time
+
         reg = TaskRegistry()
         reg.register(LockedTask)
 
@@ -351,24 +356,26 @@ class TestLockRequeueCounter:
         w._lock_manager = MagicMock()
         w._lock_manager.acquire = AsyncMock(return_value=None)
 
+        since = int(time.time() * 1000) - int(config.lock_wait_max_s * 1000) + 5_000
         msg = make_message(_default_payload(name="locked", args=[], kwargs={}))
-        msg.headers = {"x-swarmq-lock-conflict-count": 8}
+        msg.headers = {HEADER_LOCK_WAIT_SINCE: since, HEADER_LOCK_CONFLICTS: 8}
 
         await w._handle_message(msg)
 
         broker.retry_later.assert_awaited_once()
         broker.dead_letter.assert_not_called()
         _, kwargs = broker.retry_later.call_args
-        assert kwargs["headers"]["x-swarmq-lock-conflict-count"] == 9
+        assert kwargs["headers"][HEADER_LOCK_CONFLICTS] == 9
+        assert kwargs["headers"][HEADER_LOCK_WAIT_SINCE] == since
 
-    async def test_dlq_failure_at_cap_drops_message_no_infinite_loop(
+    async def test_dlq_failure_at_wait_limit_drops_message_no_infinite_loop(
         self, broker, backend, config
     ):
         """Cascade-fix regression: when dead_letter fails
-        AT the cap, falling back to nack(requeue=True) would let the
-        message bounce back at count >= cap, hit the same DLQ failure,
+        AT the wait limit, falling back to nack(requeue=True) would let the
+        message bounce back past the limit, hit the same DLQ failure,
         and loop forever without backoff (the requeue branch is
-        unreachable past the cap). Honest data loss with a loud ERROR
+        unreachable past the limit). Honest data loss with a loud ERROR
         log naming the lock is the right trade-off."""
         reg = TaskRegistry()
         reg.register(LockedTask)
@@ -381,7 +388,7 @@ class TestLockRequeueCounter:
         )
 
         msg = make_message(_default_payload(name="locked", args=[], kwargs={}))
-        msg.headers = {"x-swarmq-lock-conflict-count": 9}
+        msg.headers = lock_wait_exceeded_headers(config)
 
         await w._handle_message(msg)
 
@@ -390,10 +397,10 @@ class TestLockRequeueCounter:
         broker.route_via_dlx.assert_awaited_once_with(msg)
         # No ack happened.
         broker.ack.assert_not_awaited()
-        # No requeue either — the requeue branch is unreachable past the cap.
+        # No requeue either — the requeue branch is unreachable past the limit.
         broker.retry_later.assert_not_called()
 
-    async def test_dlq_failure_at_cap_emits_task_rejected(
+    async def test_dlq_failure_at_wait_limit_emits_task_rejected(
         self, broker, backend, config
     ):
         """U6 (R12): Der Datenverlust bleibt, aber er ist nicht mehr stumm --
@@ -415,7 +422,7 @@ class TestLockRequeueCounter:
         w._signal_dispatcher.dispatch = AsyncMock(side_effect=_dispatch)
 
         msg = make_message(_default_payload(name="locked", args=[], kwargs={}))
-        msg.headers = {"x-swarmq-lock-conflict-count": 9}
+        msg.headers = lock_wait_exceeded_headers(config)
 
         await w._handle_message(msg)
 
@@ -508,6 +515,25 @@ class TestFormatStringLock:
         broker.dead_letter.assert_awaited_once()
         _, kwargs = broker.dead_letter.call_args
         assert "x-swarmq-lock-render-error" in kwargs["headers"]
+
+    @pytest.mark.asyncio
+    async def test_render_error_header_is_bounded(self, broker, backend, config):
+        reg = TaskRegistry()
+        reg.register(FormatStringLockTask)
+
+        w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+        w._lock_manager = MagicMock()
+        w._lock_manager.acquire = AsyncMock()
+
+        # Der TypeError von ``bind`` zitiert den unbekannten Argumentnamen.
+        msg = make_message(
+            _default_payload(name="user_charge", args=[], kwargs={"user_id": 1, "amount": 1, "k" * 1_000_000: 1})
+        )
+        await w._handle_message(msg)
+
+        broker.dead_letter.assert_awaited_once()
+        render_error = broker.dead_letter.call_args.kwargs["headers"]["x-swarmq-lock-render-error"]
+        assert len(render_error.encode()) <= 8 * 1024
 
     @pytest.mark.asyncio
     async def test_render_error_with_dlq_publish_failure_nacks_no_requeue(
@@ -664,7 +690,7 @@ class TestLockGateOutcomes:
     async def test_conflict_under_cap_is_redelivered_with_exponential_delay(self, worker, broker):
         worker._lock_manager = MagicMock()
         worker._lock_manager.acquire = AsyncMock(return_value=None)
-        msg = make_message(_default_payload(), headers={"x-swarmq-lock-conflict-count": 2})
+        msg = make_message(_default_payload(), headers={HEADER_LOCK_CONFLICTS: 2})
         assert await worker._lock_gate.apply(msg, self._ctx()) is Redelivered
         kwargs = broker.retry_later.await_args.kwargs
         assert kwargs["delay_ms"] == 400  # 100 * 2**(3-1)
@@ -677,7 +703,7 @@ class TestLockGateOutcomes:
         await worker._lock_gate.apply(msg, self._ctx())
         headers = broker.retry_later.await_args.kwargs["headers"]
         assert "x-delivery-count" not in headers and "x-acquired-count" not in headers
-        assert headers["x-swarmq-lock-conflict-count"] == 1
+        assert headers[HEADER_LOCK_CONFLICTS] == 1
 
     async def test_conflict_copy_drops_backend_defer_count(self, worker, broker):
         """Das Backend hat geantwortet (Konflikt): die ueberstandene Stoerung
@@ -688,13 +714,13 @@ class TestLockGateOutcomes:
         await worker._lock_gate.apply(msg, self._ctx())
         assert "x-swarmq-backend-defer-count" not in broker.retry_later.await_args.kwargs["headers"]
 
-    async def test_conflict_at_cap_dead_letters_with_diagnostics(self, worker, broker):
+    async def test_wait_limit_dead_letters_with_diagnostics(self, worker, broker):
         worker._lock_manager = MagicMock()
         worker._lock_manager.acquire = AsyncMock(return_value=None)
-        msg = make_message(_default_payload(), headers={"x-swarmq-lock-conflict-count": LOCK_CONFLICT_DLQ_CAP - 1})
+        msg = make_message(_default_payload(), headers=lock_wait_exceeded_headers(worker._config))
         assert await worker._lock_gate.apply(msg, self._ctx()) is Redelivered
         headers = broker.dead_letter.await_args.kwargs["headers"]
-        assert headers["x-swarmq-lock-conflict-count"] == LOCK_CONFLICT_DLQ_CAP
+        assert headers["x-swarmq-lock-name"] == "resource"
         broker.ack.assert_not_awaited()  # dead_letter bestätigt selbst (U8)
 
     async def test_render_error_dead_letters_and_falls_back_to_dlx(self, worker, broker):
@@ -814,15 +840,16 @@ class TestLockGateLogging:
         entry = self._entry(swarmq_logs, "lock_acquire_failed")
         assert entry["error_type"] == "BackendResponseError" and entry["error"] == "WRONGTYPE"
 
-    async def test_conflict_dlq_failure_at_cap_logs_error_fields(self, worker, broker, swarmq_logs):
+    async def test_conflict_dlq_failure_at_wait_limit_logs_error_fields(self, worker, broker, swarmq_logs):
         worker._lock_manager = MagicMock()
         worker._lock_manager.acquire = AsyncMock(return_value=None)
         broker.dead_letter = AsyncMock(side_effect=BrokerConnectionError("down"))
-        msg = make_message(_default_payload(), headers={"x-swarmq-lock-conflict-count": LOCK_CONFLICT_DLQ_CAP - 1})
+        headers = {**lock_wait_exceeded_headers(worker._config), HEADER_LOCK_CONFLICTS: 7}
+        msg = make_message(_default_payload(), headers=headers)
         await worker._lock_gate.apply(msg, self._ctx())
 
         entry = self._entry(swarmq_logs, "lock_conflict_dlq_failed")
-        assert entry["log_level"] == "error" and entry["lock_conflict_count"] == LOCK_CONFLICT_DLQ_CAP
+        assert entry["log_level"] == "error" and entry["lock_conflicts"] == 8
         assert entry["error_type"] == "BrokerConnectionError" and entry["error"] == "down"
         assert "note" in entry
 
@@ -851,3 +878,61 @@ async def test_conflict_copy_of_a_claimed_fire_carries_the_claim_token(broker, b
 
     owner = backend.schedules.claim_fire.await_args.kwargs["owner"]
     assert broker.retry_later.await_args.kwargs["headers"]["x-swarmq-schedfire-claim"] == owner
+
+
+class TestLockWaitLimitTerminal:
+    """BZ-05/BZ-13 (Plan 0.12.0, MR 3, MR 13): Das Ende der Wartezeit laeuft
+    ueber den terminalen Dead-Letter des Workers -- Fehlerergebnis,
+    ``TASK_DLQ`` und Workflow-Fehlmarkierung."""
+
+    _WF_ID = "01890a5d-ac96-774b-bcce-b302099a8057"
+
+    def _worker(self, broker, backend, config):
+        registry = TaskRegistry()
+        registry.register(LockedTask)
+        dlq: list[dict] = []
+        w = Worker(broker=broker, backend=backend, registry=registry, config=config)
+
+        @w._signal_dispatcher.on_signal(Signal.TASK_DLQ)
+        async def _on_dlq(**kwargs):
+            dlq.append(kwargs)
+
+        w._lock_manager = MagicMock()
+        w._lock_manager.acquire = AsyncMock(return_value=None)
+        w._workflow_advancer = MagicMock()
+        w._workflow_advancer.fail = AsyncMock()
+        return w, dlq
+
+    async def test_wait_limit_in_a_workflow_marks_it_failed_and_stores_the_error(self, broker, backend, config):
+        from swarmq.headers import HEADER_WORKFLOW_ID, HEADER_WORKFLOW_STEP
+
+        w, dlq = self._worker(broker, backend, config)
+        msg = make_message(
+            _default_payload(task_id="cap-1", name="locked", args=[], kwargs={}),
+            headers={
+                **lock_wait_exceeded_headers(config),
+                HEADER_WORKFLOW_ID: self._WF_ID, HEADER_WORKFLOW_STEP: "/0",
+            },
+        )
+
+        await w._handle_message(msg)
+
+        w._workflow_advancer.fail.assert_awaited_once()
+        assert w._workflow_advancer.fail.await_args.args[0] == self._WF_ID
+        assert [c.args[0] for c in backend.store_result.await_args_list] == ["cap-1"]
+        assert [d["task_id"] for d in dlq] == ["cap-1"]
+        headers = broker.dead_letter.await_args.kwargs["headers"]
+        assert headers["x-swarmq-lock-name"] == "resource"
+        assert "lock wait limit reached" in headers["x-swarmq-traceback"]
+
+    async def test_wait_limit_reports_lock_wait_exceeded_error_type(self, broker, backend, config, swarmq_logs):
+        w, _dlq = self._worker(broker, backend, config)
+        msg = make_message(
+            _default_payload(task_id="cap-2", name="locked", args=[], kwargs={}),
+            headers=lock_wait_exceeded_headers(config),
+        )
+
+        await w._handle_message(msg)
+
+        [entry] = [e for e in swarmq_logs if e["event"] == "task_sent_to_dlq"]
+        assert entry["error_type"] == "LockWaitExceeded"

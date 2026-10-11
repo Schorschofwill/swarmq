@@ -47,19 +47,32 @@ means the feature is not active.
 | `x-swarmq-schedfire-claim` | `string` (comma-separated tokens) | Worker (copy of a schedule fire) | Owner tokens of the fire's in-flight claim, newest first, at most 16: the token of the delivery this copy came from, followed by the tokens that delivery was offered (a claim whose reply was lost may hold any of them). The copy takes a claim held by one of these tokens over instead of treating it as a duplicate. Set on deferral, retry, rate-limit and lock copies and on the copy that replaces a requeue when releasing the claim failed; a requeue in place (`nack`) never carries it. The worker reads at most 16 tokens. |
 | `x-swarmq-backend-defer-count` | `int` | Worker (backend deferral) | How often a check before execution deferred this message because the backend was unreachable; sets the next wait. Not a retry count. Copies made after the backend answered (retry, rate-limit hit, lock conflict) do not carry it, and the count starts over when the delivery carries a broker counter (`x-delivery-count`/`x-acquired-count` above 0, i.e. the broker handed the message back). |
 | `x-swarmq-guard-defer-count` | `int` | Worker (execution guard) | How often the [execution guard](../../explanation/delivery-semantics.md#execution-guard) deferred this message because the same execution ran elsewhere; sets the next wait. Not a retry count. |
-| `x-swarmq-replay-id` | `string` (hex, at most 64 characters) | `swarmq dlq retry` | New on every DLQ replay. The execution identity is the task id plus this id, so a deliberate replay runs even while the done marker of the first run exists. A longer or non-string value is ignored. |
+| `x-swarmq-unknown-since` | `int` (Unix milliseconds) | Worker (unregistered task) | First contact with a task name the worker does not register; the grace period `SWARMQ_UNKNOWN_TASK_GRACE_S` is measured from it. Kept on every deferral copy the worker makes before execution; removed on a retry copy, at dead-lettering and by `dlq retry`. |
+| `x-swarmq-replay-id` | `string` (hex, at most 64 characters) | Worker (dead-lettering), `swarmq dlq retry` | Part of the [execution identity](../../explanation/delivery-semantics.md#execution-guard), so a deliberate replay runs even while the done marker of the first run exists. The worker stamps the id of the next generation on the DLQ copy (`"g"` plus 39 hex characters, derived from the current identity, the same for two copies of one execution); `dlq retry` keeps it when `x-swarmq-dlq-gen` matches `x-swarmq-dead-lettered-at` and sets a fresh `uuid4` otherwise (0.11 worker, old stock). A longer or non-string value is ignored. |
+| `x-swarmq-xdeath-base` | `int` | Worker (every copy), `swarmq dlq retry` | Number of broker dead-letterings outside the delay queues the copy inherited: the `count` values of `x-death` whose queue is neither `{queue}.DQ` nor a delay tier, plus the previous base. Set because the broker rebuilds `x-death` on the next dead-lettering; absent means 0. The execution identity is `task_id|<replay id>#<base plus current x-death>`, without the suffix when the number is 0. |
+| `x-swarmq-dlq-gen` | `int` (Unix milliseconds) | Worker (dead-lettering) | The value of `x-swarmq-dead-lettered-at` of the stamp that set `x-swarmq-replay-id`. `dlq retry` keeps the replay id only while both are equal and removes this header. |
 | `x-swarmq-dead-lettered-at` | `int` (Unix milliseconds) | Worker (dead-lettering), `swarmq dlq` (old stock on first read) | When the message was dead-lettered; the `dlq` commands compute the remaining retention from it. Milliseconds because AMQP tables encode floats only in single precision. Removed by `dlq retry`. Messages the worker dead-letters also carry the property `expiration` (the retention, `SWARMQ_DEAD_LETTER_TTL_S`), unless the retention is `none`. |
 | `x-swarmq-dead-letter-ttl-ms` | `int` (milliseconds) or `"none"` | Worker (dead-lettering), `swarmq dlq` (on first read when it is missing) | The retention the message was dead-lettered with; `"none"` means unlimited. The `dlq` commands compute the remaining retention from it, not from their own `SWARMQ_DEAD_LETTER_TTL_S`. Removed by `dlq retry`. |
 | `x-swarmq-lock-render-error` | `string` | Worker (lock render failure) | Why the lock template could not be rendered; the message is DLQ-routed. |
-| `x-swarmq-lock-conflict-count` | `int` | Worker (lock conflict) | Conflicts so far; at 10 the message is DLQ-routed. |
+| `x-swarmq-lock-conflict-count` | `int` | 0.11 worker (lock conflict) | Legacy counter: a 0.11 worker raises it and dead-letters at 10. 0.12 neither raises nor reads it; copies carry it unchanged. |
+| `x-swarmq-lock-conflicts` | `int` | Worker (lock conflict) | Lock conflicts of this message so far; the `lock_conflict_count` of `TASK_LOCKED`. |
+| `x-swarmq-lock-wait-since` | `int` (Unix milliseconds) | Worker (lock conflict) | First lock conflict; `SWARMQ_LOCK_WAIT_MAX_S` is measured from it. |
+| `x-swarmq-lock-holder` | `string` | Worker (lock conflict) | Fingerprint of the lock's holders (the set of owners) at the last change of holder. |
+| `x-swarmq-lock-holder-since` | `int` (Unix milliseconds) | Worker (lock conflict) | When the worker last saw the holders change. |
+| `x-swarmq-lock-holder-ttl-ms` | `int` (milliseconds) | Worker (lock conflict) | Remaining TTL of the lock key at that change; a holder that keeps the lock longer than this plus 60 s counts as stalled. |
+| `x-swarmq-lock-wait-gen` | `str` (`"<retry count>:<replay ID>"`) | Worker (lock conflict) | Execution the wait belongs to. A message whose retry count or replay ID differs (a copy that a 0.11 worker made of a later execution) starts a new wait. The six lock headers stay on every deferral copy a worker makes before execution and are removed on a retry copy, at dead-lettering and by `dlq retry`; a copy of a message the broker redelivered drops them as well. |
 | `x-swarmq-lock-name` | `string` | Worker (lock conflict) | Rendered lock name the conflicts refer to. |
 | `x-swarmq-rate-limit-count` | `int` | Worker (rate limit) | How often the message bounced off its rate limit. |
 | `x-swarmq-workflow-id` | `string` | Client / Worker | Workflow the message belongs to (workflow steps only). |
 | `x-swarmq-workflow-step` | `string` | Client / Worker | Step path inside the workflow (workflow steps only). |
-| `x-delivery-count`, `x-acquired-count` | `int` | RabbitMQ (quorum queues) | Broker delivery counters; the worker checks `x-delivery-count` against `SWARMQ_DELIVERY_LIMIT`. Every copy SwarmQ publishes (retry, deferral, rate-limit, lock) drops them, so the copy is a new message with its own delivery budget. |
-| `x-death` | `array` | RabbitMQ | Broker-native DLX audit trail. |
+| `x-delivery-count`, `x-acquired-count` | `int` | RabbitMQ (quorum queues) | Broker delivery counters; the worker checks both against the [effective delivery limit](../../explanation/delivery-semantics.md#effective-delivery-limit) (the smaller of `SWARMQ_DELIVERY_LIMIT` and the queue's `x-delivery-limit`; RabbitMQ 4.3 counts a requeue only in `x-acquired-count`). Every copy SwarmQ publishes (retry, deferral, rate-limit, lock, DLQ reads by `swarmq dlq`) drops them, so the copy is a new message with its own delivery budget. |
+| `x-death` | `array` | RabbitMQ | Broker-native DLX audit trail. Every copy SwarmQ publishes drops it after moving its count into `x-swarmq-xdeath-base`. |
 
 ## Task result (Valkey)
+
+Keys below are written without the optional namespace prefix: with
+`SWARMQ_NAMESPACE` set, every key and channel starts with
+`<namespace>:sq:` instead of `sq:`.
 
 Stored at `sq:result:{task_id}`, encoded with msgpack, TTL equal to
 the resolved `result_ttl`.
@@ -129,8 +142,9 @@ malformed and returned as `None`.
 
 ## Scheduler entry
 
-Stored in the Valkey ZSET `sq:sched:fire` (score = fire timestamp
-in ms) with the definition at `sq:sched:defs:{name}`.
+Stored in the Valkey ZSET `sq:{sched}:zset` (member = schedule name,
+score = fire timestamp in ms) with the definition in the HASH
+`sq:{sched}:defs` (field = schedule name).
 
 ```jsonc
 {
@@ -156,11 +170,19 @@ in ms) with the definition at `sq:sched:defs:{name}`.
 | `kwargs` | `object<any>` | Keyword args at fire time. |
 | `queue` | `string` | Override for `TaskInfo.queues[0]`. |
 | `cron` | `string \| null` | 5-field cron; `null` for one-shot schedules. |
-| `fire_ts_ms` | `int` | Next fire time. |
-| `source` | `string` | `"cli"`, `"cli_unique"`, `"python"`, etc. |
+| `fire_ts_ms` | `int \| null` | Next fire time. |
+| `source` | `string` | `"static"` (cron defined in code), `"cli"` or `"cli_unique"` (CLI schedules and one-shots). |
+| `disabled` | `bool` | `true` after `schedule remove` (without `--permanent`). |
+| `last_fire_at` | `int \| null` | Unix ms of the last fire. |
 | `dedup_hash` | `string \| null` | SHA-256 hex when dedup is armed. |
 | `unique_until` | `"start" \| "completion"` | Dedup release mode. |
-| `disabled` | `bool` | `true` after `schedule remove` (without `--permanent`). |
+| `timezone` | `string \| null` | IANA zone of `cron`; `null` means UTC. |
+| `task_id` | `string \| null` | Since 0.12: the ID `schedule(delay=\|eta=)` returned; a one-shot fires under it. `null` for crons. |
+| `unroutable_since` | `int \| null` | Since 0.12: Unix ms of the first fire of a one-shot whose queue did not exist. |
+| `unique_for` | `int \| null` | Since 0.12: `TaskInfo.unique_for` of a cron, reported by the worker. |
+
+Fields added later come at the end with a `null` default, so entries
+written by older versions still decode.
 
 ## DLQ envelope
 
@@ -175,10 +197,9 @@ json` return envelopes of this shape:
     {
       "task_id": "01HV...",
       "task_name": "send_email",
-      "queue": "emails.XQ",
-      "body_size": 312,
+      "queue": "emails",
       "headers": {"x-swarmq-retry-count": 3, "x-swarmq-traceback": "..."},
-      "body": {"task": {...}, "args": [], "kwargs": {...}}
+      "body_size": 312
     }
   ],
   "scanned": 1,
@@ -198,12 +219,18 @@ Found:
   "scanned": 17,
   "task_id": "01HV...",
   "task_name": "send_email",
-  "queue": "emails.XQ",
-  "body_size": 312,
+  "queue": "emails",
   "headers": { ... },
-  "body": { ... }
+  "body": {"task": {...}, "args": [], "kwargs": {...}},
+  "body_raw": "{\"task\": ...}",
+  "body_size": 312
 }
 ```
+
+`queue` is the main queue; the messages are read from `{queue}.XQ`.
+`dlq list` carries no body (use `dlq inspect`). `body` is the decoded
+task body, `null` when it is not a JSON object; `body_raw` is the body as
+UTF-8 text (invalid bytes replaced).
 
 Not found (exit code `3`):
 
@@ -253,8 +280,11 @@ Single task_id:
 
 ## Cancel flag
 
-Stored at `sq:cancel:{task_id}` in Valkey with TTL
-`result_ttl × 1000` ms. The value is a fixed marker string —
+Stored at `sq:cancel:{task_id}` in Valkey with a TTL of
+`max(24 h, result_ttl)`, plus the wait until a deferred task fires and
+its `max_age` + 300 s when the client's registry knows the task. Once
+the worker has handled the cancelled delivery it shortens the TTL to
+at most 1 h (`PEXPIRE … LT`) instead of deleting the key. The value is a fixed marker string —
 presence is the signal.
 
 | Key shape | Type | Semantics |

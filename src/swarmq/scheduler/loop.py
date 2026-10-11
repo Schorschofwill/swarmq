@@ -19,9 +19,7 @@ from swarmq.config import SwarmQConfig
 from swarmq.exceptions import BackendConnectionError
 from swarmq.locking import SCHEDULER_LOCK_NAME
 from swarmq.logging import _error_fields, get_logger
-from swarmq.serialization import compute_dedup_hash, encode_json
 from swarmq.signals import Signal, SignalDispatcher
-from swarmq.task import Task, TaskInfo
 
 if TYPE_CHECKING:
     from swarmq.contracts import Publisher
@@ -29,12 +27,19 @@ if TYPE_CHECKING:
 
 from swarmq.contracts.coordination import LockToken
 from swarmq.contracts.coordination import ScheduleStore as ContractScheduleStore
-from swarmq.scheduler.definition import ScheduleDefinition, ScheduleStore, make_schedfire_key
+from swarmq.scheduler.definition import ScheduleDefinition, ScheduleStore
+from swarmq.scheduler.epoch import SchedulerEpoch
+from swarmq.scheduler.fire import SchedulerFire
 from swarmq.scheduler.fire_plan import SchedulerFirePlan
 from swarmq.scheduler.leader_version import LeaderVersionWatch, SchedulerLeaderVersion, swarmq_version
+from swarmq.scheduler.orphaned_queues import SchedulerOrphanedQueues
 from swarmq.scheduler.prune import SchedulerCronPrune
 from swarmq.scheduler.reports import cron_fingerprint, live_window_ms
+from swarmq.scheduler.stepdown import SchedulerStepdown
 from swarmq.scheduler.sync import SchedulerCronSync
+from swarmq.scheduler.unowned import SchedulerUnowned
+from swarmq.scheduler.unroutable import SchedulerUnroutable
+from swarmq.scheduler.valkey_watch import SchedulerValkeyWatch
 
 logger = get_logger(__name__)
 
@@ -74,7 +79,19 @@ def _make_owner_token() -> str:
     return f"{host}:{pid}:{suffix}"
 
 
-class SchedulerLoop(SchedulerCronSync, SchedulerCronPrune, SchedulerLeaderVersion, SchedulerFirePlan):
+class SchedulerLoop(
+    SchedulerCronSync,
+    SchedulerCronPrune,
+    SchedulerLeaderVersion,
+    SchedulerFirePlan,
+    SchedulerUnroutable,
+    SchedulerUnowned,
+    SchedulerFire,
+    SchedulerStepdown,
+    SchedulerEpoch,
+    SchedulerValkeyWatch,
+    SchedulerOrphanedQueues,
+):
     """Embedded scheduler — one instance per worker.
 
     Runs four cooperating coroutines:
@@ -118,6 +135,7 @@ class SchedulerLoop(SchedulerCronSync, SchedulerCronPrune, SchedulerLeaderVersio
         worker_id: str | None = None,
         static_crons: Sequence[ScheduleDefinition] = (),
         version: str | None = None,
+        consumed_queues: Sequence[str] = (),
     ) -> None:
         self._backend = backend
         self._broker = broker
@@ -135,11 +153,19 @@ class SchedulerLoop(SchedulerCronSync, SchedulerCronPrune, SchedulerLeaderVersio
         # Statische Crons dieses Workers (eigene Registry, Zone aufgelöst);
         # gemeldet beim Start und danach im Meldetakt (KTD10).
         self._static_crons = tuple(static_crons)
+        # Konsumierte Queues dieses Workers, gemeldet im Meldetakt (BZ-14).
+        self._consumed_queues = tuple(consumed_queues)
         # swarmq-Version dieses Workers (KTD11), Default aus den Metadaten.
         self._version = version or swarmq_version()
         self._leader_watch = LeaderVersionWatch()
+        # Zuletzt gesehener Leader (Standby), für dessen Handover-Marker.
+        self._last_seen_leader: str | None = None
+        # Drossel der Unroutable-Logs je Schedule (BZ-03, ``unroutable.py``).
+        self._unroutable_logged_at: dict[str, float] = {}
 
         self._state: _SchedulerState = "standby"
+        # Ruecktritt nach Publish-Fehlern (BZ-10, ``stepdown.py``).
+        self._init_stepdown()
         self._prev_leader_seen = False
         """Set to True when election sees the lock held by *someone*
         (acquire returned False). Used together with the
@@ -308,6 +334,9 @@ class SchedulerLoop(SchedulerCronSync, SchedulerCronPrune, SchedulerLeaderVersio
         except Exception as exc:
             # Der Worker arbeitet weiter; der nächste Takt meldet erneut.
             logger.warning("scheduler_cron_report_failed", **_error_fields(exc))
+        await self._report_queues()
+        # BZ-04: jeder Loop kennt den Epoch, auch ein späterer Leader.
+        await self._observe_epoch()
 
     async def _adopt_loop(self) -> None:
         """Leader-Takt der Übernahme (KTD10): sofort nach dem Erwerb der
@@ -319,6 +348,9 @@ class SchedulerLoop(SchedulerCronSync, SchedulerCronPrune, SchedulerLeaderVersio
                     await asyncio.wait_for(self._adopt_now.wait(), timeout=interval)
                 except TimeoutError:
                     pass
+                # Uebernahme-Takt direkt nach dem Erwerb: keine Queue-Pruefung
+                # (BZ-14), der eigene Worker startet meist noch (Consumer).
+                takeover = self._adopt_now.is_set()
                 self._adopt_now.clear()
                 if self._state == "leader":
                     try:
@@ -328,6 +360,13 @@ class SchedulerLoop(SchedulerCronSync, SchedulerCronPrune, SchedulerLeaderVersio
                         logger.warning(
                             "scheduler_cron_adopt_failed", **_error_fields(exc)
                         )
+                    finally:
+                        # BZ-11: der Poll wartet nur auf den ersten Versuch
+                        # der Amtszeit, nicht auf dessen Gelingen (fail-open).
+                        self._note_adopt_ran()
+                    # BZ-14: ausserhalb des Fire-Locks, mit eigenem Zeitlimit.
+                    if not takeover:
+                        await self.check_orphaned_queues()
         except asyncio.CancelledError:
             return
 
@@ -396,6 +435,8 @@ class SchedulerLoop(SchedulerCronSync, SchedulerCronPrune, SchedulerLeaderVersio
             return
 
         # state == "standby"
+        if self._in_stepdown_cooldown():
+            return
         try:
             acquired = (
                 await self._lock_manager.acquire(
@@ -417,15 +458,23 @@ class SchedulerLoop(SchedulerCronSync, SchedulerCronPrune, SchedulerLeaderVersio
 
         # Acquired the lock — decide which signal to emit.
         try:
-            had_handover = (
-                await self._backend.schedules.take_handover_marker()
-            )
+            had_handover = await self._take_handover_marker()
         except BackendConnectionError as exc:
             logger.warning(
                 "scheduler_handover_marker_read_failed", **_error_fields(exc)
             )
             had_handover = False
 
+        # BZ-07: die Übernahme (Handover-Marker) kann dauern; direkt danach
+        # verlängern, damit das Lock nicht vor der ersten Verlängerung abläuft.
+        if not await self._renew_after_takeover():
+            logger.warning("scheduler_lock_lost")
+            self._prev_leader_seen = True
+            return
+
+        # BZ-11: neue Amtszeit -- die Meldungen der alten gelten nicht mehr.
+        self._begin_term(int(self._wall_time() * 1000))
+        self._reset_publish_stepdown()
         self._state = "leader"
         self._renew_failures = 0  # fresh term, fresh renew budget
         await self._write_leader_version()
@@ -438,6 +487,23 @@ class SchedulerLoop(SchedulerCronSync, SchedulerCronPrune, SchedulerLeaderVersio
         # KTD10: die Cron-Meldungen aller Worker sofort übernehmen, nicht erst
         # nach einem Meldetakt.
         self._adopt_now.set()
+
+    async def _take_handover_marker(self) -> bool:
+        """Ohne gesehenen Vorgänger ohne Argument (älterer Vertrag)."""
+        schedules: ContractScheduleStore = self._backend.schedules
+        if self._last_seen_leader is None:
+            return await schedules.take_handover_marker()
+        return await schedules.take_handover_marker(previous_owner=self._last_seen_leader)
+
+    async def _renew_after_takeover(self) -> bool:
+        """``False`` nur, wenn das Lock beobachtbar weg ist. Ein Fehler beim
+        Verlängern kostet die frisch erworbene Rolle nicht; die folgenden
+        Wahl-Takte entscheiden wie bei jeder Verlängerung."""
+        try:
+            return await self._lock_manager.renew(self._lock_token, int(self._config.scheduler_lock_ttl * 1000))
+        except BackendConnectionError as exc:
+            logger.warning("scheduler_renew_error", **_error_fields(exc))
+            return True
 
     # ---- poll loop ------------------------------------------------------
 
@@ -461,8 +527,11 @@ class SchedulerLoop(SchedulerCronSync, SchedulerCronPrune, SchedulerLeaderVersio
 
     async def _poll_tick(self) -> None:
         now_ms = int(time.time() * 1000)
+        if not self._poll_may_fire(now_ms):
+            # BZ-11: direkt nach dem Erwerb erst die Meldungen abwarten.
+            return
         try:
-            due = await self._store.poll_due(now_ms, limit=100)
+            due = await self._store.poll_due(now_ms, limit=100, owner_token=self._owner_token)
         except BackendConnectionError as exc:
             logger.warning("scheduler_poll_due_failed", **_error_fields(exc))
             return
@@ -475,217 +544,22 @@ class SchedulerLoop(SchedulerCronSync, SchedulerCronPrune, SchedulerLeaderVersio
                 return
             if definition.disabled:
                 continue
+            if self._is_unowned(schedule_name, definition):
+                await self._hold_unowned(schedule_name, score_ms, definition, now_ms)
+                continue
+            await self._release_unowned(schedule_name, task_name=definition.task_name)
             await self._fire_one(schedule_name, score_ms, definition)
 
-    async def _fire_one(
-        self,
-        schedule_name: str,
-        score_ms: int,
-        definition: ScheduleDefinition,
-    ) -> None:
-        # Use the authoritative zset score, not definition.fire_ts_ms
-        # (Unit 7). The two can diverge briefly during a static-
-        # cron update where update_static_schedule writes a new
-        # fire_ts_ms into defs before the ZADD lands, or if an operator
-        # hand-edits the zset. The dedup key must match what will
-        # actually be published so a redelivered message hits the
-        # same SETNX cell.
-        schedfire_key = make_schedfire_key(schedule_name, score_ms)
-
-        now_ms = int(time.time() * 1000)
-        next_fire_ts_ms = self._plan_next_fire(schedule_name, definition, now_ms)
-        if next_fire_ts_ms is None:
-            await self._park_unplannable(schedule_name, score_ms, definition)
-            return
-
-        # Build the task message body — same shape as Client.schedule.
-        task_id = str(uuid.uuid7())
-        body = encode_json({
-            "task": {
-                "id": task_id,
-                "queue": definition.queue,
-                "name": definition.task_name,
-            },
-            "args": list(definition.args),
-            "kwargs": definition.kwargs,
-        })
-
-        # --- R3.5 Unit 9: pre-publish SETNX for static crons, header
-        # propagation for client-originated deferred (cli_unique) ---
-        # Stamp HEADER_ENQUEUED_AT so R4.4 max_age
-        # works for scheduler-fired tasks (cron + delay + eta). Without
-        # this the worker's _check_max_age_expired saw no header and
-        # treated every scheduled message as non-expiring.
-        headers: dict[str, Any] = {
-            "x-swarmq-schedfire": schedfire_key,
-            "x-swarmq-enqueued-at": int(time.time()),
-        }
-        dup_detected = False
-
-        if definition.source == "cli_unique" and definition.dedup_hash:
-            # Client already SETNX'd this task at schedule(delay=/eta=) time.
-            # Propagate the hash + intended mode so the worker releases
-            # at the right point. unique_until is persisted on the
-            # definition so post-deploy TaskInfo
-            # changes cannot silently flip release semantics.
-            headers["x-swarmq-unique-hash"] = definition.dedup_hash
-            headers["x-swarmq-unique-until"] = definition.unique_until
-        else:
-            # Static cron or plain CLI — resolve TaskInfo and SETNX here.
-            task_info = self._resolve_task_info(definition.task_name)
-            if task_info is None and schedule_name not in self._reported_names:
-                # A schedule whose task was renamed or
-                # removed previously published into the void with no
-                # trace. Warn-only, deliberately NOT a skip: in multi-
-                # module deployments the task may live in ANOTHER
-                # worker's registry — a hard skip would break those.
-                # Crons a live worker reports (U12, KTD10) belong to such
-                # a registry and therefore do not warn.
-                logger.warning(
-                    "scheduler_task_not_in_local_registry",
-                    schedule_name=schedule_name,
-                    task_name=definition.task_name,
-                    hint=(
-                        "the leader's registry does not know this task; "
-                        "if no other worker fleet registers it, the "
-                        "message lands unconsumed — remove the schedule "
-                        "or fix the task name"
-                    ),
-                )
-            if task_info is not None and task_info.unique_for is not None:
-                dedup_hash = compute_dedup_hash(
-                    definition.task_name,
-                    tuple(definition.args),
-                    dict(definition.kwargs),
-                )
-                try:
-                    existing = await self._backend.claim_unique(
-                        dedup_hash, task_id, task_info.unique_for * 1000,
-                        op_timeout=self._config.backend_op_timeout,
-                    )
-                except BackendConnectionError as exc:
-                    logger.warning(
-                        "scheduler_unique_setnx_failed",
-                        schedule_name=schedule_name,
-                        **_error_fields(exc),
-                    )
-                    return  # Retry on next poll; commit not called.
-
-                if existing is not None:
-                    await self._emit_duplicate_detected(
-                        existing_task_id=existing,
-                        task_name=definition.task_name,
-                        dedup_hash=dedup_hash,
-                    )
-                    logger.info(
-                        "dedup_detected",
-                        existing_task_id=existing,
-                        task_name=definition.task_name,
-                        dedup_hash=dedup_hash,
-                        source="scheduler.fire",
-                    )
-                    dup_detected = True
-                else:
-                    headers["x-swarmq-unique-hash"] = dedup_hash
-                    headers["x-swarmq-unique-until"] = task_info.unique_until
-
-        if not dup_detected:
-            try:
-                await self._broker.publish(
-                    definition.queue, body, headers=headers,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "scheduler_publish_failed",
-                    schedule_name=schedule_name,
-                    **_error_fields(exc),
-                )
-                return  # Do NOT commit — retry on the next poll tick.
-
-        # The commit runs even on dup-skip: commit_fire MUST advance the
-        # zset (otherwise the same schedule re-fires on every poll tick
-        # forever — see plan Unit 9 Risks "Double-SETNX-Race"
-        # commit-on-fail rationale).
-        updated_def = await self._advanced_definition(
-            schedule_name, score_ms, definition, next_fire_ts_ms, now_ms,
-        )
-
-        # fired_ts_ms: the commit only lands while the zset still holds the
-        # score we fired. A `schedule remove` (disable/permanent) or a
-        # re-plan that raced this fire keeps its change instead of being
-        # overwritten with the pre-poll definition (0.9.0).
-        try:
-            committed = await self._store.commit_fire(
-                schedule_name,
-                next_fire_ts_ms,
-                updated_def,
-                self._owner_token,
-                fired_ts_ms=score_ms,
-            )
-        except BackendConnectionError as exc:
-            logger.warning(
-                "scheduler_commit_failed",
-                schedule_name=schedule_name,
-                **_error_fields(exc),
-                dup_detected=dup_detected,
-            )
-            # On dup: next poll will re-observe the same score and re-emit
-            # the dup signal. Self-heals when Valkey recovers — signal
-            # noise is the accepted v1 trade-off for operator simplicity.
-            return
-
-        if not committed:
-            # Owner-check rejected — we lost the lock between publish and
-            # commit. The new leader will handle the next poll.
-            logger.warning(
-                "scheduler_commit_owner_mismatch",
-                schedule_name=schedule_name,
-            )
-            self._state = "standby"
-
-    def _resolve_task_info(self, task_name: str) -> TaskInfo | None:
-        """Find the registered TaskInfo for *task_name* (R3.5 Unit 9).
-
-        Scheduler has no direct registry reference — it walks the global
-        ``Task._registered_tasks`` list. Linear scan is O(n); with n
-        typically < 100 tasks this is well below the per-fire
-        ScheduleStore + broker round-trip cost, so no index is introduced.
-        """
-        for task_class in Task._registered_tasks:
-            ti: TaskInfo | None = getattr(task_class, "task_info", None)
-            if ti is not None and ti.name == task_name:
-                return ti
-        return None
-
-    async def _emit_duplicate_detected(
-        self,
-        *,
-        existing_task_id: str,
-        task_name: str,
-        dedup_hash: str,
-    ) -> None:
-        """Dispatch TASK_DUPLICATE_DETECTED with source='scheduler.fire'.
-
-        Wrapped here because :meth:`_emit` is specialised for
-        scheduler-state signals (accepts only ``worker_id``). Handler
-        exceptions are swallowed via the same SignalDispatcher contract.
-        """
-        try:
-            await self._signals.dispatch(
-                Signal.TASK_DUPLICATE_DETECTED,
-                existing_task_id=existing_task_id,
-                task_name=task_name,
-                dedup_hash=dedup_hash,
-                source="scheduler.fire",
-            )
-        except Exception as exc:
-            logger.warning(
-                "scheduler_duplicate_signal_dispatch_error",
-                task_name=task_name,
-                **_error_fields(exc),
-            )
-
     # ---- helpers --------------------------------------------------------
+
+    def _wall_time(self) -> float:
+        """Wanduhr fuer ``fire.py``; liest ``time`` dieses Moduls (Q17)."""
+        return time.time()
+
+    @property
+    def _log(self) -> Any:
+        """Logger fuer ``fire.py``: Name und Patch-Pfad bleiben ``swarmq.scheduler.loop`` (Q17)."""
+        return logger
 
     async def _sleep_until_stop(self, seconds: float) -> None:
         """Sleep for *seconds*, but short-circuit on stop."""

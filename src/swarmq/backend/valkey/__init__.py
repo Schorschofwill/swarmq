@@ -20,12 +20,7 @@ from swarmq.backend.valkey.execution_guard import ValkeyExecutionGuardStore
 from swarmq.backend.valkey.locks import ValkeyLockStore
 from swarmq.backend.valkey.rate_limit import ValkeyRateLimitStore
 from swarmq.backend.valkey.results import ValkeyResults
-from swarmq.backend.valkey.schedules import (
-    ValkeyScheduleStore,
-    fired_key,
-    handover_key,
-    inflight_key,
-)
+from swarmq.backend.valkey.schedules import ValkeyScheduleStore
 from swarmq.locking import SCHEDULER_LOCK_NAME
 
 
@@ -43,36 +38,47 @@ class ValkeyBackend(ValkeyResults):
     @property
     def locks(self) -> ValkeyLockStore:
         if self._locks is None:
-            self._locks = ValkeyLockStore(self.client)
+            self._locks = ValkeyLockStore(self.client, keys=self._keys)
         return self._locks
 
     @property
     def rate_limit(self) -> ValkeyRateLimitStore:
         if self._rate_limit is None:
-            self._rate_limit = ValkeyRateLimitStore(self.client)
+            self._rate_limit = ValkeyRateLimitStore(self.client, keys=self._keys)
         return self._rate_limit
 
     @property
     def chords(self) -> ChordManager:
         if self._chords is None:
-            self._chords = ChordManager(self.client)
+            self._chords = ChordManager(self.client, keys=self._keys)
         return self._chords
 
     @property
     def schedules(self) -> ValkeyScheduleStore:
         if self._schedules is None:
-            self._schedules = ValkeyScheduleStore(self.client)
+            self._schedules = ValkeyScheduleStore(self.client, keys=self._keys)
         return self._schedules
 
     @property
     def execution_guard(self) -> ValkeyExecutionGuardStore:
         if self._execution_guard is None:
-            self._execution_guard = ValkeyExecutionGuardStore(self.client)
+            self._execution_guard = ValkeyExecutionGuardStore(self.client, keys=self._keys)
         return self._execution_guard
 
     async def close(self) -> None:
         await super().close()
         # Die Stores halten den alten Client; nach close() neu aufbauen.
+        self._drop_stores()
+
+    def reconcile_namespace(self, configured: str | None) -> str | None:
+        keys = self._keys
+        effective = super().reconcile_namespace(configured)
+        if self._keys is not keys:
+            # Die Stores halten den alten KeySpace (Review MR 15, P1-1).
+            self._drop_stores()
+        return effective
+
+    def _drop_stores(self) -> None:
         self._locks = self._rate_limit = self._chords = self._schedules = None
         self._execution_guard = None
 
@@ -83,13 +89,13 @@ class ValkeyBackend(ValkeyResults):
 
 
     def _sched_fired_key(self, schedfire_key: str) -> str:
-        return fired_key(schedfire_key)
+        return self._keys.sched_fired(schedfire_key)
 
     def _sched_inflight_key(self, schedfire_key: str) -> str:
-        return inflight_key(schedfire_key)
+        return self._keys.sched_inflight(schedfire_key)
 
     def _sched_handover_key(self, owner_token: str) -> str:
-        return handover_key(owner_token)
+        return self._keys.sched_handover(owner_token)
 
 
 

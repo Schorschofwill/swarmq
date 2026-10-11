@@ -17,10 +17,17 @@ Metrics (plan §R5.1):
 - ``swarmq_tasks_rejected_total{queue,reason}`` — counter
   (outcome: completed | failed | cancelled | expired | rate_limited
   | dlq | duplicate)
+- ``swarmq_tasks_unknown_deferred_total{queue}`` — counter of messages
+  deferred because the worker does not register the task (BZ-06)
 - ``swarmq_task_duration_seconds{task_name,queue}`` — histogram
 - ``swarmq_tasks_active{queue}`` — gauge of in-flight tasks per queue
-- ``swarmq_queue_depth{queue,kind}`` — gauge (kind: main | delay | dlq)
-  sampled by the worker on a schedule; the exporter reads it.
+- ``swarmq_queue_depth{queue,kind}`` — gauge (kind: pending = main queue
+  plus all delay queues, delayed = delay queues only) sampled by the
+  worker on a schedule; the exporter reads it.
+- ``swarmq_delay_tiers_unavailable{queue}`` — gauge of delay tiers the
+  broker refused to declare (their delays fall back to ``{queue}.DQ``)
+- ``swarmq_scheduler_crons_held{worker_id}`` — gauge of static crons the
+  leader holds because no live worker reports them (BZ-11)
 - ``swarmq_worker_uptime_seconds{worker_id}`` — gauge
 - ``swarmq_retries_total{task_name,queue}`` — counter
 - ``swarmq_dlq_messages{queue}`` — gauge (live DLQ depth)
@@ -88,6 +95,7 @@ class _NoopMetric:
     def inc(self, _amount: float = 1.0) -> None: pass
     def dec(self, _amount: float = 1.0) -> None: pass
     def set(self, _value: float) -> None: pass
+    def remove(self, *_labelvalues: Any) -> None: pass
     def observe(self, _value: float) -> None: pass
 
 
@@ -212,11 +220,30 @@ class Metrics:
                 labelnames=("schedule_name",),
                 registry=self.registry,
             )
+            self.scheduler_fires_unroutable_total: Counter | _NoopMetric = Counter(
+                f"{namespace}_scheduler_fires_unroutable_total",
+                (
+                    "Scheduler fires the broker returned as unroutable (no queue "
+                    "with this name): kind=cron_lost or oneshot_dropped"
+                ),
+                labelnames=("queue", "kind"),
+                registry=self.registry,
+            )
             self.scheduler_leader_outdated: Gauge | _NoopMetric = Gauge(
                 f"{namespace}_scheduler_leader_outdated",
                 (
                     "1 while this worker sees a scheduler leader running a "
-                    "swarmq before 0.10 without timezone support, else 0"
+                    "swarmq before 0.12 (minimum leader version), else 0"
+                ),
+                labelnames=("worker_id",),
+                registry=self.registry,
+            )
+            # Plan 0.12.0, MR 11 (BZ-11): vom Leader zurueckgehaltene Crons.
+            self.scheduler_crons_held: Gauge | _NoopMetric = Gauge(
+                f"{namespace}_scheduler_crons_held",
+                (
+                    "Static crons the scheduler leader holds because no live worker "
+                    "reports them and it does not register them itself"
                 ),
                 labelnames=("worker_id",),
                 registry=self.registry,
@@ -239,6 +266,68 @@ class Metrics:
                 labelnames=("event",),
                 registry=self.registry,
             )
+            # Plan 0.12.0, MR 10 (BZ-01): vom Broker abgelehnte Delay-Stufen
+            # je Queue; deren Rueckstellungen gehen an ``{queue}.DQ``.
+            self.delay_tiers_unavailable: Gauge | _NoopMetric = Gauge(
+                f"{namespace}_delay_tiers_unavailable",
+                "Delay tiers the broker refused to declare; their delays use the .DQ",
+                labelnames=("queue",),
+                registry=self.registry,
+            )
+            # Plan 0.12.0, MR 11 (BZ-06): Rueckstellungen unbekannter Tasks
+            # innerhalb der Gnadenfrist (Rolling Deploy).
+            self.tasks_unknown_deferred_total: Counter | _NoopMetric = Counter(
+                f"{namespace}_tasks_unknown_deferred_total",
+                "Messages deferred because this worker does not register the task (within unknown_task_grace_s)",
+                labelnames=("queue",),
+                registry=self.registry,
+            )
+            # Plan 0.12.0, MR 13 (BZ-05, R11): Lock-Wartezeit je Worker.
+            self.lock_waits: Gauge | _NoopMetric = Gauge(
+                f"{namespace}_lock_waits",
+                "Messages this worker recently deferred because their task lock was held",
+                labelnames=("worker_id",),
+                registry=self.registry,
+            )
+            self.lock_wait_oldest_seconds: Gauge | _NoopMetric = Gauge(
+                f"{namespace}_lock_wait_oldest_seconds",
+                "Seconds the oldest of these messages has waited since its first lock conflict",
+                labelnames=("worker_id",),
+                registry=self.registry,
+            )
+            # Plan 0.12.0, MR 14 (BZ-04): Speicherstand des Valkey, vom Leader
+            # stuendlich gemessen; bei ``noeviction`` haelt ein OOM alle Apps an.
+            self.valkey_memory_used_ratio: Gauge | _NoopMetric = Gauge(
+                f"{namespace}_valkey_memory_used_ratio",
+                "Valkey used_memory / maxmemory, measured hourly by the scheduler leader (only with a maxmemory limit)",
+                labelnames=("worker_id",),
+                registry=self.registry,
+            )
+            # Plan 0.12.0, MR 17 (BZ-27): gesperrte Slots des Supervisors,
+            # gelesen ueber den Supervisor-Kanal des Workers.
+            self.supervisor_locked_slots: Gauge | _NoopMetric = Gauge(
+                f"{namespace}_supervisor_locked_slots",
+                "Worker slots the supervisor has locked after too many crashes or hangs (cooldown 1 h)",
+                labelnames=("worker_id",),
+                registry=self.registry,
+            )
+            # Plan 0.12.0, MR 18 (BZ-14): verwaiste Queues, vom Leader gemeldet.
+            self.scheduler_queues_orphaned: Gauge | _NoopMetric = Gauge(
+                f"{namespace}_scheduler_queues_orphaned",
+                (
+                    "Reported queues the scheduler leader finds with messages, no consumer "
+                    "and no live worker reporting them"
+                ),
+                labelnames=("worker_id",),
+                registry=self.registry,
+            )
+            # Plan 0.12.0, MR 18 (BZ-20): Prefetch gilt je Queue-Consumer.
+            self.worker_prefetch_limit: Gauge | _NoopMetric = Gauge(
+                f"{namespace}_worker_prefetch_limit",
+                "Unacked messages this worker may hold: consumed queues x concurrency (prefetch per consumer)",
+                labelnames=("worker_id",),
+                registry=self.registry,
+            )
             self.registry.register(_LogRecordsDroppedCollector(namespace))
         else:
             noop = _NoopMetric()
@@ -254,9 +343,19 @@ class Metrics:
             self.dlq_messages = noop
             self.scheduler_leader = noop
             self.scheduler_cron_conflicts_total = noop
+            self.scheduler_fires_unroutable_total = noop
             self.scheduler_leader_outdated = noop
             self.consumer_reregistrations_total = noop
             self.execution_guard_events_total = noop
+            self.delay_tiers_unavailable = noop
+            self.tasks_unknown_deferred_total = noop
+            self.scheduler_crons_held = noop
+            self.scheduler_queues_orphaned = noop
+            self.worker_prefetch_limit = noop
+            self.lock_waits = noop
+            self.lock_wait_oldest_seconds = noop
+            self.valkey_memory_used_ratio = noop
+            self.supervisor_locked_slots = noop
 
     @property
     def enabled(self) -> bool:
@@ -402,6 +501,11 @@ def _install_rejected_counter(dispatcher: SignalDispatcher, metrics: Metrics) ->
 
     dispatcher.on_signal(Signal.TASK_REJECTED)(_count)
 
+    async def _count_deferred(**kw: Any) -> None:
+        metrics.tasks_unknown_deferred_total.labels(queue=str(kw.get("queue") or "")).inc()
+
+    dispatcher.on_signal(Signal.TASK_UNKNOWN_DEFERRED)(_count_deferred)
+
 
 def _install_outcome_counters(
     dispatcher: SignalDispatcher, metrics: Metrics,
@@ -460,19 +564,47 @@ def _install_scheduler_gauge(
             schedule_name=str(kw.get("schedule_name", "")),
         ).inc()
 
+    @dispatcher.on_signal(Signal.SCHEDULER_FIRE_UNROUTABLE)
+    async def _fire_unroutable(**kw: Any) -> None:
+        metrics.scheduler_fires_unroutable_total.labels(
+            queue=str(kw.get("queue", "")),
+            kind=str(kw.get("kind", "")),
+        ).inc()
+
     @dispatcher.on_signal(Signal.SCHEDULER_LEADER_OUTDATED)
     async def _leader_outdated(**kw: Any) -> None:
         metrics.scheduler_leader_outdated.labels(
             worker_id=str(kw.get("worker_id", "")),
         ).set(1 if kw.get("outdated") else 0)
 
+    @dispatcher.on_signal(Signal.SCHEDULER_CRON_UNOWNED)
+    async def _cron_unowned(**kw: Any) -> None:
+        metrics.scheduler_crons_held.labels(
+            worker_id=str(kw.get("worker_id", "")),
+        ).set(int(kw.get("held_count") or 0))
+
+    @dispatcher.on_signal(Signal.SCHEDULER_QUEUE_ORPHANED)
+    async def _queue_orphaned(**kw: Any) -> None:
+        metrics.scheduler_queues_orphaned.labels(
+            worker_id=str(kw.get("worker_id", "")),
+        ).set(int(kw.get("orphaned_count") or 0))
+
+    @dispatcher.on_signal(Signal.SCHEDULER_VALKEY_CHECKED)
+    async def _valkey_checked(**kw: Any) -> None:
+        maxmemory, used = kw.get("maxmemory"), kw.get("used_memory")
+        if isinstance(maxmemory, int) and maxmemory > 0 and isinstance(used, int):
+            metrics.valkey_memory_used_ratio.labels(
+                worker_id=str(kw.get("worker_id", "")),
+            ).set(used / maxmemory)
+
     @dispatcher.on_signal(Signal.SCHEDULER_STANDBY)
     @dispatcher.on_signal(Signal.SCHEDULER_LEADER_HANDOVER)
     @dispatcher.on_signal(Signal.WORKER_SHUTDOWN)
     async def _scheduler_not_leader(**kw: Any) -> None:
-        metrics.scheduler_leader.labels(
-            worker_id=str(kw.get("worker_id", "")),
-        ).set(0)
+        worker_id = str(kw.get("worker_id", ""))
+        metrics.scheduler_leader.labels(worker_id=worker_id).set(0)
+        metrics.scheduler_crons_held.labels(worker_id=worker_id).set(0)
+        metrics.scheduler_queues_orphaned.labels(worker_id=worker_id).set(0)
 
 
 def install_signal_collectors(

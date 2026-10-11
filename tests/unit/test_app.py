@@ -732,9 +732,18 @@ class TestSwarmQCancel:
 
         result = await app.cancel("task-abc")
 
-        # ttl_ms = result_ttl * 1000 = 60_000
-        app.client.cancel.assert_awaited_once_with("task-abc", ttl_ms=60_000)
+        # BZ-23 (Plan 0.12.0, MR 5): ttl_ms = max(24 h, result_ttl) — ein
+        # kurzes result_ttl verkuerzt das Flag nicht mehr.
+        app.client.cancel.assert_awaited_once_with("task-abc", ttl_ms=86_400_000)
         assert result is True
+
+    async def test_cancel_ttl_follows_result_ttl_above_24h(self, broker, backend):
+        app = SwarmQ(broker, backend, result_ttl=172_800)
+        app.client.cancel = AsyncMock(return_value=True)
+
+        await app.cancel("task-long")
+
+        app.client.cancel.assert_awaited_once_with("task-long", ttl_ms=172_800_000)
 
     async def test_cancel_uses_default_result_ttl_when_not_overridden(
         self, broker, backend,

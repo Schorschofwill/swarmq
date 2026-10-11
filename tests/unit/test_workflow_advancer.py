@@ -1168,3 +1168,19 @@ async def test_post_enqueue_failure_does_not_lose_the_step_marker():
     assert published == ["/1"]
     fresh = decode_json(await backend.get_workflow_state("wf-post"))
     assert "/1" in fresh["step_tasks"]
+
+
+async def test_fail_with_missing_workflow_state_logs_a_warning(swarmq_logs) -> None:
+    """BZ-13 (Plan 0.12.0, MR 3): ein terminal endender Schritt, dessen
+    Workflow-Zustand schon abgelaufen ist -- der Workflow endet nicht mehr
+    ohne Spur."""
+    backend = _connected_backend()
+    advancer = WorkflowAdvancer(
+        backend, backend.chords, publisher=_NoopPublisher(), resolve_queue=lambda _n: "default",
+        make_task_id=lambda wf, path: f"{wf}:{path}", unpack=_unpack, ttl_ms=60_000,
+    )
+
+    await advancer.fail("wf-gone", "TaskError", "boom")
+
+    [entry] = [e for e in swarmq_logs if e["event"] == "workflow_state_missing"]
+    assert entry["log_level"] == "warning" and entry["workflow_id"] == "wf-gone"

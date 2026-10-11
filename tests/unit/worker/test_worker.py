@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -24,7 +25,7 @@ from swarmq.signals import Signal
 from swarmq.task import DeliveryMode, Task, TaskInfo
 from swarmq.worker import Worker
 from tests.support.messages import make_message
-from tests.unit.worker._helpers import AddTask, _default_payload  # Re-Export (test_app)
+from tests.unit.worker._helpers import AddTask, _default_payload, lock_wait_exceeded_headers  # Re-Export (test_app)
 from tests.unit.worker.gates.test_lock import LockedTask
 
 # ---------------------------------------------------------------------------
@@ -301,19 +302,31 @@ async def test_result_serialization_error_stores_error(broker, backend, config):
 
 
 # ---------------------------------------------------------------------------
-# 10. Task not in registry -> nack(requeue=False)
+# 10. Task not in registry -> Dead-Letter des Workers (Plan 0.12.0, MR 11)
 # ---------------------------------------------------------------------------
 
 
+def _without_grace(config):
+    """Gnadenfrist 0 (Plan 0.12.0, MR 11, BZ-06): der unbekannte Task geht
+    sofort den terminalen Weg; mit der Standard-Frist wuerde er zurueckgestellt
+    (``test_befund_bz06_unknown_task.py``)."""
+    return dataclasses.replace(config, unknown_task_grace_s=0)
+
+
 @pytest.mark.asyncio
-async def test_unknown_task_nacked_no_requeue(worker, broker, backend):
+async def test_unknown_task_dead_lettered_without_requeue(broker, backend, config):
+    worker = Worker(broker=broker, backend=backend, registry=TaskRegistry(), config=_without_grace(config))
     msg = make_message(_default_payload(name="nonexistent"))
 
     await worker._handle_message(msg)
 
-    broker.route_via_dlx.assert_awaited_once_with(msg)
+    # Terminal ueber ``dead_letter`` (DLQ-Kopie mit Frist, Fehlerergebnis);
+    # kein Requeue, kein nacktes ``nack`` ueber den DLX mehr.
+    broker.dead_letter.assert_awaited_once()
+    broker.redeliver.assert_not_awaited()
+    broker.route_via_dlx.assert_not_awaited()
     broker.ack.assert_not_awaited()
-    backend.store_result.assert_not_awaited()
+    backend.store_result.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -2657,9 +2670,13 @@ class TestWorkerUniqueRelease:
     # --- R3.5 review follow-up: missing terminal-path coverage (TEST-001, TEST-002) ---
 
     async def test_task_not_found_with_unique_header_releases_flag(
-        self, worker, broker, release_backend,
+        self, broker, release_backend, config,
     ):
-        """Unregistered task + unique header → nack(requeue=False), release fires in finally."""
+        """Unregistered task + unique header → Dead-Letter des Workers (MR 11),
+        release fires inline after the DLQ publish."""
+        worker = Worker(
+            broker=broker, backend=release_backend, registry=TaskRegistry(), config=_without_grace(config),
+        )
         msg = make_message(
             _default_payload(name="unknown_task"),
             headers={
@@ -2669,7 +2686,7 @@ class TestWorkerUniqueRelease:
         )
         await worker._handle_message(msg)
 
-        broker.route_via_dlx.assert_awaited_once_with(msg)
+        broker.dead_letter.assert_awaited_once()
         release_backend.release_unique.assert_awaited_once()
         call_args = release_backend.release_unique.await_args.args
         assert call_args[0] == self.HASH_TNF
@@ -2716,10 +2733,10 @@ class TestWorkerUniqueRelease:
         await worker._handle_message(msg)
         release_backend.release_unique.assert_not_awaited()
 
-    async def test_lock_conflict_cap_dlq_releases_unique(
+    async def test_lock_wait_limit_dlq_releases_unique(
         self, broker, backend, config,
     ):
-        """Lock-conflict at DLQ cap terminal → release_unique fires AFTER
+        """Lock wait limit (MR 13) terminal → release_unique fires AFTER
         ack (P1 #3 ordering)."""
         reg = TaskRegistry()
         reg.register(LockedTask)
@@ -2733,7 +2750,7 @@ class TestWorkerUniqueRelease:
             headers={
                 "x-swarmq-unique-hash": "4" * 64,
                 "x-swarmq-unique-until": "completion",
-                "x-swarmq-lock-conflict-count": 9,  # 9+1 = cap
+                **lock_wait_exceeded_headers(config),
             },
         )
         await w._handle_message(msg)

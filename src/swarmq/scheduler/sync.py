@@ -52,6 +52,9 @@ class SchedulerCronSync:
     if TYPE_CHECKING:
         async def _emit(self, signal: Signal, **extra: Any) -> None: ...
         async def prune_static_crons(self, snapshot: CronReports) -> None: ...
+        async def _load_known_names(self, schedules: Any) -> None: ...
+        async def _observe_epoch(self) -> None: ...
+        async def _maybe_recheck_valkey(self) -> None: ...
 
     async def _replan_if_unscored(
         self, existing: ScheduleDefinition, existing_raw: bytes, fire_ts_ms: int,
@@ -91,6 +94,8 @@ class SchedulerCronSync:
         # Crons, die irgendein lebender Worker meldet: beim Fire keine
         # Registry-Warnung, auch wenn der Task in einer fremden App lebt.
         self._reported_names = frozenset(c.report.name for c in choices)
+        # BZ-11: je gemeldete Namen und Stempel dieser Amtszeit.
+        await self._load_known_names(self._backend.schedules)
         for choice in choices:
             if choice.conflict:
                 logger.warning(
@@ -121,6 +126,8 @@ class SchedulerCronSync:
                 continue
             await self.apply_static_definition(desired, now_ms)
         await self.prune_static_crons(snapshot)
+        # BZ-04: Policy und Speicher hoechstens stuendlich erneut pruefen.
+        await self._maybe_recheck_valkey()
         try:
             # Meldungen überdauern die Aufräum-Frist (KTD8): sonst gälte ein
             # verstummter Cron bei langer Frist als nie gemeldet.
@@ -180,6 +187,8 @@ class SchedulerCronSync:
             return
 
         if existing_raw is None:
+            # BZ-04: fehlt ein bekannter Eintrag, kann Valkey Daten verloren haben.
+            await self._observe_epoch()
             # New entry — per-schedule error isolation so one
             # BackendConnectionError does not abort the full sync
             # (Unit 5). A cron removed while disabled comes back disabled

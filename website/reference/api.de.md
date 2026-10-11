@@ -129,6 +129,17 @@ Enqueuet einen Task und gibt seine `task_id` zurück.
 die *bestehende* Owner-`task_id` still zurückgegeben; ein
 `TASK_DUPLICATE_DETECTED`-Signal feuert zur Observability.
 
+**Client-Only-Modus (ohne Registry).** Ohne Registry kennt der Client
+die `TaskInfo` des Tasks nicht: `unique_for`, `priority` und der
+Liefermodus des Worker-Tasks werden nicht angewendet. Dedup gibt es nur
+mit ausdrücklichem `unique_for=`, die Nachricht geht an die einfache
+`queue` (ohne `.high`/`.low`-Suffix) und wird `at_least_once` gesendet.
+Der Client loggt einmal je Task-Name und Client-Instanz, für höchstens
+1000 Namen, eine WARNING `client_task_defaults_unresolved` (mit
+`task_name`). Damit die Defaults greifen, den Producer mit denselben
+registrierten Tasks bauen, etwa über eine `SwarmQ`-App, die die
+Task-Module importiert.
+
 **Raises.**
 
 - `TaskNotFoundError` — task_name nicht in der Registry (Registry-Modus).
@@ -213,7 +224,7 @@ async def get_result(
 Blockiert, bis das Task-Ergebnis verfügbar ist oder `timeout`
 abläuft.
 
-Intern wird `sq:notify:{task_id}` auf Valkey abonniert für ein
+Intern wird `[<namensraum>:]sq:notify:{task_id}` auf Valkey abonniert für ein
 Push-basiertes Warten, mit 5ms-Polling als Fallback. Bei
 `timeout=0` ein einzelnes `GET` ohne Pub/Sub.
 
@@ -245,21 +256,35 @@ async def cancel(task_id: str) -> bool
 ```
 
 Fordert den Abbruch eines Tasks an. Fire-and-forget: setzt ein
-Cancel-Flag mit TTL `result_ttl × 1000` ms und kehrt sofort zurück.
+Cancel-Flag und kehrt sofort zurück. Das Flag lebt
+`max(24 h, result_ttl)`. Bei einem verzögerten Task
+(`schedule(delay=|eta=)`), der noch nicht gefeuert hat, kommt die
+Wartezeit bis zum Fire dazu, und `max_age` + 300 s, wenn die Registry
+des Clients den Task kennt. Ein stornierter Task, der länger als
+`result_ttl` in der Queue wartet, läuft daher nicht mehr.
+
+Hat der Worker die stornierte Zustellung abgeschlossen (Abbruch vor
+dem Start oder während des Laufs), löscht er das Flag nicht, sondern
+verkürzt es auf höchstens 1 h (`PEXPIRE … LT`). Ein Duplikat derselben
+Nachricht bleibt storniert; ein Flag mit kürzerer TTL wird nie
+verlängert.
 
 **Returns.** `True`, wenn das Flag neu gesetzt wurde, `False`, wenn
-ein vorheriger `cancel()`-Aufruf noch in Flight ist.
+es schon existiert: Ein vorheriger `cancel()`-Aufruf ist noch in
+Flight, oder der Task wurde innerhalb der letzten Stunde storniert.
 
-**Raises.** `ValueError` bei leerer `task_id`.
+**Raises.** `ValueError` bei leerer `task_id`;
+`BackendConnectionError`, wenn Valkey nicht erreichbar ist.
 
 !!! warning "Stale Cancel-Flag"
-    Die Flag-TTL ist per Default 24 h. Wird dieselbe `task_id`
-    innerhalb dieses Fensters wiederverwendet (deterministische
-    IDs, Redelivery nach Crash, bevor der Worker das Flag gelöscht
-    hat), wird das stale Flag auch die nächste Zustellung abbrechen.
-    Mitigation: lass SwarmQ UUIDv7 task_ids erzeugen (Default)
-    oder übergib eine kürzere `ttl_ms` direkt über den
-    darunterliegenden Client: `await app.client.cancel(task_id, ttl_ms=...)`.
+    Wird dieselbe `task_id` neu eingereiht, solange das Flag lebt
+    (deterministische IDs; mindestens 1 h nach einer abgeschlossenen
+    stornierten Zustellung), wird auch der neue Task storniert, und
+    `cancel()` liefert `False`. Mitigation: lass SwarmQ UUIDv7
+    task_ids erzeugen (Default) oder übergib eine kürzere `ttl_ms`
+    direkt über den darunterliegenden Client:
+    `await app.client.cancel(task_id, ttl_ms=...)`. Der Worker
+    verlängert ein kürzeres Flag nie.
 
 ### `get_progress()` / `watch_progress()`
 
@@ -624,11 +649,12 @@ Lifecycle-Events, die SwarmQ emittiert. Registriere Handler mit
 | `TASK_RETRYING` | `task_id`, `task_name`, `queue`, `retry_count`, `delay` | Ein Retry wurde eingeplant; `retry_count` ist der neue Zähler, `delay` in Sekunden. |
 | `TASK_CANCELLED` | `task_id`, `task_name`, `queue` | Vor oder während der Ausführung abgebrochen. |
 | `TASK_EXPIRED` | `task_id`, `task_name`, `queue`, `age_s`, `max_age_s` | Älter als `max_age` abgeholt; in die DLQ geleitet. |
-| `TASK_LOCKED` | `task_id`, `task_name`, `lock_name`, `lock_conflict_count` | Der Lock des Tasks war von einer anderen Ausführung belegt (Lock-Konflikt); die Nachricht wird neu eingereiht, an der Konfliktgrenze in die DLQ geleitet. |
+| `TASK_LOCKED` | `task_id`, `task_name`, `lock_name`, `lock_conflict_count` | Der Lock des Tasks war von einer anderen Ausführung belegt (Lock-Konflikt); die Nachricht wird neu eingereiht, am Ende der Wartezeit als `LockWaitExceeded` in die DLQ geleitet. |
 | `TASK_RATE_LIMITED` | `task_id`, `task_name`, `retry_after_ms`, `remaining`, `rate_limit_count` | Rate-Limit erreicht; Nachricht verzögert. |
 | `TASK_DUPLICATE_DETECTED` | `existing_task_id`, `task_name`, `dedup_hash`, `source`[, `batch_index`] | Dedup-Treffer durch `unique_for`. |
 | `TASK_DLQ` | `task_id`, `task_name`, `queue`, `error` | Endgültig: Der Task ging in die DLQ (Retries erschöpft oder nicht wiederholbar). Feuert einmal. |
-| `TASK_REJECTED` | `queue`, `reason`, `task_id`, `task_name`, `error` — `task_id`/`task_name` können `None` sein | Eine Nachricht ging ohne Diagnose-Header an den Broker-DLX (`body_too_large`, `undecodable`, `unregistered_task`, `middleware_chain_factory`, `dlq_publish_failed`). |
+| `TASK_REJECTED` | `queue`, `reason`, `task_id`, `task_name`, `error` — `task_id`/`task_name` können `None` sein | Eine Nachricht ging ohne Diagnose-Header an den Broker-DLX (`body_too_large`, `undecodable`, `middleware_chain_factory`, `dlq_publish_failed`), oder ein unregistrierter Task wurde nach `SWARMQ_UNKNOWN_TASK_GRACE_S` dead-gelettert (`unregistered_task`, nach `TASK_DLQ`). |
+| `TASK_UNKNOWN_DEFERRED` | `task_id`, `task_name`, `queue`, `delay`, `unknown_since` | Der Worker registriert den Task nicht und hat die Nachricht innerhalb von `SWARMQ_UNKNOWN_TASK_GRACE_S` zurückgestellt; `delay` in Sekunden, `unknown_since` der erste Kontakt in Unix-Millisekunden. Einmal je Rückstellung; gezählt in `swarmq_tasks_unknown_deferred_total`. |
 | `WORKFLOW_STEP_ENQUEUED` | `task_id`, `task_name`, `queue`, `workflow_id`, `step_path` | Nach jedem Publish eines Workflow-Schritts, zusätzlich zu `TASK_ENQUEUED`. |
 | `WORKER_ONLINE` / `WORKER_SHUTDOWN` | `worker_id` | Worker-Start / Graceful Shutdown. |
 | `WORKER_HEARTBEAT` | `worker_id`, `uptime_seconds` | Alle `SWARMQ_METRICS_SAMPLE_INTERVAL` Sekunden; nur bei eingeschalteten Metriken. |
@@ -638,6 +664,10 @@ Lifecycle-Events, die SwarmQ emittiert. Registriere Handler mit
 | `SCHEDULER_FIRE_SKIPPED` | `worker_id`, `schedule_name`, `skipped_count` | Nachholen nach Ausfallzeit hat Cron-Termine übersprungen. |
 | `SCHEDULER_CRON_CONFLICT` | `worker_id`, `schedule_name`, `fingerprints` | Mehrere Definitionen eines statischen Crons leben seit mehr als 10 Minuten; der Leader sendet es in jedem Übernahme-Takt, solange der Konflikt besteht. |
 | `SCHEDULER_LEADER_OUTDATED` | `worker_id`, `leader`, `leader_version`, `outdated` | Ein Nicht-Leader hat einen Scheduler-Leader ohne Zeitzonen-Unterstützung gesehen (`leader_version` `None` heißt vor 0.10.0); einmal pro Leader mit `outdated=True`, erneut mit `outdated=False`, wenn ein aktueller Leader folgt. |
+| `SCHEDULER_CRON_UNOWNED` | `worker_id`, `schedule_name`, `task_name`, `held`, `held_count` | Der Leader hält einen statischen Cron zurück, den kein lebender Worker meldet und den er selbst nicht registriert (`held=True`), oder gibt ihn frei (`held=False`); einmal je Übergang, `held_count` ist die Zahl der danach zurückgehaltenen Crons. Setzt `swarmq_scheduler_crons_held`. |
+| `SCHEDULER_VALKEY_CHECKED` | `worker_id`, `status`, `policy`, `maxmemory`, `used_memory` | Der Leader hat Eviction-Policy und Speicher von Valkey erneut geprüft, höchstens einmal je Stunde; `status` ist `safe`, `unsafe` oder `unknown`, `maxmemory` `0` heißt ohne Grenze, `None` unbekannt. Setzt `swarmq_valkey_memory_used_ratio` (nur mit Grenze). |
+| `SCHEDULER_QUEUE_ORPHANED` | `worker_id`, `queue`, `orphaned`, `message_count`, `orphaned_count` | Der Leader hat eine gemeldete Queue mit Nachrichten, ohne Consumer und ohne lebenden Worker, der sie meldet, gefunden (`orphaned=True`), oder die Queue ist nicht mehr verwaist (`orphaned=False`: abgearbeitet, konsumiert, gelöscht oder wieder gemeldet); einmal je Übergang, `orphaned_count` ist die Zahl der danach verwaisten Queues. Setzt `swarmq_scheduler_queues_orphaned`. |
+| `SCHEDULER_FIRE_UNROUTABLE` | `worker_id`, `schedule_name`, `queue`, `kind` | Der Broker hat einen Publish des Leaders zurückgegeben (Queue fehlt, BZ-03): `kind="cron_lost"` für einen verlorenen Cron-Fire, `"oneshot_dropped"` für einen nach `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S` verworfenen verzögerten Task. Gezählt in `swarmq_scheduler_fires_unroutable_total`. |
 
 Handler müssen `**kwargs` akzeptieren. Nutze `kwargs.get("batch_index")` für das nur in
 `TASK_DUPLICATE_DETECTED` vorhandene Feld, da Nicht-Batch-Quellen

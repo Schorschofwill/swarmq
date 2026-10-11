@@ -9,6 +9,11 @@ Test-Liste:
 4. Explizit kleiner als ``execution_guard_ttl_s`` → ``ConfigurationError``.
 5. ``execution_guard_ttl_s`` > 0 und ``execution_guard_max_orphans`` >= 1.
 6. Env-Mapping aller vier Felder.
+
+Plan 0.12.0, MR 12 (BZ-12):
+7. ``execution_guard_backlog_ttl_s``: Standard 7 Tage, Env-Mapping, muss > 0
+   sein -- Frist, die der Zustand einer zurueckgestellten oder Replay-
+   Ausfuehrung mindestens lebt (Rueckstand hinter der Kopie).
 """
 
 from __future__ import annotations
@@ -64,3 +69,11 @@ def test_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cfg.execution_guard_ttl_s == 30.0
     assert cfg.execution_guard_done_ttl_s == 900.0
     assert cfg.execution_guard_max_orphans == 5
+
+
+def test_backlog_ttl_defaults_to_seven_days_and_maps_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert _cfg().execution_guard_backlog_ttl_s == 604_800.0
+    with pytest.raises(ConfigurationError, match="execution_guard_backlog_ttl_s"):
+        _cfg(execution_guard_backlog_ttl_s=0.0)
+    monkeypatch.setenv("SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S", "86400")
+    assert _cfg().execution_guard_backlog_ttl_s == 86_400.0

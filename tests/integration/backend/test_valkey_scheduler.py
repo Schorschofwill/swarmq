@@ -3,6 +3,18 @@
 Runs the Python wrappers against a real Valkey so we see what the
 scheduler actually writes/reads. Uses the shared conftest fixtures for
 dev-stack env-var port awareness.
+
+Test-Liste Plan 0.12.0, MR 4 (BZ-28, ``sched_poll.lua``):
+1. Ein Poll entfernt hoechstens 1000 nie feuernde Eintraege (Waisen,
+   deaktivierte) aus dem Fire-Index; der Rest folgt im naechsten Poll
+   (Obergrenze der Schleife, Q6).
+
+Test-Liste Plan 0.12.0, MR 4 (BZ-07, Handover ohne SCAN), gegen echtes
+Valkey (``GETDEL``):
+2. Den Legacy-Marker eines 0.11-Leaders (nur ``sq:sched:handover:<owner>``)
+   findet ``take_handover_marker(previous_owner=...)`` genau einmal.
+3. Die Uebernahme ueber den festen Key raeumt auch den Legacy-Key des
+   Owners ab.
 """
 
 from __future__ import annotations
@@ -13,6 +25,7 @@ import uuid
 import pytest
 
 from swarmq.backend.valkey import ValkeyBackend
+from swarmq.backend.valkey.schedules import ZSET_KEY
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(5)]
 
@@ -32,6 +45,17 @@ def schedule_name() -> str:
     """Unique per test so parallel runs do not collide in the shared
     zset/defs-hash — plus we also flush_valkey between tests."""
     return f"test-{uuid.uuid4().hex[:12]}"
+
+
+class TestPollIndexHygiene:
+    async def test_poll_drops_at_most_1000_dead_entries_per_call(self, backend):
+        """Liste 1."""
+        await backend.client.zadd(ZSET_KEY, {f"orphan_{i}": 1_000 + i for i in range(1_001)})
+        await backend.schedules.put("active", b"def", 5_000)
+
+        assert await backend.schedules.poll_due(10_000, limit=100) == []
+        assert await backend.client.zcard(ZSET_KEY) == 2
+        assert await backend.schedules.poll_due(10_000, limit=100) == [("active", 5_000, b"def")]
 
 
 class TestZsetRoundtrip:
@@ -154,6 +178,19 @@ class TestHandoverMarker:
         await asyncio.sleep(0.5)
         # Expired marker is invisible to the standby — counts as failover
         assert await backend.schedules.take_handover_marker() is False
+
+    async def test_takes_legacy_marker_of_previous_owner_once(self, backend):
+        """Liste 2."""
+        await backend.client.set("sq:sched:handover:old-leader", "1", px=5_000)
+        assert await backend.schedules.take_handover_marker() is False
+        assert await backend.schedules.take_handover_marker(previous_owner="old-leader") is True
+        assert await backend.schedules.take_handover_marker(previous_owner="old-leader") is False
+
+    async def test_take_clears_the_legacy_key_of_the_owner(self, backend):
+        """Liste 3."""
+        await backend.schedules.set_handover_marker("leader-a", 5_000)
+        assert await backend.schedules.take_handover_marker() is True
+        assert await backend.client.exists("sq:sched:handover:leader-a") == 0
 
     async def test_get_and_del_clears_multiple_markers(self, backend):
         """If two leaders left markers back-to-back, clean up all of them."""

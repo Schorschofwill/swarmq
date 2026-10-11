@@ -21,6 +21,7 @@ import uuid
 import pytest
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
+from tests.support.queues import delete_queue_family
 
 pytestmark = [pytest.mark.timeout(20)]
 
@@ -36,15 +37,8 @@ async def broker(rabbitmq_url: str):
     declared: list[str] = []
     yield b, declared
     # Cleanup
+    await delete_queue_family(rabbitmq_url, *declared)
     if b._connection is not None and not b._connection.is_closed:
-        for qname in declared:
-            try:
-                ch = await b._connection.channel()
-                q = await ch.get_queue(qname, ensure=False)
-                await q.delete(if_empty=False, if_unused=False)
-                await ch.close()
-            except Exception:
-                pass
         await b.close()
 
 
@@ -150,8 +144,7 @@ async def test_consume_survives_connection_reconnect(broker, rabbitmq_url):
 
         post_count = len(received) - pre_count
         assert post_count == 3, (
-            f"consumer lost post-reconnect messages: received "
-            f"{len(received)} total, expected 6; got {received!r}"
+            f"consumer lost post-reconnect messages: received {len(received)} total, expected 6; got {received!r}"
         )
     finally:
         await producer.close()
@@ -208,10 +201,7 @@ async def test_qos_prefetch_preserved_across_reconnect(broker, rabbitmq_url):
 
         # With prefetch=2 (re-applied after reconnect) we should see
         # exactly 2 un-acked holds; if QoS was lost we'd see 4.
-        assert len(pending_acks) == 2, (
-            f"QoS prefetch=2 not preserved after reconnect: "
-            f"pending={len(pending_acks)}"
-        )
+        assert len(pending_acks) == 2, f"QoS prefetch=2 not preserved after reconnect: pending={len(pending_acks)}"
 
         # Drain
         for m in pending_acks:

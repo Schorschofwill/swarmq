@@ -11,7 +11,7 @@ only-include = ["src"]
 
 [project]
 name = "swarmq"
-version = "0.11.1"
+version = "0.12.0.dev0"
 description = "Async task manager for Python 3.14+ using RabbitMQ and Valkey"
 readme = "README.md"
 license = "MIT"
@@ -97,10 +97,10 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 timeout = 30
 # Default-Ausschluss der opt-in-Suiten (E2E-Hardening U1.2). Chaos,
-# Stress, Soak, Property, Fuzz, Mutation laufen nur explizit via
+# Stress, Soak, Property, Fuzz, Mutation, Compat laufen nur explizit via
 # `pytest -m chaos` o.ä. — der Dev-Loop bleibt schnell (Regel in AGENTS.md:
 # jeder Unit-Test < 100 ms, keine feste Gesamtgrenze).
-addopts = "-m 'not chaos and not stress and not soak and not property and not fuzz and not mutation'"
+addopts = "-m 'not chaos and not stress and not soak and not property and not fuzz and not mutation and not compat'"
 markers = [
     "unit: unit tests",
     "integration: integration tests",
@@ -112,6 +112,9 @@ markers = [
     "property: hypothesis property-based tests (opt-in, nightly thorough)",
     "fuzz: byte/json fuzzing tests (opt-in, nightly)",
     "mutation: marker for mutmut configuration (not invoked directly)",
+    "befund(id): Nachweis eines offenen Befunds aus docs/befunde/ (immer mit xfail strict=True)",
+    "compat: Mischbetrieb mit swarmq 0.11.x aus PyPI (tests/compat, opt-in, braucht Netz zu PyPI)",
+    "spike: Charakterisierung des Broker-Verhaltens (tests/integration/spikes, RabbitMQ 4.3 und 4.2)",
 ]
 
 [tool.mypy]

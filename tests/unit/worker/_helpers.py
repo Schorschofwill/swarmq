@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import time
+from typing import Any
+
+from swarmq.headers import HEADER_LOCK_WAIT_SINCE
 from swarmq.task import Task, TaskInfo
 
 
@@ -23,3 +27,9 @@ def _default_payload(
         "args": args if args is not None else [1, 2],
         "kwargs": kwargs if kwargs is not None else {},
     }
+
+
+def lock_wait_exceeded_headers(config: Any) -> dict[str, Any]:
+    """Header einer Nachricht, deren Wartezeit auf einen Lock die Obergrenze
+    ``lock_wait_max_s`` ueberschritten hat (Plan 0.12.0, MR 13, BZ-05)."""
+    return {HEADER_LOCK_WAIT_SINCE: int(time.time() * 1000) - int(config.lock_wait_max_s * 1000) - 1_000}

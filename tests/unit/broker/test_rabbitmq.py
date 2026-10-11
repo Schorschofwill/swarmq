@@ -46,7 +46,29 @@ class TestRabbitMQBrokerConnect:
         ) as mock_connect:
             await broker.connect()
 
-        mock_connect.assert_awaited_once_with("amqp://guest:guest@localhost/")
+        mock_connect.assert_awaited_once()
+        assert mock_connect.await_args.args == ("amqp://guest:guest@localhost/",)
+        # BZ-16 (MR 16): der Consume-Kanal entsteht erst mit ``consume()`` auf
+        # einer eigenen Verbindung.
+        assert mock_connection.channel.await_count == 1
+        assert broker._publish_channel is mock_publish_channel
+        assert broker._consume_channel is None
+
+    async def test_shared_mode_opens_both_channels_on_one_connection(self):
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        broker.publish_connection = "shared"
+        mock_connection = AsyncMock()
+        mock_publish_channel = AsyncMock()
+        mock_consume_channel = AsyncMock()
+        mock_connection.channel.side_effect = [mock_publish_channel, mock_consume_channel]
+
+        with patch(
+            "swarmq.broker.rabbitmq.connection.aio_pika.connect_robust", return_value=mock_connection
+        ) as mock_connect:
+            await broker.connect()
+
+        mock_connect.assert_awaited_once()
+        assert mock_connect.await_args.args == ("amqp://guest:guest@localhost/",)
         assert mock_connection.channel.await_count == 2
         assert broker._publish_channel is mock_publish_channel
         assert broker._consume_channel is mock_consume_channel
@@ -309,7 +331,7 @@ class TestRabbitMQBrokerDeclareQueue:
         await broker.declare_queue("tasks")
 
         calls = broker._publish_channel.declare_queue.call_args_list
-        assert len(calls) == 3
+        assert len(calls) == 10  # Familie plus sieben Delay-Stufen (Review MR 10, P1-2)
 
         # Main queue: tasks
         main_call = calls[0]
@@ -390,7 +412,7 @@ class TestRabbitMQBrokerDeclareQueue:
         await broker.declare_queue("tasks")
 
         calls = broker._publish_channel.declare_queue.call_args_list
-        assert len(calls) == 3
+        assert len(calls) == 10  # Familie plus sieben Delay-Stufen (Review MR 10, P1-2)
         for c in calls:
             assert c.kwargs["arguments"]["x-queue-type"] == "classic"
 
@@ -398,50 +420,92 @@ class TestRabbitMQBrokerDeclareQueue:
 class TestRabbitMQBrokerGetQueueDepth:
     """R4.7 Autoscaling — passive-declare for queue depth."""
 
-    async def test_sums_main_and_delay_counts(self):
+    async def test_sums_main_delay_queue_and_delay_tiers_over_one_channel(self):
+        # Plan 0.12.0, MR 10 (BZ-01): "pending" bleibt Haupt-Queue plus alle
+        # Delay-Queues, jetzt mit den Delay-Stufen; abgefragt ueber einen
+        # Channel, der nur nach NOT_FOUND neu geoeffnet wird.
+        from swarmq.queue_names import delay_tiers
+
         broker = RabbitMQBroker("amqp://guest:guest@localhost/")
         conn = AsyncMock(is_closed=False)
         broker._connection = conn
+        chan = AsyncMock(is_closed=False)
+        conn.channel = AsyncMock(return_value=chan)
+        counts = {"tasks": 5, "tasks.DQ": 3, "tasks.DQ.1s": 2, "tasks.DQ.1h": 1}
 
-        # Two throwaway channels, one per queue name.
-        chan_main = AsyncMock(is_closed=False)
-        chan_delay = AsyncMock(is_closed=False)
-        conn.channel = AsyncMock(side_effect=[chan_main, chan_delay])
+        async def declare_queue(name, *, passive):
+            q = AsyncMock()
+            q.declaration_result = type("R", (), {"message_count": counts.get(name, 0)})()
+            return q
 
-        q_main = AsyncMock()
-        q_main.declaration_result = type("R", (), {"message_count": 5})()
-        q_delay = AsyncMock()
-        q_delay.declaration_result = type("R", (), {"message_count": 3})()
-        chan_main.declare_queue = AsyncMock(return_value=q_main)
-        chan_delay.declare_queue = AsyncMock(return_value=q_delay)
+        chan.declare_queue = AsyncMock(side_effect=declare_queue)
 
         depth = await broker.queue_depth("tasks")
-        assert depth == 8
-        chan_main.declare_queue.assert_awaited_once_with("tasks", passive=True)
-        chan_delay.declare_queue.assert_awaited_once_with(
-            "tasks.DQ", passive=True,
-        )
-        chan_main.close.assert_awaited()
-        chan_delay.close.assert_awaited()
+        assert depth == 11
+        assert conn.channel.await_count == 1
+        assert [c.args[0] for c in chan.declare_queue.await_args_list] == [
+            "tasks",
+            "tasks.DQ",
+            *delay_tiers("tasks"),
+        ]
+        assert all(c.kwargs == {"passive": True} for c in chan.declare_queue.await_args_list)
+        chan.close.assert_awaited()
 
     async def test_missing_queue_returns_zero(self):
+        # Fehlende Queues (auch nie benutzte Delay-Stufen) zaehlen 0; nach
+        # NOT_FOUND hat der Broker den Channel geschlossen, der naechste
+        # Name bekommt einen neuen.
         import aio_pika.exceptions
 
         broker = RabbitMQBroker("amqp://guest:guest@localhost/")
         conn = AsyncMock(is_closed=False)
         broker._connection = conn
-        chan_main = AsyncMock(is_closed=True)
-        chan_delay = AsyncMock(is_closed=True)
-        conn.channel = AsyncMock(side_effect=[chan_main, chan_delay])
-        chan_main.declare_queue = AsyncMock(
-            side_effect=aio_pika.exceptions.ChannelNotFoundEntity("NOT_FOUND"),
-        )
-        chan_delay.declare_queue = AsyncMock(
-            side_effect=aio_pika.exceptions.ChannelNotFoundEntity("NOT_FOUND"),
-        )
+        opened = []
+
+        async def open_channel():
+            chan = AsyncMock(is_closed=False)
+            chan.declare_queue = AsyncMock(
+                side_effect=aio_pika.exceptions.ChannelNotFoundEntity("NOT_FOUND"),
+            )
+            opened.append(chan)
+            return chan
+
+        conn.channel = AsyncMock(side_effect=open_channel)
 
         depth = await broker.queue_depth("tasks")
         assert depth == 0
+        assert len(opened) == 9
+
+    async def test_every_channel_is_closed_after_not_found_even_when_the_broker_closed_it(self):
+        # Review MR 10, P0-1: nach NOT_FOUND ist ``is_closed`` schon True (der
+        # Broker hat den Channel geschlossen). Ohne eigenes ``close`` oeffnet
+        # ein RobustChannel sich wieder und bleibt offen: ein Channel-Leck je
+        # fehlender Stufe und Metrik-Takt.
+        import aio_pika.exceptions
+
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        conn = AsyncMock(is_closed=False)
+        broker._connection = conn
+        opened = []
+
+        async def open_channel():
+            chan = AsyncMock(is_closed=False)
+
+            async def declare_queue(name, *, passive):
+                chan.is_closed = True
+                raise aio_pika.exceptions.ChannelNotFoundEntity("NOT_FOUND")
+
+            chan.declare_queue = AsyncMock(side_effect=declare_queue)
+            opened.append(chan)
+            return chan
+
+        conn.channel = AsyncMock(side_effect=open_channel)
+
+        assert await broker.queue_depth("tasks") == 0
+
+        assert len(opened) == 9
+        for chan in opened:
+            chan.close.assert_awaited_once()
 
     async def test_raises_when_not_connected(self):
         broker = RabbitMQBroker("amqp://guest:guest@localhost/")
@@ -492,6 +556,28 @@ class TestRabbitMQBrokerGetDlqDepth:
         )
 
         assert await broker.dead_letter_depth("tasks") == 0
+
+    async def test_missing_dlq_closes_the_channel_the_broker_closed(self):
+        # Review MR 10, P0-1 (gleiche Fehlerklasse wie ``queue_depth``): der
+        # Broker schliesst den Channel nach NOT_FOUND; ohne eigenes ``close``
+        # oeffnet ein RobustChannel sich wieder.
+        import aio_pika.exceptions
+
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        conn = AsyncMock(is_closed=False)
+        broker._connection = conn
+        chan = AsyncMock(is_closed=False)
+        conn.channel = AsyncMock(return_value=chan)
+
+        async def declare_queue(name, *, passive):
+            chan.is_closed = True
+            raise aio_pika.exceptions.ChannelNotFoundEntity("NOT_FOUND")
+
+        chan.declare_queue = AsyncMock(side_effect=declare_queue)
+
+        assert await broker.dead_letter_depth("tasks") == 0
+
+        chan.close.assert_awaited_once()
 
 
 class TestRabbitMQBrokerPublish:

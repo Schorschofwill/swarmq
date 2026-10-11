@@ -1,7 +1,8 @@
 """Client-Schedule-Seite (Plan U10) — verbatim aus ``client.py``: schedule,
 schedule_many, Dedup-Claim/-Rollback, deferred (delay/eta) und die
-Queue-/Delivery-Auflösung. ``_MISSING`` lebt hier und wird von der Fassade
-re-exportiert (app.py importiert es unverändert)."""
+Queue-/Delivery-Auflösung (seit Plan 0.12.0, MR 0, in ``schedule_resolve.py``).
+``_MISSING`` wird hier und von der Fassade re-exportiert (app.py importiert es
+unverändert)."""
 
 from __future__ import annotations
 
@@ -16,6 +17,9 @@ if TYPE_CHECKING:
     from swarmq.registry import TaskRegistry
     from swarmq.signals import SignalDispatcher
 
+from swarmq.client.schedule_resolve import _MISSING as _MISSING  # Re-Export (Fassade, app.py)
+from swarmq.client.schedule_resolve import ClientScheduleResolve
+from swarmq.client.schedule_resolve import _MissingType as _MissingType
 from swarmq.contracts import Publisher, ResultBackend
 from swarmq.contracts.coordination import ScheduleStore as ContractScheduleStore
 from swarmq.exceptions import (
@@ -53,45 +57,7 @@ class ClientBackend(ResultBackend, Protocol):
     def schedules(self) -> ContractScheduleStore: ...
 
 
-
-
-
-# R3.5 Unique Tasks: module-private sentinel that distinguishes
-# "caller did not pass a value" from "caller explicitly passed None".
-# None means "dedup explicitly disabled for this call"; _MISSING means
-# "fall through to TaskInfo default (or None in Client-Modus)".
-# Not exported — do NOT add to __init__.py.
-#
-# Dedicated singleton class so type-checkers narrow int | None | _MissingType
-# unions at call sites (plain Any would collapse to Any). __slots__ keeps
-# the object tiny; __new__ enforces exactly one instance so `is _MISSING`
-# identity checks stay cheap.
-class _MissingType:
-    """Private singleton for the `_MISSING` sentinel. See module docstring."""
-    __slots__ = ()
-    _instance: _MissingType | None = None
-
-    def __new__(cls) -> _MissingType:
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
-
-    def __repr__(self) -> str:
-        return "<_MISSING>"
-
-    def __bool__(self) -> bool:
-        # Defensive: treat the sentinel as falsy in `if value:` style checks
-        # that might be written before reading the docstring. Proper checks
-        # use `value is _MISSING`.
-        return False
-
-
-_MISSING: _MissingType = _MissingType()
-
-
-
-
-class ClientScheduling:
+class ClientScheduling(ClientScheduleResolve):
     # Mixin über dem Client-Zustand (U10); die Attribute setzt ``Client.__init__``.
     _schedule_store: ScheduleStore | None
     if TYPE_CHECKING:
@@ -102,36 +68,6 @@ class ClientScheduling:
         _signal_dispatcher: SignalDispatcher
 
         def _get_chain(self) -> MiddlewareChain: ...
-
-    def _resolve_queue_and_delivery_mode(
-        self, task_name: str, queue: str | None
-    ) -> tuple[str, str]:
-        """Resolve the target queue and delivery mode for *task_name*.
-
-        Uses the registered TaskInfo when available; falls back to the
-        explicit *queue* argument and ``at_least_once`` delivery otherwise.
-        Raises ``ValueError`` if the queue cannot be resolved.
-        """
-        resolved_queue = queue
-        delivery_mode = "at_least_once"
-        priority: str = "normal"
-        if self._registry is not None:
-            entry = self._registry.get_entry(task_name)
-            if resolved_queue is None:
-                resolved_queue = entry.task_info.queues[0]
-            delivery_mode = entry.task_info.delivery.value
-            priority = entry.task_info.priority
-        if resolved_queue is None:
-            raise ValueError(
-                "No queue specified and no registry available to resolve one"
-            )
-        # R4.3: apply priority suffix (.high / .low). 'normal' passes
-        # through unchanged. Only applied when the registry knows the
-        # task — a bare client.schedule(name, queue=...) without a
-        # registered task stays on the explicit queue.
-        if priority != "normal":
-            resolved_queue = f"{resolved_queue}.{priority}"
-        return resolved_queue, delivery_mode
 
     async def _claim_unique_flag(
         self,
@@ -375,82 +311,6 @@ class ClientScheduling:
             queue=resolved_queue,
         )
         return task_id
-
-    def _resolve_unique(
-        self,
-        task_name: str,
-        unique_for: int | _MissingType | None,
-        unique_until: Literal["start", "completion"] | _MissingType,
-    ) -> tuple[int | None, UniqueUntil]:
-        """Resolve effective unique_for / unique_until for a schedule() call.
-
-        Rules (origin CD1):
-          - unique_for is _MISSING: look up TaskInfo default if registry
-            is available; otherwise None (dedup off) in Client-Modus.
-          - unique_for is None (explicit): dedup off for this call,
-            even if TaskInfo sets a default.
-          - unique_for is int: use this value.
-        unique_until follows the same pattern with default "completion".
-        """
-        final_for: int | None
-        final_until: UniqueUntil = "completion"
-
-        if isinstance(unique_for, _MissingType):
-            final_for = None
-            if self._registry is not None and self._registry.has(task_name):
-                entry = self._registry.get_entry(task_name)
-                final_for = entry.task_info.unique_for
-                final_until = entry.task_info.unique_until
-        else:
-            final_for = unique_for
-
-        if not isinstance(unique_until, _MissingType):
-            final_until = unique_until
-        # sonst: bereits aus TaskInfo gesetzt (oder "completion"-Default
-        # im Client-Modus).
-
-        return final_for, final_until
-
-    def _batch_prepare(
-        self,
-        tasks: list[tuple[str, tuple[Any, ...], dict[str, Any]]],
-        queue: str | None,
-        unique_for: int | _MissingType | None,
-        unique_until: Literal["start", "completion"] | _MissingType,
-    ) -> list[dict[str, Any]]:
-        """Pass 0 (sync): validate + generate task_ids + compute dedup
-        parameters per element. Any validation error aborts before a single
-        network call, so no rollback is needed yet."""
-        prepped: list[dict[str, Any]] = []
-        for task_name, args, kwargs in tasks:
-            if self._registry is not None and not self._registry.has(task_name):
-                raise TaskNotFoundError(task_name)
-            resolved_queue, delivery_mode = self._resolve_queue_and_delivery_mode(
-                task_name, queue,
-            )
-            resolved_unique_for, resolved_unique_until = self._resolve_unique(
-                task_name, unique_for, unique_until,
-            )
-            if resolved_unique_for is not None:
-                dedup_hash_precomp: str | None = compute_dedup_hash(
-                    task_name, args, kwargs,
-                )
-                ttl_ms: int | None = resolved_unique_for * 1000
-            else:
-                dedup_hash_precomp = None
-                ttl_ms = None
-            prepped.append({
-                "task_name": task_name,
-                "args": args,
-                "kwargs": kwargs,
-                "task_id": str(uuid.uuid7()),
-                "queue": resolved_queue,
-                "delivery_mode": delivery_mode,
-                "unique_until": resolved_unique_until,
-                "dedup_hash": dedup_hash_precomp,
-                "dedup_ttl_ms": ttl_ms,
-            })
-        return prepped
 
     async def _batch_claim_flags(
         self, prepped: list[dict[str, Any]],
@@ -746,6 +606,7 @@ class ClientScheduling:
             source="cli_unique" if dedup_hash is not None else "cli",
             dedup_hash=dedup_hash,
             unique_until=unique_until,
+            task_id=task_id,
         )
 
         # Rollback the dedup flag if the

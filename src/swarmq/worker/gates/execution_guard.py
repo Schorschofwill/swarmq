@@ -2,7 +2,8 @@
 
 Eine erneut zugestellte Nachricht läuft nicht neben dem Original, nicht nach
 dessen Abschluss und nicht neben einem Retry. Die Identität einer Ausführung
-ist die Task-ID plus ``x-swarmq-replay-id``.
+ist die Task-ID plus ``x-swarmq-replay-id`` plus der Zahl der Broker-Tode
+ausserhalb der Delay-Queues (``swarmq.identity``, Plan 0.12.0, MR 12).
 
 Das Gate liegt im ``try`` des Runners nach dem Registry-Lookup und vor dem
 Expiry-Gate: so deckt dessen ``finally`` jeden Ausgang ab, das
@@ -19,10 +20,11 @@ from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from swarmq import identity
 from swarmq.backoff import backend_defer_delay
 from swarmq.contracts import ExecutionGuardStore
 from swarmq.exceptions import BackendConnectionError
-from swarmq.headers import HEADER_GUARD_DEFER_COUNT, HEADER_REPLAY_ID, HEADER_RETRY_COUNT
+from swarmq.headers import HEADER_GUARD_DEFER_COUNT, HEADER_RETRY_COUNT
 from swarmq.logging import _error_fields, get_logger
 from swarmq.task import DeliveryMode
 from swarmq.worker.gates import GateContext, GateDeps, prior_deferrals, redeliver_in_place, republish_headers
@@ -41,6 +43,15 @@ class GuardLease:
     owner: str
     retry_count: int
     task_id: str
+    # TTL des Zustands (Done-/Superseded-Marker) dieser Ausfuehrung in ms;
+    # None = ``execution_guard_done_ttl_s`` (MR 12: Replay-Identitaeten leben
+    # mindestens die DLQ-Frist, A4; mit ``max_age`` mindestens
+    # ``max_age + 300``, Review MR 12 P1-1).
+    state_ttl_ms: int | None = None
+    # Rueckstand (MR 12, BZ-12): so lange lebt der Zustand mindestens, sobald
+    # eine Kopie dieser Ausfuehrung zurueckgestellt wurde oder ihr Abschluss
+    # eine Neuzustellung erwartet (gescheitertes Ack); None = kein Rueckstand.
+    backlog_ttl_ms: int | None = None
 
 
 def retry_count_of(headers: Mapping[str, Any] | None) -> int:
@@ -49,17 +60,10 @@ def retry_count_of(headers: Mapping[str, Any] | None) -> int:
     return raw if isinstance(raw, int) and raw > 0 else 0
 
 
-# Laenger ist kein von swarmq erzeugter Wert (uuid4().hex); ein laengerer oder
-# kaputter Header zaehlt wie keiner und wird nicht ungedeckelt zum Valkey-Key.
-_MAX_REPLAY_ID_LEN = 64
-
-
 def execution_identity(delivery: Any, task_id: str) -> str:
-    """Task-ID plus ``x-swarmq-replay-id``, falls vorhanden."""
-    replay = (delivery.headers or {}).get(HEADER_REPLAY_ID)
-    if isinstance(replay, str) and 0 < len(replay) <= _MAX_REPLAY_ID_LEN:
-        return f"{task_id}|{replay}"
-    return task_id
+    """Task-ID | ``x-swarmq-replay-id`` | #n (Plan 0.12.0, MR 12): siehe
+    ``swarmq.identity.execution_identity``."""
+    return identity.execution_identity(delivery.headers, task_id)
 
 
 def _nominal_defer_total(attempts: int, base: float, cap: float) -> float:
@@ -118,6 +122,8 @@ class ExecutionGuard:
             return Continue
         lease = GuardLease(
             execution_identity(delivery, ctx.task_id), uuid.uuid4().hex, retry_count_of(delivery.headers), ctx.task_id,
+            state_ttl_ms=self._lease_state_ttl_ms(delivery.headers, ctx.task_info.max_age),
+            backlog_ttl_ms=self._backlog_ttl_ms(ctx.task_info.max_age),
         )
         try:
             claim = await bounded_backend_call(
@@ -127,8 +133,9 @@ class ExecutionGuard:
                     owner=lease.owner,
                     retry_count=lease.retry_count,
                     ttl_ms=int(config.execution_guard_ttl_s * 1000),
-                    state_ttl_ms=self._state_ttl_ms(),
+                    state_ttl_ms=self._state_ttl_ms(lease),
                     max_orphans=config.execution_guard_max_orphans,
+                    backlog_ttl_ms=lease.backlog_ttl_ms,
                 ),
                 what="execution guard claim",
             )
@@ -266,10 +273,46 @@ class ExecutionGuard:
             self._renewal = None
         return lease
 
-    def _state_ttl_ms(self) -> int:
+    def _done_ttl_s(self) -> float:
         ttl = self._deps.config.execution_guard_done_ttl_s
         assert ttl is not None  # Default in SwarmQConfig.__post_init__
-        return int(ttl * 1000)
+        return ttl
+
+    def _replay_state_ttl_ms(self) -> int:
+        """Zustands-TTL einer Replay-Identitaet (MR 12, A4): mindestens die
+        DLQ-Frist, denn ein erneuter ``dlq retry`` derselben XQ-Nachricht
+        traegt dieselbe Identitaet; ohne Frist (``None``) der Rueckstand."""
+        config = self._deps.config
+        floor = config.dead_letter_ttl_s
+        if floor is None:
+            floor = config.execution_guard_backlog_ttl_s
+        return int(max(self._done_ttl_s(), floor) * 1000)
+
+    def _lease_state_ttl_ms(self, headers: Mapping[str, Any] | None, max_age: int | None) -> int | None:
+        """Zustands-TTL der Ausfuehrung: Replay-Identitaeten mindestens die
+        DLQ-Frist (A4); mit ``max_age`` mindestens ``max_age + 300`` (Review
+        MR 12, P1-1) -- ein Duplikat kann so lange in der Queue warten, auch
+        wenn das Original sofort lief. None = ``execution_guard_done_ttl_s``."""
+        ttl = self._replay_state_ttl_ms() if identity.is_replay(headers) else None
+        if max_age is None:
+            return ttl
+        floor = int((max_age + 300.0) * 1000)
+        return max(int(self._done_ttl_s() * 1000) if ttl is None else ttl, floor)
+
+    def _backlog_ttl_ms(self, max_age: int | None) -> int:
+        """Rueckstand (BZ-12): ``max(execution_guard_backlog_ttl_s, max_age + 300)``
+        -- eine zurueckgestellte Kopie kommt spaetestens mit dem Ablauf des
+        Tasks zurueck, sonst irgendwann hinter dem Rueckstand der Queue."""
+        backlog = self._deps.config.execution_guard_backlog_ttl_s
+        if max_age is not None:
+            backlog = max(backlog, max_age + 300.0)
+        return int(backlog * 1000)
+
+    def _state_ttl_ms(self, lease: GuardLease) -> int:
+        """Zustands-TTL der Lease: ihre eigene (Replay) oder die Konfiguration."""
+        if lease.state_ttl_ms is not None:
+            return lease.state_ttl_ms
+        return int(self._done_ttl_s() * 1000)
 
     async def _mark(self, lease: GuardLease, marker: str, call: Callable[[], Awaitable[None]]) -> None:
         """Begrenzt und fehlertolerant: ein gescheiterter Marker darf das Verb
@@ -311,14 +354,22 @@ class ExecutionGuard:
             logger.info("execution_guard_finish_recovered", identity=lease.identity, marker=marker, attempts=attempt)
             return
 
-    async def finish(self, lease: GuardLease) -> None:
+    def _finish_ttl_ms(self, lease: GuardLease, extended: bool) -> int:
+        """``extended`` (BZ-12): der Abschluss weiss, dass eine Neuzustellung
+        kommt (gescheitertes Ack, ``SettleFailedAfterPublish``) -- sie kann
+        hinter einem Rueckstand zurueckkommen, der Marker lebt den Rueckstand."""
+        ttl = self._state_ttl_ms(lease)
+        if extended and lease.backlog_ttl_ms is not None:
+            ttl = max(ttl, lease.backlog_ttl_ms)
+        return ttl
+
+    async def finish(self, lease: GuardLease, *, extended: bool = False) -> None:
         """Done-Marker setzen (terminales Verb ausgefuehrt)."""
         store = self._store()
         assert store is not None
+        ttl_ms = self._finish_ttl_ms(lease, extended)
         await self._mark(
-            lease,
-            "done",
-            lambda: store.mark_done(lease.identity, owner=lease.owner, state_ttl_ms=self._state_ttl_ms()),
+            lease, "done", lambda: store.mark_done(lease.identity, owner=lease.owner, state_ttl_ms=ttl_ms),
         )
 
     async def release(self, lease: GuardLease) -> None:
@@ -327,15 +378,16 @@ class ExecutionGuard:
         assert store is not None
         await self._mark(lease, "release", lambda: store.release(lease.identity, owner=lease.owner))
 
-    async def supersede(self, lease: GuardLease, retry_count: int) -> None:
+    async def supersede(self, lease: GuardLease, retry_count: int, *, extended: bool = False) -> None:
         """Superseded-Marker mit dem Zaehler der Retry-Kopie setzen."""
         store = self._store()
         assert store is not None
+        ttl_ms = self._finish_ttl_ms(lease, extended)
         await self._mark(
             lease,
             "superseded",
             lambda: store.mark_superseded(
-                lease.identity, owner=lease.owner, retry_count=retry_count, state_ttl_ms=self._state_ttl_ms(),
+                lease.identity, owner=lease.owner, retry_count=retry_count, state_ttl_ms=ttl_ms,
             ),
         )
 

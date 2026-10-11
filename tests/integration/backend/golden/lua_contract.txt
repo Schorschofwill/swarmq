@@ -1,7 +1,8 @@
 chord_complete	KEYS=1	ARGV=3
-guard_claim	KEYS=2	ARGV=5
+guard_claim	KEYS=2	ARGV=6
 guard_finish	KEYS=2	ARGV=4
 lock_acquire	KEYS=1	ARGV=4
+lock_extend	KEYS=1	ARGV=4
 lock_release	KEYS=1	ARGV=2
 lock_renew	KEYS=1	ARGV=2
 sched_commit	KEYS=3	ARGV=6

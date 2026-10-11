@@ -309,6 +309,61 @@ async def test_replay_id_is_a_new_execution_identity(
     assert await guard.apply(make_message(headers={"x-swarmq-replay-id": "r1"}), _ctx()) is Redelivered
 
 
+async def test_broker_dead_lettered_copy_is_a_new_execution_identity(
+    guard: ExecutionGuard, backend: InMemoryBackend,
+) -> None:
+    """MR 12 (BZ-08): ein Replay nach einem Broker-DLX (``x-death`` fuer die
+    Haupt-Queue) ist die Identitaet ``task_id#n`` -- es laeuft trotz Done-
+    Marker des ersten Laufs; Tode in Delay-Queues zaehlen nicht."""
+    await _other_claim(backend)
+    await backend.execution_guard.mark_done("t-1", owner="other", state_ttl_ms=600_000)
+
+    delayed = make_message(headers={"x-death": [{"queue": "q.DQ.1s", "count": 1, "reason": "expired"}]})
+    assert await guard.apply(delayed, _ctx()) == Terminal.never_release()
+
+    replay = make_message(headers={"x-death": [{"queue": "q", "count": 1, "reason": "rejected"}]})
+    assert await guard.apply(replay, _ctx()) is Continue
+    assert await _other_claim(backend, identity="t-1#1", owner="probe") == "running"
+
+
+async def test_replay_identity_done_marker_outlives_the_dead_letter_retention(
+    guard: ExecutionGuard, deps: MagicMock, clock: FakeClock,
+) -> None:
+    """MR 12 (A4): der Done-Marker eines Replays (H gesetzt oder n > 0) lebt
+    mindestens ``dead_letter_ttl_s`` -- ein erneuter ``dlq retry`` derselben
+    XQ-Nachricht am naechsten Tag laeuft sonst doppelt. Normale Identitaeten
+    behalten ``execution_guard_done_ttl_s``."""
+    deps.config.dead_letter_ttl_s = 2 * 86_400.0
+    assert deps.config.execution_guard_done_ttl_s < 86_400
+    for headers in ({"x-swarmq-replay-id": "r1"}, {}):
+        delivery = make_message(headers=headers)
+        assert await guard.apply(delivery, _ctx()) is Continue
+        lease = guard.take_lease(delivery)
+        assert lease is not None
+        await guard.finish(lease)
+
+    await clock.advance(86_400)  # ueber die Done-TTL, unter der DLQ-Frist
+    assert await guard.apply(make_message(headers={}), _ctx()) is Continue
+    assert await guard.apply(make_message(headers={"x-swarmq-replay-id": "r1"}), _ctx()) == Terminal.never_release()
+
+
+async def test_replay_done_marker_without_a_retention_lives_the_backlog_ttl(
+    guard: ExecutionGuard, deps: MagicMock, clock: FakeClock,
+) -> None:
+    """``dead_letter_ttl_s=None`` (unbegrenzte DLQ): statt unbegrenzt gilt
+    ``execution_guard_backlog_ttl_s`` (7 d; Abschnitt 7)."""
+    deps.config.dead_letter_ttl_s = None
+    delivery = make_message(headers={"x-swarmq-xdeath-base": 2})
+    assert await guard.apply(delivery, _ctx()) is Continue
+    lease = guard.take_lease(delivery)
+    assert lease is not None
+    await guard.finish(lease)
+    await clock.advance(6 * 86_400)
+    assert await guard.apply(make_message(headers={"x-swarmq-xdeath-base": 2}), _ctx()) == Terminal.never_release()
+    await clock.advance(2 * 86_400)
+    assert await guard.apply(make_message(headers={"x-swarmq-xdeath-base": 2}), _ctx()) is Continue
+
+
 async def test_settle_releases_a_lease_no_verb_concluded(guard: ExecutionGuard, backend: InMemoryBackend) -> None:
     """``finally`` des Runners (kein Verb, Ausnahme, Abbruch): Running frei,
     kein Done-Marker -- die Neuzustellung läuft."""
@@ -454,6 +509,16 @@ async def test_guard_outcomes_are_counted(
     await guard.settle(delivery)
 
     assert events == [scenario]
+
+
+def test_copies_carry_the_death_count_as_base_and_drop_x_death() -> None:
+    """MR 12 (BZ-08): der Broker baut ``x-death`` beim naechsten Dead-Lettern
+    neu auf (Spike S5); jede Kopie haelt n in ``x-swarmq-xdeath-base`` fest."""
+    deaths = [{"queue": "q", "count": 2, "reason": "rejected"}, {"queue": "q.DQ", "count": 9, "reason": "expired"}]
+    delivery = make_message(headers={"x-death": deaths, "x-swarmq-xdeath-base": 1, "x-keep": "k"})
+    assert republish_headers(delivery, _ctx()) == {"x-swarmq-xdeath-base": 3, "x-keep": "k"}
+    only_delayed = make_message(headers={"x-death": deaths[1:]})
+    assert republish_headers(only_delayed, _ctx()) == {}
 
 
 def test_other_copies_do_not_inherit_the_guard_defer_count() -> None:

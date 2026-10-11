@@ -14,6 +14,8 @@ Modul hält die reinen Ableitungen (``lock_key``, ``compute_lock_ttl_ms``,
 
 from __future__ import annotations
 
+from swarmq.keyspace import KeySpace
+
 # Buffer added on top of ``hard_timeout`` to derive the lock TTL.
 # The lock TTL is purely a
 # crash-recovery deadline: under normal operation the holder releases the
@@ -29,12 +31,17 @@ from __future__ import annotations
 # to budget for; the buffer only covers single-worker timing slack.
 _LOCK_TTL_BUFFER_SECONDS = 30
 
-_LOCK_KEY_PREFIX = "sq:lock:"
+# Nur ohne Namensraum (Review MR 15, P2-3), Alias fuer ``lock_key``.
+_LOCK_KEY_PREFIX = KeySpace().lock_prefix
 
 
 def lock_key(lock_name: str) -> str:
     """Map a user-facing lock name to its Valkey key. Single source of
-    truth so producers and consumers agree on the namespace."""
+    truth so producers and consumers agree on the namespace.
+
+    Nur ohne Namensraum (Review MR 15, P2-3): mit ``SWARMQ_NAMESPACE``
+    liegt das Lock unter ``<ns>:sq:lock:<name>``
+    (``KeySpace(namespace).lock(name)``, ``ValkeyBackend.locks``)."""
     return f"{_LOCK_KEY_PREFIX}{lock_name}"
 
 
@@ -99,4 +106,7 @@ SCHEDULER_LOCK_KEY = lock_key(SCHEDULER_LOCK_NAME)
 ``lock_key()`` so the invariant ``SCHEDULER_LOCK_KEY ==
 _LOCK_KEY_PREFIX + SCHEDULER_LOCK_NAME`` holds by construction — if
 the prefix ever changes, ``sched_commit.lua``'s owner-check and the
-CLI status view stay in sync automatically (Unit 10 / Fork B1)."""
+CLI status view stay in sync automatically (Unit 10 / Fork B1).
+
+Nur ohne Namensraum (Review MR 15, P2-3): mit ``SWARMQ_NAMESPACE`` ist
+der Key ``<ns>:sq:lock:{sched}:leader`` (``KeySpace(ns).scheduler_lock()``)."""

@@ -602,6 +602,15 @@ class TestClientScheduleDelayEta:
         now_ms = int(time.time() * 1000)
         assert now_ms + 55_000 <= definition.fire_ts_ms <= now_ms + 65_000
 
+    async def test_schedule_with_delay_persists_returned_task_id(
+        self, client, _patched_schedule_store
+    ):
+        # BZ-02 (Plan 0.12.0, MR 5): der Leader feuert unter dieser ID.
+        tid = await client.schedule("add", 1, 2, queue="math", delay=60.0)
+
+        definition = _patched_schedule_store.add_schedule.await_args.args[0]
+        assert definition.task_id == tid
+
     async def test_schedule_with_eta_writes_to_store(
         self, client, broker, backend, _patched_schedule_store
     ):

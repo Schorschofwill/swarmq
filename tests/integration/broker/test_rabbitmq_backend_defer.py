@@ -20,7 +20,6 @@ from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-import aio_pika
 import pytest
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
@@ -32,6 +31,7 @@ from swarmq.worker import Worker, WorkerState
 from swarmq.worker.gates import GateContext
 from swarmq.worker.outcome import Redelivered
 from tests.contracts._support import Inbox, consume_into
+from tests.support.queues import delete_queue_family
 from tests.support.rabbitmq_faults import publish_failure
 
 pytestmark = [pytest.mark.timeout(15)]
@@ -42,7 +42,9 @@ _BASE_DELAY_S = 0.3
 
 def _worker(broker: RabbitMQBroker) -> Worker:
     cfg = SwarmQConfig(
-        broker_url="amqp://x", backend_url="valkey://x", backend_defer_base_delay=_BASE_DELAY_S,
+        broker_url="amqp://x",
+        backend_url="valkey://x",
+        backend_defer_base_delay=_BASE_DELAY_S,
     )
     backend = MagicMock()
     backend.is_cancelled = AsyncMock(side_effect=BackendConnectionError("valkey down"))
@@ -66,14 +68,7 @@ async def broker(rabbitmq_url: str, queue: str) -> AsyncIterator[RabbitMQBroker]
     yield impl
     with contextlib.suppress(Exception):
         await impl.cancel_consume()
-    connection = await aio_pika.connect_robust(rabbitmq_url)
-    try:
-        channel = await connection.channel()
-        for suffix in ("", ".DQ", ".XQ"):
-            with contextlib.suppress(Exception):
-                await channel.queue_delete(f"{queue}{suffix}")
-    finally:
-        await connection.close()
+    await delete_queue_family(rabbitmq_url, queue)
     await impl.close()
 
 

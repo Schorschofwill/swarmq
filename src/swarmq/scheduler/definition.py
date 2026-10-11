@@ -72,6 +72,20 @@ class ScheduleDefinition(msgspec.Struct, kw_only=True, frozen=True):
     # Neues Feld am Ende mit Default None, damit Eintraege aus aelteren
     # Versionen weiter dekodieren und ihr Fingerabdruck gleich bleibt.
     timezone: str | None = None
+    # Plan 0.12.0 (BZ-02): die von ``schedule(delay=|eta=)`` gelieferte ID,
+    # unter der der Leader den Oneshot feuert. Neues Feld am Ende mit Default
+    # None (Q1); Crons lassen es leer und bekommen je Fire eine neue ID.
+    task_id: str | None = None
+    # Plan 0.12.0 (BZ-03): Wanduhr in ms des ersten unroutbaren Fire-Versuchs
+    # eines Oneshots. Der Leader stellt ihn alle 60 s zurueck und verwirft ihn
+    # nach ``scheduler_unroutable_oneshot_max_s`` ab diesem Zeitpunkt. Neues
+    # Feld am Ende mit Default None (Q1).
+    unroutable_since: int | None = None
+    # Plan 0.12.0 (BZ-09): ``TaskInfo.unique_for`` eines statischen Crons,
+    # vom meldenden Worker mitgeführt. Gesetzt gelten ``unique_for`` und
+    # ``unique_until`` beim Fire aus der Definition, sonst beide aus der
+    # Registry des Leaders. Neues Feld am Ende mit Default None (Q1).
+    unique_for: int | None = None
 
 
 def make_schedfire_key(schedule_name: str, fire_ts_ms: int) -> str:
@@ -165,6 +179,19 @@ class ScheduleStore:
         (KTD8), so the next report recreates the cron enabled."""
         removed = await self._store.remove(schedule_name)
         await self._store.forget_pruned_disabled(schedule_name)
+        # BZ-11: mit der Definition verlaesst der Name das Set der je
+        # gemeldeten Crons -- best effort (Q15: ein Store ohne die Methode
+        # bleibt nutzbar; bleibt der Name stehen, wird ein gleichnamiger
+        # statischer Cron erst nach erneuter Meldung gefeuert).
+        try:
+            await self._store.forget_known_cron(schedule_name)
+        except Exception as exc:
+            logger.warning(
+                "schedule_known_forget_failed",
+                schedule_name=schedule_name,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
         return removed
 
     async def disable_schedule(self, schedule_name: str) -> bool:
@@ -205,12 +232,39 @@ class ScheduleStore:
 
     # ---- Poll / commit --------------------------------------------------
 
-    async def poll_due(self, now_ms: int, limit: int = 100) -> list[tuple[str, int, ScheduleDefinition]]:
+    async def poll_due(
+        self, now_ms: int, limit: int = 100, *, owner_token: str | None = None
+    ) -> list[tuple[str, int, ScheduleDefinition]]:
         """Schedules whose fire-ts is <= ``now_ms`` as
-        ``(schedule_name, score_ms, ScheduleDefinition)``."""
+        ``(schedule_name, score_ms, ScheduleDefinition)``. An undecodable
+        definition is logged and skipped; with ``owner_token`` (the leader)
+        it is also parked: it leaves the fire index, the definition stays
+        for inspection (BZ-28)."""
         rows = await self._store.poll_due(now_ms, limit=limit)
-        self._polled.update({name: (score, payload) for name, score, payload in rows})
-        return [(name, score, msgspec.json.decode(payload, type=ScheduleDefinition)) for name, score, payload in rows]
+        result: list[tuple[str, int, ScheduleDefinition]] = []
+        for name, score, payload in rows:
+            # Zeilenweise (BZ-28): eine kaputte Definition hält die übrigen
+            # nicht auf.
+            try:
+                definition = msgspec.json.decode(payload, type=ScheduleDefinition)
+            except msgspec.DecodeError as exc:
+                logger.warning("schedule_def_malformed_parked", schedule_name=name, **_error_fields(exc))
+                if owner_token is not None:
+                    await self._park(name, score, payload, owner_token)
+                continue
+            self._polled[name] = (score, payload)
+            result.append((name, score, definition))
+        return result
+
+    async def _park(self, name: str, score: int, payload: bytes, owner_token: str) -> None:
+        """Commit ohne neuen Score; Owner-, Score- und Payload-Prüfung in
+        ``sched_commit.lua``. Ein Fehler bleibt bei diesem Eintrag (R18)."""
+        try:
+            await self._store.commit_fire(
+                name, next_fire_ts_ms=None, payload=payload, owner=owner_token, fired_ts_ms=score, fired_payload=payload
+            )
+        except BackendConnectionError as exc:
+            logger.warning("scheduler_park_failed", schedule_name=name, **_error_fields(exc))
 
     async def commit_fire(
         self,

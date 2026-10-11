@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -20,6 +21,7 @@ from aio_pika.exceptions import (
     ConnectionClosed,
 )
 
+from swarmq.broker.rabbitmq.arg_conflict import AdoptionLog
 from swarmq.broker.rabbitmq.consumer_watch import ConsumerWatch
 from swarmq.config import INJECTED_URL
 from swarmq.exceptions import BrokerConnectionError, ConfigurationError
@@ -70,6 +72,42 @@ _POOL_ACQUIRE_TIMEOUT_S = 10.0
 
 ChannelFactory = Callable[[], Awaitable[aio_pika.abc.AbstractChannel]]
 
+
+async def close_channel_quietly(channel: aio_pika.abc.AbstractChannel | None) -> None:
+    """``close()`` ohne ``is_closed``-Pruefung und ohne Ausnahme: nach einem
+    vom Broker geschlossenen Channel (NOT_FOUND, 406) ist ``is_closed`` schon
+    True; ohne eigenes ``close`` oeffnete ein RobustChannel sich wieder und
+    bliebe offen, bis die Verbindung ``channel_max`` erreicht (Review MR 10,
+    P0-1; wie ``arg_conflict``)."""
+    if channel is None:
+        return
+    try:
+        await channel.close()
+    except Exception:
+        pass
+
+
+
+async def _connect_robust_closing_on_cancel(url: str) -> aio_pika.abc.AbstractRobustConnection:
+    """``aio_pika.connect_robust``, abbruchsicher: Wird der Aufbau abgebrochen
+    (etwa ein abgebrochener Worker-Start), baut aio-pika die angelegte
+    Verbindung sonst im Hintergrund weiter auf und verbindet sich alle 5 s neu.
+    Sie wird darum geschlossen (Plan 0.12.0, MR 18; Publish-Verbindung:
+    Nachtrag, von Georg am 2026-10-11 entschieden)."""
+    created: list[aio_pika.abc.AbstractRobustConnection] = []
+
+    class _Tracked(aio_pika.RobustConnection):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            created.append(self)
+
+    try:
+        return await aio_pika.connect_robust(url, connection_class=_Tracked)
+    except asyncio.CancelledError:
+        for connection in created:
+            with contextlib.suppress(Exception):
+                await connection.close()
+        raise
 
 class RabbitMQConnection:
     def __init__(
@@ -129,8 +167,33 @@ class RabbitMQConnection:
         # Verfallsfrist der von swarmq in die DLQ gelegten Nachrichten (KTD6);
         # None heisst unbegrenzt. Wie oben aus der Konfiguration ueberschrieben.
         self.dead_letter_ttl_s: float | None = _DEFAULT_DEAD_LETTER_TTL_S
+        # Plan 0.12.0, MR 8: die zuletzt erfolgreich deklarierten Argumente je
+        # Queue (das Neu-Deklarieren aus MR 6 legt eine geloeschte Queue so
+        # wieder an, wie sie war) und die gedrosselten Uebernahme-Logs.
+        self._declared_arguments: dict[str, dict[str, Any]] = {}
+        # Cache: Queue-Familien, die dieser Prozess schon deklariert hat.
+        self._declaration_cache: set[str] = set()
+        # Delay-Stufen (BZ-01, MR 10), die dieser Prozess deklariert hat; nur
+        # an sie geht eine Rueckstellung, sonst an ``{queue}.DQ``.
+        self._ready_delay_tiers: set[str] = set()
+        # ... und die, deren Deklaration der Broker abgelehnt hat (nicht fatal).
+        self._unavailable_delay_tiers: set[str] = set()
+        # Bestandsqueues ohne at-least-once (BZ-19) fuer die eine Warnung.
+        self._at_most_once_queues: set[str] = set()
+        self._at_most_once_reported = False
+        # ``SWARMQ_QUEUE_DEAD_LETTER_STRATEGY`` (BZ-19): ``auto``, ``at-least-once``
+        # oder ``legacy``; ``SwarmQ.__init__`` ueberschreibt aus der Konfiguration.
+        self.dead_letter_strategy: str = "auto"
+        self._adoption_log = AdoptionLog()
         self._publish_channel: aio_pika.abc.AbstractChannel | None = None
         self._consume_channel: aio_pika.abc.AbstractChannel | None = None
+        # BZ-16 (Plan 0.12.0, MR 16): ``separate`` konsumiert ueber eine
+        # zweite Verbindung, die erst der erste ``consume()`` oeffnet. Bei
+        # einem Broker-Alarm blockiert RabbitMQ nur publizierende
+        # Verbindungen; Acks laufen dann weiter. ``shared`` = wie vor 0.12.
+        # ``SwarmQ.__init__`` ueberschreibt aus der Konfiguration.
+        self.publish_connection: str = "separate"
+        self._consume_connection: aio_pika.abc.AbstractConnection | None = None
         # Consumer-Wächter (Plan 2026-10-08-1541, U6, KTD3): kennt jeden
         # angemeldeten Consumer und meldet verlorene selbst neu an.
         self._consumer_watch = ConsumerWatch()
@@ -197,17 +260,37 @@ class RabbitMQConnection:
         # abgeschlossenen Shutdown darf nicht weiterwirken (R12).
         self._publish_deadline_at = None
         try:
-            self._connection = await aio_pika.connect_robust(self._url)
+            self._connection = await _connect_robust_closing_on_cancel(self._url)
             # Channel creation can fail too (vhost misconfigured, per-
             # connection channel cap, broker restart between
             # connect_robust success and channel() call). These two
             # lines were once outside the BrokerConnectionError
             # wrapper, letting raw aio_pika exceptions escape to the CLI
             # as unformatted tracebacks; keep them inside.
-            self._publish_channel = await self._connection.channel()
-            self._consume_channel = await self._connection.channel()
+            # on_return_raises: ein basic.return (keine Queue) scheitert als
+            # PublishError statt still bestaetigt zu werden (BZ-03).
+            self._publish_channel = await self._connection.channel(on_return_raises=True)
+            if not self._separate_consume_connection():
+                self._consume_channel = await self._connection.channel()
         except Exception as exc:
             raise BrokerConnectionError(str(exc)) from exc
+
+    def _separate_consume_connection(self) -> bool:
+        """Eigene Consume-Verbindung (BZ-16): nur mit eigener URL. Bei
+        injizierter Verbindung oder Pool gibt es keine URL, dann ``shared``."""
+        return self._owns_connection and self.publish_connection == "separate"
+
+    async def _connection_for_consume(self) -> aio_pika.abc.AbstractConnection | None:
+        """Die Verbindung, auf der der Consume-Kanal liegt; oeffnet die
+        zweite Verbindung beim ersten Bedarf (BZ-16)."""
+        if not self._separate_consume_connection() or self._connection is None:
+            return self._connection
+        if self._consume_connection is None:
+            try:
+                self._consume_connection = await _connect_robust_closing_on_cancel(self._url)
+            except Exception as exc:
+                raise BrokerConnectionError(f"consume connection to {sanitize_url(self._url)!r} failed: {exc}") from exc
+        return self._consume_connection
 
     async def _connect_injected(self) -> None:
         # Injected path (producer-only). The borrowed connection (or a
@@ -235,7 +318,7 @@ class RabbitMQConnection:
                     ),
                 )
             assert self._connection is not None
-            self._publish_channel = await self._connection.channel()
+            self._publish_channel = await self._connection.channel(on_return_raises=True)
         except BrokerConnectionError:
             raise
         except Exception as exc:
@@ -322,7 +405,11 @@ class RabbitMQConnection:
         await self._drain_pending_channel_closes()
         if self._owns_connection:
             # Owned (URL) path unchanged: closing the connection closes its
-            # channels too.
+            # channels too. Die Consume-Verbindung (BZ-16) zuerst.
+            if self._consume_connection is not None:
+                consume_connection, self._consume_connection = self._consume_connection, None
+                self._consume_channel = None
+                await consume_connection.close()
             if self._connection is not None:
                 await self._connection.close()
                 self._connection = None
@@ -497,8 +584,11 @@ class RabbitMQConnection:
                 return channel, False
             if self._connection is None:
                 raise BrokerConnectionError("broker not connected")
+            connection = self._connection
+            if attr == "_consume_channel":
+                connection = await self._connection_for_consume() or connection
             try:
-                await asyncio.wait_for(self._connection.ready(), timeout=_CHANNEL_READY_TIMEOUT_S)
+                await asyncio.wait_for(connection.ready(), timeout=_CHANNEL_READY_TIMEOUT_S)
             except TimeoutError as exc:
                 raise BrokerConnectionError(
                     f"connection not ready after {_CHANNEL_READY_TIMEOUT_S}s "
@@ -514,9 +604,13 @@ class RabbitMQConnection:
                     # wartet jeder andere Sperr-Interessent mit — auch der
                     # Verwurf nach einem Deadline-Bruch, der dadurch seine
                     # eigene Frist ueberschreiten wuerde.
-                    channel = await asyncio.wait_for(
-                        self._connection.channel(), timeout=_CHANNEL_READY_TIMEOUT_S
+                    # Nur der Publish-Kanal meldet basic.return (BZ-03).
+                    opened = (
+                        connection.channel(on_return_raises=True)
+                        if attr == "_publish_channel"
+                        else connection.channel()
                     )
+                    channel = await asyncio.wait_for(opened, timeout=_CHANNEL_READY_TIMEOUT_S)
             except Exception as exc:
                 raise BrokerConnectionError(
                     f"channel reopen failed for {attr!r} on {sanitize_url(self._url)!r}: {exc}"
@@ -524,27 +618,39 @@ class RabbitMQConnection:
             setattr(self, attr, channel)
             return channel, True
 
+    def _admin_connection(self) -> aio_pika.abc.AbstractConnection | None:
+        """Verbindung fuer Admin-Lesen: die Consume-Verbindung, falls offen
+        (BZ-16) -- im Broker-Alarm haengt auf der publizierenden Verbindung
+        jeder Frame, auch ein passives Declare --, sonst wie bisher."""
+        consume = self._consume_connection
+        if consume is not None and not consume.is_closed:
+            return consume
+        return self._connection
+
     async def _throwaway_channel_message_count(self, name: str) -> int:
         """Message count of one queue via passive declare on a throwaway
         channel (a failed passive-declare closes the channel). A missing
         queue counts as 0. Shared by the admin depth queries."""
-        if self._connection is None or self._connection.is_closed:
+        connection = self._admin_connection()
+        if connection is None or connection.is_closed:
             raise BrokerConnectionError("broker is not connected")
         channel: aio_pika.abc.AbstractChannel | None = None
         try:
-            channel = await self._connection.channel()
+            channel = await connection.channel()
             q = await channel.declare_queue(name, passive=True)
             result = getattr(q, "declaration_result", None)
             if result is not None:
                 return int(getattr(result, "message_count", 0))
             return 0
         except aio_pika.exceptions.ChannelNotFoundEntity:
+            # Der Broker hat den Channel geschlossen (``is_closed`` ist schon
+            # True): trotzdem ``close()``, sonst oeffnet ein RobustChannel
+            # sich wieder und bleibt offen (Review MR 10, P0-1).
+            await close_channel_quietly(channel)
+            channel = None
             return 0
         except Exception as exc:
             raise BrokerConnectionError(str(exc)) from exc
         finally:
             if channel is not None and not channel.is_closed:
-                try:
-                    await channel.close()
-                except Exception:
-                    pass
+                await close_channel_quietly(channel)

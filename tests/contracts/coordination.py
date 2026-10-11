@@ -57,6 +57,27 @@ macht ``owner`` zum Scheduler-Leader (das Binding erwirbt den Leader-Lock
 # 23. ``report_worker_version`` erscheint in ``worker_versions`` und läuft
 #     nach seiner TTL ab.
 
+# Test list (Plan 0.12.0, MR 4, BZ-28) -- ScheduleStoreContract:
+# 33. ``poll_due`` nimmt deaktivierte Definitionen mit Score aus dem
+#     Fire-Index, bevor das Limit greift; die Definition bleibt.
+
+# Test list (Plan 0.12.0, MR 11, BZ-11) -- ScheduleStoreContract:
+# 34. ``report_cron`` merkt den Namen in ``known_cron_names`` (je gemeldet).
+# 35. ``prune_cron_reports`` laesst ``known_cron_names`` unberuehrt.
+# 36. ``prune_cron`` entfernt den Namen zusammen mit der Definition.
+# 37. ``forget_known_cron`` (CLI ``schedule remove --permanent``) entfernt ihn
+#     ebenso.
+
+# Test list (Plan 0.12.0, MR 14, BZ-04) -- ScheduleStoreContract:
+# 38. ``ensure_epoch`` legt den Epoch nur an, wenn er fehlt, und liefert
+#     danach immer den ersten Wert (``None`` nur beim Anlegen).
+
+# Test list (Plan 0.12.0, MR 18, BZ-14) -- ScheduleStoreContract:
+# 39. ``report_queues`` meldet jede Queue mit Backend-Zeit (``queue_reports``).
+# 40. eine spaetere Meldung rueckt ``last_seen`` vor.
+# 41. ``forget_queue_reports`` entfernt nur die genannten Queues.
+# 42. meldet niemand innerhalb von ``ttl_ms``, verfallen alle Meldungen (Q5).
+
 # Test list (Review #4, atomare Heilung) -- ScheduleStoreContract:
 # 24. ``replan_if_unchanged`` schreibt Definition und Score, wenn die
 #     gespeicherte Definition die gelesene ist und kein Score existiert.
@@ -123,6 +144,49 @@ class LockStoreContract:
         await clock.advance(1.0)
         assert await impl.current_owner(name) == "a"
 
+    async def test_extend_keeps_the_mutex_for_the_owner_only(self, impl: LockStore, clock: Clock) -> None:
+        """BZ-25 (Plan 0.12.0, MR 13): ``extend`` verlaengert einen gehaltenen
+        Mutex nur fuer seinen Halter."""
+        name = _name("lock")
+        token = await impl.acquire(name, owner="a", ttl_ms=300, max_concurrency=1)
+        assert token is not None
+        forged = LockToken(name=name, owner="b", max_concurrency=1)
+        assert await impl.extend(forged, ttl_ms=60_000) is False
+        assert await impl.extend(token, ttl_ms=60_000) is True
+        await clock.advance(0.8)
+        assert await impl.current_owner(name) == "a"
+
+    async def test_extend_keeps_a_semaphore_slot_and_never_shortens(self, impl: LockStore, clock: Clock) -> None:
+        name = _name("sem")
+        a = await impl.acquire(name, owner="a", ttl_ms=300, max_concurrency=2)
+        assert a is not None
+        assert await impl.extend(LockToken(name=name, owner="x", max_concurrency=2), ttl_ms=60_000) is False
+        assert await impl.extend(a, ttl_ms=60_000) is True
+        assert await impl.extend(a, ttl_ms=100) is True  # kuerzer: bleibt bei 60 s
+        await clock.advance(0.8)
+        assert await impl.acquire(name, owner="b", ttl_ms=60_000, max_concurrency=2) is not None
+        assert await impl.acquire(name, owner="c", ttl_ms=60_000, max_concurrency=2) is None  # a haelt noch
+        assert await impl.release(a) is True
+
+    async def test_extend_after_expiry_fails(self, impl: LockStore, clock: Clock) -> None:
+        name = _name("lock")
+        token = await impl.acquire(name, owner="a", ttl_ms=300, max_concurrency=1)
+        assert token is not None
+        await clock.advance(0.8)
+        assert await impl.extend(token, ttl_ms=60_000) is False
+
+    async def test_acquire_with_a_shorter_ttl_keeps_the_longer_semaphore_holder(
+        self, impl: LockStore, clock: Clock,
+    ) -> None:
+        """Rev. 3 F6 (MR 13): ein Erwerber mit kurzer TTL verkuerzt den Key
+        nicht unter einem Langlaeufer weg."""
+        name = _name("sem")
+        a = await impl.acquire(name, owner="a", ttl_ms=3_600_000, max_concurrency=2)
+        assert a is not None
+        assert await impl.acquire(name, owner="b", ttl_ms=300, max_concurrency=2) is not None
+        await clock.advance(0.8)
+        assert await impl.release(a) is True, "a ist nach dem kurzen Erwerber b nicht mehr Halter"
+
     async def test_lock_expires_after_ttl(self, impl: LockStore, clock: Clock) -> None:
         name = _name("lock")
         await impl.acquire(name, owner="a", ttl_ms=300, max_concurrency=1)
@@ -159,6 +223,21 @@ class LockStoreContract:
 
     async def test_current_owner_of_unknown_lock_is_none(self, impl: LockStore) -> None:
         assert await impl.current_owner(_name("lock")) is None
+
+    async def test_observe_reports_holders_and_remaining_ttl(self, impl: LockStore) -> None:
+        """BZ-05 (Plan 0.12.0, MR 13): ein Wartender liest die Halter (Fingerprint)
+        und die Rest-TTL des Keys; -2 ohne Key."""
+        mutex, sem = _name("lock"), _name("sem")
+        await impl.acquire(mutex, owner="a", ttl_ms=60_000, max_concurrency=1)
+        await impl.acquire(sem, owner="a", ttl_ms=60_000, max_concurrency=3)
+        await impl.acquire(sem, owner="b", ttl_ms=60_000, max_concurrency=3)
+
+        seen = await impl.observe(mutex, max_concurrency=1)
+        assert seen.owners == frozenset({"a"}) and 0 < seen.pttl_ms <= 60_000
+        seen = await impl.observe(sem, max_concurrency=3)
+        assert seen.owners == frozenset({"a", "b"}) and 0 < seen.pttl_ms <= 60_000
+        gone = await impl.observe(_name("lock"), max_concurrency=1)
+        assert gone.owners == frozenset() and gone.pttl_ms == -2
 
 
 @pytest.mark.timeout(5)
@@ -268,6 +347,15 @@ class ScheduleStoreContract:
         for i, n in enumerate(names):
             await impl.add(n, b"x", fire_ts_ms=100 + i)
         assert len(await impl.poll_due(1_000, limit=2)) <= 2
+
+    async def test_poll_due_drops_disabled_entries_before_the_limit(self, impl: ScheduleStore) -> None:
+        """Liste 33 (BZ-28)."""
+        off, on = _name("sched"), _name("sched")
+        await impl.put(off, b'{"disabled":true}', fire_ts_ms=100)
+        await impl.put(on, b'{"disabled":false}', fire_ts_ms=200)
+        assert [n for n, _, _ in await impl.poll_due(1_000, limit=1)] == [on]
+        assert await impl.fire_ts(off) is None
+        assert await impl.get(off) == b'{"disabled":true}'
 
     async def test_disable_replaces_definition_and_removes_from_index(self, impl: ScheduleStore) -> None:
         name = _name("sched")
@@ -602,6 +690,43 @@ class ScheduleStoreContract:
         assert await self._reports_of(impl, stale) == []
         assert [r.payload for r in await self._reports_of(impl, fresh)] == [b"f"]
 
+    async def test_epoch_is_created_once_and_then_kept(self, impl: ScheduleStore) -> None:
+        # Der Epoch ist ein einzelner Key je Valkey: ein frueherer Test oder
+        # Worker kann ihn schon angelegt haben.
+        candidate = _name("epoch")
+        previous = await impl.ensure_epoch(candidate)
+        current = candidate if previous is None else previous
+        assert await impl.ensure_epoch(_name("epoch")) == current
+        assert await impl.ensure_epoch(_name("epoch")) == current
+
+    async def test_report_queues_records_each_queue_in_backend_time(self, impl: ScheduleStore) -> None:
+        a, b = _name("queue"), _name("queue")
+        await impl.report_queues([a, b], ttl_ms=60_000)
+        snapshot = await impl.queue_reports()
+        assert snapshot.last_seen_ms[a] == snapshot.last_seen_ms[b] <= snapshot.now_ms
+
+    async def test_later_queue_report_advances_last_seen(self, impl: ScheduleStore, clock: Clock) -> None:
+        queue = _name("queue")
+        await impl.report_queues([queue], ttl_ms=60_000)
+        first = (await impl.queue_reports()).last_seen_ms[queue]
+        await clock.advance(0.05)
+        await impl.report_queues([queue], ttl_ms=60_000)
+        assert (await impl.queue_reports()).last_seen_ms[queue] > first
+
+    async def test_queue_reports_expire_without_a_report_within_ttl(self, impl: ScheduleStore, clock: Clock) -> None:
+        queue = _name("queue")
+        await impl.report_queues([queue], ttl_ms=100)
+        await clock.advance(0.2)
+        assert queue not in (await impl.queue_reports()).last_seen_ms
+
+    async def test_forget_queue_reports_removes_only_the_named_queues(self, impl: ScheduleStore) -> None:
+        gone, kept = _name("queue"), _name("queue")
+        await impl.report_queues([gone, kept], ttl_ms=60_000)
+        await impl.forget_queue_reports([gone])
+        reported = (await impl.queue_reports()).last_seen_ms
+        assert gone not in reported
+        assert kept in reported
+
     async def test_leader_info_without_version_key(self, impl: ScheduleStore, leader: Leader) -> None:
         owner = _name("old-leader")
         await leader(owner)
@@ -641,3 +766,34 @@ class ScheduleStoreContract:
         await impl.set_handover_marker(_name("owner"), ttl_ms=60_000)
         assert await impl.take_handover_marker() is True
         assert await impl.take_handover_marker() is False
+
+    async def test_report_cron_remembers_the_name_as_known(self, impl: ScheduleStore) -> None:
+        name = _name("cron")
+        await impl.report_cron(name, "fp1", b"def", live_window_ms=60_000)
+        assert name in await impl.known_cron_names()
+
+    async def test_pruning_reports_keeps_the_known_name(self, impl: ScheduleStore, clock: Clock) -> None:
+        name = _name("cron")
+        await impl.report_cron(name, "fp1", b"def", live_window_ms=60_000)
+        await clock.advance(0.2)
+        await impl.prune_cron_reports(max_age_ms=100)
+        assert await self._reports_of(impl, name) == []
+        assert name in await impl.known_cron_names()
+
+    async def test_prune_cron_forgets_the_known_name_with_the_definition(
+        self, impl: ScheduleStore, clock: Clock
+    ) -> None:
+        name = _name("cron")
+        await impl.put(name, b"def", 1_000)
+        await impl.report_cron(name, "fp1", b"def", live_window_ms=60_000)
+        await clock.advance(0.2)
+        assert await impl.prune_cron(name, b"def", stale_after_ms=100, remember_disabled=False) is True
+        assert name not in await impl.known_cron_names()
+
+    async def test_forget_known_cron_removes_the_name(self, impl: ScheduleStore) -> None:
+        name, other = _name("cron"), _name("cron")
+        await impl.report_cron(name, "fp1", b"def", live_window_ms=60_000)
+        await impl.report_cron(other, "fp1", b"def", live_window_ms=60_000)
+        await impl.forget_known_cron(name)
+        known = await impl.known_cron_names()
+        assert name not in known and other in known

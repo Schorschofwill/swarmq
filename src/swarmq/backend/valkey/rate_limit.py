@@ -14,6 +14,7 @@ import valkey.exceptions
 
 from swarmq.backend.valkey.connection import as_backend_error
 from swarmq.contracts import RateLimitDecision
+from swarmq.keyspace import KeySpace
 from swarmq.limits import RateLimitConfig
 from swarmq.lua import load_script
 
@@ -26,8 +27,11 @@ class RateLimiter:
     path — we do not reimplement it.
     """
 
-    def __init__(self, client: valkey_asyncio.Valkey) -> None:
+    def __init__(self, client: valkey_asyncio.Valkey, *, keys: KeySpace | None = None) -> None:
         self._client = client
+        # Ohne ``keys`` nur ohne Namensraum (Review MR 15, P2-3); das Backend
+        # reicht seinen KeySpace durch.
+        self._keys = keys if keys is not None else KeySpace()
         self._script = client.register_script(load_script("sliding_window_counter"))
 
     async def check(self, task_name: str, config: RateLimitConfig) -> tuple[bool, int, int]:
@@ -49,8 +53,8 @@ class RateLimiter:
         # sliding_window_counter.lua reads both in one EVAL and would
         # otherwise fail with CROSSSLOT on a sharded cluster.
         keys = [
-            f"sq:rl:{{{task_name}}}:{window_ts}",
-            f"sq:rl:{{{task_name}}}:{prev_ts}",
+            self._keys.rate_limit(task_name, window_ts),
+            self._keys.rate_limit(task_name, prev_ts),
         ]
         result = await self._script(keys=keys, args=[config.max_requests, config.window_size_ms, now_ms])
         allowed_raw, remaining_raw, retry_raw = result
@@ -60,8 +64,8 @@ class RateLimiter:
 class ValkeyRateLimitStore:
     """``RateLimitStore``-Vertrag über ``RateLimiter``."""
 
-    def __init__(self, client: valkey_asyncio.Valkey) -> None:
-        self._limiter = RateLimiter(client)
+    def __init__(self, client: valkey_asyncio.Valkey, *, keys: KeySpace | None = None) -> None:
+        self._limiter = RateLimiter(client, keys=keys)
 
     @property
     def limiter(self) -> RateLimiter:

@@ -21,6 +21,13 @@ Test-Liste:
 10. Scheitert der Marker-Aufruf am Backend, läuft das Verb trotzdem
     (WARNING ``execution_guard_finish_failed``).
 11. Alle anderen Attribute (Admin, Publish) gehen an den inneren Broker.
+
+Plan 0.12.0, MR 12 (BZ-12):
+12. Ein gescheitertes Ack kuendigt eine Neuzustellung an, die hinter einem
+    Rueckstand zurueckkommen kann: der Done-Marker lebt den Rueckstand
+    (``execution_guard_backlog_ttl_s``), nicht nur die Done-TTL.
+13. ``SettleFailedAfterPublish`` nach Dead-Letter (Done) und nach Retry
+    (Superseded) ebenso.
 """
 
 from __future__ import annotations
@@ -31,7 +38,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from swarmq.config import SwarmQConfig
-from swarmq.exceptions import BackendConnectionError, BrokerConnectionError, SettleFailedAfterPublish
+from swarmq.exceptions import (
+    BackendConnectionError,
+    BrokerConnectionError,
+    MessageHeadersTooLarge,
+    SettleFailedAfterPublish,
+)
 from swarmq.task import TaskInfo
 from swarmq.worker.gates import GateContext
 from swarmq.worker.gates.execution_guard import ExecutionGuard
@@ -227,6 +239,20 @@ async def test_retry_copy_published_but_ack_failed_still_marks_superseded(
     assert await _status(backend, retry_count=0) == "superseded"
 
 
+async def test_too_large_dead_letter_headers_leave_the_lease_for_the_fallback(
+    broker: GuardedBroker, guard: ExecutionGuard, inner: MagicMock, backend: InMemoryBackend,
+) -> None:
+    """Q14 (Plan 0.12.0, MR 2): ``MessageHeadersTooLarge`` ist ein
+    gescheiterter Publish, kein ``SettleFailedAfterPublish`` -- kein Done."""
+    delivery = await _claimed(guard)
+    inner.dead_letter.side_effect = MessageHeadersTooLarge("headers take 70000 bytes")
+
+    with pytest.raises(MessageHeadersTooLarge):
+        await broker.dead_letter(delivery, headers={})
+
+    assert await _status(backend) == "running"
+
+
 async def test_failed_retry_publish_leaves_the_lease_for_the_fallback(
     broker: GuardedBroker, guard: ExecutionGuard, inner: MagicMock, backend: InMemoryBackend,
 ) -> None:
@@ -336,3 +362,41 @@ async def test_orphan_limit_dead_letter_marks_done(
 
     inner.dead_letter.assert_awaited_once()
     assert await _status(backend) == "done"
+
+
+async def test_failed_ack_marks_done_for_the_backlog(
+    broker: GuardedBroker, guard: ExecutionGuard, inner: MagicMock, backend: InMemoryBackend, clock: FakeClock,
+) -> None:
+    delivery = await _claimed(guard)
+    inner.ack.side_effect = BrokerConnectionError("channel closed")
+    with pytest.raises(BrokerConnectionError):
+        await broker.ack(delivery)
+
+    await clock.advance(2 * 3600)  # ueber die Done-TTL (3900 s), weit unter 7 d
+    assert await _status(backend) == "done"
+
+
+async def test_settle_failed_after_publish_marks_for_the_backlog(
+    broker: GuardedBroker, guard: ExecutionGuard, inner: MagicMock, backend: InMemoryBackend, clock: FakeClock,
+) -> None:
+    """Die Kopie liegt, das Ack scheiterte: das Original kommt wieder -- auch
+    hinter einem Rueckstand. Done (Dead-Letter) und Superseded (Retry) leben
+    den Rueckstand."""
+    dead = await _claimed(guard)
+    inner.dead_letter.side_effect = SettleFailedAfterPublish("ack failed")
+    with pytest.raises(SettleFailedAfterPublish):
+        await broker.dead_letter(dead, headers={})
+    await clock.advance(2 * 3600)
+    assert await _status(backend) == "done"
+
+    retried = make_message(headers={})
+    ctx = GateContext(task_id="t-2", task_name="t", queue="q", task_info=TaskInfo(name="t", queues=["q"]))
+    await guard.apply(retried, ctx)
+    inner.retry_later.side_effect = SettleFailedAfterPublish("ack failed")
+    with pytest.raises(SettleFailedAfterPublish):
+        await broker.retry_later(retried, delay_ms=5, headers={"x-swarmq-retry-count": 1})
+    await clock.advance(2 * 3600)
+    claim = await backend.execution_guard.claim(
+        "t-2", owner="probe", retry_count=0, ttl_ms=60_000, state_ttl_ms=600_000, max_orphans=99,
+    )
+    assert claim.status == "superseded"

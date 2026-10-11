@@ -1,5 +1,7 @@
 {
   "sq:cancel:golden-task-0001": "string",
+  "sq:control:setpoint:golden-group": "string",
+  "sq:control:status:golden-group:golden-sup": "string",
   "sq:guard:{golden-task-0001}:run": "string",
   "sq:guard:{golden-task-0001}:state": "hash",
   "sq:lock:golden-lock": "string",
@@ -17,10 +19,14 @@
   "sq:wf:golden-wf-0001": "string",
   "sq:{sched}:defs": "hash",
   "sq:{sched}:disabled": "set",
+  "sq:{sched}:epoch": "string",
+  "sq:{sched}:handover": "string",
   "sq:{sched}:leader_version": "string",
   "sq:{sched}:report:def": "hash",
   "sq:{sched}:report:first_seen": "hash",
+  "sq:{sched}:report:known": "set",
   "sq:{sched}:report:last_seen": "hash",
+  "sq:{sched}:report:queues": "hash",
   "sq:{sched}:worker_version:golden-worker": "string",
   "sq:{sched}:zset": "zset"
 }

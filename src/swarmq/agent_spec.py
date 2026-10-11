@@ -86,6 +86,13 @@ _ERROR_SEMANTICS: dict[str, dict[str, Any]] = {
         dlq_on_uncaught="n/a", exit_code_on_cli=CONFIG_ERROR_EXIT_CODE,
         transport_field="stderr line",
     ),
+    "QueueArgumentsMismatch": dict(
+        # Eine vorhandene Queue hat andere, nicht uebernehmbare Argumente
+        # (BZ-15, Plan 0.12.0, MR 8); ein Neustart aendert nichts.
+        origin="library", when=["startup"], retriable="no",
+        dlq_on_uncaught="n/a", exit_code_on_cli=CONFIG_ERROR_EXIT_CODE,
+        transport_field="stderr line",
+    ),
     "LoggingConfigError": dict(
         # Ungueltige Logging-Einstellungen enden im Worker mit Exit 78
         # (Plan 2026-10-06-0831, R14).
@@ -111,6 +118,33 @@ _ERROR_SEMANTICS: dict[str, dict[str, Any]] = {
         origin="library", when=["run"], retriable="no",
         dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",
     ),
+    "UnroutableMessage": dict(
+        # Die Queue fehlt; dieselbe Nachricht scheitert wieder, bis ein
+        # Worker sie deklariert hat. Nichts wurde zugestellt (Plan 0.12.0,
+        # MR 6, BZ-03).
+        origin="library", when=["schedule", "run"], retriable="no",
+        dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",
+    ),
+    "MessageHeadersTooLarge": dict(
+        # Dieselben Header scheitern wieder; nichts wurde gesendet
+        # (Plan 0.12.0, MR 2, BZ-17).
+        origin="library", when=["schedule", "run"], retriable="no",
+        dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",
+    ),
+    "BrokerPublishBlocked": dict(
+        # Der Broker blockierte die Publish-Verbindung (Ressourcenalarm) bis
+        # zur Publish-Frist; nichts wurde gesendet, ein spaeterer Versuch ist
+        # sicher (Plan 0.12.0, MR 16, BZ-16).
+        origin="library", when=["schedule", "run"], retriable="yes",
+        dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",
+    ),
+    "PublishRejected": dict(
+        # Der Broker lehnte den Publish fuer diese Queue ueber alle Versuche
+        # ab (negatives Confirm, etwa reject-publish); die Verbindung ist
+        # gesund (Review MR 15, P2-2).
+        origin="library", when=["schedule", "run"], retriable="yes",
+        dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",
+    ),
     "BackendConnectionError": dict(
         origin="library", when=["startup", "schedule", "run"], retriable="no",
         dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",
@@ -127,6 +161,21 @@ _ERROR_SEMANTICS: dict[str, dict[str, Any]] = {
         origin="library", when=["schedule"], retriable="no",
         dlq_on_uncaught="n/a", exit_code_on_cli=None,
         transport_field="raised to caller",
+    ),
+    "RedeliveryLimitError": dict(
+        # Nie geworfen: Fehlertyp der DLQ-Kopie, wenn nur ``x-acquired-count``
+        # (RabbitMQ 4.3) das Zustelllimit erreicht (Plan 0.12.0, MR 3, BZ-29).
+        origin="library", when=["run"], retriable="no",
+        dlq_on_uncaught="yes", exit_code_on_cli=None,
+        transport_field="error_message, is_error=true",
+    ),
+    "LockWaitExceeded": dict(
+        # Nie geworfen: Fehlertyp der DLQ-Kopie, wenn die Wartezeit auf einen
+        # Lock endet (Stillstand des Halters oder SWARMQ_LOCK_WAIT_MAX_S;
+        # Plan 0.12.0, MR 13, BZ-05).
+        origin="library", when=["run"], retriable="no",
+        dlq_on_uncaught="yes", exit_code_on_cli=None,
+        transport_field="error_message, is_error=true",
     ),
     "TaskError": dict(
         origin="library", when=["result"], retriable="n/a",
@@ -333,7 +382,9 @@ def _cli_exit_codes() -> list[dict[str, Any]]:
             "Configuration error of `swarmq worker` (EX_CONFIG): "
             "ConfigurationError, task module not importable, `--configure` "
             "hook failed, invalid logging settings (LoggingConfigError); "
-            "retrying without a change is pointless"
+            "retrying without a change is pointless. `swarmq check`: a worker "
+            "would refuse to start in this environment (evicting Valkey "
+            "maxmemory-policy under SWARMQ_VALKEY_EVICTION_CHECK=strict)"
         )},
         {"code": exit_code_for(KeyboardInterrupt()), "meaning": (
             "Interrupted by Ctrl-C (KeyboardInterrupt, 128 + SIGINT) outside "

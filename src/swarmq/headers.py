@@ -71,3 +71,74 @@ HEADER_DEAD_LETTERED_AT = "x-swarmq-dead-lettered-at"
 # der eigenen Konfiguration -- ein Leser mit kuerzerer Frist loescht sonst
 # Nachrichten, die der Worker laenger halten wollte (Review Phase 2).
 HEADER_DEAD_LETTER_TTL_MS = "x-swarmq-dead-letter-ttl-ms"
+
+# Erster Kontakt mit einem Task-Namen, den der Worker nicht kennt, in
+# Epoch-Millisekunden (Plan 0.12.0, MR 11, BZ-06). Zustands-Header der
+# Rueckstellschleife: jede Kopie der Gates traegt ihn weiter (Q6); die
+# fachliche Retry-Kopie, der DLQ-Stempel und ``dlq retry`` entfernen ihn,
+# damit eine spaetere Unbekanntheit (naechster Rollout) neu gemessen wird.
+HEADER_UNKNOWN_SINCE = "x-swarmq-unknown-since"
+
+# Ausfuehrungsidentitaet (Plan 0.12.0, MR 12, BZ-08): Summe der ``x-death``-
+# Zaehler ausserhalb der Delay-Queues, die eine Kopie von swarmq mitnimmt.
+# Der Broker baut ``x-death`` beim naechsten Dead-Lettern neu auf (Spike S5);
+# die Base haelt den Stand fest, damit die Identitaet ``task_id|H#n`` stabil
+# bleibt. Fehlt der Header (0.11, UI-Move), gilt Base 0.
+HEADER_XDEATH_BASE = "x-swarmq-xdeath-base"
+
+# Generation beim Dead-Lettern durch den Worker (MR 12): der Wert von
+# ``x-swarmq-dead-lettered-at`` desselben Stempels. ``dlq retry`` behaelt die
+# Replay-ID (Generations-ID) nur, wenn beide gleich sind; hat ein 0.11-Worker
+# die Nachricht erneut dead-gelettert, stempelt er ``dead-lettered-at`` neu,
+# und die CLI vergibt eine neue ``uuid4``.
+HEADER_DLQ_GENERATION = "x-swarmq-dlq-gen"
+
+# Lock-Konflikte warten zeitbasiert (Plan 0.12.0, MR 13, BZ-05). Zustands-
+# Header der Rueckstellschleife (Q6): jede Kopie der Gates traegt sie weiter;
+# die fachliche Retry-Kopie, der DLQ-Stempel und ``dlq retry`` entfernen sie.
+# ``x-swarmq-lock-conflicts`` zaehlt die Konflikte (speist das Signal-kwarg
+# ``lock_conflict_count``); der Legacy-Zaehler ``x-swarmq-lock-conflict-count``
+# wird von 0.12 nicht mehr erhoeht, weil 0.11-Worker derselben App ab 10 in
+# die DLQ schicken. ``lock-wait-since``: erster Konflikt (Epoch-ms, Worker-
+# Wanduhr); ``lock-holder``: Fingerprint der Halter beim letzten Wechsel,
+# ``lock-holder-since``: Zeitpunkt des Wechsels, ``lock-holder-ttl-ms``: die
+# damals beobachtete PTTL des Keys (Basis fuer die Stillstandsgrenze + 60 s).
+HEADER_LOCK_CONFLICTS = "x-swarmq-lock-conflicts"
+# Legacy-Zaehler aus 0.11 (Deckel 10): 0.12 setzt und liest ihn nicht mehr,
+# Kopien tragen ihn unveraendert weiter (Wire-Name bleibt, Golden).
+HEADER_LOCK_CONFLICT_COUNT_LEGACY = "x-swarmq-lock-conflict-count"
+HEADER_LOCK_WAIT_SINCE = "x-swarmq-lock-wait-since"
+HEADER_LOCK_HOLDER = "x-swarmq-lock-holder"
+HEADER_LOCK_HOLDER_SINCE = "x-swarmq-lock-holder-since"
+HEADER_LOCK_HOLDER_TTL_MS = "x-swarmq-lock-holder-ttl-ms"
+# Generation der Wartezeit (Review MR 13, P2-4): Retry-Zaehler und Replay-ID
+# der Zustellung, deren Konflikt die Wartezeit begann (``"<retry>:<replay>"``).
+# Eine Kopie einer spaeteren Ausfuehrung, die die Zustands-Header noch traegt
+# (0.11 entfernt sie weder in der Retry-Kopie noch bei ``dlq retry``), beginnt
+# eine neue Wartezeit; fehlt der Header, gilt ``"0:"``.
+HEADER_LOCK_WAIT_GEN = "x-swarmq-lock-wait-gen"
+
+# Zustands-Header einer Lock-Wartezeit (ohne ``x-swarmq-lock-name``). Eine
+# Kopie einer vom Broker neu zugestellten Nachricht traegt sie nicht weiter
+# (Review MR 13, P2-4): die Wartezeit endete mit dem Acquire.
+LOCK_WAIT_STATE_HEADERS: tuple[str, ...] = (
+    HEADER_LOCK_CONFLICTS,
+    HEADER_LOCK_WAIT_SINCE,
+    HEADER_LOCK_WAIT_GEN,
+    HEADER_LOCK_HOLDER,
+    HEADER_LOCK_HOLDER_SINCE,
+    HEADER_LOCK_HOLDER_TTL_MS,
+)
+
+# Zustands-Header aller Rueckstellschleifen (Q6): bleiben auf jeder Kopie,
+# die ein Gate vor der Ausfuehrung anlegt; entfernt nur in der fachlichen
+# Retry-Kopie, im DLQ-Stempel und durch ``dlq retry``.
+LOOP_STATE_HEADERS: tuple[str, ...] = (
+    HEADER_UNKNOWN_SINCE,
+    HEADER_LOCK_CONFLICTS,
+    HEADER_LOCK_WAIT_SINCE,
+    HEADER_LOCK_HOLDER,
+    HEADER_LOCK_HOLDER_SINCE,
+    HEADER_LOCK_HOLDER_TTL_MS,
+    HEADER_LOCK_WAIT_GEN,
+)

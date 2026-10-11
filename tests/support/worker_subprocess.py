@@ -62,6 +62,7 @@ def spawn_worker(
     concurrency: int = 4,
     env_extra: dict[str, str] | None = None,
     extra_args: list[str] | None = None,
+    python: str | None = None,
 ) -> subprocess.Popen[str]:
     """Launch ``swarmq.cli worker`` as a subprocess.
 
@@ -88,6 +89,10 @@ def spawn_worker(
         Additional env vars to set in the subprocess.
     extra_args :
         Additional CLI args appended after the standard set.
+    python :
+        Interpreter to run the worker with (default: this test's
+        ``sys.executable``). The compat suite passes the interpreter of an
+        isolated venv with an older swarmq release (Q2).
     """
     env = dict(os.environ)
     env["SWARMQ_BROKER_URL"] = broker_url
@@ -98,13 +103,18 @@ def spawn_worker(
         env.update(env_extra)
 
     cmd: list[str] = [
-        sys.executable,
-        "-m", "swarmq.cli",
+        python or sys.executable,
+        "-m",
+        "swarmq.cli",
         "worker",
-        "--module", fixture_module,
-        "--queues", queue_name,
-        "--concurrency", str(concurrency),
-        "--log-format", "json",
+        "--module",
+        fixture_module,
+        "--queues",
+        queue_name,
+        "--concurrency",
+        str(concurrency),
+        "--log-format",
+        "json",
     ]
     if extra_args:
         cmd.extend(extra_args)
@@ -136,7 +146,11 @@ def worker_children(proc: subprocess.Popen[str]) -> list[psutil.Process]:
 
 
 def wait_for_worker_children(
-    proc: subprocess.Popen[str], *, count: int = 1, timeout: float = 10.0, exclude: Collection[int] = (),
+    proc: subprocess.Popen[str],
+    *,
+    count: int = 1,
+    timeout: float = 10.0,
+    exclude: Collection[int] = (),
 ) -> list[psutil.Process]:
     """Block until the supervisor runs ``count`` worker children, not
     counting the PIDs in ``exclude`` (e.g. a child just killed, to wait for
@@ -210,9 +224,7 @@ def wait_for_worker_started(
         line = proc.stdout.readline() if proc.stdout else ""
         if not line:
             if proc.poll() is not None:
-                raise RuntimeError(
-                    f"worker exited before starting; rc={proc.returncode}"
-                )
+                raise RuntimeError(f"worker exited before starting; rc={proc.returncode}")
             continue
         if marker in line:
             return

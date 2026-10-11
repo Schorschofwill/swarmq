@@ -17,19 +17,18 @@ Queue zu laufen. Abgesichert durch ``tests/e2e/test_retry_band.py``.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from swarmq.backoff import calculate_backoff
 from swarmq.cancellation import build_error_result_dict
 from swarmq.exceptions import (
-    BackendConnectionError,
     NoRetry,
     Retry,
     TaskNotFoundError,
-    WorkflowStateConflict,
 )
-from swarmq.headers import HEADER_RETRY_COUNT, HEADER_WORKFLOW_ID
+from swarmq.header_text import bounded_header_text
+from swarmq.headers import HEADER_RETRY_COUNT, LOOP_STATE_HEADERS
 from swarmq.logging import _error_fields, get_logger
 from swarmq.serialization import encode_result
 from swarmq.signals import Signal
@@ -38,6 +37,7 @@ from swarmq.worker.compute.pool import SlotUnavailable
 from swarmq.worker.execution import ExecutionResult
 from swarmq.worker.gates import GateContext, GateDeps, dead_letter_copy, redeliver_in_place, republish_headers
 from swarmq.worker.outcome import DeliveryOutcome, Redelivered
+from swarmq.worker.terminal import fail_workflow_step
 
 if TYPE_CHECKING:
     from swarmq.middleware import MessageContext, MiddlewareChain
@@ -128,8 +128,13 @@ class RetryHandler:
         # header) survives redelivery -- ohne die Zustellzaehler des Brokers
         # (neue Nachricht, eigenes Zustellbudget).
         headers = republish_headers(delivery, ctx)
+        # Q6 (BZ-06, BZ-05): der Task lief -- die Rueckstellschleifen
+        # ("unbekannt", Lock-Wartezeit) sind beendet, spaetere beginnen mit
+        # frischer Frist.
+        for state_header in LOOP_STATE_HEADERS:
+            headers.pop(state_header, None)
         headers[HEADER_RETRY_COUNT] = retry_count + 1
-        headers["x-swarmq-traceback"] = error_message
+        headers["x-swarmq-traceback"] = bounded_header_text(error_message)
         try:
             await deps.broker.retry_later(delivery, delay_ms=delay_ms, headers=headers)
         except Exception as broker_exc:
@@ -164,12 +169,48 @@ class RetryHandler:
         await self.dead_letter(delivery, ctx, error_message, type(exc).__name__)
         return Redelivered
 
-    async def dead_letter(self, delivery: Any, ctx: GateContext, error_message: str, error_type: str) -> None:
+    async def fail_workflow(
+        self, delivery: Any, ctx: GateContext, error_message: str, may_redeliver: bool = True
+    ) -> bool:
+        """Workflow der Zustellung fehlmarkieren (BZ-13, ``GateDeps.fail_workflow``).
+        ``False``: voruebergehend gescheitert und neu zugestellt -- nur bei
+        *may_redeliver* und AT_LEAST_ONCE (bzw. unregistriertem Task)."""
+        try:
+            task_info = self._deps.registry.get(ctx.task_name).task_info
+        except TaskNotFoundError:
+            task_info = None
+        at_least_once = task_info is None or task_info.delivery is DeliveryMode.AT_LEAST_ONCE
+        return await fail_workflow_step(
+            self._deps, self._workflow_advancer(), delivery, ctx, error_message,
+            redeliver=may_redeliver and at_least_once, log=logger,
+        )
+
+    async def dead_letter(
+        self,
+        delivery: Any,
+        ctx: GateContext,
+        error_message: str,
+        error_type: str,
+        *,
+        may_redeliver: bool = True,
+        extra_headers: Mapping[str, Any] | None = None,
+        on_publish_failure: Callable[[Exception], Awaitable[None]] | None = None,
+    ) -> bool:
         """Store error result in backend, dead-letter, and ack the original.
+
+        ``True``, wenn die DLQ-Kopie liegt (auch bei ``SettleFailedAfterPublish``);
+        ``False``, wenn die Zustellung stattdessen neu zugestellt wurde oder der
+        DLX-Fallback des Aufrufers lief (Plan 0.12.0, MR 11).
 
         ``error_type`` ist der Klassenname der ausloesenden Ausnahme (R17):
         ``task_sent_to_dlq`` traegt damit dasselbe Fehlerschema wie
         ``_error_fields``; ``error`` bleibt der Fehlertext ``error_message``.
+        ``may_redeliver=False`` (am Zustelllimit): eine voruebergehend
+        gescheiterte Workflow-Fehlmarkierung stellt nicht neu zu.
+        ``extra_headers``: Diagnose-Header der DLQ-Kopie (Lock-Pfade).
+        ``on_publish_failure``: ersetzt das ``redeliver`` nach gescheitertem
+        DLQ-Publish (Lock-Pfade: terminaler DLX-Fallback, die Ursache ist
+        dauerhaft).
         """
         deps = self._deps
         task_id, task_name, queue = ctx.task_id, ctx.task_name, ctx.queue
@@ -180,6 +221,20 @@ class RetryHandler:
             task_info_for_release = deps.registry.get(task_name).task_info
         except TaskNotFoundError:
             task_info_for_release = None
+
+        # R4.1 fail-fast + liveness (U6): if this terminally-failed message is
+        # a workflow step, mark the whole workflow failed synchronously and
+        # wake any handle.get() waiter — so get() raises the error within
+        # bounded time instead of hanging to its timeout, and no subsequent
+        # step / chord body is enqueued. Scheitert die Markierung
+        # voruebergehend, stellt sie AT_LEAST_ONCE-Zustellungen neu zu
+        # (non-terminal: das Unique-Flag bleibt stehen, damit der terminale
+        # Pfad der Redelivery es freigibt); bei FIRE_AND_FORGET gibt es
+        # nichts zurueckzuhalten. Vor dem Speichern des Fehlerergebnisses:
+        # die Markierung prueft, ob der Schritt schon erfolgreich erledigt
+        # ist (MR 3, BZ-13), und saehe sonst das eigene Fehlerergebnis.
+        if not await self.fail_workflow(delivery, ctx, error_message, may_redeliver):
+            return False
 
         # Store error result so callers of get_result() get a response
         result_data = build_error_result_dict(
@@ -201,57 +256,17 @@ class RetryHandler:
         except Exception as store_exc:
             logger.warning("dlq_result_store_failed", **_error_fields(store_exc))
 
-        # R4.1 fail-fast + liveness (U6): if this terminally-failed message is
-        # a workflow step, mark the whole workflow failed synchronously and
-        # wake any handle.get() waiter — so get() raises the error within
-        # bounded time instead of hanging to its timeout, and no subsequent
-        # step / chord body is enqueued.
-        wf_id = deps.extract_valid_workflow_id(delivery)
-        if wf_id is None and (delivery.headers or {}).get(HEADER_WORKFLOW_ID) is not None:
-            logger.warning("workflow_id_header_invalid", task_id=task_id, task_name=task_name)
-        advancer = self._workflow_advancer()
-        if wf_id is not None and advancer is not None:
-            try:
-                await advancer.fail(wf_id, "TaskError", error_message)
-            except (BackendConnectionError, WorkflowStateConflict) as wf_exc:
-                # R25/KTD12 (U10): ``dead_letter`` bestaetigt das Original —
-                # ohne terminalen Workflow-Zustand bliebe der Workflow bis zum
-                # TTL ``RUNNING`` und ``handle.get()`` liefe in den Timeout.
-                # Die Redelivery wiederholt Fail-Mark und Dead-Letter (beide
-                # idempotent); das Delivery-Limit begrenzt die Schleife. Bei
-                # FIRE_AND_FORGET gibt es nichts zurueckzuhalten.
-                at_least_once = (
-                    task_info_for_release is None
-                    or task_info_for_release.delivery is DeliveryMode.AT_LEAST_ONCE
-                )
-                logger.error(
-                    "workflow_fail_mark_failed", workflow_id=wf_id,
-                    **_error_fields(wf_exc), redelivered=at_least_once,
-                )
-                if at_least_once:
-                    try:
-                        await redeliver_in_place(deps, delivery, ctx)
-                    except Exception:
-                        pass
-                    # Non-terminal — das Unique-Flag bleibt stehen, damit der
-                    # terminale Pfad der Redelivery es freigibt.
-                    return
-            except Exception as wf_exc:
-                # Deterministisch: eine Redelivery drehte bis zum
-                # Delivery-Limit, ohne dass die Markierung je gelingt.
-                logger.error(
-                    "workflow_fail_mark_failed", workflow_id=wf_id,
-                    **_error_fields(wf_exc), redelivered=False,
-                )
-
         # R3.5 Unit 11: preserve all inbound headers so a message that
         # reached DLQ via retry-exhaustion still carries its original
         # x-swarmq-unique-hash for operator introspection (inline
         # release below takes care of the actual flag cleanup).
         headers = {**(dict(delivery.headers) if delivery.headers else {})}
-        headers["x-swarmq-traceback"] = error_message
+        headers["x-swarmq-traceback"] = bounded_header_text(error_message)
+        headers.update(extra_headers or {})
+        placed = False
         try:
             await dead_letter_copy(deps, delivery, headers)
+            placed = True
             # Release AFTER successful ack (dead_letter bestätigt das
             # Original). If it raises, the except branch redelivers and
             # the redelivery's terminal path must still be able to
@@ -266,12 +281,17 @@ class RetryHandler:
                 Signal.TASK_DLQ, task_id=task_id, task_name=task_name, queue=queue, error=error_message
             )
         except Exception as broker_exc:
-            logger.error("dlq_publish_failed", **_error_fields(broker_exc))
-            try:
-                await redeliver_in_place(deps, delivery, ctx)
-            except Exception:
-                pass
-            # Non-terminal — leave the flag so the redelivery's terminal
-            # path releases it. No release here.
+            if on_publish_failure is not None:
+                # Terminaler Fallback des Aufrufers (gibt selbst frei).
+                await on_publish_failure(broker_exc)
+            else:
+                logger.error("dlq_publish_failed", **_error_fields(broker_exc))
+                try:
+                    await redeliver_in_place(deps, delivery, ctx)
+                except Exception:
+                    pass
+                # Non-terminal — leave the flag so the redelivery's terminal
+                # path releases it. No release here.
         # KTD11: der Task ist endgueltig fehlgeschlagen -> ERROR.
         logger.error("task_sent_to_dlq", error_type=error_type, error=error_message)
+        return placed

@@ -15,47 +15,54 @@ import valkey.asyncio as valkey_asyncio
 from valkey.exceptions import ValkeyError
 
 from swarmq.backend.valkey.connection import as_backend_error
-from swarmq.contracts.coordination import CronReport, CronReports, LeaderInfo
+from swarmq.contracts.coordination import CronReport, CronReports, LeaderInfo, QueueReports
 from swarmq.exceptions import BackendConnectionError
-from swarmq.locking import SCHEDULER_LOCK_KEY
+from swarmq.keyspace import KeySpace
 from swarmq.lua import load_script
+
+# Nur ohne Namensraum (Review MR 15, P2-3): die Modulkonstanten und
+# ``fired_key``/``inflight_key``/``handover_key`` nennen die Keys ohne
+# Praefix. Mit ``SWARMQ_NAMESPACE`` liegen sie unter ``<ns>:sq:...``; der
+# Store nimmt dann den KeySpace des Backends (``keys=``).
+_DEFAULT_KEYS = KeySpace()
 
 # The {sched} hash tag co-locates zset, defs and the leader
 # lock (sq:lock:{sched}:leader) in ONE Valkey-Cluster hash slot —
 # sched_poll.lua/sched_commit.lua touch them in a single EVAL and would
 # otherwise die with CROSSSLOT on a sharded cluster. Single-key markers
 # (fired/inflight/handover) deliberately carry no tag.
-ZSET_KEY = "sq:{sched}:zset"
-DEFS_KEY = "sq:{sched}:defs"
+# Die Namen bildet ``swarmq.keyspace`` (Plan 0.12.0, Q4); die Konstanten
+# bleiben als Aliase der Default-Keys.
+ZSET_KEY = _DEFAULT_KEYS.sched_zset()
+DEFS_KEY = _DEFAULT_KEYS.sched_defs()
 # Cron-Meldungen der Worker (Plan 2026-10-08-1541, KTD10): drei Hashes mit
 # demselben Hash-Tag, Feld jeweils ``name|fingerprint``.
-REPORT_FIRST_SEEN_KEY = "sq:{sched}:report:first_seen"
-REPORT_LAST_SEEN_KEY = "sq:{sched}:report:last_seen"
-REPORT_DEF_KEY = "sq:{sched}:report:def"
-_REPORT_KEYS = [REPORT_FIRST_SEEN_KEY, REPORT_LAST_SEEN_KEY, REPORT_DEF_KEY]
+REPORT_FIRST_SEEN_KEY = _DEFAULT_KEYS.sched_report_first_seen()
+REPORT_LAST_SEEN_KEY = _DEFAULT_KEYS.sched_report_last_seen()
+REPORT_DEF_KEY = _DEFAULT_KEYS.sched_report_def()
 # Version des Leaders neben dem Leader-Lock (KTD11), Wert ``owner|version``
 # mit der Lock-TTL; 0.9.0-Leader schreiben ihn nie.
-LEADER_VERSION_KEY = "sq:{sched}:leader_version"
+LEADER_VERSION_KEY = _DEFAULT_KEYS.sched_leader_version()
 # Versionen der meldenden Worker (KTD11): ein String-Key je Worker mit der
 # Lebendigkeits-TTL der Cron-Meldungen; abgelaufene verschwinden von selbst.
-WORKER_VERSION_PREFIX = "sq:{sched}:worker_version:"
+WORKER_VERSION_PREFIX = _DEFAULT_KEYS.sched_worker_version_prefix
 # Beim Aufraeumen deaktivierte Crons (KTD8): ein Set mit den Namen; das
 # Wiederanlegen nach einer neuen Meldung uebernimmt ``disabled``.
-PRUNED_DISABLED_KEY = "sq:{sched}:disabled"
+PRUNED_DISABLED_KEY = _DEFAULT_KEYS.sched_disabled()
 
 
 def fired_key(schedfire_key: str) -> str:
-    return f"sq:sched:fired:{schedfire_key}"
+    return _DEFAULT_KEYS.sched_fired(schedfire_key)
 
 
 def inflight_key(schedfire_key: str) -> str:
     """Separate namespace from the completed marker so the two TTLs can
     coexist without collision."""
-    return f"sq:sched:inflight:{schedfire_key}"
+    return _DEFAULT_KEYS.sched_inflight(schedfire_key)
 
 
 def handover_key(owner_token: str) -> str:
-    return f"sq:sched:handover:{owner_token}"
+    return _DEFAULT_KEYS.sched_handover(owner_token)
 
 
 def _decode(value: bytes | str) -> str:
@@ -63,8 +70,19 @@ def _decode(value: bytes | str) -> str:
 
 
 class ValkeyScheduleStore:
-    def __init__(self, client: valkey_asyncio.Valkey) -> None:
+    def __init__(self, client: valkey_asyncio.Valkey, *, keys: KeySpace | None = None) -> None:
         self._client = client
+        self._keys = keys if keys is not None else _DEFAULT_KEYS
+        k = self._keys
+        self._zset = k.sched_zset()
+        self._defs = k.sched_defs()
+        self._report_last_seen = k.sched_report_last_seen()
+        self._report_keys = [k.sched_report_first_seen(), self._report_last_seen, k.sched_report_def()]
+        self._report_known = k.sched_report_known()
+        self._report_queues = k.sched_report_queues()
+        self._disabled = k.sched_disabled()
+        self._leader_version = k.sched_leader_version()
+        self._scheduler_lock = k.scheduler_lock()
         self._poll_script = client.register_script(load_script("sched_poll"))
         self._commit_script = client.register_script(load_script("sched_commit"))
         self._disable_script = client.register_script(load_script("sched_disable"))
@@ -76,6 +94,12 @@ class ValkeyScheduleStore:
         self._report_script = client.register_script(load_script("sched_report"))
         self._report_prune_script = client.register_script(load_script("sched_report_prune"))
         self._prune_script = client.register_script(load_script("sched_prune"))
+
+    def _fired(self, schedfire_key: str) -> str:
+        return self._keys.sched_fired(schedfire_key)
+
+    def _inflight(self, schedfire_key: str) -> str:
+        return self._keys.sched_inflight(schedfire_key)
 
     async def _run(self, what: str, coro: Any) -> Any:
         """Transportfehler -> ``BackendConnectionError``, Fehlerantworten und
@@ -108,7 +132,7 @@ class ValkeyScheduleStore:
             await self.zadd_schedule(name, fire_ts_ms)
 
     async def exists(self, name: str) -> bool:
-        result = await self._run("hexists", self._client.hexists(DEFS_KEY, name))
+        result = await self._run("hexists", self._client.hexists(self._defs, name))
         return bool(result)
 
     async def remove(self, name: str) -> bool:
@@ -118,12 +142,15 @@ class ValkeyScheduleStore:
         await self.hdel_schedule_def(name)
         return existed
 
+    async def forget_known_cron(self, name: str) -> None:
+        await self._run(f"forget_known_cron for {name!r}", self._client.srem(self._report_known, name))
+
     async def get(self, name: str) -> bytes | None:
         return await self.hget_schedule_def(name)
 
     async def fire_ts(self, name: str) -> int | None:
         """ZSCORE im Fire-Index; ``None`` ohne Eintrag."""
-        score = await self._run("fire_ts", self._client.zscore(ZSET_KEY, name))
+        score = await self._run("fire_ts", self._client.zscore(self._zset, name))
         return None if score is None else int(score)
 
     async def list_all(self) -> Mapping[str, bytes]:
@@ -137,21 +164,22 @@ class ValkeyScheduleStore:
         in einem EVAL (Review #4)."""
         result = await self._run(
             f"sched_replan for {name!r}",
-            self._replan_script(keys=[DEFS_KEY, ZSET_KEY], args=[name, expected, payload, fire_ts_ms]),
+            self._replan_script(keys=[self._defs, self._zset], args=[name, expected, payload, fire_ts_ms]),
         )
         return int(result) == 1
 
     async def disable(self, name: str, payload: bytes) -> bool:
         """``sched_disable.lua``: HEXISTS-Guard, dann HSET + ZREM atomar."""
         result = await self._run(
-            f"sched_disable for {name!r}", self._disable_script(keys=[DEFS_KEY, ZSET_KEY], args=[name, payload])
+            f"sched_disable for {name!r}", self._disable_script(keys=[self._defs, self._zset], args=[name, payload])
         )
         return int(result) == 1
 
     async def poll_due(self, now_ms: int, *, limit: int = 100) -> list[tuple[str, int, bytes]]:
-        """``sched_poll.lua`` (read-only): ``(name, fire_ts_ms, payload)`` der
-        fälligen Einträge; Waisen ohne Definition überspringt das Skript."""
-        rows = await self._run("sched_poll", self._poll_script(keys=[ZSET_KEY, DEFS_KEY], args=[now_ms, limit]))
+        """``sched_poll.lua``: ``(name, fire_ts_ms, payload)`` der fälligen
+        Einträge. Waisen ohne Definition und deaktivierte Definitionen nimmt
+        das Skript aus dem Fire-Index, bevor das Limit greift (BZ-28)."""
+        rows = await self._run("sched_poll", self._poll_script(keys=[self._zset, self._defs], args=[now_ms, limit]))
         result: list[tuple[str, int, bytes]] = []
         for member_raw, score_raw, def_raw in rows:
             result.append((_decode(member_raw), int(_decode(score_raw)), def_raw))
@@ -186,7 +214,7 @@ class ValkeyScheduleStore:
             args.append(fired_payload)
         result = await self._run(
             f"sched_commit for {name!r}",
-            self._commit_script(keys=[ZSET_KEY, DEFS_KEY, SCHEDULER_LOCK_KEY], args=args),
+            self._commit_script(keys=[self._zset, self._defs, self._scheduler_lock], args=args),
         )
         return int(result) in (1, 2)
 
@@ -203,7 +231,7 @@ class ValkeyScheduleStore:
         result = await self._run(
             "sched_fire_claim",
             self._fire_claim_script(
-                keys=[inflight_key(fire_key)], args=[owner or "1", ttl_ms, *(offered or [""])],
+                keys=[self._inflight(fire_key)], args=[owner or "1", ttl_ms, *(offered or [""])],
             ),
         )
         return int(result) == 1
@@ -213,7 +241,7 @@ class ValkeyScheduleStore:
             await self.clear_schedfire_inflight(fire_key)
             return
         await self._run(
-            "release_fire_claim", self._owner_release_script(keys=[inflight_key(fire_key)], args=[owner]),
+            "release_fire_claim", self._owner_release_script(keys=[self._inflight(fire_key)], args=[owner]),
         )
 
     async def is_fire_completed(self, fire_key: str) -> bool:
@@ -222,25 +250,50 @@ class ValkeyScheduleStore:
     async def set_handover_marker(self, owner: str, ttl_ms: int) -> None:
         await self.set_schedfire_handover_marker(owner, ttl_ms)
 
-    async def take_handover_marker(self) -> bool:
-        return await self.get_and_del_schedfire_handover_marker()
+    async def take_handover_marker(self, previous_owner: str | None = None) -> bool:
+        """``GETDEL`` auf den festen Key, kein SCAN über die DB (BZ-07); der
+        Legacy-Key des gefundenen Owners wird mit entfernt. Ein Leader vor
+        0.12 schreibt nur den Legacy-Key: ihn findet ``previous_owner``."""
+        owner = await self._run("take_handover_marker", self._client.getdel(self._keys.sched_handover_latest()))
+        if owner is not None:
+            await self._run("take_handover_marker", self._client.delete(self._keys.sched_handover(_decode(owner))))
+            return True
+        if previous_owner is None:
+            return False
+        legacy = await self._run("take_handover_marker", self._client.getdel(self._keys.sched_handover(previous_owner)))
+        return legacy is not None
+
+    async def ensure_epoch(self, candidate: str) -> str | None:
+        """``SET NX GET`` in einem Schritt (Valkey >= 7): ``None``, wenn der
+        Epoch eben angelegt wurde, sonst der gespeicherte Wert (BZ-04)."""
+        previous = await self._run(
+            "ensure_epoch", self._client.set(self._keys.sched_epoch(), candidate, nx=True, get=True)
+        )
+        return None if previous is None else _decode(previous)
 
     async def report_cron(
         self, name: str, fingerprint: str, payload: bytes, *, live_window_ms: int,
     ) -> None:
-        """``sched_report.lua``: Meldung mit Server-Zeit (``TIME``)."""
+        """``sched_report.lua``: Meldung mit Server-Zeit (``TIME``); danach der
+        Name ins Set der je gemeldeten Crons (BZ-11, eigener Befehl: die
+        Arität des Skripts bleibt, Q3)."""
         await self._run(
             f"sched_report for {name!r}",
             self._report_script(
-                keys=_REPORT_KEYS, args=[f"{name}|{fingerprint}", payload, live_window_ms],
+                keys=self._report_keys, args=[f"{name}|{fingerprint}", payload, live_window_ms],
             ),
         )
+        await self._run(f"sched_report_known for {name!r}", self._client.sadd(self._report_known, name))
+
+    async def known_cron_names(self) -> frozenset[str]:
+        raw = await self._run("known_cron_names", self._client.smembers(self._report_known))
+        return frozenset(_decode(name) for name in raw)
 
     async def cron_reports(self) -> CronReports:
         """``TIME`` und die drei Meldungs-Hashes in einer Transaktion."""
         async with self._client.pipeline(transaction=True) as pipe:
             pipe.time()
-            for key in _REPORT_KEYS:
+            for key in self._report_keys:
                 pipe.hgetall(key)
             (seconds, micros), first, last, defs = await self._run("cron_reports", pipe.execute())
         reports: list[CronReport] = []
@@ -256,7 +309,7 @@ class ValkeyScheduleStore:
     async def prune_cron_reports(self, *, max_age_ms: int) -> int:
         """``sched_report_prune.lua``: Prüfen und Löschen in einem Schritt."""
         result = await self._run(
-            "sched_report_prune", self._report_prune_script(keys=_REPORT_KEYS, args=[max_age_ms]),
+            "sched_report_prune", self._report_prune_script(keys=self._report_keys, args=[max_age_ms]),
         )
         return int(result)
 
@@ -267,54 +320,88 @@ class ValkeyScheduleStore:
         result = await self._run(
             f"sched_prune for {name!r}",
             self._prune_script(
-                keys=[DEFS_KEY, ZSET_KEY, REPORT_LAST_SEEN_KEY, PRUNED_DISABLED_KEY],
+                keys=[self._defs, self._zset, self._report_last_seen, self._disabled],
                 args=[
                     name, expected, "" if stale_after_ms is None else stale_after_ms,
                     "1" if remember_disabled else "0",
                 ],
             ),
         )
-        return int(result) == 1
+        if int(result) != 1:
+            return False
+        # BZ-11: der Name verlaesst das Set der je gemeldeten Crons nur mit
+        # der Definition (eigener Befehl, Aritaet des Skripts bleibt, Q3).
+        await self._run(f"sched_prune_known for {name!r}", self._client.srem(self._report_known, name))
+        return True
 
     async def pruned_disabled(self, name: str) -> bool:
-        result = await self._run("pruned_disabled", self._client.sismember(PRUNED_DISABLED_KEY, name))
+        result = await self._run("pruned_disabled", self._client.sismember(self._disabled, name))
         return bool(result)
 
     async def forget_pruned_disabled(self, name: str) -> None:
-        await self._run("forget_pruned_disabled", self._client.srem(PRUNED_DISABLED_KEY, name))
+        await self._run("forget_pruned_disabled", self._client.srem(self._disabled, name))
+
+    async def report_queues(self, queues: Sequence[str], *, ttl_ms: int) -> None:
+        """Queue-Meldung mit Server-Zeit (BZ-14): erst ``TIME``, dann ``HSET``
+        und ``PEXPIRE`` in einer Transaktion. Kein Lua-Skript: zwei Roundtrips
+        je Meldetakt, nicht je Nachricht."""
+        if not queues:
+            return
+        seconds, micros = await self._run("report_queues", self._client.time())
+        now_ms = int(seconds) * 1000 + int(micros) // 1000
+        async with self._client.pipeline(transaction=True) as pipe:
+            pipe.hset(self._report_queues, mapping=dict.fromkeys(queues, now_ms))
+            pipe.pexpire(self._report_queues, ttl_ms)
+            await self._run("report_queues", pipe.execute())
+
+    async def queue_reports(self) -> QueueReports:
+        """``TIME`` und der Meldungs-Hash in einer Transaktion (BZ-14)."""
+        async with self._client.pipeline(transaction=True) as pipe:
+            pipe.time()
+            pipe.hgetall(self._report_queues)
+            (seconds, micros), raw = await self._run("queue_reports", pipe.execute())
+        return QueueReports(
+            now_ms=int(seconds) * 1000 + int(micros) // 1000,
+            last_seen_ms={_decode(queue): int(last) for queue, last in raw.items()},
+        )
+
+    async def forget_queue_reports(self, queues: Sequence[str]) -> None:
+        if queues:
+            await self._run("forget_queue_reports", self._client.hdel(self._report_queues, *queues))
 
     async def report_worker_version(self, worker_id: str, version: str, *, ttl_ms: int) -> None:
         await self._run(
             "report_worker_version",
-            self._client.set(f"{WORKER_VERSION_PREFIX}{worker_id}", version, px=ttl_ms),
+            self._client.set(self._keys.sched_worker_version(worker_id), version, px=ttl_ms),
         )
 
     async def worker_versions(self) -> Mapping[str, str]:
         """SCAN über die Worker-Keys (nur für ``schedule status``), dann MGET;
         zwischendurch abgelaufene Keys fehlen im Ergebnis."""
         try:
-            keys = [key async for key in self._client.scan_iter(match=f"{WORKER_VERSION_PREFIX}*", count=100)]
+            pattern = f"{self._keys.sched_worker_version_prefix}*"
+            keys = [key async for key in self._client.scan_iter(match=pattern, count=100)]
         except (ValkeyError, OSError) as exc:
             raise as_backend_error(str(exc), exc) from exc
         if not keys:
             return {}
         values = await self._run("worker_versions", self._client.mget(keys))
         return {
-            _decode(key).removeprefix(WORKER_VERSION_PREFIX): _decode(value)
+            _decode(key).removeprefix(self._keys.sched_worker_version_prefix): _decode(value)
             for key, value in zip(keys, values, strict=True)
             if value is not None
         }
 
     async def set_leader_version(self, owner: str, version: str, *, ttl_ms: int) -> None:
         await self._run(
-            "set_leader_version", self._client.set(LEADER_VERSION_KEY, f"{owner}|{version}", px=ttl_ms),
+            "set_leader_version", self._client.set(self._leader_version, f"{owner}|{version}", px=ttl_ms),
         )
 
     async def leader_info(self) -> LeaderInfo:
         """Lock-Owner und Versions-Key in einer Transaktion."""
         async with self._client.pipeline(transaction=True) as pipe:
-            pipe.get(SCHEDULER_LOCK_KEY)
-            pipe.get(LEADER_VERSION_KEY)
+            pipe.get(self._scheduler_lock)
+            pipe.get(self._leader_version)
             raw_owner, raw_version = await self._run("leader_info", pipe.execute())
         owner = None if raw_owner is None else _decode(raw_owner)
         version = None
@@ -328,40 +415,40 @@ class ValkeyScheduleStore:
     # ------------------------------------------------------------------
 
     async def zadd_schedule(self, schedule_name: str, fire_ts_ms: int) -> None:
-        await self._run("zadd_schedule", self._client.zadd(ZSET_KEY, {schedule_name: fire_ts_ms}))
+        await self._run("zadd_schedule", self._client.zadd(self._zset, {schedule_name: fire_ts_ms}))
 
     async def zrem_schedule(self, schedule_name: str) -> None:
-        await self._run("zrem_schedule", self._client.zrem(ZSET_KEY, schedule_name))
+        await self._run("zrem_schedule", self._client.zrem(self._zset, schedule_name))
 
     async def zrangebyscore_schedules(self, max_score_ms: int, limit: int) -> list[bytes]:
         result: list[bytes] = await self._run(
-            "zrangebyscore_schedules", self._client.zrangebyscore(ZSET_KEY, "-inf", max_score_ms, start=0, num=limit)
+            "zrangebyscore_schedules", self._client.zrangebyscore(self._zset, "-inf", max_score_ms, start=0, num=limit)
         )
         return result
 
     async def hset_schedule_def(self, schedule_name: str, def_json: bytes) -> None:
-        await self._run("hset_schedule_def", self._client.hset(DEFS_KEY, schedule_name, def_json))  # type: ignore[arg-type]
+        await self._run("hset_schedule_def", self._client.hset(self._defs, schedule_name, def_json))  # type: ignore[arg-type]
 
     async def hsetnx_schedule_def(self, schedule_name: str, def_json: bytes) -> bool:
-        result = await self._run("hsetnx_schedule_def", self._client.hsetnx(DEFS_KEY, schedule_name, def_json))  # type: ignore[arg-type]
+        result = await self._run("hsetnx_schedule_def", self._client.hsetnx(self._defs, schedule_name, def_json))  # type: ignore[arg-type]
         return int(result) == 1
 
     async def hget_schedule_def(self, schedule_name: str) -> bytes | None:
-        result: bytes | None = await self._run("hget_schedule_def", self._client.hget(DEFS_KEY, schedule_name))
+        result: bytes | None = await self._run("hget_schedule_def", self._client.hget(self._defs, schedule_name))
         return result
 
     async def hdel_schedule_def(self, schedule_name: str) -> None:
-        await self._run("hdel_schedule_def", self._client.hdel(DEFS_KEY, schedule_name))
+        await self._run("hdel_schedule_def", self._client.hdel(self._defs, schedule_name))
 
     async def hgetall_schedule_defs(self) -> dict[bytes, bytes]:
-        result: dict[bytes, bytes] = await self._run("hgetall_schedule_defs", self._client.hgetall(DEFS_KEY))
+        result: dict[bytes, bytes] = await self._run("hgetall_schedule_defs", self._client.hgetall(self._defs))
         return result
 
     async def set_schedfire_dedup(self, schedfire_key: str, ttl_ms: int) -> bool:
         """Consumer-side "completed" marker (long TTL, written AFTER the task
         finished; Unit 1). True when this was the first write."""
         result = await self._run(
-            "set_schedfire_dedup", self._client.set(fired_key(schedfire_key), "1", nx=True, px=ttl_ms)
+            "set_schedfire_dedup", self._client.set(self._fired(schedfire_key), "1", nx=True, px=ttl_ms)
         )
         return bool(result)
 
@@ -369,7 +456,7 @@ class ValkeyScheduleStore:
         """Pre-run claim with a short TTL; a crashed claimant lets the next
         redelivery re-run (Unit 1)."""
         result = await self._run(
-            "set_schedfire_inflight", self._client.set(inflight_key(schedfire_key), "1", nx=True, px=ttl_ms)
+            "set_schedfire_inflight", self._client.set(self._inflight(schedfire_key), "1", nx=True, px=ttl_ms)
         )
         return bool(result)
 
@@ -377,26 +464,26 @@ class ValkeyScheduleStore:
         """Release the claim WITHOUT the completed marker:
         the fire is being re-delivered, so the long-TTL marker must not make
         the redelivered copy get ack+skipped."""
-        await self._run("clear_schedfire_inflight", self._client.delete(inflight_key(schedfire_key)))
+        await self._run("clear_schedfire_inflight", self._client.delete(self._inflight(schedfire_key)))
 
     async def is_schedfire_completed(self, schedfire_key: str) -> bool:
-        result = await self._run("is_schedfire_completed", self._client.exists(fired_key(schedfire_key)))
+        result = await self._run("is_schedfire_completed", self._client.exists(self._fired(schedfire_key)))
         return bool(result == 1)
 
     async def set_schedfire_handover_marker(self, owner_token: str, ttl_ms: int) -> None:
-        """Leader marker set right before graceful release."""
-        await self._run("set_schedfire_handover_marker", self._client.set(handover_key(owner_token), "1", px=ttl_ms))
+        """Leader marker set right before graceful release: the fixed key for
+        successors from 0.12 on (BZ-07, no SCAN) plus the per-owner key that
+        successors before 0.12 find by SCAN."""
+        await self._run(
+            "set_schedfire_handover_marker",
+            self._client.set(self._keys.sched_handover_latest(), owner_token, px=ttl_ms),
+        )
+        key = self._keys.sched_handover(owner_token)
+        await self._run("set_schedfire_handover_marker", self._client.set(key, "1", px=ttl_ms))
 
-    async def get_and_del_schedfire_handover_marker(self) -> bool:
-        """Consume any handover marker set by a previous leader (scan + delete)."""
-        found_any = False
-        try:
-            async for key in self._client.scan_iter(match="sq:sched:handover:*", count=100):
-                await self._client.delete(key)
-                found_any = True
-        except (ValkeyError, OSError) as exc:
-            raise BackendConnectionError(str(exc)) from exc
-        return found_any
+    async def get_and_del_schedfire_handover_marker(self, previous_owner: str | None = None) -> bool:
+        """Alias von :meth:`take_handover_marker` (Name der früheren Fassade)."""
+        return await self.take_handover_marker(previous_owner)
 
 
 if TYPE_CHECKING:  # Konformitäts-Anker (KTD1)

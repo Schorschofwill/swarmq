@@ -39,6 +39,15 @@ Store und publisht zum Fire-Zeitpunkt an RabbitMQ. Siehe
 `delay=0` ist ein einfacher Immediate-Publish; nur positives
 `delay` oder beliebiges `eta` nimmt den Scheduler-Pfad.
 
+Ein verzögerter Task läuft unter der ID, die `schedule()` geliefert
+hat. `get_result()`, `cancel()` und das Dedup-Flag von `unique_for`
+wirken daher wie bei einem sofortigen Task. Die ID steht im Feld
+`task_id` des Oneshot-Eintrags (`oneshot:<task_id>`). Ein Leader vor
+0.12 kennt das Feld nicht und feuert unter einer neuen ID. Solange ein
+solcher Leader die Rolle hat, läuft `get_result()` auf die gelieferte ID
+in den Timeout, und `cancel()` wirkt nicht. Jeder Cron-Fire bekommt eine
+neue ID.
+
 ## Cron-Scheduling
 
 Für wiederkehrende Arbeit setze `cron` auf `TaskInfo`:
@@ -171,7 +180,8 @@ an Valkey: beim Start und danach alle
 Meldung enthält den Namen, die vollständige Definition und einen
 Fingerabdruck über die Felder aus dem Code: Cron-Ausdruck, Zeitzone
 (bereits aufgelöst aus Task oder Standard des Workers), Queue und
-Task-Name. Meldungen tragen die Serverzeit von Valkey, Uhrabweichungen
+Task-Name, dazu `unique_for` und `unique_until`, wenn der Task
+`unique_for` setzt (ab 0.12). Meldungen tragen die Serverzeit von Valkey, Uhrabweichungen
 zwischen Workern spielen keine Rolle.
 
 Der Scheduler-Leader übernimmt gemeldete Crons im selben Takt: sofort
@@ -201,8 +211,11 @@ Was das praktisch heißt:
 - Ein statischer Cron, den ein lebender Worker meldet, ist nach
   `swarmq schedule remove --permanent` binnen eines Takts wieder da.
   Dauerhaft weg ist er erst, wenn ihn kein Code mehr meldet.
-- Ein aus dem Code entfernter Cron hört auf zu feuern, sobald ihn
-  `SWARMQ_SCHEDULER_PRUNE_AFTER_S` lang (Standard 24 h; ab 0.11.0, siehe
+- Ein aus dem Code entfernter Cron hört auf zu feuern, sobald ihn kein
+  lebender Worker mehr meldet: Ab 0.12 hält der Leader ihn zurück (siehe
+  [zurückgehaltene Crons](#crons-die-niemand-meldet-werden-zuruckgehalten))
+  und entfernt ihn, sobald ihn `SWARMQ_SCHEDULER_PRUNE_AFTER_S` lang
+  (Standard 24 h; ab 0.11.0, siehe
   [Crons entfernen](#crons-entfernen-die-keine-app-mehr-meldet)) kein
   Worker gemeldet hat. Sofort loswerden lässt er sich mit
   `swarmq schedule remove --permanent NAME`, sobald ihn kein Worker mehr
@@ -211,9 +224,16 @@ Was das praktisch heißt:
   mit der Warnung `scheduler_static_cron_shadowed_by_cli`.
 - Crons anderer Apps auf demselben Valkey feuern ohne die Warnung
   `scheduler_task_not_in_local_registry`, solange ein lebender Worker
-  sie meldet. Ihre `TaskInfo` kennt der Leader weiterhin nicht;
-  `unique_for` eines solchen Tasks wirkt also nicht auf seine
-  Cron-Fires.
+  sie meldet.
+- `unique_for` eines Cron-Tasks wirkt bei jedem Leader, auch bei einem,
+  dessen eigene Registry den Task nicht kennt (andere App, anderes
+  `--module`, getrennte CPU- und IO-Worker). Die Meldung trägt
+  `unique_for` und `unique_until`, und der Leader nimmt beide aus der
+  Definition; eine Definition ohne sie (vor 0.12 geschrieben oder ein
+  CLI-Schedule) nutzt die eigene `TaskInfo` des Leaders. Das braucht
+  einen Leader ab 0.12; solange ein Leader vor 0.12 die Rolle hält,
+  kann ein langer Cron-Lauf den nächsten Termin wieder überlappen
+  ([Unique-Crons](locking-and-dedup.de.md#unique-crons)).
 
 Meldungen, die 7 Tage lang nicht erneuert wurden, löscht der Leader,
 oder nach dem Doppelten von `SWARMQ_SCHEDULER_PRUNE_AFTER_S`, falls das
@@ -254,7 +274,7 @@ alt ist.
   wirkt nicht, solange eine andere App den Leader stellt.
 - **Deaktivierte Crons kommen deaktiviert zurück.** Der Leader merkt
   sich einen Cron, der beim Entfernen deaktiviert war
-  (`sq:{sched}:disabled`); meldet ihn ein Worker wieder, wird er
+  (`[<namensraum>:]sq:{sched}:disabled`); meldet ihn ein Worker wieder, wird er
   deaktiviert angelegt, und der Leader loggt
   `scheduler_cron_revived_disabled` (WARNING). Das gilt auch nach
   `schedule prune --orphans`. Gehört der Name inzwischen zu einem
@@ -280,6 +300,50 @@ nichts. Die Frist muss mindestens das Dreifache von
     umgestellt ist; dann `scheduler_cron_prune_skipped` auf Crons
     beobachten, die entfernt worden wären.
 
+### Crons, die niemand meldet, werden zurückgehalten
+
+Seit 0.12 feuert der Leader keinen statischen Cron, den kein lebender
+Worker mehr meldet und den er selbst nicht registriert. Vorher feuerte
+ein Cron, dessen Task aus dem Code entfernt wurde, weiter, bis die
+Aufräumfrist (24 h) ablief, und jeder Fire endete als unregistrierter
+Task in der `.XQ`. Jetzt hält der Leader einen solchen Cron zurück: Er
+verschiebt den Termin in jedem Poll ohne Publish auf
+`jetzt + SWARMQ_SCHEDULER_SEEN_INTERVAL_S`, bis ein Worker den Cron
+wieder meldet oder der Leader ihn aufräumt.
+
+Ein Cron gilt als verwaist, wenn alles Folgende zutrifft:
+
+- Der Leader hat die Cron-Meldungen in seiner aktuellen Amtszeit
+  geladen (direkt nach dem Erwerb des Locks wartet er darauf höchstens
+  5 s; ohne Meldungen, etwa weil Valkey nicht erreichbar war, feuert er
+  wie bisher — fail-open).
+- Ein Worker ab 0.12 hat den Namen irgendwann gemeldet
+  (`[<namensraum>:]sq:{sched}:report:known`, ein Set von Namen, das nur zusammen mit
+  der Definition entfernt wird, durch das Aufräumen oder durch
+  `swarmq schedule remove --permanent`).
+- Es gibt keine lebende Meldung des Namens.
+- Der Cron ist keiner der eigenen statischen Crons des Leaders.
+- Die gespeicherte Definition hat `source="static"` (ein CLI-Schedule
+  gleichen Namens wird nie zurückgehalten).
+
+Der Übergang wird einmal je Cron geloggt: `scheduler_cron_held_unowned`
+(WARNING), wenn das Zurückhalten beginnt, `scheduler_cron_unowned_released`
+(INFO), wenn der Cron wieder feuert oder entfernt wird. Das Signal
+`SCHEDULER_CRON_UNOWNED` (`schedule_name`, `task_name`, `held`,
+`held_count`) feuert bei beiden Übergängen, und die Gauge
+`swarmq_scheduler_crons_held{worker_id}` zeigt, wie viele Crons der
+Leader zurückhält. Ein zurückgehaltener Cron holt verpasste Termine
+nicht nach: Der nächste Fire ist der nächste Termin, nachdem ein Worker
+ihn gemeldet hat.
+
+**Mischbetrieb.** Nur ein Leader ab 0.12 hält Crons zurück; solange
+eine 0.11-App die Führung hat, feuern entfernte Crons wie bisher (ihre
+Fires enden mit Aufbewahrungsfrist in der `.XQ`, sobald ein
+0.12-Worker sie aufgibt, siehe
+[unregistrierte Tasks](dead-letter-queues.de.md#unregistrierte-tasks-und-rolling-deploys)).
+Crons, die nur Worker vor 0.12 melden, stehen nie in
+`[<namensraum>:]sq:{sched}:report:known` und werden nicht zurückgehalten.
+
 ### Konflikte
 
 Leben mehrere Definitionen eines Cron-Namens länger als 10 Minuten
@@ -295,23 +359,93 @@ verschiedene Namen.
 ### Leader-Version
 
 Der Leader schreibt seine swarmq-Version neben das Leader-Lock, und
-jeder Worker meldet seine Version mit seinen Cron-Meldungen. Ein
-swarmq vor 0.10.0 schreibt keine Version und kennt das Feld
-`timezone` nicht: Als Leader verwirft er die Zone jedes Crons, den er
-feuert, und feuert ihn danach wieder in UTC.
+jeder Worker meldet seine Version mit seinen Cron-Meldungen.
+Scheduler-Korrekturen wirken nur, solange der Leader sie kennt: Ein
+swarmq vor 0.10.0 schreibt keine Version und kennt das Feld `timezone`
+nicht (als Leader verwirft er die Zone jedes Crons, den er feuert), und
+einem Leader vor 0.12 fehlt unter anderem die stabile Task-ID
+zurückgestellter Tasks.
 
-Ein Worker, der einen solchen Leader (ohne Version oder vor 0.10.0)
-in zwei Wahl-Takten in Folge sieht (`SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL`),
-loggt einmal pro Leader `scheduler_leader_outdated`, sendet das Signal
+Ein Worker, der einen Leader unter der **Mindestversion für Leader**
+(derzeit 0.12; ohne Version zählt als darunter) in zwei Wahl-Takten in
+Folge sieht (`SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL`), loggt einmal pro
+Leader `scheduler_leader_outdated`, sendet das Signal
 `SCHEDULER_LEADER_OUTDATED` und setzt die Gauge
 `swarmq_scheduler_leader_outdated{worker_id}` auf `1`. Folgt ein
 aktueller Leader, kommt das Signal erneut mit `outdated=False`, und die
-Gauge fällt auf `0`. Ein Leader ab 0.10.0, der älter ist als der
-Worker (rollendes Upgrade), kennt Zeitzonen und löst keine Warnung aus.
+Gauge fällt auf `0`. Beim rollenden Upgrade von 0.11 ist die Warnung
+zu erwarten, bis die Führung zu einem 0.12-Worker wechselt; die Gauge
+bleibt auf `1`, solange eine 0.11-App auf demselben Valkey die Führung
+hält.
 
 `swarmq schedule status` zeigt `LEADER_VERSION` und die meldenden
 Worker mit ihren Versionen (siehe
 [CLI-Referenz](../reference/cli.md#swarmq-schedule-status)).
+
+### Fire-Index
+
+Der Leader liest pro Poll-Takt höchstens 100 fällige Einträge.
+Einträge, die nie feuern können, nimmt er aus dem Fire-Index, bevor
+dieses Limit greift; sie halten fällige Crons dahinter also nicht auf:
+
+- ein Index-Eintrag ohne Definition (etwa nach einem Wettlauf zwischen
+  `put` und `swarmq schedule remove --permanent`);
+- eine deaktivierte Definition, die noch einen Termin hat (geschrieben
+  von einem swarmq vor 0.10, der auch deaktivierte Crons einplante).
+
+Ein Poll entfernt höchstens 1000 solcher Einträge; ein größerer
+Rückstand verschwindet in den folgenden Takten. Die Definitionen
+selbst bleiben.
+
+Eine Definition, die der Leader nicht dekodieren kann (kaputtes JSON,
+falsche Feldtypen), hält den Poll ebenfalls nicht mehr auf. Der Leader
+loggt `schedule_def_malformed_parked` und nimmt den Eintrag aus dem
+Fire-Index; die Definition bleibt zur Prüfung stehen. Reparieren mit
+`swarmq schedule add` oder entfernen mit
+`swarmq schedule remove --permanent <name>`. Ein statischer Cron kommt
+mit der nächsten Meldung eines Workers zurück, der ihn definiert.
+
+### Leader-Übernahme
+
+Ein Leader, der sauber stoppt, hinterlässt einen kurzlebigen
+Handover-Marker, damit sein Nachfolger `SCHEDULER_LEADER` statt
+`SCHEDULER_LEADER_FAILOVER` sendet. Ab 0.12 liegt der Marker unter
+einem festen Key, `[<namensraum>:]sq:{sched}:handover`, und der Nachfolger liest ihn
+mit einem einzigen `GETDEL`. Bisher durchsuchte er die ganze
+Valkey-Datenbank; bei einer großen Datenbank konnte das länger dauern
+als die Lock-TTL und den neuen Leader sein Lock gleich wieder kosten.
+Direkt nach der Übernahme verlängert der Leader sein Lock außerdem
+einmal, noch vor der ersten regulären Verlängerung.
+
+Gemischte Versionen funktionieren weiter: Ein 0.12-Leader schreibt den
+Marker zusätzlich unter dem alten Key je Owner, nach dem Nachfolger vor
+0.12 suchen, und ein 0.12-Nachfolger erkennt den Marker eines Leaders
+vor 0.12 über den zuletzt gesehenen Leader. Ein verpasster Marker
+ändert nur das Signal.
+
+### Fehlende Queues
+
+Queues deklarieren die Worker, die sie konsumieren. Ab 0.12 wirft ein
+Publish an eine Queue, die es nicht gibt, `UnroutableMessage`, statt
+vom Broker bestätigt und verworfen zu werden. Die Worker einer **neuen
+Queue vor ihren Producern** starten – das gilt für jede neue Queue,
+nicht nur beim Upgrade. Ein Producer bekommt die Ausnahme sofort; es
+gibt keine Wiederholung.
+
+Der Scheduler-Leader behandelt eine fehlende Queue so:
+
+| Fire | Was passiert |
+|---|---|
+| Cron | Der Fire ist verloren und wird festgeschrieben, der Cron rückt auf seinen nächsten Termin. `SCHEDULER_FIRE_UNROUTABLE` mit `kind="cron_lost"` zählt ihn (`swarmq_scheduler_fires_unroutable_total`). `scheduler_fire_unroutable` wird höchstens einmal je Cron und 10 Minuten geloggt; dazu kommt `scheduler_fire_unroutable_foreign`, wenn ein Worker einer anderen App den Cron meldet (prüfen, ob alle Apps am selben Valkey denselben RabbitMQ-vhost nutzen). |
+| Verzögerter Task (`delay=`/`eta=`) | Alle 60 s erneut versucht (`scheduler_oneshot_unroutable`, ebenso gedrosselt). Die Definition hält den ersten unroutbaren Versuch in `unroutable_since` fest. Nach `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S` (Standard ein Tag) ab diesem Versuch wird der Task verworfen: `scheduler_oneshot_unroutable_dropped`, `kind="oneshot_dropped"`, ein Fehlerergebnis unter seiner Task-ID (`get_result()` wirft `TaskError`), und seine `unique_for`-Sperre wird freigegeben. |
+
+Ein Worker, dessen eigene `{queue}.DQ` oder `{queue}.XQ` während des
+Laufs gelöscht wurde, deklariert die Queue-Familie einmal auf einem
+eigenen Channel neu und veröffentlicht die Retry- bzw. DLQ-Kopie
+erneut; eine gelöschte
+[Delay-Stufe](../explanation/delivery-semantics.md#delay-stufen)
+`{queue}.DQ.<stufe>` wird ebenso neu angelegt. Ein Workflow-Schritt, dessen nächster Schritt an eine fehlende
+Queue geht, lässt den Workflow sofort scheitern.
 
 ### Von Hand umgerechnete UTC-Crons umstellen
 
@@ -436,9 +570,16 @@ class ChargeCard(Task):
 | `linear` | `retry_base_delay × n` |
 | `fixed` | `retry_base_delay` |
 
-Globales Cap: `retry_max_delay` (Default 3600 s) kürzt jeden
-berechneten Delay. Setze `SWARMQ_RETRY_MAX_DELAY=...` oder
-übergib `retry_max_delay=...` als `SwarmQ`-kwarg.
+`exponential` und `linear` multiplizieren den Delay mit einem
+Zufallsfaktor zwischen 1 und 2 (Jitter), damit sich die Retries vieler
+gleichzeitig gescheiterter Nachrichten verteilen. `fixed` hat keinen
+Jitter.
+
+Globales Cap: `retry_max_delay` (Default 3600 s) begrenzt jeden
+berechneten Delay. Ein Delay über dem Cap wird zu 0,6 bis
+0,8 × `retry_max_delay`, aus demselben Jitter gezogen, damit auch
+Retries am Cap verteilt bleiben. Setze `SWARMQ_RETRY_MAX_DELAY=...`
+oder übergib `retry_max_delay=...` als `SwarmQ`-kwarg.
 
 ### Selektive Retries
 
@@ -541,6 +682,17 @@ Bei Pickup, wenn `now - enqueued_at >= max_age`, loggt der Worker
 `task_expired` (WARNING, mit `age_s` und `max_age_s`), feuert das
 `TASK_EXPIRED`-Signal, routet die Nachricht in die DLQ und ruft
 `run()` nicht auf.
+
+`max_age` begrenzt auch, wie spät ein Duplikat noch auftauchen kann,
+und legt damit fest, wie lange der Duplikatschutz hält: Der Done-Marker
+des [Ausführungsschutzes](../explanation/delivery-semantics.de.md#ausfuhrungsschutz)
+und der Completed-Marker eines Cron-Fires leben mindestens
+`max_age + 300` Sekunden. `max_age` für Cron-Tasks und für Tasks
+setzen, die nicht doppelt laufen dürfen; ohne `max_age` läuft ein
+Duplikat erneut, das länger als die Marker-Aufbewahrung (im Standard
+etwa 65 Minuten) hinter einem Rückstand wartet. Das kostet einen
+kleinen Hash je Ausführung in Valkey für `max_age + 300` Sekunden (etwa
+100 MB bei einer Million Tasks am Tag mit `max_age` 24 h).
 
 ## Cancellation
 

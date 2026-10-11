@@ -21,11 +21,13 @@ stay, and how to switch dead-lettering of task failures off.
 | `raise NoRetry("reason")` from task body | `x-swarmq-traceback` with the error message | not dead-lettered: error result stored, acked |
 | Exception not in `retry_exceptions` | `x-swarmq-traceback` with the error message | not dead-lettered: error result stored, acked |
 | `x-delivery-limit=20` tripped by RabbitMQ, or the worker's own delivery-count check one delivery earlier | `x-death` from broker; from the worker `x-swarmq-traceback` with `WorkerHungError` | still dead-lettered |
+| The worker handed the delivery back (`nack(requeue=True)`) until `x-acquired-count` reached the delivery limit (RabbitMQ 4.3) | `x-swarmq-traceback` with `RedeliveryLimitError` | still dead-lettered |
 | The same execution expired `SWARMQ_EXECUTION_GUARD_MAX_ORPHANS` times without release ([execution guard](../explanation/delivery-semantics.md#execution-guard)) | `x-swarmq-traceback` with `WorkerHungError` | still dead-lettered |
 | `TaskInfo.max_age` exceeded at pickup | none of its own — the message keeps its original headers; the stored error result says `task expired: age …s exceeds max_age …s` | still dead-lettered |
-| Lock-render failure (template kwarg missing, empty render) | `x-swarmq-lock-render-error` with the error message | still dead-lettered |
-| Lock conflict budget exhausted (10th conflict) | `x-swarmq-lock-conflict-count`, `x-swarmq-lock-name` | still dead-lettered |
-| Body over the size cap, undecodable body, unregistered task name, broken middleware-chain factory, failed dead-letter publish | none from SwarmQ — only the broker's `x-death` | still dead-lettered |
+| Lock-render failure (template kwarg missing, empty render) | `x-swarmq-lock-render-error` with the error message, `x-swarmq-traceback` | still dead-lettered |
+| Wait for a task lock ended (stalled holder or `SWARMQ_LOCK_WAIT_MAX_S`) | `x-swarmq-lock-name`, `x-swarmq-traceback` with `LockWaitExceeded` | still dead-lettered |
+| Task name not registered in the worker, after the grace period `SWARMQ_UNKNOWN_TASK_GRACE_S` (default 15 min; `0` = at first contact), see [unregistered tasks](#unregistered-tasks-and-rolling-deploys) | `x-swarmq-traceback` with `task '…' is not registered`; the stored error result says the same | still dead-lettered |
+| Body over the size cap, undecodable body, broken middleware-chain factory, failed dead-letter publish | none from SwarmQ — only the broker's `x-death` | still dead-lettered |
 
 Every message the worker dead-letters itself also carries
 `x-swarmq-dead-lettered-at` (Unix milliseconds) and a per-message
@@ -45,13 +47,14 @@ knowing which path fired tells you what to fix.
 
 | Path | Who moves the message | Signal | Metric | Headers |
 |---|---|---|---|---|
-| **Dead-lettering by the worker** — retries exhausted, `NoRetry`, `max_age`, lock errors, delivery limit about to trip, orphan limit of the execution guard | Worker publishes to `.XQ` and acks the original | `TASK_DLQ` (`task_id`, `task_name`, `queue`, `error`) for retries exhausted, `NoRetry`, the delivery limit and the orphan limit; `TASK_EXPIRED` for `max_age`; none for lock errors | `swarmq_tasks_total{outcome="dlq"}` | SwarmQ diagnostics (`x-swarmq-retry-count`, `x-swarmq-traceback`, `x-swarmq-lock-*`, see the table above); an error result is stored, except for lock errors |
+| **Dead-lettering by the worker** — retries exhausted, `NoRetry`, `max_age`, lock errors, delivery limit about to trip, orphan limit of the execution guard, unregistered task after its grace period | Worker publishes to `.XQ` and acks the original | `TASK_DLQ` (`task_id`, `task_name`, `queue`, `error`) for retries exhausted, `NoRetry`, the delivery limit, the orphan limit, lock errors (render failure, end of a lock wait) and the unregistered task (there followed by `TASK_REJECTED` with `unregistered_task`); `TASK_EXPIRED` for `max_age` | `swarmq_tasks_total{outcome="dlq"}` | SwarmQ diagnostics (`x-swarmq-retry-count`, `x-swarmq-traceback`, `x-swarmq-lock-*`, see the table above); an error result is stored |
 | **Rejection by the worker** — the message could not be turned into a task | Worker rejects without requeue; the broker's dead-letter exchange routes it | `TASK_REJECTED` (`queue`, `reason`, `task_id`, `task_name`, `error`) | `swarmq_tasks_rejected_total{queue,reason}` | only the broker's `x-death`; `task_id`/`task_name` are `None` when the body never decoded |
 | **Dead-lettering by the broker** — `x-delivery-limit` after repeated worker crashes, message TTL, queue length limit | RabbitMQ itself | none — no worker saw the terminal delivery | `swarmq_dlq_messages{queue}` (depth gauge sampled by the worker) | only `x-death` |
 
 `reason` on the rejection path is one of `body_too_large`,
-`undecodable`, `unregistered_task`, `middleware_chain_factory`,
-`dlq_publish_failed`. `unregistered_task` after a deploy usually means
+`undecodable`, `middleware_chain_factory`, `dlq_publish_failed`;
+`unregistered_task` is the exception that comes from the first path
+(from 0.12, see below). `unregistered_task` after a deploy usually means
 the worker and the producer run different versions of the task module;
 `body_too_large` and `undecodable` point at the producer.
 
@@ -61,6 +64,52 @@ task that reliably kills the process (SIGSEGV, OOM) never reaches
 from the penultimate delivery on, so it lands on the first path with
 `TASK_DLQ`; the broker path remains for TTL and length limits, and for
 crashes faster than the worker's own check.
+
+## Unregistered tasks and rolling deploys
+
+A message whose task name the worker does not register is not lost at
+first contact. During a rolling deploy the producers usually run the
+new code before the last old worker is gone; every new task name would
+otherwise end in the `.XQ` and every workflow with such a step would
+fail. From 0.12 the worker therefore defers the message within a
+grace period:
+
+- **`SWARMQ_UNKNOWN_TASK_GRACE_S`** (default `900`, 15 minutes) is
+  measured from the first contact, which the worker stamps into the
+  header `x-swarmq-unknown-since`. The message goes back through the
+  delay queue: 1 s the first time, then as long as it has waited so
+  far (so roughly doubling), at most 60 s per round and never past the
+  end of the grace period. Each round logs `task_unknown_deferred`
+  (WARNING), fires `TASK_UNKNOWN_DEFERRED` and counts
+  `swarmq_tasks_unknown_deferred_total{queue}`. A worker that knows
+  the task picks the copy up as soon as it consumes the queue.
+- **After the grace period** the worker dead-letters the message
+  itself: error result `task '…' is not registered`, workflow step
+  marked failed, unique flag released, `TASK_DLQ`, then
+  `TASK_REJECTED` with `reason="unregistered_task"`, log
+  `task_not_found` (ERROR). The DLQ copy carries the retention and
+  `x-swarmq-traceback` like every other dead-lettered message; `dlq
+  retry` starts a fresh grace period.
+- **`0` switches the grace period off**: dead-letter at first contact.
+  Use it for workers that must never hold foreign messages, for
+  example a fleet that consumes a shared queue with a deliberately
+  smaller task module.
+- A cron fire of a removed task takes the same path: the scheduler
+  leader holds a cron no live worker reports (see
+  [scheduling](scheduling-and-retries.md#crons-nobody-reports-are-held)),
+  and a fire that still gets through ends in the `.XQ` with a
+  retention instead of staying there forever.
+
+**Deploy order.** Start the workers before the producers, or roll
+them first. The grace period covers the gap of an ordinary rolling
+deploy; a producer that is ahead for longer than
+`SWARMQ_UNKNOWN_TASK_GRACE_S` fills the `.XQ` as before 0.12.
+
+**Mixed versions.** Only workers from 0.12 defer. A worker on 0.11
+that consumes the same queue rejects an unknown task at first contact
+without retention (`TASK_REJECTED`, broker `x-death` only), also when
+it receives a deferral copy made by a 0.12 worker. Until every worker
+of a queue runs 0.12, the old rule applies: workers before producers.
 
 ## Listing DLQ contents
 
@@ -83,7 +132,16 @@ Useful flags:
 - `--queue QUEUE` — the main queue name; the DLQ is `{queue}.XQ`.
 
 The operation is non-destructive: messages stay in the DLQ even
-after listing.
+after listing. `dlq list`, `dlq inspect` and `dlq retry` read with
+acknowledgement on their own channel: each read message is copied to
+the end of the DLQ (or, for `retry`, to the main queue) and acknowledged
+only after the broker confirmed the copy. A reader that dies or loses
+its connection mid-way loses nothing; the broker returns what it had not
+acknowledged yet. Dying between a copy and its acknowledgement leaves
+the message twice in the DLQ; retrying both runs the task once (the
+second has the same execution identity). Listing reorders the DLQ: read
+messages move to its end. Two listings at the same time each see only
+part of the DLQ.
 
 ## Inspecting one message
 
@@ -112,6 +170,18 @@ BODY:
 }
 ```
 
+`x-swarmq-traceback` and `x-swarmq-lock-render-error` hold at most
+8 KiB: a longer text keeps its first 6 KiB and its last 2 KiB with a
+`[... N bytes truncated ...]` note in between. The full error message
+stays in the stored error result. A message header must fit into one
+AMQP frame; an oversized header closed the whole worker connection, and
+every message the worker held came back to the queue. Before each
+publish SwarmQ also checks all headers against half of the negotiated
+`frame_max` (128 KiB on RabbitMQ by default) and truncates long texts
+further if needed; if they still do not fit, the publish raises
+[`MessageHeadersTooLarge`](../reference/errors.md#messageheaderstoolarge)
+without sending anything.
+
 Use `--scan-limit N` to widen the search when the task_id is deep
 in a large DLQ. Exit code `3` means the task_id was not found; `0`
 means found.
@@ -130,10 +200,23 @@ full retry budget on redelivery. Other headers (traceback, dedup
 hash, enqueued-at) survive so the operator context is preserved.
 The republished message carries no `expiration` and no
 `x-swarmq-dead-lettered-at`; if it fails again, it is dead-lettered
-with a fresh retention. It also gets a new `x-swarmq-replay-id`: the
+with a fresh retention, and `x-swarmq-enqueued-at` restarts, so a task
+with `max_age` does not expire at once. The replay keeps the
+`x-swarmq-replay-id` the worker stamped when it dead-lettered the
+message (from 0.12): the
 [execution guard](../explanation/delivery-semantics.md#execution-guard)
-would otherwise skip it as already finished while the marker of the
-first run still exists.
+treats the replay as a new execution and runs it, while a second
+`dlq retry` of the same message -- or its at-least-once duplicate --
+carries the same identity and is skipped. A message without that
+stamp -- dead-lettered by a 0.11 worker or by the broker itself
+(delivery limit, `route_via_dlx`), or old stock -- gets an id derived
+from its identity instead, so repeating the retry runs it once as
+well; only a message without a task id gets a random id. "Move messages" in the RabbitMQ UI or a shovel
+replays the message with the same headers and therefore runs it too,
+but does not restart `x-swarmq-enqueued-at`. If the broker
+dead-letters such a replay again (`route_via_dlx`, delivery limit), a
+second UI move of it is skipped as a duplicate of the first; use
+`swarmq dlq retry` for it, which gives it a new id.
 
 ### All messages
 

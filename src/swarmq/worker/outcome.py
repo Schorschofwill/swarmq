@@ -12,7 +12,8 @@ Drei Ausgänge:
   Schedfire-Completed-Marker schreibt. Die drei heutigen Varianten:
   ``release_in_finally()`` (Erfolg, Fehler, Cancel, Unknown-Task),
   ``already_released()`` (Lock-Pfade und Dead-Letter, die nach dem Ack inline
-  freigeben) und ``never_release()`` (Expiry: Flag bleibt stehen).
+  freigeben), ``release_only()`` (Expiry nach dem Dead-Letter, BZ-22) und
+  ``never_release()`` (Expiry, dessen Dead-Letter scheiterte).
 
 Ein Gate *muss* einen Ausgang zurückgeben — „Reset vergessen" ist kein
 möglicher Zustand mehr (Entwurf §4).
@@ -57,8 +58,16 @@ class Terminal(DeliveryOutcome):
         return cls(release_unique=False, finalize_schedfire=True)
 
     @classmethod
+    def release_only(cls) -> Terminal:
+        """Expiry nach erfolgreichem Dead-Letter (BZ-22): das Dedup-Flag im
+        ``finally`` freigeben (owner-geprueft mit der ``task_id``), ohne
+        Schedfire-Completed-Marker."""
+        return cls(release_unique=True, finalize_schedfire=False)
+
+    @classmethod
     def never_release(cls) -> Terminal:
-        """Expiry: das Dedup-Flag bleibt bewusst stehen (heutiges Verhalten)."""
+        """Expiry, dessen Dead-Letter scheiterte: das Dedup-Flag bleibt stehen,
+        die Neuzustellung gibt es frei."""
         return cls(release_unique=False, finalize_schedfire=False)
 
 

@@ -60,7 +60,9 @@ class ResultBackend(Protocol):
     async def is_cancelled(self, task_id: str, *, op_timeout: float | None = None) -> bool: ...
 
     async def clear_cancel_flag(self, task_id: str, *, op_timeout: float | None = None) -> None:
-        """Loggt statt zu werfen; die TTL heilt Waisen."""
+        """Verkürzt das Flag auf höchstens 1 h (``PEXPIRE … LT``, BZ-23),
+        verlängert ein kürzeres nie und löscht nicht. Loggt statt zu werfen;
+        die TTL heilt Waisen."""
 
     # --- Workflow -------------------------------------------------------
     async def store_workflow_state(

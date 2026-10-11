@@ -8,6 +8,7 @@ import uuid
 import pytest
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
+from tests.support.queues import delete_queue_family
 
 
 def _unique(prefix: str) -> str:
@@ -28,26 +29,18 @@ async def broker(rabbitmq_url: str):
     yield b
 
     # Teardown: delete every queue that was declared during the test.
+    await delete_queue_family(rabbitmq_url, *declared_queues)
     if b._connection is not None and not b._connection.is_closed:
-        for qname in declared_queues:
-            try:
-                ch = await b._connection.channel()
-                q = await ch.get_queue(qname, ensure=False)
-                await q.delete(if_empty=False, if_unused=False)
-                await ch.close()
-            except Exception:
-                pass
         await b.close()
 
 
 # -- helpers -----------------------------------------------------------------
 
+
 async def _declare_and_track(broker: RabbitMQBroker, queue_name: str) -> None:
-    """Declare the queue triplet and register all three names for cleanup."""
+    """Declare the queue family and register it for cleanup."""
     await broker.declare_queue(queue_name)
-    broker._declared_queues.extend(  # type: ignore[attr-defined]
-        [queue_name, f"{queue_name}.DQ", f"{queue_name}.XQ"]
-    )
+    broker._declared_queues.append(queue_name)  # type: ignore[attr-defined]
 
 
 # -- tests -------------------------------------------------------------------

@@ -9,6 +9,40 @@ class ConfigurationError(SwarmQError):
     pass
 
 
+#: Migration einer Queue-Familie (Review MR 8, P2-3): ``{queue}.DQ`` und die
+#: Delay-Stufen ``{queue}.DQ.*`` (BZ-01, Review MR 10, P2-5) enthalten Retries
+#: und Termine, sie werden nie einfach geloescht.
+MIGRATION_HINT = (
+    "migrate the queue: stop its producers, let its workers drain the queue, its .DQ and its .DQ.* tiers "
+    "(the .DQ and its .DQ.* tiers hold pending retries and deferred tasks: wait for them or move them "
+    "with a shovel, never just delete them), stop the workers, move or keep the .XQ, then delete the "
+    "queue family and start the workers with the new setting."
+)
+
+
+class QueueArgumentsMismatch(ConfigurationError):
+    """Eine vorhandene Queue hat andere Argumente als die Konfiguration, und
+    swarmq kann sie nicht uebernehmen (BZ-15), etwa ein geaenderter
+    ``SWARMQ_QUEUE_TYPE``. RabbitMQ aendert die Argumente einer bestehenden
+    Queue nie; ein Neustart aendert daran nichts, darum Exit 78 statt einer
+    Neustartschleife. ``x-delivery-limit``, ``x-dead-letter-strategy`` und
+    ``x-overflow`` werden dagegen uebernommen.
+    """
+
+    def __init__(self, queue: str, argument: str, declared: object, existing: object, hint: str = "") -> None:
+        self.queue = queue
+        self.argument = argument
+        self.declared = declared
+        self.existing = existing
+        hint = hint or f"Restore the previous setting, or {MIGRATION_HINT}"
+        message = (
+            f"queue {queue!r}: argument {argument!r} differs from the existing queue "
+            f"(declared {declared!r}, existing {existing!r}); RabbitMQ never changes the arguments "
+            f"of an existing queue. {hint}"
+        )
+        super().__init__(message)
+
+
 class LoggingConfigError(ConfigurationError):
     """Eine Logging-Konfigurationsdatei ist nicht ladbar oder ungueltig.
 
@@ -55,6 +89,48 @@ class SettleFailedAfterPublish(BrokerConnectionError):
     """
 
 
+class MessageHeadersTooLarge(BrokerConnectionError):
+    """Die Header einer Nachricht passen auch nach dem Kuerzen langer Texte
+    nicht in die Haelfte von ``frame_max``; der Publish wurde nicht
+    versucht (BZ-17). Ein zu grosser Content-Header schloesse sonst die
+    ganze Verbindung, und alle unbestaetigten Nachbar-Zustellungen kaemen
+    zurueck. Unterklasse von :class:`BrokerConnectionError` (Q14).
+    """
+
+
+class UnroutableMessage(BrokerConnectionError):
+    """Der Broker hat die Nachricht per ``basic.return`` zurueckgewiesen:
+    keine Queue mit diesem Namen (BZ-03). Nichts wurde zugestellt.
+
+    Typisch ist ein Producer, der vor dem ersten Worker einer neuen Queue
+    sendet, oder ein Prioritaets-Publish an ``{queue}.high``/``.low`` ohne
+    ``--priorities``. Vor 0.12 bestaetigte der Broker solche Nachrichten
+    und verwarf sie still. Unterklasse von :class:`BrokerConnectionError`
+    (Q14): bestehende Handler fangen sie weiter.
+    """
+
+
+class BrokerPublishBlocked(BrokerConnectionError):
+    """Die Publish-Verbindung war bis zur Publish-Frist vom Broker blockiert
+    (``connection.blocked``, Ressourcenalarm: Speicher oder Platte; BZ-16).
+    Nichts wurde gesendet; ein spaeterer Versuch ist sicher. Ein Alarm
+    trifft jeden Prozess am Broker gleich, deshalb zaehlt er nicht fuer den
+    Ruecktritt des Leaders. Unterklasse von :class:`BrokerConnectionError`
+    (Q14): bestehende Handler fangen sie weiter.
+    """
+
+
+class PublishRejected(BrokerConnectionError):
+    """Der Broker hat den Publish fuer diese Queue ueber alle Versuche
+    abgelehnt: negatives Publisher-Confirm (``basic.nack``), etwa eine volle
+    Queue mit ``x-overflow=reject-publish`` oder eine Quorum-Queue ohne
+    Quorum (Review MR 15, P2-2). Die Verbindung ist gesund; der Fehler haengt
+    an der Queue, deshalb zaehlt er nicht fuer den Ruecktritt des Leaders.
+    Unterklasse von :class:`BrokerConnectionError` (Q14): bestehende Handler
+    fangen sie weiter.
+    """
+
+
 class BackendConnectionError(SwarmQError):
     pass
 
@@ -80,6 +156,25 @@ class BackendResponseError(BackendConnectionError):
 
 class TaskNotFoundError(SwarmQError):
     pass
+
+
+class RedeliveryLimitError(SwarmQError):
+    """Fehlertyp einer DLQ-Kopie, deren Zustellungen immer wieder per
+    ``redeliver`` (``nack(requeue=True)``) zurueckgegeben wurden, bis
+    ``x-acquired-count`` (RabbitMQ 4.3) das Zustelllimit erreichte (BZ-29).
+    Wird nicht geworfen; der Name steht als ``error_type`` in
+    ``task_sent_to_dlq`` und am Anfang von ``x-swarmq-traceback``.
+    """
+
+
+class LockWaitExceeded(SwarmQError):
+    """Fehlertyp einer DLQ-Kopie, deren Wartezeit auf einen Lock endete
+    (Plan 0.12.0, MR 13, BZ-05): entweder hielt derselbe Halter laenger als
+    seine TTL + 60 s (Stillstand), oder die Obergrenze
+    ``SWARMQ_LOCK_WAIT_MAX_S`` ab dem ersten Konflikt war erreicht. Wird
+    nicht geworfen; der Name steht als ``error_type`` in ``task_sent_to_dlq``
+    und am Anfang von ``x-swarmq-traceback``.
+    """
 
 
 class TaskError(SwarmQError):

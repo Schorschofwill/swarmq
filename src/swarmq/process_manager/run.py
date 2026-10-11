@@ -143,9 +143,9 @@ def _run_multi_process_worker_configured(
             )
         queue_depth_fn = _make_queue_depth_sampler(admin_factory, list(args.queues))
 
-    # Resolve SwarmQConfig.shutdown_timeout once in
-    # the parent and pass it as the phase-1 grace so a subprocess's
-    # graceful-shutdown flow has the budget it was configured for.
+    # Resolve SwarmQConfig.shutdown_timeout once in the parent and pass it
+    # as the total shutdown budget from SIGTERM (BZ-18, Plan 0.12.0, MR 17);
+    # the worker subprocess derives its drain from the same value.
     from swarmq.config import SwarmQConfig
     # Mit den aufgeloesten Settings ueberspringt SwarmQConfig die Logging-Env:
     # ein ungueltiges SWARMQ_LOG_FORMAT, das ``--log-format`` schon

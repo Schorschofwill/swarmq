@@ -23,11 +23,13 @@ Task-Fehlern abschaltest.
 | `raise NoRetry("reason")` aus Task-Body | `x-swarmq-traceback` mit der Fehlermeldung | nicht dead-gelettert: Fehlerergebnis gespeichert, bestätigt |
 | Exception außerhalb von `retry_exceptions` | `x-swarmq-traceback` mit der Fehlermeldung | nicht dead-gelettert: Fehlerergebnis gespeichert, bestätigt |
 | `x-delivery-limit=20` von RabbitMQ ausgelöst, oder die eigene Zustellzähler-Prüfung des Workers eine Zustellung vorher | `x-death` vom Broker; vom Worker `x-swarmq-traceback` mit `WorkerHungError` | weiter dead-gelettert |
+| Der Worker hat die Zustellung zurückgegeben (`nack(requeue=True)`), bis `x-acquired-count` das Zustelllimit erreichte (RabbitMQ 4.3) | `x-swarmq-traceback` mit `RedeliveryLimitError` | weiter dead-gelettert |
 | Dieselbe Ausführung ist `SWARMQ_EXECUTION_GUARD_MAX_ORPHANS`-mal ohne Freigabe abgelaufen ([Ausführungsschutz](../explanation/delivery-semantics.md#ausfuhrungsschutz)) | `x-swarmq-traceback` mit `WorkerHungError` | weiter dead-gelettert |
 | `TaskInfo.max_age` bei Pickup überschritten | kein eigener — die Nachricht behält ihre ursprünglichen Header; das gespeicherte Fehlerergebnis lautet `task expired: age …s exceeds max_age …s` | weiter dead-gelettert |
-| Lock-Render-Fehler (Template-Kwarg fehlt, leerer Render) | `x-swarmq-lock-render-error` mit der Fehlermeldung | weiter dead-gelettert |
-| Lock-Konflikt-Budget erschöpft (10. Konflikt) | `x-swarmq-lock-conflict-count`, `x-swarmq-lock-name` | weiter dead-gelettert |
-| Body über der Größengrenze, nicht dekodierbarer Body, unregistrierter Task-Name, kaputte Middleware-Chain-Factory, gescheitertes Dead-Letter-Publish | keiner von SwarmQ — nur das `x-death` des Brokers | weiter dead-gelettert |
+| Lock-Render-Fehler (Template-Kwarg fehlt, leerer Render) | `x-swarmq-lock-render-error` mit der Fehlermeldung, `x-swarmq-traceback` | weiter dead-gelettert |
+| Wartezeit auf einen Task-Lock zu Ende (hängender Halter oder `SWARMQ_LOCK_WAIT_MAX_S`) | `x-swarmq-lock-name`, `x-swarmq-traceback` mit `LockWaitExceeded` | weiter dead-gelettert |
+| Task-Name im Worker nicht registriert, nach der Gnadenfrist `SWARMQ_UNKNOWN_TASK_GRACE_S` (Standard 15 min; `0` = beim ersten Kontakt), siehe [unregistrierte Tasks](#unregistrierte-tasks-und-rolling-deploys) | `x-swarmq-traceback` mit `task '…' is not registered`; das gespeicherte Fehlerergebnis sagt dasselbe | weiter dead-gelettert |
+| Body über der Größengrenze, nicht dekodierbarer Body, kaputte Middleware-Chain-Factory, gescheitertes Dead-Letter-Publish | keiner von SwarmQ — nur das `x-death` des Brokers | weiter dead-gelettert |
 
 Jede Nachricht, die der Worker selbst dead-lettert, trägt außerdem
 `x-swarmq-dead-lettered-at` (Unix-Millisekunden) und eine
@@ -49,13 +51,14 @@ reparieren ist.
 
 | Weg | Wer bewegt die Nachricht | Signal | Metrik | Header |
 |---|---|---|---|---|
-| **Dead-Lettering durch den Worker** — Retries erschöpft, `NoRetry`, `max_age`, Lock-Fehler, Delivery-Limit kurz vor dem Auslösen, Waisen-Grenze des Ausführungsschutzes | Worker publiziert nach `.XQ` und bestätigt das Original | `TASK_DLQ` (`task_id`, `task_name`, `queue`, `error`) bei erschöpften Retries, `NoRetry`, Delivery-Limit und Waisen-Grenze; `TASK_EXPIRED` bei `max_age`; keines bei Lock-Fehlern | `swarmq_tasks_total{outcome="dlq"}` | SwarmQ-Diagnose (`x-swarmq-retry-count`, `x-swarmq-traceback`, `x-swarmq-lock-*`, siehe Tabelle oben); ein Fehlerergebnis wird gespeichert, außer bei Lock-Fehlern |
+| **Dead-Lettering durch den Worker** — Retries erschöpft, `NoRetry`, `max_age`, Lock-Fehler, Delivery-Limit kurz vor dem Auslösen, Waisen-Grenze des Ausführungsschutzes, unregistrierter Task nach seiner Gnadenfrist | Worker publiziert nach `.XQ` und bestätigt das Original | `TASK_DLQ` (`task_id`, `task_name`, `queue`, `error`) bei erschöpften Retries, `NoRetry`, Delivery-Limit, Waisen-Grenze, Lock-Fehlern (Render-Fehler, Ende einer Lock-Wartezeit) und unregistriertem Task (dort gefolgt von `TASK_REJECTED` mit `unregistered_task`); `TASK_EXPIRED` bei `max_age` | `swarmq_tasks_total{outcome="dlq"}` | SwarmQ-Diagnose (`x-swarmq-retry-count`, `x-swarmq-traceback`, `x-swarmq-lock-*`, siehe Tabelle oben); ein Fehlerergebnis wird gespeichert |
 | **Abweisung durch den Worker** — die Nachricht ließ sich nicht in einen Task verwandeln | Worker weist ohne Requeue ab; der Dead-Letter-Exchange des Brokers routet sie | `TASK_REJECTED` (`queue`, `reason`, `task_id`, `task_name`, `error`) | `swarmq_tasks_rejected_total{queue,reason}` | nur das `x-death` des Brokers; `task_id`/`task_name` sind `None`, wenn der Body nie dekodiert wurde |
 | **Dead-Lettering durch den Broker** — `x-delivery-limit` nach wiederholten Worker-Abstürzen, Nachrichten-TTL, Längenlimit der Queue | RabbitMQ selbst | keines — kein Worker hat die letzte Zustellung gesehen | `swarmq_dlq_messages{queue}` (Tiefen-Gauge, vom Worker abgetastet) | nur `x-death` |
 
 `reason` auf dem Abweisungsweg ist einer von `body_too_large`,
-`undecodable`, `unregistered_task`, `middleware_chain_factory`,
-`dlq_publish_failed`. `unregistered_task` nach einem Deploy heißt
+`undecodable`, `middleware_chain_factory`, `dlq_publish_failed`;
+`unregistered_task` ist die Ausnahme, die vom ersten Weg kommt (seit
+0.12, siehe unten). `unregistered_task` nach einem Deploy heißt
 meist, dass Worker und Produzent verschiedene Versionen des Task-Moduls
 fahren; `body_too_large` und `undecodable` zeigen auf den Produzenten.
 
@@ -66,6 +69,54 @@ solche Nachricht ab der vorletzten Zustellung selbst, sie landet also
 auf dem ersten Weg mit `TASK_DLQ`; der Broker-Weg bleibt für TTL und
 Längenlimits und für Abstürze, die schneller sind als die eigene
 Prüfung des Workers.
+
+## Unregistrierte Tasks und Rolling Deploys
+
+Eine Nachricht, deren Task-Namen der Worker nicht registriert, ist beim
+ersten Kontakt nicht verloren. Bei einem Rolling Deploy laufen die
+Producer meist mit dem neuen Code, bevor der letzte alte Worker weg
+ist; jeder neue Task-Name landete sonst in der `.XQ`, und jeder
+Workflow mit einem solchen Schritt schlüge fehl. Seit 0.12 stellt der
+Worker die Nachricht deshalb innerhalb einer Gnadenfrist zurück:
+
+- **`SWARMQ_UNKNOWN_TASK_GRACE_S`** (Standard `900`, 15 Minuten) wird
+  ab dem ersten Kontakt gemessen, den der Worker in den Header
+  `x-swarmq-unknown-since` stempelt. Die Nachricht geht über die
+  Delay-Queue zurück: 1 s beim ersten Mal, dann so lang, wie sie bisher
+  gewartet hat (also etwa verdoppelt), höchstens 60 s je Runde und nie
+  über das Ende der Frist hinaus. Jede Runde loggt
+  `task_unknown_deferred` (WARNING), feuert `TASK_UNKNOWN_DEFERRED` und
+  zählt `swarmq_tasks_unknown_deferred_total{queue}`. Ein Worker, der
+  den Task kennt, nimmt die Kopie, sobald er die Queue konsumiert.
+- **Nach der Frist** dead-lettert der Worker die Nachricht selbst:
+  Fehlerergebnis `task '…' is not registered`, Workflow-Schritt als
+  fehlgeschlagen markiert, Unique-Flag freigegeben, `TASK_DLQ`, danach
+  `TASK_REJECTED` mit `reason="unregistered_task"`, Log
+  `task_not_found` (ERROR). Die DLQ-Kopie trägt die Aufbewahrungsfrist
+  und `x-swarmq-traceback` wie jede andere dead-geletterte Nachricht;
+  `dlq retry` beginnt eine frische Frist.
+- **`0` schaltet die Frist ab**: Dead-Letter beim ersten Kontakt. Für
+  Worker, die fremde Nachrichten nie halten sollen, etwa eine Flotte,
+  die eine geteilte Queue mit einem bewusst kleineren Task-Modul
+  konsumiert.
+- Ein Cron-Fire eines entfernten Tasks nimmt denselben Weg: Der
+  Scheduler-Leader hält einen Cron zurück, den kein lebender Worker
+  meldet (siehe
+  [Scheduling](scheduling-and-retries.de.md#crons-die-niemand-meldet-werden-zuruckgehalten)),
+  und ein Fire, das trotzdem durchkommt, endet mit Aufbewahrungsfrist in
+  der `.XQ`, statt dort für immer zu liegen.
+
+**Deploy-Reihenfolge.** Worker vor den Producern starten bzw. zuerst
+ausrollen. Die Gnadenfrist deckt die Lücke eines gewöhnlichen Rolling
+Deploys; ein Producer, der länger als `SWARMQ_UNKNOWN_TASK_GRACE_S`
+voraus ist, füllt die `.XQ` wie vor 0.12.
+
+**Mischbetrieb.** Nur Worker ab 0.12 stellen zurück. Ein Worker auf
+0.11, der dieselbe Queue konsumiert, weist einen unbekannten Task beim
+ersten Kontakt ohne Aufbewahrungsfrist ab (`TASK_REJECTED`, nur das
+`x-death` des Brokers), auch wenn er eine Rückstellungs-Kopie eines
+0.12-Workers bekommt. Bis jeder Worker einer Queue 0.12 fährt, gilt die
+alte Regel: Worker vor Producern.
 
 ## DLQ-Inhalte auflisten
 
@@ -89,7 +140,17 @@ Nützliche Flags:
 - `--queue QUEUE` — der Haupt-Queue-Name; die DLQ ist `{queue}.XQ`.
 
 Die Operation ist non-destruktiv: Nachrichten bleiben auch nach
-dem Auflisten in der DLQ.
+dem Auflisten in der DLQ. `dlq list`, `dlq inspect` und `dlq retry`
+lesen bestätigungspflichtig über einen eigenen Channel: Jede gelesene
+Nachricht wird ans Ende der DLQ kopiert (bei `retry` in die Haupt-Queue)
+und erst bestätigt, wenn der Broker die Kopie bestätigt hat. Stirbt der
+Lesende oder verliert er die Verbindung, geht nichts verloren; der
+Broker gibt zurück, was noch nicht bestätigt war. Stirbt er zwischen
+Kopie und Bestätigung, liegt die Nachricht zweimal in der DLQ; ein Retry
+beider führt den Task einmal aus (die zweite hat dieselbe
+Ausführungsidentität). Lesen ordnet die DLQ um: Gelesene Nachrichten
+wandern ans Ende. Zwei gleichzeitige Listings sehen jeweils nur einen
+Teil der DLQ.
 
 ## Eine Nachricht inspizieren
 
@@ -118,6 +179,19 @@ BODY:
 }
 ```
 
+`x-swarmq-traceback` und `x-swarmq-lock-render-error` fassen höchstens
+8 KiB: Ein längerer Text behält seine ersten 6 KiB und seine letzten
+2 KiB, dazwischen steht ein Vermerk `[... N bytes truncated ...]`. Die
+volle Fehlermeldung steht weiter im gespeicherten Fehlerergebnis. Ein
+Nachrichten-Header muss in einen AMQP-Frame passen; ein zu großer Header
+schloss die ganze Worker-Verbindung, und jede Nachricht, die der Worker
+hielt, kam in die Queue zurück. Vor jedem Publish prüft SwarmQ zusätzlich
+alle Header gegen die Hälfte des ausgehandelten `frame_max` (bei RabbitMQ
+standardmäßig 128 KiB) und kürzt lange Texte bei Bedarf weiter; passen
+sie dann immer noch nicht, wirft der Publish
+[`MessageHeadersTooLarge`](../reference/errors.md#messageheaderstoolarge),
+ohne etwas zu senden.
+
 Nutze `--scan-limit N`, um die Suche zu verbreitern, wenn die
 task_id tief in einer großen DLQ liegt. Exit-Code `3` bedeutet
 task_id nicht gefunden; `0` bedeutet gefunden.
@@ -136,11 +210,25 @@ bekommt sein volles Retry-Budget bei Redelivery. Andere Header
 (Traceback, Dedup-Hash, Enqueued-at) bleiben erhalten, damit der
 Operator-Kontext bleibt. Die zurückgelegte Nachricht trägt weder
 `expiration` noch `x-swarmq-dead-lettered-at`; scheitert sie erneut,
-wird sie mit frischer Frist dead-gelettert. Außerdem bekommt sie eine
-neue `x-swarmq-replay-id`: Der
+wird sie mit frischer Frist dead-gelettert; `x-swarmq-enqueued-at`
+beginnt neu, damit ein Task mit `max_age` nicht sofort abläuft. Die
+Wiederholung behält die `x-swarmq-replay-id`, die der Worker beim
+Dead-Lettern gestempelt hat (seit 0.12): Der
 [Ausführungsschutz](../explanation/delivery-semantics.md#ausfuhrungsschutz)
-würde sie sonst als bereits abgeschlossen überspringen, solange der
-Marker des ersten Laufs noch steht.
+behandelt sie als neue Ausführung und lässt sie laufen; ein zweiter
+`dlq retry` derselben Nachricht -- oder ihr at-least-once-Duplikat --
+trägt dieselbe Identität und wird übersprungen. Eine Nachricht ohne
+diesen Stempel -- von einem 0.11-Worker oder vom Broker selbst
+dead-gelettert (Delivery-Limit, `route_via_dlx`) oder Altbestand --
+bekommt stattdessen eine aus ihrer Identität abgeleitete ID; auch dort
+läuft ein wiederholter Retry nur einmal. Nur eine Nachricht ohne Task-ID
+bekommt eine zufällige ID. "Move messages" in
+der RabbitMQ-UI oder ein Shovel legt die Nachricht mit denselben Headern
+zurück und lässt sie deshalb ebenfalls laufen, setzt aber
+`x-swarmq-enqueued-at` nicht neu. Dead-lettert der Broker eine solche
+Wiederholung erneut (`route_via_dlx`, Delivery-Limit), wird ein zweiter
+UI-Move als Duplikat des ersten übersprungen; dafür `swarmq dlq retry`
+verwenden, das ihr eine neue ID gibt.
 
 ### Alle Nachrichten
 

@@ -79,6 +79,33 @@ Worker-seitig konsumiert `swarmq worker --queues reports,default`
 aus beiden. Siehe [Scheduling und Retries](scheduling-and-retries.md)
 für das Zusammenspiel mit `delay=` / `eta=`.
 
+### Task in eine andere Queue verschieben
+
+Zieht ein Task in eine andere Queue um oder ändert sich `--queues` eines
+Workers, bleiben Nachrichten in der alten Queue (und Retry-Kopien, die
+noch in ihren Delay-Queues warten) liegen: Kein Worker konsumiert sie
+mehr. Seit 0.12 meldet jeder Worker die Queues, die er konsumiert, an
+Valkey (`[<namensraum>:]sq:{sched}:report:queues`, Zeitstempel von der Valkey-Uhr). Der
+Scheduler-Leader prüft die gemeldeten Queues in jedem Übernahme-Takt
+(`SWARMQ_SCHEDULER_SEEN_INTERVAL_S`, Standard 60 s; nicht im Takt direkt
+nach einer Übernahme) per passivem
+Declare, ohne Management-API. Eine Queue gilt als verwaist, wenn sie
+Nachrichten hält, keinen Consumer hat und seit drei Takten kein
+lebender Worker sie gemeldet hat. Dann loggt der Leader
+`scheduler_queue_orphaned` (WARNING, einmal je Übergang), sendet
+`SCHEDULER_QUEUE_ORPHANED` und setzt die Gauge
+`swarmq_scheduler_queues_orphaned`; darauf alarmieren. `swarmq check`
+mit `SWARMQ_BROKER_URL` nennt verwaiste Queues und gemeldete Queues ohne
+ihre `.XQ` ([CLI](../reference/cli.de.md#swarmq-check)).
+
+Abhilfe: einen Worker für die alte Queue laufen lassen, bis sie leer
+ist, die Nachrichten verschieben oder die Queue löschen. Grenzen:
+Geprüft werden nur Queues, die ein Worker ab 0.12 gemeldet hat; eine
+Queue mit Consumer (etwa einem Worker vor 0.12) gilt nie als verwaist.
+Einträge fehlender oder leerer Queues, die 7 Tage niemand gemeldet hat,
+werden entfernt; der ganze Key verfällt 7 Tage nach der letzten Meldung
+irgendeines Workers.
+
 ## Argumente und Rückgabewerte
 
 ### Was Clients übergeben dürfen

@@ -29,6 +29,11 @@ eine gewählte Meldung."""
 #     feuert mit dem neuen Inhalt.
 # 14. CLI-Definition gleichen Namens mit anderer Zone → Warnung, keine
 #     Änderung (Regression).
+#
+# Test list (Plan 0.12.0, MR 9, BZ-09):
+# 15. Bestandsdefinition ohne ``unique_for``, Task mit ``unique_for`` →
+#     übernommen (Upgrade von 0.11).
+# 16. Geändertes ``unique_until`` bei gesetztem ``unique_for`` → übernommen.
 
 from __future__ import annotations
 
@@ -532,6 +537,26 @@ class TestSyncInsertOrUpdate:
 
         stored, _ = await self._stored(memory)
         assert stored.task_name == "tz"
+
+    async def test_added_unique_for_updates_definition(self, memory, sync_loop):
+        """BZ-09: eine Definition aus 0.11 (ohne ``unique_for``) bekommt die
+        Unique-Einstellung des Tasks, damit jeder Leader sie anwendet."""
+        await self._seed(memory, _LATER_MS)
+        self._task(unique_for=3600, unique_until="start")
+
+        await _sync(sync_loop)
+
+        stored, _ = await self._stored(memory)
+        assert (stored.unique_for, stored.unique_until) == (3600, "start")
+
+    async def test_changed_unique_until_updates_definition(self, memory, sync_loop):
+        await self._seed(memory, _LATER_MS, unique_for=3600, unique_until="completion")
+        self._task(unique_for=3600, unique_until="start")
+
+        await _sync(sync_loop)
+
+        stored, _ = await self._stored(memory)
+        assert stored.unique_until == "start"
 
     async def test_changed_disabled_definition_gets_no_fire_entry(self, memory, sync_loop):
         await self._seed(memory, _LATER_MS, disabled=True)

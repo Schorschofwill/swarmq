@@ -28,10 +28,17 @@ from swarmq.contracts.coordination import (
     ScheduleStore,
 )
 from swarmq.exceptions import SettleFailedAfterPublish
-from swarmq.headers import HEADER_BACKEND_DEFER_COUNT, HEADER_GUARD_DEFER_COUNT, HEADER_SCHEDFIRE_CLAIM
+from swarmq.headers import (
+    HEADER_BACKEND_DEFER_COUNT,
+    HEADER_GUARD_DEFER_COUNT,
+    HEADER_SCHEDFIRE_CLAIM,
+    LOCK_WAIT_STATE_HEADERS,
+)
+from swarmq.identity import copy_headers
 from swarmq.logging import _error_fields, get_logger
 from swarmq.signals import Signal
 from swarmq.worker.outcome import DeliveryOutcome
+from swarmq.worker.redelivery import redeliver_pause_s
 
 if TYPE_CHECKING:
     from swarmq.config import SwarmQConfig
@@ -91,6 +98,9 @@ class SchedfireClaim:
     # tragen kann (die angebotenen Uebernahme-Tokens); leer, sobald der
     # Claim sicher ``owner`` gehoert.
     candidates: tuple[str, ...] = ()
+    # TTL des Completed-Markers in ms (Plan 0.12.0, MR 12, BZ-12): folgt der
+    # Wartezeit des Fires in der Queue; None = ``scheduler_dedup_ttl``.
+    completed_ttl_ms: int | None = None
 
     def header_value(self) -> str:
         """Wert von ``x-swarmq-schedfire-claim`` einer Kopie: das eigene
@@ -139,6 +149,17 @@ class GateDeps:
     maybe_release_unique: Callable[[Any, str, TaskInfo | None], Awaitable[None]]
     extract_valid_workflow_id: Callable[[Any], str | None]
     register_lock: Callable[[uuid.UUID, LockEntry], None]
+    # BZ-29: Pause vor jedem ``redeliver`` (Sekunden -> Warten). Der Worker
+    # setzt sie (bricht beim Shutdown ab); ``None`` = keine Pause.
+    redeliver_pause: Callable[[float], Awaitable[None]] | None = None
+    # BZ-13: Workflow eines terminal endenden Schritts fehlmarkieren
+    # (delivery, ctx, error_message, may_redeliver) -> ``False``, wenn die
+    # Zustellung deshalb neu zugestellt wurde. Der Worker setzt es
+    # (``RetryHandler.fail_workflow``); ``None`` = keine Markierung.
+    fail_workflow: Callable[[Any, GateContext, str, bool], Awaitable[bool]] | None = None
+    # BZ-25 (MR 13): erworbenen Lock dem Keeper uebergeben (token, ttl_ms, ctx);
+    # der Worker setzt es (``LockKeeper.keep``); ``None`` = keine Verlaengerung.
+    keep_lock: Callable[[LockToken, int, GateContext], None] | None = None
 
 
 # Zaehler, die der Broker je Zustellung fuehrt (Quorum-Queues). Eine Kopie
@@ -161,13 +182,20 @@ def republish_headers(delivery: Any, ctx: GateContext) -> dict[str, Any]:
     """Header fuer eine neue Kopie von *delivery* (Retry, Zurueckstellung,
     Requeue): alle Header des Originals ohne die Zustellzaehler des Brokers
     und ohne ``x-swarmq-backend-defer-count`` (die Zurueckstellung setzt ihn
-    selbst). Hielt die Zustellung einen Schedfire-Claim, traegt die Kopie
-    dessen Owner-Token -- sie uebernimmt den Claim, falls dessen Freigabe
-    scheitert."""
-    headers = {
-        key: value for key, value in (delivery.headers or {}).items()
-        if key not in _NOT_COPIED
-    }
+    selbst); ``x-death`` geht als ``x-swarmq-xdeath-base`` mit (MR 12). Hielt
+    die Zustellung einen Schedfire-Claim, traegt die Kopie dessen Owner-Token
+    -- sie uebernimmt den Claim, falls dessen Freigabe scheitert. Hat der
+    Broker die Zustellung neu zugestellt, entfaellt die Lock-Wartezeit."""
+    # MR 12 (BZ-08): ``x-death`` wird zur Base -- der Broker baut es beim
+    # naechsten Dead-Lettern neu auf (Spike S5), die Identitaet bleibt so stabil.
+    headers = {key: value for key, value in copy_headers(delivery.headers).items() if key not in _NOT_COPIED}
+    if broker_redelivered(delivery.headers or {}):
+        # Review MR 13, P2-4: eine Neuzustellung durch den Broker (Absturz
+        # nach dem Acquire, Shutdown-Requeue) gehoert nicht mehr zur
+        # Lock-Wartezeit ihrer Kopie; ohne Broker-Zaehler saehe die Kopie
+        # sonst wieder aktuell aus.
+        for header in LOCK_WAIT_STATE_HEADERS:
+            headers.pop(header, None)
     if ctx.schedfire_claim is not None:
         headers[HEADER_SCHEDFIRE_CLAIM] = ctx.schedfire_claim.header_value()
     return headers
@@ -191,9 +219,16 @@ def prior_deferrals(headers: Mapping[str, Any], counter_header: str = HEADER_BAC
     Gates, Absturz, Fallback): die Folge ist unterbrochen, die Zaehlung
     beginnt neu. Klassische Queues fuehren keine solchen Zaehler.
     """
-    if any(_as_count(headers.get(counter)) > 0 for counter in BROKER_DELIVERY_COUNTERS):
+    if broker_redelivered(headers):
         return 0
     return _as_count(headers.get(counter_header))
+
+
+def broker_redelivered(headers: Mapping[str, Any]) -> bool:
+    """Hat der Broker diese Zustellung nach einer frueheren zurueckgegeben
+    (Requeue, Absturz, Shutdown)? Kopien tragen keine Broker-Zaehler; klassische
+    Queues fuehren keine -- dort ist eine Neuzustellung nicht erkennbar."""
+    return any(_as_count(headers.get(counter)) > 0 for counter in BROKER_DELIVERY_COUNTERS)
 
 
 def deferral_copy(deps: GateDeps, delivery: Any, ctx: GateContext) -> tuple[dict[str, Any], int, int]:
@@ -230,12 +265,12 @@ async def redeliver_in_place(deps: GateDeps, delivery: Any, ctx: GateContext) ->
     ``nack`` zaehlt wieder aufs Zustelllimit (Logikfehler -> DLQ)."""
     claim = ctx.schedfire_claim
     if claim is None:
-        await deps.broker.redeliver(delivery)
+        await _pause_then_redeliver(deps, delivery)
         return
     # Vor der Freigabe gebaut: sie nimmt den Claim vom Kontext.
     headers, attempt, delay_ms = deferral_copy(deps, delivery, ctx)
     if await deps.finalize_schedfire(ctx, False):
-        await deps.broker.redeliver(delivery)
+        await _pause_then_redeliver(deps, delivery)
         return
     fields = {"task_id": ctx.task_id, "task_name": ctx.task_name, "schedfire_key": claim.key}
     try:
@@ -245,9 +280,21 @@ async def redeliver_in_place(deps: GateDeps, delivery: Any, ctx: GateContext) ->
     except Exception as exc:
         # Broker ebenfalls gestoert: letzter Ausweg ``nack``.
         logger.warning("task_copy_failed_redelivered", **fields, **_error_fields(exc))
-        await deps.broker.redeliver(delivery)
+        await _pause_then_redeliver(deps, delivery)
         return
     logger.warning("task_requeued_as_copy", **fields, defer_count=attempt, delay_ms=delay_ms)
+
+
+async def _pause_then_redeliver(deps: GateDeps, delivery: Any) -> None:
+    """``redeliver`` nach der Pause aus ``redeliver_pause_s`` (BZ-29). Eine
+    scheiternde Pause verhindert das ``nack`` nicht (die Zustellung bliebe
+    sonst unbestaetigt bis zum Kanalende); ein Abbruch geht durch."""
+    if deps.redeliver_pause is not None:
+        try:
+            await deps.redeliver_pause(redeliver_pause_s(delivery.headers or {}))
+        except Exception as exc:
+            logger.warning("redeliver_pause_failed", **_error_fields(exc))
+    await deps.broker.redeliver(delivery)
 
 
 class Gate(Protocol):
@@ -302,6 +349,22 @@ async def route_via_dlx(
         task_name=task_name,
         error=error,
     )
+    await _fail_workflow_best_effort(deps, delivery, task_id, task_name, error or reason)
+
+
+async def _fail_workflow_best_effort(
+    deps: GateDeps, delivery: Any, task_id: str | None, task_name: str | None, error_message: str
+) -> None:
+    """BZ-13: ein per DLX beendeter Workflow-Schritt markiert seinen Workflow
+    als fehlgeschlagen -- best effort, ohne Neuzustellung (die Nachricht
+    liegt schon im ``.XQ``). Ein Fehler hier bricht den Pfad nicht ab."""
+    if deps.fail_workflow is None:
+        return
+    ctx = GateContext(task_id=task_id or "", task_name=task_name or "", queue=getattr(delivery, "queue", None) or "")
+    try:
+        await deps.fail_workflow(delivery, ctx, error_message, False)
+    except Exception as exc:
+        logger.warning("workflow_fail_mark_failed", task_id=task_id, **_error_fields(exc), redelivered=False)
 
 
 __all__ = [

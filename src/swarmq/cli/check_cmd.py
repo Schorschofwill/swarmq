@@ -118,10 +118,10 @@ def _run_worker_check(args: argparse.Namespace) -> int:
         # R14: ohne diese Pruefung meldete --check "in Ordnung" fuer eine
         # Logging-Einstellung, an der der Start danach mit Exit 78 scheitert.
         _check_logging_settings(args)
-        # Patch 0.11.1: der Start lehnt einen gesetzten Namensraum ab (Exit 78).
-        from swarmq.namespace_guard import reject_namespace
+        # BZ-10: der Start lehnt einen ungueltigen Namensraum ab (Exit 78).
+        from swarmq.config import env_namespace
 
-        reject_namespace()
+        env_namespace()
         # Dieselbe Aufloesung wie beim Start (CLI > Env > Default), damit
         # --check die Werte prueft, die der Worker bekommt.
         resolve_worker_options(args, os.environ)

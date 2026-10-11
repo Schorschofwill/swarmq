@@ -9,6 +9,8 @@ positional arguments:
     schedule  Inspect or manage schedules without restarting workers.
     dlq       Inspect and recover messages from dead-letter queues.
     inspect   List registered tasks and their TaskInfo metadata.
+    check     Check the operating environment (Valkey, shutdown) before an
+              upgrade.
 
 options:
   -h, --help  show this help message and exit

@@ -30,7 +30,7 @@ from swarmq.task import DeliveryMode, Task, TaskInfo
 from swarmq.worker import Worker
 from swarmq.workflow_orchestration import WorkflowStep, WorkflowStepEnqueuer
 from tests.support.messages import make_message
-from tests.unit.worker._helpers import _default_payload
+from tests.unit.worker._helpers import _default_payload, lock_wait_exceeded_headers
 
 _HASH = "a" * 64
 _SCHEDFIRE = "golden-sched:1700000000000"
@@ -235,12 +235,12 @@ async def test_terminal_release_in_finally_releases_after_ack_and_writes_complet
 
 
 async def test_terminal_already_released_does_not_release_twice(broker, backend, rec) -> None:
-    """Lock-Konflikt am Cap: Dead-Letter + Freigabe inline — der finally gibt nicht erneut frei."""
+    """Ende der Lock-Wartezeit (MR 13): Dead-Letter + Freigabe inline — der finally gibt nicht erneut frei."""
     worker = _worker(broker, backend, rec, LockedTask)
     worker._lock_manager.acquire = rec.spy("lock_manager.acquire", None)
     msg = make_message(
         _payload("pipe-locked"),
-        headers={HEADER_UNIQUE_HASH: _HASH, "x-swarmq-lock-conflict-count": 9},
+        headers={HEADER_UNIQUE_HASH: _HASH, **lock_wait_exceeded_headers(worker._config)},
     )
 
     await worker._handle_message(msg)
@@ -251,7 +251,9 @@ async def test_terminal_already_released_does_not_release_twice(broker, backend,
     assert rec.index("broker.dead_letter") < rec.index("backend.release_unique")
 
 
-async def test_terminal_never_release_keeps_dedup_flag_on_expiry(broker, backend, rec) -> None:
+async def test_terminal_release_only_frees_dedup_flag_after_expiry_dead_letter(broker, backend, rec) -> None:
+    """BZ-22 (Plan 0.12.0, MR 3): nach dem Dead-Letter eines abgelaufenen
+    Tasks gibt der ``finally`` das Dedup-Flag frei (vorher blieb es stehen)."""
     worker = _worker(broker, backend, rec, ExpiringTask)
     msg = make_message(
         _payload("pipe-expiring"),
@@ -262,7 +264,8 @@ async def test_terminal_never_release_keeps_dedup_flag_on_expiry(broker, backend
 
     assert rec.calls.count("broker.dead_letter") == 1  # bestätigt das Original selbst (U8)
     assert "broker.ack" not in rec.calls
-    assert "backend.release_unique" not in rec.calls
+    assert rec.calls.count("backend.release_unique") == 1
+    assert rec.index("broker.dead_letter") < rec.index("backend.release_unique")
 
 
 async def test_unhandled_pipeline_exception_is_terminal_with_release_and_marker(
@@ -293,14 +296,14 @@ class TestRejectReasons:
     """
 
     @staticmethod
-    def _worker_with_spy(broker, backend, *tasks):
+    def _worker_with_spy(broker, backend, *tasks, **cfg):
         # Die Conftest-Fixtures bringen die Cancel-Flag-Defaults mit; ein
         # nackter ``MagicMock(spec=...)`` liefert dort truthy Mocks und der
         # Pre-Start-Cancel-Gate greift, bevor der Reject-Pfad erreicht ist.
         registry = TaskRegistry()
         for task in tasks:
             registry.register(task)
-        config = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x")
+        config = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x", **cfg)
         worker = Worker(broker=broker, backend=backend, registry=registry, config=config)
         events: list[dict] = []
 
@@ -343,8 +346,10 @@ class TestRejectReasons:
         assert rejected["reason"] == "undecodable"
         assert rejected["task_id"] is None
 
+    # Gnadenfrist 0 (Plan 0.12.0, MR 11, BZ-06): erst nach der Frist ist der
+    # unbekannte Task terminal und ``TASK_REJECTED`` feuert.
     async def test_unregistered_task_names_the_task(self, broker, backend):
-        worker, _broker, events = self._worker_with_spy(broker, backend)
+        worker, _broker, events = self._worker_with_spy(broker, backend, unknown_task_grace_s=0)
         msg = make_message(_default_payload(name="not-registered"))
         msg.queue = "default"
 
@@ -360,7 +365,7 @@ class TestRejectReasons:
         unregistrierten Task ist er dekodiert -- ``task_not_found`` loggt die
         Kennung --, das Signal trug sie trotzdem nicht. Ohne Kennung ist die
         Nachricht im ``.XQ`` nicht wiederzufinden (``swarmq dlq inspect``)."""
-        worker, _broker, events = self._worker_with_spy(broker, backend)
+        worker, _broker, events = self._worker_with_spy(broker, backend, unknown_task_grace_s=0)
         payload = _default_payload(name="not-registered")
         msg = make_message(payload)
         msg.queue = "default"

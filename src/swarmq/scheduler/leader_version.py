@@ -1,8 +1,8 @@
-"""Leader-Version (Plan 2026-10-08-1541, KTD11): ein Leader vor swarmq 0.10
-kennt keine Zeitzonen und verwirft ``timezone`` bei jedem Fire. Nicht-Leader
-erkennen ihn am fehlenden Versions-Key neben dem Leader-Lock oder an einer
-Version unter 0.10. Ein älterer Leader ab 0.10 (rollendes Upgrade) ist kein
-Fall für die Warnung."""
+"""Leader-Version (Plan 2026-10-08-1541, KTD11): ein Leader unter der
+Mindestversion kennt nicht alle Scheduler-Korrekturen der Nicht-Leader (vor
+0.10 etwa keine Zeitzonen, vor 0.12 keine stabile Oneshot-ID). Nicht-Leader erkennen ihn am fehlenden Versions-Key
+neben dem Leader-Lock oder an einer Version unter der Mindestversion (Plan
+2026-10-09-2314, MR 5)."""
 
 from __future__ import annotations
 
@@ -18,8 +18,9 @@ logger = get_logger(__name__)
 
 _RELEASE = re.compile(r"\d+(?:\.\d+)*")
 
-# Erste swarmq-Version, deren Leader die Zeitzone eines Crons beachtet.
-TIMEZONE_FLOOR = (0, 10)
+# Mindestversion eines Leaders; darunter warnen Nicht-Leader.
+MINIMUM_LEADER_VERSION = (0, 12)
+_MINIMUM = ".".join(map(str, MINIMUM_LEADER_VERSION))
 
 
 def _release(version: str) -> tuple[int, ...] | None:
@@ -44,14 +45,14 @@ def swarmq_version() -> str:
 
 
 def is_outdated(leader_version: str | None) -> bool:
-    """``True``, wenn der Leader keine Zeitzonen kennt: ohne Versionsangabe
-    (vor 0.10.0) oder mit einem Release unter 0.10. Ein älterer Leader ab
-    0.10 (rollendes Upgrade) gilt nicht als veraltet; eine nicht lesbare
-    Leader-Version ebenfalls nicht."""
+    """``True``, wenn der Leader unter der Mindestversion liegt: ohne
+    Versionsangabe (vor 0.10.0) oder mit einem Release unter
+    :data:`MINIMUM_LEADER_VERSION`. Eine nicht lesbare Leader-Version gilt
+    nicht als veraltet."""
     if leader_version is None:
         return True
     leader = _release(leader_version)
-    return leader is not None and leader < TIMEZONE_FLOOR
+    return leader is not None and leader < MINIMUM_LEADER_VERSION
 
 
 class LeaderVersionWatch:
@@ -96,6 +97,7 @@ class SchedulerLeaderVersion:
     _owner_token: str
     _version: str
     _leader_watch: LeaderVersionWatch
+    _last_seen_leader: str | None
 
     if TYPE_CHECKING:
         async def _emit(self, signal: Signal, **extra: Any) -> None: ...
@@ -118,6 +120,10 @@ class SchedulerLeaderVersion:
         except Exception as exc:
             logger.warning("scheduler_leader_version_check_failed", **_error_fields(exc))
             return
+        if info.owner is not None:
+            # BZ-07: ein 0.11-Leader hinterlässt seinen Handover-Marker nur
+            # unter seinem Owner-Token.
+            self._last_seen_leader = info.owner
         await self._observe_leader(info.owner, info.version)
 
     async def _observe_leader(self, owner: str | None, version: str | None) -> None:
@@ -133,10 +139,9 @@ class SchedulerLeaderVersion:
                 leader_version=version,
                 version=self._version,
                 hint=(
-                    "the scheduler leader runs a swarmq before 0.10 and drops "
-                    "a cron's timezone on every fire; upgrade every app on "
-                    "this Valkey to 0.10 or later before changing crons or "
-                    "timezones"
+                    f"the scheduler leader runs a swarmq before {_MINIMUM} and "
+                    "lacks scheduler fixes this worker relies on; upgrade "
+                    f"every app on this Valkey to {_MINIMUM} or later"
                 ),
             )
         await self._emit(

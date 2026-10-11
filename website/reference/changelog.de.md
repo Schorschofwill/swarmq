@@ -6,6 +6,923 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ## [Unreleased]
 
+0.12.0, noch unveröffentlicht. Die Version behebt die Befunde der
+Untersuchung „Betrieb über Zeit“ (BZ-01 bis BZ-29): verlorene und
+doppelt ausgeführte Tasks, Wartezeiten ohne Grenze und Zustand, der
+sich über Wochen Betrieb aufbaut. BZ-20 bleibt eine Grenze und wird
+jetzt gemeldet. **Erst alle Apps als eigenes Deployment auf 0.11.1
+ausrollen**, dann [Ausrollen und Upgraden](../guides/deployment.md)
+folgen.
+
+### Upgrade-Hinweise
+
+#### Reihenfolge
+
+1. **Zuerst `swarmq check`** mit 0.12 in einem eigenen virtualenv gegen
+   Produktion ausführen (`pip install swarmq==0.12.*`; es liest nur:
+   `CONFIG GET`, `INFO`, `SCAN`, passive Deklarationen). Unter
+   Kubernetes geht das als Init-Container. Exit `78` heißt: Die neuen
+   Worker würden den Start verweigern. Das nicht erst beim Ausrollen
+   herausfinden: Ein Worker, der den Start verweigert, endet bei jedem
+   Neustart wieder mit `78`, Kubernetes zeigt `CrashLoopBackOff`,
+   Docker mit `restart:`-Policy läuft in eine Schleife.
+   `maxmemory-policy noeviction` setzen oder bewusst
+   `SWARMQ_VALKEY_EVICTION_CHECK=warn` (etwa bei einem Managed-Dienst
+   mit fester Policy, mit bekanntem Risiko) ([CLI](cli.md#swarmq-check)).
+2. **Zuerst alle Apps auf 0.11.1**, als eigenes Deployment. Ein Rollback
+   per Kubernetes oder Docker geht auf das vorher deployte Image zurück;
+   0.11.0 scheitert an Queues, die 0.12 angelegt hat, und ignoriert einen
+   Namensraum still ([0.11.1](#0111-2026-10-10)).
+3. **Worker vor Producern.** Für jede neue Queue gilt das jetzt
+   dauerhaft: Ein Publish an eine Queue, die noch kein Worker deklariert
+   hat, wirft `UnroutableMessage` (BZ-03). Beim Rollout von 0.11 gilt es
+   auch für neue Task-Namen, weil nur 0.12-Worker einen unbekannten Task
+   zurückstellen (BZ-06).
+4. **Grace-Period:** Kubernetes `terminationGracePeriodSeconds` und
+   Docker `stop_grace_period` mindestens `SWARMQ_SHUTDOWN_TIMEOUT + 15 s`
+   (`swarmq check` zeigt `min_grace_period_s`). Mit dem Default 30 s
+   drainiert ein eingebetteter Worker jetzt 25 s, ein Worker unter dem
+   Supervisor 23 s (bisher 30 s); um langen Tasks den bisherigen Drain zu
+   geben, `SWARMQ_SHUTDOWN_TIMEOUT` zusammen mit der Frist um 7 s
+   anheben (BZ-18).
+5. **Namensraum zuletzt.** Erst alle Komponenten (Worker, Producer, CLI,
+   Kontrolldienst) auf 0.12, dann `SWARMQ_NAMESPACE` überall im selben
+   Schritt setzen; gemischte Werte spalten die App. Nur für eine neue App
+   oder nach dem Umzug der App: Der Namensraum migriert keine Daten unter
+   `sq:` (Schedules, CLI-Crons, verzögerte Tasks, Ergebnisse, Locks).
+   Umzug: die App vollständig stoppen (Kubernetes `strategy: Recreate`
+   oder auf 0 skalieren, kein Rolling Update), ihre Crons und One-Shots
+   ohne Namensraum entfernen (`swarmq schedule list`, `swarmq schedule
+   remove --permanent`), ihre CLI-Crons und One-Shots mit Namensraum neu
+   anlegen, Valkey-ACL-Muster von `~sq:*` auf `~<namensraum>:sq:*`
+   umstellen (Kanäle `&sq:*` auf `&<namensraum>:sq:*`) und Werkzeuge, die
+   die Keys direkt lesen (Dashboards wie swarmv), auf den Namensraum
+   einstellen. Vorher alle Apps am Valkey auf 0.12 bringen: Ein Leader
+   älter als 0.12 feuert die alten Definitionen bis zu 24 Stunden weiter.
+   Getrennte RabbitMQ-vhosts an einem Valkey brauchen je App einen
+   Namensraum. Solange Apps älter als 0.12 ohne Namensraum am Valkey
+   laufen, `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S=0` setzen, sonst kann die
+   Führung zu einer 0.11-App wandern (BZ-10;
+   [Ablauf](configuration.md#eine-app-in-einen-namensraum-umziehen)).
+6. **Verbindungen:** Worker öffnen zwei Verbindungen zu RabbitMQ
+   (Producer eine). `connection_max`, `max-connections` je vhost,
+   Benutzerlimits und Alarme auf die Verbindungszahl vor dem Rollout
+   prüfen, oder `SWARMQ_BROKER_PUBLISH_CONNECTION=shared` setzen (BZ-16).
+7. **Queues, Rechte, Policies:** Eine Queue-Familie hat jetzt bis zu
+   sieben weitere Queues, die Delay-Stufen `{queue}.DQ.1s` bis
+   `{queue}.DQ.1h` (21 mit `SWARMQ_PRIORITIES`); Rechte und Policies der
+   Delay-Queues brauchen das Muster `\.DQ(\.\w+)?$` (BZ-01). Auf eine
+   Queue wirkt nur eine Policy: jeden Schlüssel (at-least-once
+   Dead-Lettering, `max-length`) in eine aufnehmen. Keine
+   `delivery-limit`-Policy auf swarmq-Queues setzen (BZ-15, BZ-19).
+
+#### Geändertes Verhalten
+
+- **Valkey-Eviction (BZ-04):** Ein Worker verweigert den Start
+  (`ConfigurationError`, Exit `78`), wenn Valkey swarmq-Keys verdrängen
+  kann (jede Policy außer `noeviction` mit `maxmemory`-Grenze oder
+  unbekannter Grenze). Eine nicht lesbare Policy blockiert nie.
+- **Unroutbare Publishes (BZ-03):** `send()`/`schedule()` an eine Queue,
+  die es nicht gibt, werfen sofort `UnroutableMessage`, statt Erfolg zu
+  melden, während der Broker die Nachricht verwirft. Ein Task mit
+  `TaskInfo(priority="high"|"low")`, dessen Worker ohne `--priorities`
+  laufen, wirft sie jetzt ebenfalls.
+- **Herunterfahren (BZ-18):** `SWARMQ_SHUTDOWN_TIMEOUT` ist das
+  Gesamtbudget ab `SIGTERM`, nicht mehr der Drain allein;
+  `ProcessManager(shutdown_grace_s=...)` bedeutet ebenfalls das
+  Gesamtbudget.
+- **Lock-Konflikte (BZ-05):** Eine Nachricht, deren Task-Lock belegt
+  ist, wartet zeitbasiert statt 10 Versuche; `LockConflictLimitError`
+  kommt nicht mehr vor (stattdessen `LockWaitExceeded`).
+  `x-swarmq-lock-conflict-count` wird von 0.12 weder erhöht noch
+  gelesen; das neue `x-swarmq-lock-conflicts` speist das Signal-kwarg
+  `lock_conflict_count`, dessen Bedeutung gleich bleibt.
+  `task_lock_conflict` wird beim ersten Konflikt und danach etwa einmal
+  je Minute geloggt; `lock_conflict_dlq_failed` nennt das Feld
+  `lock_conflicts` statt `lock_conflict_count`; die DLQ-Kopie trägt
+  keinen Konfliktzähler-Header mehr (die Zahl steht im Text von
+  `x-swarmq-traceback`, „(N conflicts)“).
+- **Unbekannte Tasks (BZ-06):** Ein 0.12-Worker stellt einen Task, den
+  er nicht registriert, 15 Minuten zurück, bevor er ihn in die DLQ
+  schickt. `unregistered_task` folgt jetzt auf `TASK_DLQ`, die DLQ-Kopie
+  trägt SwarmQ-Header, und `task_not_found` kommt erst nach der Frist.
+- **Delivery-Limit (BZ-15):** Der Worker dead-lettert beim kleineren
+  Wert aus `SWARMQ_DELIVERY_LIMIT` und dem `x-delivery-limit` der Queue:
+  Eine Queue mit Limit 20 bei `SWARMQ_DELIVERY_LIMIT=50` dead-lettert der
+  Worker bei 19 Zustellungen mit Fehlerergebnis, statt dass der Broker
+  sie still verwirft. Ein geänderter Queue-Typ endet mit
+  `QueueArgumentsMismatch`, Exit `78`, statt einer Neustartschleife.
+  `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=at-least-once` zusammen mit
+  `SWARMQ_QUEUE_TYPE=classic` ist ein `ConfigurationError`.
+- **At-least-once-Dead-Lettering (BZ-19):** Auf neuen Quorum-Queues mit
+  einer `max-length`-Policy (auch einer Operator-Policy) bekommt ein
+  Publish an eine volle Queue ein Nack statt drop-head und scheitert
+  nach fünf Versuchen mit `PublishRejected`. Duplikate aus
+  at-least-once-Dead-Lettering laufen bei Tasks ohne Ausführungsschutz
+  (`FIRE_AND_FORGET`, `execution_guard=False`) doppelt. Jeder
+  Worker-Prozess loggt `queue_dead_letter_at_most_once` für
+  Bestandsqueues, und jeder Start kostet je von 0.12 angelegter Queue
+  bis zu zwei Channel-Fehler `PRECONDITION_FAILED` im Broker-Log.
+- **Negative Publisher-Confirms** werfen `PublishRejected` (Unterklasse
+  von `BrokerConnectionError`) statt eines schlichten
+  `BrokerConnectionError`; ein Publish auf einer blockierten Verbindung
+  wirft nach `SWARMQ_PUBLISH_TIMEOUT_S` `BrokerPublishBlocked` statt
+  `PublishIndeterminate` (BZ-16). Bestehende
+  `except BrokerConnectionError`-Handler fangen beide weiter.
+- **Stornieren (BZ-23):** Nach der stornierten Zustellung wird das Flag
+  auf höchstens 1 h verkürzt statt gelöscht: Dieselbe `task_id`, die
+  innerhalb dieser Stunde neu eingereiht wird, wird storniert, und
+  `cancel()` liefert `False`. `cancel()` liest außerdem den
+  One-Shot-Eintrag der Task-ID und wirft `BackendConnectionError`, wenn
+  dieses Lesen scheitert.
+- **Crons mit `unique_for` (BZ-09)** bekommen einen neuen
+  Fingerabdruck. Melden 0.11- und 0.12-Worker einer App einen solchen
+  Cron länger als 10 Minuten gleichzeitig, loggt der Leader
+  `scheduler_cron_conflict` (die Definition von 0.12 gewinnt); ein
+  0.12-Leader schreibt die Definition einmal neu
+  (`scheduler_static_cron_updated`).
+- **Leader-Version (KTD11):** Worker warnen bei jedem Leader vor 0.12
+  (bisher 0.10); während des Rollouts ist `scheduler_leader_outdated`
+  erwartet, bis ein 0.12-Worker führt.
+- **Autoscaling (BZ-01):** `swarmq worker --autoscale` zählt nur die
+  Nachrichten, die in `{queue}` selbst bereitliegen (`ready_depth`); ein
+  Rückstand zurückgestellter Nachrichten skaliert nicht mehr hoch.
+- **`swarmq dlq retry` (BZ-08)** behält die `x-swarmq-replay-id`, die ein
+  0.12-Worker gestempelt hat, und setzt `x-swarmq-enqueued-at` neu; ein
+  zweiter Retry derselben `.XQ`-Nachricht wird als Duplikat übersprungen.
+- **Queue-Deklarationen** laufen nach einer passiven Prüfung auf einem
+  eigenen Channel; eine Queue ohne `x-delivery-limit` wird übernommen
+  (WARNING; RabbitMQ nimmt 20). Eine Ablehnung, die swarmq nicht erkennt
+  (Queue-Limit, Recht), meldet die Broker-Meldung und rät nicht mehr zum
+  Löschen der Queue.
+- **Retry-Backoff (BZ-26):** Oberhalb von `retry_max_delay` wartet ein
+  `exponential`- oder `linear`-Retry 0,6 bis 0,8 × `retry_max_delay`
+  statt genau den Cap.
+
+#### Neue Defaults
+
+| Einstellung | Default | Wirkung |
+|---|---|---|
+| `SWARMQ_VALKEY_EVICTION_CHECK` | `strict` | Start verweigern unter verdrängender Policy |
+| `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY` | `auto` | neue Quorum-Queues at-least-once mit `reject-publish` |
+| `SWARMQ_UNKNOWN_TASK_GRACE_S` | `900` | unbekannte Tasks 15 min zurückstellen |
+| `SWARMQ_LOCK_WAIT_MAX_S` | `21600` | längste Wartezeit auf einen Task-Lock |
+| `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S` | `604800` | Ausführungszustand hinter einem Rückstand lebt 7 Tage |
+| `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S` | `86400` | verzögerten Task an fehlende Queue einen Tag erneut versuchen |
+| `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S` | `SWARMQ_SCHEDULER_LOCK_TTL` | Leader tritt nach wiederholten Publish-Fehlern zurück |
+| `SWARMQ_BROKER_PUBLISH_CONNECTION` | `separate` | Worker nutzen zwei Broker-Verbindungen |
+| `SWARMQ_SHUTDOWN_TIMEOUT` | `30` (unverändert) | jetzt das Gesamtbudget des Herunterfahrens |
+| Cancel-Flag | `max(24 h, result_ttl)` | bisher `result_ttl` |
+| gesperrter Worker-Slot | 1 h Abkühlzeit | bisher gesperrt bis zum Neustart des Supervisors |
+
+### Behoben
+
+- **BZ-01: Ein kurzer Retry oder eine kurze Rückstellung wartet nicht
+  mehr hinter einer langen.** Alle Wartezeiten einer Queue teilten sich
+  `{queue}.DQ`, und RabbitMQ lässt nur die Nachricht am Kopf verfallen:
+  Ein Retry, der eine Stunde wartete, hielt jede Lock-, Rate-Limit-,
+  Backend- oder Guard-Rückstellung dahinter fest. Der Worker nutzt jetzt
+  sieben Delay-Stufen `{queue}.DQ.1s` bis `{queue}.DQ.1h` und legt eine
+  Wartezeit in die kleinste Stufe, die sie erreicht; Wartezeiten über
+  einer Stunde bleiben in `{queue}.DQ`. Die Stufen entstehen beim Start
+  des Workers mit den Argumenten von `{queue}.DQ`; eine Ablehnung ist
+  nicht fatal (die Wartezeiten dieser Stufe nutzen `{queue}.DQ`,
+  `delay_tier_unavailable`)
+  ([Delay-Stufen](../explanation/delivery-semantics.md#delay-stufen)).
+- **BZ-02: Ein verzögerter Task läuft unter der ID, die `schedule()`
+  geliefert hat.** `schedule(delay=|eta=)` lieferte eine ID, und der
+  Leader feuerte den Task unter einer neuen: `get_result()` lief in den
+  Timeout, `cancel()` wirkte nicht, und das Dedup-Flag von `unique_for`
+  wurde nie freigegeben. Der One-Shot-Eintrag speichert die ID jetzt im
+  neuen Feld `ScheduleDefinition.task_id`; Einträge ohne das Feld feuern
+  unter der ID aus ihrem Namen `oneshot:<task_id>`. Crons bekommen
+  weiter je Fire eine neue ID
+  ([verzögerte Ausführung](../guides/scheduling-and-retries.md#immediate-vs-deferred)).
+- **BZ-03: Ein Publish an eine Queue, die es nicht gibt, verschwindet
+  nicht mehr still.** Der Broker gab eine solche Nachricht zurück
+  (`basic.return`), das Publisher-Confirm kam trotzdem, also meldeten
+  `send()`/`schedule()` Erfolg, und die Nachricht war weg. Die
+  Publish-Channels werten eine Rückgabe jetzt als Fehler: Der Publish
+  wirft sofort `UnroutableMessage`, ohne Wiederholung.
+  - Der Scheduler-Leader zählt einen Cron-Fire an eine fehlende Queue
+    als verloren: Er schreibt den Fire fest, sendet
+    `SCHEDULER_FIRE_UNROUTABLE` (`kind="cron_lost"`) und loggt
+    `scheduler_fire_unroutable` höchstens einmal je Cron und 10 Minuten,
+    dazu `scheduler_fire_unroutable_foreign`, wenn ein Worker einer
+    anderen App den Cron meldet.
+  - Ein verzögerter Task, dessen Queue fehlt, wird alle 60 s erneut
+    versucht. Nach `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S`, gezählt
+    ab dem ersten unroutbaren Versuch
+    (`ScheduleDefinition.unroutable_since`), wird er verworfen:
+    `scheduler_oneshot_unroutable_dropped`, `kind="oneshot_dropped"`, ein
+    Fehlerergebnis unter seiner Task-ID, und sein `unique_for`-Flag wird
+    freigegeben.
+  - Ein Worker, dessen eigene `{queue}.DQ`/`.XQ` (oder Delay-Stufe)
+    während des Laufs gelöscht wurde, deklariert die Queue-Familie
+    einmal neu, über dieselbe Kette wie beim Start, und veröffentlicht
+    die Retry- bzw. DLQ-Kopie erneut (`own_queue_unroutable_redeclaring`).
+  - Ein Workflow-Schritt, dessen nächster Schritt an eine fehlende Queue
+    geht, markiert den Workflow sofort als `failed`
+    (`workflow_advance_unroutable`), statt bis zum Zustelllimit neu
+    zugestellt zu werden
+  ([fehlende Queues](../guides/scheduling-and-retries.md#fehlende-queues)).
+- **BZ-04: Verdrängte Locks und Marker sowie Datenverlust in Valkey
+  bleiben nicht mehr unbemerkt.** Unter `volatile-*` oder `allkeys-*`
+  verdrängte Valkey still Locks, den Leader-Lock, den Ausführungsschutz
+  sowie Unique- und Fired-Marker, und Tasks liefen doppelt. Beim
+  Verbinden liest das Backend jetzt `maxmemory-policy` und `maxmemory`
+  (`CONFIG GET`, sonst `INFO memory`, höchstens 2 s, scheitert nie);
+  unter einer verdrängenden Policy loggt jedes Verbinden
+  `valkey_eviction_policy_unsafe`, ein Worker mit `strict` endet mit
+  Exit `78` (Producer und CLI-Befehle warnen nur), und der
+  Scheduler-Leader prüft höchstens einmal je Stunde erneut. Ein per
+  `swarmq schedule remove` abgeschalteter Cron kam nach einem
+  Datenverlust von Valkey aktiv zurück; jeder Worker merkt sich jetzt
+  den Epoch-Key `[<namensraum>:]sq:{sched}:epoch` und loggt
+  `valkey_data_loss_detected`, wenn er fehlt. Die interne Empfehlung
+  `volatile-lru` ist zu `noeviction` plus AOF korrigiert
+  ([Valkey-Anforderungen](configuration.md#valkey-anforderungen)). Zur
+  Laufzeit wird ein Lock, der beim Verlängern oder Freigeben fehlt oder
+  einem anderen Halter gehört, als `task_lock_lost` gemeldet (siehe
+  BZ-25).
+- **BZ-05: Ein Lock-Konflikt wartet zeitbasiert statt 10 Versuche.**
+  Der 10. Konflikt (etwa 51 s) schickte die Nachricht ohne `TASK_DLQ`,
+  Ergebnis und Workflow-Markierung in die DLQ. Eine Nachricht, deren
+  Task-Lock belegt ist, wird jetzt zurückgestellt (100 ms, verdoppelt,
+  höchstens 60 s), solange der Lock den Halter wechselt oder sein Halter
+  lebt. In die DLQ geht sie als `LockWaitExceeded`, mit Fehlerergebnis,
+  `TASK_DLQ` und fehlmarkiertem Workflow, erst wenn derselbe Halter den
+  Lock länger hält als die TTL des Keys + 60 s oder seit dem ersten
+  Konflikt `SWARMQ_LOCK_WAIT_MAX_S` vergangen ist; `max_age` bleibt die
+  harte Grenze. Die Wartezeit nutzt die Wanduhren der Worker (ein
+  Versatz bis etwa 60 s wird toleriert). Eine neue Wartezeit beginnt,
+  wenn der Broker die Nachricht neu zustellt (ein Worker starb nach dem
+  Acquire oder gab sie beim Herunterfahren zurück), und auf der Kopie
+  einer späteren Ausführung (`x-swarmq-lock-wait-gen`: Retry-Zähler und
+  Replay-ID); klassische Queues führen keinen Zustellzähler, dort setzt
+  eine Neuzustellung die alte Wartezeit fort. Ein Lock-Store, dessen
+  `observe` keine `LockObservation` liefert, gilt als nicht meldefähig.
+  `swarmq dlq retry` entfernt auch den 0.11-Zähler
+  `x-swarmq-lock-conflict-count`
+  ([Lock-Acquisition](../guides/locking-and-dedup.md#lock-acquisition-verhalten)).
+- **BZ-06: Ein unregistrierter Task landet beim ersten Kontakt nicht
+  mehr in der `.XQ`.** Bei einem Rolling Deploy mit Producern vor den
+  Workern wurde jeder neue Task-Name ohne Aufbewahrungsfrist und ohne
+  Fehlerergebnis an den Broker-DLX abgewiesen, und jeder Workflow mit
+  einem solchen Schritt schlug fehl. Der Worker stellt die Nachricht
+  jetzt für `SWARMQ_UNKNOWN_TASK_GRACE_S` mit Backoff zurück (1 s, dann
+  so lang wie bisher gewartet, höchstens 60 s je Runde), gemessen ab dem
+  ersten Kontakt in `x-swarmq-unknown-since`; ein Scheduler-Fire behält
+  dabei seinen In-Flight-Claim und sein Unique-Flag. Nach der Frist
+  dead-lettert der Worker die Nachricht selbst: Fehlerergebnis,
+  Workflow-Schritt als fehlgeschlagen markiert, Unique-Flag freigegeben,
+  `TASK_DLQ`, Aufbewahrungsfrist und `x-swarmq-traceback` auf der
+  DLQ-Kopie, danach `TASK_REJECTED` mit `unregistered_task` und
+  `task_not_found` (ERROR)
+  ([unregistrierte Tasks](../guides/dead-letter-queues.md#unregistrierte-tasks-und-rolling-deploys)).
+- **BZ-07: Ein neuer Scheduler-Leader durchsucht nicht mehr die ganze
+  Valkey-Datenbank.** Bei der Übernahme suchte er den Handover-Marker
+  seines Vorgängers per `SCAN`, noch vor der ersten Lock-Verlängerung;
+  bei Millionen Keys konnte das die Lock-TTL überdauern, und die
+  Leader-Rolle flatterte. Der Marker hat jetzt einen festen Key,
+  `[<namensraum>:]sq:{sched}:handover`, gelesen per `GETDEL`, und der
+  Leader verlängert sein Lock direkt nach der Übernahme. Leader vor 0.12
+  finden den Marker weiter, und ihr Marker wird weiter erkannt
+  ([Leader-Übernahme](../guides/scheduling-and-retries.md#leader-ubernahme)).
+- **BZ-08: Eine DLQ-Wiederholung ohne neue `x-swarmq-replay-id` wird
+  nicht mehr übersprungen.** „Move messages“ in der RabbitMQ-UI, ein
+  Shovel, swarmv und ein CLI vor 0.11 legen eine dead-gelettete
+  Nachricht mit ihren Headern zurück; der Ausführungsschutz sah den
+  Done-Marker des ersten Laufs und bestätigte die Wiederholung, ohne sie
+  auszuführen. Der Worker stempelt jetzt die Replay-ID der nächsten
+  Generation auf jede DLQ-Kopie, die er publiziert (`x-swarmq-dlq-gen`),
+  und eine Nachricht, die der Broker selbst dead-gelettert hat
+  (Delivery-Limit, `route_via_dlx`), bekommt ihre neue Identität aus
+  `x-death`; jede Kopie, die SwarmQ publiziert, nimmt diesen Zähler als
+  `x-swarmq-xdeath-base` mit, weil der Broker `x-death` beim nächsten
+  Dead-Lettern neu aufbaut. Ein wiederholter Scheduler-Fire läuft
+  ebenfalls. `swarmq dlq retry` leitet die Replay-ID einer Nachricht ohne
+  passendes `x-swarmq-dlq-gen` (0.11-Worker, Broker-Dead-Lettering,
+  Altbestand) aus ihrer Identität ab, ein wiederholter Retry läuft also
+  einmal; nur eine Nachricht ohne Task-ID bekommt eine zufällige ID. Eine
+  gestempelte, vom Broker erneut dead-gelettete Nachricht oder eine mit
+  einer Replay-ID, die der Worker nicht liest, behandelt es als neue
+  Generation
+  ([Ausführungsschutz](../explanation/delivery-semantics.md#ausfuhrungsschutz),
+  [Nachrichten retryen](../guides/dead-letter-queues.md#nachrichten-retryen)).
+- **BZ-09: `unique_for` eines Crons hängt nicht mehr davon ab, welcher
+  Worker Leader ist.** Der Leader las `unique_for` aus seiner eigenen
+  Task-Registry; ein Leader aus einer anderen App, mit anderem
+  `--module` oder aus der anderen Hälfte getrennter CPU- und IO-Worker
+  feuerte den Cron ohne Dedup, und lange Läufe überlappten. Worker melden
+  `unique_for` und `unique_until` jetzt mit ihren Crons, und der Leader
+  nimmt beide aus der Definition (neues Feld
+  `ScheduleDefinition.unique_for`); eine Definition ohne sie (vor 0.12
+  geschrieben oder ein CLI-Schedule) nutzt weiter die `TaskInfo` des
+  Leaders. Der Cron-Fingerabdruck enthält beide Werte nur, wenn
+  `unique_for` gesetzt ist. Scheitert der Publish eines Termins, nachdem
+  der Leader das Flag genommen hat, gibt er es jetzt frei (nicht nach
+  `PublishIndeterminate` und nicht, wenn `schedule(delay=|eta=)` es
+  genommen hat); vorher zählte der nächste Takt den Termin als Duplikat,
+  und er ging verloren
+  ([Unique-Crons](../guides/locking-and-dedup.md#unique-crons)).
+- **BZ-10: Mehrere Apps auf einem Valkey lassen sich trennen.** Ohne
+  Namensraum teilten alle Apps Rate-Limit- und Lock-Keys, Unique-Hashes
+  und einen Scheduler-Leader, und ein Leader mit defektem Broker hielt
+  die Crons aller Apps an. `SWARMQ_NAMESPACE` verschiebt jeden
+  Valkey-Key, jeden Pub/Sub-Kanal, den Scheduler-Leader und den
+  Kontrollkanal von `sq:…` nach `<namensraum>:sq:…`; Queue-Namen bleiben
+  ohne Präfix (ein RabbitMQ-vhost je App). Ohne Namensraum bleibt alles
+  byte-identisch. Ein Leader, dessen Broker wiederholt scheitert, tritt
+  jetzt zurück: Nach mindestens 2 gescheiterten Publishes über
+  mindestens `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S` ohne Erfolg dazwischen
+  gibt er das Leader-Lock ohne Handover-Marker frei (der Nachfolger
+  sendet `SCHEDULER_LEADER_FAILOVER`), sendet `SCHEDULER_STANDBY` und
+  bewirbt sich 2 × Lock-TTL nicht erneut
+  (`scheduler_publish_failures_stepdown`). Es zählen nur echte
+  Verbindungsfehler: `UnroutableMessage`, `MessageHeadersTooLarge`,
+  `BrokerPublishBlocked`, `PublishRejected` und `PublishIndeterminate`
+  treffen jeden Kandidaten oder eine Queue und zählen nicht. Eine Lücke
+  länger als die Frist zwischen zwei Fehlern und jede neue Amtszeit
+  beginnen eine neue Serie. Backend und Konfiguration einigen sich auf
+  einen Namensraum: Ein ausdrückliches `ValkeyBackend(namespace=…)`
+  (oder `keys=`) gilt und füllt `app.config.namespace`; ohne es
+  übernimmt das Backend `SwarmQConfig.namespace` (Code oder
+  `SWARMQ_NAMESPACE`), sobald es an `SwarmQ(...)` geht. Beide gesetzt und
+  verschieden (auch `namespace=""` neben gesetztem `SWARMQ_NAMESPACE`)
+  ist ein `ConfigurationError` (`namespace mismatch`, Exit `78`). Der
+  Namensraum ist nur kleingeschrieben zulässig
+  (`[a-z0-9][a-z0-9_.-]{0,63}`, nicht `sq`); ein ungültiger Wert stoppt
+  Worker, `SwarmQ(...)` und die CLI-Befehle vor jeder Verbindung (Exit
+  `78`; `swarmq worker --check`: Exit 1).
+  `scheduler_fire_unroutable_foreign` nennt im Hinweis
+  `SWARMQ_NAMESPACE`, und die Lock-Hinweise (`valkey-cli DEL …`) nennen
+  den Key mit dem Namensraum des Backends
+  ([Namensraum](configuration.md#namensraum-mehrere-apps-auf-einem-valkey),
+  [Herkunft des Namensraums](configuration.md#herkunft-des-namensraums)).
+- **BZ-11: Ein Cron, dessen Task aus dem Code entfernt wurde, feuert
+  nicht mehr bis zum Ablauf der Aufräumfrist.** Jeder Fire eines
+  solchen Crons endete als unregistrierter Task in der `.XQ`, bis zu
+  24 h lang. Der Scheduler-Leader hält jetzt einen statischen Cron
+  zurück, den ein Worker ab 0.12 irgendwann gemeldet hat, den kein
+  lebender Worker mehr meldet und den der Leader selbst nicht
+  registriert: Der Termin wandert ohne Publish auf
+  `jetzt + SWARMQ_SCHEDULER_SEEN_INTERVAL_S`, bis ein Worker ihn wieder
+  meldet oder der Leader ihn aufräumt (`SCHEDULER_CRON_UNOWNED`,
+  `scheduler_cron_held_unowned`). Ein CLI-Schedule gleichen Namens wird
+  nie zurückgehalten. Direkt nach einer Übernahme wartet der Leader
+  höchstens 5 s auf die Cron-Meldungen; ohne sie feuert er wie bisher
+  (fail-open, `scheduler_unowned_check_skipped`)
+  ([zurückgehaltene Crons](../guides/scheduling-and-retries.md#crons-die-niemand-meldet-werden-zuruckgehalten)).
+- **BZ-12: Done- und Completed-Marker laufen hinter einem langen
+  Rückstand nicht mehr ab.** Der Done-Marker des Ausführungsschutzes und
+  der Completed-Marker eines Schedule-Fires lebten feste 3900 s,
+  gemessen ab dem Lauf, nicht ab der Zeit, die eine zurückgestellte
+  Kopie oder ein doppeltes Fire in der Queue wartet; nach mehr als
+  65 Minuten Rückstand lief die Kopie ein zweites Mal. Der Claim, der
+  eine Neuzustellung zurückstellt, verlängert den Zustand der Ausführung
+  jetzt auf `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S` oder `max_age + 300`,
+  auch wenn die laufende Zustellung ihren Marker nur freigibt (etwa um
+  auf einen Lock zu warten) oder länger als die Done-TTL läuft; die
+  danach geschriebenen Marker verkürzen ihn nie, und ein gescheitertes
+  Ack oder eine Kopie, deren Ack scheiterte, markiert die Ausführung für
+  denselben Rückstand. Der Completed-Marker eines Schedule-Fires lebt
+  `2 × Wartezeit + 300` Sekunden, wobei die Wartezeit die Zeit des Fires
+  in der Queue ist (gedeckelt bei `max_age + 300` und der
+  Rückstands-TTL, nie unter `SWARMQ_SCHEDULER_DEDUP_TTL`). Bei einem Task
+  mit `max_age` leben Done- und Superseded-Marker und der
+  Completed-Marker mindestens `max_age + 300` Sekunden, auch wenn der
+  Lauf sofort begann (der Completed-Marker bleibt bei der Rückstands-TTL
+  gedeckelt). **Kosten:** ein kleiner Hash je Ausführung für `max_age +
+  300` Sekunden, etwa 100 MB bei einer Million Tasks am Tag mit
+  `max_age` 24 h; Betreiber steuern das über `max_age`. `max_age` für
+  Cron-Tasks und für Tasks setzen, die nicht doppelt laufen dürfen
+  ([Ausführungsschutz](../explanation/delivery-semantics.md#ausfuhrungsschutz)).
+- **BZ-13: Workflows hängen nicht mehr bis zu ihrer TTL, wenn ein
+  Schritt außerhalb des Retry-Pfads endet.** Ein Schritt, der abläuft
+  (`max_age`), am Lock-Template scheitert, seine Lock-Wartezeit beendet
+  (`LockWaitExceeded`) oder im Worker nicht registriert ist, markiert
+  seinen Workflow jetzt als `failed`; `get()` wirft `TaskError`, statt in
+  den Timeout zu laufen. Lock-Template-Fehler und das Ende einer
+  Lock-Wartezeit speichern außerdem ein Fehlerergebnis und feuern
+  `TASK_DLQ`. Ein spätes Duplikat eines Schritts, der schon erfolgreich
+  lief, markiert den Workflow nicht als gescheitert, und ein Workflow mit
+  abgelaufenem Zustand loggt `workflow_state_missing`, statt still zu
+  enden. Am Zustelllimit gibt eine Workflow-Markierung, die an einem
+  nicht erreichbaren Valkey scheitert, die Zustellung nicht mehr zurück;
+  sie geht trotzdem in die DLQ
+  ([Fehlerfälle](../guides/workflows.md#fehlerfalle)).
+- **BZ-14: Verwaiste Queues werden gemeldet.** Zog ein Task in eine
+  andere Queue um oder änderte sich `--queues`, blieb der Rückstand der
+  alten Queue ohne Consumer liegen, ohne Logzeile und ohne Metrik. Jetzt
+  meldet jeder Worker die Queues, die er konsumiert, in jedem Meldetakt
+  an Valkey (Hash `[<namensraum>:]sq:{sched}:report:queues`, Zeitstempel
+  aus Valkeys `TIME`). In jedem Übernahme-Takt (nicht direkt nach einer
+  Übernahme) prüft der Leader die Queues, die seit drei Takten kein
+  lebender Worker gemeldet hat, per passivem Declare, ohne
+  Management-API: Nachrichten und kein Consumer heißt verwaist. Er loggt
+  `scheduler_queue_orphaned` (WARNING) und
+  `scheduler_queue_orphan_resolved` (INFO) einmal je Übergang, sendet
+  `SCHEDULER_QUEUE_ORPHANED` und setzt
+  `swarmq_scheduler_queues_orphaned`. Einträge fehlender oder leerer
+  Queues, die 7 Tage niemand gemeldet hat, werden entfernt; jede Prüfung
+  hat ein Zeitlimit von 30 s (`scheduler_queue_check_failed`)
+  ([Task in eine andere Queue verschieben](../guides/defining-tasks.md#task-in-eine-andere-queue-verschieben)).
+- **BZ-15: Geänderte Queue-Argumente enden mit Exit 78 statt einer
+  Neustartschleife.** Ein geändertes `SWARMQ_DELIVERY_LIMIT` lässt die
+  bestehenden Queues deklarierbar (ihr Limit gilt, mit WARNING
+  `queue_argument_adopted`; eine Queue ohne `x-delivery-limit` wird
+  ebenfalls übernommen). Jeder andere erkannte Konflikt, etwa ein
+  geänderter `SWARMQ_QUEUE_TYPE`, wirft `QueueArgumentsMismatch` mit
+  deklariertem und vorhandenem Wert; bisher endete er als
+  `BrokerConnectionError`, Exit 1 und endlose Neustarts. Deklarationen
+  laufen nach einer passiven Prüfung auf einem eigenen kurzlebigen
+  Channel (eine vorhandene Queue wird mit den Argumenten aus 0.11
+  deklariert, von 0.11 angelegte Queues bekommen so nie eine Ablehnung),
+  nie auf dem Publish-Channel, und das Ergebnis wird je Prozess gecacht
+  (verworfen bei `UnroutableMessage` oder fehlender Queue). Nur die
+  erste Übernahme von `x-dead-letter-strategy`/`x-overflow` je Prozess
+  kommt als INFO, weitere als DEBUG; ein zuerst übernommenes
+  `x-overflow` bleibt, wenn die Strategy folgt. Ein Verbindungsabriss
+  während der Deklaration ist ein `BrokerConnectionError`. Der Worker
+  nutzt das effektive Delivery-Limit (das kleinere aus
+  `SWARMQ_DELIVERY_LIMIT` und dem `x-delivery-limit` der Queue; fehlend:
+  20, `-1`: unbegrenzt, `0`: keine Wiederzustellung)
+  ([vorhandene Queue-Argumente](../explanation/delivery-semantics.md#vorhandene-queue-argumente),
+  [Queue-Argumente ändern](../explanation/delivery-semantics.md#queue-argumente-andern)).
+- **BZ-16: Acks hängen nicht mehr hinter einem blockierten Publish.**
+  Publish und Konsum teilten sich eine Verbindung, und bei einem
+  Ressourcenalarm blockiert RabbitMQ publizierende Verbindungen. Ein
+  Worker konsumiert jetzt über eine zweite Verbindung, die sein erster
+  `consume()` öffnet: Consume-Kanal, Acks und Nacks wandern dorthin,
+  Publishes bleiben auf der ersten Verbindung. Producer, die nie
+  konsumieren, und Broker auf injizierter Verbindung oder Pool behalten
+  eine Verbindung. Queue- und DLQ-Tiefen werden über die
+  Consume-Verbindung gelesen, falls sie offen ist. Ein Publish auf einer
+  blockierten Verbindung sendet nichts und wartet innerhalb von
+  `SWARMQ_PUBLISH_TIMEOUT_S` auf die Freigabe; danach wirft er
+  `BrokerPublishBlocked`, behält den Publish-Kanal und gibt eine
+  `unique_for`-Sperre frei (`publish_connection_blocked`). Die Prüfung
+  liest den Zustand synchron, ohne Roundtrip. Ein Worker-Start oder
+  `connect()`, der während des Aufbaus einer Verbindung abgebrochen wird,
+  schließt die halb offene Verbindung, statt aio-pika im Hintergrund
+  alle 5 s neu verbinden zu lassen
+  ([Fehlerkatalog](errors.md#brokerpublishblocked)).
+- **BZ-17: Ein Task, der mit einem riesigen Fehlertext scheitert,
+  schickt seine Nachbarn nicht mehr in die Queue zurück.**
+  `x-swarmq-traceback` und `x-swarmq-lock-render-error` sind auf 8 KiB
+  begrenzt (die ersten 6 KiB und die letzten 2 KiB); bisher schloss der
+  Broker bei einem Fehlertext über `frame_max` (128 KiB) die
+  Worker-Verbindung, und jede Nachricht, die der Worker hielt, wurde neu
+  zugestellt. Jeder Publish prüft seine Header außerdem gegen die Hälfte
+  von `frame_max` und wirft `MessageHeadersTooLarge`, ohne zu senden
+  ([Eine Nachricht inspizieren](../guides/dead-letter-queues.md#eine-nachricht-inspizieren)).
+- **BZ-18: Das Herunterfahren passt in die Grace-Period des
+  Orchestrators.** Der Drain allein verbrauchte das ganze
+  `SWARMQ_SHUTDOWN_TIMEOUT`, Lock-Freigabe, Leader-Übergabe, Marker des
+  Ausführungsschutzes und Verbindungsschluss kamen danach; unter dem
+  Supervisor kamen dessen eigenes `SIGTERM` (nach dem vollen Wert) und
+  `SIGKILL` (5 s später) noch dahinter. Das Herunterfahren dauerte mit
+  Defaults also 35 s und mehr, länger als der Kubernetes-Default von
+  30 s bis `SIGKILL`. Jetzt endet der Drain 5 s vor dem Ende (höchstens
+  die Hälfte des Budgets); der Supervisor schickt `SIGTERM` bei
+  `T - 7 s`, `SIGKILL` bei `T - 2 s` und hat seine Worker bis `T`
+  eingesammelt, sein Worker drainiert bis `T - 7 s`. Die Publish-Endfrist
+  im Herunterfahren ist das Ende des Drains. Jeder Aufräumschritt hat ein
+  Zeitlimit (der Rest des Budgets, mindestens 1 s): Rechen-Pool,
+  abgetrennte Lock-Freigaben, Marker des Ausführungsschutzes, jede
+  Lock-Freigabe, Scheduler-Stopp, DI-Container, Broker-Schluss (beide
+  Verbindungen) und Backend-Schluss; ein Schritt darüber loggt
+  `shutdown_step_timeout`, und das Herunterfahren geht weiter. Auf
+  Tasks, die den Abbruch ignorieren, wird höchstens 1 s gewartet. Der
+  Recycling-Drain bleibt unverändert (größter `hard_timeout`)
+  ([Shutdown-Budget](../explanation/delivery-semantics.md#shutdown-budget)).
+- **BZ-19: Neue Quorum-Queues dead-lettern at-least-once.**
+  Rückstellungen und das Delivery-Limit bewegen Nachrichten per
+  Dead-Lettering des Brokers, und das tut RabbitMQ bei Quorum-Queues
+  standardmäßig at-most-once: Ein Leaderwechsel konnte sie verlieren,
+  obwohl die Doku at-least-once versprach. Neue Queues bekommen jetzt
+  `x-dead-letter-strategy=at-least-once` und `x-overflow=reject-publish`
+  auf `{queue}`, `{queue}.DQ` und den Delay-Stufen (nicht
+  `{queue}.XQ`). Bestandsqueues behalten ihre Argumente; eine WARNING
+  `queue_dead_letter_at_most_once` je Prozess listet sie (auch solche mit
+  `at-least-once`, aber einem anderen `x-overflow`). Eine Policy mit
+  `dead-letter-strategy=at-least-once` und `overflow=reject-publish`
+  behebt ihr Dead-Lettering, beendet die Warnung aber nicht, weil swarmq
+  Policies nicht sieht; das tut nur
+  `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=legacy`
+  ([Garantie beim Dead-Lettering](../explanation/delivery-semantics.md#garantie-beim-dead-lettering)).
+- **BZ-20 (Grenze, jetzt gemeldet): Prefetch je Consumer.**
+  `--concurrency` ist der Prefetch jedes Consumers: Ein Worker, der K
+  Queues konsumiert (jedes Prioritätsband zählt), hält bis zu K ×
+  concurrency unbestätigte Nachrichten, und die letzte wartet bis zu K ×
+  `hard_timeout` auf ihr Ack. Globales QoS geht mit Quorum-Queues nicht
+  (RabbitMQ 4.2 schließt die Verbindung, 4.3 ignoriert es), es bleibt
+  also eine Grenze. Neu: die Startwarnung
+  `prefetch_exceeds_consumer_timeout` (einmal je Start, wenn K ≥ 2 und
+  `hard_timeout` × K über `SWARMQ_CONSUMER_TIMEOUT_S` liegt) und die
+  Gauge `swarmq_worker_prefetch_limit{worker_id}` (K × concurrency)
+  ([Prefetch je Consumer](../explanation/delivery-semantics.md#prefetch-je-consumer)).
+- **BZ-21: `dlq list`, `dlq inspect` und `dlq retry` verlieren keine
+  Nachrichten mehr, wenn der Lesende stirbt.** Sie entnahmen jede
+  Nachricht mit `no_ack=True` und legten sie erst am Ende zurück; ein
+  Kill, OOM oder Netzverlust dazwischen kostete das bereits Gelesene.
+  Jetzt lesen sie bestätigungspflichtig über einen eigenen Channel (auf
+  der Consume-Verbindung, falls offen), kopieren jede Nachricht ans Ende
+  von `{queue}.XQ` (mit ihrer Restfrist) bzw. bei `retry` nach `{queue}`
+  und bestätigen das Original erst, wenn der Broker die Kopie bestätigt
+  hat. Kopien tragen keine Zustellzähler des Brokers
+  (`x-delivery-count`, `x-acquired-count`), wiederholtes Listen
+  verbraucht also nicht das Delivery-Limit der XQ. Ein gescheitertes
+  Bestätigen loggt `dlq_read_ack_failed` (WARNING) und lässt die
+  Nachricht doppelt zurück
+  ([DLQ-Inhalte auflisten](../guides/dead-letter-queues.md#dlq-inhalte-auflisten)).
+- **BZ-22: Ein Unique-Task, der über `max_age` abläuft, gibt sein
+  Dedup-Flag frei.** Bisher blieb das Flag bis zum Ende von `unique_for`
+  stehen, und jedes neue `schedule()` mit denselben Argumenten lieferte
+  still die ID des abgelaufenen Tasks. Das Flag wird freigegeben, sobald
+  die abgelaufene Nachricht in der DLQ liegt, geprüft gegen ihre Task-ID
+  ([Wann das Flag freigeben](../guides/locking-and-dedup.md#wann-das-flag-freigeben)).
+- **BZ-23: Ein stornierter Task läuft nicht mehr, wenn er länger als
+  `result_ttl` wartet.** `app.cancel()` gab dem Flag die TTL
+  `result_ttl`, und der Worker löschte es nach der stornierten
+  Zustellung; ein Task, der länger wartete (Rückstau, gestoppte Worker,
+  langes `delay`), oder ein Duplikat einer stornierten Nachricht lief
+  doch. Das Flag lebt jetzt `max(24 h, result_ttl)`, dazu die Wartezeit
+  bis zum Fire eines verzögerten Tasks und dessen `max_age` + 300 s,
+  wenn die Registry des Clients den Task kennt. Hat der Worker die
+  stornierte Zustellung behandelt, auch wenn der Task während des Laufs
+  storniert wurde, verkürzt er das Flag auf höchstens 1 h
+  (`PEXPIRE … LT`), statt es zu löschen; ein kürzeres Flag wird nie
+  verlängert ([`cancel()`](api.md#cancel)).
+- **BZ-24: Ein Producer ohne Registry verliert Dedup und Priorität
+  nicht mehr still.** Ein Client ohne Registry kann `unique_for`,
+  `priority` und den Liefermodus aus der `TaskInfo` des Tasks nicht
+  anwenden; er loggt jetzt einmal je Task-Name und Client-Instanz (für
+  höchstens 1000 Namen) eine WARNING `client_task_defaults_unresolved`
+  ([Client-Only-Modus](api.md#schedule)).
+- **BZ-25: Task-Locks überleben einen Handler, der länger läuft als
+  seine Lock-TTL.** Der Worker verlängert einen gehaltenen Mutex oder
+  Semaphor-Slot jetzt, solange der Handler läuft, beginnend ein Fenster
+  vor dem Ablauf (ein Fenster sind drei Takte von
+  `min(max(TTL / 3, 50 ms), 20 s)`); bisher lief der Lock still ab, und
+  ein zweiter Worker bekam ihn. Ab einem `hard_timeout` von 30 s kostet
+  ein Task, der innerhalb von `hard_timeout - 30 s` fertig wird, keinen
+  zusätzlichen Roundtrip; bei kürzerem `hard_timeout` deckt das Fenster
+  die ganze TTL. Ein hart beendeter Halter hinterlässt den Lock weiter
+  bis `hard_timeout + 30 s`, höchstens ein Fenster länger. Ein Lock, der
+  beim Verlängern oder Freigeben fehlt oder einem anderen Halter gehört
+  (verdrängt, Valkey-Datenverlust), wird als `task_lock_lost` gemeldet
+  (WARNING, `stage` `running` oder `release`); gelang vor der Frist des
+  Locks keine Verlängerung (Valkey weg), mit `stage="expired"`. Ein
+  scheiternder Takt des Keepers loggt `lock_keeper_tick_failed`, der
+  Keeper läuft weiter; höchstens 32 Verlängerungen laufen gleichzeitig.
+  Ein Lock-Store, dessen `extend` weder `True` noch `False` liefert,
+  gilt als ohne `extend` (`lock_extend_unsupported`). `lock_acquire.lua`
+  verlängert die TTL des Keys nur noch und verkürzt sie nie; ein
+  Semaphor-Erwerber mit kurzer TTL lässt den Key so nicht mehr unter
+  einem Halter mit längerer TTL ablaufen
+  ([Locks während der Ausführung](../guides/locking-and-dedup.md#locks-wahrend-der-ausfuhrung)).
+- **BZ-26: Retries am Delay-Cap kommen nicht mehr alle gleichzeitig
+  zurück.** Oberhalb von `retry_max_delay` wartet ein `exponential`- oder
+  `linear`-Retry jetzt zwischen 0,6 und 0,8 × `retry_max_delay` statt
+  genau den Cap, und eine sehr hohe Versuchszahl (ab etwa 1024) wirft
+  kein `OverflowError` mehr. `fixed` bleibt ohne Jitter
+  ([Backoff-Formeln](../guides/scheduling-and-retries.md#backoff-formeln)).
+- **BZ-27: Ein gesperrter Worker-Slot läuft nach einer Abkühlzeit
+  wieder an.** Der Supervisor sperrt einen Slot, dessen Worker binnen
+  einer Stunde 5-mal abgestürzt ist (oder nach zu vielen hängenden
+  Workern); die Sperre galt bis zum Neustart des Supervisors. Jetzt
+  dauert sie 1 h (`ProcessManager.SLOT_COOLDOWN_S`); danach loggt der
+  Supervisor `worker_slot_unlocked` und belegt den Slot wieder, mit
+  leerer Neustart-Historie. `worker_restart_limit_exceeded` und
+  `hang_replacement_budget_exhausted` tragen `cooldown_s`. Sind alle
+  Slots gesperrt und lebt kein Worker mehr, endet der Supervisor weiter
+  mit `1`, damit die Orchestrierung ihr eigenes Backoff anwendet.
+  `SlotTable.lock(slot)` ohne `until` sperrt weiter dauerhaft.
+- **BZ-28: Tote Einträge im Fire-Index halten nicht mehr alle Crons
+  an.** Der Leader liest pro Takt höchstens 100 fällige Einträge.
+  Index-Einträge ohne Definition und deaktivierte Definitionen, die noch
+  einen Termin hatten (geschrieben vor 0.10), füllten dieses Limit,
+  sodass 100 davon alle Crons blockierten. Der Poll nimmt sie jetzt aus
+  dem Fire-Index, bevor das Limit greift, höchstens 1000 pro Takt; die
+  Definitionen bleiben. Eine Definition, die der Leader nicht dekodieren
+  kann, lässt auch nicht mehr den ganzen Takt scheitern: Sie wird als
+  `schedule_def_malformed_parked` geloggt und aus dem Fire-Index
+  genommen. `sched_poll.lua` behält Keys und Argumente, schreibt aber
+  jetzt (`ZREM`)
+  ([Fire-Index](../guides/scheduling-and-retries.md#fire-index)).
+- **BZ-29: Eine Zustellung, die der Worker immer wieder zurückgibt,
+  kreist auf RabbitMQ 4.3 nicht mehr endlos und verbraucht ihr
+  Zustellbudget nicht mehr in einem Augenblick.** RabbitMQ 4.3 zählt
+  `nack(requeue=True)` nicht in `x-delivery-count`, nur in
+  `x-acquired-count`. Die Zustellzähler-Prüfung zählt jetzt beide und
+  schickt eine solche Zustellung eine Runde vor `SWARMQ_DELIVERY_LIMIT`
+  als `RedeliveryLimitError` in die DLQ; bisher kreiste eine Zustellung,
+  die eine Prüfung jedes Mal zurückgab (Fehlerantwort von Valkey,
+  gescheiterter Dead-Letter-Publish, kein Rechen-Slot), auf 4.3 ohne Ende
+  und verbrauchte auf 4.2 ihre rund 20 Zustellungen in einem Augenblick.
+  Vor jeder Rückgabe wartet der Worker jetzt `min(0,1 s × 2^k, 5 s)`
+  (k = bisherige Zustellungen) und hält dabei den Slot; ein Shutdown
+  beendet die Wartezeit
+  ([Zustellsemantik](../explanation/delivery-semantics.md)).
+- **KTD11: Die Leader-Versionsprüfung warnt bei jedem Leader vor 0.12**
+  (Mindestversion für Leader, bisher 0.10), weil die Scheduler-Korrekturen
+  oben nur wirken, solange der Leader sie kennt. Der `hint`, die
+  Gauge-Beschreibung und die Signal-Dokumentation nennen keine Zeitzonen
+  mehr ([Leader-Version](../guides/scheduling-and-retries.md#leader-version)).
+
+### Hinzugefügt
+
+#### Konfiguration
+
+| Variable | Default | Zweck |
+|---|---|---|
+| `SWARMQ_VALKEY_EVICTION_CHECK` | `strict` | `strict`, `warn` oder `off`: was ein Worker unter einer verdrängenden Valkey-Policy tut (BZ-04) |
+| `SWARMQ_NAMESPACE` | ungesetzt | App-Namensraum für jeden Valkey-Key und Kanal; `SwarmQConfig.namespace` (BZ-10) |
+| `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S` | `SWARMQ_SCHEDULER_LOCK_TTL` | Leader tritt nach gescheiterten Publishes über diese Frist zurück; `0` schaltet ab (BZ-10) |
+| `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY` | `auto` | `auto`, `at-least-once` oder `legacy`: Dead-Lettering neuer Quorum-Queues (BZ-19) |
+| `SWARMQ_UNKNOWN_TASK_GRACE_S` | `900` | wie lange ein Worker einen unbekannten Task zurückstellt; `0` dead-lettert beim ersten Kontakt (BZ-06) |
+| `SWARMQ_LOCK_WAIT_MAX_S` | `21600` | Obergrenze für das Warten auf einen belegten Task-Lock, ab dem ersten Konflikt; `> 0` und endlich (BZ-05) |
+| `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S` | `604800` | wie lange der Ausführungszustand hinter einem Rückstand lebt (BZ-12) |
+| `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S` | `86400` | wie lange der Leader einen verzögerten Task erneut versucht, dessen Queue fehlt (BZ-03) |
+| `SWARMQ_BROKER_PUBLISH_CONNECTION` | `separate` | `separate` oder `shared`: zweite Broker-Verbindung zum Konsumieren; `SwarmQConfig.broker_publish_connection` (BZ-16) |
+
+Siehe [Konfiguration](configuration.md).
+
+#### CLI
+
+- **`swarmq check [--format (table|json)]`**: prüft vor einem Upgrade nur
+  lesend die Umgebung. Abschnitt `valkey`: Eviction-Policy, `maxmemory`,
+  Speicher, AOF, Version, Cluster-Modus, `namespace` und
+  `unprefixed_keys` (Keys ohne Namensraum neben einem Namensraum, per
+  `SCAN` höchstens 5 Sekunden lang gezählt; `unprefixed_keys_complete`
+  unterscheidet eine vollständige Zählung von einer Untergrenze, im
+  Cluster-Modus wird nur der verbundene Knoten gezählt). Abschnitt
+  `shutdown`: `min_grace_period_s`. Abschnitt `queues` (mit
+  `SWARMQ_BROKER_URL`): verwaiste Queues und gemeldete Queues ohne
+  `.XQ`. Befunde `eviction_policy`, `eviction_policy_unknown`,
+  `aof_disabled`, `cluster`, `version`, `unprefixed_keys`,
+  `unprefixed_keys_unknown`, `orphaned_queue`,
+  `dead_letter_queue_missing`, `queues_unchecked`. Exit `78`, wenn ein
+  Worker den Start verweigern würde, sonst `0` (Warnungen erlaubt), `1`,
+  wenn Valkey oder ein konfigurierter Broker nicht erreichbar ist
+  ([CLI](cli.md#swarmq-check)).
+- Hilfetexte (`--max-processes`, `schedule list`) schreiben Keys als
+  `[<namensraum>:]sq:…`.
+
+#### Ausnahmen
+
+Alle neuen Broker-Ausnahmen sind Unterklassen von
+`BrokerConnectionError`; bestehende Handler fangen sie weiter
+([Fehlerkatalog](errors.md)):
+
+- `swarmq.UnroutableMessage`: Der Broker hat einen Publish
+  zurückgegeben, weil es keine Queue mit diesem Namen gibt (BZ-03).
+- `swarmq.MessageHeadersTooLarge`: Die Header passen auch mit gekürzten
+  Texten nicht in die Hälfte des ausgehandelten `frame_max`; nichts
+  wurde gesendet (BZ-17).
+- `swarmq.exceptions.BrokerPublishBlocked`: Die Verbindung blieb durch
+  einen Ressourcenalarm bis zur Publish-Frist blockiert; nichts wurde
+  gesendet (BZ-16).
+- `swarmq.exceptions.PublishRejected`: Der Broker hat jeden Versuch mit
+  einem negativen Confirm beantwortet (`reject-publish` an einer vollen
+  Queue, Quorum-Queue ohne Quorum).
+- `swarmq.QueueArgumentsMismatch` (Unterklasse von
+  `ConfigurationError`): Eine vorhandene Queue hat ein Argument, das von
+  der Konfiguration abweicht und das swarmq nicht übernimmt;
+  `swarmq worker` endet mit `78` (BZ-15).
+- `swarmq.RedeliveryLimitError` und `swarmq.LockWaitExceeded`: werden
+  nie geworfen; der `error_type` einer DLQ-Kopie, deren Zustellungen bis
+  zum Delivery-Limit zurückgegeben wurden (BZ-29) bzw. deren Wartezeit
+  auf einen Task-Lock endete (BZ-05).
+
+#### Signale
+
+([Signale](../guides/signals.md))
+
+- `TASK_UNKNOWN_DEFERRED` (`task_id`, `task_name`, `queue`, `delay`,
+  `unknown_since`) (BZ-06).
+- `SCHEDULER_FIRE_UNROUTABLE` (`worker_id`, `schedule_name`, `queue`,
+  `kind`: `cron_lost` oder `oneshot_dropped`) (BZ-03).
+- `SCHEDULER_CRON_UNOWNED` (`worker_id`, `schedule_name`, `task_name`,
+  `held`, `held_count`) (BZ-11).
+- `SCHEDULER_VALKEY_CHECKED` (BZ-04).
+- `SCHEDULER_QUEUE_ORPHANED` (BZ-14).
+
+#### Metriken
+
+([Metrik-Katalog](configuration.md#metrik-katalog))
+
+- `swarmq_valkey_memory_used_ratio{worker_id}` (BZ-04).
+- `swarmq_lock_waits{worker_id}` und
+  `swarmq_lock_wait_oldest_seconds{worker_id}` (BZ-05).
+- `swarmq_tasks_unknown_deferred_total{queue}` (BZ-06).
+- `swarmq_scheduler_fires_unroutable_total{queue, kind}` (BZ-03).
+- `swarmq_scheduler_crons_held{worker_id}` (BZ-11).
+- `swarmq_scheduler_queues_orphaned{worker_id}` (BZ-14).
+- `swarmq_delay_tiers_unavailable{queue}` (BZ-01).
+- `swarmq_supervisor_locked_slots` (BZ-27).
+- `swarmq_worker_prefetch_limit{worker_id}` (BZ-20).
+- `swarmq_queue_depth{kind="delayed"}`: nur die Nachrichten in den
+  Delay-Queues; `kind="pending"` behält seine Bedeutung (`{queue}` plus
+  alle Delay-Queues, jetzt mit den Stufen) (BZ-01).
+- `swarmq_queue_depth` und `swarmq_dlq_messages` je konsumierter Queue:
+  Mit `SWARMQ_PRIORITIES` tastet der Worker jetzt auch die Bänder
+  `{queue}.high` und `{queue}.low` ab.
+
+#### Log-Events
+
+([Logging](logging.md))
+
+- Valkey-Umgebung (BZ-04): `valkey_eviction_policy_unsafe`,
+  `valkey_eviction_policy_unknown`, `valkey_data_loss_detected`.
+- Locks (BZ-05, BZ-25): `lock_wait_exceeded`,
+  `lock_observe_unsupported`, `lock_observe_failed`, `task_lock_lost`,
+  `task_lock_held_past_hard_timeout`, `lock_extend_failed`,
+  `lock_extend_unsupported`, `lock_keeper_tick_failed`.
+- Unbekannte Tasks (BZ-06): `task_unknown_deferred`,
+  `unknown_task_defer_failed`, `unknown_task_dlq_failed`.
+- Fehlende Queues (BZ-03): `scheduler_fire_unroutable`,
+  `scheduler_fire_unroutable_foreign`, `scheduler_oneshot_unroutable`,
+  `scheduler_oneshot_unroutable_dropped`,
+  `own_queue_unroutable_redeclaring`, `workflow_advance_unroutable`.
+- Scheduler (BZ-09, BZ-10, BZ-11, BZ-14, BZ-28):
+  `scheduler_unique_release_failed`,
+  `scheduler_publish_failures_stepdown`, `scheduler_cron_held_unowned`,
+  `scheduler_cron_unowned_released`, `scheduler_unowned_check_skipped`,
+  `scheduler_queue_orphaned`, `scheduler_queue_orphan_resolved`,
+  `scheduler_queue_check_failed`, `schedule_def_malformed_parked`.
+- Queues (BZ-01, BZ-19): `delay_tier_unavailable`,
+  `queue_dead_letter_at_most_once`.
+- Broker-Verbindungen und DLQ (BZ-16, BZ-21):
+  `publish_connection_blocked`, `publish_blocked_state_unreadable`,
+  `dlq_read_ack_failed`.
+- Weitere: `workflow_state_missing` (BZ-13),
+  `client_task_defaults_unresolved` (BZ-24), `shutdown_step_timeout`
+  (BZ-18), `worker_slot_unlocked` (BZ-27),
+  `prefetch_exceeds_consumer_timeout` (BZ-20).
+
+#### Header, Valkey-Keys und Golden-Dateien
+
+Alles additiv; bestehende Golden-Einträge sind byte-identisch, wo nicht
+anders genannt ([Header](agent/message-formats.md#amqp-header)).
+
+- **Header:** `x-swarmq-unknown-since` (BZ-06); `x-swarmq-xdeath-base`,
+  `x-swarmq-dlq-gen` (BZ-08); `x-swarmq-lock-conflicts`,
+  `x-swarmq-lock-wait-since`, `x-swarmq-lock-holder`,
+  `x-swarmq-lock-holder-since`, `x-swarmq-lock-holder-ttl-ms`,
+  `x-swarmq-lock-wait-gen` (BZ-05).
+- **Valkey-Keys** (jeweils unter `[<namensraum>:]`): `sq:{sched}:epoch`
+  (ohne TTL, ein Key; BZ-04), `sq:{sched}:handover` (wenige Sekunden
+  TTL; BZ-07), `sq:{sched}:report:known` (Namen, die ein 0.12-Worker
+  gemeldet hat; wird mit der Definition entfernt; BZ-11),
+  `sq:{sched}:report:queues` (verfällt 7 Tage nach der letzten Meldung;
+  BZ-14).
+- **Schedule-Definition:** neue Felder `task_id` (BZ-02),
+  `unroutable_since` (BZ-03) und `unique_for` (BZ-09), jeweils per
+  Default `null`.
+- **Golden-Dateien:** `keys.json` (Epoch-, Handover- und Melde-Keys);
+  `keys.namespace.json` und `channels.namespace.txt` (neu, Keys und
+  Kanäle mit Namensraum; `channels.txt` unverändert); `headers.txt` (die
+  Header oben); `lua_contract.txt` (neues `lock_extend`; `guard_claim`
+  nimmt ein sechstes Argument; `lock_acquire` verlängert die TTL nur;
+  `sched_poll.lua` schreibt jetzt); `queue_args.json` (neue Schlüssel
+  `quorum_at_least_once` und `delay_tiers`, neue Beschreibung unter
+  `delay`); `values/schedule_definition.json` (neue `null`-Felder).
+
+#### API und Verträge
+
+- `RabbitMQBroker.ready_depth(queue)` (Nachrichten, die in `{queue}`
+  selbst bereitliegen), `RabbitMQBroker.publish_connection`, optionale
+  Broker-Methode `queue_statuses(names)` mit
+  `swarmq.contracts.broker.QueueStatus`.
+- `ValkeyBackend(..., namespace=...)`, `ValkeyBackend.namespace`,
+  `ValkeyBackend.reconcile_namespace`,
+  `ValkeyBackend.eviction_check`/`recheck_eviction`,
+  `swarmq.keyspace.validate_namespace`.
+- `LockStore.observe` und `LockStore.extend`;
+  `ScheduleStore.ensure_epoch`, `report_queues`, `queue_reports`,
+  `forget_queue_reports` mit `swarmq.contracts.QueueReports`. Stores und
+  Broker ohne die optionalen Methoden lassen die Funktion aus.
+- `ProcessManager.SLOT_COOLDOWN_S`, `SlotTable.lock(slot, until=...)`.
+
+### Wirkt erst, wenn …
+
+- **… der Scheduler-Leader 0.12 fährt:** stabile One-Shot-IDs (BZ-02),
+  Cron-Dedup aus der Definition (BZ-09), zurückgehaltene Crons (BZ-11),
+  die Prüfung verwaister Queues (BZ-14) und der feste Handover-Key
+  (BZ-07). Solange ein Leader vor 0.12 die Rolle hält, feuern verzögerte
+  Tasks unter einer neuen ID, ein langer Cron-Lauf kann den nächsten
+  Termin überlappen, und entfernte Crons feuern wieder in die `.XQ`. Die
+  Gauge `swarmq_scheduler_leader_outdated` zeigt es.
+- **… jeder Worker einer Queue 0.12 fährt:**
+  - die Gnadenfrist für unbekannte Tasks (BZ-06): Ein 0.11-Worker weist
+    einen unbekannten Task, auch eine Rückstellungs-Kopie, beim ersten
+    Kontakt ab;
+  - Wiederholungen nach einem Broker-Dead-Lettering (BZ-08): Eine
+    Wiederholung, die einen 0.11-Worker erreicht, wird übersprungen, ein
+    wiederholter Cron-Fire ebenso;
+  - die Aufbewahrung der Marker hinter einem Rückstand (BZ-12): Ein
+    0.11-Worker verkürzt den Zustand beim Schreiben seines Done-Markers
+    ohne Bedingung;
+  - das Warten auf einen Lock (BZ-05): Ein 0.11-Worker, der eine
+    Nachricht selbst zurückstellt, erhöht weiter den alten Zähler und
+    dead-lettert beim 10. Konflikt;
+  - die Lock-Verlängerung (BZ-25): 0.11-Erwerber eines Semaphors
+    verkürzen den Key weiter;
+  - zwei Verbindungen (BZ-16): Im Alarm hängen die Acks von
+    0.11-Workern wie bisher.
+- **… der `swarmq dlq`-Befehl 0.12 ist** (BZ-21): Ein `dlq`-Befehl von
+  0.11 liest weiter zerstörend.
+- **… die Queue neu ist** (BZ-19): Nur neue Quorum-Queues bekommen
+  at-least-once-Dead-Lettering; Bestandsqueues brauchen eine Policy oder
+  einen Umzug. Die Delay-Stufen (BZ-01) legt der Worker an, der die
+  Queue konsumiert; Producer und Scheduler publizieren nie an eine
+  Delay-Queue, und ein Prozess, der die Familie nicht deklariert hat,
+  nutzt `{queue}.DQ`.
+- **… ein Worker ab 0.12 den Cron bzw. die Queue gemeldet hat:** Crons,
+  die nur Worker vor 0.12 melden, werden nicht zurückgehalten (BZ-11),
+  Queues, die nur sie konsumieren, nicht geprüft (BZ-14).
+- **… die Registry des Clients den Task kennt:** nur dann deckt das
+  Cancel-Flag die Wartezeit bis zum Fire eines verzögerten Tasks und
+  dessen `max_age` ab (BZ-23).
+- **… jede App am Valkey 0.12 fährt**, bevor ein Namensraum gesetzt
+  wird (BZ-10).
+
+### Bekannte Grenzen
+
+- **BZ-01:** Über einer Stunde bleibt das Head-of-Line-Blocking von
+  `{queue}.DQ`; innerhalb einer Stufe kann eine Wartezeit bis zum
+  Vierfachen dauern, mindestens bis zu einer Sekunde.
+- **BZ-04:** Ein Datenverlust bei gleichzeitigem Neustart aller Prozesse
+  bleibt unerkannt, ebenso ein Verlust seit einem RDB-Snapshot, der den
+  Epoch zurückbringt; die Policy wird nur stündlich geprüft.
+- **BZ-05/BZ-25:** Gemischte `hard_timeout` unter einem Semaphor-Namen
+  werden nicht unterstützt: Ein Erwerber räumt Slots ab, die älter als
+  seine eigene TTL sind. Ein blockierter Event-Loop blockiert auch die
+  Lock-Verlängerung; der Lock kann ablaufen und wird als
+  `task_lock_lost` gemeldet.
+- **BZ-08:**
+  - Eine Broker-DLX-Wiederholung oder eine Cron-Wiederholung, die einen
+    0.11-Worker erreicht, wird übersprungen (Verlust); eine Wiederholung
+    in-flight beim Versionswechsel kann doppelt laufen.
+  - Nach einem UI-Move zählt die erste Ausführung das rohe `x-death`;
+    wiederholte UI-Moves nach erneutem Broker-Dead-Lettering werden
+    übersprungen (`swarmq dlq retry` verwenden).
+  - `route_via_dlx` nach einem UI-Move trägt den alten
+    `x-swarmq-dead-lettered-at` weiter (ein `nack` kann keine Header
+    setzen), `dlq list` kann eine solche Nachricht deshalb als
+    abgelaufen verwerfen.
+  - Eine UI-Wiederholung mit `max_age` kann sofort ablaufen.
+  - Mit `dead_letter_ttl_s=None` sind Replay-Identitäten 7 Tage
+    geschützt, nicht unbegrenzt.
+- **BZ-10:**
+  - Bei getrennten vhosts an einem Valkey ist der Namensraum Pflicht.
+  - Nach dem Setzen des Namensraums kein Rollback unter 0.12.
+  - Der Umzug einer bestehenden App in einen Namensraum braucht einen
+    vollständigen Stopp; Ergebnisse, verzögerte Tasks und Locks unter
+    `sq:` werden nicht übernommen.
+  - Ein Leader älter als 0.12 am selben Valkey feuert die alten
+    Definitionen bis zu 24 h weiter; Crons laufen doppelt.
+  - Valkey-ACL-Muster und Werkzeuge, die die Keys direkt lesen
+    (swarmv), müssen dem Namensraum folgen.
+  - `swarmq check` zählt Keys ohne Präfix höchstens 5 s lang (danach
+    „mindestens n“) und im Cluster-Modus nur auf dem verbundenen Knoten.
+  - Rücktritt: `ACCESS_REFUSED` beim Publish (Schreibrecht des Benutzers
+    auf `amq.default`) zählt weiter. Ein toter TCP ohne RST endet
+    zunächst als `PublishIndeterminate` und zählt erst, sobald der
+    Heartbeat den Verlust erkennt.
+- **BZ-11:** Ein zurückgehaltener Cron holt verpasste Termine nicht
+  nach.
+- **BZ-12:** Ein Rückstand, der erst nach dem Lauf entsteht, ist bei
+  Tasks ohne `max_age` nicht abgedeckt. Der Completed-Marker bleibt bei
+  7 Tagen gedeckelt; Done- und Superseded-Marker haben keinen Deckel und
+  leben bei einem `max_age` über 7 Tagen entsprechend länger.
+- **BZ-14:** Eine Queue mit irgendeinem Consumer gilt nie als verwaist;
+  eine Queue, deren Worker langsam neu startet, kann bis zum erneuten
+  Konsumieren als verwaist gelten.
+- **BZ-16:** RabbitMQ meldet die Blockade nur einer Verbindung, die
+  während des Alarms publiziert; der erste Publish nach Beginn des
+  Alarms endet deshalb weiter als `PublishIndeterminate`. Der
+  Blocked-Zustand wird aus einem privaten aiormq-Attribut gelesen; fehlt
+  es in einer späteren aiormq-Version, warnt swarmq einmal
+  (`publish_blocked_state_unreadable`) und publiziert ungeprüft.
+- **BZ-19:** Duplikate laufen bei Tasks ohne Ausführungsschutz doppelt;
+  Rollback nur auf 0.11.1 oder neuer; `reject-publish` zusammen mit
+  einer `max-length`-Policy lässt Publishes an eine volle Queue
+  scheitern.
+- **BZ-20:** Der Prefetch gilt je Consumer.
+- **BZ-21:** Stirbt der Lesende zwischen Kopie und Bestätigung, liegt
+  die Nachricht zweimal in der DLQ (ein wiederholtes `dlq retry` führt
+  sie einmal aus); parallele `dlq list` sehen jeweils nur einen Teil der
+  DLQ.
+- **BZ-23:** Ein sofort publizierter Task ist 24 h stornierbar.
+- **KTD11:** Die Gauge `swarmq_scheduler_leader_outdated` bleibt auf
+  `1`, solange eine 0.11-App auf demselben Valkey die Führung hält.
+- **Delivery-Limit per Policy:** Eine `delivery-limit`-Policy sieht
+  swarmq nicht; auf swarmq-Queues wird sie nicht unterstützt.
+
 ## [0.11.1] — 2026-10-10
 
 Rollback-Ziel vor 0.12. **Erst alle Apps als eigenes Deployment auf

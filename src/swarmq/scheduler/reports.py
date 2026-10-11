@@ -38,12 +38,14 @@ def live_window_ms(seen_interval_s: float) -> int:
 
 def code_fields(definition: ScheduleDefinition) -> tuple[Any, ...]:
     """Die aus dem Code stammenden Felder einer statischen Definition
-    (KTD10): Cron, normalisierte Zeitzone, Queue, Task-Name. Weicht eines
-    ab, übernimmt der Leader die Definition."""
-    return (
-        definition.cron, definition.timezone, definition.queue,
-        definition.task_name,
-    )
+    (KTD10): Cron, normalisierte Zeitzone, Queue, Task-Name, dazu
+    ``unique_for`` und ``unique_until`` nur, wenn ``unique_for`` gesetzt ist
+    (BZ-09; ohne bleiben Felder und Abdruck wie vor 0.12). Weicht eines ab,
+    übernimmt der Leader die Definition."""
+    fields: tuple[Any, ...] = (definition.cron, definition.timezone, definition.queue, definition.task_name)
+    if definition.unique_for is not None:
+        fields += (definition.unique_for, definition.unique_until)
+    return fields
 
 
 def cron_fingerprint(definition: ScheduleDefinition) -> str:
@@ -81,6 +83,10 @@ def static_definitions(
             fire_ts_ms=None,
             source="static",
             timezone=timezone,
+            unique_for=task_info.unique_for,
+            # Ohne ``unique_for`` wirkt ``unique_until`` nicht; der Default
+            # hält Payload und Abdruck wie vor 0.12 (BZ-09).
+            unique_until=(task_info.unique_until if task_info.unique_for is not None else "completion"),
         ))
     return result
 

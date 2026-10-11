@@ -21,6 +21,7 @@ swarmq worker   --module DOTTED.PATH [options]
 swarmq schedule (list | add | remove | status) [options]
 swarmq dlq      (list | inspect | retry | purge) [options]
 swarmq inspect  --module DOTTED.PATH [--format FORMAT]
+swarmq check    [--format FORMAT]
 ```
 
 ## Exit codes
@@ -31,7 +32,7 @@ swarmq inspect  --module DOTTED.PATH [--format FORMAT]
 | `1` | Runtime error: broker or backend unreachable, `swarmq dlq`/`schedule` failed at runtime. Retrying later is the right response. Also every configuration error of `swarmq schedule`, `swarmq dlq` and `swarmq inspect` (missing `SWARMQ_BROKER_URL`/`SWARMQ_BACKEND_URL`, invalid `--args`/`--kwargs` JSON, invalid `--cron`/`--at`, `inspect --module` not found or registering no tasks) and every failure of `swarmq worker --check`, including argparse errors. |
 | `2` | Bad arguments (argparse-detected usage error), also `swarmq dlq retry` with both a `task_id` and `--all` or with neither (message on stderr). Not under `swarmq worker --check`, which reports argparse errors as JSON with exit `1`. |
 | `3` | `swarmq dlq inspect` / `swarmq dlq retry <task_id>` found no matching DLQ entry |
-| `78` | Configuration error of `swarmq worker` (`EX_CONFIG`): `ConfigurationError`, task module not importable, `--configure` hook failed, port range invalid, invalid logging settings or logging config file (`LoggingConfigError`). Emitted by the parent process and by the supervisor when a worker child exits `78`. Retrying without a change is pointless. |
+| `78` | Configuration error of `swarmq worker` (`EX_CONFIG`): `ConfigurationError`, task module not importable, `--configure` hook failed, port range invalid, invalid logging settings or logging config file (`LoggingConfigError`). Emitted by the parent process and by the supervisor when a worker child exits `78`. Retrying without a change is pointless. `swarmq check`: a worker would refuse to start in this environment (evicting Valkey `maxmemory-policy` under `SWARMQ_VALKEY_EVICTION_CHECK=strict`). |
 | `130` | Interrupted by Ctrl-C (`KeyboardInterrupt`, 128 + `SIGINT`) outside the command's own handling, for example while modules are imported. A running command or worker treats Ctrl-C as a graceful shutdown and exits `0`. |
 
 `78` follows `sysexits.h`. Every configuration error, whether it
@@ -107,11 +108,11 @@ swarmq worker --module DOTTED.PATH
 | `--log-drain-timeout SECONDS` | `5` | Upper bound for every flush of the log queues: at exit, before a reload, before each compute result. Records not written in time count as dropped. Must be greater than 0 and at most `threading.TIMEOUT_MAX`, otherwise exit `78`. Env var: `SWARMQ_LOG_DRAIN_TIMEOUT`. See [Logging](logging.md#bounded-flushing). |
 | `--burst` | off | Exit cleanly once all queues have been idle for `--burst-idle-timeout` seconds. Env var: `SWARMQ_BURST_MODE`. |
 | `--burst-idle-timeout SECONDS` | `5.0` | Seconds of queue silence required before `--burst` exits. Env var: `SWARMQ_BURST_IDLE_TIMEOUT`. |
-| `--priorities` | off | Auto-declare + consume the `{queue}.high`/`.normal`/`.low` triplet for every queue. Env var: `SWARMQ_PRIORITIES`. |
+| `--priorities` | off | Auto-declare + consume the `{queue}.high`/`.normal`/`.low` triplet for every queue. Env var: `SWARMQ_PRIORITIES`. Without it, publishing a task with `TaskInfo(priority="high"\|"low")` raises `UnroutableMessage` (from 0.12; before, the message was dropped silently). |
 | `--metrics-port PORT` | unset | **Base port** for Prometheus `/metrics`: the worker in slot `s` serves on `PORT + s`, so `--processes 3 --metrics-port 9000` occupies `9000-9002`. Requires `pip install 'swarmq[metrics]'`. Bind host: `SWARMQ_METRICS_HOST` (default `127.0.0.1`). See [base ports](configuration.md#observability). |
 | `--health-port PORT` | unset | **Base port** for `/health` + `/ready`, same slot offset as `--metrics-port`. Bind host: `SWARMQ_HEALTH_HOST` (default `127.0.0.1`). |
-| `--processes N`, `-p N` | `1` | Run N worker subprocesses in slots `0..N-1`. Since 0.5.0 every `swarmq worker` runs under the supervisor, also with `N = 1`: it restarts crashed workers (max 5 per hour) into the same slot, replaces workers whose heartbeat stops, reloads on `SIGHUP` by re-executing itself with `os.execvpe()` and the argv (`sys.orig_argv`) and environment captured at start-up, so `python -m swarmq.cli worker ...` reloads too, and exits 0 once all workers ended cleanly (`--burst`). `SIGTERM` and `SIGINT` always end the supervisor, also while a reload is being checked or prepared. A configuration error in any worker ends the run after a single attempt with exit `78`. |
-| `--autoscale MIN,MAX` | unset | Enable queue-depth-driven autoscaling between `MIN` and `MAX` worker subprocesses. Implies `--processes`. |
+| `--processes N`, `-p N` | `1` | Run N worker subprocesses in slots `0..N-1`. Since 0.5.0 every `swarmq worker` runs under the supervisor, also with `N = 1`: it restarts crashed workers (max 5 per hour) into the same slot, locks a slot that exceeds this for a 1 h cooldown (since 0.12; before, for good), replaces workers whose heartbeat stops, reloads on `SIGHUP` by re-executing itself with `os.execvpe()` and the argv (`sys.orig_argv`) and environment captured at start-up, so `python -m swarmq.cli worker ...` reloads too, and exits 0 once all workers ended cleanly (`--burst`). `SIGTERM` and `SIGINT` always end the supervisor, also while a reload is being checked or prepared. A configuration error in any worker ends the run after a single attempt with exit `78`. |
+| `--autoscale MIN,MAX` | unset | Enable queue-depth-driven autoscaling between `MIN` and `MAX` worker subprocesses. Implies `--processes`. Since 0.12 it counts only the messages ready in each queue itself, not the delay queues ([delay tiers](../explanation/delivery-semantics.md#delay-tiers)). |
 | `--max-processes N` | unset | **Enables the control channel** and declares the headroom: a setpoint stored in the backend may raise this supervisor to at most `N` worker processes. `N` must be at least `--processes` and the `--autoscale` upper bound; with `--pool cpu` it must not overbook the assigned CPUs (`N` without `--concurrency`, `N × --concurrency` with it). Without this flag the supervisor never reads or writes setpoints and behaves exactly as before. See [control channel](#control-channel). |
 | `--group LABEL` | sorted set of `--queues` | Group key of the control channel. Every supervisor with the same key (in the same backend) follows the same setpoint, each on its own. Deployments that share a backend and serve the same queues need distinct labels, otherwise they steer each other. |
 | `--reload` | off | Watch task modules and trigger SIGHUP reload on change. Developer-only. Requires `pip install 'swarmq[reload]'`. |
@@ -194,7 +195,7 @@ swarmq worker --module myapp.tasks --autoscale 2,4 --max-processes 16 --group or
 ```
 
 **Setpoint.** The controlling service writes one JSON value per group to
-`sq:control:setpoint:<group>`, for example `{"min": 2, "max": 8}`. A
+`[<namespace>:]sq:control:setpoint:<group>` (`<namespace>:` only with `SWARMQ_NAMESPACE`), for example `{"min": 2, "max": 8}`. A
 fixed process count `N` is the setpoint `{"min": N, "max": N}` and
 switches autoscaling off for the group. The supervisor reads the key
 once before it spawns the first worker and then every 5 seconds. A
@@ -214,7 +215,7 @@ the backend is unreachable at start-up, the group comes up with its
 start-up arguments and applies the setpoint once the backend answers.
 
 **Status.** Every supervisor reports under
-`sq:control:status:<group>:<supervisor>` (the supervisor id is
+`[<namespace>:]sq:control:status:<group>:<supervisor>` (the supervisor id is
 `SWARMQ_WORKER_ID` or the hostname plus `:p<pid>`): the group key, the
 last setpoint read (or `null`), whether the store was `present`,
 `absent` or `unread` (unreachable), the effective bounds and their
@@ -236,9 +237,12 @@ locked; the status reports their number.
 
 **Security.** Whoever may write to the backend may set the size of a
 worker group. The setpoint and status keys live under their own
-prefixes (`sq:control:setpoint:` and `sq:control:status:`), separate
-from task and result keys, so an operator can grant write access to
-setpoints and to statuses separately (for example with Valkey ACLs).
+prefixes (`[<namespace>:]sq:control:setpoint:` and
+`[<namespace>:]sq:control:status:`), separate from task and result keys,
+so an operator can grant write access to setpoints and to statuses
+separately (for example with Valkey ACLs such as
+`~<namespace>:sq:control:setpoint:*`; without namespace
+`~sq:control:setpoint:*`).
 Until the controlling service has its own credentials with such
 restricted write access, every task producer that shares the backend
 URL can also set setpoints.
@@ -254,7 +258,7 @@ Requires `SWARMQ_BACKEND_URL`; does not connect to the broker.
 swarmq schedule list [--format (table|json)]
 ```
 
-Lists every schedule in `sq:sched:defs` with its cron, next fire
+Lists every schedule in `[<namespace>:]sq:{sched}:defs` with its cron, next fire
 time, queue, and dedup state. The column `LAST_SEEN` shows the newest
 [cron report](../guides/scheduling-and-retries.md#cron-reports-and-the-leader)
 of a static cron (UTC), `never` for a static cron no worker has ever
@@ -310,7 +314,7 @@ swarmq schedule remove NAME [--permanent] [--format (table|json)]
 
 Without `--permanent`, the schedule is disabled but kept; it stays
 disabled when its code changes. With `--permanent`, it is hard-deleted,
-and a mark from pruning a disabled cron (`sq:{sched}:disabled`) is
+and a mark from pruning a disabled cron (`[<namespace>:]sq:{sched}:disabled`) is
 cleared, also when the cron itself is already gone; the next report then
 creates it enabled. A static cron that a live worker still reports is adopted again by the
 leader within one `SWARMQ_SCHEDULER_SEEN_INTERVAL_S`; it only stays
@@ -341,9 +345,9 @@ WORKERS:
 `LEADER_VERSION` is `(not reported: swarmq before 0.10.0)` when the
 leader runs a swarmq that writes no version, and `-` without a leader.
 `WORKERS` lists every worker whose report is live (three
-`SWARMQ_SCHEDULER_SEEN_INTERVAL_S`), `(none)` without any. Before you
-change crons or time zones, every version shown here should be 0.10.0
-or later (see
+`SWARMQ_SCHEDULER_SEEN_INTERVAL_S`), `(none)` without any. Every
+version shown here should be at least the minimum leader version
+(currently 0.12; see
 [leader version](../guides/scheduling-and-retries.md#leader-version)).
 Fire times are shown in UTC.
 
@@ -385,7 +389,9 @@ Operate on `{queue}.XQ`, the broker-level dead-letter queue. Needs
 swarmq dlq list [--queue QUEUE] [--limit N] [--format (table|json)]
 ```
 
-Drain-and-republish scan — shows `task_id`, `task_name`, retry-count
+Reads the DLQ with acknowledgement and copies each message to its end
+before acknowledging the original, so a reader that dies loses
+nothing ([reading the DLQ](../guides/dead-letter-queues.md#listing-dlq-contents)). Shows `task_id`, `task_name`, retry-count
 header, error preview, body size. `--queue` defaults to `default` (DLQ
 `default.XQ`), `--limit` to `100`. Repeated calls are safe: messages
 stay in the DLQ with their remaining retention; reading does not
@@ -460,6 +466,77 @@ TASK           QUEUES        DELIVERY       RETRIES  RATE_LIMIT  LOCK           
 render_invoice pdf           at_least_once  5        -           -                  -           -             -
 send_email     default,mail  at_least_once  3        100/m       -                  -           -             -
 sync_user      users         at_least_once  2        -           user-{user_id}     60          completion    -
+```
+
+## `swarmq check`
+
+```text
+swarmq check [--format (table|json)]
+```
+
+Read-only check of the environment swarmq runs in (new in 0.12). Reads
+`SWARMQ_BACKEND_URL`, `SWARMQ_VALKEY_EVICTION_CHECK`,
+`SWARMQ_SHUTDOWN_TIMEOUT`, `SWARMQ_NAMESPACE`, and for the `queues`
+section `SWARMQ_BROKER_URL` and `SWARMQ_SCHEDULER_SEEN_INTERVAL_S`. It
+sends only `CONFIG GET`, `INFO`, `SCAN` and reads to Valkey and passive
+declares to RabbitMQ. Run it **before an upgrade**, with the new swarmq version in a
+separate virtualenv, against production; in Kubernetes optionally as an
+init container ([Valkey requirements](configuration.md#valkey-requirements)).
+Not the same as `swarmq worker --check`, which dry-runs a worker start.
+
+Sections:
+
+- `valkey`: `maxmemory_policy`, `maxmemory`, `used_memory`, `eviction`
+  (`safe`, `unsafe`, `unknown`), the effective `eviction_check`,
+  `aof_enabled`, `version`, `cluster_enabled`, `namespace`
+  (`SWARMQ_NAMESPACE`, `null` without) and `unprefixed_keys`: with a
+  namespace the number of keys without it (`sq:*`, counted by `SCAN` up
+  to 10000 within 5 seconds), else `null`, and `unprefixed_keys_complete`
+  (`false` when `SCAN` hit the time limit: the count is then a lower
+  bound). In cluster mode `SCAN` sees only the node it is connected to.
+  Values Valkey does not report (ACL) are `null`.
+- `shutdown`: `shutdown_timeout` and `min_grace_period_s`
+  (`shutdown_timeout + 15`), the least `terminationGracePeriodSeconds`
+  (Kubernetes) or `stop_grace_period` (Docker) to configure.
+- `queues` (since 0.12, only with `SWARMQ_BROKER_URL`, else
+  `checked: false`): the queues workers of 0.12 or later report
+  (`reported`), checked with a passive declare: `orphaned` lists queues
+  with messages, no consumer and no live report for three report ticks
+  (`SWARMQ_SCHEDULER_SEEN_INTERVAL_S`), each with `queue`, `messages` and
+  `last_reported_s_ago`; `missing_dead_letter_queues` lists reported
+  queues whose `.XQ` is gone (the broker drops failed tasks routed there)
+  ([moving a task to another queue](../guides/defining-tasks.md#moving-a-task-to-another-queue)).
+
+`findings` lists each problem with `section`, `level` (`error` or
+`warning`), `code` and `message`: `eviction_policy` (error under
+`strict`, else warning), `eviction_policy_unknown`, `aof_disabled`,
+`cluster`, `version` (older than 8), `unprefixed_keys` (keys without
+namespace next to a namespace: apps without `SWARMQ_NAMESPACE` on the
+same Valkey, or data from before the namespace was set, which the
+namespace does not migrate; [namespace](configuration.md#namespace-several-apps-on-one-valkey)),
+`unprefixed_keys_unknown` (`SCAN` failed, is forbidden, or hit its time
+limit before finding a key), `orphaned_queue`, `dead_letter_queue_missing`
+and `queues_unchecked` (the reported queues could not be read from
+Valkey, for example forbidden by ACL). An incomplete count reads `at least <n>
+keys … (count incomplete …)`; in cluster mode the message adds that only
+one node was counted.
+
+Exit codes: `0` when nothing blocks (warnings allowed), `78` when a
+worker would refuse to start in this environment (evicting policy under
+`SWARMQ_VALKEY_EVICTION_CHECK=strict`, invalid `SWARMQ_NAMESPACE`), `1` when Valkey is unreachable,
+`SWARMQ_BACKEND_URL` is missing, or `SWARMQ_BROKER_URL` is set and the
+broker is unreachable.
+
+```bash
+$ SWARMQ_BACKEND_URL=valkey://valkey:6379/0 swarmq check --format table
+valkey  url  valkey://valkey:6379/0
+valkey  eviction_check  strict
+valkey  eviction  unsafe
+valkey  maxmemory_policy  volatile-lru
+...
+ERROR  valkey: maxmemory-policy volatile-lru may evict swarmq keys (...)
+WARNING  valkey: AOF is off: (...)
+FAILED
 ```
 
 ## Global flags

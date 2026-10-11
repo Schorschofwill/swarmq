@@ -17,10 +17,15 @@ task_id zurückgibt, verspricht SwarmQ:
 
 1. Die Nachricht wurde von RabbitMQ mit Publisher-Confirm akzeptiert.
 2. Ein Worker wird `SendEmail.run(to="a@example.com")` mindestens
-   einmal ausführen.
+   einmal ausführen, außer der Task wird abgebrochen, verfällt über
+   `max_age` oder geht vor dem Lauf in die DLQ. Auf Quorum-Queues, die
+   noch at-most-once dead-lettern (vor 0.12 angelegt oder
+   `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=legacy`), kann ein Retry oder eine
+   Rückstellung bei einem Leaderwechsel verloren gehen
+   ([Garantie beim Dead-Lettering](#garantie-beim-dead-lettering)).
 3. Das Ergebnis des Tasks — Success, Exception oder Cancellation —
-   wird nach Valkey unter `sq:result:{task_id}` mit konfigurierter
-   TTL geschrieben.
+   wird nach Valkey unter `[<namensraum>:]sq:result:{task_id}` mit
+   konfigurierter TTL geschrieben.
 
 Es verspricht **nicht**:
 
@@ -89,7 +94,7 @@ Nachricht entweder oder routet sie in die DLQ:
 | RabbitMQs `x-delivery-limit=20` erreicht | Broker-native DLQ-Route |
 | Backend nicht erreichbar bei einer Prüfung vor der Ausführung (Schedule-Fire-Dedup, Cancel-Check, Rate-Limit, Lock) | Neue Nachricht in die Delay-Queue mit wachsendem Backoff, Original bestätigt (`task_deferred_backend_unavailable`); kein Retry |
 | Task-Alter übersteigt `max_age` bei Pickup | `TASK_EXPIRED`-Signal + DLQ |
-| Lock-Render-Fehler oder Conflict-Cap erreicht | DLQ-Route mit Header `x-swarmq-lock-render-error` (Render-Fehler) bzw. `x-swarmq-lock-name` (Conflict-Cap) |
+| Lock-Render-Fehler, oder die Wartezeit auf einen Lock ist zu Ende (hängender Halter, `SWARMQ_LOCK_WAIT_MAX_S`) | DLQ-Route mit Header `x-swarmq-lock-render-error` (Render-Fehler) bzw. `x-swarmq-lock-name` (`LockWaitExceeded`) |
 | Dieselbe Ausführung ist bereits abgeschlossen, von einem Retry überholt oder läuft anderswo ([Ausführungsschutz](#ausfuhrungsschutz)) | Bestätigt und übersprungen (`duplicate_delivery_skipped`) oder neue Nachricht in die Delay-Queue mit wachsendem Backoff (`execution_guard_deferred`); kein Retry |
 | `Task.run()` scheitert terminal bei abgeschaltetem Dead-Lettering (`TaskInfo(dead_letter=False)`) | Fehlerergebnis gespeichert, Original bestätigt; keine DLQ |
 
@@ -134,6 +139,20 @@ nennen. Das ist kein Retry: `max_retries` bleibt unberührt,
 annimmt, fällt der Worker auf `basic.nack(requeue=True)` zurück.
 Fire-and-forget-Tasks werden genauso zurückgestellt, denn diese
 Prüfungen laufen vor ihrem frühen Ack.
+
+Vor einer Rückgabe an Ort und Stelle (`basic.nack(requeue=True)`:
+Fehlerantwort von Valkey, gescheiterter Kopie- oder
+Dead-Letter-Publish, kein freier Rechen-Slot) wartet der Worker
+`min(0,1 s × 2^k, 5 s)`; k ist die Zahl der bisherigen Zustellungen
+(der größere Wert aus `x-delivery-count` und `x-acquired-count`). Der
+Task-Slot bleibt dabei belegt; ein Shutdown beendet die Wartezeit
+sofort. Die rund 20 Runden des Default-Zustelllimits dauern damit mehr
+als eine Minute, und eine kurze Störung verbraucht das Budget nicht.
+RabbitMQ 4.3 zählt eine solche Rückgabe nur in `x-acquired-count`,
+nicht in `x-delivery-count`. Die Zustellzähler-Prüfung des Workers
+zählt beide und schickt die Zustellung eine Runde vor dem Limit in die
+DLQ, als `RedeliveryLimitError`, wenn nur `x-acquired-count` es
+erreicht hat.
 
 Retry-Kopien und die Kopien nach einem Rate-Limit-Treffer oder
 Lock-Konflikt lassen die Zustellzähler des Brokers genauso weg; ein
@@ -217,6 +236,42 @@ anderen Worker mit demselben Nachrichten-Body.
 
 **Mitigation.** Keine nötig. So ist das Design.
 
+### Shutdown-Budget
+
+`SWARMQ_SHUTDOWN_TIMEOUT` (Default 30 s) ist das Gesamtbudget ab
+`SIGTERM` (seit 0.12). Kubernetes schickt nach
+`terminationGracePeriodSeconds` (Default 30 s) `SIGKILL`, Docker nach
+`stop_grace_period` (Default 10 s); bis dahin muss alles erledigt sein.
+Vor 0.12 verbrauchte der Drain allein das ganze Budget: Sperrenfreigabe,
+Leader-Übergabe und Marker des Ausführungsschutzes kamen erst nach dem
+`SIGKILL` der Orchestrierung.
+
+| Phase | Eingebetteter Worker | Unter dem Supervisor (`swarmq worker`) |
+|---|---|---|
+| Drain laufender Tasks, Publish-Endfrist | bis `T - 5 s` | bis `T - 7 s` |
+| Übrige Tasks abbrechen, Sperren freigeben, Scheduler stoppen (Übergabe), Verbindungen schließen | bis `T` | bis `T - 2 s` |
+| Supervisor: `SIGTERM` an noch lebende Worker | -- | bei `T - 7 s` |
+| Supervisor: `SIGKILL`, Prozesse einsammeln | -- | bei `T - 2 s`, fertig bis `T` |
+
+`T` ist `SWARMQ_SHUTDOWN_TIMEOUT`; bei kurzem Budget ist jede Reserve
+höchstens die Hälfte des Rests (`T = 5` eingebettet: Drain 2,5 s). Der
+Drain zählt ab `SIGTERM`, ein langsamer `WORKER_SHUTDOWN`-Handler
+(höchstens 10 s) verkürzt ihn also. Jeder Aufräumschritt hat ein
+Zeitlimit (der Rest des Budgets, mindestens 1 s); ein Schritt darüber
+wird geloggt (`shutdown_step_timeout`) und übersprungen, Lock-TTL und
+Leader-Lock-TTL heilen, was er hinterlässt. Ein recycelnder Worker
+(`SWARMQ_RECYCLE_*`) behält seinen eigenen Drain (größter
+`hard_timeout`).
+
+**Die Frist der Orchestrierung auf mindestens
+`SWARMQ_SHUTDOWN_TIMEOUT + 15 s` setzen**: Kubernetes
+`terminationGracePeriodSeconds`, Docker/Compose `stop_grace_period`. Der
+Abstand deckt `preStop`-Hooks und die Signalzustellung. `swarmq check`
+gibt den Wert aus (`min_grace_period_s`). Ein Task, der länger läuft als
+der Drain, wird abgebrochen und neu zugestellt (siehe oben); sollen lange
+Tasks während eines Deploys fertig werden, `SWARMQ_SHUTDOWN_TIMEOUT`
+zusammen mit der Frist anheben.
+
 ## Ausführungsschutz
 
 Ab 0.11.0 prüft der Worker jede Zustellung gegen einen Marker in
@@ -225,11 +280,29 @@ standardmäßig an). Eine erneut zugestellte Nachricht läuft nicht,
 solange dieselbe Ausführung anderswo läuft, nachdem sie abgeschlossen
 ist oder nachdem ein Retry sie überholt hat.
 
-**Identität.** Eine Ausführung ist die Task-ID plus der Header
-`x-swarmq-replay-id`, falls vorhanden. `swarmq dlq retry` und
-`dlq retry --all` setzen eine neue Replay-ID, damit eine bewusste
-Wiederholung erneut läuft, auch solange der Marker des ersten Laufs
-steht.
+**Identität.** Eine Ausführung ist die Task-ID, plus der Header
+`x-swarmq-replay-id`, falls vorhanden, plus die Zahl der Broker-Tode
+der Nachricht außerhalb der Delay-Queues (seit 0.12). Diese Zahl ist
+`x-swarmq-xdeath-base` plus die `count`-Werte in `x-death`, deren Queue
+weder `{queue}.DQ` noch eine Delay-Stufe ist; ohne beides ist die
+Identität byte-gleich zu 0.11 (`task_id` bzw. `task_id|<Replay-ID>`).
+Jede Kopie, die SwarmQ selbst publiziert (Retry, Zurückstellung,
+Dead-Lettering, `dlq retry`), nimmt `x-death` als
+`x-swarmq-xdeath-base` mit, denn der Broker baut `x-death` beim
+nächsten Dead-Lettern neu auf. Dead-lettert der Worker eine Nachricht,
+trägt die Kopie in `{queue}.XQ` bereits die Replay-ID der nächsten
+Generation (`x-swarmq-replay-id`, aus der aktuellen Identität
+abgeleitet, dazu `x-swarmq-dlq-gen` gleich `x-swarmq-dead-lettered-at`).
+Eine Wiederholung, die die Header behält -- `swarmq dlq retry`, "Move
+messages" in der RabbitMQ-UI, ein Shovel, ein älteres CLI --, ist damit
+eine neue Ausführung und läuft, auch solange der Done-Marker des ersten
+Laufs steht. Eine Nachricht, die der Broker selbst dead-gelettert hat
+(Delivery-Limit, `route_via_dlx`), bekommt ihre neue Identität genauso
+aus `x-death`. Zwei Zustellungen derselben Wiederholung
+(at-least-once-Duplikat, zweimal `dlq retry` derselben Nachricht)
+teilen die Identität, die zweite wird übersprungen. Ein so wiederholter
+Scheduler-Fire läuft ebenfalls: Seine Completed- und In-Flight-Marker
+nutzen den Key `<Fire>|<Identitäts-Suffix>`.
 
 **Ablauf.** Nach dem Task-Lookup und vor der Expiry-Prüfung setzt der
 Worker einen Running-Marker mit eigenem Owner-Token und einer TTL von
@@ -311,7 +384,32 @@ die Neuzustellung den Task dann erneut aus.
 `max(SWARMQ_RETRY_MAX_DELAY, SWARMQ_CONSUMER_TIMEOUT_S) + 300` Sekunden,
 mindestens `SWARMQ_EXECUTION_GUARD_TTL_S`. Zurückgestellte Kopien
 können hinter langen Retry-Verzögerungen stecken, und ab RabbitMQ 4.3
-bleiben Zustellungen bis zum Consumer-Timeout ausgecheckt. Keys:
+bleiben Zustellungen bis zum Consumer-Timeout ausgecheckt. Eine
+zurückgestellte Kopie kann aber viel später zurückkommen -- hinter dem
+Rückstand einer Queue, die nach einer Störung aufholt. Seit 0.12
+verlängert der Claim, der eine Neuzustellung zurückstellt, den Zustand
+der Ausführung deshalb auf `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S`
+(Standard 7 Tage) oder `max_age + 300`, je nachdem, was länger ist, und
+der danach geschriebene Done- oder Superseded-Marker verkürzt ihn nie;
+ein am Kanal gescheitertes Ack oder eine Retry- bzw. DLQ-Kopie, deren
+Ack scheiterte, markiert die Ausführung für denselben Rückstand, weil
+der Broker das Original neu zustellt. Bei einem Task mit `max_age`
+leben Done- und Superseded-Marker in jedem Fall mindestens
+`max_age + 300` Sekunden: Ein Duplikat (at-least-once, ein zweiter Fire
+des Schedulers) kann bis `max_age` in der Queue warten, auch wenn das
+Original sofort lief. Der Completed-Marker eines Schedule-Fires folgt
+derselben Regel, gedeckelt bei `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S`.
+Das kostet einen kleinen Hash je Ausführung für `max_age + 300`
+Sekunden -- etwa 100 MB Valkey-Speicher bei einer Million Tasks am Tag
+mit `max_age` 24 h; `max_age` ist die Stellschraube. Ein Rückstand, der
+erst nach dem Lauf entsteht, ist bei Tasks ohne `max_age` nicht
+abgedeckt; `max_age` daher für Cron-Tasks und für Tasks setzen, die
+nicht doppelt laufen dürfen. Der Done-Marker einer Wiederholung
+(Replay-ID gesetzt oder zuvor vom Broker dead-gelettert) lebt mindestens `SWARMQ_DEAD_LETTER_TTL_S` -- ein
+zweiter `dlq retry` derselben `.XQ`-Nachricht Tage später trägt dieselbe
+Identität und muss weiter übersprungen werden; bei
+`SWARMQ_DEAD_LETTER_TTL_S=none` stattdessen
+`SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S` (Standard 7 Tage). Keys:
 `sq:guard:{<identity>}:run` (Running-Marker) und
 `sq:guard:{<identity>}:state` (Done, Superseded, Waisen), beide unter
 demselben Hash-Tag.
@@ -339,6 +437,28 @@ nicht exactly-once:
   setzen und prüfen keine Marker. Bis jeder Worker einer Queue 0.11.0
   läuft, ist eine Zustellung, die ein älterer Worker bearbeitet, nicht
   geschützt.
+- **Wiederholungen im Mischbetrieb mit 0.11.** Ein 0.11-Worker ignoriert
+  `x-swarmq-xdeath-base` und `x-death`: Eine Wiederholung nach einem
+  Broker-Dead-Lettering (Delivery-Limit, `route_via_dlx`), die einen
+  0.11-Worker erreicht, wird wie bisher verworfen, ebenso ein
+  wiederholter Scheduler-Fire (Verlust, keine Doppelausführung). Eine
+  Wiederholung in-flight beim Versionswechsel kann doppelt laufen
+  (Identität mit und ohne Todeszähler). Nach "Move messages" in der
+  RabbitMQ-UI zählt die erste Ausführung das rohe `x-death` (keine
+  Base). Eine UI-Wiederholung eines Tasks mit `max_age` kann sofort
+  ablaufen: Nur `dlq retry` setzt `x-swarmq-enqueued-at` neu.
+- **Wiederholte UI-Moves nach erneutem Broker-Dead-Lettering werden
+  übersprungen.** Dead-lettert der Broker eine UI-Wiederholung erneut
+  (`route_via_dlx`, Delivery-Limit), baut er `x-death` mit dem Zähler 1
+  neu auf, und ein UI-Move setzt keine Base; ein zweites "Move messages"
+  dieser Nachricht hat deshalb die Identität der ersten Wiederholung und
+  wird übersprungen. Dafür `swarmq dlq retry` verwenden: Es erkennt das
+  neue `x-death` und gibt der Nachricht eine neue Replay-ID. Dieselbe
+  Nachricht behält den `x-swarmq-dead-lettered-at` ihres ersten
+  Dead-Letterings; `swarmq dlq list` verwirft sie deshalb als abgelaufen,
+  sobald die ab dann gezählte Frist vorbei ist. Eine Replay-ID mit mehr
+  als 64 Zeichen (fremder Producer) liest der Worker nicht; `dlq retry`
+  ersetzt sie.
 - `FIRE_AND_FORGET`-Tasks werden vor der Ausführung bestätigt und
   nicht geschützt. Ein eigenes Backend ohne `execution_guard`-Store
   schaltet den Schutz ab.
@@ -420,6 +540,23 @@ an. Für Liveness `/health` nutzen.
 Brokers anheben, wenn Jobs länger als 30 Minuten laufen; der Worker
 warnt beim Start, wenn ein `hard_timeout` ihn übersteigt.
 
+### Prefetch je Consumer
+
+`--concurrency N` ist der Prefetch **jedes** Consumers, nicht des
+Workers: Ein Worker, der K Queues konsumiert (mit Prioritäten zählt jedes
+Band), hält bis zu K × N unbestätigte Nachrichten, führt aber nur N
+gleichzeitig aus. Andere Worker bekommen die gehaltenen Nachrichten
+nicht, und die letzte davon wartet bis zu K × `hard_timeout` auf ihr
+Ack, was gegen den `consumer_timeout` zählt. Ein Limit für alle
+Consumer eines Channels (globales QoS) geht mit Quorum-Queues nicht:
+RabbitMQ 4.2 schließt die Verbindung, 4.3 ignoriert es. Das ist eine
+bekannte Grenze (BZ-20). Seit 0.12 warnt der Worker beim Start mit
+`prefetch_exceeds_consumer_timeout`, wenn K ≥ 2 ist und das
+`hard_timeout` eines Tasks × K über `SWARMQ_CONSUMER_TIMEOUT_S` liegt,
+und meldet K × N als Gauge `swarmq_worker_prefetch_limit{worker_id}`.
+Abhilfe: weniger Queues je Worker (eigene Deployments je Queue), ein
+kleineres `hard_timeout` oder ein größerer `consumer_timeout`.
+
 ## Idempotenz-Erwartungen
 
 Behandle jeden `run()`-Aufruf so, als könnte es die zweite, dritte
@@ -458,15 +595,17 @@ erreicht die DLQ über einen von fünf Wegen:
    sie bestätigt hat.
 2. **`NoRetry`.** Der Task-Body raiste `NoRetry("reason")`. Das
    überspringt den Retry-Entscheid komplett — direkt in die DLQ.
-3. **Broker-native Delivery-Limit.** RabbitMQ hat die Nachricht
-   20-mal redelivered, ohne dass ein Ack gelandet ist. Das ist der
+3. **Delivery-Limit.** Die Nachricht wurde `limit - 1`-mal zugestellt,
+   ohne dass ein Ack gelandet ist ([effektives Delivery-Limit](#effektives-delivery-limit);
+   standardmäßig 20). Das ist der
    Pathologischer-Loop-Schutz; er schirmt den Broker gegen einen
    buggy Worker ab. Ein Backend-Ausfall zählt nicht dagegen: Die
    Prüfungen vor der Ausführung stellen die Nachricht als neue
    Nachricht zurück, statt sie neu einzureihen (siehe oben).
-4. **Expiry / Lock-Render / Conflict-Cap.** `max_age` überschritten,
-   Lock-Key kann nicht gerendert werden (z. B. fehlender kwarg),
-   Lock-Conflict-Budget getroffen. Die DLQ trägt die Nachricht mit
+4. **Expiry / Lock-Render / Lock-Wartezeit.** `max_age` überschritten,
+   Lock-Key kann nicht gerendert werden (z. B. fehlender kwarg), oder
+   die Wartezeit auf einen Lock ist zu Ende (hängender Halter,
+   `SWARMQ_LOCK_WAIT_MAX_S`). Die DLQ trägt die Nachricht mit
    Diagnostik-Headern.
 5. **Waisen-Grenze des Ausführungsschutzes.** Dieselbe Ausführung ist
    `SWARMQ_EXECUTION_GUARD_MAX_ORPHANS`-mal ohne Freigabe abgelaufen;
@@ -486,35 +625,226 @@ zurückgesetzt, sodass der Task sein volles Retry-Budget zurückbekommt,
 und eine neue Replay-ID lässt ihn am Ausführungsschutz vorbei.
 Der Original-Traceback bleibt in den Headern für die Post-Mortem.
 
+## Delay-Stufen
+
+Ein Retry mit Backoff und jede Rückstellung (Lock- oder
+Rate-Limit-Konflikt, Backend-Ausfall, Ausführungsschutz) wartet in einer
+Delay-Queue: Die Nachricht trägt ihre eigene Ablaufzeit, und nach Ablauf
+leitet RabbitMQ sie per Dead-Lettering zurück nach `{queue}`. RabbitMQ
+lässt eine Nachricht aber nur am **Kopf** einer Queue verfallen. Bis 0.11
+teilten sich alle Wartezeiten einer Queue `{queue}.DQ`; ein Retry, der
+vorne eine Stunde wartete, hielt jede kürzere Rückstellung dahinter fest.
+
+Seit 0.12 nutzt der Worker sieben Delay-Stufen je Queue:
+
+| Stufe | Wartezeiten |
+|---|---|
+| `{queue}.DQ.1s` | bis 1 s |
+| `{queue}.DQ.4s` | bis 4 s |
+| `{queue}.DQ.15s` | bis 15 s |
+| `{queue}.DQ.1m` | bis 1 min |
+| `{queue}.DQ.4m` | bis 4 min |
+| `{queue}.DQ.15m` | bis 15 min |
+| `{queue}.DQ.1h` | bis 1 h |
+| `{queue}.DQ` | über 1 h |
+
+Eine Wartezeit kommt in die kleinste Stufe, deren Grenze sie erreicht.
+Innerhalb einer Stufe kann eine kürzere Wartezeit weiter hinter einer
+längeren warten, benachbarte Stufen liegen aber höchstens Faktor vier
+auseinander: Eine Wartezeit dauert höchstens das Vierfache, mindestens
+aber bis zu einer Sekunde. Wartezeiten über einer Stunde behalten das
+Head-of-Line-Blocking von `{queue}.DQ`.
+
+**Anlage:** Der Worker, der `{queue}` konsumiert, legt die sieben
+Stufen beim Start an, direkt nach der Queue-Familie, mit den Argumenten
+von `{queue}.DQ` und über dieselbe Kette (siehe [vorhandene
+Queue-Argumente](#vorhandene-queue-argumente)): Im Modus `auto`
+dead-lettert eine neue Stufe at-least-once; im Modus `at-least-once` ist
+eine vorhandene Stufe ohne at-least-once-Dead-Lettering ein
+Konfigurationsfehler (Exit 78), wie bei jeder vorhandenen Queue. Eine Queue
+hat höchstens sieben Stufen, mit `SWARMQ_PRIORITIES` höchstens 21 (sieben
+je Band). Nur `retry_later` eines Prozesses, der die Queue-Familie selbst
+deklariert hat, also des Workers, nutzt die Stufen; Producer und der
+Scheduler publizieren nie an eine Delay-Queue. Ein Worker, der die
+Familie nicht deklariert hat, nutzt `{queue}.DQ` wie in 0.11.
+
+**Ablehnung:** Lehnt der Broker eine Stufe ab (Queue-Limit des vhosts,
+fehlendes Recht, eine vorhandene Queue gleichen Namens mit anderen
+Argumenten), läuft der Worker weiter. Seine Wartezeiten dieser Stufe
+gehen für den Rest des Prozesses an `{queue}.DQ`; er loggt die WARNING
+`delay_tier_unavailable` einmal je Stufe und meldet die Gauge
+`swarmq_delay_tiers_unavailable{queue}`. Ursache beheben und den Worker
+neu starten. Eine Stufe, die während des Laufs gelöscht wird, legt der
+nächste unroutbare Publish an sie einmal für sich allein neu an;
+scheitert das, gilt `{queue}.DQ`.
+
+**Rechte und Policies:** Die configure- und write-Rechte des
+swarmq-Benutzers müssen `{queue}.DQ.<stufe>` abdecken. Eine Policy für die
+Delay-Queues, etwa die at-least-once-Policy, braucht das Muster
+`\.DQ(\.\w+)?$` statt `\.DQ$`.
+
+**Mischbetrieb und Rollback:** Eine Stufe leitet wie `{queue}.DQ` zurück
+nach `{queue}`; ein 0.11-Worker auf derselben Queue konsumiert also
+Nachrichten, die ein 0.12-Worker zurückgestellt hat. Nach einem Rollback
+auf 0.11.1 bleiben die Stufen bestehen; ihre Nachrichten kehren weiter
+zur Fälligkeit nach `{queue}` zurück. Eine Stufe erst löschen, wenn sie
+leer ist.
+
+**Duplikate:** At-least-once-Dead-Lettering kann eine Nachricht doppelt
+zustellen; der [Ausführungsschutz](#ausfuhrungsschutz) überspringt ein
+solches Duplikat, außer bei Tasks ohne ihn (`FIRE_AND_FORGET`,
+`execution_guard=False`).
+
+**Autoscaling** (`swarmq worker --autoscale`) zählt seit 0.12 nur die
+Nachrichten, die in `{queue}` selbst bereitliegen. Lange Rückstellungen
+in den Stufen skalieren keine Worker hoch; kurze Retries kehren binnen
+Sekunden nach `{queue}` zurück und werden dort gezählt. Die Gauge
+`swarmq_queue_depth{kind="pending"}` behält ihre Bedeutung (`{queue}` plus
+alle Delay-Queues); das neue `kind="delayed"` zählt nur die Delay-Queues.
+
 ## Vorhandene Queue-Argumente
 
 Der Worker deklariert beim Start `{queue}`, `{queue}.DQ` und
-`{queue}.XQ`. Existiert eine Queue schon mit anderen Argumenten, lehnt
-RabbitMQ die Deklaration ab (`PRECONDITION_FAILED - inequivalent arg`).
-Seit 0.11.1 übernimmt der Worker für drei Argumente den vorhandenen
-Wert und deklariert erneut:
+`{queue}.XQ`. RabbitMQ ändert die Argumente einer bestehenden Queue nie;
+eine Deklaration mit anderen Argumenten wird abgelehnt
+(`PRECONDITION_FAILED - inequivalent arg`). Seit 0.12 läuft jede
+Deklaration auf einem eigenen kurzlebigen Channel, nie auf dem
+Publish-Channel; eine Ablehnung kann so keine laufenden Publishes
+abreißen. Je Queue geht der Worker so vor:
 
-- `x-dead-letter-strategy` und `x-overflow` (0.12 legt Queues mit
-  `at-least-once` und `reject-publish` an): still übernommen (INFO).
-- `x-delivery-limit`: übernommen mit WARNING `queue_argument_adopted`.
-  Liegt das vorhandene Limit unter `SWARMQ_DELIVERY_LIMIT`, dead-lettert
-  der Broker selbst nach dem vorhandenen Limit, ohne Fehlerergebnis.
-  Liegt es darüber, dead-lettert weiter das Delivery-Count-Gate des
-  Workers bei `SWARMQ_DELIVERY_LIMIT - 1` Zustellungen. Eine Queue ohne
-  `x-delivery-limit` wird nicht übernommen und scheitert wie bisher.
-
-Auf Queues, die 0.12 angelegt hat, übernimmt 0.11.1 damit
-`x-overflow=reject-publish`. Mit einer `max-length`-Policy bekommt ein
-Publish auf eine volle Queue dann ein Nack, statt dass die älteste
-Nachricht verworfen wird (drop-head), und scheitert nach den
-Wiederholversuchen mit `BrokerConnectionError`.
+1. Ein passives Declare prüft, ob die Queue existiert.
+   - Sie existiert: Der Worker deklariert sie mit den Argumenten aus
+     0.11 und `SWARMQ_DELIVERY_LIMIT`. Queues, die 0.11 angelegt hat,
+     bekommen so nie eine Ablehnung.
+   - Sie existiert nicht: Der Worker legt sie mit den Zielargumenten an,
+     siehe [Garantie beim Dead-Lettering](#garantie-beim-dead-lettering).
+2. Für drei Argumente übernimmt er den vorhandenen Wert und deklariert
+   erneut:
+   - `x-dead-letter-strategy` und `x-overflow`, ob die Queue einen Wert
+     hat oder keinen. Ein zuerst übernommenes `x-overflow` bleibt, wenn
+     die Strategy folgt. Nur die erste Übernahme je Prozess kommt als
+     INFO `queue_argument_adopted`, jede weitere als DEBUG; eine von 0.12
+     angelegte Queue kostet je Start eine, höchstens zwei Ablehnungen.
+   - `x-delivery-limit`, auch wenn die Queue keines hat: WARNING
+     `queue_argument_adopted` je Queue. Der Worker nutzt dann das
+     [effektive Delivery-Limit](#effektives-delivery-limit).
+3. Jeder andere erkannte Konflikt, etwa ein geänderter
+   `SWARMQ_QUEUE_TYPE`, endet mit `QueueArgumentsMismatch`
+   (`swarmq worker`: Exit 78, keine Neustartschleife). Die Meldung nennt
+   das Argument, den deklarierten und den vorhandenen Wert
+   ([Migration](#queue-argumente-andern)). Jede andere Ablehnung
+   (Queue-Limit des vhosts, fehlendes Recht, exklusive Queue) bleibt ein
+   `BrokerConnectionError`.
 
 Jedes Argument wird höchstens einmal übernommen; eine Deklaration
-braucht also höchstens vier Versuche. Jeder andere Konflikt (etwa
-`x-queue-type`) scheitert wie bisher mit `BrokerConnectionError`. Die
-Versuche laufen auf einem eigenen kurzlebigen Channel; ein Konflikt
-schließt nie den Publish-Channel. Noch nicht vorhandene Queues werden
-mit denselben Argumenten wie in 0.11.0 angelegt.
+braucht also höchstens vier Versuche. Das passive Declare hat keine
+eigene Frist, wie schon die Deklaration in 0.11: Das Anlegen einer
+Quorum-Queue kann unter Last lange dauern. Das Ergebnis wird je Prozess
+gecacht. Kommt ein Publish als unroutbar zurück (`UnroutableMessage`)
+oder findet ein Consumer die Queue nicht, wird der Eintrag verworfen,
+und die nächste Deklaration legt die Queue neu an. Das effektive
+Delivery-Limit bleibt dabei erhalten, bis wieder eine Deklaration
+gelingt. Fehlt einem Worker seine eigene `{queue}.DQ` oder `{queue}.XQ`,
+deklariert er die Queue-Familie auf dieselbe Weise neu, mit Übernahme,
+und publiziert dann ein zweites Mal.
+
+**Betrieb:** Jeder Worker-Prozess, auch jedes Kind eines Supervisors,
+durchläuft diese Kette bei seinem eigenen Start. Er schreibt seine
+eigene INFO `queue_argument_adopted` und seine eigene WARNING
+`queue_dead_letter_at_most_once`. Für eine von 0.12 angelegte Queue
+kostet jeder Prozessstart bis zu zwei Ablehnungen je Queue. RabbitMQ
+protokolliert jede Ablehnung als Channel-Fehler
+(`PRECONDITION_FAILED`); diese aus Alarmen auf Channel-Fehler
+ausnehmen oder dort erwarten. Ein Verbindungsabriss mitten in der Kette
+beendet die Deklaration als `BrokerConnectionError`.
+
+Nur ohne eigene Verbindung, etwa in Unit-Tests und im
+Golden-Generator, deklariert der Broker wie in 0.11.0 direkt auf dem
+Publish-Channel, ohne Kette. Ein verbundener Broker nimmt diesen Weg
+nie.
+
+### Garantie beim Dead-Lettering
+
+Rückstellungen (`{queue}.DQ` zurück nach `{queue}`) und das
+Delivery-Limit des Brokers (`{queue}` nach `{queue}.XQ`) bewegen
+Nachrichten per Dead-Lettering. Bei Quorum-Queues tut RabbitMQ das
+standardmäßig **at-most-once**: Bei einem Leaderwechsel oder einem nicht
+verfügbaren Ziel kann eine solche Nachricht verloren gehen.
+`SWARMQ_QUEUE_DEAD_LETTER_STRATEGY` legt fest, was swarmq deklariert:
+
+| Wert | Neue Queues | Bestandsqueues |
+|---|---|---|
+| `auto` (Standard) | `x-dead-letter-strategy=at-least-once` und `x-overflow=reject-publish` auf `{queue}` und `{queue}.DQ` (nicht `{queue}.XQ`) | behalten ihre Argumente; eine WARNING `queue_dead_letter_at_most_once` je Prozess listet die ohne at-least-once |
+| `at-least-once` | wie `auto` | ohne at-least-once und `reject-publish`: `QueueArgumentsMismatch` (Exit 78) |
+| `legacy` | Argumente aus 0.11 (at-most-once) | behalten ihre Argumente, keine Warnung |
+
+At-least-once wirkt nur zusammen mit `x-overflow=reject-publish`; mit
+jedem anderen Overflow dead-lettert RabbitMQ at-most-once. swarmq zählt
+eine Queue mit `at-least-once` und etwa `drop-head` deshalb als
+at-most-once: Sie steht in der Warnung, und im Modus `at-least-once`
+endet sie mit `QueueArgumentsMismatch` auf `x-overflow`.
+
+Für Bestandsqueues eine Policy mit `dead-letter-strategy=at-least-once`
+und `overflow=reject-publish` setzen oder die Queues migrieren (siehe
+unten). Eine Policy sieht swarmq nicht; die Policy beendet die Warnung
+deshalb nicht, das tut nur `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=legacy`.
+Auf eine Queue wirkt nur eine Policy, die mit der höchsten Priorität:
+Eine neue Policy verdrängt eine bestehende, etwa eine mit `max-length`.
+Alle Schlüssel, die die Queue braucht, gehören in diese eine Policy.
+Eine Operator-Policy mit `max-length` hat unter `reject-publish`
+dieselbe Folge wie eine `max-length`-Policy (siehe unten). Klassische
+Queues sind nicht betroffen.
+
+`reject-publish` ändert ein Verhalten: Mit einer `max-length`-Policy
+bekommt ein Publish auf eine volle Queue ein Nack, statt dass die
+älteste Nachricht verworfen wird (drop-head), und scheitert nach fünf
+Versuchen mit `BrokerConnectionError`. At-least-once-Dead-Lettering kann
+eine Nachricht auch doppelt zustellen; der
+[Ausführungsschutz](#ausfuhrungsschutz) überspringt das Duplikat, außer
+bei Tasks ohne ihn (`FIRE_AND_FORGET`, `execution_guard=False`).
+
+**Rollback:** Von 0.12 angelegte Queues kann erst 0.11.1 deklarieren.
+Erst alle Apps als eigenes Deployment auf 0.11.1 ausrollen, dann auf
+0.12.
+
+### Effektives Delivery-Limit
+
+Der Worker dead-lettert eine Nachricht ab dem vorletzten Zustellversuch
+selbst, mit Fehlerergebnis: bei `limit - 1` Zustellungen. `limit` ist
+das kleinere aus `SWARMQ_DELIVERY_LIMIT` und dem effektiven Limit der
+Queue, aus der die Zustellung kam. Das effektive Limit ist das
+`x-delivery-limit` der Queue; fehlt es, nimmt RabbitMQ 4 den Wert 20,
+`-1` heißt unbegrenzt (dann gilt `SWARMQ_DELIVERY_LIMIT`), und `0` heißt
+keine Wiederzustellung (der Worker dead-lettert bei der ersten
+Wiederzustellung). Beispiel: Eine Queue mit Limit 20 bei
+`SWARMQ_DELIVERY_LIMIT=50` dead-lettert der Worker bei 19 Zustellungen.
+
+Eine `delivery-limit`-Policy deckelt das Limit ebenfalls, ist für swarmq
+ohne Management-API aber unsichtbar. Auf swarmq-Queues keine setzen.
+
+### Queue-Argumente ändern
+
+`SWARMQ_DELIVERY_LIMIT` lässt sich jederzeit ändern: Neue Queues
+bekommen den neuen Wert, bestehende behalten ihren, und der Worker nutzt
+den kleineren (siehe oben). Um `SWARMQ_QUEUE_TYPE` zu ändern oder einer
+bestehenden Queue ohne Policy at-least-once-Dead-Lettering zu geben,
+die Queue migrieren:
+
+1. Die Producer der Queue stoppen (auch die Crons des Schedulers, die
+   an sie publizieren).
+2. Die Worker `{queue}`, `{queue}.DQ` und die
+   [Delay-Stufen](#delay-stufen) `{queue}.DQ.*` leeren lassen. Sie
+   enthalten ausstehende Rückstellungen und verzögerte Tasks
+   (`delay`/`eta`), die womöglich erst viel später fällig sind: auf sie
+   warten oder sie per Shovel in eine Zwischen-Queue verschieben. Eine
+   Delay-Queue mit Nachrichten nie einfach löschen; die Nachrichten
+   gingen verloren.
+3. Die Worker stoppen.
+4. Den Inhalt von `{queue}.XQ` verschieben oder behalten.
+5. Die Queues der Familie löschen (`{queue}`, `{queue}.DQ`, die Stufen
+   und `{queue}.XQ`) und die Worker mit der neuen Einstellung starten.
+   Sie legen die Queues neu an; danach die verschobenen Nachrichten per
+   Shovel zurückholen.
 
 ## Was SwarmQ nicht tut
 

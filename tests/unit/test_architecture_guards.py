@@ -56,21 +56,30 @@ _FORBIDDEN_IN_CORE = ("aio_pika", "valkey", "swarmq.backend.valkey", "swarmq.bro
 _ALIAS_MODULES: frozenset[str] = frozenset()  # seit U15 leer (KTD10 abgeschlossen)
 
 _SPLIT_MODULES: dict[str, list[str]] = {
-    "swarmq.broker.rabbitmq": ["connection", "delivery", "admin", "consumer_watch"],  # U5; Waechter U6
-    "swarmq.backend.valkey": ["connection", "results"],  # U17
+    "swarmq.broker.rabbitmq": [
+        "connection", "delivery", "admin", "consumer_watch", "topology",  # U5; U6; 0.12 MR 0
+        "declarations",  # Plan 0.12.0, MR 8
+    ],
+    "swarmq.backend.valkey": ["connection", "results", "environment"],  # U17; environment: Plan 0.12.0, MR 14
     # ``decode`` seit U6 (Plan 2026-09-08-001): Header-Pruefung, Size-Cap und
     # Body-Dekodierung aus ``pipeline.py`` gezogen.
     "swarmq.worker": [
         "outcome", "pipeline", "gates", "execution", "retry", "results",
         "lifecycle", "decode",
+        "shutdown", "finalize",  # Plan 0.12.0, MR 0
+        "redelivery", "terminal",  # Plan 0.12.0, MR 3 (BZ-29, BZ-13)
+        "lock_keeper", "lock_wait_tracker",  # Plan 0.12.0, MR 13 (BZ-25, BZ-05)
+        "prefetch",  # Plan 0.12.0, MR 18 (BZ-20)
     ],  # U6-U9
-    "swarmq.client": ["schedule", "results", "workflows"],  # U10
-    "swarmq.scheduler": ["definition", "loop", "sync"],  # U11
+    "swarmq.client": ["schedule", "results", "workflows", "schedule_resolve"],  # U10; Plan 0.12.0, MR 0
+    # U11; fire: Plan 0.12.0, MR 0; valkey_watch: MR 14; orphaned_queues: MR 18
+    "swarmq.scheduler": ["definition", "loop", "sync", "fire", "valkey_watch", "orphaned_queues"],
     "swarmq.process_manager": [
         "config", "supervisor", "entry", "sampler", "check", "run",
         "setpoint_store", "setpoint",  # Kontrollkanal U2/U5
         "reload",  # Plan 2026-10-06-1811, U8
         "worker_target",  # Restpunkte 0.9.0: Kindziel aus ``supervisor``
+        "restart_budget",  # Plan 0.12.0, MR 0: Lebenszeichen und Neustart-Budget
     ],  # U21
 }
 
@@ -138,6 +147,19 @@ def test_contract_bindings_are_pure() -> None:
     assert not skipping, f"Bindings tragen skip/xfail: {skipping}"
     mismatches = arch.binding_case_count_mismatches(bindings)
     assert not mismatches, f"Bindings derselben Basisklasse mit abweichender Fallzahl: {mismatches}"
+
+
+# Q4 (Plan 0.12.0): Valkey-Keys entstehen nur in ``swarmq.keyspace``.
+_KEYSPACE_MODULE = "swarmq.keyspace"
+_KEYSPACE_HELP_TEXTS: dict[str, list[str]] = {
+    "swarmq.cli.parser": ["sq:control:setpoint:<group>"],
+    "swarmq.cli.parser_ops": ["sq:sched:defs"],
+}
+
+
+def test_no_keyspace_literals_outside_keyspace_module() -> None:
+    hits = arch.keyspace_literals(_SRC, _PKG, exempt_modules=[_KEYSPACE_MODULE], exempt_substrings=_KEYSPACE_HELP_TEXTS)
+    assert not hits, f"sq:-Literale ausserhalb von {_KEYSPACE_MODULE}: {hits}"
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +313,42 @@ class TestOverrideGuard:
         assert arch.unmatched_override_entries(["pkg.sub.*"], ["pkg", "pkg.sub"], "pkg") == ["pkg.sub.*"]
 
 
+class TestKeyspaceLiteralGuard:
+    def test_code_literal_and_fstring_part_are_reported(self, tmp_path: Path) -> None:
+        _write_tree(
+            tmp_path,
+            {
+                "pkg/__init__.py": "",
+                "pkg/store.py": (
+                    '"""Docstring mit sq:result:<id>."""\n'
+                    "# Kommentar mit sq:lock:\n"
+                    'KEY = "sq:{sched}:zset"\n'
+                    "def k(x):\n"
+                    '    """sq:doc"""\n'
+                    '    return f"sq:result:{x}"\n'
+                    'ATTR = "frei"\n'
+                    '"""Attribut-Doku: sq:frei."""\n'
+                ),
+            },
+        )
+        hits = arch.keyspace_literals(tmp_path, "pkg")
+        assert hits == [("pkg.store", 3, "sq:{sched}:zset"), ("pkg.store", 6, "sq:result:")]
+
+    def test_exempt_module_and_help_text_are_not_reported(self, tmp_path: Path) -> None:
+        _write_tree(
+            tmp_path,
+            {
+                "pkg/__init__.py": "",
+                "pkg/keyspace.py": 'ROOT = "sq:"\n',
+                "pkg/parser.py": 'add(help="List all in sq:sched:defs.")\nOTHER = "sq:x"\n',
+            },
+        )
+        hits = arch.keyspace_literals(
+            tmp_path, "pkg", exempt_modules=["pkg.keyspace"], exempt_substrings={"pkg.parser": ["sq:sched:defs"]}
+        )
+        assert hits == [("pkg.parser", 2, "sq:x")]
+
+
 class TestPatchPathGuard:
     def test_patch_into_split_facade_is_reported(self, tmp_path: Path) -> None:
         _write_tree(
@@ -384,3 +442,45 @@ class TestBindingGuard:
         assert arch.binding_case_count_mismatches(bindings) == {
             "tests.contracts.coordination.LockStoreContract": {3, 6}
         }
+
+
+# Review MR 15, P2-3: ``KeySpace()`` ohne Argument kennt keinen Namensraum.
+# Erlaubt nur in ``swarmq.keyspace``, ``backend.valkey.connection`` und den
+# ausdruecklich als "nur ohne Namensraum" gekennzeichneten Alias-/Default-
+# Modulen (Modulkonstanten und Store-Defaults, die das Backend immer mit
+# seinem KeySpace ueberschreibt).
+_BARE_KEYSPACE_ALLOWED = (
+    "swarmq.keyspace",
+    "swarmq.backend.valkey.connection",
+    "swarmq.locking",
+    "swarmq.backend.valkey.schedules",
+    "swarmq.backend.valkey.execution_guard",
+    "swarmq.backend.valkey.chords",
+    "swarmq.backend.valkey.locks",
+    "swarmq.backend.valkey.rate_limit",
+)
+
+
+def test_no_namespace_blind_keyspace_outside_the_allowed_modules() -> None:
+    hits = arch.bare_keyspace_calls(_SRC, _PKG, exempt_modules=_BARE_KEYSPACE_ALLOWED)
+    assert not hits, f"KeySpace() ohne Namensraum ausserhalb der erlaubten Module: {hits}"
+
+
+class TestBareKeySpaceGuard:
+    def test_call_without_arguments_is_reported(self, tmp_path: Path) -> None:
+        _write_tree(
+            tmp_path,
+            {
+                "pkg/__init__.py": "",
+                "pkg/store.py": (
+                    "from pkg.keyspace import KeySpace\n"
+                    "A = KeySpace()\n"
+                    "B = KeySpace(None)\n"
+                    "C = KeySpace(namespace)\n"
+                    "D = keyspace.KeySpace()\n"
+                ),
+                "pkg/keyspace.py": "class KeySpace: ...\nX = KeySpace()\n",
+            },
+        )
+        hits = arch.bare_keyspace_calls(tmp_path, "pkg", exempt_modules=["pkg.keyspace"])
+        assert hits == [("pkg.store", 2), ("pkg.store", 5)]

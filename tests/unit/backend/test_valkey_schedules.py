@@ -12,6 +12,14 @@ Test-Liste 0.9.0 (Ausfall vs. Fehlerantwort, rollendes Upgrade):
 Test-Liste Plan 2026-10-08-1541 (U3, KTD12):
 4. ``commit_fire`` mit ``fired_payload`` sendet sechs ARGV; ohne
    ``fired_ts_ms`` steht an fünfter Stelle ``""`` (kein Verwerf-Schutz).
+
+Test-Liste Plan 0.12.0, MR 4 (BZ-07, Handover ohne SCAN):
+5. ``set_handover_marker`` schreibt den festen Key ``sq:{sched}:handover``
+   (Wert: Owner) und den Legacy-Key je Owner, den 0.11-Nachfolger per SCAN
+   finden; beide mit derselben TTL.
+6. ``take_handover_marker`` liest den festen Key per ``GETDEL``, ohne SCAN,
+   und löscht den Legacy-Key des gefundenen Owners.
+7. Mit ``previous_owner`` erkennt es auch den Legacy-Key eines 0.11-Leaders.
 """
 
 from __future__ import annotations
@@ -241,14 +249,30 @@ class TestSchedfireClaims:
         client.exists.assert_awaited_once_with("sq:sched:fired:k")
 
     async def test_handover_marker_roundtrip_names(self) -> None:
+        """Liste 5 (BZ-07)."""
         store, client, _ = _store()
         client.set = AsyncMock(return_value=True)
         await store.set_handover_marker("owner-1", 5_000)
-        assert client.set.await_count == 1
-        client.scan_iter = MagicMock()
-        # take_handover_marker konsumiert per Scan+Delete; Detailverhalten
-        # ist integrativ gedeckt (Leader-Election) — hier nur der Vertrag,
-        # dass ein Fehler nicht entweicht, sondern False liefert.
+        assert [(c.args, c.kwargs) for c in client.set.await_args_list] == [
+            (("sq:{sched}:handover", "owner-1"), {"px": 5_000}),
+            (("sq:sched:handover:owner-1", "1"), {"px": 5_000}),
+        ]
+
+    async def test_take_handover_marker_reads_fixed_key_without_scan(self) -> None:
+        """Liste 6 (BZ-07)."""
+        store, client, _ = _store()
+        client.getdel = AsyncMock(return_value=b"owner-1")
+        client.scan_iter = MagicMock(side_effect=AssertionError("no SCAN"))
+        assert await store.take_handover_marker() is True
+        client.getdel.assert_awaited_once_with("sq:{sched}:handover")
+        client.delete.assert_awaited_once_with("sq:sched:handover:owner-1")
+
+    async def test_take_handover_marker_finds_legacy_marker_of_previous_owner(self) -> None:
+        """Liste 7 (BZ-07): ein 0.11-Leader schreibt nur den Legacy-Key."""
+        store, client, _ = _store()
+        client.getdel = AsyncMock(side_effect=lambda key: b"1" if key == "sq:sched:handover:old" else None)
+        assert await store.take_handover_marker(previous_owner="old") is True
+        assert [c.args for c in client.getdel.await_args_list] == [("sq:{sched}:handover",), ("sq:sched:handover:old",)]
 
     async def test_wrapping_on_driver_error(self) -> None:
         store, client, _ = _store()

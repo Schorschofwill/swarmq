@@ -27,7 +27,6 @@ import uuid
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock
 
-import aio_pika
 import pytest
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
@@ -38,6 +37,7 @@ from swarmq.worker import Worker, WorkerState
 from swarmq.worker.gates import GateContext
 from swarmq.worker.outcome import Continue, Redelivered
 from tests.contracts._support import consume_into
+from tests.support.queues import delete_queue_family
 
 pytestmark = [pytest.mark.timeout(15)]
 
@@ -65,14 +65,7 @@ async def broker(rabbitmq_url: str, queue: str) -> AsyncIterator[RabbitMQBroker]
     yield impl
     with contextlib.suppress(Exception):
         await impl.cancel_consume()
-    connection = await aio_pika.connect_robust(rabbitmq_url)
-    try:
-        channel = await connection.channel()
-        for suffix in ("", ".DQ", ".XQ"):
-            with contextlib.suppress(Exception):
-                await channel.queue_delete(f"{queue}{suffix}")
-    finally:
-        await connection.close()
+    await delete_queue_family(rabbitmq_url, queue)
     await impl.close()
 
 
@@ -90,18 +83,28 @@ def _worker(broker: RabbitMQBroker) -> Worker:
 
 
 async def test_retry_copy_with_inherited_high_delivery_count_is_not_dead_lettered(
-    broker: RabbitMQBroker, queue: str,
+    broker: RabbitMQBroker,
+    queue: str,
 ) -> None:
     worker = _worker(broker)
     await broker.publish(queue, _BODY, headers={"x-delivery-count": _DELIVERY_LIMIT - 1})
     inbox = await consume_into(broker, queue)
     original = await inbox.next()
     ctx = GateContext(
-        task_id="t1", task_name="flaky", queue=queue, task_info=FlakyTask.task_info, task_class=FlakyTask,
+        task_id="t1",
+        task_name="flaky",
+        queue=queue,
+        task_info=FlakyTask.task_info,
+        task_class=FlakyTask,
     )
 
     outcome = await worker._retry_handler.evaluate(
-        original, ctx, RuntimeError("boom"), "boom", {"retry_count": 0}, MiddlewareChain([]),  # type: ignore[typeddict-item]
+        original,
+        ctx,
+        RuntimeError("boom"),
+        "boom",
+        {"retry_count": 0},
+        MiddlewareChain([]),  # type: ignore[typeddict-item]
     )
     assert outcome is Redelivered
 

@@ -38,6 +38,7 @@ from swarmq.worker import Worker, WorkerState
 from swarmq.worker.gates import GateContext
 from swarmq.worker.outcome import Continue
 from tests.contracts._support import consume_into
+from tests.support.queues import delete_queue_family
 from tests.support.rabbitmq_faults import publish_failure
 
 
@@ -78,14 +79,7 @@ async def broker(rabbitmq_url: str, queue: str) -> AsyncIterator[RabbitMQBroker]
     yield impl
     with contextlib.suppress(Exception):
         await impl.cancel_consume()
-    connection = await aio_pika.connect_robust(rabbitmq_url)
-    try:
-        channel = await connection.channel()
-        for suffix in ("", ".DQ", ".XQ"):
-            with contextlib.suppress(Exception):
-                await channel.queue_delete(f"{queue}{suffix}")
-    finally:
-        await connection.close()
+    await delete_queue_family(rabbitmq_url, queue)
     await impl.close()
 
 
@@ -144,8 +138,14 @@ async def test_lock_render_failure_with_publish_failure_routes_via_dlx(
     task_info = TaskInfo(name="ctr-locked", queues=(queue,), lock="user-{missing}", hard_timeout=5)
 
     ctx = GateContext(
-        task_id="t1", task_name="ctr-locked", queue=queue, task_info=task_info, task_class=_LockedTask,
-        args=[1], kwargs={}, handler_id=uuid.uuid4(),
+        task_id="t1",
+        task_name="ctr-locked",
+        queue=queue,
+        task_info=task_info,
+        task_class=_LockedTask,
+        args=[1],
+        kwargs={},
+        handler_id=uuid.uuid4(),
     )
     # U6 (R12): derselbe Weg, jetzt beobachtbar — das Signal folgt dem
     # erfolgreichen Broker-Verb, also muss es hier feuern.

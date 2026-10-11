@@ -113,7 +113,7 @@ class TestCheckMaxAgeExpired:
         ti = TaskInfo(name="t", queues=["q"], max_age=60)
         msg = _expiry_message(int(time.time()) - 120)  # 120s old, limit 60
         handled = await _apply(w, msg, ti, task_id="id-xyz")
-        assert handled == Terminal.never_release()
+        assert handled == Terminal.release_only()  # BZ-22 (MR 3)
         w._broker.dead_letter.assert_awaited_once()
         # U8: retry_later/dead_letter bestätigen das Original selbst
         w._broker.ack.assert_not_awaited()
@@ -150,7 +150,7 @@ class TestCheckMaxAgeExpired:
 
         handled = await _apply(w, msg, ti, task_id="id")
 
-        assert handled == Terminal.never_release()
+        assert handled == Terminal.release_only()  # BZ-22 (MR 3)
         w._backend.store_result.assert_not_awaited()
         # DLQ + ack continue regardless.
         w._broker.dead_letter.assert_awaited_once()
@@ -166,7 +166,7 @@ class TestCheckMaxAgeExpired:
         ti = TaskInfo(name="t", queues=["q"], max_age=10)
         msg = _expiry_message(int(time.time()) - 30)
         handled = await _apply(w, msg, ti, task_id="id")
-        assert handled == Terminal.never_release()
+        assert handled == Terminal.release_only()  # BZ-22 (MR 3)
         # DLQ + ack still happen even though store_result failed.
         w._broker.dead_letter.assert_awaited_once()
         # U8: retry_later/dead_letter bestätigen das Original selbst
@@ -223,3 +223,63 @@ class TestExpiryErrorFields:
         assert entry["log_level"] == "error"
         assert entry["error_type"] == "BrokerConnectionError"
         assert entry["error"] == "redeliver failed, channel lost"
+
+
+class TestExpiredWorkflowStep:
+    """BZ-13 (Plan 0.12.0, MR 3): ein abgelaufener Workflow-Schritt markiert
+    seinen Workflow als fehlgeschlagen.
+
+    Test-Liste:
+    - [x] Markierung scheitert voruebergehend (Valkey weg) -> neu zugestellt,
+          keine DLQ, kein ``TASK_EXPIRED`` (das Zustelllimit begrenzt das)
+    """
+
+    async def test_fail_mark_outage_redelivers_instead_of_dead_lettering(self):
+        from swarmq.exceptions import BackendConnectionError, TaskNotFoundError
+        from swarmq.headers import HEADER_WORKFLOW_ID, HEADER_WORKFLOW_STEP
+        from swarmq.worker.outcome import Redelivered
+
+        w = _make_worker()
+        w._broker.redeliver = AsyncMock()
+        w._registry.get = MagicMock(side_effect=TaskNotFoundError("t"))
+        w._workflow_advancer = MagicMock()
+        w._workflow_advancer.fail = AsyncMock(side_effect=BackendConnectionError("valkey down"))
+        expired: list[dict] = []
+
+        @w._signal_dispatcher.on_signal(Signal.TASK_EXPIRED)
+        async def _cap(**kw):
+            expired.append(kw)
+
+        msg = _expiry_message(int(time.time()) - 120)
+        msg.headers[HEADER_WORKFLOW_ID] = "01890a5d-ac96-774b-bcce-b302099a8057"
+        msg.headers[HEADER_WORKFLOW_STEP] = "/1"
+
+        handled = await _apply(w, msg, TaskInfo(name="t", queues=["q"], max_age=60), task_id="id")
+
+        assert handled is Redelivered
+        w._broker.redeliver.assert_awaited_once_with(msg)
+        w._broker.dead_letter.assert_not_awaited()
+        assert expired == []
+
+
+class TestExpiredUniqueRelease:
+    """BZ-22 (Plan 0.12.0, MR 3): Freigabe des Unique-Flags nur nach
+    erfolgreichem Dead-Letter.
+
+    Test-Liste:
+    - [x] Dead-Letter scheitert -> neu zugestellt, Flag bleibt stehen
+          (``never_release``); die Neuzustellung gibt es frei
+    """
+
+    async def test_failed_dead_letter_keeps_the_flag(self):
+        from swarmq.exceptions import BrokerConnectionError
+
+        w = _make_worker()
+        w._broker.dead_letter = AsyncMock(side_effect=BrokerConnectionError("down"))
+        w._broker.redeliver = AsyncMock()
+        msg = _expiry_message(int(time.time()) - 120)
+
+        handled = await _apply(w, msg, TaskInfo(name="t", queues=["q"], max_age=60), task_id="id")
+
+        assert handled == Terminal.never_release()
+        w._broker.redeliver.assert_awaited_once_with(msg)

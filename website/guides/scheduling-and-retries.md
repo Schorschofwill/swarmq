@@ -38,6 +38,14 @@ store and publishes to RabbitMQ at fire time. See
 `delay=0` is a plain immediate publish; only a positive `delay` or
 any `eta` takes the scheduler path.
 
+A deferred task runs under the ID that `schedule()` returned, so
+`get_result()`, `cancel()` and the dedup flag of `unique_for` work as
+for an immediate task. The ID is stored in the field `task_id` of the
+one-shot entry (`oneshot:<task_id>`). A leader before 0.12 ignores the
+field and fires under a new ID: while such a leader holds the role,
+`get_result()` on the returned ID times out and `cancel()` has no
+effect. Each cron fire gets a new ID.
+
 ## Cron scheduling
 
 For recurring work, set `cron` on `TaskInfo`:
@@ -166,7 +174,8 @@ Valkey: at start and then every `SWARMQ_SCHEDULER_SEEN_INTERVAL_S`
 seconds (default `60`). A report holds the name, the full definition
 and a fingerprint over the fields that come from code: cron
 expression, time zone (already resolved from the task or the worker's
-default), queue and task name. Reports carry the Valkey server time,
+default), queue and task name, plus `unique_for` and `unique_until`
+when the task sets `unique_for` (from 0.12). Reports carry the Valkey server time,
 so clock skew between workers does not matter.
 
 The scheduler leader adopts reported crons on the same interval, right
@@ -195,17 +204,28 @@ What this means in practice:
 - A static cron that a live worker reports comes back within one
   interval after `swarmq schedule remove --permanent`. It only stays
   gone once no code reports it anymore.
-- A cron removed from code stops firing once no worker has reported
-  it for `SWARMQ_SCHEDULER_PRUNE_AFTER_S` (default 24 h; from 0.11.0,
-  see [removing crons](#removing-crons-no-app-reports-anymore)). To get
+- A cron removed from code stops firing as soon as no live worker
+  reports it any more: from 0.12 the leader holds it (see
+  [held crons](#crons-nobody-reports-are-held)) and removes it once no
+  worker has reported it for `SWARMQ_SCHEDULER_PRUNE_AFTER_S` (default
+  24 h; from 0.11.0, see
+  [removing crons](#removing-crons-no-app-reports-anymore)). To get
   rid of it at once, use `swarmq schedule remove --permanent NAME` once
   no worker reports it anymore.
 - A CLI schedule of the same name still beats the static cron, with
   the warning `scheduler_static_cron_shadowed_by_cli`.
 - Crons of other apps on the same Valkey fire without the warning
   `scheduler_task_not_in_local_registry`, as long as a live worker
-  reports them. The leader still does not know their `TaskInfo`, so
-  `unique_for` of such a task has no effect on its cron fires.
+  reports them.
+- `unique_for` of a cron task applies on every leader, also one whose
+  own registry does not know the task (another app, another
+  `--module`, separate CPU and IO workers). The report carries
+  `unique_for` and `unique_until`, and the leader takes both from the
+  definition; a definition without them (written before 0.12, or a CLI
+  schedule) uses the leader's own `TaskInfo`. This needs a leader on
+  0.12 or later; while a leader before 0.12 holds the role, a long cron
+  run can overlap the next fire again
+  ([unique crons](locking-and-dedup.md#unique-crons)).
 
 The leader deletes reports that were not refreshed for 7 days, or for
 twice `SWARMQ_SCHEDULER_PRUNE_AFTER_S` if that is longer.
@@ -242,7 +262,7 @@ old.
   every app; raising the period in one app alone has no effect while
   another app leads.
 - **Disabled crons come back disabled.** The leader remembers a cron
-  that was disabled when it was removed (`sq:{sched}:disabled`); when a
+  that was disabled when it was removed (`[<namespace>:]sq:{sched}:disabled`); when a
   worker reports it again, it is created disabled and the leader logs
   `scheduler_cron_revived_disabled` (WARNING). This also applies after
   `schedule prune --orphans`. If the name now belongs to a different
@@ -268,6 +288,47 @@ nothing. The period must be at least three times
     `scheduler_cron_prune_skipped` for crons that would have been
     removed.
 
+### Crons nobody reports are held
+
+From 0.12 the leader does not fire a static cron that no live worker
+reports any more and that it does not register itself. Before, a cron
+whose task was removed from the code kept firing until the prune
+period (24 h) ran out, and every fire ended as an unregistered task in
+the `.XQ`. Now the leader holds such a cron: it moves the fire to
+`now + SWARMQ_SCHEDULER_SEEN_INTERVAL_S` without publishing, on every
+poll, until a worker reports the cron again or the leader prunes it.
+
+A cron counts as unowned when all of the following hold:
+
+- the leader has loaded the cron reports in its current term (right
+  after it took the lock it waits up to 5 s for that; without reports,
+  for example because Valkey was unreachable, it fires as before —
+  fail-open);
+- a worker from 0.12 has reported the name at some point
+  (`[<namespace>:]sq:{sched}:report:known`, a set of names that is only removed
+  together with the definition, by the prune or by `swarmq schedule
+  remove --permanent`);
+- no live report of the name exists;
+- the cron is not one of the leader's own static crons;
+- the stored definition has `source="static"` (a CLI schedule of the
+  same name is never held).
+
+The transition is logged once per cron: `scheduler_cron_held_unowned`
+(WARNING) when the hold starts, `scheduler_cron_unowned_released`
+(INFO) when the cron fires again or is removed. The signal
+`SCHEDULER_CRON_UNOWNED` (`schedule_name`, `task_name`, `held`,
+`held_count`) fires on both transitions, and the gauge
+`swarmq_scheduler_crons_held{worker_id}` shows how many crons the
+leader holds. A held cron does not fire its missed occurrences later:
+the next fire is the next occurrence after a worker reports it.
+
+**Mixed versions.** Only a leader from 0.12 holds crons; while a 0.11
+app holds the leadership, removed crons fire as before (their fires
+end in the `.XQ` with a retention once a 0.12 worker gives up on them,
+see [unregistered tasks](dead-letter-queues.md#unregistered-tasks-and-rolling-deploys)).
+Crons reported only by workers before 0.12 are never in
+`[<namespace>:]sq:{sched}:report:known` and are not held.
+
 ### Conflicts
 
 When several definitions of one cron name stay live side by side for
@@ -282,23 +343,87 @@ same name in two apps on one Valkey; give them different names.
 ### Leader version
 
 The leader writes its swarmq version next to the leader lock, and
-every worker reports its version with its cron reports. A swarmq
-before 0.10.0 writes no version and does not know the `timezone`
-field: as leader it drops the zone of every cron it fires and fires
-it in UTC again.
+every worker reports its version with its cron reports. Scheduler
+fixes only take effect while the leader has them: a swarmq before
+0.10.0 writes no version and does not know the `timezone` field (as
+leader it drops the zone of every cron it fires), and a leader before
+0.12 lacks, among others, the stable task ID of deferred tasks.
 
-A worker that sees such a leader (no version, or one before 0.10.0) on two
-election ticks in a row (`SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL`) logs `scheduler_leader_outdated` once per
-leader, sends the `SCHEDULER_LEADER_OUTDATED` signal and sets the
-gauge `swarmq_scheduler_leader_outdated{worker_id}` to `1`. When a
-current leader follows, the signal comes again with `outdated=False`
-and the gauge drops to `0`. A leader on 0.10.0 or later that is older
-than the worker (a rolling upgrade) knows time zones and triggers no
-warning.
+A worker that sees a leader below the **minimum leader version**
+(currently 0.12; no version counts as below) on two election ticks in
+a row (`SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL`) logs
+`scheduler_leader_outdated` once per leader, sends the
+`SCHEDULER_LEADER_OUTDATED` signal and sets the gauge
+`swarmq_scheduler_leader_outdated{worker_id}` to `1`. When a current
+leader follows, the signal comes again with `outdated=False` and the
+gauge drops to `0`. During a rolling upgrade from 0.11 the warning is
+expected until the leadership moves to a 0.12 worker; the gauge stays
+at `1` as long as a 0.11 app on the same Valkey holds the leadership.
 
 `swarmq schedule status` shows `LEADER_VERSION` and the reporting
 workers with their versions (see
 [CLI reference](../reference/cli.md#swarmq-schedule-status)).
+
+### Fire index
+
+The leader reads at most 100 due entries per poll tick. Entries that
+can never fire are taken out of the fire index before that limit
+applies, so they cannot hold back due crons behind them:
+
+- an index entry without a definition (for example after a race
+  between `put` and `swarmq schedule remove --permanent`);
+- a disabled definition that still has a fire time (written by a
+  swarmq before 0.10, which planned disabled crons too).
+
+One poll removes at most 1000 such entries; a larger backlog clears
+over the next ticks. The definitions themselves stay.
+
+A definition the leader cannot decode (broken JSON, wrong field
+types) does not stop the poll either. The leader logs
+`schedule_def_malformed_parked` and takes the entry out of the fire
+index; the definition stays for inspection. Fix it with
+`swarmq schedule add` or clear it with
+`swarmq schedule remove --permanent <name>`. A static cron comes back
+with the next report of a worker that defines it.
+
+### Leader takeover
+
+A leader that stops cleanly leaves a short-lived handover marker, so
+its successor sends `SCHEDULER_LEADER` instead of
+`SCHEDULER_LEADER_FAILOVER`. From 0.12 the marker sits under one fixed
+key, `[<namespace>:]sq:{sched}:handover`, and the successor reads it with a single
+`GETDEL`. Before, it scanned the whole Valkey database, which could
+take longer than the lock TTL on a large database and cost the new
+leader its lock again. Right after the takeover the leader also renews
+its lock once, before the first regular renewal.
+
+Mixed versions keep working: a 0.12 leader also writes the marker
+under the old per-owner key that successors before 0.12 scan for, and
+a 0.12 successor recognises the marker of a leader before 0.12 through
+the leader it saw last. A missed marker only changes the signal.
+
+### Missing queues
+
+Queues are declared by the workers that consume them. From 0.12 a
+publish to a queue that does not exist raises `UnroutableMessage`
+instead of being confirmed and dropped by the broker. Start the
+workers of a **new queue before its producers** — this holds for every
+new queue, not only during an upgrade. A producer gets the exception
+right away; it is not retried.
+
+The scheduler leader handles a missing queue like this:
+
+| Fire | What happens |
+|---|---|
+| Cron | The fire is lost and committed, so the cron moves to its next occurrence. `SCHEDULER_FIRE_UNROUTABLE` with `kind="cron_lost"` counts it (`swarmq_scheduler_fires_unroutable_total`). `scheduler_fire_unroutable` is logged at most once per cron and 10 minutes; `scheduler_fire_unroutable_foreign` is added when the cron is reported by a worker of another app (check that all apps sharing the Valkey use the same RabbitMQ vhost). |
+| Deferred task (`delay=`/`eta=`) | Retried every 60 s (`scheduler_oneshot_unroutable`, throttled the same way). The definition records the first unroutable attempt in `unroutable_since`. After `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S` (default one day) from that attempt the task is dropped: `scheduler_oneshot_unroutable_dropped`, `kind="oneshot_dropped"`, an error result under its task ID (so `get_result()` raises `TaskError`), and its `unique_for` flag is released. |
+
+A worker whose own `{queue}.DQ` or `{queue}.XQ` was deleted while it
+ran declares the queue family once on a separate channel and publishes
+the retry or DLQ copy again; a deleted
+[delay tier](../explanation/delivery-semantics.md#delay-tiers)
+`{queue}.DQ.<tier>` is declared again the same way. A workflow step whose next step goes to a
+missing queue fails the workflow at once.
 
 ### Migrating hand-converted UTC crons
 
@@ -422,8 +547,14 @@ class ChargeCard(Task):
 | `linear` | `retry_base_delay × n` |
 | `fixed` | `retry_base_delay` |
 
-Global cap: `retry_max_delay` (default 3600 s) truncates any
-computed delay. Set `SWARMQ_RETRY_MAX_DELAY=...` or pass
+`exponential` and `linear` multiply the delay by a random factor
+between 1 and 2 (jitter), so retries of many messages that failed
+together spread out. `fixed` has no jitter.
+
+Global cap: `retry_max_delay` (default 3600 s) bounds any computed
+delay. A delay above the cap becomes 0.6 to 0.8 × `retry_max_delay`,
+drawn from the same jitter, so retries at the cap stay spread out as
+well. Set `SWARMQ_RETRY_MAX_DELAY=...` or pass
 `retry_max_delay=...` as a `SwarmQ` kwarg.
 
 ### Selective retries
@@ -522,6 +653,17 @@ On pickup, if `now - enqueued_at >= max_age`, the worker logs
 `task_expired` (WARNING, with `age_s` and `max_age_s`), fires the
 `TASK_EXPIRED` signal, routes the message to the DLQ and does not call
 `run()`.
+
+`max_age` also bounds how long a duplicate can turn up, so it sets how
+long the duplicate protection holds: the done marker of the
+[execution guard](../explanation/delivery-semantics.md#execution-guard)
+and the completed marker of a cron fire live at least `max_age + 300`
+seconds. Set `max_age` on cron tasks and on tasks that must not run
+twice; without it, a duplicate that waits behind a backlog longer than
+the marker retention (about 65 minutes by default) runs again. The
+cost is one small hash per execution in Valkey for `max_age + 300`
+seconds (about 100 MB at one million tasks a day with `max_age` of
+24 h).
 
 ## Cancellation
 

@@ -16,6 +16,10 @@
 -- ARGV[5] Waisen-Grenze: ab so vielen Waisen ``orphan_limit`` (der Marker
 --         gehoert trotzdem ARGV[1], damit das folgende Dead-Letter ihn
 --         abschliesst)
+-- ARGV[6] Rueckstand in ms (Plan 0.12.0, MR 12, BZ-12): meldet der Claim
+--         ``running``, wird die Zustellung zurueckgestellt und kann hinter
+--         einem Rueckstand zurueckkommen -- der Zustand (und mit ihm der
+--         kommende Done-Marker) lebt mindestens so lange; 0 = unveraendert
 --
 -- Returns {status, orphans}
 
@@ -37,6 +41,18 @@ if holder == ARGV[1] then
     return {'claimed', orphans}
 end
 if holder then
+    local backlog = tonumber(ARGV[6]) or 0
+    if backlog > 0 then
+        -- Eigenes Feld (Review MR 12, P2-1): ohne es verschwaende der Hash
+        -- samt Frist, sobald die letzte Lease freigegeben wird (HDEL in
+        -- guard_finish.lua); und lief die Ausfuehrung laenger als die
+        -- Zustands-TTL, legt es den Zustand neu an. Claim und Abschluss
+        -- lesen das Feld nicht.
+        redis.call('HSET', KEYS[2], 'backlog', 1)
+        if backlog > redis.call('PTTL', KEYS[2]) then
+            redis.call('PEXPIRE', KEYS[2], backlog)
+        end
+    end
     return {'running', 0}
 end
 if redis.call('HEXISTS', KEYS[2], 'lease') == 1 then
@@ -44,7 +60,11 @@ if redis.call('HEXISTS', KEYS[2], 'lease') == 1 then
 end
 redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
 redis.call('HSET', KEYS[2], 'lease', ARGV[1])
-redis.call('PEXPIRE', KEYS[2], ARGV[4])
+-- Nie verkuerzen: ein Claim mit ``running`` kann den Zustand schon auf den
+-- Rueckstand gesetzt haben (BZ-12).
+if tonumber(ARGV[4]) > redis.call('PTTL', KEYS[2]) then
+    redis.call('PEXPIRE', KEYS[2], ARGV[4])
+end
 if orphans >= tonumber(ARGV[5]) then
     return {'orphan_limit', orphans}
 end

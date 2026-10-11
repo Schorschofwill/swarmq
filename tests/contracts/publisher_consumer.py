@@ -161,6 +161,29 @@ class BrokerContract:
         inbox2 = await consume_into(impl, queue)
         await inbox2.expect_nothing()  # Original bestätigt
 
+    async def test_replay_of_a_dead_letter_with_a_matching_generation_keeps_its_replay_id(
+        self, impl: Any, queue: str, dead_letters: DeadLetters
+    ) -> None:
+        """MR 12 (BZ-08): traegt die DLQ-Kopie ``x-swarmq-dlq-gen`` gleich
+        ``x-swarmq-dead-lettered-at`` (Stempel eines 0.12-Workers), behaelt
+        ``retry_dead_letter`` ihre ``x-swarmq-replay-id`` -- ein wiederholter
+        Retry derselben Nachricht ergibt dieselbe Identitaet; der Stempel und
+        das alte Alter (A6) reisen nicht mit."""
+        body = b'{"task": {"id": "ctr-gen", "name": "t", "queue": "q"}, "args": [], "kwargs": {}}'
+        await impl.publish(queue, body, headers={"x-swarmq-enqueued-at": 7})
+        inbox = await consume_into(impl, queue)
+        delivery = await inbox.next()
+        fresh = {**delivery.headers, "x-swarmq-replay-id": "r1", "x-swarmq-dlq-gen": 5, "x-swarmq-dead-lettered-at": 5}
+        await impl.dead_letter(delivery, headers=fresh)
+        [(_, letter)] = await dead_letters(queue)
+        assert letter["x-swarmq-dlq-gen"] == letter["x-swarmq-dead-lettered-at"]
+        assert (await impl.retry_dead_letter(queue, "ctr-gen"))[0] is True
+        replay = await inbox.next()
+        assert replay.headers["x-swarmq-replay-id"] == letter["x-swarmq-replay-id"]
+        assert "x-swarmq-dlq-gen" not in replay.headers and "x-swarmq-dead-lettered-at" not in replay.headers
+        assert replay.headers["x-swarmq-enqueued-at"] != 7
+        await impl.ack(replay)
+
     async def test_retry_later_raises_on_publish_failure_and_leaves_original_unacked(
         self, impl: Broker, queue: str, publish_failure: PublishFailure
     ) -> None:

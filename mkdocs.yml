@@ -154,6 +154,7 @@ plugins:
             Dead letter queues: Dead-Letter-Queues
             Hot reload (dev-only): Hot Reload (nur Dev)
             CPU mode: CPU-Modus
+            Deploying and upgrading: Ausrollen und Upgraden
             Testing tasks: Tasks testen
             Reference: Referenz
             API: API
@@ -189,6 +190,7 @@ nav:
       - Dead letter queues: guides/dead-letter-queues.md
       - Hot reload (dev-only): guides/hot-reload.md
       - CPU mode: guides/cpu-mode.md
+      - Deploying and upgrading: guides/deployment.md
       - Testing tasks: guides/testing-tasks.md
   - Reference:
       - reference/index.md

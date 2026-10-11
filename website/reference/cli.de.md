@@ -22,6 +22,7 @@ swarmq worker   --module DOTTED.PATH [options]
 swarmq schedule (list | add | remove | status) [options]
 swarmq dlq      (list | inspect | retry | purge) [options]
 swarmq inspect  --module DOTTED.PATH [--format FORMAT]
+swarmq check    [--format FORMAT]
 ```
 
 ## Exit-Codes
@@ -32,7 +33,7 @@ swarmq inspect  --module DOTTED.PATH [--format FORMAT]
 | `1` | Laufzeitfehler: Broker oder Backend unerreichbar, `swarmq dlq`/`schedule` zur Laufzeit gescheitert. Später erneut versuchen ist die richtige Antwort. Außerdem jeder Konfigurationsfehler von `swarmq schedule`, `swarmq dlq` und `swarmq inspect` (fehlende `SWARMQ_BROKER_URL`/`SWARMQ_BACKEND_URL`, ungültiges JSON in `--args`/`--kwargs`, ungültiges `--cron`/`--at`, `inspect --module` nicht gefunden oder ohne registrierte Tasks) und jeder Fehler von `swarmq worker --check`, auch argparse-Fehler. |
 | `2` | Ungültige Argumente (argparse-Usage-Fehler), auch `swarmq dlq retry` mit `task_id` und `--all` zugleich oder mit keinem von beiden (Meldung auf stderr). Nicht unter `swarmq worker --check`: Dort kommen argparse-Fehler als JSON mit Exit `1`. |
 | `3` | `swarmq dlq inspect` / `swarmq dlq retry <task_id>` fand keinen passenden DLQ-Eintrag |
-| `78` | Konfigurationsfehler von `swarmq worker` (`EX_CONFIG`): `ConfigurationError`, Task-Modul nicht importierbar, `--configure`-Hook gescheitert, Portbereich ungültig, ungültige Logging-Einstellungen oder Logging-Konfigurationsdatei (`LoggingConfigError`). Kommt aus dem Elternprozess und aus dem Supervisor, wenn ein Worker-Kind mit `78` endet. Ein erneuter Versuch ohne Änderung ist sinnlos. |
+| `78` | Konfigurationsfehler von `swarmq worker` (`EX_CONFIG`): `ConfigurationError`, Task-Modul nicht importierbar, `--configure`-Hook gescheitert, Portbereich ungültig, ungültige Logging-Einstellungen oder Logging-Konfigurationsdatei (`LoggingConfigError`). Kommt aus dem Elternprozess und aus dem Supervisor, wenn ein Worker-Kind mit `78` endet. Ein erneuter Versuch ohne Änderung ist sinnlos. `swarmq check`: Ein Worker würde in dieser Umgebung den Start verweigern (verdrängende Valkey-`maxmemory-policy` unter `SWARMQ_VALKEY_EVICTION_CHECK=strict`). |
 | `130` | Durch Strg-C unterbrochen (`KeyboardInterrupt`, 128 + `SIGINT`), außerhalb der Behandlung durch den Befehl selbst, etwa während Module importiert werden. Ein laufender Befehl oder Worker behandelt Strg-C als Graceful Shutdown und endet mit `0`. |
 
 `78` folgt `sysexits.h`. Jeder Konfigurationsfehler, ob er im
@@ -111,11 +112,11 @@ swarmq worker --module DOTTED.PATH
 | `--log-drain-timeout SECONDS` | `5` | Obergrenze für jedes Leeren der Log-Queues: beim Prozessende, vor einem Reload, vor jedem Ergebnis eines Rechenkinds. Nicht rechtzeitig geschriebene Einträge gelten als verworfen. Muss größer als 0 und höchstens `threading.TIMEOUT_MAX` sein, sonst Exit `78`. Env-Var: `SWARMQ_LOG_DRAIN_TIMEOUT`. Siehe [Logging](logging.md#begrenztes-leeren). |
 | `--burst` | aus | Exited sauber, sobald alle Queues `--burst-idle-timeout` Sekunden Idle waren. Env-Var: `SWARMQ_BURST_MODE`. |
 | `--burst-idle-timeout SECONDS` | `5.0` | Sekunden Queue-Stille, bevor `--burst` exited. Env-Var: `SWARMQ_BURST_IDLE_TIMEOUT`. |
-| `--priorities` | aus | Auto-Deklaration und Konsum des `{queue}.high`/`.normal`/`.low`-Triplets für jede Queue. Env-Var: `SWARMQ_PRIORITIES`. |
+| `--priorities` | aus | Auto-Deklaration und Konsum des `{queue}.high`/`.normal`/`.low`-Triplets für jede Queue. Env-Var: `SWARMQ_PRIORITIES`. Ohne das Flag wirft der Publish eines Tasks mit `TaskInfo(priority="high"\|"low")` `UnroutableMessage` (ab 0.12; vorher ging die Nachricht still verloren). |
 | `--metrics-port PORT` | ungesetzt | **Basisport** für Prometheus `/metrics`: Der Worker in Slot `s` serviert auf `PORT + s`, `--processes 3 --metrics-port 9000` belegt also `9000-9002`. Braucht `pip install 'swarmq[metrics]'`. Bind-Host: `SWARMQ_METRICS_HOST` (Default `127.0.0.1`). Siehe [Basisports](configuration.de.md#observability). |
 | `--health-port PORT` | ungesetzt | **Basisport** für `/health` + `/ready`, derselbe Slot-Versatz wie bei `--metrics-port`. Bind-Host: `SWARMQ_HEALTH_HOST` (Default `127.0.0.1`). |
-| `--processes N`, `-p N` | `1` | Lässt N Worker-Subprozesse in den Slots `0..N-1` laufen. Seit 0.5.0 läuft jeder `swarmq worker` unter dem Supervisor, auch mit `N = 1`: Er startet gecrashte Worker im selben Slot neu (max 5 pro Stunde), ersetzt Worker ohne Lebenszeichen, reloaded auf `SIGHUP`, indem er sich per `os.execvpe()` mit den beim Start festgehaltenen argv (`sys.orig_argv`) und Environment neu startet – so reloaded auch `python -m swarmq.cli worker ...` –, und endet mit 0, sobald alle Worker sauber beendet sind (`--burst`). `SIGTERM` und `SIGINT` beenden den Supervisor immer, auch während ein Reload geprüft oder vorbereitet wird. Ein Konfigurationsfehler in einem beliebigen Worker beendet den Lauf nach genau einem Versuch mit Exit `78`. |
-| `--autoscale MIN,MAX` | ungesetzt | Aktiviert Queue-tiefen-getriebenes Autoscaling zwischen `MIN` und `MAX` Worker-Subprozessen. Impliziert `--processes`. |
+| `--processes N`, `-p N` | `1` | Lässt N Worker-Subprozesse in den Slots `0..N-1` laufen. Seit 0.5.0 läuft jeder `swarmq worker` unter dem Supervisor, auch mit `N = 1`: Er startet gecrashte Worker im selben Slot neu (max 5 pro Stunde), sperrt einen Slot darüber hinaus für eine Abkühlzeit von 1 h (seit 0.12; vorher dauerhaft), ersetzt Worker ohne Lebenszeichen, reloaded auf `SIGHUP`, indem er sich per `os.execvpe()` mit den beim Start festgehaltenen argv (`sys.orig_argv`) und Environment neu startet – so reloaded auch `python -m swarmq.cli worker ...` –, und endet mit 0, sobald alle Worker sauber beendet sind (`--burst`). `SIGTERM` und `SIGINT` beenden den Supervisor immer, auch während ein Reload geprüft oder vorbereitet wird. Ein Konfigurationsfehler in einem beliebigen Worker beendet den Lauf nach genau einem Versuch mit Exit `78`. |
+| `--autoscale MIN,MAX` | ungesetzt | Aktiviert Queue-tiefen-getriebenes Autoscaling zwischen `MIN` und `MAX` Worker-Subprozessen. Impliziert `--processes`. Seit 0.12 zählt es nur die Nachrichten, die in der Queue selbst bereitliegen, nicht die Delay-Queues ([Delay-Stufen](../explanation/delivery-semantics.md#delay-stufen)). |
 | `--max-processes N` | ungesetzt | **Schaltet den Kontrollkanal ein** und erklärt den Spielraum: Ein im Backend hinterlegter Sollwert darf diesen Supervisor auf höchstens `N` Worker-Prozesse bringen. `N` muss mindestens `--processes` und die `--autoscale`-Obergrenze decken; mit `--pool cpu` darf es die zugeteilten CPUs nicht überbuchen (`N` ohne `--concurrency`, `N × --concurrency` mit). Ohne dieses Argument liest und schreibt der Supervisor keine Sollwerte und verhält sich exakt wie bisher. Siehe [Kontrollkanal](#kontrollkanal). |
 | `--group LABEL` | sortierte Menge der `--queues` | Gruppenschlüssel des Kontrollkanals. Jeder Supervisor mit demselben Schlüssel (im selben Backend) folgt demselben Sollwert, jeder für sich. Deployments, die sich ein Backend teilen und dieselben Queues bedienen, brauchen verschiedene Labels, sonst steuern sie einander. |
 | `--reload` | aus | Beobachtet Task-Module und triggert SIGHUP-Reload bei Änderung. Nur Developer. Braucht `pip install 'swarmq[reload]'`. |
@@ -198,7 +199,7 @@ swarmq worker --module myapp.tasks --autoscale 2,4 --max-processes 16 --group or
 ```
 
 **Sollwert.** Der steuernde Dienst schreibt je Gruppe einen JSON-Wert nach
-`sq:control:setpoint:<gruppe>`, etwa `{"min": 2, "max": 8}`. Eine feste
+`[<namensraum>:]sq:control:setpoint:<gruppe>` (`<namensraum>:` nur mit `SWARMQ_NAMESPACE`), etwa `{"min": 2, "max": 8}`. Eine feste
 Prozesszahl `N` ist der Sollwert `{"min": N, "max": N}` und schaltet die
 Autoskalierung für die Gruppe ab. Der Supervisor liest den Schlüssel
 einmal, bevor er den ersten Worker startet, und danach alle 5 Sekunden.
@@ -219,7 +220,7 @@ fährt die Gruppe mit ihren Startargumenten hoch und übernimmt den
 Sollwert, sobald das Backend antwortet.
 
 **Rückmeldung.** Jeder Supervisor meldet unter
-`sq:control:status:<gruppe>:<supervisor>` (die Supervisor-Kennung ist
+`[<namensraum>:]sq:control:status:<gruppe>:<supervisor>` (die Supervisor-Kennung ist
 `SWARMQ_WORKER_ID` oder der Hostname, jeweils plus `:p<pid>`): den
 Gruppenschlüssel, den zuletzt gelesenen Sollwert (oder `null`), ob der
 Speicher `present`, `absent` oder `unread` (nicht erreichbar) war, die
@@ -242,10 +243,12 @@ gesperrt; die Rückmeldung nennt ihre Zahl.
 
 **Sicherheit.** Wer auf das Backend schreiben darf, kann die Größe einer
 Worker-Gruppe setzen. Sollwert- und Statusschlüssel liegen unter eigenen
-Präfixen (`sq:control:setpoint:` und `sq:control:status:`), getrennt von
-Task- und Ergebnisschlüsseln, sodass ein Betreiber Schreibrechte für
-Sollwerte und für Rückmeldungen getrennt vergeben kann (etwa per
-Valkey-ACL). Solange der steuernde Dienst keine eigenen Zugangsdaten mit
+Präfixen (`[<namensraum>:]sq:control:setpoint:` und
+`[<namensraum>:]sq:control:status:`), getrennt von Task- und
+Ergebnisschlüsseln, sodass ein Betreiber Schreibrechte für Sollwerte und
+für Rückmeldungen getrennt vergeben kann (etwa per Valkey-ACL wie
+`~<namensraum>:sq:control:setpoint:*`; ohne Namensraum
+`~sq:control:setpoint:*`). Solange der steuernde Dienst keine eigenen Zugangsdaten mit
 so eingeschränkten Schreibrechten hat, kann jeder Task-Erzeuger, der die
 Backend-URL teilt, auch Sollwerte setzen.
 
@@ -261,7 +264,7 @@ Broker.
 swarmq schedule list [--format (table|json)]
 ```
 
-Listet jeden Schedule in `sq:sched:defs` mit Cron, Next-Fire-Zeit,
+Listet jeden Schedule in `[<namensraum>:]sq:{sched}:defs` mit Cron, Next-Fire-Zeit,
 Queue und Dedup-Zustand auf. Die Spalte `LAST_SEEN` zeigt die jüngste
 [Cron-Meldung](../guides/scheduling-and-retries.md#cron-meldungen-und-leader)
 eines statischen Crons (UTC), `never` für einen statischen Cron, den
@@ -320,7 +323,7 @@ swarmq schedule remove NAME [--permanent] [--format (table|json)]
 Ohne `--permanent` wird der Schedule nur deaktiviert, bleibt aber
 erhalten; er bleibt deaktiviert, wenn sich sein Code ändert. Mit
 `--permanent` wird er hart gelöscht, und eine Markierung aus dem
-Entfernen eines deaktivierten Crons (`sq:{sched}:disabled`) wird
+Entfernen eines deaktivierten Crons (`[<namensraum>:]sq:{sched}:disabled`) wird
 gelöscht, auch wenn der Cron selbst schon weg ist; die nächste Meldung
 legt ihn dann aktiv an. Einen statischen Cron, den ein
 lebender Worker noch meldet, übernimmt der Leader binnen eines
@@ -353,9 +356,9 @@ WORKERS:
 `LEADER_VERSION` ist `(not reported: swarmq before 0.10.0)`, wenn der
 Leader ein swarmq ohne Versionsangabe ausführt, und `-` ohne Leader.
 `WORKERS` listet jeden Worker mit lebender Meldung (drei
-`SWARMQ_SCHEDULER_SEEN_INTERVAL_S`), ohne einen `(none)`. Bevor Crons
-oder Zeitzonen umgestellt werden, sollten alle hier gezeigten Versionen
-0.10.0 oder neuer sein (siehe
+`SWARMQ_SCHEDULER_SEEN_INTERVAL_S`), ohne einen `(none)`. Alle hier
+gezeigten Versionen sollten mindestens die Mindestversion für Leader
+erreichen (derzeit 0.12; siehe
 [Leader-Version](../guides/scheduling-and-retries.md#leader-version)).
 Termine erscheinen in UTC.
 
@@ -398,7 +401,9 @@ Braucht `SWARMQ_BROKER_URL`; verbindet sich nicht mit dem Backend.
 swarmq dlq list [--queue QUEUE] [--limit N] [--format (table|json)]
 ```
 
-Drain-and-Republish-Scan — zeigt `task_id`, `task_name`, Retry-Count-
+Liest die DLQ mit Bestätigung und kopiert jede Nachricht an ihr Ende,
+bevor das Original bestätigt wird; ein Leser, der abbricht, verliert
+nichts ([DLQ lesen](../guides/dead-letter-queues.md#dlq-inhalte-auflisten)). Zeigt `task_id`, `task_name`, Retry-Count-
 Header, Fehler-Preview, Body-Größe. `--queue` ist per Default
 `default` (DLQ `default.XQ`), `--limit` `100`. Wiederholte Aufrufe sind safe:
 Nachrichten bleiben mit ihrer Restfrist in der DLQ; Lesen verlängert
@@ -477,6 +482,81 @@ TASK           QUEUES        DELIVERY       RETRIES  RATE_LIMIT  LOCK           
 render_invoice pdf           at_least_once  5        -           -                  -           -             -
 send_email     default,mail  at_least_once  3        100/m       -                  -           -             -
 sync_user      users         at_least_once  2        -           user-{user_id}     60          completion    -
+```
+
+## `swarmq check`
+
+```text
+swarmq check [--format (table|json)]
+```
+
+Prüft nur lesend die Umgebung, in der swarmq läuft (neu in 0.12). Liest
+`SWARMQ_BACKEND_URL`, `SWARMQ_VALKEY_EVICTION_CHECK`,
+`SWARMQ_SHUTDOWN_TIMEOUT`, `SWARMQ_NAMESPACE` und für den Abschnitt
+`queues` `SWARMQ_BROKER_URL` und `SWARMQ_SCHEDULER_SEEN_INTERVAL_S`.
+Schickt an Valkey nur `CONFIG GET`, `INFO`, `SCAN` und Lesebefehle, an
+RabbitMQ nur passive Declares. **Vor einem Upgrade** mit der neuen swarmq-Version in einem
+eigenen virtualenv gegen Produktion laufen lassen; unter Kubernetes
+optional als Init-Container ([Valkey-Anforderungen](configuration.de.md#valkey-anforderungen)).
+Nicht dasselbe wie `swarmq worker --check`, das einen Worker-Start
+probeweise durchläuft.
+
+Abschnitte:
+
+- `valkey`: `maxmemory_policy`, `maxmemory`, `used_memory`, `eviction`
+  (`safe`, `unsafe`, `unknown`), das wirksame `eviction_check`,
+  `aof_enabled`, `version`, `cluster_enabled`, `namespace`
+  (`SWARMQ_NAMESPACE`, ohne ihn `null`) und `unprefixed_keys`: mit
+  Namensraum die Zahl der Keys ohne ihn (`sq:*`, per `SCAN` gezählt bis
+  10000 binnen 5 Sekunden), sonst `null`, und `unprefixed_keys_complete`
+  (`false`, wenn `SCAN` das Zeitlimit erreichte: die Zahl ist dann eine
+  Untergrenze). Im Cluster-Modus sieht `SCAN` nur den verbundenen Knoten.
+  Werte, die Valkey nicht liefert (ACL), sind `null`.
+- `shutdown`: `shutdown_timeout` und `min_grace_period_s`
+  (`shutdown_timeout + 15`), die mindestens einzustellende
+  `terminationGracePeriodSeconds` (Kubernetes) bzw. `stop_grace_period`
+  (Docker).
+- `queues` (seit 0.12, nur mit `SWARMQ_BROKER_URL`, sonst
+  `checked: false`): die von Workern ab 0.12 gemeldeten Queues
+  (`reported`), per passivem Declare geprüft: `orphaned` nennt Queues mit
+  Nachrichten, ohne Consumer und seit drei Meldetakten
+  (`SWARMQ_SCHEDULER_SEEN_INTERVAL_S`) ohne lebende Meldung, je mit
+  `queue`, `messages` und `last_reported_s_ago`;
+  `missing_dead_letter_queues` nennt gemeldete Queues, deren `.XQ` fehlt
+  (der Broker verwirft dorthin geleitete gescheiterte Tasks)
+  ([Task in eine andere Queue verschieben](../guides/defining-tasks.de.md#task-in-eine-andere-queue-verschieben)).
+
+`findings` nennt jedes Problem mit `section`, `level` (`error` oder
+`warning`), `code` und `message`: `eviction_policy` (unter `strict` ein
+Fehler, sonst eine Warnung), `eviction_policy_unknown`, `aof_disabled`,
+`cluster`, `version` (älter als 8), `unprefixed_keys` (Keys ohne
+Namensraum neben einem Namensraum: Apps ohne `SWARMQ_NAMESPACE` am
+selben Valkey oder Daten von vor dem Setzen, die der Namensraum nicht
+migriert; [Namensraum](configuration.md#namensraum-mehrere-apps-auf-einem-valkey)),
+`unprefixed_keys_unknown` (`SCAN` gescheitert, verboten oder vor dem
+ersten Fund am Zeitlimit), `orphaned_queue`, `dead_letter_queue_missing`
+und `queues_unchecked` (die gemeldeten Queues waren aus Valkey nicht
+lesbar, etwa per ACL verboten). Eine unvollständige Zählung lautet `at least
+<n> keys … (count incomplete …)`; im Cluster-Modus nennt die Meldung
+zusätzlich, dass nur ein Knoten gezählt wurde.
+
+Exit-Codes: `0`, wenn nichts blockiert (Warnungen erlaubt), `78`, wenn
+ein Worker in dieser Umgebung den Start verweigern würde (verdrängende
+Policy unter `SWARMQ_VALKEY_EVICTION_CHECK=strict`, ungültiger
+`SWARMQ_NAMESPACE`), `1`, wenn Valkey
+nicht erreichbar ist, `SWARMQ_BACKEND_URL` fehlt oder `SWARMQ_BROKER_URL`
+gesetzt und der Broker nicht erreichbar ist.
+
+```bash
+$ SWARMQ_BACKEND_URL=valkey://valkey:6379/0 swarmq check --format table
+valkey  url  valkey://valkey:6379/0
+valkey  eviction_check  strict
+valkey  eviction  unsafe
+valkey  maxmemory_policy  volatile-lru
+...
+ERROR  valkey: maxmemory-policy volatile-lru may evict swarmq keys (...)
+WARNING  valkey: AOF is off: (...)
+FAILED
 ```
 
 ## Globale Flags

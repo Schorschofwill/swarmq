@@ -22,12 +22,19 @@ except SwarmQError as exc:
 | `SwarmQError` | `Exception` | Wurzel der Hierarchie |
 | `ConfigurationError` | `SwarmQError` | Fehlkonfiguration beim Worker-Start, CLI-Args, fehlende Env-Vars |
 | `LoggingConfigError` | `ConfigurationError` | Logging-Konfigurationsdatei (`--log-config`) nicht ladbar oder ungültig |
+| `QueueArgumentsMismatch` | `ConfigurationError` | Eine vorhandene Queue hat andere Argumente als die Konfiguration, die swarmq nicht übernehmen kann (etwa ein geänderter `SWARMQ_QUEUE_TYPE`) |
 | `BrokerConnectionError` | `SwarmQError` | RabbitMQ nicht erreichbar |
 | `PublishIndeterminate` | `BrokerConnectionError` | Ein Publish hat seine Frist gerissen; ob er ankam, ist unbekannt |
 | `SettleFailedAfterPublish` | `BrokerConnectionError` | Worker-intern: Eine Retry- oder Dead-Letter-Kopie ist veröffentlicht, nur das Ack des Originals scheiterte |
+| `MessageHeadersTooLarge` | `BrokerConnectionError` | Die Nachrichten-Header passen auch mit gekürzten Texten nicht in die Hälfte von `frame_max`; nichts wurde gesendet |
+| `UnroutableMessage` | `BrokerConnectionError` | Der Broker hat einen Publish zurückgegeben: Es gibt keine Queue mit diesem Namen; nichts wurde zugestellt |
+| `BrokerPublishBlocked` | `BrokerConnectionError` | Der Broker hat die Publish-Verbindung über die ganze Publish-Frist blockiert (Ressourcenalarm); nichts wurde gesendet |
+| `PublishRejected` | `BrokerConnectionError` | Der Broker hat den Publish an diese Queue in jedem Versuch abgelehnt (negatives Publisher-Confirm); die Verbindung ist gesund |
 | `BackendConnectionError` | `SwarmQError` | Valkey nicht erreichbar |
 | `BackendResponseError` | `BackendConnectionError` | Valkey hat eine Operation mit einem Fehler beantwortet (`WRONGTYPE`, Skriptfehler) |
 | `TaskNotFoundError` | `SwarmQError` | `schedule()` mit unbekanntem Task-Namen |
+| `LockWaitExceeded` | `SwarmQError` | Wird nie geworfen: Fehlertyp einer DLQ-Kopie, deren Wartezeit auf einen Task-Lock endete (hängender Halter oder `SWARMQ_LOCK_WAIT_MAX_S`) |
+| `RedeliveryLimitError` | `SwarmQError` | Wird nie geworfen: Fehlertyp einer DLQ-Kopie, deren Zustellungen bis zum Zustelllimit zurückgegeben wurden |
 | `TaskError` | `SwarmQError` | Der Task-Body raiste; bis `get_result()` propagiert |
 | `TaskCancelledError` | `TaskError` | `app.cancel(task_id)` griff während der Ausführung |
 | `ResultNotReadyError` | `SwarmQError` | `get_result()` lief in Timeout, bevor ein Ergebnis ankam |
@@ -111,6 +118,30 @@ mit `78` und loggt genau eine Zeile `worker_config_error` mit `path`,
 `error_type` und `error`. Bei einem Reload loggt der laufende Supervisor
 stattdessen `log_config_reload_failed` und lässt seine Worker
 weiterlaufen.
+
+## `QueueArgumentsMismatch`
+
+**Wann geworfen.** Wenn der Worker beim Start seine Queues deklariert
+und eine vorhandene Queue ein Argument hat, das von der Konfiguration
+abweicht und das swarmq nicht übernimmt. Unterklasse von
+`ConfigurationError`, importierbar aus `swarmq` und `swarmq.exceptions`.
+Die Meldung und die Attribute `queue`, `argument`, `declared` und
+`existing` nennen den Konflikt.
+
+**Ursache.** RabbitMQ ändert die Argumente einer bestehenden Queue nie.
+Typisch: `SWARMQ_QUEUE_TYPE` wurde für schon vorhandene Queues geändert,
+oder `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=at-least-once` trifft auf eine
+Queue ohne at-least-once-Dead-Lettering
+(`x-dead-letter-strategy=at-least-once` zusammen mit
+`x-overflow=reject-publish`). Ein abweichendes
+`x-delivery-limit`, `x-dead-letter-strategy` oder `x-overflow` wird
+übernommen und löst sie nicht aus
+([vorhandene Queue-Argumente](../explanation/delivery-semantics.md#vorhandene-queue-argumente)).
+
+**Behebung.** Ein Neustart hilft nicht; `swarmq worker` endet deshalb
+mit `78`, und der Supervisor startet ihn nicht neu. Die vorherige
+Einstellung wiederherstellen oder die
+[Queue migrieren](../explanation/delivery-semantics.md#queue-argumente-andern).
 
 ## `BrokerConnectionError`
 
@@ -419,7 +450,10 @@ hängen geblieben; der Broker hat sie vielleicht, vielleicht nicht.
 wenn der Task idempotent ist oder mit `unique_for` eingereiht wurde
 (SwarmQ behält in diesem Fall den Dedup-Claim, eine Wiederholung im
 Fenster wird also abgewiesen statt doppelt zu laufen). Siehe die Warnung
-unter [`BrokerConnectionError`](#brokerconnectionerror).
+unter [`BrokerConnectionError`](#brokerconnectionerror). Ein
+Scheduler-Leader zählt den Fehler nicht für den Rücktritt: Ausbleibende
+Confirms hängen meist an einer Queue (etwa einer Quorum-Queue ohne
+Quorum), nicht an der Verbindung des Leaders.
 
 ```python
 from swarmq import BrokerConnectionError, PublishIndeterminate
@@ -452,6 +486,139 @@ Original erneut zu, während die Kopie schon unterwegs ist; der
 setzt seinen Superseded- bzw. Done-Marker wie nach Erfolg, sodass das
 neu zugestellte Original übersprungen wird. Für Tests aus
 `swarmq.exceptions` importieren.
+
+## `MessageHeadersTooLarge`
+
+**Wann geworfen.** Von einem Publish (`schedule()`, im Worker auch von
+Retry- und Dead-Letter-Kopien), wenn die kodierten Nachrichten-Header
+mehr als die Hälfte des ausgehandelten `frame_max` brauchen, auch
+nachdem lange Texte auf 8 KiB gekürzt wurden. Unterklasse von
+`BrokerConnectionError`. Es wurde nichts gesendet.
+
+**Ursache.** Viele oder große Header mit Nicht-Text-Werten, etwa eine
+Middleware, die Hunderte Header ergänzt. Die eigenen Diagnose-Header von
+SwarmQ sind begrenzt und lösen den Fehler nicht aus.
+
+**Recovery.** Nicht mit denselben Headern wiederholen; sie scheitern
+wieder. Die Header verkleinern. Anders als bei `PublishIndeterminate`
+wird eine `unique_for`-Sperre freigegeben, weil nichts beim Broker
+ankam.
+
+## `UnroutableMessage`
+
+**Wann geworfen.** Von einem Publish (`send()`, `schedule()`,
+Workflow-Schritte, im Worker auch Retry- und Dead-Letter-Kopien), wenn
+der Broker die Nachricht zurückgibt, weil es keine Queue mit diesem
+Namen gibt. Unterklasse von `BrokerConnectionError`. Sofort geworfen,
+ohne Wiederholung; nichts wurde zugestellt. Vor 0.12 bestätigte der
+Broker einen solchen Publish und verwarf die Nachricht still.
+
+**Ursache.** Die Queue wurde nie deklariert oder wurde gelöscht. Worker
+deklarieren die Queues, die sie konsumieren; meist startet also ein
+Producer vor dem ersten Worker einer neuen Queue, `queue=` ist
+vertippt, oder ein Task mit `TaskInfo(priority="high"|"low")` hat
+Worker ohne `--priorities` (kein `{queue}.high`/`.low`).
+
+**Recovery.** Zuerst den Worker der Queue starten, dann erneut
+veröffentlichen. Eine `unique_for`-Sperre wird freigegeben, weil nichts
+beim Broker ankam. Der Worker deklariert seine eigene
+`{queue}.DQ`/`.XQ` einmal selbst neu; der Scheduler-Leader schreibt
+einen verlorenen Cron-Fire fest und versucht einen verzögerten Task
+alle 60 s erneut, bis `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S`
+([fehlende Queues](../guides/scheduling-and-retries.md#fehlende-queues)).
+
+## `BrokerPublishBlocked`
+
+**Wann geworfen.** Von einem Publish (`send()`, `schedule()`,
+Workflow-Schritte, Cron-Fires, im Worker auch Retry-, Rückstellungs- und
+Dead-Letter-Kopien), wenn RabbitMQ die Publish-Verbindung blockiert hat
+(`connection.blocked`, Speicher- oder Plattenalarm) und sie nicht
+innerhalb von `SWARMQ_PUBLISH_TIMEOUT_S` freigibt (beim Herunterfahren:
+die restliche Gnadenfrist). Unterklasse von `BrokerConnectionError`.
+Der Publish wartet zuerst auf die Freigabe und sendet nichts, solange
+blockiert ist; die WARNING `publish_connection_blocked` markiert das
+Warten. Eine nicht blockierte Verbindung kostet keinen zusätzlichen
+Roundtrip.
+
+**Ursache.** Ein Ressourcenalarm des Brokers. RabbitMQ meldet die
+Blockade nur einer Verbindung, die während des Alarms publiziert; der
+erste Publish nach Beginn des Alarms ist also schon gesendet, hängt und
+endet als `PublishIndeterminate`, spätere werfen diesen Fehler.
+
+**Recovery.** Ein späterer Versuch ist sicher, nichts kam beim Broker
+an; eine `unique_for`-Sperre wird freigegeben. Speicher oder Platte am
+Broker freimachen. Ein Scheduler-Leader zählt den Fehler nicht für den
+Rücktritt: Ein Alarm blockiert jeden Kandidaten. Legt aiormq den
+Blocked-Zustand nicht mehr offen, loggt swarmq einmal
+`publish_blocked_state_unreadable` und publiziert ungeprüft wie vor 0.12.
+
+## `PublishRejected`
+
+**Wann geworfen.** Von einem Publish (`send()`, `schedule()`,
+Workflow-Schritte, Cron-Fires, Kopien im Worker), wenn RabbitMQ jeden der
+5 Versuche mit einem negativen Publisher-Confirm (`basic.nack`)
+beantwortet. Unterklasse von `BrokerConnectionError`; der Text ist
+derselbe wie vor 0.12 (`publish to '<queue>' failed after 5 attempts:
+…`).
+
+**Ursache.** Die Queue lehnt die Nachricht ab, nicht die Verbindung: eine
+volle Queue mit `x-overflow=reject-publish` (seit 0.12 Default neuer
+Quorum-Queues, zusammen mit einer `max-length`-Policy) oder eine
+Quorum-Queue ohne Quorum ihrer Mitglieder.
+
+**Abhilfe.** Ein späterer Versuch ist sicher, der Broker hat die
+Nachricht nicht gespeichert; ein `unique_for`-Claim wird freigegeben. Die
+Queue reparieren (Längenlimit anheben oder entfernen, Quorum
+wiederherstellen). Ein Scheduler-Leader zählt den Fehler nicht für den
+Rücktritt: Eine kaputte Cron-Queue ließe die Führung sonst nur wandern,
+ohne zu helfen.
+
+## `LockWaitExceeded`
+
+**Wann geworfen.** Nie; der Name steht nur als `error_type` in
+`task_sent_to_dlq` und am Anfang von `x-swarmq-traceback` der
+DLQ-Nachricht. Eine Nachricht, deren Task-Lock belegt ist, wartet über
+die Delay-Queue. Der Worker schickt sie mit diesem Fehlertyp in die
+DLQ, wenn derselbe Halter den Lock länger hält als die TTL des Keys
+plus 60 s (der Text sagt `lock holder stalled`) oder wenn seit dem
+ersten Konflikt `SWARMQ_LOCK_WAIT_MAX_S` vergangen ist (`lock wait
+limit reached`). Das Fehlerergebnis wird gespeichert, `TASK_DLQ`
+feuert, und ein Workflow-Schritt markiert seinen Workflow als
+gescheitert. Bis 0.11 ging die Nachricht beim 10. Konflikt als
+`LockConflictLimitError` in die DLQ.
+
+**Ursache.** Ein Halter, der nicht fertig wird (hängender Task, dessen
+Lock der Worker am Leben hält, zu langes `hard_timeout`), oder ein
+Lock, der länger belegt ist, als die Grenze erlaubt.
+
+**Recovery.** Den Halter ansehen: Die Logzeile `lock_wait_exceeded`
+nennt den Lock (`lock_name`), ebenso `x-swarmq-lock-name` an der
+DLQ-Nachricht. Einen festgefahrenen Lock entfernt
+`valkey-cli DEL [<namensraum>:]sq:lock:<name>`. Danach die Nachricht mit
+`swarmq dlq retry` wiederholen. `SWARMQ_LOCK_WAIT_MAX_S` anheben, wenn
+lange Wartezeiten erwartet sind.
+
+## `RedeliveryLimitError`
+
+**Wann geworfen.** Nie; der Name steht nur als `error_type` in
+`task_sent_to_dlq` und am Anfang von `x-swarmq-traceback` der
+DLQ-Nachricht. Der Worker gibt eine Zustellung an die Queue zurück
+(`nack(requeue=True)`), wenn er gerade nicht über sie entscheiden kann,
+etwa weil Valkey mit einem Fehler antwortet oder ein Dead-Letter-Publish
+scheitert. Auf RabbitMQ 4.3 erhöht eine solche Rückgabe nur
+`x-acquired-count`, nicht `x-delivery-count`. Erreicht
+`x-acquired-count` den Wert `SWARMQ_DELIVERY_LIMIT - 1`, schickt der
+Worker die Zustellung mit diesem Fehlertyp in die DLQ. Hat zuerst
+`x-delivery-count` die Grenze erreicht (hängender Worker, geschlossener
+Channel), bleibt der Typ `WorkerHungError`.
+
+**Ursache.** Ein Fehler, der über alle Zustellungen anhält: Valkey
+antwortet weiter mit einem Fehler, die Dead-Letter-Queue nimmt keinen
+Publish an, oder es wird kein Rechen-Slot frei.
+
+**Recovery.** Die Ursache beheben, die das Worker-Log vor dem
+Dead-Letter-Eintrag nennt, dann die Nachricht mit `swarmq dlq retry`
+erneut einreihen.
 
 ## `WorkflowValidationError`
 

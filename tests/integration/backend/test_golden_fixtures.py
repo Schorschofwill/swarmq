@@ -34,6 +34,18 @@ async def test_keys_and_types_match_golden(backend: ValkeyBackend) -> None:
     assert await g.snapshot_keys(backend) == expected
 
 
+async def test_namespaced_keys_and_types_match_golden(valkey_url: str) -> None:
+    """BZ-10 (Plan 0.12.0, MR 15): mit Namensraum ``golden-ns`` liegt jeder
+    Key unter ``golden-ns:sq:...``; Golden additiv in ``keys.namespace.json``."""
+    expected = json.loads((g.GOLDEN_DIR / "keys.namespace.json").read_text())
+    backend = ValkeyBackend(valkey_url, namespace=g.NAMESPACE)
+    await backend.connect()
+    try:
+        assert await g.snapshot_keys(backend) == expected
+    finally:
+        await backend.close()
+
+
 def test_result_envelope_is_byte_identical_and_decodes_to_fixed_input() -> None:
     fixture = (g.GOLDEN_DIR / "values" / "result.msgpack").read_bytes()
     assert g.value_fixtures()["result.msgpack"] == fixture
@@ -52,7 +64,8 @@ def test_schedule_definition_is_field_equal() -> None:
     assert msgspec.json.decode(fixture, type=ScheduleDefinition) == g.golden_schedule_definition()
     assert list(json.loads(fixture)) == [
         "schedule_name", "task_name", "args", "kwargs", "queue", "cron", "fire_ts_ms", "source",
-        "disabled", "last_fire_at", "dedup_hash", "unique_until", "timezone",
+        "disabled", "last_fire_at", "dedup_hash", "unique_until", "timezone", "task_id",
+        "unroutable_since", "unique_for",
     ]
 
 
@@ -66,6 +79,15 @@ async def test_progress_hash_fields_match_golden(backend: ValkeyBackend) -> None
 
 def test_channels_match_golden() -> None:
     assert g.channels() == (g.GOLDEN_DIR / "channels.txt").read_text()
+
+
+def test_namespaced_channels_match_golden() -> None:
+    # Review MR 15 (Hinweis): Kanaele mit Namensraum additiv (Q3); die Datei
+    # ist ``channels.txt`` mit Praefix ``golden-ns:``.
+    expected = (g.GOLDEN_DIR / "channels.namespace.txt").read_text()
+    assert g.channels_namespace() == expected
+    plain = (g.GOLDEN_DIR / "channels.txt").read_text().splitlines()
+    assert expected.splitlines() == [f"{g.NAMESPACE}:{line}" for line in plain]
 
 
 async def test_queue_arguments_match_golden() -> None:

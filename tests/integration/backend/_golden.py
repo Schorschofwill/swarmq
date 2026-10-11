@@ -30,21 +30,23 @@ from unittest.mock import AsyncMock
 from uuid import UUID
 
 import msgspec
+from aio_pika.exceptions import ChannelNotFoundEntity
 from valkey.crc import key_slot
 
 from swarmq.backend.valkey import ValkeyBackend
-from swarmq.backend.valkey.chords import ChordManager
-from swarmq.backend.valkey.locks import LockManager
-from swarmq.backend.valkey.rate_limit import RateLimiter
+from swarmq.backend.valkey.control import ValkeySetpointStore
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.cancellation import build_result_dict
-from swarmq.limits import RateLimitConfig
+from swarmq.contracts.control import Setpoint
+from swarmq.queue_names import queue_family
 from swarmq.scheduler import ScheduleDefinition
 from swarmq.serialization import encode_json, encode_result
 from swarmq.workflow import Signature, chain, chord, group
 from swarmq.workflow_orchestration import build_initial_workflow_state
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
+# Namensraum fuer ``keys.namespace.json`` (Plan 0.12.0, MR 15, BZ-10).
+NAMESPACE = "golden-ns"
 SRC_DIR = Path(__file__).resolve().parents[3] / "src" / "swarmq"
 
 TASK_ID = "golden-task-0001"
@@ -123,7 +125,7 @@ def value_fixtures() -> dict[str, bytes]:
 # keys.json — gegen echtes Valkey
 # ---------------------------------------------------------------------------
 
-_RL_WINDOW = re.compile(r"^(sq:rl:\{[^}]+\}:)\d+$")
+_RL_WINDOW = re.compile(r"^((?:[^:]+:)?sq:rl:\{[^}]+\}:)\d+$")
 
 
 def _normalise_key(key: str) -> str:
@@ -149,22 +151,34 @@ async def snapshot_keys(backend: ValkeyBackend) -> dict[str, str]:
         SCHEDULE, "0" * 16, value_fixtures()["schedule_definition.json"], live_window_ms=TTL_MS
     )
     await backend.schedules.report_worker_version("golden-worker", "0.10.0", ttl_ms=TTL_MS)
+    # Gemeldete Queues (Plan 0.12.0, MR 18, BZ-14).
+    await backend.schedules.report_queues(["golden"], ttl_ms=TTL_MS)
     # Cron-Aufraeumen (KTD8): ein deaktiviert entfernter Cron landet im Set.
     await backend.schedules.put("golden-pruned", value_fixtures()["schedule_definition.json"], None)
     await backend.schedules.prune_cron(
         "golden-pruned", value_fixtures()["schedule_definition.json"], stale_after_ms=None, remember_disabled=True,
     )
     await backend.schedules.set_leader_version("golden-owner", "0.10.0", ttl_ms=TTL_MS)
+    # Epoch des Datenbestands (Plan 0.12.0, MR 14, BZ-04).
+    await backend.schedules.ensure_epoch("golden-epoch")
     # Ausfuehrungsschutz (Plan 2026-10-08-1541, KTD5): Running-Marker und Zustand.
     await backend.execution_guard.claim(
         TASK_ID, owner="golden-owner", retry_count=0, ttl_ms=TTL_MS, state_ttl_ms=TTL_MS, max_orphans=3,
     )
-    locks = LockManager(client)
-    await locks.acquire("golden-lock", "golden-owner", TTL_MS, 1)
-    await locks.acquire("{sched}:leader", "golden-owner", TTL_MS, 1)
-    await locks.acquire("golden-sem", "golden-owner", TTL_MS, 2)
-    await RateLimiter(client).check("golden-task", RateLimitConfig(max_requests=10, window_size_ms=60_000))
-    await ChordManager(client).record_and_check_complete(WF_ID, "c1", "m1", 2, TTL_MS)
+    # Die Stores des Backends selbst (Review MR 15, Hinweis): mit Namensraum
+    # belegt die Golden-Datei so auch die Verdrahtung von Locks, Rate-Limit
+    # und Chords mit dem KeySpace des Backends (BZ-10).
+    keys = backend._keys
+    locks = backend.locks
+    await locks.acquire("golden-lock", owner="golden-owner", ttl_ms=TTL_MS, max_concurrency=1)
+    await locks.acquire("{sched}:leader", owner="golden-owner", ttl_ms=TTL_MS, max_concurrency=1)
+    await locks.acquire("golden-sem", owner="golden-owner", ttl_ms=TTL_MS, max_concurrency=2)
+    await backend.rate_limit.check("golden-task", max_requests=10, window_ms=60_000)
+    await backend.chords.record_and_check_complete(WF_ID, "c1", "m1", 2, TTL_MS)
+    # Kontrollkanal (Plan 0.12.0, MR 0): Sollwert und Rueckmeldung.
+    control = ValkeySetpointStore(client=client, keys=keys)
+    await control.write_setpoint("golden-group", Setpoint(low=1, high=2))
+    await control.write_status("golden-group", "golden-sup", {"workers": 1}, ttl_s=TTL_MS / 1000)
 
     keys: dict[str, str] = {}
     for raw in await client.keys("*"):
@@ -190,19 +204,67 @@ def channels() -> str:
     return "\n".join(lines) + "\n"
 
 
+def channels_namespace() -> str:
+    """Wie ``channels``, mit Namensraum ``NAMESPACE`` (additiv, Q3)."""
+    backend = ValkeyBackend("valkey://golden", namespace=NAMESPACE)
+    lines = [
+        f"{backend.notify_channel_name(TASK_ID)}\tdone",
+        f"{backend.progress_channel_name(TASK_ID)}\t<json der HASH-Felder>",
+        f"{backend.workflow_notify_channel(WF_ID)}\tdone",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+async def _declared_on_own_channels(queue_type: str, strategy: str, *, tiers: bool = False) -> dict[str, Any]:
+    """Die Deklarationen einer neuen Queue-Familie ``golden``. Seit MR 8 laufen
+    sie auf eigenen Wegwerf-Channels nach einem passiven Declare (hier
+    NOT_FOUND: die Queue ist neu); erfasst wird je Queue die gelungene.
+
+    Mit ``tiers`` (MR 10, Q3: getrennter Aufruf, eigener Schluessel) nur die
+    Delay-Stufen, die der Start seit Review MR 10 (P1-2) nach der Familie
+    anlegt; ohne ``tiers`` nur die Familie."""
+    broker = RabbitMQBroker("amqp://golden", queue_type=queue_type)
+    broker.dead_letter_strategy = strategy
+    broker._publish_channel = AsyncMock(is_closed=False)
+    declared: dict[str, Any] = {}
+
+    async def open_channel(**_: Any) -> AsyncMock:
+        channel = AsyncMock(is_closed=False)
+
+        async def declare_queue(
+            name: str, *, durable: bool = True, arguments: dict[str, Any] | None = None, passive: bool = False
+        ) -> None:
+            if passive:
+                raise ChannelNotFoundEntity(f"NOT_FOUND - no queue '{name}' in vhost '/'")
+            declared[name] = {"durable": durable, "arguments": arguments}
+
+        channel.declare_queue = AsyncMock(side_effect=declare_queue)
+        return channel
+
+    broker._connection = AsyncMock(is_closed=False)
+    broker._connection.channel = AsyncMock(side_effect=open_channel)
+    await broker.declare_queue("golden")
+    family = set(queue_family("golden"))
+    return {name: value for name, value in declared.items() if (name not in family) == tiers}
+
+
 async def queue_args() -> dict[str, Any]:
-    out: dict[str, Any] = {}
-    for queue_type in ("quorum", "classic"):
-        broker = RabbitMQBroker("amqp://golden", queue_type=queue_type)
-        channel = AsyncMock()
-        channel.is_closed = False
-        broker._publish_channel = channel
-        await broker.declare_queue("golden")
-        out[queue_type] = {
-            call.args[0]: {"durable": call.kwargs["durable"], "arguments": call.kwargs["arguments"]}
-            for call in channel.declare_queue.await_args_list
-        }
-    out["delay"] = "per-message expiration (Sekunden) auf {queue}.DQ; kein x-message-ttl"
+    # Q3 (MR 8): ``quorum`` und ``classic`` bleiben die Argumente aus 0.11
+    # (Modus ``legacy``); die at-least-once-Neuanlage ist ein eigener Schlüssel.
+    out: dict[str, Any] = {
+        "quorum": await _declared_on_own_channels("quorum", "legacy"),
+        "classic": await _declared_on_own_channels("classic", "legacy"),
+        "quorum_at_least_once": await _declared_on_own_channels("quorum", "auto"),
+    }
+    out["delay_tiers"] = {
+        "quorum": await _declared_on_own_channels("quorum", "legacy", tiers=True),
+        "classic": await _declared_on_own_channels("classic", "legacy", tiers=True),
+        "quorum_at_least_once": await _declared_on_own_channels("quorum", "auto", tiers=True),
+    }
+    out["delay"] = (
+        "per-message expiration (Sekunden) auf der kleinsten Stufe {queue}.DQ.<1s|4s|15s|1m|4m|15m|1h> "
+        ">= Wartezeit, ueber 1 h auf {queue}.DQ; kein x-message-ttl"
+    )
     return out
 
 
@@ -250,9 +312,12 @@ def lua_contract() -> str:
 async def write_all(backend: ValkeyBackend) -> None:
     (GOLDEN_DIR / "values").mkdir(parents=True, exist_ok=True)
     (GOLDEN_DIR / "keys.json").write_text(json.dumps(await snapshot_keys(backend), indent=2) + "\n")
+    namespaced = ValkeyBackend(client=backend.client, namespace=NAMESPACE)
+    (GOLDEN_DIR / "keys.namespace.json").write_text(json.dumps(await snapshot_keys(namespaced), indent=2) + "\n")
     for name, data in value_fixtures().items():
         (GOLDEN_DIR / "values" / name).write_bytes(data)
     (GOLDEN_DIR / "channels.txt").write_text(channels())
+    (GOLDEN_DIR / "channels.namespace.txt").write_text(channels_namespace())
     (GOLDEN_DIR / "queue_args.json").write_text(json.dumps(await queue_args(), indent=2, sort_keys=True) + "\n")
     (GOLDEN_DIR / "headers.txt").write_text(header_names())
     (GOLDEN_DIR / "lua_contract.txt").write_text(lua_contract())

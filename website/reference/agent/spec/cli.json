@@ -17,6 +17,27 @@
           "positional": false,
           "required": false,
           "type": "str"
+        }
+      ],
+      "help": "Read-only check of the environment swarmq runs in: Valkey eviction policy, maxmemory, memory, AOF, version and cluster mode, and the grace period the shutdown timeout needs. With SWARMQ_BROKER_URL also the queues workers report: orphaned queues (messages, no consumer, no live worker) and missing .XQ dead-letter queues. Run it with the new swarmq version before an upgrade. Exit 0 when nothing blocks, 78 when a worker would refuse to start (evicting maxmemory-policy under SWARMQ_VALKEY_EVICTION_CHECK=strict), 1 on errors. Not the same as 'swarmq worker --check'.",
+      "path": "check"
+    },
+    {
+      "arguments": [
+        {
+          "choices": [
+            "table",
+            "json"
+          ],
+          "default": null,
+          "flags": [
+            "--format"
+          ],
+          "help": "Output format. Default: 'table' on a TTY, 'json' on a pipe. Override the default with SWARMQ_DEFAULT_FORMAT=table|json.",
+          "name": "--format",
+          "positional": false,
+          "required": false,
+          "type": "str"
         },
         {
           "default": "default",
@@ -678,7 +699,7 @@
           "flags": [
             "--max-processes"
           ],
-          "help": "Enable the control channel and declare the headroom: a setpoint stored in the backend (sq:control:setpoint:<group>) may raise this supervisor to at most N worker processes. Slot table, observability port ranges and the default compute slots per worker are sized from N at start-up; N must be at least --processes and the --autoscale upper bound. Without this flag the supervisor never reads or writes setpoints.",
+          "help": "Enable the control channel and declare the headroom: a setpoint stored in the backend ([<namespace>:]sq:control:setpoint:<group>) may raise this supervisor to at most N worker processes. Slot table, observability port ranges and the default compute slots per worker are sized from N at start-up; N must be at least --processes and the --autoscale upper bound. Without this flag the supervisor never reads or writes setpoints.",
           "name": "--max-processes",
           "positional": false,
           "required": false,
@@ -738,7 +759,7 @@
           "flags": [
             "--priorities"
           ],
-          "help": "R4.3: auto-declare + consume the high/normal/low triplet for every --queues base queue, so tasks with TaskInfo(priority='high'|'low') route correctly. Without this flag, priority-tagged tasks publish to {queue}.high/.low which are never consumed.",
+          "help": "R4.3: auto-declare + consume the high/normal/low triplet for every --queues base queue, so tasks with TaskInfo(priority='high'|'low') route correctly. Without this flag, publishing priority-tagged tasks raises UnroutableMessage (no {queue}.high/.low exists).",
           "name": "--priorities",
           "nargs": 0,
           "positional": false,
@@ -815,7 +836,7 @@
     },
     {
       "code": 78,
-      "meaning": "Configuration error of `swarmq worker` (EX_CONFIG): ConfigurationError, task module not importable, `--configure` hook failed, invalid logging settings (LoggingConfigError); retrying without a change is pointless"
+      "meaning": "Configuration error of `swarmq worker` (EX_CONFIG): ConfigurationError, task module not importable, `--configure` hook failed, invalid logging settings (LoggingConfigError); retrying without a change is pointless. `swarmq check`: a worker would refuse to start in this environment (evicting Valkey maxmemory-policy under SWARMQ_VALKEY_EVICTION_CHECK=strict)"
     },
     {
       "code": 130,

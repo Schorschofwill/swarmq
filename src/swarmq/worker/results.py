@@ -17,6 +17,7 @@ from swarmq.exceptions import (
     BackendConnectionError,
     BrokerConnectionError,
     ResultSerializationError,
+    UnroutableMessage,
     WorkflowStateConflict,
 )
 from swarmq.headers import HEADER_WORKFLOW_ID, HEADER_WORKFLOW_STEP
@@ -122,9 +123,9 @@ class ResultTail:
                 return outcome
         if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
             await deps.broker.ack(delivery)
-        # Even with result_ttl=0 we must clear the cancel flag when the task
-        # was cancelled — otherwise it lives until TTL expires and a
-        # task_id reuse would silently cancel.
+        # Even with result_ttl=0 the cancel flag is shortened to at most
+        # 1 h (BZ-23, PEXPIRE LT) so it does not live its full TTL; a
+        # duplicate of the message within that hour stays cancelled.
         if execution.is_cancelled:
             await deps.backend.clear_cancel_flag(ctx.task_id, op_timeout=deps.config.backend_op_timeout)
         return Terminal.release_in_finally()
@@ -203,6 +204,23 @@ class ResultTail:
                 return Redelivered
             logger.error("workflow_advance_backend_error", workflow_id=wf_id, **_error_fields(exc))
             return Terminal.release_in_finally()
+        except UnroutableMessage as exc:
+            # Die Queue des naechsten Schritts fehlt (BZ-03, Plan 0.12.0 MR 6).
+            # Eine Redelivery aenderte daran nichts und liefe bis zum
+            # Zustelllimit: den Workflow sofort fail-markieren, dann Ack.
+            # Bewusst ``_fail_workflow`` statt ``fail_workflow_step``: dessen
+            # Schutz "Schritt schon erledigt" griffe hier immer, denn das
+            # Ergebnis dieses Schritts ist bereits gespeichert.
+            logger.error("workflow_advance_unroutable", workflow_id=wf_id, **_error_fields(exc))
+            return await self._fail_workflow(
+                delivery,
+                ctx,
+                wf_id,
+                advancer,
+                "UnroutableMessage",
+                str(exc),
+                event="workflow_fail_mark_error",
+            )
         except BrokerConnectionError as exc:
             # A workflow-step publish failed transiently (e.g. a
             # publisher-confirm Nack past the broker's retry budget). Do NOT
@@ -268,7 +286,8 @@ class ResultTail:
                 task_id=ctx.task_id,
             )
 
-        # Clear the cancel flag AFTER the result is safely stored so a
+        # Shorten the cancel flag (BZ-23: at most 1 h, not deleted) AFTER
+        # the result is safely stored so a
         # mid-op failure leaves the flag in place and a redelivery
         # re-triggers the cancel branch.
         if execution.is_cancelled:

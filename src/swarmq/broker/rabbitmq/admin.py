@@ -9,17 +9,36 @@ from __future__ import annotations
 
 import asyncio
 import json
-import uuid
+from collections.abc import Sequence
 from typing import Any
 
 import aio_pika
 from aio_pika.exceptions import ChannelNotFoundEntity
 
-from swarmq.broker.rabbitmq.connection import RabbitMQConnection
+from swarmq.broker.rabbitmq.connection import RabbitMQConnection, close_channel_quietly
 from swarmq.broker.rabbitmq.delivery import RabbitMQDelivery, dead_letter_ttl_header, message_of, settle
 from swarmq.contracts import Delivery
+from swarmq.contracts.broker import QueueStatus
 from swarmq.exceptions import BrokerConnectionError
-from swarmq.headers import HEADER_DEAD_LETTER_TTL_MS, HEADER_DEAD_LETTERED_AT, HEADER_REPLAY_ID, HEADER_RETRY_COUNT
+from swarmq.headers import (
+    HEADER_DEAD_LETTER_TTL_MS,
+    HEADER_DEAD_LETTERED_AT,
+    HEADER_DLQ_GENERATION,
+    HEADER_ENQUEUED_AT,
+    HEADER_LOCK_CONFLICT_COUNT_LEGACY,
+    HEADER_REPLAY_ID,
+    HEADER_RETRY_COUNT,
+    LOOP_STATE_HEADERS,
+)
+from swarmq.identity import HEADER_X_DEATH, copy_headers, replay_id_of, retry_replay_id
+from swarmq.logging import _error_fields, get_logger
+from swarmq.queue_names import delay_tiers
+
+logger = get_logger(__name__)
+
+
+#: declare-ok ohne ``declaration_result`` (Fake): zaehlt wie eine leere Queue.
+_NO_RESULT = object()
 
 
 def _dead_lettered_at_ms(headers: dict[str, Any]) -> int | None:
@@ -31,7 +50,32 @@ def _dead_lettered_at_ms(headers: dict[str, Any]) -> int | None:
     return value
 
 
+def _fresh_generation(headers: dict[str, Any]) -> bool:
+    """True, wenn ``x-swarmq-dlq-gen`` dem Zeitstempel
+    ``x-swarmq-dead-lettered-at`` gleicht: Die Replay-ID ist die
+    Generations-ID des Stempels eines 0.12-Workers (MR 12). Hat ein
+    0.11-Worker die Nachricht erneut dead-gelettert, stempelt er den
+    Zeitstempel neu, und die Gleichheit bricht."""
+    generation = headers.get(HEADER_DLQ_GENERATION)
+    if isinstance(generation, bool) or not isinstance(generation, int):
+        return False
+    # Review MR 12: eine Replay-ID, die der Worker nicht liest (fremder
+    # Producer, > 64 Zeichen), liefe unter der Identitaet des Originals --
+    # dessen Done-Marker verwuerfe das Replay.
+    if replay_id_of(headers) is None:
+        return False
+    # Der Stempel entfernt ``x-death``. Steht es wieder da, hat der Broker die
+    # Nachricht nach dem Stempel erneut dead-gelettert (UI-Move, Lauf,
+    # ``route_via_dlx``): die Generation ist verbraucht (Review MR 12, P2-3).
+    if headers.get(HEADER_X_DEATH):
+        return False
+    return generation == _dead_lettered_at_ms(headers)
+
+
 _UNLIMITED = ("none", b"none")
+
+# Zustellzaehler des Brokers (Quorum-Queues; Spike S4).
+_BROKER_DELIVERY_COUNTERS = ("x-delivery-count", "x-acquired-count")
 
 
 def _message_ttl_s(headers: dict[str, Any]) -> tuple[bool, float | None]:
@@ -44,6 +88,11 @@ def _message_ttl_s(headers: dict[str, Any]) -> tuple[bool, float | None]:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         return False, None
     return True, value / 1000
+
+
+async def _close_quietly(channel: aio_pika.abc.AbstractChannel) -> None:
+    if not channel.is_closed:
+        await close_channel_quietly(channel)
 
 
 class RabbitMQAdmin(RabbitMQDelivery):
@@ -71,9 +120,20 @@ class RabbitMQAdmin(RabbitMQDelivery):
     # ------------------------------------------------------------------
 
     async def _dlq_queue(self, queue_name: str) -> aio_pika.abc.AbstractQueue:
-        """Get a handle on ``{queue_name}.XQ``."""
-        pub = await self._ensure_publish_channel()
-        return await pub.get_queue(f"{queue_name}.XQ")
+        """Handle auf ``{queue_name}.XQ`` ueber einen eigenen Channel (BZ-21,
+        Plan 0.12.0, MR 16): gelesene, noch unbestaetigte Nachrichten gibt der
+        Broker zurueck, sobald dieser Channel oder seine Verbindung endet. Der
+        Aufrufer schliesst ihn (``queue.channel``). Auf der Consume-Verbindung,
+        falls offen (BZ-16)."""
+        connection = self._admin_connection()
+        if connection is None or connection.is_closed:
+            raise BrokerConnectionError("broker is not connected")
+        channel = await connection.channel()
+        try:
+            return await channel.get_queue(f"{queue_name}.XQ")
+        except BaseException:
+            await close_channel_quietly(channel)
+            raise
 
     @staticmethod
     def _parse_task_fields(body: bytes) -> tuple[str | None, str | None, dict[str, Any] | None]:
@@ -133,10 +193,10 @@ class RabbitMQAdmin(RabbitMQDelivery):
         break_after_first_match: bool = False,
         skip_malformed_on_move: bool = False,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        """Drain up to *limit* messages from the DLQ destructively, then
-        republish each one to either the DLQ (default) or the main queue
-        (when *move_to_main* is set and either no filter is in effect or
-        the task_id matches).
+        """Read up to *limit* messages from the DLQ (acknowledgement
+        required, own channel), then republish each one to either the DLQ
+        (default) or the main queue (when *move_to_main* is set and either
+        no filter is in effect or the task_id matches).
 
         Four call-site modes encoded by the flag combinations:
           * SCAN-ONLY (match=None, move=False): list_dead_letters —
@@ -153,12 +213,13 @@ class RabbitMQAdmin(RabbitMQDelivery):
             garbage into main that the worker would just dead-letter
             again.
 
-        Why drain+republish and not ``nack(requeue=True)``:
-        ``basic.nack(requeue=True)`` re-inserts messages at the HEAD of
-        the queue, so a plain get+nack loop iterates forever on the same
-        message. Destructive get + in-finally republish is the only
-        portable-RabbitMQ pattern that traverses the queue and preserves
-        content.
+        Why copy+ack and not ``nack(requeue=True)``: a requeue puts the
+        message back at the HEAD (a get+nack loop sees the same message
+        forever), and every return counts the XQ's delivery count up
+        (Spike S4, 4.2 for nack, 4.3 for reject/channel close) -- after 20
+        returns the message would be gone. The copy goes to the end of the
+        XQ with its remaining TTL; the original is acked only after the
+        copy's publisher confirm (BZ-21, Plan 0.12.0, MR 16).
 
         Returns ``(all_entries, matched_entries)`` — each entry has
         ``task_id``, ``task_name``, ``queue``, ``headers``, ``body``
@@ -169,116 +230,198 @@ class RabbitMQAdmin(RabbitMQDelivery):
         scanned (not the *limit* cap) — callers use it for
         operator-facing count reporting.
 
-        Crash safety: if the process dies mid-drain, any messages that
-        have been read but not yet republished are lost. Per-message
-        republish-error handling: an AMQP error on one republish does
-        NOT abort the rest — the loop catches each
-        publish individually, logs, and continues. After the loop runs
-        to completion, the first collected error is re-raised so the
-        caller observes the failure.
+        Crash safety: a reader that dies mid-read loses nothing -- the
+        broker returns every unacknowledged message when the channel or
+        connection ends. Dying between a copy and its ack leaves the
+        message twice; the execution identity (MR 12) runs a repeated
+        ``dlq retry`` only once. Per-message republish-error handling: an
+        error on one republish does NOT abort the rest; its original stays
+        unacknowledged and returns. After the loop, the first collected
+        error is re-raised so the caller observes the failure.
         """
         queue = await self._dlq_queue(queue_name)
-        drained: list[tuple[bytes, dict[str, Any], bool, bool]] = []  # (body, headers, is_match, is_malformed)
+        # (Nachricht, body, headers, is_match, is_malformed)
+        drained: list[tuple[Any, bytes, dict[str, Any], bool, bool]] = []
         entries: list[dict[str, Any]] = []
         matched: list[dict[str, Any]] = []
         try:
-            for _ in range(limit):
-                msg = await queue.get(no_ack=True, fail=False)
-                if msg is None:
-                    break
-                body = msg.body
-                headers = self._normalise_header_keys(dict(msg.headers or {}))
-                if self._stamp_or_expire(headers):
-                    continue
-                task_id, task_name, payload = self._parse_task_fields(body)
-                entry: dict[str, Any] = {
-                    "task_id": task_id,
-                    "task_name": task_name,
-                    "queue": queue_name,
-                    "headers": headers,
-                    "body": payload,
-                    "body_raw": body.decode("utf-8", errors="replace"),
-                    "body_size": len(body),
-                }
-                is_match = match_task_id is not None and task_id == match_task_id
-                # Malformed = we could not extract a task_id; such
-                # messages cannot be tracked for dedup or retried
-                # meaningfully. retry_all skips them to avoid an
-                # infinite cycle.
-                is_malformed = task_id is None
-                entries.append(entry)
-                if is_match:
-                    matched.append(entry)
-                drained.append((body, headers, is_match, is_malformed))
-                if break_after_first_match and is_match:
-                    break
+            await self._drain_dlq_messages(
+                queue, queue_name, limit, match_task_id, break_after_first_match, drained, entries, matched
+            )
         finally:
-            # Per-item try/except so one publish failure doesn't truncate
-            # the rest of the drain. Failures are collected
-            # and logged; the first is re-raised after the loop.
-            errors: list[BaseException] = []
-            for body, headers, is_match, is_malformed in drained:
-                try:
-                    # Route to main when:
-                    #  * move_to_main is set, AND
-                    #  * (no filter OR this entry matched the filter), AND
-                    #  * NOT (skip_malformed_on_move set AND this is malformed)
-                    to_main = move_to_main and (match_task_id is None or is_match)
-                    if to_main and skip_malformed_on_move and is_malformed:
-                        to_main = False
-
-                    # Route through _publish_with_retry: transient
-                    # channel errors during
-                    # reconnect windows must not silently drop drained
-                    # messages. Same contract as every other publish
-                    # site.
-                    if to_main:
-                        forward_headers = dict(headers)
-                        # Reset retry-count so the operator's "try this
-                        # again" intent isn't blocked by a stale counter.
-                        forward_headers.pop(HEADER_RETRY_COUNT, None)
-                        # Keine DLQ-Nachricht mehr (KTD6): ohne Frist und
-                        # Zeitstempel; ein erneutes Dead-Lettering stempelt neu.
-                        forward_headers.pop(HEADER_DEAD_LETTERED_AT, None)
-                        forward_headers.pop(HEADER_DEAD_LETTER_TTL_MS, None)
-                        # Neue Ausfuehrungs-Identitaet (KTD5): der Ausfuehrungs-
-                        # schutz liesse die Wiederholung sonst als abgeschlossen
-                        # fallen, solange der Done-Marker des ersten Laufs steht.
-                        forward_headers[HEADER_REPLAY_ID] = uuid.uuid4().hex
-                        msg_out = aio_pika.Message(
-                            body=body,
-                            delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
-                            headers=forward_headers,
-                        )
-                        await self._publish_with_retry(queue_name, msg_out)
-                    else:
-                        # Back into the DLQ. Headers preserved verbatim,
-                        # mit der Rest-TTL (KTD6): Lesen verlaengert nichts.
-                        msg_out = aio_pika.Message(
-                            body=body,
-                            delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
-                            expiration=self._remaining_dead_letter_ttl(headers),
-                            headers=dict(headers),
-                        )
-                        await self._publish_with_retry(f"{queue_name}.XQ", msg_out)
-                except asyncio.CancelledError:
-                    # Honour task-level cancellation — do not collect
-                    # and swallow. _publish_with_retry already handles
-                    # the aio_pika internal drain_future CancelledError
-                    # via current_task().cancelling() guard.
-                    raise
-                except Exception as exc:
-                    errors.append(exc)
-            if errors:
-                # Wrap the first collected failure in a
-                # BrokerConnectionError so the CLI surfaces a clean
-                # error line rather than a raw aio_pika traceback. The
-                # rest are lost-to-log; a single transient broker blip
-                # usually affects every subsequent publish identically.
-                raise BrokerConnectionError(
-                    f"dlq republish failed on {len(errors)} of {len(drained)} message(s); first error: {errors[0]}"
-                ) from errors[0]
+            try:
+                await self._copy_then_ack(queue_name, drained, match_task_id, move_to_main, skip_malformed_on_move)
+            finally:
+                # Was noch unbestaetigt ist, gibt der Broker zurueck.
+                await close_channel_quietly(queue.channel)
         return entries, matched
+
+    async def _drain_dlq_messages(
+        self,
+        queue: aio_pika.abc.AbstractQueue,
+        queue_name: str,
+        limit: int,
+        match_task_id: str | None,
+        break_after_first_match: bool,
+        drained: list[tuple[Any, bytes, dict[str, Any], bool, bool]],
+        entries: list[dict[str, Any]],
+        matched: list[dict[str, Any]],
+    ) -> None:
+        """Liest bis *limit* Nachrichten bestaetigungspflichtig (BZ-21): sie
+        bleiben in der XQ, bis ihre Kopie bestaetigt ist. Abgelaufene werden
+        per Ack verworfen (KTD6)."""
+        for _ in range(limit):
+            msg = await queue.get(no_ack=False, fail=False)
+            if msg is None:
+                break
+            body = msg.body
+            headers = self._normalise_header_keys(dict(msg.headers or {}))
+            if self._stamp_or_expire(headers):
+                await self._ack_dlq_original(msg)
+                continue
+            task_id, task_name, payload = self._parse_task_fields(body)
+            entry: dict[str, Any] = {
+                "task_id": task_id,
+                "task_name": task_name,
+                "queue": queue_name,
+                "headers": headers,
+                "body": payload,
+                "body_raw": body.decode("utf-8", errors="replace"),
+                "body_size": len(body),
+            }
+            is_match = match_task_id is not None and task_id == match_task_id
+            # Malformed = we could not extract a task_id; such
+            # messages cannot be tracked for dedup or retried
+            # meaningfully. retry_all skips them to avoid an
+            # infinite cycle.
+            is_malformed = task_id is None
+            entries.append(entry)
+            if is_match:
+                matched.append(entry)
+            drained.append((msg, body, headers, is_match, is_malformed))
+            if break_after_first_match and is_match:
+                break
+
+    async def _copy_then_ack(
+        self,
+        queue_name: str,
+        drained: list[tuple[Any, bytes, dict[str, Any], bool, bool]],
+        match_task_id: str | None,
+        move_to_main: bool,
+        skip_malformed_on_move: bool,
+    ) -> None:
+        """Je gelesener Nachricht eine Kopie ans Ende der XQ (oder in die
+        Haupt-Queue), Publisher-Confirm abwarten, erst dann das Original
+        bestaetigen (BZ-21). Eine Rueckgabe zaehlte den Delivery-Count der XQ
+        hoch (Spike S4) -- nach 20 Listings waere die Nachricht weg. Scheitert
+        eine Kopie, bleibt ihr Original unbestaetigt und kehrt zurueck; endet
+        der Lesende zwischen Kopie und Ack, liegt sie doppelt dort, und die
+        Ausfuehrungs-Identitaet (MR 12) verwirft einen doppelten Retry."""
+        # Per-item try/except so one publish failure doesn't truncate
+        # the rest of the drain. Failures are collected
+        # and logged; the first is re-raised after the loop.
+        errors: list[BaseException] = []
+        for msg, body, read_headers, is_match, is_malformed in drained:
+            # Die Kopie ist eine neue Nachricht: ohne die Zustellzaehler, die
+            # der Broker nach einem abgebrochenen Lesen gesetzt hat.
+            headers = {k: v for k, v in read_headers.items() if k not in _BROKER_DELIVERY_COUNTERS}
+            try:
+                # Route to main when:
+                #  * move_to_main is set, AND
+                #  * (no filter OR this entry matched the filter), AND
+                #  * NOT (skip_malformed_on_move set AND this is malformed)
+                to_main = move_to_main and (match_task_id is None or is_match)
+                if to_main and skip_malformed_on_move and is_malformed:
+                    to_main = False
+
+                # Route through _publish_with_retry: transient
+                # channel errors during
+                # reconnect windows must not silently drop drained
+                # messages. Same contract as every other publish
+                # site.
+                if to_main:
+                    msg_out = aio_pika.Message(
+                        body=body,
+                        delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                        headers=self._forward_headers(headers, body),
+                    )
+                    await self._publish_with_retry(queue_name, msg_out)
+                else:
+                    # Back into the DLQ. Headers preserved verbatim,
+                    # mit der Rest-TTL (KTD6): Lesen verlaengert nichts.
+                    msg_out = aio_pika.Message(
+                        body=body,
+                        delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                        expiration=self._remaining_dead_letter_ttl(headers),
+                        headers=dict(headers),
+                    )
+                    await self._publish_with_retry(f"{queue_name}.XQ", msg_out)
+            except asyncio.CancelledError:
+                # Honour task-level cancellation — do not collect
+                # and swallow. _publish_with_retry already handles
+                # the aio_pika internal drain_future CancelledError
+                # via current_task().cancelling() guard.
+                raise
+            except Exception as exc:
+                errors.append(exc)
+                continue
+            await self._ack_dlq_original(msg)
+        if errors:
+            # Wrap the first collected failure in a
+            # BrokerConnectionError so the CLI surfaces a clean
+            # error line rather than a raw aio_pika traceback. The
+            # rest are lost-to-log; a single transient broker blip
+            # usually affects every subsequent publish identically.
+            raise BrokerConnectionError(
+                f"dlq republish failed on {len(errors)} of {len(drained)} message(s); first error: {errors[0]}"
+            ) from errors[0]
+
+    async def _ack_dlq_original(self, msg: Any) -> None:
+        """Bestaetigt eine gelesene XQ-Nachricht. Scheitert das, kehrt sie
+        zurueck (bei einer Kopie: doppelt) -- kein Verlust, nur eine WARNING."""
+        try:
+            await msg.ack()
+        except Exception as exc:
+            logger.warning(
+                "dlq_read_ack_failed",
+                **_error_fields(exc),
+                hint="the read DLQ message returns to the queue; after a copy it is there twice",
+            )
+
+    def _forward_headers(self, headers: dict[str, Any], body: bytes) -> dict[str, Any]:
+        """Header einer Wiederholung aus der DLQ (``dlq retry``)."""
+        # MR 12: ``x-death`` geht als Base mit (stabile Identitaet).
+        forward_headers = copy_headers(headers)
+        # A6 (MR 12): die Wiederholung beginnt mit frischem Alter, sonst
+        # liefe sie mit ``max_age`` sofort wieder ab.
+        forward_headers[HEADER_ENQUEUED_AT] = int(self.clock())
+        # Reset retry-count so the operator's "try this again" intent isn't
+        # blocked by a stale counter.
+        forward_headers.pop(HEADER_RETRY_COUNT, None)
+        # Keine DLQ-Nachricht mehr (KTD6): ohne Frist und Zeitstempel; ein
+        # erneutes Dead-Lettering stempelt neu.
+        forward_headers.pop(HEADER_DEAD_LETTERED_AT, None)
+        forward_headers.pop(HEADER_DEAD_LETTER_TTL_MS, None)
+        # Q6 (Plan 0.12.0, MR 11): die Gnadenfrist fuer einen unbekannten Task
+        # beginnt mit der Wiederholung neu (eine DLX-Kopie per ``nack`` behielt
+        # den Header).
+        # MR 13 (BZ-05): ebenso die Lock-Wartezeit.
+        for state_header in LOOP_STATE_HEADERS:
+            forward_headers.pop(state_header, None)
+        # Review MR 13: der Konfliktzaehler von 0.11 (Deckel 10) ebenso, sonst
+        # schickte ein 0.11-Worker die Wiederholung beim ersten Konflikt zurueck.
+        forward_headers.pop(HEADER_LOCK_CONFLICT_COUNT_LEGACY, None)
+        # Ausfuehrungs-Identitaet der Wiederholung (KTD5; Plan 0.12.0, MR 12):
+        # der Ausfuehrungsschutz liesse sie sonst als abgeschlossen fallen,
+        # solange der Done-Marker des ersten Laufs steht. Die Generations-ID
+        # eines 0.12-Workers bleibt (ein wiederholter Retry derselben
+        # XQ-Nachricht laeuft nicht doppelt); sonst eine aus der Identitaet
+        # der XQ-Nachricht abgeleitete ID (Review MR 12, P2-2: ebenso
+        # idempotent), ohne Task-ID im Body eine neue uuid4.
+        if not _fresh_generation(headers):
+            forward_headers[HEADER_REPLAY_ID] = retry_replay_id(headers, body)
+        forward_headers.pop(HEADER_DLQ_GENERATION, None)
+        return forward_headers
 
     def _remaining_dead_letter_ttl(self, headers: dict[str, Any]) -> float | None:
         """Rest der Verfallsfrist in Sekunden ab dem Dead-Lettering (KTD6);
@@ -321,8 +464,8 @@ class RabbitMQAdmin(RabbitMQDelivery):
             (may be ``len(entries)``, but exposed explicitly so callers
             can tell "DLQ had fewer than limit" from "stopped at limit").
 
-        Non-destructive: every scanned message is republished to the DLQ
-        in the drain's finally-block.
+        Non-destructive: every scanned message is copied to the end of the
+        DLQ and only then acknowledged (BZ-21).
         """
         entries, _matched = await self._drain_dlq_with_filter(queue, limit=limit)
         summaries = [
@@ -411,48 +554,81 @@ class RabbitMQAdmin(RabbitMQDelivery):
             raise BrokerConnectionError(str(exc)) from exc
 
     async def queue_depth(self, queue: str) -> int:
-        """Return the total pending-message count for ``queue`` and its
-        delay companion ``{queue}.DQ`` (R4.7 Autoscaling).
+        """Return the total pending-message count for ``queue``, its delay
+        companion ``{queue}.DQ`` and the delay tiers ``{queue}.DQ.1s`` …
+        ``.1h`` (R4.7 Autoscaling; tiers since 0.12, BZ-01).
 
         Uses AMQP ``declare(passive=True)`` which returns the current
         ``message_count`` without modifying the queue — safe to poll
-        at a 10s cadence. If a queue does not exist yet (worker not
-        started, fresh deployment) the broker raises
-        :class:`ChannelNotFoundEntity` **and closes the channel**
-        (AMQP semantics); we treat that as 0 depth and use a
-        short-lived dedicated channel per call so a missing queue
-        does not poison the publish channel.
+        at a 10s cadence. A queue that does not exist (worker not
+        started, a tier never used) counts as 0; the broker then
+        **closes the channel** (AMQP semantics), so the next name gets a
+        fresh one. Throwaway channels only — a missing queue never
+        poisons the publish channel.
 
         DLQ depth is deliberately excluded: XQ backlog is not
         work-to-do, it's work-that-failed and should not drive
         scale-up.
         """
-        if self._connection is None or self._connection.is_closed:
+        return await self._passive_message_counts((queue, f"{queue}.DQ", *delay_tiers(queue)))
+
+    async def ready_depth(self, queue: str) -> int:
+        """Nachrichten, die in ``queue`` selbst zur Abholung bereitliegen, ohne
+        Delay-Queues und DLQ (Plan 0.12.0, MR 10). Grundlage des Autoscalers:
+        lange Rueckstellungen in den Delay-Stufen sind keine Arbeit fuer jetzt."""
+        return await self._passive_message_counts((queue,))
+
+    async def _passive_message_counts(self, names: tuple[str, ...]) -> int:
+        """Summe der ``message_count`` von ``names`` ueber einen Wegwerf-Channel,
+        der nach NOT_FOUND neu geoeffnet wird (Plan 0.12.0, MR 10)."""
+        results = await self._passive_declarations(names)
+        return sum(int(getattr(result, "message_count", 0)) for result in results.values() if result is not None)
+
+    async def queue_statuses(self, names: Sequence[str]) -> dict[str, QueueStatus | None]:
+        """Nachrichten und Consumer je Queue aus dem passiven Declare (Plan
+        0.12.0, MR 18, BZ-14); ``None`` fuer eine fehlende Queue. Ohne
+        Management-API, ueber die Consume-Verbindung, falls offen (MR 16)."""
+        results = await self._passive_declarations(tuple(names))
+        return {
+            name: None
+            if result is None
+            else QueueStatus(
+                message_count=int(getattr(result, "message_count", 0)),
+                consumer_count=int(getattr(result, "consumer_count", 0)),
+            )
+            for name, result in results.items()
+        }
+
+    async def _passive_declarations(self, names: tuple[str, ...]) -> dict[str, Any]:
+        """declare-ok je Name ueber einen Wegwerf-Channel, der nach NOT_FOUND
+        neu geoeffnet wird; ``None`` fuer eine fehlende Queue."""
+        connection = self._admin_connection()
+        if connection is None or connection.is_closed:
             raise BrokerConnectionError("broker is not connected")
-        total = 0
-        for name in (queue, f"{queue}.DQ"):
-            # Throwaway channel per queue — a failed passive-declare
-            # closes the channel, so we cannot share one across both
-            # lookups without re-opening in between.
-            channel: aio_pika.abc.AbstractChannel | None = None
-            try:
-                channel = await self._connection.channel()
-                q = await channel.declare_queue(name, passive=True)
-                result = getattr(q, "declaration_result", None)
-                if result is not None:
-                    total += int(getattr(result, "message_count", 0))
-            except ChannelNotFoundEntity:
-                # Queue does not exist yet — counts as 0 depth.
-                continue
-            except Exception as exc:
-                raise BrokerConnectionError(str(exc)) from exc
-            finally:
-                if channel is not None and not channel.is_closed:
-                    try:
-                        await channel.close()
-                    except Exception:
-                        pass
-        return total
+        results: dict[str, Any] = {}
+        channel: aio_pika.abc.AbstractChannel | None = None
+        try:
+            for name in names:
+                if channel is None or channel.is_closed:
+                    channel = await connection.channel()
+                try:
+                    q = await channel.declare_queue(name, passive=True)
+                except ChannelNotFoundEntity:
+                    # Queue does not exist. The broker closed the
+                    # channel, so ``is_closed`` is already True: close it here
+                    # WITHOUT that guard, or a RobustChannel reopens itself and
+                    # is never closed (Review MR 10, P0-1; like ``arg_conflict``).
+                    await close_channel_quietly(channel)
+                    channel = None
+                    results[name] = None
+                    continue
+                results[name] = getattr(q, "declaration_result", None) or _NO_RESULT
+        except Exception as exc:
+            raise BrokerConnectionError(str(exc)) from exc
+        finally:
+            if channel is not None:
+                await _close_quietly(channel)
+        return results
 
     async def dead_letter_depth(self, queue: str) -> int:
         """Return the live message count of ``{queue}.XQ`` (the

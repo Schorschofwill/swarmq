@@ -397,6 +397,18 @@ async def test_leader_outdated_signal_sets_and_clears_gauge():
     assert m.registry.get_sample_value(sample, {"worker_id": "w"}) == 0.0
 
 
+def test_leader_outdated_help_names_the_minimum_version():
+    """KTD11 (Plan 2026-10-09-2314, MR 5): die Gauge meldet einen Leader
+    unter der Mindestversion 0.12, nicht mehr nur fehlende Zeitzonen."""
+    m = Metrics()
+    if not m.enabled:
+        pytest.skip("prometheus_client missing")
+    [help_line] = [
+        line for line in m.render().decode().splitlines() if line.startswith("# HELP swarmq_scheduler_leader_outdated ")
+    ]
+    assert "before 0.12" in help_line and "timezone" not in help_line
+
+
 def test_consumer_reregistrations_are_counted_per_queue():
     """Plan 2026-10-08-1541 (U6, R2): jede Neuanmeldung des Consumer-Wächters."""
     m = Metrics()
@@ -424,3 +436,59 @@ def test_execution_guard_events_are_counted_per_event():
     sample = "swarmq_execution_guard_events_total"
     assert m.registry.get_sample_value(sample, {"event": "duplicate_skipped"}) == 2.0
     assert m.registry.get_sample_value(sample, {"event": "lease_lost"}) == 1.0
+
+
+async def test_fire_unroutable_signal_increments_unroutable_counter():
+    """Plan 0.12.0 (MR 6, BZ-03): verlorene Cron-Fires und verworfene Oneshots
+    sind zaehlbar."""
+    m = Metrics()
+    if not m.enabled:
+        pytest.skip("prometheus_client missing")
+    disp = SignalDispatcher()
+    install_signal_collectors(disp, m)
+    for kind in ("cron_lost", "cron_lost", "oneshot_dropped"):
+        await disp.dispatch(
+            Signal.SCHEDULER_FIRE_UNROUTABLE,
+            worker_id="w",
+            schedule_name="nightly",
+            queue="reports",
+            kind=kind,
+        )
+    body = m.render().decode()
+    assert 'swarmq_scheduler_fires_unroutable_total{kind="cron_lost",queue="reports"} 2.0' in body
+    assert 'swarmq_scheduler_fires_unroutable_total{kind="oneshot_dropped",queue="reports"} 1.0' in body
+
+
+async def test_unknown_task_deferrals_are_counted_per_queue():
+    """Plan 0.12.0, MR 11 (BZ-06): jede Rueckstellung eines unbekannten Tasks."""
+    m = Metrics()
+    if not m.enabled:
+        pytest.skip("prometheus_client missing")
+    disp = SignalDispatcher()
+    install_signal_collectors(disp, m)
+
+    for _ in range(2):
+        await disp.dispatch(
+            Signal.TASK_UNKNOWN_DEFERRED, task_id="t", task_name="new_task", queue="q1",
+            delay=1.0, unknown_since=0,
+        )
+
+    assert m.registry.get_sample_value("swarmq_tasks_unknown_deferred_total", {"queue": "q1"}) == 2.0
+
+
+async def test_scheduler_crons_held_gauge_follows_the_unowned_signal():
+    """Plan 0.12.0, MR 11 (BZ-11): Zahl der zurueckgehaltenen Crons des Leaders,
+    0 sobald der Worker die Fuehrung abgibt."""
+    m = Metrics()
+    if not m.enabled:
+        pytest.skip("prometheus_client missing")
+    disp = SignalDispatcher()
+    install_signal_collectors(disp, m)
+    sample = "swarmq_scheduler_crons_held"
+
+    await disp.dispatch(
+        Signal.SCHEDULER_CRON_UNOWNED, worker_id="w", schedule_name="ghost", task_name="t", held=True, held_count=2,
+    )
+    assert m.registry.get_sample_value(sample, {"worker_id": "w"}) == 2.0
+    await disp.dispatch(Signal.SCHEDULER_STANDBY, worker_id="w")
+    assert m.registry.get_sample_value(sample, {"worker_id": "w"}) == 0.0

@@ -19,19 +19,28 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, cast
 
 import aio_pika
-from aio_pika.exceptions import ChannelInvalidStateError, DeliveryError
+from aio_pika.exceptions import ChannelInvalidStateError, ChannelNotFoundEntity, DeliveryError, PublishError
 
-from swarmq.broker.rabbitmq.arg_conflict import declare_adopting_existing
+from swarmq.broker.rabbitmq.blocked import UNREADABLE, unblocked_event
 from swarmq.broker.rabbitmq.connection import (
-    _CHANNEL_READY_TIMEOUT_S,
     _CHANNEL_TRANSIENT_ERRORS,
     _PUBLISH_MAX_ATTEMPTS,
-    RabbitMQConnection,
 )
 from swarmq.broker.rabbitmq.consumer_watch import ConsumerWatch, ReregisteredHook
+from swarmq.broker.rabbitmq.declarations import RabbitMQDeclarations
+from swarmq.broker.rabbitmq.header_guard import guard_headers, negotiated_frame_max
+from swarmq.broker.rabbitmq.redeclare import publish_redeclaring_once
 from swarmq.contracts import Delivery, DeliveryCallback, PublishReceipt
-from swarmq.exceptions import BrokerConnectionError, PublishIndeterminate, SettleFailedAfterPublish
-from swarmq.headers import HEADER_DEAD_LETTER_TTL_MS, HEADER_DEAD_LETTERED_AT
+from swarmq.exceptions import (
+    BrokerConnectionError,
+    BrokerPublishBlocked,
+    PublishIndeterminate,
+    PublishRejected,
+    SettleFailedAfterPublish,
+    UnroutableMessage,
+)
+from swarmq.headers import HEADER_DEAD_LETTER_TTL_MS, HEADER_DEAD_LETTERED_AT, LOOP_STATE_HEADERS
+from swarmq.identity import dead_letter_generation
 from swarmq.logging import _error_fields, get_logger
 
 logger = get_logger(__name__)
@@ -69,87 +78,15 @@ async def settle(action: Awaitable[None], verb: str) -> None:
         raise BrokerConnectionError(f"{verb} failed, channel or connection lost: {exc}") from exc
 
 
-class RabbitMQDelivery(RabbitMQConnection):
+class RabbitMQDelivery(RabbitMQDeclarations):
     #: Höchstens so lange wartet ein Settle auf einen vom Broker beendeten
     #: Consumer auf den eigenen Cancel des Wächters (U7, KTD4). Deckt einen
     #: Takt mit Channel-, Cancel- und Consume-RPC (je 2 s) mit Luft ab.
     settle_cancel_wait_s: float = 10.0
     #: Wanduhr fuer ``x-swarmq-dead-lettered-at`` und die Rest-TTL (KTD6).
     clock: Callable[[], float] = staticmethod(time.time)
-    #: Obergrenze je Deklarationsversuch auf dem Wegwerf-Channel (Patch 0.11.1).
-    declare_probe_timeout_s: float = _CHANNEL_READY_TIMEOUT_S
-
-    # ------------------------------------------------------------------
-    # Deklaration
-    # ------------------------------------------------------------------
-
-    async def declare_queue(self, queue_name: str) -> None:
-        pub = await self._ensure_publish_channel()
-        # Main queue — DLX points to dead-letter queue
-        main_args: dict[str, Any] = {
-            "x-queue-type": self._queue_type,
-            "x-dead-letter-exchange": "",
-            "x-dead-letter-routing-key": f"{queue_name}.XQ",
-        }
-        try:
-            await self._declare_queue_triplet(pub, queue_name, main_args)
-        except aio_pika.exceptions.AMQPChannelError as exc:
-            # A pre-existing queue with mismatched
-            # arguments raises aio_pika ChannelClosed (PRECONDITION_FAILED).
-            # Without this wrap, the CLI surfaces a raw aio_pika traceback
-            # instead of a clean 'queue arg conflict' message.
-            raise BrokerConnectionError(
-                f"declare_queue {queue_name!r} failed: {exc}. "
-                f"Existing queue likely has different x-queue-type or "
-                f"x-dead-letter-* args. Delete the queue via the RabbitMQ "
-                f"management UI / CLI and retry, or match the existing args."
-            ) from exc
-
-    async def _declare_queue_triplet(
-        self,
-        pub: aio_pika.abc.AbstractChannel,
-        queue_name: str,
-        main_args: dict[str, Any],
-    ) -> None:
-        # Quorum-queue safety net (U2.1 skip): without x-delivery-limit a
-        # deterministically-crashing task (SIGSEGV/OOM) is redelivered
-        # forever by the broker, never reaching max_retries. The budget is
-        # configurable since B5 (``SWARMQ_DELIVERY_LIMIT``), default 20 —
-        # ~3-4 task-level retries per delivery plus broker-hiccup headroom,
-        # while still providing a terminal DLQ path. That headroom is
-        # narrower since the publish deadline: a publish that breaks its
-        # deadline inside the worker redelivers the in-flight message
-        # instead of acking it, and each round costs one delivery.
-        if self._queue_type == "quorum":
-            main_args["x-delivery-limit"] = self.delivery_limit
-        await self._declare_adopting(pub, queue_name, main_args)
-        # Delay queue — DLX points back to main queue
-        await self._declare_adopting(
-            pub,
-            f"{queue_name}.DQ",
-            {
-                "x-queue-type": self._queue_type,
-                "x-dead-letter-exchange": "",
-                "x-dead-letter-routing-key": queue_name,
-            },
-        )
-        # Dead-letter queue
-        await self._declare_adopting(pub, f"{queue_name}.XQ", {"x-queue-type": self._queue_type})
-
-    async def _declare_adopting(self, pub: aio_pika.abc.AbstractChannel, name: str, arguments: dict[str, Any]) -> None:
-        """Patch 0.11.1: erst auf Wegwerf-Channels deklarieren und vorhandene
-        Argumente übernehmen (``arg_conflict``), dann mit den übernommenen
-        Argumenten auf dem Publish-Channel. Ein 406 trifft so nie den
-        Publish-Channel und reißt keine parallelen Publishes ab.
-
-        Ohne offene eigene Verbindung gibt es keinen Wegwerf-Channel; dann
-        gilt das Verhalten aus 0.11.0 (direkt auf dem Publish-Channel)."""
-        connection = self._connection
-        if connection is not None and not connection.is_closed:
-            arguments = await declare_adopting_existing(
-                connection, name, arguments, timeout_s=self.declare_probe_timeout_s
-            )
-        await pub.declare_queue(name, durable=True, arguments=arguments)
+    #: Fail-open beim unlesbaren Blocked-Zustand meldet je Broker einmal (BZ-16).
+    _blocked_state_unreadable_reported: bool = False
 
     # ------------------------------------------------------------------
     # Publish
@@ -170,6 +107,7 @@ class RabbitMQDelivery(RabbitMQConnection):
         message_body: bytes,
         delay_ms: int,
         headers: Mapping[str, Any] | None = None,
+        target: str | None = None,
     ) -> None:
         msg = aio_pika.Message(
             body=message_body,
@@ -177,21 +115,26 @@ class RabbitMQDelivery(RabbitMQConnection):
             expiration=delay_ms / 1000,
             headers=dict(headers or {}),
         )
-        await self._publish_with_retry(f"{queue_name}.DQ", msg)
+        await self._publish_with_retry(target or f"{queue_name}.DQ", msg)
 
     async def _publish_to_dead_letter_queue(
         self,
         queue_name: str,
         message_body: bytes,
         headers: Mapping[str, Any] | None = None,
+        *,
+        at_ms: int | None = None,
     ) -> None:
+        # Q6 (Plan 0.12.0, MR 11, MR 13): Zustands-Header der Rueckstellschleifen
+        # enden am DLQ-Stempel; ein ``dlq retry`` beginnt mit frischer Frist.
+        stamped = {k: v for k, v in (headers or {}).items() if k not in LOOP_STATE_HEADERS}
         msg = aio_pika.Message(
             body=message_body,
             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
             expiration=self.dead_letter_ttl_s,
             headers={
-                **(headers or {}),
-                HEADER_DEAD_LETTERED_AT: int(self.clock() * 1000),
+                **stamped,
+                HEADER_DEAD_LETTERED_AT: int(self.clock() * 1000) if at_ms is None else at_ms,
                 HEADER_DEAD_LETTER_TTL_MS: dead_letter_ttl_header(self.dead_letter_ttl_s),
             },
         )
@@ -209,21 +152,33 @@ class RabbitMQDelivery(RabbitMQConnection):
         current_task().cancelling() indicates our task is being
         cancelled.
         """
+        # Vor jedem Versuch und ohne Wiederholung: zu grosse Header schloessen
+        # die ganze Verbindung (BZ-17).
+        msg.headers = guard_headers(msg.headers, negotiated_frame_max(self._connection)) or {}
         timeout_s = self._effective_publish_timeout()
         # Pro-Aufruf-Container statt Instanzzustand: bei nebenlaeufigen
         # Publishes darf der Verwurf nur den Kanal treffen, auf dem GENAU
         # dieser Vorgang haengen blieb.
         in_flight: list[aio_pika.abc.AbstractChannel] = []
+        blocked: list[bool] = []
         try:
             async with asyncio.timeout(timeout_s) as timeout_cm:
                 # Registrieren, damit ein beginnendes Herunterfahren diesen
                 # bereits laufenden Deckel nachziehen kann (R12, KTD9).
                 self._active_publish_timeouts.add(timeout_cm)
                 try:
+                    await self._wait_while_blocked(routing_key, blocked)
                     return await self._publish_attempts(routing_key, msg, in_flight)
                 finally:
                     self._active_publish_timeouts.discard(timeout_cm)
         except TimeoutError as exc:
+            if blocked:
+                # Nichts gesendet, der Kanal ist gesund: kein Verwurf, und
+                # anders als ``PublishIndeterminate`` sicher wiederholbar.
+                raise BrokerPublishBlocked(
+                    f"publish to {routing_key!r} not sent: the broker blocked the publish "
+                    f"connection (resource alarm) for the whole publish deadline of {timeout_s}s"
+                ) from exc
             # Der Deckel ist gerissen. Ohne Verwurf bliebe die tote
             # Verbindung stehen und jeder Folge-Publish verbrennte erneut
             # die volle Frist (R10).
@@ -239,9 +194,41 @@ class RabbitMQDelivery(RabbitMQConnection):
                 ),
             )
             raise PublishIndeterminate(
-                f"publish to {routing_key!r} exceeded the publish deadline "
-                f"of {timeout_s}s; delivery is indeterminate"
+                f"publish to {routing_key!r} exceeded the publish deadline of {timeout_s}s; delivery is indeterminate"
             ) from exc
+
+    async def _wait_while_blocked(self, routing_key: str, blocked: list[bool]) -> None:
+        """Wartet, solange der Broker die Publish-Verbindung blockiert (BZ-16).
+
+        Unblockiert kostet das nur ein synchrones Lesen -- kein Roundtrip,
+        kein ``wait_for``. Blockiert, wuerde ein Publish auf dem Socket
+        haengen und als ``PublishIndeterminate`` enden; das Warten innerhalb
+        der Publish-Frist sendet nichts, bis der Alarm vorbei ist."""
+        event = unblocked_event(self._connection)
+        if event is UNREADABLE:
+            if not self._blocked_state_unreadable_reported:
+                self._blocked_state_unreadable_reported = True
+                logger.warning(
+                    "publish_blocked_state_unreadable",
+                    hint=(
+                        "cannot read the connection.blocked state from aiormq; publishes run "
+                        "unchecked (fail-open) and hang on the socket during a broker alarm"
+                    ),
+                )
+            return
+        if not isinstance(event, asyncio.Event) or event.is_set():
+            return
+        logger.warning(
+            "publish_connection_blocked",
+            routing_key=routing_key,
+            hint=(
+                "the broker blocked the publish connection (resource alarm: memory or disk); "
+                "publishes wait until it is unblocked or the publish deadline expires"
+            ),
+        )
+        blocked.append(True)
+        await event.wait()
+        blocked.clear()
 
     async def _publish_attempts(
         self,
@@ -260,6 +247,13 @@ class RabbitMQDelivery(RabbitMQConnection):
             try:
                 await pub.default_exchange.publish(msg, routing_key=routing_key)
                 return
+            except PublishError as exc:
+                # basic.return: keine Queue mit diesem Namen. Eine Wiederholung
+                # aendert daran nichts; vor DeliveryError fangen (Unterklasse).
+                self.invalidate_declaration(routing_key)
+                raise UnroutableMessage(
+                    f"publish to {routing_key!r} was returned unroutable: no queue with this name (BZ-03)"
+                ) from exc
             except DeliveryError as exc:
                 # A publisher-confirm Nack/Reject (e.g. a quorum queue briefly
                 # without disk quorum) is a NEGATIVE confirm, not a channel
@@ -291,9 +285,11 @@ class RabbitMQDelivery(RabbitMQConnection):
                 # exhaustion.
                 if attempt < _PUBLISH_MAX_ATTEMPTS - 1:
                     await asyncio.sleep(0.05 * (2**attempt))
-        raise BrokerConnectionError(
-            f"publish to {routing_key!r} failed after {_PUBLISH_MAX_ATTEMPTS} attempts: {last_exc}"
-        ) from last_exc
+        # Review MR 15, P2-2: ein negatives Confirm haengt an der Queue, nicht
+        # an der Verbindung (der Scheduler zaehlt es nicht fuer den Ruecktritt).
+        error = PublishRejected if isinstance(last_exc, DeliveryError) else BrokerConnectionError
+        message = f"publish to {routing_key!r} failed after {_PUBLISH_MAX_ATTEMPTS} attempts: {last_exc}"
+        raise error(message) from last_exc
 
     # ------------------------------------------------------------------
     # Consume
@@ -311,7 +307,12 @@ class RabbitMQDelivery(RabbitMQConnection):
         # only re-applies after a recreate (avoids an AMQP RPC per
         # consume-channel access).
         await chan.set_qos(prefetch_count=concurrency)
-        amqp_queue = await chan.get_queue(queue)
+        try:
+            amqp_queue = await chan.get_queue(queue)
+        except ChannelNotFoundEntity:
+            # Die Queue ist weg: die naechste Deklaration legt sie neu an (MR 8).
+            self.invalidate_declaration(queue)
+            raise
 
         async def _on_raw(message: aio_pika.abc.AbstractIncomingMessage) -> None:
             delivery = Delivery(body=message.body, headers=dict(message.headers or {}), queue=queue, handle=message)
@@ -434,9 +435,30 @@ class RabbitMQDelivery(RabbitMQConnection):
             await settle(message.nack(requeue=True), "redeliver")
 
     async def retry_later(self, delivery: Delivery, *, delay_ms: int, headers: Mapping[str, Any]) -> None:
-        await self._publish_to_delay_queue(delivery.queue, delivery.body, delay_ms, headers)
+        target = self._delay_target(delivery.queue, delay_ms)
+
+        async def publish() -> None:
+            nonlocal target
+            if target not in self._ready_delay_tiers and target != f"{delivery.queue}.DQ":
+                # Die Delay-Stufe (BZ-01, MR 10) war unroutbar und ist verworfen:
+                # nach dem Neu-Deklarieren wieder die Stufe, sonst ``{queue}.DQ``.
+                target = self._delay_target(delivery.queue, delay_ms)
+            await self._publish_to_delay_queue(delivery.queue, delivery.body, delay_ms, headers, target)
+
+        # Unroutbar: eine Stufe wird allein neu deklariert, ``{queue}.DQ`` mit
+        # der Familie (Review MR 10, P2-3).
+        await publish_redeclaring_once(self, target, publish)
         await self._ack_after_publish(delivery)
 
     async def dead_letter(self, delivery: Delivery, *, headers: Mapping[str, Any]) -> None:
-        await self._publish_to_dead_letter_queue(delivery.queue, delivery.body, headers)
+        # Neue Ausfuehrungsgeneration (Plan 0.12.0, MR 12, BZ-08): Generations-
+        # ID und ``x-swarmq-dlq-gen`` entstehen mit ``x-swarmq-dead-lettered-at``
+        # im selben Stempel; alle Dead-Letter-Pfade des Workers laufen hier durch.
+        at_ms = int(self.clock() * 1000)
+        stamped = dead_letter_generation(headers, delivery.body, at_ms)
+        await publish_redeclaring_once(
+            self,
+            delivery.queue,
+            lambda: self._publish_to_dead_letter_queue(delivery.queue, delivery.body, stamped, at_ms=at_ms),
+        )
         await self._ack_after_publish(delivery)

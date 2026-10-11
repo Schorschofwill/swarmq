@@ -60,8 +60,11 @@ class Signal(enum.Enum):
       * TASK_REJECTED:     queue, reason, task_id, task_name, error
         - Emitted for every message the worker hands to the broker's DLX
           without diagnostic headers (the ``route_via_dlx`` path): a body
-          over the size cap, an undecodable body, an unregistered task, a
-          broken middleware-chain factory, or a failed dead-letter publish.
+          over the size cap, an undecodable body, a broken middleware-chain
+          factory, or a failed dead-letter publish -- and, after the grace
+          period ``unknown_task_grace_s`` ran out, for an unregistered task
+          (that one is dead-lettered by the worker with an error result,
+          so TASK_DLQ fires first; Plan 0.12.0, MR 11, BZ-06).
         - reason is one of "body_too_large" | "undecodable" |
           "unregistered_task" | "middleware_chain_factory" |
           "dlq_publish_failed".
@@ -75,6 +78,15 @@ class Signal(enum.Enum):
           publishes, in addition to TASK_ENQUEUED. Carries the workflow
           identity that TASK_ENQUEUED cannot grow without breaking
           handlers with a fixed signature (U11, R16).
+      * TASK_UNKNOWN_DEFERRED: task_id, task_name, queue, delay,
+                               unknown_since
+        - The worker does not register the task and defers the message
+          (copy via the delay queue) within ``unknown_task_grace_s``,
+          typically during a rolling deploy with producers ahead of the
+          workers (Plan 0.12.0, MR 11, BZ-06). ``delay`` in seconds,
+          ``unknown_since`` the first contact in Unix milliseconds. Once
+          per deferral; counted in
+          ``swarmq_tasks_unknown_deferred_total{queue}``.
       * TASK_DLQ:          task_id, task_name, queue, error
         - Emitted when a message is terminally dead-lettered (retry
           exhaustion / non-retryable error). Distinct from TASK_FAILED,
@@ -115,12 +127,40 @@ class Signal(enum.Enum):
                                    while the conflict lasts)
       * SCHEDULER_LEADER_OUTDATED: worker_id, leader, leader_version,
                                    outdated (a non-leader saw the scheduler
-                                   leader run a swarmq before 0.10 without
-                                   timezone support — leader_version None
-                                   means before 0.10.0; once per leader
+                                   leader run a swarmq before the minimum
+                                   leader version, 0.12 — leader_version
+                                   None means before 0.10.0; once per leader
                                    change with outdated=True, and with
                                    outdated=False when a current leader
                                    follows)
+      * SCHEDULER_FIRE_UNROUTABLE: worker_id, schedule_name, queue, kind
+                                   (the leader's publish was returned: no
+                                   queue with this name, BZ-03. kind
+                                   "cron_lost": this cron fire is lost and
+                                   committed; "oneshot_dropped": a delayed
+                                   task stayed unroutable longer than
+                                   scheduler_unroutable_oneshot_max_s and
+                                   was dropped with an error result)
+      * SCHEDULER_CRON_UNOWNED:    worker_id, schedule_name, task_name, held,
+                                   held_count (the leader starts holding a
+                                   static cron that no live worker reports
+                                   and that it does not register itself,
+                                   held=True, or releases it again,
+                                   held=False; once per transition, BZ-11;
+                                   held_count = crons held afterwards)
+      * SCHEDULER_VALKEY_CHECKED:  worker_id, status, policy, maxmemory,
+                                   used_memory (the leader checked Valkey's
+                                   eviction policy and memory again, at most
+                                   once per hour, BZ-04; status "safe",
+                                   "unsafe" or "unknown"; maxmemory 0 means
+                                   no limit, None unknown)
+      * SCHEDULER_QUEUE_ORPHANED:  worker_id, queue, orphaned, message_count,
+                                   orphaned_count (the leader found a reported
+                                   queue with messages, no consumer and no
+                                   live worker reporting it, orphaned=True, or
+                                   the queue is no longer orphaned,
+                                   orphaned=False; once per transition, BZ-14;
+                                   orphaned_count = orphaned queues afterwards)
 
     Handlers are invoked async; exceptions are swallowed and logged.
     """
@@ -138,6 +178,7 @@ class Signal(enum.Enum):
     TASK_DUPLICATE_DETECTED = "task_duplicate_detected"
     TASK_DLQ = "task_dlq"
     TASK_REJECTED = "task_rejected"
+    TASK_UNKNOWN_DEFERRED = "task_unknown_deferred"
 
     # Workflow lifecycle
     WORKFLOW_STEP_ENQUEUED = "workflow_step_enqueued"
@@ -157,6 +198,10 @@ class Signal(enum.Enum):
     SCHEDULER_FIRE_SKIPPED = "scheduler_fire_skipped"
     SCHEDULER_CRON_CONFLICT = "scheduler_cron_conflict"
     SCHEDULER_LEADER_OUTDATED = "scheduler_leader_outdated"
+    SCHEDULER_FIRE_UNROUTABLE = "scheduler_fire_unroutable"
+    SCHEDULER_CRON_UNOWNED = "scheduler_cron_unowned"
+    SCHEDULER_VALKEY_CHECKED = "scheduler_valkey_checked"
+    SCHEDULER_QUEUE_ORPHANED = "scheduler_queue_orphaned"
 
 
 class SignalDispatcher:

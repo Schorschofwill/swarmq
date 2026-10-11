@@ -24,8 +24,11 @@ from valkey.exceptions import (
 from valkey.exceptions import ConnectionError as ValkeyConnectionError
 from valkey.exceptions import TimeoutError as ValkeyTimeoutError
 
-from swarmq.config import INJECTED_URL
+from swarmq.backend.valkey.environment import log_eviction_check, probe_eviction
+from swarmq.config import INJECTED_URL, env_namespace, env_valkey_eviction_check
 from swarmq.exceptions import BackendConnectionError, BackendResponseError, ConfigurationError
+from swarmq.keyspace import KeySpace
+from swarmq.valkey_policy import EvictionCheck
 
 # Transient transport errors that should be retried transparently by the
 # valkey-py client. Application-level errors (ResponseError, DataError,
@@ -89,6 +92,17 @@ _SOCKET_CONNECT_TIMEOUT_S = 5.0
 _PING_TIMEOUT_S = 2.0
 
 
+def _keyspace(namespace: str | None) -> KeySpace:
+    """KeySpace aus dem Parameter, sonst aus ``SWARMQ_NAMESPACE``; ein
+    ungueltiger Wert ist ein ``ConfigurationError`` (Exit 78)."""
+    if namespace is None:
+        return KeySpace(env_namespace())
+    try:
+        return KeySpace(namespace)
+    except ValueError as exc:
+        raise ConfigurationError(f"namespace: {exc}") from exc
+
+
 class ValkeyConnection:
     def __init__(
         self,
@@ -96,6 +110,9 @@ class ValkeyConnection:
         *,
         client: valkey.asyncio.Valkey | None = None,
         pool: valkey.asyncio.ConnectionPool | None = None,
+        keys: KeySpace | None = None,
+        eviction_check: str | None = None,
+        namespace: str | None = None,
     ) -> None:
         """Construct a backend from a URL, an existing client, or a pool.
 
@@ -125,6 +142,19 @@ class ValkeyConnection:
             ("pool", pool is not None),
         ]
         given = [name for name, present in sources if present]
+        # Alle Keys und Kanaele dieses Backends (Plan 0.12.0, Q4).
+        if keys is not None and namespace is not None:
+            raise ConfigurationError("ValkeyBackend accepts keys or namespace, not both")
+        # Namensraum (BZ-10): ohne Angabe aus der Umgebung (Q11, ueber ``config.py``).
+        self._keys = keys if keys is not None else _keyspace(namespace)
+        # Ausdruecklich (``namespace=`` oder ``keys=``) geht vor der Konfiguration
+        # (Review MR 15, E1/P1-1, ``reconcile_namespace``).
+        self._namespace_explicit = keys is not None or namespace is not None
+        # Ergebnis der Eviction-Pruefung beim Verbinden (BZ-04); ``None``, solange
+        # nicht geprueft wurde.
+        self.eviction_check: EvictionCheck | None = None
+        # Schalter der Pruefung; ohne Angabe aus der Umgebung (Q11, ueber ``config.py``).
+        self._eviction_mode = eviction_check if eviction_check is not None else env_valkey_eviction_check()
         if not given:
             raise ConfigurationError("ValkeyBackend requires exactly one of: url, client, or pool")
         if len(given) > 1:
@@ -154,6 +184,30 @@ class ValkeyConnection:
             self._client = None
             self._owns_client = True
 
+    @property
+    def namespace(self) -> str | None:
+        """Der Namensraum aller Keys und Kanaele dieses Backends (BZ-10)."""
+        return self._keys.namespace
+
+    def reconcile_namespace(self, configured: str | None) -> str | None:
+        """Den Namensraum mit der Konfiguration abgleichen (Review MR 15, E1/P1-1).
+
+        Ohne ausdruecklichen Parameter uebernimmt das Backend *configured*.
+        Mit ausdruecklichem Parameter gilt er; ist *configured* gesetzt und
+        verschieden, ist das ein ``ConfigurationError`` (Exit 78). Liefert den
+        wirksamen Namensraum, mit dem der Aufrufer die Konfiguration fuellt."""
+        if not self._namespace_explicit:
+            if configured != self._keys.namespace:
+                self._keys = _keyspace(configured or "")
+            return self._keys.namespace
+        if configured is not None and configured != self._keys.namespace:
+            raise ConfigurationError(
+                f"namespace mismatch: ValkeyBackend(namespace={self._keys.namespace or ''!r}) and "
+                f"SWARMQ_NAMESPACE/SwarmQConfig.namespace={configured!r} differ; set the namespace in one "
+                "place or to the same value (the backend parameter wins only when the configuration is unset)"
+            )
+        return self._keys.namespace
+
     async def connect(self) -> None:
         # Idempotent, and a no-op when a client was injected: the borrowed
         # client/pool already exists, so swarmq builds nothing here.
@@ -177,6 +231,20 @@ class ValkeyConnection:
             await self._client.ping()
         except (ValkeyConnectionError, OSError) as exc:
             raise BackendConnectionError(str(exc)) from exc
+        # BZ-04 (Plan 0.12.0, MR 14): verdraengende Policy laut melden.
+        if self._eviction_mode != "off":
+            self.eviction_check = await probe_eviction(self._client)
+            log_eviction_check(self.eviction_check)
+
+    async def recheck_eviction(self) -> EvictionCheck | None:
+        """Erneute Pruefung (Leader, stuendlich; BZ-04) samt ``used_memory``;
+        warnt bei Befund wie ``connect``. ``None`` mit ``off`` oder ohne
+        Verbindung. Wirft nie."""
+        if self._eviction_mode == "off" or self._client is None:
+            return None
+        self.eviction_check = await probe_eviction(self._client, memory=True)
+        log_eviction_check(self.eviction_check)
+        return self.eviction_check
 
     async def close(self) -> None:
         if self._client is not None:

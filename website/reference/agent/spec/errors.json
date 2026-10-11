@@ -57,6 +57,23 @@
     },
     {
       "dlq_on_uncaught": "n/a",
+      "doc": "Die Publish-Verbindung war bis zur Publish-Frist vom Broker blockiert\n(``connection.blocked``, Ressourcenalarm: Speicher oder Platte; BZ-16).\nNichts wurde gesendet; ein spaeterer Versuch ist sicher. Ein Alarm\ntrifft jeden Prozess am Broker gleich, deshalb zaehlt er nicht fuer den\nRuecktritt des Leaders. Unterklasse von :class:`BrokerConnectionError`\n(Q14): bestehende Handler fangen sie weiter.",
+      "exception_class": "swarmq.exceptions.BrokerPublishBlocked",
+      "exit_code_on_cli": 1,
+      "init_params": [],
+      "module": "swarmq.exceptions",
+      "name": "BrokerPublishBlocked",
+      "origin": "library",
+      "parent": "BrokerConnectionError",
+      "retriable": "yes",
+      "transport_field": "stderr line",
+      "when": [
+        "schedule",
+        "run"
+      ]
+    },
+    {
+      "dlq_on_uncaught": "n/a",
       "doc": null,
       "exception_class": "swarmq.exceptions.ConfigurationError",
       "exit_code_on_cli": 78,
@@ -70,6 +87,22 @@
       "when": [
         "startup",
         "cli"
+      ]
+    },
+    {
+      "dlq_on_uncaught": "yes",
+      "doc": "Fehlertyp einer DLQ-Kopie, deren Wartezeit auf einen Lock endete\n(Plan 0.12.0, MR 13, BZ-05): entweder hielt derselbe Halter laenger als\nseine TTL + 60 s (Stillstand), oder die Obergrenze\n``SWARMQ_LOCK_WAIT_MAX_S`` ab dem ersten Konflikt war erreicht. Wird\nnicht geworfen; der Name steht als ``error_type`` in ``task_sent_to_dlq``\nund am Anfang von ``x-swarmq-traceback``.",
+      "exception_class": "swarmq.exceptions.LockWaitExceeded",
+      "exit_code_on_cli": null,
+      "init_params": [],
+      "module": "swarmq.exceptions",
+      "name": "LockWaitExceeded",
+      "origin": "library",
+      "parent": "SwarmQError",
+      "retriable": "no",
+      "transport_field": "error_message, is_error=true",
+      "when": [
+        "run"
       ]
     },
     {
@@ -90,6 +123,23 @@
       "when": [
         "startup",
         "cli"
+      ]
+    },
+    {
+      "dlq_on_uncaught": "n/a",
+      "doc": "Die Header einer Nachricht passen auch nach dem Kuerzen langer Texte\nnicht in die Haelfte von ``frame_max``; der Publish wurde nicht\nversucht (BZ-17). Ein zu grosser Content-Header schloesse sonst die\nganze Verbindung, und alle unbestaetigten Nachbar-Zustellungen kaemen\nzurueck. Unterklasse von :class:`BrokerConnectionError` (Q14).",
+      "exception_class": "swarmq.exceptions.MessageHeadersTooLarge",
+      "exit_code_on_cli": 1,
+      "init_params": [],
+      "module": "swarmq.exceptions",
+      "name": "MessageHeadersTooLarge",
+      "origin": "library",
+      "parent": "BrokerConnectionError",
+      "retriable": "no",
+      "transport_field": "stderr line",
+      "when": [
+        "schedule",
+        "run"
       ]
     },
     {
@@ -124,6 +174,61 @@
       "transport_field": "stderr line",
       "when": [
         "schedule",
+        "run"
+      ]
+    },
+    {
+      "dlq_on_uncaught": "n/a",
+      "doc": "Der Broker hat den Publish fuer diese Queue ueber alle Versuche\nabgelehnt: negatives Publisher-Confirm (``basic.nack``), etwa eine volle\nQueue mit ``x-overflow=reject-publish`` oder eine Quorum-Queue ohne\nQuorum (Review MR 15, P2-2). Die Verbindung ist gesund; der Fehler haengt\nan der Queue, deshalb zaehlt er nicht fuer den Ruecktritt des Leaders.\nUnterklasse von :class:`BrokerConnectionError` (Q14): bestehende Handler\nfangen sie weiter.",
+      "exception_class": "swarmq.exceptions.PublishRejected",
+      "exit_code_on_cli": 1,
+      "init_params": [],
+      "module": "swarmq.exceptions",
+      "name": "PublishRejected",
+      "origin": "library",
+      "parent": "BrokerConnectionError",
+      "retriable": "yes",
+      "transport_field": "stderr line",
+      "when": [
+        "schedule",
+        "run"
+      ]
+    },
+    {
+      "dlq_on_uncaught": "n/a",
+      "doc": "Eine vorhandene Queue hat andere Argumente als die Konfiguration, und\nswarmq kann sie nicht uebernehmen (BZ-15), etwa ein geaenderter\n``SWARMQ_QUEUE_TYPE``. RabbitMQ aendert die Argumente einer bestehenden\nQueue nie; ein Neustart aendert daran nichts, darum Exit 78 statt einer\nNeustartschleife. ``x-delivery-limit``, ``x-dead-letter-strategy`` und\n``x-overflow`` werden dagegen uebernommen.",
+      "exception_class": "swarmq.exceptions.QueueArgumentsMismatch",
+      "exit_code_on_cli": 78,
+      "init_params": [
+        "queue",
+        "argument",
+        "declared",
+        "existing",
+        "hint"
+      ],
+      "module": "swarmq.exceptions",
+      "name": "QueueArgumentsMismatch",
+      "origin": "library",
+      "parent": "ConfigurationError",
+      "retriable": "no",
+      "transport_field": "stderr line",
+      "when": [
+        "startup"
+      ]
+    },
+    {
+      "dlq_on_uncaught": "yes",
+      "doc": "Fehlertyp einer DLQ-Kopie, deren Zustellungen immer wieder per\n``redeliver`` (``nack(requeue=True)``) zurueckgegeben wurden, bis\n``x-acquired-count`` (RabbitMQ 4.3) das Zustelllimit erreichte (BZ-29).\nWird nicht geworfen; der Name steht als ``error_type`` in\n``task_sent_to_dlq`` und am Anfang von ``x-swarmq-traceback``.",
+      "exception_class": "swarmq.exceptions.RedeliveryLimitError",
+      "exit_code_on_cli": null,
+      "init_params": [],
+      "module": "swarmq.exceptions",
+      "name": "RedeliveryLimitError",
+      "origin": "library",
+      "parent": "SwarmQError",
+      "retriable": "no",
+      "transport_field": "error_message, is_error=true",
+      "when": [
         "run"
       ]
     },
@@ -290,6 +395,23 @@
       "transport_field": "raised to caller",
       "when": [
         "schedule"
+      ]
+    },
+    {
+      "dlq_on_uncaught": "n/a",
+      "doc": "Der Broker hat die Nachricht per ``basic.return`` zurueckgewiesen:\nkeine Queue mit diesem Namen (BZ-03). Nichts wurde zugestellt.\n\nTypisch ist ein Producer, der vor dem ersten Worker einer neuen Queue\nsendet, oder ein Prioritaets-Publish an ``{queue}.high``/``.low`` ohne\n``--priorities``. Vor 0.12 bestaetigte der Broker solche Nachrichten\nund verwarf sie still. Unterklasse von :class:`BrokerConnectionError`\n(Q14): bestehende Handler fangen sie weiter.",
+      "exception_class": "swarmq.exceptions.UnroutableMessage",
+      "exit_code_on_cli": 1,
+      "init_params": [],
+      "module": "swarmq.exceptions",
+      "name": "UnroutableMessage",
+      "origin": "library",
+      "parent": "BrokerConnectionError",
+      "retriable": "no",
+      "transport_field": "stderr line",
+      "when": [
+        "schedule",
+        "run"
       ]
     },
     {

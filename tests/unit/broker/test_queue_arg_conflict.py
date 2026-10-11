@@ -15,8 +15,8 @@ Test-Liste:
 1. Strategy fehlt in der Deklaration, Queue hat ``at-least-once`` → übernehmen.
 2. Overflow fehlt, Queue hat ``reject-publish`` → übernehmen.
 3. Delivery-Limit abweichend (``received '20' but current is '40'``) → 40 als int.
-4. Delivery-Limit fehlt auf der Queue (``current is none``) → nicht übernehmbar
-   (Review P2-2a: wie 0.11.0 abbrechen; 0.12 legt Queues immer mit Limit an).
+4. Delivery-Limit fehlt auf der Queue (``current is none``) → ab 0.12 übernommen
+   (Argument entfällt; Plan MR 8: tolerant, Broker-Default 20).
 5. (Typ ``short`` → int: abgedeckt in ``test_declare_adoption.py``.)
 6. Anderes Argument (``x-queue-type``) → nicht übernehmbar (None).
 7. 406 ohne "inequivalent arg" (Queue-Limit) → None.
@@ -67,10 +67,13 @@ def test_adopts_differing_delivery_limit_as_int() -> None:
     assert adopted == ("x-delivery-limit", {**BASE, "x-delivery-limit": 40})
 
 
-def test_delivery_limit_missing_on_the_queue_is_not_adopted() -> None:
+def test_delivery_limit_missing_on_the_queue_is_adopted() -> None:
+    """0.12 (Plan MR 8, BZ-15): ``x-delivery-limit`` wird tolerant behandelt,
+    auch wenn es auf der Queue fehlt (dann gilt der Broker-Default 20)."""
     text = _text("x-delivery-limit", "received the value '20' of type 'byte' but current is none")
 
-    assert adopt_existing_argument(text, BASE) is None
+    without_limit = {key: value for key, value in BASE.items() if key != "x-delivery-limit"}
+    assert adopt_existing_argument(text, BASE) == ("x-delivery-limit", without_limit)
 
 
 def test_other_arguments_are_not_adopted() -> None:

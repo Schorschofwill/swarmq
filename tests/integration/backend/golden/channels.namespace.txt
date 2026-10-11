@@ -1,0 +1,3 @@
+golden-ns:sq:notify:golden-task-0001	done
+golden-ns:sq:progress:channel:golden-task-0001	<json der HASH-Felder>
+golden-ns:sq:wf:notify:golden-wf-0001	done

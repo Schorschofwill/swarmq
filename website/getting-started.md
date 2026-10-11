@@ -8,7 +8,9 @@ five minutes. No entrypoint boilerplate, no config files required.
 SwarmQ needs a RabbitMQ broker and a Valkey (or Redis) backend. The
 repository ships a `docker-compose.yml` that brings both up locally.
 
-- Python **3.11+** (3.14 tested on CI)
+- Python **3.14+**
+- RabbitMQ **4.2 or 4.3** (quorum queues) and Valkey **8** or later
+  ([Valkey requirements](reference/configuration.md#valkey-requirements))
 - Docker, or a running RabbitMQ + Valkey pair you control
 - A package manager — examples use [`uv`](https://docs.astral.sh/uv/)
 
