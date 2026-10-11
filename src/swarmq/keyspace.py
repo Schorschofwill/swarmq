@@ -21,10 +21,12 @@ from dataclasses import dataclass
 
 _ROOT = "sq:"
 
-# Erlaubt: Buchstaben, Ziffern, ``_ . -``, beginnend mit Buchstabe oder Ziffer,
-# hoechstens 64 Zeichen. Ausgeschlossen sind damit ``:`` (Trenner im Key) und
-# die Glob-Zeichen ``* ? [ ]`` (SCAN-Muster) sowie ``{ }`` (Hash-Tags).
-_NAMESPACE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
+# Erlaubt: Kleinbuchstaben, Ziffern, ``_ . -``, beginnend mit Buchstabe oder
+# Ziffer, hoechstens 64 Zeichen. Ausgeschlossen sind damit ``:`` (Trenner im
+# Key) und die Glob-Zeichen ``* ? [ ]`` (SCAN-Muster) sowie ``{ }``
+# (Hash-Tags). Nur Kleinschreibung (Review MR 15): Valkey-Keys unterscheiden
+# Gross- und Kleinschreibung, ``App1`` und ``app1`` waeren zwei Apps.
+_NAMESPACE_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}")
 
 
 def validate_namespace(value: str | None) -> str | None:
@@ -37,9 +39,11 @@ def validate_namespace(value: str | None) -> str | None:
         return None
     if not _NAMESPACE_RE.fullmatch(value) or value.lower() == "sq":
         msg = (
-            f"invalid namespace {value!r}: use 1-64 characters A-Z, a-z, 0-9, '_', '.', '-', "
+            f"invalid namespace {value!r}: use 1-64 characters a-z, 0-9, '_', '.', '-' (lowercase only), "
             "starting with a letter or digit, not 'sq'"
         )
+        if value != value.lower() and _NAMESPACE_RE.fullmatch(value.lower()):
+            msg += f"; write it in lowercase: {value.lower()!r}"
         raise ValueError(msg)
     return value
 

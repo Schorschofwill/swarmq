@@ -34,14 +34,10 @@ from aio_pika.exceptions import ChannelNotFoundEntity
 from valkey.crc import key_slot
 
 from swarmq.backend.valkey import ValkeyBackend
-from swarmq.backend.valkey.chords import ChordManager
 from swarmq.backend.valkey.control import ValkeySetpointStore
-from swarmq.backend.valkey.locks import LockManager
-from swarmq.backend.valkey.rate_limit import RateLimiter
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.cancellation import build_result_dict
 from swarmq.contracts.control import Setpoint
-from swarmq.limits import RateLimitConfig
 from swarmq.queue_names import queue_family
 from swarmq.scheduler import ScheduleDefinition
 from swarmq.serialization import encode_json, encode_result
@@ -167,15 +163,16 @@ async def snapshot_keys(backend: ValkeyBackend) -> dict[str, str]:
     await backend.execution_guard.claim(
         TASK_ID, owner="golden-owner", retry_count=0, ttl_ms=TTL_MS, state_ttl_ms=TTL_MS, max_orphans=3,
     )
-    # Die Stores mit dem KeySpace des Backends: mit Namensraum liegen auch
-    # Locks, Rate-Limit, Chords und Kontrollkanal darunter (BZ-10).
+    # Die Stores des Backends selbst (Review MR 15, Hinweis): mit Namensraum
+    # belegt die Golden-Datei so auch die Verdrahtung von Locks, Rate-Limit
+    # und Chords mit dem KeySpace des Backends (BZ-10).
     keys = backend._keys
-    locks = LockManager(client, keys=keys)
-    await locks.acquire("golden-lock", "golden-owner", TTL_MS, 1)
-    await locks.acquire("{sched}:leader", "golden-owner", TTL_MS, 1)
-    await locks.acquire("golden-sem", "golden-owner", TTL_MS, 2)
-    await RateLimiter(client, keys=keys).check("golden-task", RateLimitConfig(max_requests=10, window_size_ms=60_000))
-    await ChordManager(client, keys=keys).record_and_check_complete(WF_ID, "c1", "m1", 2, TTL_MS)
+    locks = backend.locks
+    await locks.acquire("golden-lock", owner="golden-owner", ttl_ms=TTL_MS, max_concurrency=1)
+    await locks.acquire("{sched}:leader", owner="golden-owner", ttl_ms=TTL_MS, max_concurrency=1)
+    await locks.acquire("golden-sem", owner="golden-owner", ttl_ms=TTL_MS, max_concurrency=2)
+    await backend.rate_limit.check("golden-task", max_requests=10, window_ms=60_000)
+    await backend.chords.record_and_check_complete(WF_ID, "c1", "m1", 2, TTL_MS)
     # Kontrollkanal (Plan 0.12.0, MR 0): Sollwert und Rueckmeldung.
     control = ValkeySetpointStore(client=client, keys=keys)
     await control.write_setpoint("golden-group", Setpoint(low=1, high=2))

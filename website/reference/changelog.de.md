@@ -626,7 +626,9 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   byte-identisch (Golden-Datei `keys.json` unverändert; die Keys mit
   Namensraum stehen in der neuen Golden-Datei `keys.namespace.json`).
   Neu sind `ValkeyBackend.namespace` und
-  `swarmq.keyspace.validate_namespace`
+  `swarmq.keyspace.validate_namespace`; der Namensraum ist nur
+  kleingeschrieben zulässig (`a-z 0-9 _ . -`, Großbuchstaben sind ein
+  `ConfigurationError`, der die kleingeschriebene Form nennt)
   ([Namensraum](configuration.md#namensraum-mehrere-apps-auf-einem-valkey)).
 - **`SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S`** (Default
   `SWARMQ_SCHEDULER_LOCK_TTL`, `0` schaltet ab) und das Log-Event

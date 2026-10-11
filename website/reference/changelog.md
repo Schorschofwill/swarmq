@@ -582,7 +582,9 @@ All notable changes to SwarmQ. This project follows
   are not prefixed. Without a namespace everything stays byte-identical
   (golden file `keys.json` unchanged; the namespaced keys are in the new
   golden file `keys.namespace.json`). `ValkeyBackend.namespace` and
-  `swarmq.keyspace.validate_namespace` are new
+  `swarmq.keyspace.validate_namespace` are new; the namespace is
+  lowercase only (`a-z 0-9 _ . -`, uppercase is a `ConfigurationError`
+  that names the lowercase spelling)
   ([namespace](configuration.md#namespace-several-apps-on-one-valkey)).
 - **`SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S`** (default
   `SWARMQ_SCHEDULER_LOCK_TTL`, `0` disables) and the log event

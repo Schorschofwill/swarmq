@@ -196,7 +196,7 @@ def test_invalid_namespace_is_rejected(value: str) -> None:
         validate_namespace(value)
 
 
-@pytest.mark.parametrize("value", ["app1", "billing-prod", "a.b_c", "A" * 64])
+@pytest.mark.parametrize("value", ["app1", "billing-prod", "a.b_c", "a" * 64])
 def test_valid_namespace_is_returned(value: str) -> None:
     from swarmq.keyspace import validate_namespace
 
