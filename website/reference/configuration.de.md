@@ -141,7 +141,7 @@ Jeder Worker mit eingeschalteten Metriken (`--metrics-port`/`SWARMQ_METRICS_PORT
 | `swarmq_recyclings_total` | Counter | `kind`, `reason` | Prozess-Recyclings; `kind` ist `worker` oder `compute_child`. |
 | `swarmq_queue_depth` | Gauge | `queue`, `kind` | Vom Broker gemeldete Nachrichtenzahl, alle `SWARMQ_METRICS_SAMPLE_INTERVAL` abgetastet: `kind="pending"` ist `{queue}` plus alle Delay-Queues, `kind="delayed"` (seit 0.12) nur die Delay-Queues ([Delay-Stufen](../explanation/delivery-semantics.md#delay-stufen)). |
 | `swarmq_dlq_messages` | Gauge | `queue` | Nachrichten in `{queue}.XQ`, abgetastet. |
-| `swarmq_lock_waits` | Gauge | `worker_id` | Nachrichten, die dieser Worker wegen eines belegten Task-Locks zurückgestellt und in den letzten 3 Minuten wieder gesehen hat. |
+| `swarmq_lock_waits` | Gauge | `worker_id` | Nachrichten, die dieser Worker wegen eines belegten Task-Locks zurückgestellt und in den letzten 3 Minuten wieder gesehen hat. Eine Nachricht, die länger in der Haupt-Queue wartet (ein Rückstand von mehr als etwa 2 Minuten zusätzlich zur Rückstellung von höchstens 60 s), fällt heraus; bei Rückstand zählt die Gauge also zu wenig. |
 | `swarmq_lock_wait_oldest_seconds` | Gauge | `worker_id` | Sekunden, die die älteste dieser Nachrichten seit ihrem ersten Lock-Konflikt wartet. |
 | `swarmq_delay_tiers_unavailable` | Gauge | `queue` | Delay-Stufen der Queue, deren Deklaration der Broker abgelehnt hat; ihre Wartezeiten nutzen `{queue}.DQ` ([Delay-Stufen](../explanation/delivery-semantics.md#delay-stufen)). |
 | `swarmq_worker_uptime_seconds` | Gauge | `worker_id` | Sekunden seit Worker-Start, abgetastet. |

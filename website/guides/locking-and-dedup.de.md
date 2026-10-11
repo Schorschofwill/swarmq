@@ -99,7 +99,9 @@ einmal `lock_observe_unsupported` und wartet bis
 `LockObservation` liefert. Die Gauges `swarmq_lock_waits` und
 `swarmq_lock_wait_oldest_seconds` zeigen je Worker, wie viele
 Nachrichten er zuletzt zurückgestellt hat und wie lange die älteste
-schon wartet.
+schon wartet; eine Nachricht, die er 3 Minuten nicht wieder sieht,
+fällt heraus, bei einem Rückstand von mehr als etwa 2 Minuten in der
+Queue zählen die Gauges also zu wenig.
 
 Eine neue Wartezeit beginnt, wenn der Broker die Nachricht neu
 zustellt (der Worker starb, nachdem er den Lock erworben hatte, oder
@@ -164,7 +166,14 @@ Takt von 20 s also etwa 40 s), loggt der Worker `task_lock_lost`
 (WARNING, `stage="running"`): Ein zweiter Halter kann jetzt parallel
 laufen. Dieselbe Warnung mit `stage="release"` kommt, wenn der Lock
 bei der Freigabe schon weg ist. Eine gescheiterte Verlängerung loggt
-`lock_extend_failed` und wird im nächsten Takt wiederholt.
+`lock_extend_failed` und wird im nächsten Takt wiederholt; gelang vor
+der Frist des Locks keine Verlängerung, loggt der Worker
+`task_lock_lost` mit `stage="expired"`, ohne Valkey zu fragen, und
+verlängert ihn nicht weiter.
+
+Beim Herunterfahren gibt der Worker die Locks von Handlern frei, die
+nach dem Drain noch laufen. Ein Handler, der seinen Abbruch ignoriert
+und weiterläuft, verliert seinen Lock dann.
 
 Grenzen: Ein Erwerber mit kurzer TTL räumt weiterhin Semaphor-Slots
 ab, die älter als seine eigene TTL sind; gemischte

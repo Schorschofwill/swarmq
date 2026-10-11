@@ -31,6 +31,8 @@ logger = get_logger(__name__)
 TICK_MIN_S = 0.05
 TICK_MAX_S = 20.0
 WINDOW_TICKS = 3
+# Hoechstens so viele Verlaengerungen gleichzeitig (Review MR 13, Hinweis).
+MAX_PARALLEL_EXTENDS = 32
 
 
 def keeper_tick_s(ttl_ms: int) -> float:
@@ -54,6 +56,13 @@ class KeptLock:
     deadline: float
     original_deadline: float
     warned_past_timeout: bool = False
+    # Spaetester Ablauf in Valkey (monotone Uhr; Zeitpunkt nach der letzten
+    # bestaetigten Verlaengerung + Fenster). Danach ist der Lock sicher weg.
+    expires_by: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not self.expires_by:
+            self.expires_by = self.deadline
 
 
 class LockKeeper:
@@ -94,10 +103,12 @@ class LockKeeper:
         if self._loop is None or self._loop.done():
             self._loop = asyncio.create_task(self._run())
 
-    def drop(self, token: LockToken) -> None:
-        self._kept.pop(token, None)
+    def drop(self, token: LockToken) -> KeptLock | None:
+        """Lease herausnehmen; liefert sie (Task-Felder fuer Meldungen)."""
+        kept = self._kept.pop(token, None)
         if not self._kept:
             self._stop_loop()
+        return kept
 
     def close(self) -> None:
         """Keeper beenden (vor dem Schliessen des Backends)."""
@@ -112,7 +123,11 @@ class LockKeeper:
     async def _run(self) -> None:
         while self._kept:
             await self._sleep(min(keeper_tick_s(kept.ttl_ms) for kept in self._kept.values()))
-            await self.tick_once()
+            try:
+                await self.tick_once()
+            except Exception as exc:
+                # Die Schleife darf nicht sterben: sonst verlaengert niemand mehr.
+                logger.warning("lock_keeper_tick_failed", leases=len(self._kept), **_error_fields(exc))
 
     async def tick_once(self) -> None:
         """Ein Takt: jede Lease, die in weniger als einem Fenster ablaeuft,
@@ -121,9 +136,30 @@ class LockKeeper:
         if store is None:
             return
         now = self._now()
+        for kept in [kept for kept in self._kept.values() if now >= kept.expires_by]:
+            self._report_expired(kept)
         due = [kept for kept in self._kept.values() if kept.deadline - now < keeper_window_s(kept.ttl_ms)]
         if due:
-            await asyncio.gather(*(self._extend(store, kept, now) for kept in due))
+            limit = asyncio.Semaphore(MAX_PARALLEL_EXTENDS)
+
+            async def bounded(kept: KeptLock) -> None:
+                async with limit:
+                    await self._extend(store, kept, now)
+
+            await asyncio.gather(*(bounded(kept) for kept in due))
+
+    def _report_expired(self, kept: KeptLock) -> None:
+        """Keine Verlaengerung bis zur Frist bestaetigt (Valkey-Ausfall): der
+        Lock ist sicher abgelaufen -- melden ohne Roundtrip, Lease faellt heraus."""
+        self._kept.pop(kept.token, None)
+        logger.warning(
+            "task_lock_lost",
+            lock_name=kept.token.name,
+            task_id=kept.task_id,
+            task_name=kept.task_name,
+            stage="expired",
+            hint="no extension succeeded before the lock's deadline; a second holder may run in parallel",
+        )
 
     async def _extend(self, store: Any, kept: KeptLock, now: float) -> None:
         window_ms = int(keeper_window_s(kept.ttl_ms) * 1000)
@@ -163,6 +199,7 @@ class LockKeeper:
             self._kept.pop(kept.token, None)
             return
         kept.deadline = now + window_ms / 1000.0
+        kept.expires_by = self._now() + window_ms / 1000.0
         if now >= kept.original_deadline and not kept.warned_past_timeout:
             kept.warned_past_timeout = True
             logger.warning(

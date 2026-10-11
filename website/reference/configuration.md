@@ -140,7 +140,7 @@ Every worker with metrics enabled (`--metrics-port`/`SWARMQ_METRICS_PORT`,
 | `swarmq_recyclings_total` | counter | `kind`, `reason` | Process recyclings; `kind` is `worker` or `compute_child`. |
 | `swarmq_queue_depth` | gauge | `queue`, `kind` | Broker-reported message count, sampled every `SWARMQ_METRICS_SAMPLE_INTERVAL`: `kind="pending"` is `{queue}` plus all delay queues, `kind="delayed"` (since 0.12) the delay queues only ([delay tiers](../explanation/delivery-semantics.md#delay-tiers)). |
 | `swarmq_dlq_messages` | gauge | `queue` | Messages in `{queue}.XQ`, sampled. |
-| `swarmq_lock_waits` | gauge | `worker_id` | Messages this worker deferred because their task lock was held and saw again within the last 3 minutes. |
+| `swarmq_lock_waits` | gauge | `worker_id` | Messages this worker deferred because their task lock was held and saw again within the last 3 minutes. A message that waits longer than that in the main queue (a backlog of more than about 2 minutes on top of the at most 60 s deferral) drops out, so under backlog the gauge undercounts. |
 | `swarmq_lock_wait_oldest_seconds` | gauge | `worker_id` | Seconds the oldest of these messages has waited since its first lock conflict. |
 | `swarmq_delay_tiers_unavailable` | gauge | `queue` | Delay tiers of the queue the broker refused to declare; their delays use `{queue}.DQ` ([delay tiers](../explanation/delivery-semantics.md#delay-tiers)). |
 | `swarmq_worker_uptime_seconds` | gauge | `worker_id` | Seconds since the worker started, sampled. |

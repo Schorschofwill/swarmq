@@ -114,8 +114,10 @@ class LockManager:
         if self._extend_script is None:
             self._extend_script = self._client.register_script(load_script("lock_extend"))
         try:
-            seconds, microseconds = await self._client.time()
-            now_ms = int(seconds) * 1000 + int(microseconds) // 1000
+            now_ms = 0  # Mutex: das Skript liest ``now_ms`` nicht -- ein Roundtrip
+            if max_concurrency != 1:
+                seconds, microseconds = await self._client.time()
+                now_ms = int(seconds) * 1000 + int(microseconds) // 1000
             result = await self._extend_script(
                 keys=[self._keys.lock(lock_name)],
                 args=[owner_token, ttl_ms, max_concurrency, now_ms],

@@ -4,6 +4,8 @@ BZ-25) gegen gemockte Skripte: Argumente, Rueckgabe, Fehler-Wrapping.
 Test-Liste:
 - [x] ``extend`` registriert ``lock_extend`` bei erster Nutzung und reicht
       Owner, TTL, max_concurrency und Server-TIME durch
+- [x] Review MR 13 (Hinweis): Mutex ohne ``TIME`` (ein Roundtrip; das
+      Skript liest ``now_ms`` nur fuer Semaphoren), ARGV bleibt 4
 - [x] Fehlerantwort -> ``BackendResponseError``, Transportfehler ->
       ``BackendConnectionError``
 """
@@ -45,3 +47,10 @@ async def test_extend_wraps_errors() -> None:
     script.side_effect = ConnectionError("gone")
     with pytest.raises(BackendConnectionError, match="lock extend failed"):
         await store.extend(LockToken("l", "owner-a", 1), ttl_ms=1)
+
+
+async def test_mutex_extend_skips_server_time() -> None:
+    store, script = _store()
+    assert await store.extend(LockToken("l", "owner-a", 1), ttl_ms=60_000) is True
+    store._client.time.assert_not_awaited()
+    assert script.await_args.kwargs == {"keys": ["sq:lock:l"], "args": ["owner-a", 60_000, 1, 0]}

@@ -4,6 +4,9 @@ DLQ-Stempel und bei ``dlq retry``.
 Test-Liste:
 - [x] der DLQ-Stempel (``_publish_to_dead_letter_queue``) entfernt sie
 - [x] ``dlq retry`` entfernt sie aus einer DLX-Kopie (``nack``, Header blieben)
+- [x] Review MR 13 (Hinweis): ``dlq retry`` entfernt auch den Legacy-Zaehler
+      ``x-swarmq-lock-conflict-count`` (eine 0.11-DLQ-Kopie traegt 10; ein
+      0.11-Worker schickte die Wiederholung beim ersten Konflikt zurueck)
 """
 
 from __future__ import annotations
@@ -60,3 +63,21 @@ async def test_dlq_retry_drops_the_lock_wait_state() -> None:
     found, _ = await broker.retry_dead_letter("tasks", "t-1")
     assert found is True
     assert not set(_STATE) & set(published[0].headers)
+
+
+async def test_dlq_retry_drops_the_legacy_conflict_counter() -> None:
+    broker = _broker()
+    body = json.dumps({"task": {"id": "t-1", "name": "n"}}).encode()
+    queue = Mock()
+    legacy = {"x-swarmq-lock-conflict-count": 10, "x-swarmq-lock-name": "r"}
+    queue.get = AsyncMock(side_effect=[Mock(body=body, headers=legacy), None])
+    broker._dlq_queue = AsyncMock(return_value=queue)
+    published: list[Any] = []
+
+    async def publish(routing_key: str, msg: Any) -> None:
+        published.append(msg)
+
+    broker._publish_with_retry = publish
+    found, _ = await broker.retry_dead_letter("tasks", "t-1")
+    assert found is True
+    assert "x-swarmq-lock-conflict-count" not in published[0].headers

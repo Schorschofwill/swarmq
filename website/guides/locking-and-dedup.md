@@ -96,7 +96,9 @@ that cannot report its holders (a third-party store) logs
 `SWARMQ_LOCK_WAIT_MAX_S`; so does a store whose `observe` returns no
 `LockObservation`. The gauges `swarmq_lock_waits` and
 `swarmq_lock_wait_oldest_seconds` show per worker how many messages it
-recently deferred and how long the oldest has waited.
+recently deferred and how long the oldest has waited; a message not
+seen again within 3 minutes drops out, so with a backlog of more than
+about 2 minutes in the queue the gauges undercount.
 
 A new wait begins when the broker redelivers the message (the worker
 died after it had acquired the lock, or returned the message at
@@ -156,7 +158,13 @@ ticks once the extensions have started, about 40 s with a tick of
 a second holder may now run in parallel. The same warning with
 `stage="release"` comes when the lock is already gone at release. A
 failed extension logs `lock_extend_failed` and is retried at the next
-tick.
+tick; when no extension succeeded before the lock's deadline, the
+worker logs `task_lock_lost` with `stage="expired"` without asking
+Valkey and stops extending it.
+
+At shutdown the worker releases the locks of handlers that are still
+running after the drain. A handler that ignores its cancellation and
+keeps running loses its lock at that point.
 
 Limits: an acquirer with a short TTL still sweeps semaphore slots
 older than its own TTL, so mixed `hard_timeout` values under one

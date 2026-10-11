@@ -110,7 +110,10 @@ All notable changes to SwarmQ. This project follows
   `lock_conflict_count`, whose meaning is unchanged); `task_lock_conflict`
   is logged on the first conflict and then about once a minute;
   `lock_conflict_dlq_failed` names the field `lock_conflicts` instead
-  of `lock_conflict_count`. The wait uses the workers' wall clocks (a
+  of `lock_conflict_count`; the DLQ copy no longer carries a conflict
+  counter header (the count is in the `x-swarmq-traceback` text,
+  "(N conflicts)"), and `swarmq dlq retry` also removes the 0.11
+  counter `x-swarmq-lock-conflict-count`. The wait uses the workers' wall clocks (a
   skew of up to about 60 s is tolerated). A new wait begins when the
   broker redelivers the message (a worker died after acquiring the
   lock, or returned it at shutdown) and on the copy of a later
@@ -503,8 +506,12 @@ All notable changes to SwarmQ. This project follows
 - **A lost lock is reported.** When a lock is gone or held by another
   owner at extension or at release (evicted by `maxmemory-policy`,
   Valkey data loss), the worker logs `task_lock_lost` (WARNING,
-  `stage` `running` or `release`) instead of ignoring it
-  ([logging](logging.md)).
+  `stage` `running` or `release`, with `task_id` and `task_name`)
+  instead of ignoring it. When no extension succeeded before the
+  lock's deadline (Valkey down), it logs `stage="expired"` without a
+  round trip. A failing keeper tick logs `lock_keeper_tick_failed` and
+  the keeper keeps running; a mutex extension is one round trip, and at
+  most 32 extensions run at once ([logging](logging.md)).
 - **A semaphore acquirer with a short TTL no longer expires the key
   under a holder with a longer one.** `lock_acquire.lua` only extends
   the key's TTL, never shortens it. Known limits: an acquirer still

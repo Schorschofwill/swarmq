@@ -5,6 +5,8 @@ Test-Liste:
       (Freigabe im finally) nicht mehr
 - [x] Freigabe liegengebliebener Locks im Shutdown nimmt sie aus dem Keeper;
       der Keeper endet vor ``backend.close``
+- [x] Review MR 13 (Hinweis): der Abbruch-Teardown (``_abort_teardown``)
+      beendet den Keeper ebenfalls
 - [x] ein Gate ohne ``keep_lock`` (Dritt-Verdrahtung) laeuft wie bisher
 """
 
@@ -104,3 +106,17 @@ async def test_gate_without_keep_lock_acquires_as_before(broker, backend, config
 
     assert await gate.apply(make_message(_default_payload(name="kept", args=[], kwargs={})), ctx) is Continue
     assert len(ctx.acquired_locks) == 1 and worker._lock_keeper.kept == 0
+
+
+async def test_abort_teardown_closes_the_keeper(broker, backend, config) -> None:
+    """Review MR 13 (Hinweis): ein abgebrochener ``start_worker()`` darf keine
+    Keeper-Schleife hinterlassen."""
+    worker = _worker(broker, backend, config)
+    worker._lock_keeper.keep(LockToken("resource", "o-1", 1), 90_000, task_id="t", task_name="kept")
+    loop = worker._lock_keeper._loop
+    assert loop is not None
+
+    await worker._abort_teardown()
+
+    assert worker._lock_keeper.kept == 0
+    assert loop.cancelling() or loop.cancelled()

@@ -133,7 +133,8 @@ class WorkerShutdown:
         if self._lock_manager is not None and self._active_handler_locks:
             for handler_id, locks in list(self._active_handler_locks.items()):  # noqa: B007
                 for token in locks:
-                    self._lock_keeper.drop(token)
+                    kept = self._lock_keeper.drop(token)
+                    task_fields = {} if kept is None else {"task_id": kept.task_id, "task_name": kept.task_name}
                     try:
                         released = await self._lock_manager.release(token)
                     except Exception as exc:
@@ -149,6 +150,7 @@ class WorkerShutdown:
                         _lc.logger.warning(
                             "task_lock_lost",
                             lock_name=token.name,
+                            **task_fields,
                             stage="release",
                             hint="the lock was gone or held by another owner at release; "
                             "a second holder may have run in parallel",
@@ -312,6 +314,11 @@ class WorkerShutdown:
             self._metrics_sampler_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._metrics_sampler_task
+
+        # BZ-25 (Review MR 13): keine Keeper-Schleife ueberleben lassen; die
+        # Locks laufen mit ihrer Rest-TTL ab.
+        with contextlib.suppress(Exception):
+            self._lock_keeper.close()
 
         # The leak root: cancel + await the scheduler election/poll sub-tasks.
         if self._scheduler is not None:

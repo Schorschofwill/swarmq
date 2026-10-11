@@ -23,6 +23,7 @@ from swarmq.headers import (
     HEADER_DEAD_LETTERED_AT,
     HEADER_DLQ_GENERATION,
     HEADER_ENQUEUED_AT,
+    HEADER_LOCK_CONFLICT_COUNT_LEGACY,
     HEADER_REPLAY_ID,
     HEADER_RETRY_COUNT,
     LOOP_STATE_HEADERS,
@@ -324,6 +325,9 @@ class RabbitMQAdmin(RabbitMQDelivery):
         # MR 13 (BZ-05): ebenso die Lock-Wartezeit.
         for state_header in LOOP_STATE_HEADERS:
             forward_headers.pop(state_header, None)
+        # Review MR 13: der Konfliktzaehler von 0.11 (Deckel 10) ebenso, sonst
+        # schickte ein 0.11-Worker die Wiederholung beim ersten Konflikt zurueck.
+        forward_headers.pop(HEADER_LOCK_CONFLICT_COUNT_LEGACY, None)
         # Ausfuehrungs-Identitaet der Wiederholung (KTD5; Plan 0.12.0, MR 12):
         # der Ausfuehrungsschutz liesse sie sonst als abgeschlossen fallen,
         # solange der Done-Marker des ersten Laufs steht. Die Generations-ID

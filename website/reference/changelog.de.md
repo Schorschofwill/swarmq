@@ -112,7 +112,10 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   `lock_conflict_count`, dessen Bedeutung gleich bleibt);
   `task_lock_conflict` wird beim ersten Konflikt und danach etwa einmal
   je Minute geloggt; `lock_conflict_dlq_failed` nennt das Feld
-  `lock_conflicts` statt `lock_conflict_count`. Die Wartezeit nutzt die
+  `lock_conflicts` statt `lock_conflict_count`; die DLQ-Kopie trägt
+  keinen Konfliktzähler-Header mehr (die Zahl steht im Text von
+  `x-swarmq-traceback`, „(N conflicts)“), und `swarmq dlq retry`
+  entfernt auch den 0.11-Zähler `x-swarmq-lock-conflict-count`. Die Wartezeit nutzt die
   Wanduhren der Worker (ein Versatz bis etwa 60 s wird toleriert). Eine
   neue Wartezeit beginnt, wenn der Broker die Nachricht neu zustellt
   (ein Worker starb nach dem Acquire oder gab sie beim Herunterfahren
@@ -542,8 +545,13 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 - **Ein verlorener Lock wird gemeldet.** Ist ein Lock beim Verlängern
   oder bei der Freigabe weg oder von einem anderen Halter besetzt
   (verdrängt durch `maxmemory-policy`, Valkey-Datenverlust), loggt der
-  Worker `task_lock_lost` (WARNING, `stage` `running` oder `release`),
-  statt es zu übergehen ([Logging](logging.de.md)).
+  Worker `task_lock_lost` (WARNING, `stage` `running` oder `release`,
+  mit `task_id` und `task_name`), statt es zu übergehen. Gelang vor der
+  Frist des Locks keine Verlängerung (Valkey weg), meldet er
+  `stage="expired"` ohne Roundtrip. Ein scheiternder Takt des Keepers
+  loggt `lock_keeper_tick_failed`, der Keeper läuft weiter; eine
+  Mutex-Verlängerung ist ein Roundtrip, und höchstens 32
+  Verlängerungen laufen gleichzeitig ([Logging](logging.de.md)).
 - **Ein Semaphor-Erwerber mit kurzer TTL lässt den Key nicht mehr unter
   einem Halter mit längerer TTL ablaufen.** `lock_acquire.lua`
   verlängert die TTL des Keys nur noch, verkürzt sie nie. Bekannte

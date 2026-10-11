@@ -522,7 +522,7 @@ async def release_acquired_locks(
     acquired_locks: list[LockToken],
     *,
     log: Any,
-    drop: Callable[[LockToken], None] | None = None,
+    drop: Callable[[LockToken], object] | None = None,
 ) -> None:
     """Release every lock acquired by this handler. Called in the
     ``_handle_message`` finally block. Failures are logged and
@@ -534,8 +534,12 @@ async def release_acquired_locks(
     auch wenn der Versuch scheitert.
     """
     for token in acquired_locks:
-        if drop is not None:
-            drop(token)
+        kept = drop(token) if drop is not None else None
+        # Task-Felder aus der Lease (Review MR 13, Hinweis); im Handler setzt
+        # sie zusaetzlich der Log-Kontext.
+        task_fields = {
+            field: getattr(kept, field) for field in ("task_id", "task_name") if hasattr(kept, field)
+        }
         try:
             released = await lock_manager.release(token)
         except Exception as exc:
@@ -553,6 +557,7 @@ async def release_acquired_locks(
             log.warning(
                 "task_lock_lost",
                 lock_name=token.name,
+                **task_fields,
                 stage="release",
                 hint="the lock was gone or held by another owner at release; a second holder may have run in parallel",
             )

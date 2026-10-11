@@ -22,6 +22,14 @@ Test-Liste:
 - [x] kein Store -> nichts passiert
 - [x] Schleife: schlaeft den kleinsten Takt, endet mit der letzten Lease,
       verlaengert nach jedem Schlaf die faelligen Leases
+- [x] Review MR 13 (Hinweis): ist die lokale Frist sicher verstrichen (alle
+      Verlaengerungen scheiterten, z. B. Valkey-Ausfall), WARNING
+      ``task_lock_lost`` mit ``stage="expired"`` ohne Roundtrip; die Lease
+      faellt heraus
+- [x] Review MR 13 (Hinweis): hoechstens 32 Verlaengerungen gleichzeitig
+      (viele faellige Leases fluten Valkey nicht)
+- [x] Review MR 13 (Hinweis): eine Ausnahme im Takt beendet die Schleife
+      nicht; sie wird geloggt (``lock_keeper_tick_failed``)
 """
 
 from __future__ import annotations
@@ -274,3 +282,84 @@ async def test_loop_ticks_after_each_sleep() -> None:
     await asyncio.wait_for(ticks.wait(), timeout=2)
     assert len(store.calls) == 1
     keeper.close()
+
+
+async def test_loop_survives_a_failing_tick(swarmq_logs) -> None:
+    """Review MR 13 (Hinweis): stirbt die Schleife, verlaengert niemand mehr."""
+    clock = _Clock()
+    ticks = asyncio.Event()
+    calls = 0
+
+    def store() -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("boom")
+        return None
+
+    async def sleep(delay: float) -> None:
+        clock.sleeps.append(delay)
+        if len(clock.sleeps) >= 3:
+            ticks.set()
+            await asyncio.Event().wait()
+
+    keeper = LockKeeper(store, sleep=sleep, now=clock)
+    keeper.keep(_TOKEN, 90_000, task_id="t1", task_name="locked")
+    await asyncio.wait_for(ticks.wait(), timeout=2)
+
+    assert calls == 2
+    [failed] = [e for e in swarmq_logs if e["event"] == "lock_keeper_tick_failed"]
+    assert failed["log_level"] == "warning" and failed["error_type"] == "RuntimeError"
+    keeper.close()
+
+
+async def test_at_most_32_extensions_run_at_once() -> None:
+    """Review MR 13 (Hinweis): ``gather`` ueber alle faelligen Leases ist
+    begrenzt."""
+    clock = _Clock()
+    gate, full = asyncio.Event(), asyncio.Event()
+    inflight = peak = 0
+
+    class _Blocking:
+        async def extend(self, token: LockToken, ttl_ms: int) -> bool:
+            nonlocal inflight, peak
+            inflight += 1
+            peak = max(peak, inflight)
+            if inflight == 32:
+                full.set()
+            await gate.wait()
+            inflight -= 1
+            return True
+
+    keeper = _keeper(_Blocking(), clock)
+    for n in range(40):
+        keeper.keep(LockToken(f"l{n}", "o", 1), 90_000, task_id=f"t{n}", task_name="locked")
+    clock.now += 31.0
+
+    tick = asyncio.create_task(keeper.tick_once())
+    await asyncio.wait_for(full.wait(), timeout=2)
+    assert peak == 32
+    gate.set()
+    await asyncio.wait_for(tick, timeout=2)
+    assert peak == 32 and inflight == 0
+    keeper.close()
+
+
+async def test_surely_expired_lock_is_reported_without_a_round_trip(swarmq_logs) -> None:
+    store, clock = _Store(), _Clock()
+    keeper = _keeper(store, clock)
+    keeper.keep(_TOKEN, 90_000, task_id="t1", task_name="locked")
+    for _ in range(3):  # Valkey weg: jeder Versuch scheitert
+        store.raise_once = ConnectionError("valkey away")
+        clock.now += 20.0
+        await keeper.tick_once()
+    calls = len(store.calls)
+    assert not [e for e in swarmq_logs if e["event"] == "task_lock_lost"]
+
+    clock.now += 31.0  # 1091 > Frist t0 + 90 s
+    await keeper.tick_once()
+
+    assert len(store.calls) == calls and keeper.kept == 0
+    [lost] = [e for e in swarmq_logs if e["event"] == "task_lock_lost"]
+    assert lost["stage"] == "expired" and lost["log_level"] == "warning"
+    assert lost["task_id"] == "t1" and lost["lock_name"] == "resource"
