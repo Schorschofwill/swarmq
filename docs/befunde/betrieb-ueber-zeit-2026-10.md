@@ -108,7 +108,7 @@ Status je Befund: „offen“ oder „behoben (MR n, <Commit>)“. Mit dem Fix i
 | BZ-24 | `tests/unit/client/test_befund_bz24_registry_less_producer.py` | behoben (MR 2, 466cdd9) |
 | BZ-25 | `tests/integration/test_befund_bz25_lock_lease.py` | behoben bis auf blockierten Event-Loop (wird gemeldet: `task_lock_lost`) (MR 13, 1c5682b; Review MR 13) |
 | BZ-26 | `tests/unit/test_befund_bz26_backoff.py` | behoben (MR 2, 0fcbfe8) |
-| BZ-27 | `tests/unit/process_manager/test_befund_bz27_slot_lock.py` | offen |
+| BZ-27 | `tests/unit/process_manager/test_befund_bz27_slot_lock.py` | behoben (MR 17, 4c5e2a7) |
 | BZ-28 | `tests/integration/test_befund_bz28_sched_poll_orphans.py`, `tests/unit/scheduler/test_befund_bz02_bz07_bz09_bz28_scheduler.py` | behoben (MR 4, d4719fa) |
 | BZ-29 | `tests/unit/worker/gates/test_befund_bz29_redeliver_limit.py` | behoben (MR 3, 47aed19) |
 
