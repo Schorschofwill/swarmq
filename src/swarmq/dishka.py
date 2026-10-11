@@ -127,7 +127,7 @@ def get_registered_container() -> AsyncContainer | _Missing:
     return _container
 
 
-def _reset_container() -> None:  # pyright: ignore[reportUnusedFunction]  # von Tests aufgerufen
+def _reset_container() -> None:
     """Test-only: clear the registered container slot."""
     global _container  # noqa: PLW0603 - Modul-Singleton
     _container = _MISSING

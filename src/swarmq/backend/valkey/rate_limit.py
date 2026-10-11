@@ -44,7 +44,7 @@ class RateLimiter:
         ``docs/recherche-deepening-lua-scripts.md`` §3.1 and complicates
         future Valkey-replication semantics.
         """
-        seconds, microseconds = await self._client.time()  # pyright: ignore[reportUnknownMemberType]  # valkey-Typen unvollständig (**kwargs, dict ohne Typargumente)
+        seconds, microseconds = await self._client.time()
         now_ms = int(seconds) * 1000 + int(microseconds) // 1000
         window_ts = now_ms - (now_ms % config.window_size_ms)
         prev_ts = window_ts - config.window_size_ms

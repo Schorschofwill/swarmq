@@ -58,7 +58,7 @@ class LockManager:
         with — same pattern as ``RateLimiter.check``.
         """
         try:
-            seconds, microseconds = await self._client.time()  # pyright: ignore[reportUnknownMemberType]  # valkey-Typen unvollständig (**kwargs, dict ohne Typargumente)
+            seconds, microseconds = await self._client.time()
             now_ms = int(seconds) * 1000 + int(microseconds) // 1000
             result = cast(
                 "int",
@@ -126,7 +126,7 @@ class LockManager:
         try:
             now_ms = 0  # Mutex: das Skript liest ``now_ms`` nicht -- ein Roundtrip
             if max_concurrency != 1:
-                seconds, microseconds = await self._client.time()  # pyright: ignore[reportUnknownMemberType]  # valkey-Typen unvollständig (**kwargs, dict ohne Typargumente)
+                seconds, microseconds = await self._client.time()
                 now_ms = int(seconds) * 1000 + int(microseconds) // 1000
             result = await self._extend_script(
                 keys=[self._keys.lock(lock_name)],
@@ -205,7 +205,7 @@ class ValkeyLockStore:
                 if max_concurrency == 1:
                     pipe.get(key)
                 else:
-                    pipe.zrange(key, 0, -1)  # pyright: ignore[reportUnknownMemberType]  # valkey-Typen unvollständig (**kwargs, dict ohne Typargumente)
+                    pipe.zrange(key, 0, -1)
                 pipe.pttl(key)
                 raw, pttl = cast("list[Any]", await pipe.execute())
         except BackendConnectionError:

@@ -390,7 +390,7 @@ async def _run_schedule_status(args: argparse.Namespace) -> None:
         await backend.close()
 
 
-async def _run_schedule_async(args: argparse.Namespace) -> None:  # pyright: ignore[reportUnusedFunction]  # über Fassade/Nachbarmodul importiert
+async def _run_schedule_async(args: argparse.Namespace) -> None:
     """Dispatch a parsed 'swarmq schedule <subcommand>' invocation."""
     if args.schedule_command == "list":
         await _run_schedule_list(args)

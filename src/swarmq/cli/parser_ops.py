@@ -14,7 +14,7 @@ from swarmq.cli._shared import (
 )
 
 
-def _add_schedule_parser(subparsers: Any) -> None:  # pyright: ignore[reportUnusedFunction]  # über Fassade/Nachbarmodul importiert
+def _add_schedule_parser(subparsers: Any) -> None:
     """``swarmq schedule list|add|remove|status|prune``."""
     schedule = subparsers.add_parser(
         "schedule",
@@ -205,7 +205,7 @@ def _add_schedule_parser(subparsers: Any) -> None:  # pyright: ignore[reportUnus
     )
 
 
-def _add_dlq_parser(subparsers: Any) -> None:  # pyright: ignore[reportUnusedFunction]  # über Fassade/Nachbarmodul importiert
+def _add_dlq_parser(subparsers: Any) -> None:
     """``swarmq dlq list|inspect|retry|purge``."""
     dlq = subparsers.add_parser(
         "dlq",
@@ -363,7 +363,7 @@ def _add_dlq_parser(subparsers: Any) -> None:  # pyright: ignore[reportUnusedFun
     # inspect — introspect registered TaskInfo (including R3.5 dedup)
 
 
-def _add_inspect_parser(subparsers: Any) -> None:  # pyright: ignore[reportUnusedFunction]  # über Fassade/Nachbarmodul importiert
+def _add_inspect_parser(subparsers: Any) -> None:
     """``swarmq inspect`` — TaskInfo-Metadaten."""
     inspect_parser = subparsers.add_parser(
         "inspect",
@@ -393,7 +393,7 @@ def _add_inspect_parser(subparsers: Any) -> None:  # pyright: ignore[reportUnuse
     )
 
 
-def _add_check_parser(subparsers: Any) -> None:  # pyright: ignore[reportUnusedFunction]  # über Fassade/Nachbarmodul importiert
+def _add_check_parser(subparsers: Any) -> None:
     """``swarmq check`` -- Betriebsumgebung pruefen (Plan 0.12.0, MR 14)."""
     check = subparsers.add_parser(
         "check",

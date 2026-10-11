@@ -119,7 +119,7 @@ class ValkeyResults(ValkeyConnection):
 
     async def notify_result(self, task_id: str) -> None:
         try:
-            await self._require_client().publish(self.notify_channel_name(task_id), "done")  # pyright: ignore[reportUnknownMemberType]  # valkey-Typen unvollständig (**kwargs, dict ohne Typargumente)
+            await self._require_client().publish(self.notify_channel_name(task_id), "done")
         except (BackendConnectionError, ValkeyError, OSError) as exc:
             logger.warning("publish_notification_failed", task_id=task_id, **_error_fields(exc))
 
@@ -219,7 +219,7 @@ class ValkeyResults(ValkeyConnection):
 
         async def _write() -> None:
             async with self._require_client().pipeline(transaction=False) as pipe:
-                pipe.hset(key, mapping=dict(fields))  # pyright: ignore[reportUnknownMemberType]  # valkey-Typen unvollständig (**kwargs, dict ohne Typargumente)
+                pipe.hset(key, mapping=dict(fields))
                 pipe.pexpire(key, ttl_ms)
                 await pipe.execute()
 
@@ -233,7 +233,7 @@ class ValkeyResults(ValkeyConnection):
         """
         raw: dict[bytes, bytes] = await self._run(
             "get_progress",
-            self._require_client().hgetall(self._progress_key(task_id)),  # pyright: ignore[reportUnknownMemberType]  # valkey-Typen unvollständig (**kwargs, dict ohne Typargumente)
+            self._require_client().hgetall(self._progress_key(task_id)),
             op_timeout,
         )
         return raw or None
@@ -246,7 +246,7 @@ class ValkeyResults(ValkeyConnection):
         the :meth:`notify_result` discipline.
         """
         try:
-            await self._require_client().publish(self.progress_channel_name(task_id), payload)  # pyright: ignore[reportUnknownMemberType]  # valkey-Typen unvollständig (**kwargs, dict ohne Typargumente)
+            await self._require_client().publish(self.progress_channel_name(task_id), payload)
         except (BackendConnectionError, ValkeyError, OSError) as exc:
             logger.warning("publish_progress_failed", task_id=task_id, **_error_fields(exc))
 
@@ -406,7 +406,7 @@ class ValkeyResults(ValkeyConnection):
         """Wake any ``handle.get()`` waiting on this workflow (R16 liveness).
         Best-effort: failures are logged and swallowed."""
         try:
-            await self._require_client().publish(self.workflow_notify_channel(wf_id), "done")  # pyright: ignore[reportUnknownMemberType]  # valkey-Typen unvollständig (**kwargs, dict ohne Typargumente)
+            await self._require_client().publish(self.workflow_notify_channel(wf_id), "done")
         except (BackendConnectionError, ValkeyError, OSError) as exc:
             logger.warning("publish_workflow_notification_failed", workflow_id=wf_id, **_error_fields(exc))
 

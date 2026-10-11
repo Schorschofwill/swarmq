@@ -302,15 +302,15 @@ class ValkeyScheduleStore:
         await self._run(f"sched_report_known for {name!r}", self._client.sadd(self._report_known, name))
 
     async def known_cron_names(self) -> frozenset[str]:
-        raw = await self._run("known_cron_names", self._client.smembers(self._report_known))  # pyright: ignore[reportUnknownMemberType]  # valkey-Typen unvollständig (**kwargs, dict ohne Typargumente)
+        raw = await self._run("known_cron_names", self._client.smembers(self._report_known))
         return frozenset(_decode(name) for name in raw)
 
     async def cron_reports(self) -> CronReports:
         """``TIME`` und die drei Meldungs-Hashes in einer Transaktion."""
         async with self._client.pipeline(transaction=True) as pipe:
-            pipe.time()  # pyright: ignore[reportUnknownMemberType]  # valkey-Typen unvollständig (**kwargs, dict ohne Typargumente)
+            pipe.time()
             for key in self._report_keys:
-                pipe.hgetall(key)  # pyright: ignore[reportUnknownMemberType]  # valkey-Typen unvollständig (**kwargs, dict ohne Typargumente)
+                pipe.hgetall(key)
             (seconds, micros), first, last, defs = await self._run("cron_reports", pipe.execute())
         reports: list[CronReport] = []
         for raw_field, raw_first in first.items():
@@ -371,18 +371,18 @@ class ValkeyScheduleStore:
         je Meldetakt, nicht je Nachricht."""
         if not queues:
             return
-        seconds, micros = await self._run("report_queues", self._client.time())  # pyright: ignore[reportUnknownMemberType]  # valkey-Typen unvollständig (**kwargs, dict ohne Typargumente)
+        seconds, micros = await self._run("report_queues", self._client.time())
         now_ms = int(seconds) * 1000 + int(micros) // 1000
         async with self._client.pipeline(transaction=True) as pipe:
-            pipe.hset(self._report_queues, mapping=dict.fromkeys(queues, now_ms))  # pyright: ignore[reportUnknownMemberType]  # valkey-Typen unvollständig (**kwargs, dict ohne Typargumente)
+            pipe.hset(self._report_queues, mapping=dict.fromkeys(queues, now_ms))
             pipe.pexpire(self._report_queues, ttl_ms)
             await self._run("report_queues", pipe.execute())
 
     async def queue_reports(self) -> QueueReports:
         """``TIME`` und der Meldungs-Hash in einer Transaktion (BZ-14)."""
         async with self._client.pipeline(transaction=True) as pipe:
-            pipe.time()  # pyright: ignore[reportUnknownMemberType]  # valkey-Typen unvollständig (**kwargs, dict ohne Typargumente)
-            pipe.hgetall(self._report_queues)  # pyright: ignore[reportUnknownMemberType]  # valkey-Typen unvollständig (**kwargs, dict ohne Typargumente)
+            pipe.time()
+            pipe.hgetall(self._report_queues)
             (seconds, micros), raw = await self._run("queue_reports", pipe.execute())
         return QueueReports(
             now_ms=int(seconds) * 1000 + int(micros) // 1000,
@@ -404,7 +404,7 @@ class ValkeyScheduleStore:
         zwischendurch abgelaufene Keys fehlen im Ergebnis."""
         try:
             pattern = f"{self._keys.sched_worker_version_prefix}*"
-            scan = cast("AsyncIterator[bytes]", self._client.scan_iter(match=pattern, count=100))  # pyright: ignore[reportUnknownMemberType]  # valkey-Typen unvollständig (**kwargs, dict ohne Typargumente)
+            scan = cast("AsyncIterator[bytes]", self._client.scan_iter(match=pattern, count=100))
             keys = [key async for key in scan]
         except (ValkeyError, OSError) as exc:
             raise as_backend_error(str(exc), exc) from exc
@@ -449,12 +449,12 @@ class ValkeyScheduleStore:
     async def zrangebyscore_schedules(self, max_score_ms: int, limit: int) -> list[bytes]:
         result: list[bytes] = await self._run(
             "zrangebyscore_schedules",
-            self._client.zrangebyscore(self._zset, "-inf", max_score_ms, start=0, num=limit),  # pyright: ignore[reportUnknownMemberType]  # valkey-Typen unvollständig (**kwargs, dict ohne Typargumente)
+            self._client.zrangebyscore(self._zset, "-inf", max_score_ms, start=0, num=limit),
         )
         return result
 
     async def hset_schedule_def(self, schedule_name: str, def_json: bytes) -> None:
-        await self._run("hset_schedule_def", self._client.hset(self._defs, schedule_name, def_json))  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType, reportUnknownMemberType]  # valkey-Typen unvollständig; bytes ist für str-Parameter gültig
+        await self._run("hset_schedule_def", self._client.hset(self._defs, schedule_name, def_json))  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]  # bytes ist für str-Parameter gültig
 
     async def hsetnx_schedule_def(self, schedule_name: str, def_json: bytes) -> bool:
         result = await self._run("hsetnx_schedule_def", self._client.hsetnx(self._defs, schedule_name, def_json))  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]  # valkey-Typen erlauben nur str; bytes ist zur Laufzeit gültig
@@ -468,7 +468,7 @@ class ValkeyScheduleStore:
         await self._run("hdel_schedule_def", self._client.hdel(self._defs, schedule_name))
 
     async def hgetall_schedule_defs(self) -> dict[bytes, bytes]:
-        result: dict[bytes, bytes] = await self._run("hgetall_schedule_defs", self._client.hgetall(self._defs))  # pyright: ignore[reportUnknownMemberType]  # valkey-Typen unvollständig (**kwargs, dict ohne Typargumente)
+        result: dict[bytes, bytes] = await self._run("hgetall_schedule_defs", self._client.hgetall(self._defs))
         return result
 
     async def set_schedfire_dedup(self, schedfire_key: str, ttl_ms: int) -> bool:

@@ -39,7 +39,7 @@ async def _ready_depth(broker: SamplerBroker, queue: str) -> int:
     return ready if ready is not None else await broker.queue_depth(queue)
 
 
-def _make_queue_depth_sampler(  # pyright: ignore[reportUnusedFunction]  # über Fassade/Nachbarmodul importiert
+def _make_queue_depth_sampler(
     admin_factory: AdminFactory,
     queues: list[str],
 ) -> Callable[[], int]:

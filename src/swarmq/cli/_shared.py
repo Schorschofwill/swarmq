@@ -66,7 +66,7 @@ _VALID_LOG_LEVELS = VALID_LOG_LEVELS
 _VALID_LOG_FORMATS = VALID_LOG_FORMATS
 
 
-def _positive_int(raw: str) -> int:  # pyright: ignore[reportUnusedFunction]  # über Fassade/Nachbarmodul importiert
+def _positive_int(raw: str) -> int:
     """argparse type-function — rejects values < 1 with a clear message."""
     try:
         value = int(raw)
@@ -77,7 +77,7 @@ def _positive_int(raw: str) -> int:  # pyright: ignore[reportUnusedFunction]  # 
     return value
 
 
-def _positive_float(raw: str) -> float:  # pyright: ignore[reportUnusedFunction]  # über Fassade/Nachbarmodul importiert
+def _positive_float(raw: str) -> float:
     """argparse type-function — rejects values <= 0 with a clear message."""
     try:
         value = float(raw)
@@ -103,7 +103,7 @@ _DOTTED_IDENTIFIER_RE = re.compile(
 )
 
 
-def _dotted_module_name(raw: str) -> str:  # pyright: ignore[reportUnusedFunction]  # über Fassade/Nachbarmodul importiert
+def _dotted_module_name(raw: str) -> str:
     """argparse type-function: accept dotted Python identifiers.
 
     Rejects obvious non-imports (paths, hyphens, leading digits, empty
@@ -118,7 +118,7 @@ def _dotted_module_name(raw: str) -> str:  # pyright: ignore[reportUnusedFunctio
     return raw
 
 
-def _configure_hook(raw: str) -> str:  # pyright: ignore[reportUnusedFunction]  # über Fassade/Nachbarmodul importiert
+def _configure_hook(raw: str) -> str:
     """argparse type-function fuer ``--configure MODULE:CALLABLE`` (R9/R11).
 
     Geprueft wird nur die Form: ein dotted Modulname, ein Doppelpunkt, ein
@@ -134,7 +134,7 @@ def _configure_hook(raw: str) -> str:  # pyright: ignore[reportUnusedFunction]  
     return raw
 
 
-def _autoscale_range(raw: str) -> tuple[int, int]:  # pyright: ignore[reportUnusedFunction]  # über Fassade/Nachbarmodul importiert
+def _autoscale_range(raw: str) -> tuple[int, int]:
     """argparse type-function for ``--autoscale=MIN,MAX``.
 
     R4.7: accepts two positive integers separated by a comma. MIN
@@ -162,7 +162,7 @@ def _autoscale_range(raw: str) -> tuple[int, int]:  # pyright: ignore[reportUnus
 _FORBIDDEN_WATCH_PREFIXES = ("/proc", "/sys", "/dev")
 
 
-def _watch_dir_path(raw: str) -> str:  # pyright: ignore[reportUnusedFunction]  # über Fassade/Nachbarmodul importiert
+def _watch_dir_path(raw: str) -> str:
     """argparse type-function for ``--watch-dir PATH``.
 
     R5.3: accepts only existing directories and returns an absolute
@@ -188,7 +188,7 @@ def _watch_dir_path(raw: str) -> str:  # pyright: ignore[reportUnusedFunction]  
     return resolved
 
 
-def _queue_list(raw: str) -> list[str]:  # pyright: ignore[reportUnusedFunction]  # über Fassade/Nachbarmodul importiert
+def _queue_list(raw: str) -> list[str]:
     """Comma-separated queue names with whitespace stripped.
 
     Mirrors :class:`SwarmQConfig`'s ``SWARMQ_QUEUES`` env-var parsing:
@@ -202,7 +202,7 @@ def _queue_list(raw: str) -> list[str]:  # pyright: ignore[reportUnusedFunction]
     return queues
 
 
-async def _backend_from_env() -> ValkeyBackend:  # pyright: ignore[reportUnusedFunction]  # über Fassade/Nachbarmodul importiert
+async def _backend_from_env() -> ValkeyBackend:
     """Construct + connect a ValkeyBackend from SWARMQ_BACKEND_URL.
 
     Shared helper for the schedule subcommands which only need the
@@ -224,7 +224,7 @@ async def _backend_from_env() -> ValkeyBackend:  # pyright: ignore[reportUnusedF
     return backend
 
 
-async def _broker_from_env() -> RabbitMQBroker:  # pyright: ignore[reportUnusedFunction]  # über Fassade/Nachbarmodul importiert
+async def _broker_from_env() -> RabbitMQBroker:
     """Construct + connect a RabbitMQBroker from SWARMQ_BROKER_URL.
 
     Shared helper for the dlq subcommands which only need the broker
@@ -259,7 +259,7 @@ async def _broker_from_env() -> RabbitMQBroker:  # pyright: ignore[reportUnusedF
     return broker
 
 
-def _render_table(rows: Sequence[tuple[str, ...]], empty_label: str) -> str:  # pyright: ignore[reportUnusedFunction]  # über Fassade/Nachbarmodul importiert
+def _render_table(rows: Sequence[tuple[str, ...]], empty_label: str) -> str:
     """Render a list of tuples as a two-space-separated, left-aligned table.
 
     The first row is the header; every subsequent row is data. Column

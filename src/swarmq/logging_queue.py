@@ -393,7 +393,7 @@ _OPTIN_TAKEOVER = False
 """Haelt die Regel "App gewinnt" (KTD4) den Opt-in in diesem Prozess?"""
 
 
-def _enable_log_queue(  # pyright: ignore[reportUnusedFunction]  # ueber swarmq.logging exportiert
+def _enable_log_queue(
     level: str | int,
     *,
     json: bool = False,
@@ -423,7 +423,7 @@ def _enable_log_queue(  # pyright: ignore[reportUnusedFunction]  # ueber swarmq.
     return True
 
 
-def _disable_log_queue() -> _Draining | None:  # pyright: ignore[reportUnusedFunction]  # ueber swarmq.logging exportiert
+def _disable_log_queue() -> _Draining | None:
     """Gibt eine Anforderung frei. Die letzte stellt Handler, ``propagate``
     und Level von ``swarmq`` wieder her (KTD10) und schliesst die Queue, in
     O(1) und ohne zu warten (Plan 2026-10-06-1811, KTD4). Das Leeren
@@ -435,7 +435,7 @@ def _disable_log_queue() -> _Draining | None:  # pyright: ignore[reportUnusedFun
     return None
 
 
-async def _await_log_queue_drained(draining: _Draining | None, timeout: float) -> None:  # pyright: ignore[reportUnusedFunction]  # ueber swarmq.logging exportiert
+async def _await_log_queue_drained(draining: _Draining | None, timeout: float) -> None:
     """Wartet, ohne den Event-Loop anzuhalten, bis der Listener die
     geschlossene Opt-in-Queue geleert hat (Plan 2026-10-06-1811, KTD4).
 
@@ -498,7 +498,7 @@ def _finish_in_background(draining: _Draining, deadline: Deadline, timeout: floa
     ).start()
 
 
-def _reset_log_queue() -> None:  # pyright: ignore[reportUnusedFunction]  # ueber swarmq.logging exportiert
+def _reset_log_queue() -> None:
     """Hebt den Opt-in unabhaengig von der Zahl der Anforderungen auf."""
     global _OPTIN_HOLDERS, _OPTIN_TAKEOVER  # noqa: PLW0603 - Modul-Singleton
     _OPTIN_HOLDERS = 0  # pyright: ignore[reportConstantRedefinition]  # Modul-Zustand
@@ -709,7 +709,7 @@ _APP_TAKEOVER_REPORTED = False
 """``logging_reconfigured_by_app`` erscheint einmal je Prozess (KTD4)."""
 
 
-def _activate_swarmq_queue_after_app_takeover(*, json: bool, queue_size: int) -> None:  # pyright: ignore[reportUnusedFunction]  # ueber swarmq.logging exportiert
+def _activate_swarmq_queue_after_app_takeover(*, json: bool, queue_size: int) -> None:
     """Nach dem Ersatz durch die App laufen die swarmq-Logs ueber die
     Opt-in-Queue am Logger ``swarmq`` an die Handler der App (KTD4, KTD10):
     Ein blockierender App-Handler haelt den Event-Loop nicht auf (R6). Das

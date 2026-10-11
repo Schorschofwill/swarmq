@@ -267,7 +267,7 @@ async def _run_dlq_purge(args: argparse.Namespace) -> None:
         await broker.close()
 
 
-async def _run_dlq_async(args: argparse.Namespace) -> None:  # pyright: ignore[reportUnusedFunction]  # über Fassade/Nachbarmodul importiert
+async def _run_dlq_async(args: argparse.Namespace) -> None:
     """Dispatch a parsed 'swarmq dlq <subcommand>' invocation."""
     if args.dlq_command == "list":
         await _run_dlq_list(args)

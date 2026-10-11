@@ -180,6 +180,15 @@ reportIgnoreCommentWithoutRule = "error"
 reportUnnecessaryTypeIgnoreComment = "error"
 # Paketinterner Zugriff über Fassaden ist Architektur (wie ruff SLF001).
 reportPrivateUsage = false
+# Private ``_``-Funktionen werden über Fassaden und Nachbarmodule importiert
+# (auch für mock.patch); dieselbe Begründung wie reportPrivateUsage.
+reportUnusedFunction = false
+# valkey-py liefert unvollständige Typen (``**kwargs``, ``dict`` ohne
+# Typargumente); die Aufrufe der Client-Methoden stehen gebündelt im Backend.
+executionEnvironments = [
+    { root = "src/swarmq/backend/valkey", reportUnknownMemberType = false },
+    { root = "src" },
+]
 
 [tool.ruff]
 target-version = "py314"
