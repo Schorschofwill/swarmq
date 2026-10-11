@@ -443,7 +443,7 @@ class ProcessManager(RestartBudget):
                 timeout = min(timeout, max(0.0, deadline - time.monotonic()))
             try:
                 info.process.join(timeout=timeout)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - Join best effort beim Warten auf Worker
                 pass
 
     def _collect_zombies(self) -> None:
@@ -550,7 +550,7 @@ class ProcessManager(RestartBudget):
             exitcode = info.process.exitcode
             try:
                 info.process.join(timeout=1)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - Join best effort, Prozess ist bereits beendet
                 pass
             del self.workers[pid]
             self._refresh_slot(info.worker_id)  # KTD1: Uebergang → aktiv / frei; Sperre bleibt

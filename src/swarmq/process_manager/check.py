@@ -11,6 +11,8 @@ from typing import TypedDict
 from swarmq.exceptions import ConfigurationError
 from swarmq.slots import effective_concurrency, resolve_default_slots, validate_pool_mode
 
+_MAX_TCP_PORT = 65535
+
 
 def _validate_module_importable(module: str) -> ModuleSpec:
     """Pre-flight check: raise ConfigurationError if ``module`` cannot
@@ -155,7 +157,7 @@ def _validate_observability_ports(
     metrics_range, health_range = observability_port_ranges(base_metrics, base_health, upper)
 
     for flag, rng in (("--metrics-port", metrics_range), ("--health-port", health_range)):
-        if rng is None or rng[1] <= 65535:
+        if rng is None or rng[1] <= _MAX_TCP_PORT:
             continue
         source = _source(flag)
         raise ConfigurationError(
@@ -243,7 +245,7 @@ def check_worker_config(
     health_port: int | None = None,
     pool: str = "io",
     concurrency: int | None = None,
-    recycling: bool = False,
+    recycling: bool = False,  # noqa: ARG001 - öffentliche Signatur, seit U3 ohne Wirkung
     configure: str | None = None,
     max_processes: int | None = None,
 ) -> WorkerConfigCheckResult:

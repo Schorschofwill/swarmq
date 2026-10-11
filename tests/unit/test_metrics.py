@@ -16,7 +16,7 @@ from swarmq.metrics import (
 from swarmq.signals import Signal, SignalDispatcher
 
 # ---------------------------------------------------------------------------
-# Metrics (registry + render)
+# Metrics: Registry und Rendern
 # ---------------------------------------------------------------------------
 
 
@@ -195,7 +195,7 @@ class TestInstallSignalCollectors:
 
 
 # ---------------------------------------------------------------------------
-# MetricsServer (HTTP)
+# MetricsServer über HTTP
 # ---------------------------------------------------------------------------
 
 

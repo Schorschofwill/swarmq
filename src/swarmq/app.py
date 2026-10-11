@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Self
 
 from swarmq.client import _MISSING, Client, _MissingType
 from swarmq.client.results import _DEFAULT_CANCEL_FLAG_TTL_MS
 
 if TYPE_CHECKING:
+    from types import TracebackType
+
     from swarmq.backend.valkey import ValkeyBackend
     from swarmq.broker.rabbitmq import RabbitMQBroker
     from swarmq.workflow import Chain, Chord, Group, Signature
@@ -96,7 +98,7 @@ class SwarmQ:
             effective = self.backend.reconcile_namespace(self.config.namespace)
         except ConfigurationError:
             raise
-        except Exception:
+        except Exception:  # noqa: BLE001 - Backend ohne Abgleich laesst Konfiguration unveraendert (Q15)
             return
         if effective is None or isinstance(effective, str):
             self.config.namespace = effective
@@ -120,7 +122,7 @@ class SwarmQ:
         """Build a fresh :class:`MiddlewareChain` from currently registered middlewares."""
         return MiddlewareChain(self._middlewares)
 
-    async def __aenter__(self) -> SwarmQ:
+    async def __aenter__(self) -> Self:
         await self.broker.connect()
         try:
             await self.backend.connect()
@@ -129,7 +131,12 @@ class SwarmQ:
             raise
         return self
 
-    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         # Staged try/finally: broker.close() may raise
         # by design on the injected path (channel.close() errors are NOT
         # swallowed there); without the finally-chain that left the
@@ -261,7 +268,7 @@ class SwarmQ:
         # patches like ``mock.patch("swarmq.app.Worker")`` continue to
         # intercept the construction. A direct lazy-local import would
         # bind to swarmq.worker.Worker and bypass the facade patch.
-        from swarmq import app as _app_module
+        from swarmq import app as _app_module  # noqa: PLW0406 - Fassaden-Attribut bleibt per mock.patch austauschbar
 
         worker = _app_module.Worker(  # type: ignore[operator]  # PEP-562-Fassaden-Attribut, patchbar
             self.broker,

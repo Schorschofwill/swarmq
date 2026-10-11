@@ -72,12 +72,12 @@ class WorkerShutdown:
         if self._metrics_server is not None:
             try:
                 await self._metrics_server.stop()
-            except Exception:
+            except Exception:  # noqa: BLE001 - Teardown best effort
                 _lc.logger.exception("metrics_server_stop_failed")
         if self._health_server is not None:
             try:
                 await self._health_server.stop()
-            except Exception:
+            except Exception:  # noqa: BLE001 - Teardown best effort
                 _lc.logger.exception("health_server_stop_failed")
 
     async def _drain_in_flight(self, drain_until: float | None = None) -> None:
@@ -88,7 +88,7 @@ class WorkerShutdown:
         # (in-flight drain, lock release, scheduler stop). 2026-06-02 audit.
         try:
             await self._broker.cancel_consume()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Teilfehler darf Shutdown nicht abbrechen
             _lc.logger.warning("cancel_consume_partial_failure", **_error_fields(exc))
 
         # 2. Wait for in-flight tasks to complete
@@ -145,7 +145,7 @@ class WorkerShutdown:
                     task_fields = {} if kept is None else {"task_id": kept.task_id, "task_name": kept.task_name}
                     try:
                         released = await asyncio.wait_for(self._lock_manager.release(token), self._step_timeout())
-                    except Exception as exc:
+                    except Exception as exc:  # noqa: BLE001 - Lock-TTL heilt den Fall selbst
                         # KTD11: die Lock-TTL heilt den Fall selbst -> WARNING.
                         _lc.logger.warning(
                             "shutdown_lock_release_failed",
@@ -179,7 +179,7 @@ class WorkerShutdown:
         if self._scheduler is not None:
             try:
                 await asyncio.wait_for(self._scheduler.stop(), self._step_timeout())
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - Leader-Lock laeuft per TTL ab
                 # KTD11: Leader-Lock und Marker laufen per TTL ab -> WARNING.
                 _lc.logger.warning("scheduler_stop_failed", **_error_fields(exc))
                 if isinstance(exc, TimeoutError):
@@ -196,7 +196,7 @@ class WorkerShutdown:
         if not isinstance(_di_container, _Missing):
             try:
                 await self._bounded_step("di_container_close", _di_container.close())
-            except Exception:
+            except Exception:  # noqa: BLE001 - Teardown best effort
                 _lc.logger.exception("dishka_container_close_failed")
 
     async def _bounded_step(self, step: str, awaitable: Awaitable[object]) -> None:

@@ -48,7 +48,7 @@ def tick(pm: Any) -> None:
 
     try:
         depth = pm._queue_depth_fn()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - Fehler wird geloggt, Autoscale läuft weiter
         # sanitize_url strips embedded AMQP
         # credentials before the exception text reaches the log.
         fields = _error_fields(exc)

@@ -66,7 +66,7 @@ class ClientResults:
         self,
         task_id: str,
         timeout: float = 10,
-        polling: float = 0.2,
+        polling: float = 0.2,  # noqa: ARG002 - nur aus API-Kompatibilitaet erhalten
     ) -> Any:
         """Retrieve a task result, waiting up to *timeout* seconds.
 

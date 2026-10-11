@@ -125,7 +125,7 @@ class LockKeeper:
             await self._sleep(min(keeper_tick_s(kept.ttl_ms) for kept in self._kept.values()))
             try:
                 await self.tick_once()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - Schleife darf nicht sterben
                 # Die Schleife darf nicht sterben: sonst verlaengert niemand mehr.
                 logger.warning("lock_keeper_tick_failed", leases=len(self._kept), **_error_fields(exc))
 
@@ -177,7 +177,7 @@ class LockKeeper:
             logger.warning("lock_extend_unsupported", **fields, **_error_fields(exc))
             self._kept.pop(kept.token, None)
             return
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - naechster Takt versucht erneut
             # Naechster Takt erneut; das Fenster deckt drei Takte.
             logger.warning("lock_extend_failed", **fields, **_error_fields(exc))
             return

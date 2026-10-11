@@ -81,7 +81,7 @@ def _check_logging_settings(args: argparse.Namespace) -> None:
 
     settings = resolve_logging_settings(args, os.environ, None)
     if settings.log_config is not None:
-        path = os.path.abspath(settings.log_config)
+        path = os.path.abspath(settings.log_config)  # noqa: PTH100 - abspath normalisiert ohne Symlinks aufzulösen
         # Parsen allein reicht nicht: ein Tippfehler in der Handler-Klasse ist
         # gueltiges JSON und faellt erst in ``dictConfig`` auf. Dieselbe Probe
         # wie vor dem Hot-Reload, in einem eigenen Interpreter, damit --check
@@ -161,17 +161,18 @@ def _run_worker_check(args: argparse.Namespace) -> int:
             health_ports=result["health_ports"],
         )
         sys.stdout.write(json.dumps(payload) + "\n")
-        return 0
     except ConfigurationError as exc:
         payload["error"] = str(exc)
         payload["error_type"] = "ConfigurationError"
         sys.stdout.write(json.dumps(payload) + "\n")
         return 1
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - jeder Fehler wird als JSON-Ergebnis gemeldet
         payload["error"] = f"{type(exc).__name__}: {exc}"
         payload["error_type"] = type(exc).__name__
         sys.stdout.write(json.dumps(payload) + "\n")
         return 1
+    else:
+        return 0
 
 
 def _is_check_invocation(argv: Sequence[str] | None) -> bool:

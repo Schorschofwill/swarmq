@@ -22,6 +22,8 @@ from swarmq.exceptions import ConfigurationError
 
 DEFAULT_IO_CONCURRENCY = 10
 _CGROUP_CPU_MAX = Path("/sys/fs/cgroup/cpu.max")
+#: ``cpu.max`` enthaelt genau zwei Felder: Quote und Periode.
+_CPU_MAX_FIELDS = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,7 +47,7 @@ def _cgroup_quota(path: Path) -> int | None:
         parts = path.read_text(encoding="ascii").split()
     except OSError, UnicodeDecodeError:
         return None
-    if len(parts) != 2 or parts[0] == "max":
+    if len(parts) != _CPU_MAX_FIELDS or parts[0] == "max":
         return None
     try:
         quota, period = int(parts[0]), int(parts[1])

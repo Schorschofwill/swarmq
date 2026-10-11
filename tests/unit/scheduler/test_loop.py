@@ -6,7 +6,7 @@ API), Poll/Fire, Schedfire-Dedup (``claim_unique``), Stop/Abort."""
 # 2. Fehler-Events tragen ``error_type``/``error`` (je Aufrufstelle ein Test):
 #    handover_marker_failed, lock_release_failed, election_tick_error,
 #    renew_error, acquire_error, handover_marker_read_failed,
-#    cron_adopt_failed (U12), poll_tick_error, poll_due_failed,
+#    cron_adopt_failed (seit U12), poll_tick_error, poll_due_failed,
 #    unique_setnx_failed, publish_failed, commit_failed,
 #    duplicate_signal_dispatch_error, signal_dispatch_error.
 # 3. ``scheduler_task_not_in_local_registry`` ueber ``swarmq_logs`` statt
@@ -254,12 +254,9 @@ class TestElectionLoop:
 
         # One failure short of the limit, then a success, then again
         # one failure short — never steps down.
-        seq: list = []
-        for _ in range(limit - 1):
-            seq.append(BackendConnectionError("blip"))
+        seq: list = [BackendConnectionError("blip") for _ in range(limit - 1)]
         seq.append(True)
-        for _ in range(limit - 1):
-            seq.append(BackendConnectionError("blip"))
+        seq.extend(BackendConnectionError("blip") for _ in range(limit - 1))
         lock_manager.renew.side_effect = seq
 
         for _ in range(len(seq)):

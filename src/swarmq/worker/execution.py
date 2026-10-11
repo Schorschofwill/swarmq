@@ -135,7 +135,7 @@ class TaskExecutor:
             if task_info.soft_timeout is not None:
                 run_coro = asyncio.wait_for(run_coro, timeout=task_info.soft_timeout)
             run_task = asyncio.create_task(run_coro)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Task-Fehler darf die Pipeline nicht verlassen
             fail(exc, str(exc))
             return
 
@@ -191,12 +191,12 @@ class TaskExecutor:
                 # "timeout" or None (bare CancelledError): hard-timeout path.
                 hard_err_msg = f"hard timeout after {task_info.hard_timeout}s"
                 fail(RuntimeError(hard_err_msg), hard_err_msg)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Task-Fehler darf die Pipeline nicht verlassen
             fail(exc, str(exc))
         else:
             try:
                 await task_instance.post_execution()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - Task-Fehler darf die Pipeline nicht verlassen
                 fail(exc, str(exc))
                 result.result_value = None
 
@@ -282,7 +282,7 @@ class TaskExecutor:
 
         try:
             await task_instance.pre_execution()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Task-Fehler darf die Pipeline nicht verlassen
             _fail(exc, str(exc))
         else:
             await self._run_with_guards(task_instance, ctx, result, _fail)
@@ -339,7 +339,7 @@ class TaskExecutor:
             except asyncio.CancelledError:
                 # Handler finally cancels us explicitly — propagate.
                 raise
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - Fehler wird geloggt, Schleife laeuft weiter
                 logger.warning("cancel_monitor_error", task_id=task_id, **_error_fields(exc))
                 # Fall through — the next iteration's asyncio.wait already
                 # waits poll_interval, so no extra sleep is needed.

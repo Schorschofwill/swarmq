@@ -197,7 +197,7 @@ async def _run_job(job: ComputeJob, channel: Any, slot: int | None) -> ResultEnv
     except asyncio.CancelledError as exc:
         caught = exc
         raise
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - Task-Fehler wird als Fehler-Envelope gemeldet
         caught = exc
         envelope = error_envelope(job.task_id, exc, **meta)
     finally:
@@ -333,7 +333,7 @@ async def _recv_job(job_conn: Any, stop: asyncio.Event) -> ComputeJob | None:
             return
         try:
             fut.set_result(job_conn.recv())
-        except Exception:
+        except Exception:  # noqa: BLE001 - offenes Future hinge sonst fuer immer
             # EOF/OSError: der Loop-Prozess ist weg (R27, Rueckfallebene). Alles andere
             # (unlesbarer Rahmen): ebenfalls beenden — ein offenes Future hinge fuer immer.
             fut.set_result(None)

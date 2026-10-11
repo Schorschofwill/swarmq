@@ -137,7 +137,7 @@ class ValkeyResults(ValkeyConnection):
         while loop.time() < pub_deadline:
             try:
                 msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.05)
-            except Exception:
+            except Exception:  # noqa: BLE001 - Pub/Sub-Fehler, weiter mit Polling
                 return None  # Pub/Sub error, fall through to polling
             if msg is not None:
                 raw = await get_within_deadline()
@@ -150,7 +150,7 @@ class ValkeyResults(ValkeyConnection):
         try:
             await pubsub.unsubscribe(channel)
             await pubsub.aclose()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 - Teardown best effort
             pass
 
     async def wait_for_result(self, task_id: str, *, timeout: float) -> bytes | None:
@@ -178,7 +178,7 @@ class ValkeyResults(ValkeyConnection):
         pubsub: Any = self._pubsub()
         try:
             await pubsub.subscribe(channel)
-        except Exception:
+        except Exception:  # noqa: BLE001 - Pub/Sub nicht verfuegbar, weiter mit Polling
             pubsub = None  # Pub/Sub unavailable, fall through to polling
 
         try:
@@ -275,7 +275,7 @@ class ValkeyResults(ValkeyConnection):
         try:
             try:
                 await _subscribe_and_drain()
-            except Exception:
+            except Exception:  # noqa: BLE001 - Abo gescheitert, Schnappschuss als Ersatz
                 fallback = await _snapshot()
                 if fallback is not None:
                     yield fallback
@@ -288,7 +288,7 @@ class ValkeyResults(ValkeyConnection):
             while True:
                 try:
                     msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)
-                except Exception:
+                except Exception:  # noqa: BLE001 - Pub/Sub-Fehler, Schnappschuss und Resubscribe
                     # Pub/Sub-Fehler: Schnappschuss überbrückt, dann aktives
                     # Resubscribe mit 0,5 s Backoff.
                     fallback = await _snapshot()
@@ -308,7 +308,7 @@ class ValkeyResults(ValkeyConnection):
     async def _try_resubscribe(subscribe_and_drain: Any) -> None:
         try:
             await subscribe_and_drain()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 - Resubscribe best effort, naechster Versuch folgt
             pass
         await asyncio.sleep(0.5)
 
@@ -420,16 +420,17 @@ class ValkeyResults(ValkeyConnection):
                 msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.05)
                 if msg is not None:
                     return True
-            return False
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception:  # noqa: BLE001 - Fehler gilt als keine Benachrichtigung
+            return False
+        else:
             return False
         finally:
             try:
                 await pubsub.unsubscribe(channel)
                 await pubsub.aclose()
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - Teardown best effort
                 pass
 
     # ------------------------------------------------------------------

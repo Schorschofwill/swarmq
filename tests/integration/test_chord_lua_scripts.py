@@ -37,9 +37,7 @@ def _ids():
 async def test_exactly_one_completion_fires_body(manager):
     wf_id, chord_id = _ids()
     members = [f"m{i}" for i in range(5)]
-    fired = []
-    for m in members:
-        fired.append(await manager.record_and_check_complete(wf_id, chord_id, m, expected_n=5, ttl_ms=60_000))
+    fired = [await manager.record_and_check_complete(wf_id, chord_id, m, expected_n=5, ttl_ms=60_000) for m in members]
     assert fired.count(True) == 1
     # The last completion is the one that fires.
     assert fired == [False, False, False, False, True]

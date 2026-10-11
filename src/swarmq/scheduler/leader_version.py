@@ -112,14 +112,14 @@ class SchedulerLeaderVersion:
                 self._version,
                 ttl_ms=int(self._config.scheduler_lock_ttl * 1000),
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Fehler wird geloggt, nächster Takt schreibt erneut
             logger.warning("scheduler_leader_version_write_failed", **_error_fields(exc))
 
     async def _check_leader_version(self) -> None:
         """Nicht-Leader: Leader-Lock samt Versions-Key beobachten."""
         try:
             info = await self._backend.schedules.leader_info()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Fehler wird geloggt, nächster Takt prüft erneut
             logger.warning("scheduler_leader_version_check_failed", **_error_fields(exc))
             return
         if info.owner is not None:

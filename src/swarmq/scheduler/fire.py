@@ -293,7 +293,7 @@ class SchedulerFire:
                 await self._defer_unroutable_oneshot(schedule_name, score_ms, definition, now_ms, task_id)
                 return False
             await self._report_unroutable_cron(schedule_name, definition, exc)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Fehler wird geloggt, Scheduler läuft weiter
             self._log.warning(
                 "scheduler_publish_failed",
                 schedule_name=schedule_name,
@@ -318,7 +318,7 @@ class SchedulerFire:
             return
         try:
             await self._backend.release_unique(own_claim, task_id, op_timeout=self._config.backend_op_timeout)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - best effort, Flag läuft über TTL ab
             self._log.warning(
                 "scheduler_unique_release_failed",
                 schedule_name=schedule_name,
@@ -362,7 +362,7 @@ class SchedulerFire:
                 dedup_hash=dedup_hash,
                 source="scheduler.fire",
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Signal-Handler darf Scheduler nicht stoppen
             self._log.warning(
                 "scheduler_duplicate_signal_dispatch_error",
                 task_name=task_name,

@@ -27,6 +27,8 @@ if TYPE_CHECKING:
 
 _progress_logger = get_logger(__name__)
 
+_MAX_TASK_NAME_LEN = 255
+
 # Cron syntax we intentionally do NOT support in v1: L (last), W (nearest
 # weekday), # (nth weekday of month). Rejected at construction so the failure
 # surfaces at task-module import time rather than inside the scheduler loop.
@@ -177,7 +179,7 @@ class TaskInfo:
     def _validate_identity_and_retry(self) -> None:
         if not self.name:
             raise ValueError("name must not be empty")
-        if len(self.name) > 255:
+        if len(self.name) > _MAX_TASK_NAME_LEN:
             raise ValueError("name must not exceed 255 characters")
         if not self.queues:
             raise ValueError("queues must have at least 1 element")
@@ -435,7 +437,7 @@ class Task:
                 fields,
                 ttl_ms=self._result_ttl_ms,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Fortschritt best effort, Fehler wird geloggt
             _progress_logger.warning(
                 "update_progress_hset_failed",
                 task_id=self._task_id,
@@ -448,7 +450,7 @@ class Task:
                 self._task_id,
                 json.dumps(fields).encode("utf-8"),
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Fortschritt best effort, Fehler wird geloggt
             _progress_logger.warning(
                 "update_progress_publish_failed",
                 task_id=self._task_id,

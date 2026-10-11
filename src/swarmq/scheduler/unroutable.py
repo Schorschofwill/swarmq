@@ -182,7 +182,7 @@ class SchedulerUnroutable:
         nahm (Owner = ``task_id``); sonst blockierte sie bis zu ihrem TTL."""
         try:
             await self._backend.release_unique(dedup_hash, task_id, op_timeout=self._config.backend_op_timeout)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - best effort, Sperre läuft über TTL ab
             self._log.warning(
                 "scheduler_unroutable_unique_release_failed",
                 task_id=task_id,
@@ -216,7 +216,7 @@ class SchedulerUnroutable:
                 op_timeout=self._config.backend_op_timeout,
             )
             await self._backend.notify_result(task_id)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Fehler wird geloggt, best effort
             self._log.warning("scheduler_unroutable_result_store_failed", task_id=task_id, **_error_fields(exc))
 
     async def _commit_unroutable(

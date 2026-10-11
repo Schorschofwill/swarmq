@@ -113,7 +113,7 @@ async def _read_queue_state(url: str, broker_url: str) -> QueueState:
     await backend.connect()
     try:
         reports = await backend.schedules.queue_reports()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - Fehler wird als Queue-Zustand gemeldet
         return QueueState(error=f"{type(exc).__name__}: {exc}")
     finally:
         await backend.close()
@@ -334,8 +334,9 @@ def _render_table(report: dict[str, Any]) -> str:
     for name in ("valkey", "shutdown", "queues"):
         for key, value in report[name].items():
             lines.append(f"{name}  {key}  {'-' if value is None else value}")
-    for finding in report["findings"]:
-        lines.append(f"{finding['level'].upper()}  {finding['section']}: {finding['message']}")
+    lines.extend(
+        f"{finding['level'].upper()}  {finding['section']}: {finding['message']}" for finding in report["findings"]
+    )
     lines.append("OK" if report["ok"] else "FAILED")
     return "\n".join(lines)
 
@@ -347,7 +348,7 @@ def run_env_check(args: argparse.Namespace) -> int:
     try:
         url = os.environ.get("SWARMQ_BACKEND_URL", "")
         if not url:
-            raise ConfigurationError(
+            raise ConfigurationError(  # noqa: TRY301 - gleicher Fehlerpfad wie die übrigen Prüfungen
                 "SWARMQ_BACKEND_URL is not set; export it or pass it via env, "
                 "e.g. SWARMQ_BACKEND_URL=valkey://localhost:6379/0"
             )
@@ -355,7 +356,7 @@ def run_env_check(args: argparse.Namespace) -> int:
         broker_url = os.environ.get("SWARMQ_BROKER_URL", "")
         queues = asyncio.run(_read_queue_state(url, broker_url)) if broker_url else None
         report = build_report(url, described, env_valkey_eviction_check(), queues=queues)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - CLI meldet jeden Fehler als eine Zeile
         sys.stderr.write(f"swarmq check: {exc}\n")
         return 1
     if args.format == "json":

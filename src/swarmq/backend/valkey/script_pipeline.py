@@ -88,7 +88,7 @@ class ScriptPipeline:
         pool = self._client.connection_pool
         try:
             connection = await pool.get_connection("EVALSHA")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Fehler geht an die wartenden Futures
             _fail(batch, exc)
             return
         try:
@@ -98,7 +98,7 @@ class ScriptPipeline:
                 lambda: self._exchange(connection, batch),
                 _ignore_failure,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Fehler geht an die wartenden Futures
             _fail(batch, exc)
             return
         finally:
@@ -114,7 +114,7 @@ class ScriptPipeline:
     async def _direct(self, call: _Call) -> None:
         try:
             reply = await call.script(keys=call.keys, args=call.args, client=self._client)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Fehler geht an das wartende Future
             reply = exc
         _settle(call.future, reply)
 
@@ -130,12 +130,13 @@ class ScriptPipeline:
                     # Die Fehlerantwort ist vollstaendig gelesen: die
                     # Verbindung bleibt synchron, nur dieser Aufruf scheitert.
                     replies.append(exc)
-            return replies
         except BaseException:
             # Protokollzustand unbekannt (Transportfehler, Abbruch mitten im
             # Lesen): die Verbindung verwerfen.
             await connection.disconnect(nowait=True)
             raise
+        else:
+            return replies
 
 
 def _settle(future: asyncio.Future[Any], reply: Any) -> None:

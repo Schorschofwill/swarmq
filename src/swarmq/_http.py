@@ -212,10 +212,10 @@ class AsyncHttpServer:
         finally:
             try:
                 await writer.drain()
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - Teardown best effort
                 pass
             writer.close()
             try:
                 await writer.wait_closed()
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - Teardown best effort
                 pass

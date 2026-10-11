@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from swarmq.broker.rabbitmq import RabbitMQBroker
 
 _VALID_OUTPUT_FORMATS = frozenset({"table", "json"})
+_AUTOSCALE_BOUND_COUNT = 2  # --autoscale MIN,MAX
 
 #: Canonical ``choices=`` tuple for every ``--format`` add_argument site in
 #: :mod:`swarmq.cli.parser`. Keep alignment with ``_VALID_OUTPUT_FORMATS``
@@ -142,7 +143,7 @@ def _autoscale_range(raw: str) -> tuple[int, int]:
     a single clean error line instead of a Python traceback.
     """
     parts = [p.strip() for p in raw.split(",") if p.strip()]
-    if len(parts) != 2:
+    if len(parts) != _AUTOSCALE_BOUND_COUNT:
         raise argparse.ArgumentTypeError(f"--autoscale must be MIN,MAX (got {raw!r})")
     try:
         low, high = int(parts[0]), int(parts[1])

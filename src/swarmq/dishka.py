@@ -62,7 +62,7 @@ class _Missing:
 
     _instance: _Missing | None = None
 
-    def __new__(cls) -> _Missing:
+    def __new__(cls) -> _Missing:  # noqa: PYI034 - Singleton liefert die gespeicherte Instanz
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
@@ -97,7 +97,7 @@ def setup_dishka(container: AsyncContainer) -> None:
     always an accident, and the silent last-writer-wins made the losing
     module's providers vanish without a trace).
     """
-    global _container
+    global _container  # noqa: PLW0603 - Modul-Singleton
     if _container is not _MISSING and _container is not container:
         logger.warning(
             "dishka_container_replaced",
@@ -116,7 +116,7 @@ def get_registered_container() -> AsyncContainer | _Missing:
 
 def _reset_container() -> None:
     """Test-only: clear the registered container slot."""
-    global _container
+    global _container  # noqa: PLW0603 - Modul-Singleton
     _container = _MISSING
 
 
@@ -136,7 +136,6 @@ def _key_resolvable(container: object, key: object) -> bool:
             if reg.get_factory(key) is not None:
                 return True
             reg = reg.child_registry
-        return False
     except AttributeError:
         # Introspection surface changed across dishka versions — degrade to
         # presence-only (the container-registered check already passed). Log
@@ -148,6 +147,8 @@ def _key_resolvable(container: object, key: object) -> bool:
             ),
         )
         return True
+    else:
+        return False
 
 
 def _reject_ineffective_fromdishka(registered_tasks: list[type], error_cls: type[Exception]) -> None:
@@ -215,7 +216,7 @@ def validate_registered_tasks(registered_tasks: list[type]) -> None:
         )
 
 
-def _get_request_container(args: tuple[object, ...], kwargs: dict[str, object]) -> AsyncContainer:
+def _get_request_container(args: tuple[object, ...], kwargs: dict[str, object]) -> AsyncContainer:  # noqa: ARG001 - Signatur von dishka container_getter vorgegeben
     """container_getter for wrap_injection: returns the per-task REQUEST
     container set by the worker. Raises a clear error if called outside an
     active request scope (e.g. a FromDishka task invoked directly in a test

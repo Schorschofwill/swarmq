@@ -32,7 +32,7 @@ class ValkeyBackend(ValkeyResults):
     _execution_guard: ValkeyExecutionGuardStore | None = None
 
     # ------------------------------------------------------------------
-    # Koordinationsobjekte (KTD4)
+    # Koordinationsobjekte, siehe KTD4
     # ------------------------------------------------------------------
 
     @property

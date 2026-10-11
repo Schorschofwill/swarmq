@@ -16,6 +16,8 @@ from swarmq.exceptions import ConfigurationError
 #: Gueltige Level fuer alle Logging-Einstellungen; CRITICAL ueberall (KTD8).
 VALID_LOG_LEVELS: tuple[str, ...] = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 VALID_LOG_FORMATS: tuple[str, ...] = ("human", "json")
+#: Laenge eines (NAME, LEVEL)-Paars.
+_LOGGER_LEVEL_PAIR_LEN = 2
 
 
 @dataclass(frozen=True)
@@ -254,7 +256,7 @@ def validate_logger_levels(pairs: object, source: str) -> tuple[tuple[str, str],
     """``(NAME, LEVEL)``-Paare pruefen und das Level normalisieren."""
     entries: list[str] = []
     for pair in pairs if isinstance(pairs, (tuple, list)) else [pairs]:
-        if not (isinstance(pair, (tuple, list)) and len(pair) == 2):
+        if not (isinstance(pair, (tuple, list)) and len(pair) == _LOGGER_LEVEL_PAIR_LEN):
             msg = f"{source} expects (NAME, LEVEL) pairs, got {pair!r}"
             raise ConfigurationError(msg)
         entries.append(f"{pair[0]}={pair[1]}")

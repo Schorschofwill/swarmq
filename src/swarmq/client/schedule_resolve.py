@@ -40,7 +40,7 @@ class _MissingType:
     __slots__ = ()
     _instance: _MissingType | None = None
 
-    def __new__(cls) -> _MissingType:
+    def __new__(cls) -> _MissingType:  # noqa: PYI034 - Singleton liefert die gespeicherte Instanz
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance

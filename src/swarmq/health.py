@@ -40,6 +40,9 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+#: Laengere Fehlertexte werden auf den Klassennamen reduziert.
+_MAX_ERROR_TAG_LEN = 120
+
 #: Zusatz-Check fuer ``/ready``: (ok, Fehlertext oder ``None``).
 ReadinessCheck = Callable[[], Awaitable[tuple[bool, str | None]]]
 
@@ -106,7 +109,7 @@ class HealthChecker:
         msg = str(exc)
         if not msg:
             return cls
-        if len(msg) > 120 or "://" in msg or "@" in msg:
+        if len(msg) > _MAX_ERROR_TAG_LEN or "://" in msg or "@" in msg:
             return cls
         # Strip host:port fragments. Two patterns:
         #  (a) '[::1]:6379' — IPv6 bracket notation
@@ -120,20 +123,22 @@ class HealthChecker:
         ``connect()`` und bei Störung ``BackendConnectionError``."""
         try:
             await asyncio.wait_for(self._backend.ping(), timeout=self._timeout)
-            return True, None
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Fehler wird geloggt, Check meldet nicht bereit
             logger.warning("check_backend_failed", **_error_fields(exc))
             return False, self._sanitise_error(exc)
+        else:
+            return True, None
 
     async def check_broker(self) -> tuple[bool, str | None]:
         """``Publisher.ping`` wirft, wenn nicht verbunden oder die Verbindung
         nicht bereit ist (transportnah, keine Queue-Deklarationen)."""
         try:
             await asyncio.wait_for(self._broker.ping(), timeout=self._timeout)
-            return True, None
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Fehler wird geloggt, Check meldet nicht bereit
             logger.warning("check_broker_failed", **_error_fields(exc))
             return False, self._sanitise_error(exc)
+        else:
+            return True, None
 
     async def check_all(self) -> ReadinessSnapshot:
         """Return a structured snapshot suitable for JSON serialisation."""
@@ -147,7 +152,7 @@ class HealthChecker:
         for name, check in self._checks.items():
             try:
                 ok, err = await asyncio.wait_for(check(), timeout=self._timeout)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - Nutzer-Check darf Readiness-Abfrage nicht abbrechen
                 ok, err = False, self._sanitise_error(exc)
             cast("dict[str, object]", snapshot)[name] = _DependencyState(ok=ok, error=err)
             snapshot["ready"] = snapshot["ready"] and ok
@@ -231,7 +236,7 @@ class HealthServer:
 
     async def _handle_request(
         self,
-        method: str,
+        method: str,  # noqa: ARG002 - Handler-Signatur des HTTP-Servers vorgegeben
         path: str,
         writer: asyncio.StreamWriter,
     ) -> None:

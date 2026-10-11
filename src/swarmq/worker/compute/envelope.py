@@ -111,8 +111,8 @@ def _is_picklable(obj: object) -> bool:
     """Hin- UND Rueckweg pruefen: eine Exception mit eigener ``__init__``-Signatur
     pickelt zwar, scheitert aber beim ``loads`` im Elternprozess."""
     try:
-        pickle.loads(pickle.dumps(obj))
-    except Exception:
+        pickle.loads(pickle.dumps(obj))  # noqa: S301 - Rundreise eigener Daten, keine Fremdeingabe
+    except Exception:  # noqa: BLE001 - jeder Pickle-Fehler heisst nicht picklebar
         return False
     return True
 
@@ -152,7 +152,7 @@ def reconstruct_exception(info: RemoteExceptionInfo) -> BaseException:
         cls: Any = module
         for part in info.qualname.split("."):
             cls = getattr(cls, part)
-    except Exception:
+    except Exception:  # noqa: BLE001 - Klasse nicht ladbar, Rueckfall-Exception
         return fallback
     if not (isinstance(cls, type) and issubclass(cls, BaseException)):
         return fallback
@@ -161,7 +161,7 @@ def reconstruct_exception(info: RemoteExceptionInfo) -> BaseException:
     for ctor_args in ((info.message,), ()):
         try:
             rebuilt = exc_cls(*ctor_args)
-        except Exception:
+        except Exception:  # noqa: BLE001, S112 - naechste Konstruktor-Variante versuchen
             continue
         break
     if rebuilt is None:

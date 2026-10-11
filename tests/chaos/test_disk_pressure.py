@@ -213,11 +213,15 @@ class TestDiskPressure:
                 # Re-read the keys we wrote by scanning — the helper
                 # raises before returning, so we need to recover the
                 # filler set from the server itself.
-                async for key in backend._client.scan_iter(
-                    match="k_*",
-                    count=200,
-                ):
-                    written.append(key.decode() if isinstance(key, bytes) else key)
+                written.extend(
+                    [
+                        key.decode() if isinstance(key, bytes) else key
+                        async for key in backend._client.scan_iter(
+                            match="k_*",
+                            count=200,
+                        )
+                    ]
+                )
 
             assert written, "expected at least one filler key present after OOM-fill"
 

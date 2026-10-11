@@ -334,7 +334,7 @@ def stale_patch_targets(tests_root: Path, split_modules: Mapping[str, Iterable[s
                     continue
                 first = target[len(facade) + 1 :].split(".", 1)[0]
                 # Erlaubt: Submodule und die von der Fassade re-exportierten
-                # Klassen (CamelCase). Konstanten/Funktionen/Module-Aliase
+                # Klassen in CamelCase. Konstanten/Funktionen/Module-Aliase
                 # (``logger``, ``asyncio``, ``_POOL_…``) sind veraltet.
                 is_class = first[:1].isupper() and not first.isupper()
                 if first not in set(submodules) and not is_class:

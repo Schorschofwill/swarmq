@@ -166,7 +166,8 @@ class ClientWorkflows:
             "type": type(exc).__name__,
             "message": f"apply() failed to enqueue the initial frontier: {exc}",
         }
-        for candidate in (state, None):
+        for known in (state, None):
+            candidate = known
             if candidate is None:
                 raw = await self._backend.get_workflow_state(workflow_id, op_timeout=self._backend_op_timeout)
                 if raw is None:

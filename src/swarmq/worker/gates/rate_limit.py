@@ -58,7 +58,7 @@ class RateLimitGate:
                 decision.remaining,
                 decision.retry_after_ms,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Limiter-Fehler stellt zurueck
             # The limiter is the only side-effect-free decision-point we
             # have. If Valkey is unreachable we cannot decide safely: an
             # outage defers the message with backoff, any other error
@@ -105,7 +105,7 @@ class RateLimitGate:
 
         try:
             await deps.broker.retry_later(delivery, delay_ms=retry_after_ms, headers=original_headers)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Broker gestoert, Original bleibt in Flight
             # Broker failure between publish and ack would create a
             # duplicate (republished + redelivered original). nack with
             # requeue=True keeps the original in flight for retry; the

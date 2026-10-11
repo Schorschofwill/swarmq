@@ -171,7 +171,7 @@ class ResultTail:
             if at_least_once:
                 await redeliver_in_place(deps, delivery, ctx)
                 return Redelivered
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Fehler wird geloggt, terminaler Pfad laeuft weiter
             _log_fail_mark_error(event, workflow_id=wf_id, **_error_fields(exc), redelivered=False)
         return None
 
@@ -251,7 +251,7 @@ class ResultTail:
                 return Redelivered
             logger.error("workflow_advance_broker_error", workflow_id=wf_id, **_error_fields(exc))
             return Terminal.release_in_finally()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - unerwarteter Advance-Fehler markiert Workflow
             # Unexpected advance bug: fail the workflow so get() raises
             # instead of hanging, then ack (no infinite redelivery loop).
             logger.error(
@@ -303,7 +303,7 @@ class ResultTail:
 
         try:
             await deps.backend.notify_result(ctx.task_id)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Benachrichtigung best effort, wird geloggt
             logger.warning(
                 "publish_notification_failed",
                 **_error_fields(exc),

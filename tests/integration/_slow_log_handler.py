@@ -13,6 +13,7 @@ import glob
 import logging
 import os
 import time
+from pathlib import Path
 
 
 class SlowHandler(logging.StreamHandler):  # type: ignore[type-arg]
@@ -25,7 +26,7 @@ class SlowHandler(logging.StreamHandler):  # type: ignore[type-arg]
                 os.rename(flag, flag + ".used")
             except OSError:
                 continue  # ein anderer Prozess war schneller
-            with open(flag + ".used") as fh:
+            with Path(flag + ".used").open() as fh:
                 time.sleep(float(fh.read() or "5"))
             break
         super().__init__(*args, **kwargs)

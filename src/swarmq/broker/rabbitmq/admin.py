@@ -240,7 +240,7 @@ class RabbitMQAdmin(RabbitMQDelivery):
         error is re-raised so the caller observes the failure.
         """
         queue = await self._dlq_queue(queue_name)
-        # (Nachricht, body, headers, is_match, is_malformed)
+        # Tupel je Nachricht: Nachricht, body, headers, is_match, is_malformed
         drained: list[tuple[Any, bytes, dict[str, Any], bool, bool]] = []
         entries: list[dict[str, Any]] = []
         matched: list[dict[str, Any]] = []
@@ -362,7 +362,7 @@ class RabbitMQAdmin(RabbitMQDelivery):
                 # the aio_pika internal drain_future CancelledError
                 # via current_task().cancelling() guard.
                 raise
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - Fehler je Nachricht sammeln, Rest weiter republishen
                 errors.append(exc)
                 continue
             await self._ack_dlq_original(msg)
@@ -381,7 +381,7 @@ class RabbitMQAdmin(RabbitMQDelivery):
         zurueck (bei einer Kopie: doppelt) -- kein Verlust, nur eine WARNING."""
         try:
             await msg.ack()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Ack best effort, Nachricht kehrt zurueck, WARNING
             logger.warning(
                 "dlq_read_ack_failed",
                 **_error_fields(exc),

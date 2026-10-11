@@ -67,7 +67,7 @@ class ExpiryGate:
         # als fehlgeschlagen. Scheitert das voruebergehend, ist die Zustellung
         # neu zugestellt (nicht terminal) -- vor dem Signal, damit es je
         # Ablauf einmal feuert.
-        if deps.fail_workflow is not None and not await deps.fail_workflow(delivery, ctx, error_message, True):
+        if deps.fail_workflow is not None and not await deps.fail_workflow(delivery, ctx, error_message, True):  # noqa: FBT003 - Callable-Feld ohne Parameternamen
             return Redelivered
         await deps.signals.dispatch(
             Signal.TASK_EXPIRED,

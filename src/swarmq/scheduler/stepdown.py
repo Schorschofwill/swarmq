@@ -41,6 +41,9 @@ if TYPE_CHECKING:
     from swarmq.config import SwarmQConfig
     from swarmq.contracts.coordination import LockStore, LockToken
 
+# Mindestzahl Publish-Fehler in einer Serie vor dem Ruecktritt.
+_MIN_FAILURES_FOR_STEPDOWN = 2
+
 # Fehler, die jeden Kandidaten gleich treffen: ein Ruecktritt liesse die
 # Fuehrung nur rotieren. ``BrokerPublishBlocked``: ein Broker-Alarm blockiert
 # jede publizierende Verbindung (Plan 0.12.0, MR 16). ``PublishRejected``:
@@ -80,7 +83,7 @@ class PublishStepdown:
             self._first_at = now
         self._last_at = now
         self._count += 1
-        if self._count >= 2 and now - self._first_at >= self._window_s:
+        if self._count >= _MIN_FAILURES_FOR_STEPDOWN and now - self._first_at >= self._window_s:
             self._count = 0
             return True
         return False
@@ -138,7 +141,7 @@ class SchedulerStepdown:
         self._stepdown_until = _monotonic() + cooldown_s
         try:
             await self._lock_manager.release(self._lock_token)
-        except Exception as release_exc:
+        except Exception as release_exc:  # noqa: BLE001 - Lock läuft per TTL ab
             # Das Lock laeuft dann per TTL ab; der Standby bleibt.
             self._log.warning("scheduler_lock_release_failed", **_error_fields(release_exc))
         await self._emit(Signal.SCHEDULER_STANDBY)

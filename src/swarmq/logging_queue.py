@@ -171,7 +171,7 @@ def dropped_log_records() -> int:
 def count_dropped(count: int = 1) -> None:
     """Zaehlt verworfene Eintraege, auch aus den Datei-Modus-Queues
     (Plan 2026-10-06-1811, KTD1) und beim Aufgeben eines Leerens (KTD3)."""
-    global _DROPPED_TOTAL
+    global _DROPPED_TOTAL  # noqa: PLW0603 - Modul-Singleton
     _DROPPED_TOTAL += count
 
 
@@ -347,7 +347,7 @@ def _dispatch_to_root(record: logging.LogRecord, listener: _SwarmqQueueListener)
             listener.current = handler
             try:
                 handler.handle(record)
-            except Exception:
+            except Exception:  # noqa: BLE001 - werfender App-Handler darf uebrige nicht blockieren (KTD1)
                 listener.errors.failed()
             listener.current = None
 
@@ -403,7 +403,7 @@ def _enable_log_queue(
     dann auch fuer ``shutdown_logging`` beim Prozessende (Plan
     2026-10-06-1811, KTD3/KTD4).
     """
-    global _OPTIN_HOLDERS
+    global _OPTIN_HOLDERS  # noqa: PLW0603 - Modul-Singleton
     if _CONFIGURED:
         return False
     _OPTIN_HOLDERS += 1
@@ -418,7 +418,7 @@ def _disable_log_queue() -> _Draining | None:
     und Level von ``swarmq`` wieder her (KTD10) und schliesst die Queue, in
     O(1) und ohne zu warten (Plan 2026-10-06-1811, KTD4). Das Leeren
     erwartet danach ``_await_log_queue_drained``."""
-    global _OPTIN_HOLDERS
+    global _OPTIN_HOLDERS  # noqa: PLW0603 - Modul-Singleton
     _OPTIN_HOLDERS = max(_OPTIN_HOLDERS - 1, 0)
     if _OPTIN_HOLDERS == 0 and not _OPTIN_TAKEOVER:
         return _detach_log_queue()
@@ -490,7 +490,7 @@ def _finish_in_background(draining: _Draining, deadline: Deadline, timeout: floa
 
 def _reset_log_queue() -> None:
     """Hebt den Opt-in unabhaengig von der Zahl der Anforderungen auf."""
-    global _OPTIN_HOLDERS, _OPTIN_TAKEOVER
+    global _OPTIN_HOLDERS, _OPTIN_TAKEOVER  # noqa: PLW0603 - Modul-Singleton
     _OPTIN_HOLDERS = 0
     _OPTIN_TAKEOVER = False
     draining = _detach_log_queue()
@@ -501,7 +501,7 @@ def _reset_log_queue() -> None:
 def _install_log_queue(level: str | int | None, *, json: bool, queue_size: int) -> None:
     """Installiert den Opt-in-Handler am Logger ``swarmq``, falls noch keiner
     da ist; ``level=None`` laesst das ``swarmq``-Level unangetastet."""
-    global _OPTIN_HANDLER, _OPTIN_SAVED
+    global _OPTIN_HANDLER, _OPTIN_SAVED  # noqa: PLW0603 - Modul-Singleton
     if _OPTIN_HANDLER is not None:
         return
     logger = logging.getLogger("swarmq")
@@ -540,7 +540,7 @@ _DRAIN_TIMEOUT = 5.0
 
 def set_drain_timeout(seconds: float) -> None:
     """Setzt die Frist fuer ``shutdown_logging`` ohne ``timeout`` (KTD11)."""
-    global _DRAIN_TIMEOUT
+    global _DRAIN_TIMEOUT  # noqa: PLW0603 - Modul-Singleton
     _DRAIN_TIMEOUT = seconds
 
 
@@ -552,7 +552,7 @@ def shutdown_logging(timeout: float | None = None) -> None:
     Listener wieder. Ein folgendes ``configure_logging`` baut neu auf (KTD4).
     Was bis zur Frist nicht geschrieben ist, gilt als verworfen.
     """
-    global _CONFIGURED, _APP_TAKEOVER_REPORTED
+    global _CONFIGURED, _APP_TAKEOVER_REPORTED  # noqa: PLW0603 - Modul-Singleton
     _CONFIGURED = _APP_TAKEOVER_REPORTED = False
     _stop_listeners(timeout)
 
@@ -705,7 +705,7 @@ def _activate_swarmq_queue_after_app_takeover(*, json: bool, queue_size: int) ->
     Ein blockierender App-Handler haelt den Event-Loop nicht auf (R6). Das
     ``swarmq``-Level bleibt, wie es ist -- die App hat entschieden.
     """
-    global _OPTIN_TAKEOVER
+    global _OPTIN_TAKEOVER  # noqa: PLW0603 - Modul-Singleton
     _OPTIN_TAKEOVER = True
     _install_log_queue(None, json=json, queue_size=queue_size)
 
@@ -725,7 +725,7 @@ def _after_fork_in_child() -> None:
     2026-10-06-1811, KTD10); die vom ``before``-Hook gehaltenen Handler-Locks
     setzt die stdlib im Kind schon selbst zurueck.
     """
-    global _LISTENER_LOCK, _DROPPED_TOTAL
+    global _LISTENER_LOCK, _DROPPED_TOTAL  # noqa: PLW0603 - Modul-Singleton
     _LISTENER_LOCK = threading.Lock()
     _DROPPED_TOTAL = 0
     _LISTENERS.clear()

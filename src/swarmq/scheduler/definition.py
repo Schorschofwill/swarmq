@@ -185,7 +185,7 @@ class ScheduleStore:
         # statischer Cron erst nach erneuter Meldung gefeuert).
         try:
             await self._store.forget_known_cron(schedule_name)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - best effort, Fehler wird geloggt
             logger.warning(
                 "schedule_known_forget_failed",
                 schedule_name=schedule_name,

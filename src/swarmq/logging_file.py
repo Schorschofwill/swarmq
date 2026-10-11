@@ -21,6 +21,7 @@ import time
 import weakref
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, ClassVar
 
 from swarmq.exceptions import LoggingConfigError
@@ -112,7 +113,7 @@ class HandlerErrors:
         abgelaufen ist -- auch wenn keine Fehler mehr folgen."""
         try:
             self._dispatch(record)
-        except Exception:
+        except Exception:  # noqa: BLE001 - Fehler wird gezaehlt, Logging laeuft weiter
             self.failed()
         else:
             self.report_due()
@@ -127,7 +128,7 @@ class HandlerErrors:
         count = self.count
         if self._report.report_due(final=final) and self.count != count:
             with contextlib.suppress(Exception):
-                print(
+                print(  # noqa: T201 - letzter Ausweg, wenn das Logging selbst versagt
                     f"swarmq: log_handler_errors — {count} error(s) in log handlers so far",
                     file=sys.stderr,
                 )
@@ -166,7 +167,7 @@ def load_log_config(path: str) -> str:
     selbst nie lesen.
     """
     try:
-        with open(path, encoding="utf-8") as fh:
+        with Path(path).open(encoding="utf-8") as fh:
             config = _parse_log_config(path, fh.read())
     except (OSError, ValueError, ImportError) as exc:
         # ValueError deckt JSONDecodeError und UnicodeDecodeError ab.
@@ -199,7 +200,7 @@ class DictConfigProbe:
     """
 
     def __init__(self, raw: str) -> None:
-        self._proc: subprocess.Popen[str] = subprocess.Popen(
+        self._proc: subprocess.Popen[str] = subprocess.Popen(  # noqa: S603 - feste Argumente, sys.executable, keine Shell
             [sys.executable, "-c", _DICT_CONFIG_PROBE],
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
@@ -352,7 +353,7 @@ def _drain_before_multiprocessing_exit(drain: Callable[[], None]) -> None:
     Pipe schliessen -- vorher noch ungelesene Records waeren verloren, und
     der Listener stuerbe mit ``EOFError``/``OSError``-Traceback. Ein
     ``Finalize`` gilt nur im Prozess, der es angelegt hat."""
-    global _MP_EXIT_DRAIN_PID
+    global _MP_EXIT_DRAIN_PID  # noqa: PLW0603 - Modul-Singleton
     pid = os.getpid()
     if pid == _MP_EXIT_DRAIN_PID:
         return
@@ -379,7 +380,7 @@ def reset_queue_listeners_after_fork() -> None:
     Records schreibt der Elternprozess -- im Kind erschienen sie doppelt.
     Ein beim Fork gehaltenes Wiederstart-Lock hat im Kind keinen Besitzer
     mehr und wird ersetzt."""
-    global _CONFIG_LISTENER_LOCK
+    global _CONFIG_LISTENER_LOCK  # noqa: PLW0603 - Modul-Singleton
     _CONFIG_LISTENER_LOCK = threading.Lock()
     CONFIG_LISTENERS.clear()
     for handler, drops in list(_STARTED_HANDLERS.items()):
@@ -548,7 +549,7 @@ def _offer_sentinel(listener: logging.handlers.QueueListener, timeout: float) ->
     target: Any = listener.queue  # ``_QueueLike`` kennt nur ``put_nowait``/``get``
     try:
         if timeout > 0:
-            target.put(sentinel, True, timeout)
+            target.put(sentinel, True, timeout)  # noqa: FBT003 - Queue.put(item, block, timeout) einer fremden Queue-API
         else:
             target.put_nowait(sentinel)
     except queue.Full:

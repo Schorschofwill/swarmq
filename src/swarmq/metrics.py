@@ -369,7 +369,7 @@ class Metrics:
     def enabled(self) -> bool:
         return self._enabled
 
-    def count_consumer_reregistration(self, queue: str, reason: str) -> None:
+    def count_consumer_reregistration(self, queue: str, reason: str) -> None:  # noqa: ARG002 - Hook-Signatur, Grund steht im Log
         """Hook des Consumer-Waechters (Plan 2026-10-08-1541, U6). Der Grund
         steht im Log ``consumer_reregistered``, nicht im Label."""
         self.consumer_reregistrations_total.labels(queue=queue).inc()
@@ -430,7 +430,7 @@ class MetricsServer:
 
     async def _handle_request(
         self,
-        method: str,
+        method: str,  # noqa: ARG002 - Handler-Signatur des HTTP-Servers vorgegeben
         path: str,
         writer: asyncio.StreamWriter,
     ) -> None:

@@ -32,6 +32,7 @@ INJECTED_URL = "<injected>"
 # KTD1: Schreibweisen fuer UTC, die zu ``None`` normalisiert werden, damit
 # sich der Fingerabdruck gespeicherter Definitionen beim Upgrade nicht aendert.
 _UTC_ALIASES: frozenset[str] = frozenset({"UTC", "Etc/UTC"})
+_MAX_PORT = 65535
 
 
 def normalize_timezone(value: str | None, field_name: str = "timezone") -> str | None:
@@ -63,7 +64,7 @@ def _parse_port(raw: str, env_var: str) -> int:
         port = int(raw)
     except ValueError as exc:
         raise ConfigurationError(f"{env_var} must be an integer, got {raw!r}") from exc
-    if not 1 <= port <= 65535:
+    if not 1 <= port <= _MAX_PORT:
         raise ConfigurationError(f"{env_var} must be in 1..65535, got {port}")
     return port
 
@@ -236,7 +237,7 @@ class SwarmQConfig(ConfigValidation):
     broker_publish_connection: str = "separate"
     cancel_poll_interval: float = 1.0
     # Upper bound for individual Valkey operations used by the cancel
-    # pipeline (is_cancelled / store_result / clear_cancel_flag). Slow
+    # pipeline, namely is_cancelled, store_result and clear_cancel_flag. Slow
     # Valkey would otherwise wedge the cancel monitor at TCP-default
     # latency. 5s is conservative for a local Valkey deployment.
     backend_op_timeout: float = 5.0

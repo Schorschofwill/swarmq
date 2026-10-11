@@ -102,7 +102,7 @@ async def defer_backend_unavailable(
         # Publish-then-ack: ``retry_later`` bestaetigt das Original erst, wenn
         # der Broker die Kopie bestaetigt hat (Publisher-Confirm).
         await deps.broker.retry_later(delivery, delay_ms=delay_ms, headers=headers)
-    except Exception as publish_exc:
+    except Exception as publish_exc:  # noqa: BLE001 - Broker gestoert, Rueckfall auf alten Weg
         # Broker ebenfalls gestoert: der alte Weg. Das Original ist nicht
         # bestaetigt; ``PublishIndeterminate`` kann eine Kopie hinterlassen
         # (Duplikat statt Verlust, at-least-once).

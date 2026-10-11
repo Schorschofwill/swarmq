@@ -68,7 +68,7 @@ class SchedulerOrphanedQueues:
             return
         try:
             await self._backend.schedules.report_queues(self._consumed_queues, ttl_ms=REPORT_MAX_AGE_MS)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Worker arbeitet weiter, nächster Takt meldet erneut
             # Der Worker arbeitet weiter; der naechste Takt meldet erneut.
             self._log.warning("scheduler_queue_report_failed", error_type=type(exc).__name__, error=str(exc))
 
@@ -76,7 +76,7 @@ class SchedulerOrphanedQueues:
         """Leader-Takt: verwaiste Queues melden (nur beim Uebergang); wirft nie."""
         try:
             await asyncio.wait_for(self._check_orphaned_queues(), timeout=QUEUE_CHECK_TIMEOUT_S)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Leader-Takt wirft nie, Fehler wird geloggt
             self._log_check_failed(exc)
 
     async def _check_orphaned_queues(self) -> None:

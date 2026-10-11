@@ -23,7 +23,6 @@ hint rather than crashing inside the daemon thread.
 from __future__ import annotations
 
 import importlib.util
-import os
 import sys
 import threading
 from collections.abc import Callable, Iterable
@@ -284,7 +283,7 @@ class FileWatcher:
             # argument parsing and supervisor start. Fail loud with the
             # specific path rather than dying inside watchfiles with a
             # generic OSError.
-            missing = [d for d in self._dirs if not os.path.isdir(d)]
+            missing = [d for d in self._dirs if not Path(d).is_dir()]
             if missing:
                 logger.error(
                     "watch_dir_missing",

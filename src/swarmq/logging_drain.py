@@ -150,7 +150,7 @@ def is_stuck(handler: logging.Handler) -> bool:
 def _stream_of(handler: logging.Handler | None) -> object:
     try:
         return getattr(handler, "stream", None)
-    except Exception:  # eine Property der App darf hier nicht werfen
+    except Exception:  # noqa: BLE001 - eine Property der App darf hier nicht werfen
         return None
 
 
@@ -158,7 +158,7 @@ def _file_of(stream: object) -> tuple[int, int] | None:
     """``(st_dev, st_ino)`` der Datei hinter ``stream``, sonst ``None``."""
     try:
         info = os.fstat(stream.fileno())  # type: ignore[attr-defined]
-    except Exception:  # kein fd (StringIO), geschlossen, fremde Klasse
+    except Exception:  # noqa: BLE001 - kein fd (StringIO), geschlossen, fremde Klasse
         return None
     return info.st_dev, info.st_ino
 
@@ -263,7 +263,7 @@ def _flushable(stream: object) -> bool:
         return False
     try:
         return _writable_now(stream.fileno())  # type: ignore[attr-defined]
-    except Exception:
+    except Exception:  # noqa: BLE001 - ohne nutzbaren fd gilt Stream als nicht schreibbar
         return False
 
 

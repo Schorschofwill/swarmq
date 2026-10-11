@@ -139,11 +139,11 @@ class RetryHandler:
         headers["x-swarmq-traceback"] = bounded_header_text(error_message)
         try:
             await deps.broker.retry_later(delivery, delay_ms=delay_ms, headers=headers)
-        except Exception as broker_exc:
+        except Exception as broker_exc:  # noqa: BLE001 - Broker gestoert, Rueckfall auf Redeliver
             logger.error("retry_publish_failed", **_error_fields(broker_exc))
             try:
                 await redeliver_in_place(deps, delivery, ctx)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - Redeliver best effort, Fehler schon geloggt
                 pass
             return Redelivered
         logger.info("task_retrying", retry_count=retry_count + 1, max_retries=task_info.max_retries, delay_ms=delay_ms)
@@ -261,9 +261,9 @@ class RetryHandler:
             )
             try:
                 await deps.backend.notify_result(task_id)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - Benachrichtigung best effort, wird geloggt
                 logger.warning("publish_notification_failed", **_error_fields(exc), task_id=task_id)
-        except Exception as store_exc:
+        except Exception as store_exc:  # noqa: BLE001 - Ergebnis-Speicher best effort, wird geloggt
             logger.warning("dlq_result_store_failed", **_error_fields(store_exc))
 
         # R3.5 Unit 11: preserve all inbound headers so a message that
@@ -290,7 +290,7 @@ class RetryHandler:
             await deps.signals.dispatch(
                 Signal.TASK_DLQ, task_id=task_id, task_name=task_name, queue=queue, error=error_message
             )
-        except Exception as broker_exc:
+        except Exception as broker_exc:  # noqa: BLE001 - Publish-Fehler fuehrt in den Rueckfall
             if on_publish_failure is not None:
                 # Terminaler Fallback des Aufrufers (gibt selbst frei).
                 await on_publish_failure(broker_exc)
@@ -298,7 +298,7 @@ class RetryHandler:
                 logger.error("dlq_publish_failed", **_error_fields(broker_exc))
                 try:
                     await redeliver_in_place(deps, delivery, ctx)
-                except Exception:
+                except Exception:  # noqa: BLE001, S110 - Redeliver best effort, Fehler schon geloggt
                     pass
                 # Non-terminal — leave the flag so the redelivery's terminal
                 # path releases it. No release here.

@@ -128,7 +128,7 @@ async def _schedule_and_get_result(queue: str, value: str) -> str:
 # - [x] Ungueltige ``--log-config``: Exit 78, genau eine strukturierte Zeile
 #       mit ``path`` und ``error_type`` (AE4)
 # - [x] ``SWARMQ_QUEUE_TYPE=bogus --log-format json``: eine JSON-Zeile, Exit 78
-#       (AE8/AE9, bestehend)
+#       (bestehend seit AE8/AE9)
 
 
 def test_cli_worker_round_trip_then_clean_sigterm() -> None:

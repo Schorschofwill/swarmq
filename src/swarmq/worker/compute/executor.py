@@ -97,7 +97,7 @@ class ComputeExecutor(TaskExecutor):
             elif msg[0] == "publish":
                 _, task_id, payload = msg
                 await deps.backend.publish_progress(task_id, payload)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Fehler wird geloggt, Weiterleitung laeuft weiter
             logger.warning("compute_progress_forward_failed", **_error_fields(exc))
 
     # ------------------------------------------------------------------ execute
@@ -213,7 +213,7 @@ class ComputeExecutor(TaskExecutor):
         except ChildDied as exc:
             fail(exc, str(exc))
             return
-        except Exception as exc:  # Pool-Fehler duerfen die Pipeline nicht verlassen
+        except Exception as exc:  # noqa: BLE001 - Pool-Fehler duerfen die Pipeline nicht verlassen
             fail(exc, f"compute pool failure: {exc}")
             return
         self._apply_envelope(envelope, result, fail)

@@ -189,11 +189,6 @@ ignore = [
     "S101",    # alle ``assert`` in src/ sind Typ-Narrowing ohne Seiteneffekt (Analyse 2026-10-11)
     # --- TEMPORÄR (Plan 2026-10-11-1200, KTD3): offene fachliche Regeln. ---
     # Jede Unit beginnt mit dem Streichen ihrer Einträge; am Ende ist die Liste leer.
-    # U4 (src/, bei Treffern auch in tests/):
-    "ARG001", "ARG002", "BLE001", "C408", "ERA001", "FBT003", "FURB110", "FURB162",
-    "G201", "ICN001", "ISC004", "PERF401", "PLR2004", "PLW0108", "PLW0406", "PLW0603",
-    "PLW2901", "PTH100", "PTH112", "PTH123", "PYI034", "PYI036", "S110", "S112",
-    "S301", "S311", "S324", "S603", "S606", "T201", "TRY300", "TRY301",
     # U5 (src/ und tests/):
     "PT018",
 ]

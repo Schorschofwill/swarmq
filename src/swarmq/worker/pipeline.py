@@ -179,7 +179,7 @@ class Worker(WorkerLifecycle, WorkerShutdown):
         self._execution_guard = ExecutionGuard(
             gate_deps,
             store=lambda: self._guard_store,
-            dead_letter=lambda d, c, m, t: self._retry_handler.dead_letter(d, c, m, t),
+            dead_letter=lambda d, c, m, t: self._retry_handler.dead_letter(d, c, m, t),  # noqa: PLW0108 - spaete Bindung und nur vier Argumente weiterreichen
             on_event=self._count_guard_event,
         )
         gate_deps.broker = cast("WorkerBroker", GuardedBroker(broker, self._execution_guard))
@@ -396,7 +396,7 @@ class Worker(WorkerLifecycle, WorkerShutdown):
         Body ist dekodiert, das Signal trägt Kennung und Name (B14)."""
         try:
             return self._get_chain()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Nutzer-Factory darf Consumer-Loop nicht stoppen
             logger.error("middleware_chain_factory_failed", **_error_fields(exc))
             if not acked_before_execute:
                 await route_via_dlx(

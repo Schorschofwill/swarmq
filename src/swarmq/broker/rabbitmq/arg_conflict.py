@@ -107,7 +107,6 @@ async def declare_adopting_existing(
             # Queue.Declare ohne Client-Frist wie in 0.11.0: das Anlegen einer
             # Quorum-Queue (Raft) kann unter Last lange dauern.
             await channel.declare_queue(queue, durable=True, arguments=current)
-            return current
         except ChannelPreconditionFailed as exc:
             text = str(exc.args[0] if exc.args else exc)
             result = adopt_existing_argument(text, current)
@@ -124,6 +123,8 @@ async def declare_adopting_existing(
             adopted.add(arg)
             log.adopted(queue, arg, current.get(arg), adopted_arguments.get(arg))
             current = _with_full_set(arg, adopted_arguments, adopted)
+        else:
+            return current
         finally:
             # Auch nach einem 406: ein RobustChannel öffnet sich sonst selbst wieder.
             if channel is not None:

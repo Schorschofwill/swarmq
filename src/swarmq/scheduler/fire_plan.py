@@ -16,6 +16,9 @@ from swarmq.signals import Signal
 
 logger = get_logger(__name__)
 
+# Obergrenze der gezaehlten verpassten Termine (siehe ``_count_skipped``).
+_MAX_SKIPPED_COUNT = 1000
+
 
 class SchedulerFirePlan:
     # Mixin über dem Loop-Zustand: die Attribute setzt ``SchedulerLoop.__init__``.
@@ -86,7 +89,7 @@ class SchedulerFirePlan:
             return -1
         try:
             return next_fire_ms(definition.cron, definition.timezone, now_ms)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Fehler wird geloggt, Ergebnis ist None
             logger.error(
                 "scheduler_next_fire_failed",
                 schedule_name=schedule_name,
@@ -141,7 +144,7 @@ class SchedulerFirePlan:
         """
         skipped = 0
         for fire_ms in iter_fire_ms(cron, timezone, score_ms):
-            if fire_ms > now_ms or skipped >= 1000:
+            if fire_ms > now_ms or skipped >= _MAX_SKIPPED_COUNT:
                 break
             skipped += 1
         return skipped

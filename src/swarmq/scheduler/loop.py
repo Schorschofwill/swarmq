@@ -292,7 +292,7 @@ class SchedulerLoop(
             if task is not None:
                 try:
                     await task
-                except asyncio.CancelledError, Exception:
+                except asyncio.CancelledError, Exception:  # noqa: BLE001, S110 - Teardown best effort
                     pass
         self._election_task = None
         self._poll_task = None
@@ -327,7 +327,7 @@ class SchedulerLoop(
                 self._version,
                 ttl_ms=live_window,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Worker arbeitet weiter, nächster Takt meldet erneut
             # Der Worker arbeitet weiter; der nächste Takt meldet erneut.
             logger.warning("scheduler_cron_report_failed", **_error_fields(exc))
         await self._report_queues()
@@ -352,7 +352,7 @@ class SchedulerLoop(
                     try:
                         async with self._fire_lock:
                             await self.adopt_reported_crons()
-                    except Exception as exc:
+                    except Exception as exc:  # noqa: BLE001 - Fehler wird geloggt, Schleife läuft weiter
                         logger.warning("scheduler_cron_adopt_failed", **_error_fields(exc))
                     finally:
                         # BZ-11: der Poll wartet nur auf den ersten Versuch
@@ -374,7 +374,7 @@ class SchedulerLoop(
                     await self._election_tick()
                 except asyncio.CancelledError:
                     raise
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - Fehler wird geloggt, Schleife läuft weiter
                     logger.warning("scheduler_election_tick_error", **_error_fields(exc))
                 await self._sleep_until_stop(interval)
         except asyncio.CancelledError:
@@ -426,7 +426,7 @@ class SchedulerLoop(
                 await self._emit(Signal.SCHEDULER_STANDBY)
             return
 
-        # state == "standby"
+        # Verbleibender Zustand: standby
         if self._in_stepdown_cooldown():
             return
         try:
@@ -507,7 +507,7 @@ class SchedulerLoop(
                             await self._poll_tick()
                     except asyncio.CancelledError:
                         raise
-                    except Exception as exc:
+                    except Exception as exc:  # noqa: BLE001 - Fehler wird geloggt, Schleife läuft weiter
                         logger.warning("scheduler_poll_tick_error", **_error_fields(exc))
                 await self._sleep_until_stop(interval)
         except asyncio.CancelledError:
@@ -559,7 +559,7 @@ class SchedulerLoop(
     async def _emit(self, signal: Signal, **extra: Any) -> None:
         try:
             await self._signals.dispatch(signal, worker_id=self._worker_id, **extra)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Signal-Handler darf Scheduler nicht stoppen
             logger.warning(
                 "scheduler_signal_dispatch_error",
                 signal=signal.value,

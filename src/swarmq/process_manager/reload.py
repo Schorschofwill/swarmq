@@ -167,7 +167,7 @@ def reexec(pm: Any, retcode: int) -> int:
             # execvpe closes the env side of the trust boundary so in-process
             # os.environ mutation (e.g., a library flipping PYTHONPATH) cannot
             # influence the re-exec'd interpreter's import resolution.
-            os.execvpe(sys.executable, [sys.executable, *pm._startup_argv], pm._startup_env)
+            os.execvpe(sys.executable, [sys.executable, *pm._startup_argv], pm._startup_env)  # noqa: S606 - Re-Exec mit eigenem argv-Snapshot, keine Shell
         finally:
             pm._reexec_holds_signals = False
             _restore_signal_mask(saved)  # nur ohne ``execve`` erreicht

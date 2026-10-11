@@ -70,7 +70,7 @@ def _make_queue_depth_sampler(
                 try:
                     async with asyncio.timeout(1.0):
                         await broker.close()
-                except TimeoutError, Exception:
+                except TimeoutError, Exception:  # noqa: BLE001, S110 - Close best effort unter Broker-Ausfall
                     pass
 
         return asyncio.run(_run())

@@ -70,7 +70,7 @@ async def finalize_schedfire(
             finalize = backend.schedules.release_fire_claim(schedfire_key, owner=owner)
         # Begrenzt: ein Blackhole darf weder Gate noch finally blockieren.
         await bounded_backend_call(gate_deps, finalize, what="schedfire finalize")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - darf weder nack noch finally ueberspringen
         # Auch eine fremde Ausnahme (Dritt-Store): sie darf weder den
         # ``nack``/die Kopie eines Requeues noch das finally ueberspringen.
         log.warning(

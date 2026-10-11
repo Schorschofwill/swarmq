@@ -97,7 +97,7 @@ def generation_id(identity: str) -> str:
     den Worker: deterministisch aus der aktuellen Identitaet, damit zwei
     DLQ-Kopien derselben Ausfuehrung (``PublishIndeterminate``) dieselbe ID
     tragen und ein wiederholter ``dlq retry`` dieselbe Identitaet ergibt."""
-    return "g" + hashlib.sha1(identity.encode()).hexdigest()[:39]
+    return "g" + hashlib.sha1(identity.encode(), usedforsecurity=False).hexdigest()[:39]
 
 
 #: Namensraum der Replay-IDs, die ``dlq retry`` ohne frische Generation

@@ -63,7 +63,7 @@ def _queue_delivery_limit(broker: Any, queue: object) -> int | None:
         return None
     try:
         value = lookup(queue)
-    except Exception:
+    except Exception:  # noqa: BLE001 - Fremd-Broker, Rueckfall auf Konfiguration
         return None
     return value if type(value) is int else None
 

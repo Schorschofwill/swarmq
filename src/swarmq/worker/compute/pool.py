@@ -241,11 +241,12 @@ class SlotPool:
                 # Das Ergebnis ist festgeschrieben; das Recycling laeuft im Hintergrund,
                 # damit ein spaeter Cancel es nicht mehr verwerfen kann.
                 self._schedule_recycle(slot, child)
-            return envelope
         except asyncio.CancelledError:
             if child is not None:
                 await self._kill_child_uninterruptible(child, reason="cancelled")
             raise
+        else:
+            return envelope
         finally:
             slot.active = None
             if not slot.blocked and not self._closing:
@@ -283,10 +284,11 @@ class SlotPool:
         while True:
             try:
                 await asyncio.shield(kill)
-                return
             except asyncio.CancelledError:
                 if kill.done():
                     raise
+            else:
+                return
 
     # ------------------------------------------------------------------ Kinder
 
@@ -410,11 +412,11 @@ class SlotPool:
         while True:
             try:
                 raw = conn.recv_bytes()
-            except Exception:  # EOF, geschlossenes Handle, abgerissener Rahmen: das Kind ist weg
+            except Exception:  # noqa: BLE001 - EOF, geschlossenes Handle, abgerissener Rahmen: das Kind ist weg
                 break
             try:
-                msg = pickle.loads(raw)
-            except Exception as exc:  # Dekodierfehler trifft nur dieses Kind
+                msg = pickle.loads(raw)  # noqa: S301 - Daten aus dem eigenen Kindprozess
+            except Exception as exc:  # noqa: BLE001 - Dekodierfehler trifft nur dieses Kind
                 self._loop.call_soon_threadsafe(self._on_decode_error, child, exc)
                 continue
             self._loop.call_soon_threadsafe(self._on_message, child, msg)

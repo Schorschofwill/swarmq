@@ -263,7 +263,7 @@ def _setup_worker_logging(args: argparse.Namespace) -> LoggingSettings:
         # KTD9: einmal hier absolut aufloesen und pruefen; die Kinder bekommen
         # die gepruefte Konfiguration und lesen die Datei nie -- weder ein
         # anderes Arbeitsverzeichnis noch eine spaetere Aenderung wirkt dort.
-        path = os.path.abspath(settings.log_config)
+        path = os.path.abspath(settings.log_config)  # noqa: PTH100 - abspath normalisiert ohne Symlinks aufzulösen
         settings = dataclasses.replace(
             settings,
             log_config=path,

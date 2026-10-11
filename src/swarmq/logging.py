@@ -248,7 +248,9 @@ def _guard_reserved_keys(_: Any, __: str, event_dict: structlog.typing.EventDict
 
 
 def _merge_contextvars_guarded(
-    logger: Any, method_name: str, event_dict: structlog.typing.EventDict
+    logger: Any,  # noqa: ARG001 - structlog-Prozessor-Signatur vorgegeben
+    method_name: str,  # noqa: ARG001 - structlog-Prozessor-Signatur vorgegeben
+    event_dict: structlog.typing.EventDict,
 ) -> structlog.typing.EventDict:
     """``merge_contextvars`` mit Schutz der stdlib-Logkwargs.
 
@@ -259,9 +261,8 @@ def _merge_contextvars_guarded(
     ``merge_contextvars`` Vorrang.
     """
     for key, value in structlog.contextvars.get_contextvars().items():
-        if key in structlog.stdlib.LOG_KWARG_NAMES:
-            key = f"swarmq_{key}"
-        event_dict.setdefault(key, value)
+        name = f"swarmq_{key}" if key in structlog.stdlib.LOG_KWARG_NAMES else key
+        event_dict.setdefault(name, value)
     return event_dict
 
 

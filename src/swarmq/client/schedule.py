@@ -141,7 +141,7 @@ class ClientScheduling(ClientScheduleResolve):
                 task_id,
                 op_timeout=self._backend_op_timeout,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Rollback best effort, Fehler wird geloggt
             logger.warning(
                 "dedup_rollback_failed",
                 dedup_hash=dedup_hash,
@@ -486,7 +486,7 @@ class ClientScheduling(ClientScheduleResolve):
         # TASK_DUPLICATE_DETECTED handlers see events in batch-index order.
         try:
             if setnx_errors:
-                raise next(iter(setnx_errors.values()))
+                raise next(iter(setnx_errors.values()))  # noqa: TRY301 - erster SETNX-Fehler laeuft bewusst durch den Rollback-Pfad
 
             for i, entry in enumerate(prepped):
                 headers: dict[str, Any] = {}

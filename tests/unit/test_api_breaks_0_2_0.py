@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-# A2: ValkeyBackend-Methoden-Aliase (KTD10, U17/U18)
+# A2: Methoden-Aliase des ValkeyBackend (KTD10, U17/U18)
 _BACKEND_ALIASES = [
     "setnx_unique",
     "get_results_batch",

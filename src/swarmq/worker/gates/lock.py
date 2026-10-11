@@ -94,6 +94,9 @@ LOCK_STALL_GRACE_MS = 60_000
 LOCK_CONFLICT_BACKOFF_BASE_MS = 100
 LOCK_CONFLICT_BACKOFF_CAP_MS = 60_000
 
+#: PTTL-Antwort fuer einen fehlenden Key: kein Halter.
+_PTTL_KEY_MISSING = -2
+
 # Halter-Header der Wartezeit (entfallen, sobald kein Halter mehr da ist).
 LOCK_HOLDER_HEADERS = (HEADER_LOCK_HOLDER, HEADER_LOCK_HOLDER_SINCE, HEADER_LOCK_HOLDER_TTL_MS)
 
@@ -108,7 +111,7 @@ def lock_conflict_delay_ms(conflicts: int) -> int:
 def holder_fingerprint(owners: frozenset[str]) -> str:
     """Fingerprint der Halter: nur die Menge der Owner, ohne Score und PTTL
     (sonst saehe jede Erneuerung wie ein Halterwechsel aus)."""
-    return hashlib.sha1(",".join(sorted(owners)).encode()).hexdigest()[:16]
+    return hashlib.sha1(",".join(sorted(owners)).encode(), usedforsecurity=False).hexdigest()[:16]
 
 
 def _as_int(raw: Any, default: int) -> int:
@@ -158,8 +161,8 @@ def render_lock_name(lock_template: str, task_class: type[Any], args: list[Any],
         raise ValueError(f"failed to render lock name {lock_template!r}: {exc}") from exc
 
 
-# (delivery, ctx, error_message, error_type, extra_headers, on_publish_failure)
-# -- der terminale Dead-Letter des Workers (``RetryHandler.dead_letter``):
+# Argumente delivery, ctx, error_message, error_type, extra_headers und
+# on_publish_failure -- der terminale Dead-Letter des Workers (``RetryHandler.dead_letter``):
 # Fehlerergebnis, Workflow-Fehlmarkierung, DLQ-Kopie, Unique-Freigabe und
 # ``TASK_DLQ`` (Plan 0.12.0, MR 3, BZ-13/BZ-05). Scheitert der DLQ-Publish,
 # laeuft statt des ``redeliver`` der DLX-Fallback des Gates.
@@ -253,7 +256,7 @@ class LockGate:
             acquired = await asyncio.shield(
                 self._acquire_and_register(lock_manager, ctx, lock_name, owner_token, ttl_ms, task_info.max_concurrency)
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Ausfall oder Fehler stellt zurueck
             # Same shape as rate-limit: an outage defers; any other
             # failure means we cannot decide safely -> nack(requeue) so the
             # broker hands the message to the next worker (the delivery
@@ -355,7 +358,7 @@ class LockGate:
         self.waits.record(ctx.task_id, wait_since_ms=wait_since, now_ms=now_ms)
         try:
             await deps.broker.retry_later(delivery, delay_ms=lock_conflict_delay_ms(conflicts), headers=headers)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Broker gestoert, Original bleibt in Flight
             # Same try/except shape as retry / rate-limit: broker failure
             # between publish and ack means the message might double-
             # deliver. nack(requeue=True) keeps the original in flight;
@@ -387,7 +390,7 @@ class LockGate:
         observation = await self._observe(lock_manager, ctx, lock_name, max_concurrency)
         if observation is None:
             return None  # nicht messbar (Q15): nur die Obergrenze gilt
-        if observation.pttl_ms == -2 or not observation.owners:
+        if observation.pttl_ms == _PTTL_KEY_MISSING or not observation.owners:
             # Kein Halter (der Konflikt war ein Rennen): kein Stillstand.
             for header in LOCK_HOLDER_HEADERS:
                 headers.pop(header, None)
@@ -420,7 +423,7 @@ class LockGate:
         except (AttributeError, NotImplementedError, TypeError) as exc:
             self._warn_observe_unsupported(lock_name, **_error_fields(exc))
             return None
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Beobachtung best effort, wird geloggt
             logger.warning(
                 "lock_observe_failed",
                 task_id=ctx.task_id,
@@ -583,7 +586,7 @@ async def release_acquired_locks(
         task_fields = {field: getattr(kept, field) for field in ("task_id", "task_name") if hasattr(kept, field)}
         try:
             released = await lock_manager.release(token)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Lock-TTL heilt den Fall selbst
             # KTD11: die Lock-TTL heilt den Fall selbst -> WARNING.
             log.warning(
                 "lock_release_failed",

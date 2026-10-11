@@ -202,9 +202,7 @@ def test_denial_persistent_until_window_shifts() -> None:
             task = _fresh_task_name()
 
             # Phase 1: burn through the limit. All should be allowed.
-            burst = []
-            for _ in range(_LIMIT):
-                burst.append(await _call(limiter, task))
+            burst = [await _call(limiter, task) for _ in range(_LIMIT)]
             # Phase 2: one more call, must be denied.
             mid_denied = [await _call(limiter, task)]
             # Phase 3: zero-sleep retry — same bucket, still denied.

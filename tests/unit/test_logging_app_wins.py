@@ -39,6 +39,7 @@ import sys
 import threading
 import weakref
 from collections.abc import Iterator
+from typing import Self
 
 import pytest
 
@@ -228,7 +229,7 @@ def _fake_swarmq(monkeypatch: pytest.MonkeyPatch) -> None:
         def __init__(self, broker: object, backend: object, **kwargs: object) -> None:
             pass
 
-        async def __aenter__(self) -> _FakeApp:
+        async def __aenter__(self) -> Self:
             return self
 
         async def __aexit__(self, *exc: object) -> bool:

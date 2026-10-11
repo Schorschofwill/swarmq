@@ -154,7 +154,7 @@ def _resolve_fire_time(args: argparse.Namespace) -> tuple[str | None, int]:
         return cron, fire_ts_ms
     # --at <iso-datetime>
     try:
-        dt = datetime.fromisoformat(args.at.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(args.at.replace("Z", "+00:00"))  # noqa: FURB162 - Fehlermeldung soll unverändert bleiben
     except ValueError as exc:
         raise ConfigurationError(f"invalid --at datetime: {args.at!r} ({exc})") from exc
     if dt.tzinfo is None:

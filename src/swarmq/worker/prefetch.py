@@ -19,6 +19,10 @@ from swarmq.logging import get_logger
 
 logger = get_logger(__name__)
 
+#: Ab so vielen Queues warnt diese Pruefung; mit einer Queue warnt
+#: ``hard_timeout_exceeds_consumer_timeout``.
+_MIN_QUEUES_FOR_WARNING = 2
+
 
 def prefetch_limit(consumed_queues: Sequence[str], concurrency: int) -> int:
     """Hoechstens gehaltene unbestaetigte Nachrichten eines Workers."""
@@ -31,7 +35,7 @@ def warn_prefetch_over_consumer_timeout(
     """Startwarnung, wenn ``hard_timeout`` x K ueber ``consumer_timeout_s``
     liegt (K >= 2; mit einer Queue warnt ``hard_timeout_exceeds_consumer_timeout``)."""
     count = len(consumed_queues)
-    if count < 2:
+    if count < _MIN_QUEUES_FOR_WARNING:
         return
     offenders = [
         f"{name}({ti.hard_timeout}s)"

@@ -33,20 +33,20 @@ def _format_inspect_table(entries: list[dict[str, Any]]) -> str:
             "CRON",
         )
     ]
-    for e in entries:
-        rows.append(
-            (
-                e["name"],
-                ",".join(e["queues"]),
-                e["delivery"],
-                str(e["max_retries"]),
-                e["rate_limit"] or "-",
-                e["lock"] or "-",
-                "-" if e["unique_for"] is None else str(e["unique_for"]),
-                e["unique_until"] if e["unique_for"] is not None else "-",
-                e["cron"] or "-",
-            )
+    rows.extend(
+        (
+            e["name"],
+            ",".join(e["queues"]),
+            e["delivery"],
+            str(e["max_retries"]),
+            e["rate_limit"] or "-",
+            e["lock"] or "-",
+            "-" if e["unique_for"] is None else str(e["unique_for"]),
+            e["unique_until"] if e["unique_for"] is not None else "-",
+            e["cron"] or "-",
         )
+        for e in entries
+    )
     return _render_table(rows, "(no tasks registered)")
 
 

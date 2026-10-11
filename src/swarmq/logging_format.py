@@ -7,7 +7,7 @@ dictConfig-Dateien.
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 import logging
 import time
 from typing import Any
@@ -31,7 +31,7 @@ class _SafeProcessorFormatter(structlog.stdlib.ProcessorFormatter):
     def format(self, record: logging.LogRecord) -> str:
         try:
             return super().format(record)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Formatfehler faellt auf Ersatz-Record zurueck
             return super().format(self._substitute_record(record, exc))
 
     def _substitute_record(self, record: logging.LogRecord, exc: Exception) -> logging.LogRecord:
@@ -81,7 +81,7 @@ def _add_record_timestamp(_: Any, __: str, event_dict: structlog.typing.EventDic
 
 def iso_utc(created: float) -> str:
     """``created`` (Epochensekunden) als ISO 8601 in UTC mit Suffix ``Z``."""
-    return datetime.datetime.fromtimestamp(created, tz=datetime.UTC).isoformat().replace("+00:00", "Z")
+    return dt.datetime.fromtimestamp(created, tz=dt.UTC).isoformat().replace("+00:00", "Z")
 
 
 _EXTRA_ADDER = structlog.stdlib.ExtraAdder()

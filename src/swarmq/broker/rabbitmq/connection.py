@@ -83,7 +83,7 @@ async def close_channel_quietly(channel: aio_pika.abc.AbstractChannel | None) ->
         return
     try:
         await channel.close()
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 - Schliessen best effort
         pass
 
 
@@ -331,7 +331,7 @@ class RabbitMQConnection:
             if self._pool_ctx is not None:
                 try:
                     await self._pool_ctx.__aexit__(type(exc), exc, exc.__traceback__)
-                except Exception:
+                except Exception:  # noqa: BLE001, S110 - Pool-Rueckgabe best effort, Originalfehler folgt
                     pass
                 self._pool_ctx = None
                 self._connection = None
@@ -362,7 +362,7 @@ class RabbitMQConnection:
             # no-op when no item was assigned).
             try:
                 await self._pool_ctx.__aexit__(None, None, None)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - Best-effort release
                 pass
             self._pool_ctx = None
             self._connection = None
@@ -635,7 +635,6 @@ class RabbitMQConnection:
             result = getattr(q, "declaration_result", None)
             if result is not None:
                 return int(getattr(result, "message_count", 0))
-            return 0
         except aio_pika.exceptions.ChannelNotFoundEntity:
             # Der Broker hat den Channel geschlossen (``is_closed`` ist schon
             # True): trotzdem ``close()``, sonst oeffnet ein RobustChannel
@@ -645,6 +644,8 @@ class RabbitMQConnection:
             return 0
         except Exception as exc:
             raise BrokerConnectionError(str(exc)) from exc
+        else:
+            return 0
         finally:
             if channel is not None and not channel.is_closed:
                 await close_channel_quietly(channel)

@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -35,7 +36,7 @@ def _alive(pid: int) -> bool:
         return True
     # Zombie zaehlt als tot: der Supervisor ist weg, niemand sammelt ihn ein.
     try:
-        with open(f"/proc/{pid}/status", encoding="ascii") as fh:
+        with Path(f"/proc/{pid}/status").open(encoding="ascii") as fh:
             return "State:\tZ" not in fh.read()
     except OSError:
         return False

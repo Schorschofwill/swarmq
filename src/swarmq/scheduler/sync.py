@@ -122,7 +122,7 @@ class SchedulerCronSync:
                 )
             try:
                 desired = _validated(choice.report.payload, now_ms)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - ungültige Meldung wird geloggt und übersprungen
                 logger.error(
                     "scheduler_cron_report_invalid",
                     schedule_name=choice.report.name,

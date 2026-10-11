@@ -206,7 +206,7 @@ class ExecutionGuard:
         delay_ms = int(delay_s * 1000)
         try:
             await self._deps.broker.retry_later(delivery, delay_ms=delay_ms, headers=headers)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Broker gestoert, Requeue an derselben Stelle
             # Broker gestoert: der alte Weg, Requeue an derselben Stelle.
             logger.warning(
                 "execution_guard_defer_failed_redelivered",
@@ -338,7 +338,7 @@ class ExecutionGuard:
         TTL stehen und zaehlte bei der Neuzustellung als Waise."""
         try:
             await bounded_backend_call(self._deps, call(), what=f"execution guard {marker}")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Marker darf das Verb nicht aufhalten
             logger.warning(
                 "execution_guard_finish_failed",
                 identity=lease.identity,
@@ -359,7 +359,7 @@ class ExecutionGuard:
             last = self._closing.is_set() or _nominal_defer_total(attempt, base, cap) >= config.execution_guard_ttl_s
             try:
                 await bounded_backend_call(self._deps, call(), what=f"execution guard {marker}")
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - Nachholversuch, naechste Runde oder Log
                 if not last:
                     continue
                 logger.warning(

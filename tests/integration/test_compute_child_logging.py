@@ -99,11 +99,7 @@ def _run(
 
 
 def _json_events(stderr: str) -> list[str]:
-    events = []
-    for line in stderr.splitlines():
-        if line.startswith("{"):
-            events.append(json.loads(line)["event"])
-    return events
+    return [json.loads(line)["event"] for line in stderr.splitlines() if line.startswith("{")]
 
 
 def test_builtin_children_follow_the_job_and_the_preload_keeps_one_thread(tmp_path: Path) -> None:

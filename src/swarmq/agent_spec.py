@@ -71,9 +71,9 @@ def _spec_version() -> str:
 # subclass MUST appear; ``build_error_catalog`` raises otherwise, so adding an
 # exception without classifying it fails generation (and the sync test) loudly.
 #
-# Fields: origin ("library"|"task_code"), when (lifecycle stages),
-# retriable ("yes"|"no"|"controlled"|"n/a"), dlq_on_uncaught ("yes"|"no"|"n/a"),
-# exit_code_on_cli (int|None), transport_field (str|None).
+# Fields: origin is library or task_code, when lists lifecycle stages,
+# retriable is yes, no, controlled or n/a, dlq_on_uncaught is yes, no or n/a,
+# exit_code_on_cli is an int or None, transport_field is a str or None.
 _ERROR_SEMANTICS: dict[str, dict[str, Any]] = {
     "SwarmQError": {
         "origin": "library",
@@ -665,12 +665,16 @@ def build_llms_txt() -> str:
     lines = [
         "# SwarmQ",
         "",
-        "> Python task queue on RabbitMQ + Valkey — at-least-once delivery, "
-        "retries, scheduling, workflows, and a machine-readable agent spec.",
+        (
+            "> Python task queue on RabbitMQ + Valkey — at-least-once delivery, "
+            "retries, scheduling, workflows, and a machine-readable agent spec."
+        ),
         "",
-        "The spec files under `reference/agent/spec/` are generated from the "
-        "code and kept in sync by tests, so an agent can consume them without "
-        "reading the source.",
+        (
+            "The spec files under `reference/agent/spec/` are generated from the "
+            "code and kept in sync by tests, so an agent can consume them without "
+            "reading the source."
+        ),
         "",
         "## Documentation",
         "",
@@ -728,7 +732,7 @@ def _main(argv: list[str] | None = None) -> int:
     written = write_spec(spec_dir)
     written.append(write_llms_txt(llms_path))
     for path in written:
-        print(path)
+        print(path)  # noqa: T201 - CLI-Ausgabe der erzeugten Pfade
     return 0
 
 

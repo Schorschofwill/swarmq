@@ -119,7 +119,7 @@ class CancelGate:
                         deps.backend.notify_result(task_id),
                         what="cancel result notification",
                     )
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - Benachrichtigung best effort, wird geloggt
                     logger.warning("publish_notification_failed", task_id=task_id, **_error_fields(exc))
 
             # Shorten the flag to at most 1 h (BZ-23; log+swallow at the
@@ -130,7 +130,7 @@ class CancelGate:
             # completed so a redelivery after in-flight-TTL expiry does not
             # re-run the task (Unit 1). User-initiated cancel is
             # terminal — "this fire was processed."
-            await deps.finalize_schedfire(ctx, True)
+            await deps.finalize_schedfire(ctx, True)  # noqa: FBT003 - Callable-Feld ohne Parameternamen
 
             # R3.5 Unit 11: pre-start cancel is a terminal path — the task
             # never ran; release the dedup flag so a future legitimate

@@ -40,4 +40,4 @@ def contain_delivery_errors() -> Iterator[None]:
             hint="delivery not settled; the broker redelivers the unacknowledged message",
         )
     except Exception as exc:
-        logger.error("delivery_handler_failed", **_error_fields(exc), exc_info=True)
+        logger.error("delivery_handler_failed", **_error_fields(exc), exc_info=True)  # noqa: G201 - exception() reicht anderen Methodennamen an stdlib

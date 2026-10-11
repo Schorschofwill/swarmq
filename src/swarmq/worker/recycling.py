@@ -120,11 +120,12 @@ async def start_with_bind_retry(start: Callable[[], Awaitable[None]], *, budget_
     while True:
         try:
             await start()
-            return
         except RuntimeError as exc:
             if "bind failed" not in str(exc) or time.monotonic() >= deadline:
                 raise
             await asyncio.sleep(0.25)
+        else:
+            return
 
 
 __all__ = [

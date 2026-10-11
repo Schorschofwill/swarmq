@@ -133,7 +133,7 @@ class WorkflowHandle:
             entry: dict[str, Any] = {"task_id": tid, "status": "completed"}
             try:
                 entry["result"] = self._unpack(raw)
-            except Exception:
+            except Exception:  # noqa: BLE001 - gespeichertes Fehlerergebnis meldet Status failed
                 # Stored result is an error/cancel — report failed status
                 # rather than propagating the exception from an introspection
                 # call; get() is the surface that raises.
@@ -185,7 +185,7 @@ class WorkflowHandle:
             # oder zum Slice-Ende; der Poll oben trägt die Liveness.
             try:
                 await self._backend.wait_for_workflow(self.workflow_id, timeout=min(0.2, remaining))
-            except Exception:
+            except Exception:  # noqa: BLE001 - Pub/Sub nicht verfuegbar, Poll-Fallback
                 # Pub/Sub nicht verfügbar — Poll-Fallback.
                 await asyncio.sleep(min(0.05, max(0.0, remaining)))
 
@@ -387,7 +387,7 @@ class WorkflowAdvancer(WorkflowFailure):
         group: Group,
         group_path: str,
         member_task_id: str,
-        result: Any,
+        result: Any,  # noqa: ARG002 - einheitliche Signatur der Member-Callbacks
     ) -> None:
         expected_n = len(group.members)
         fired = await self._chord.record_member(

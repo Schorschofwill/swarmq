@@ -40,6 +40,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -193,7 +194,7 @@ def test_abort_kills_a_running_probe(log_config):
 
 def test_an_unloadable_file_logs_reload_failed_without_a_probe(log_config, swarmq_logs):
     factory = _Factory()
-    with open(log_config, "w") as fh:
+    with Path(log_config).open("w") as fh:
         fh.write('{"version": 1,')
     ctl = ReloadController(log_config, probe_factory=factory, clock=_Clock())
     ctl.request()
