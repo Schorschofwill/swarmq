@@ -399,7 +399,7 @@ class ClientScheduling(ClientScheduleResolve):
             self._broker.publish(
                 state["resolved_queues"][i],
                 state["encoded_messages"][i],
-                headers=state["dedup_headers"][i] if state["dedup_headers"][i] else None,
+                headers=state["dedup_headers"][i] or None,
             )
             for i in publish_indices
         ]

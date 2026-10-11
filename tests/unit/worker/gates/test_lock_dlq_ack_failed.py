@@ -39,16 +39,16 @@ class _RenderFails(Task):
 
 
 def _ctx(task_class: type[Task], **overrides: object) -> GateContext:
-    base: dict[str, object] = dict(
-        task_id="t1",
-        task_name=task_class.task_info.name,
-        queue="default",
-        task_info=task_class.task_info,
-        task_class=task_class,
-        args=[],
-        kwargs={},
-        handler_id=uuid.uuid4(),
-    )
+    base: dict[str, object] = {
+        "task_id": "t1",
+        "task_name": task_class.task_info.name,
+        "queue": "default",
+        "task_info": task_class.task_info,
+        "task_class": task_class,
+        "args": [],
+        "kwargs": {},
+        "handler_id": uuid.uuid4(),
+    }
     base.update(overrides)
     return GateContext(**base)  # type: ignore[arg-type]
 

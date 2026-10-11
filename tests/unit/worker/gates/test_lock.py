@@ -609,16 +609,16 @@ class TestLockGateOutcomes:
     """Direkte Gate-Tests (Plan U7): Outcome, Registrierung, Fallbacks."""
 
     def _ctx(self, task_class=LockedTask, **overrides):
-        base = dict(
-            task_id="t1",
-            task_name=task_class.task_info.name,
-            queue="default",
-            task_info=task_class.task_info,
-            task_class=task_class,
-            args=[],
-            kwargs={},
-            handler_id=uuid.uuid4(),
-        )
+        base = {
+            "task_id": "t1",
+            "task_name": task_class.task_info.name,
+            "queue": "default",
+            "task_info": task_class.task_info,
+            "task_class": task_class,
+            "args": [],
+            "kwargs": {},
+            "handler_id": uuid.uuid4(),
+        }
         base.update(overrides)
         return GateContext(**base)
 
@@ -690,16 +690,16 @@ class TestLockGateLogging:
     ``error_type``/``error``."""
 
     def _ctx(self, task_class=LockedTask, **overrides):
-        base = dict(
-            task_id="t1",
-            task_name=task_class.task_info.name,
-            queue="default",
-            task_info=task_class.task_info,
-            task_class=task_class,
-            args=[],
-            kwargs={},
-            handler_id=uuid.uuid4(),
-        )
+        base = {
+            "task_id": "t1",
+            "task_name": task_class.task_info.name,
+            "queue": "default",
+            "task_info": task_class.task_info,
+            "task_class": task_class,
+            "args": [],
+            "kwargs": {},
+            "handler_id": uuid.uuid4(),
+        }
         base.update(overrides)
         return GateContext(**base)
 

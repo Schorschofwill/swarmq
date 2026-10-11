@@ -113,7 +113,7 @@ def _tail(broker, backend, config, task=TailTask):
 
 
 def _execution(**overrides) -> ExecutionResult:
-    base = dict(result_value="ok", is_error=False, is_cancelled=False, error_message="", task_exception=None)
+    base = {"result_value": "ok", "is_error": False, "is_cancelled": False, "error_message": "", "task_exception": None}
     base.update(overrides)
     return ExecutionResult(**base)
 

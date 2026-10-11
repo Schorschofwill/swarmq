@@ -192,7 +192,7 @@ def test_config_spec_enum_choices_match_validation() -> None:
     assert by_name["queue_type"]["choices"] == ["classic", "quorum"]
     assert by_name["log_lifecycle_level"]["choices"] == by_name["log_level"]["choices"]
     # The documented choices are exactly what the config accepts/rejects.
-    base = dict(broker_url="amqp://x", backend_url="valkey://x")
+    base = {"broker_url": "amqp://x", "backend_url": "valkey://x"}
     for level in by_name["log_level"]["choices"]:
         SwarmQConfig(**base, log_level=level)  # no raise
         SwarmQConfig(**base, log_lifecycle_level=level)
@@ -251,7 +251,7 @@ def test_cli_spec_arguments_match_parser_per_command() -> None:
     for path, parser in leaves.items():
         spec_flags = set()
         for arg in by_path[path]["arguments"]:
-            spec_flags.update(arg["flags"] if arg["flags"] else [arg["name"]])
+            spec_flags.update(arg["flags"] or [arg["name"]])
         assert spec_flags == _option_strings(parser), f"mismatch for {path!r}"
 
 

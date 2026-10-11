@@ -27,16 +27,16 @@ def _env(monkeypatch, valkey_url):
 
 
 def _ns_add(**overrides) -> argparse.Namespace:
-    base = dict(
-        name="test",
-        cron="*/5 * * * *",
-        at=None,
-        task="ping",
-        args="[]",
-        kwargs="{}",
-        queue="default",
-        format="table",
-    )
+    base = {
+        "name": "test",
+        "cron": "*/5 * * * *",
+        "at": None,
+        "task": "ping",
+        "args": "[]",
+        "kwargs": "{}",
+        "queue": "default",
+        "format": "table",
+    }
     base.update(overrides)
     return argparse.Namespace(**base)
 

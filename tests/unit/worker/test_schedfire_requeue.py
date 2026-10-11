@@ -205,13 +205,13 @@ def _step_message() -> Any:
 
 
 def _ok(**overrides: Any) -> ExecutionResult:
-    base: dict[str, Any] = dict(
-        result_value="ok",
-        is_error=False,
-        is_cancelled=False,
-        error_message="",
-        task_exception=None,
-    )
+    base: dict[str, Any] = {
+        "result_value": "ok",
+        "is_error": False,
+        "is_cancelled": False,
+        "error_message": "",
+        "task_exception": None,
+    }
     base.update(overrides)
     return ExecutionResult(**base)
 

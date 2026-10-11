@@ -396,13 +396,13 @@ class TestGracefulHandover:
 
         # Use a long TTL — if handover falls back to TTL-expiry, B won't
         # acquire within the test timeout.
-        cfg_kwargs = dict(
-            queues=[queue],
-            concurrency=1,
-            scheduler_poll_interval=0.1,
-            scheduler_heartbeat_interval=0.2,
-            scheduler_lock_ttl=10.0,
-        )
+        cfg_kwargs = {
+            "queues": [queue],
+            "concurrency": 1,
+            "scheduler_poll_interval": 0.1,
+            "scheduler_heartbeat_interval": 0.2,
+            "scheduler_lock_ttl": 10.0,
+        }
 
         async with (
             SwarmQ(broker_a, backend_a, **cfg_kwargs) as app_a,
@@ -606,13 +606,13 @@ class TestRecurringAcrossLeaderChange:
         broker_b = RabbitMQBroker(rabbitmq_url)
         backend_b = ValkeyBackend(valkey_url)
 
-        cfg = dict(
-            queues=[queue],
-            concurrency=1,
-            scheduler_poll_interval=0.1,
-            scheduler_heartbeat_interval=0.2,
-            scheduler_lock_ttl=1.0,
-        )
+        cfg = {
+            "queues": [queue],
+            "concurrency": 1,
+            "scheduler_poll_interval": 0.1,
+            "scheduler_heartbeat_interval": 0.2,
+            "scheduler_lock_ttl": 1.0,
+        }
 
         async with SwarmQ(broker_a, backend_a, **cfg) as app_a, SwarmQ(broker_b, backend_b, **cfg) as app_b:
             await app_a.broker.declare_queue(queue)
@@ -697,13 +697,13 @@ class TestCrashFailover:
         broker_b = RabbitMQBroker(rabbitmq_url)
         backend_b = ValkeyBackend(valkey_url)
 
-        cfg = dict(
-            queues=[queue],
-            concurrency=1,
-            scheduler_poll_interval=0.1,
-            scheduler_heartbeat_interval=0.2,
-            scheduler_lock_ttl=1.0,
-        )
+        cfg = {
+            "queues": [queue],
+            "concurrency": 1,
+            "scheduler_poll_interval": 0.1,
+            "scheduler_heartbeat_interval": 0.2,
+            "scheduler_lock_ttl": 1.0,
+        }
 
         async with SwarmQ(broker_a, backend_a, **cfg) as app_a, SwarmQ(broker_b, backend_b, **cfg) as app_b:
             a_leader = asyncio.Event()
@@ -924,13 +924,13 @@ class TestCronReportsAcrossApps:
         seen_interval = 0.3
         name = _task_name("nightly")
         queue_a, queue_b = _unique_queue(), _unique_queue()
-        cfg = dict(
-            concurrency=1,
-            scheduler_poll_interval=0.1,
-            scheduler_heartbeat_interval=0.2,
-            scheduler_lock_ttl=1.0,
-            scheduler_seen_interval_s=seen_interval,
-        )
+        cfg = {
+            "concurrency": 1,
+            "scheduler_poll_interval": 0.1,
+            "scheduler_heartbeat_interval": 0.2,
+            "scheduler_lock_ttl": 1.0,
+            "scheduler_seen_interval_s": seen_interval,
+        }
 
         def _app(queue: str) -> SwarmQ:
             # Jede App hält ihre eigene Registry (Momentaufnahme bei der
@@ -1051,14 +1051,14 @@ class TestCronPruneAcrossApps:
         seen_interval, prune_after = 0.3, 1.2
         name, legacy = _task_name("nightly"), _task_name("legacy")
         queue_a, queue_b = _unique_queue(), _unique_queue()
-        cfg = dict(
-            concurrency=1,
-            scheduler_poll_interval=0.1,
-            scheduler_heartbeat_interval=0.2,
-            scheduler_lock_ttl=1.0,
-            scheduler_seen_interval_s=seen_interval,
-            scheduler_prune_after_s=prune_after,
-        )
+        cfg = {
+            "concurrency": 1,
+            "scheduler_poll_interval": 0.1,
+            "scheduler_heartbeat_interval": 0.2,
+            "scheduler_lock_ttl": 1.0,
+            "scheduler_seen_interval_s": seen_interval,
+            "scheduler_prune_after_s": prune_after,
+        }
 
         def _app(queue: str) -> SwarmQ:
             app = SwarmQ(

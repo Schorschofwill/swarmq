@@ -320,13 +320,13 @@ async def test_3_scheduler_candidates_no_missed_cron_fires(
             await valkey_client.incr(counter_key)
             return "ok"
 
-    cfg = dict(
-        queues=[queue],
-        concurrency=2,
-        scheduler_poll_interval=0.05,
-        scheduler_heartbeat_interval=0.2,
-        scheduler_lock_ttl=2.0,
-    )
+    cfg = {
+        "queues": [queue],
+        "concurrency": 2,
+        "scheduler_poll_interval": 0.05,
+        "scheduler_heartbeat_interval": 0.2,
+        "scheduler_lock_ttl": 2.0,
+    }
 
     apps: list[SwarmQ] = []
     tasks: list[asyncio.Task] = []

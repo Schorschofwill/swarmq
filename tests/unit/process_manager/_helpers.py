@@ -12,18 +12,18 @@ from swarmq.process_manager import (
 
 def _make_test_cfg(**overrides) -> WorkerConfig:
     """Return a minimal WorkerConfig for unit tests (pickle-safe)."""
-    defaults = dict(
-        module="dummy.module",
-        queues=("default",),
-        concurrency=1,
-        log_level="ERROR",
-        log_format="human",
-        burst=False,
-        burst_idle_timeout=5.0,
-        priorities=False,
-        metrics_port=None,
-        health_port=None,
-    )
+    defaults = {
+        "module": "dummy.module",
+        "queues": ("default",),
+        "concurrency": 1,
+        "log_level": "ERROR",
+        "log_format": "human",
+        "burst": False,
+        "burst_idle_timeout": 5.0,
+        "priorities": False,
+        "metrics_port": None,
+        "health_port": None,
+    }
     defaults.update(overrides)
     return WorkerConfig(**defaults)
 
