@@ -151,6 +151,10 @@ src = ["src"]
 # Plan U2: erstes blockierendes Lint-Gate (``lint-and-types``). 120 statt 88
 # entspricht der gelebten Zeilenbreite des Bestands (längste Zeile 120).
 line-length = 120
+# Nur Python (Plan 2026-10-11-1200, U2): ruff 0.17 formatiert sonst auch
+# Codeblöcke in Markdown — darunter abgeschlossene Pläne, die unverändert
+# bleiben sollen.
+include = ["*.py", "*.pyi"]
 
 [tool.ruff.lint]
 select = [
