@@ -37,7 +37,7 @@ niemand für eine Zusicherung hält.
 
 | Job | Was |
 |---|---|
-| `lint-and-types` | `ruff format --check .`, `ruff check src/ tests/ typings/`, `mypy src/swarmq tests`, `basedpyright` (siehe „Lint, Format und Typen“) |
+| `lint-and-types` | `ruff format --check .`, `ruff check src/ tests/ typings/`, `mypy src/swarmq tests`, `basedpyright`, `stubtest` (siehe „Lint, Format und Typen“) |
 | `lock-check` | `uv.lock` ist zum `pyproject.toml` synchron |
 | `unit-tests` | `tests/unit`, dazu `tests/property` und `tests/fuzz/test_parser_fuzz.py` |
 | `integration-tests` | `tests/integration` gegen RabbitMQ und Valkey |
@@ -202,6 +202,7 @@ basedpyright, Stubs); `uv sync` und `uv run` ziehen beide über
 | Lint | `uv run ruff check src tests typings` | `select = ["ALL"]`, Ausnahmekatalog in `pyproject.toml` |
 | mypy | `uv run --extra test --extra reload mypy src/swarmq tests` | strict plus Zusatzcodes; Tests ohne Annotationspflicht |
 | basedpyright | `uv run --extra test --extra reload basedpyright` | strict, nur `src/swarmq` |
+| Stubs | `uv run python -m mypy.stubtest msgpack croniter --mypy-config-file pyproject.toml --ignore-missing-stub` | `typings/` gegen die installierten Pakete; Drift nach einem Upgrade wird rot |
 
 **Hooks einrichten** (einmal je Klon):
 

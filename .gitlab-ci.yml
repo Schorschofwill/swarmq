@@ -111,6 +111,10 @@ variables:
 # Kein Build-Toolchain nötig (die Prüfer brauchen die C-Extension nicht);
 # $UV_RUN, damit mypy das `reload`-Extra (watchfiles) auflösen kann. Die
 # Werkzeuge kommen aus den Gruppen `lint`/`typing` (KTD9).
+# stubtest gleicht die lokalen Teil-Stubs in typings/ (msgpack, croniter) mit
+# den installierten Paketen ab, damit Drift nach Upgrades auffällt.
+# --ignore-missing-stub: die Stubs decken bewusst nur die von swarmq genutzte
+# Oberfläche ab; geprüft wird, dass das Gestubbte zur Laufzeit passt.
 lint-and-types:
   extends: .uv
   stage: test
@@ -120,6 +124,7 @@ lint-and-types:
     - $UV_RUN ruff check src/ tests/ typings/
     - $UV_RUN mypy src/swarmq tests
     - $UV_RUN basedpyright
+    - $UV_RUN python -m mypy.stubtest msgpack croniter --mypy-config-file pyproject.toml --ignore-missing-stub
 
 # Tier 1 — unit + property. No external services; the fast regression gate.
 # Guards against uv.lock drifting from pyproject.toml — including optional

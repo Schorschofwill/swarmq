@@ -1,11 +1,16 @@
 # Lokaler Teil-Stub fuer msgpack 1.x (liefert keine Typinformationen).
 # Deckt nur die von swarmq und seinen Tests genutzte Oberflaeche ab.
 from collections.abc import Callable
-from typing import Any, NamedTuple
+from typing import Any, Self
 
-class ExtType(NamedTuple):
-    code: int
-    data: bytes
+# Laufzeit: Unterklasse von namedtuple("ExtType", "code data") mit eigenem
+# __new__(cls, code, data); als NamedTuple laesst sich __new__ nicht stubben.
+class ExtType(tuple[int, bytes]):
+    def __new__(cls, code: int, data: bytes) -> Self: ...
+    @property
+    def code(self) -> int: ...
+    @property
+    def data(self) -> bytes: ...
 
 class UnpackException(Exception): ...
 class BufferFull(UnpackException): ...
@@ -18,6 +23,7 @@ UnpackValueError = ValueError
 class ExtraData(UnpackValueError):
     unpacked: Any
     extra: bytes
+    def __init__(self, unpacked: Any, extra: bytes) -> None: ...
 
 def packb(
     o: Any,

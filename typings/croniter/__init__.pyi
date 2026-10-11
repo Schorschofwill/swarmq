@@ -16,7 +16,10 @@ class croniter:  # noqa: N801 - Name der Bibliothek
         self,
         expr_format: str,
         start_time: dt.datetime | float | None = None,
-        ret_type: type = ...,
+        # Bewusst nur float: get_next()/get_prev() ohne ret_type liefern den
+        # Typ aus diesem Parameter; swarmq nutzt ihn nicht, daher stimmt der
+        # float-Default der Overloads unten nur mit dieser Einschraenkung.
+        ret_type: type[float] = ...,
         day_or: bool = True,
         max_years_between_matches: int | None = None,
         is_prev: bool = False,
