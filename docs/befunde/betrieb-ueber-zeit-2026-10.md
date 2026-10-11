@@ -91,7 +91,7 @@ Status je Befund: „offen“ oder „behoben (MR n, <Commit>)“. Mit dem Fix i
 | BZ-07 | `tests/unit/scheduler/test_befund_bz02_bz07_bz09_bz28_scheduler.py` | behoben (MR 4, ddcb11b) |
 | BZ-08 | `tests/integration/test_befund_bz08_replay_without_id.py` | behoben (MR 12, a3d34f9) |
 | BZ-09 | `tests/unit/scheduler/test_befund_bz02_bz07_bz09_bz28_scheduler.py` | behoben (MR 9, b21cbf0) |
-| BZ-10 | `tests/integration/test_befund_bz10_shared_valkey.py` | offen |
+| BZ-10 | `tests/integration/test_befund_bz10_shared_valkey.py` | behoben (MR 15, 1d243f2); Nachweise 1, 2, 4 mit Namensraum umgeschrieben, Test 3 ueber den Ruecktritt |
 | BZ-11 | `tests/e2e/test_befund_bz02_bz11_bz23_scheduler.py` | behoben (MR 11, e4ece7d) |
 | BZ-12 | `tests/unit/worker/gates/test_befund_bz12_marker_ttl.py` | behoben (MR 12, 507b471) |
 | BZ-13 | `tests/unit/worker/test_befund_bz13_workflow_hang.py` | behoben (MR 3, a570112) |
