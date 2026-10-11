@@ -137,7 +137,7 @@ async def test_10_workers_1000_tasks_each_exact_once(
     client_backend = ValkeyBackend(valkey_url)
 
     worker_apps: list[SwarmQ] = []
-    worker_tasks: list[asyncio.Task] = []
+    worker_tasks: list[asyncio.Task[None]] = []
 
     try:
         async with SwarmQ(
@@ -333,7 +333,7 @@ async def test_3_scheduler_candidates_no_missed_cron_fires(
     }
 
     apps: list[SwarmQ] = []
-    tasks: list[asyncio.Task] = []
+    tasks: list[asyncio.Task[None]] = []
 
     try:
         for _ in range(3):

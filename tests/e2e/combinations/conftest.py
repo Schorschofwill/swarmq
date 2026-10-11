@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import os
 import uuid
+from collections.abc import AsyncIterator
 
 import pytest
 
@@ -74,7 +75,7 @@ def toxiproxy_available() -> bool:
 @pytest.fixture
 async def toxiproxy(
     toxiproxy_available: bool,
-) -> ToxiproxyClient:
+) -> AsyncIterator[ToxiproxyClient]:
     """Async ToxiproxyClient — context-managed so any leaked toxics are reset
     on test exit. Skips the test when Toxiproxy is not reachable."""
     if not toxiproxy_available:

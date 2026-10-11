@@ -91,7 +91,7 @@ def _spawn_worker(queue_name: str):
     )
 
 
-def _wait_for_worker_started(proc: subprocess.Popen, deadline: float) -> None:
+def _wait_for_worker_started(proc: subprocess.Popen[str], deadline: float) -> None:
     while time.monotonic() < deadline:
         line = proc.stdout.readline() if proc.stdout else ""
         if not line:
@@ -112,7 +112,9 @@ async def _schedule_and_get_result(queue: str, value: str) -> str:
     app = SwarmQ(broker, backend, queues=[queue])
     async with app:
         task_id = await app.schedule("cli_di_echo", value, queue=queue)
-        return await app.get_result(task_id, timeout=15)
+        result = await app.get_result(task_id, timeout=15)
+        assert isinstance(result, str)
+        return result
 
 
 def test_cli_worker_dishka_injection_round_trip_then_clean_sigterm() -> None:

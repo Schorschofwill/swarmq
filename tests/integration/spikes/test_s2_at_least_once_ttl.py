@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from typing import Any
 
 import aio_pika
 import pytest
@@ -44,7 +45,8 @@ async def test_expiry_at_head_dead_letters_at_least_once_via_default_exchange(
 
     assert message.body == b"head"
     assert time.monotonic() - start < 5.0
-    (death,) = message.headers["x-death"]
+    headers: dict[str, Any] = dict(message.headers)
+    (death,) = headers["x-death"]
     assert {k: death[k] for k in ("count", "reason", "queue", "exchange", "routing-keys", "original-expiration")} == {
         "count": 1,
         "reason": "expired",
@@ -53,7 +55,7 @@ async def test_expiry_at_head_dead_letters_at_least_once_via_default_exchange(
         "routing-keys": [delay],
         "original-expiration": "200",
     }
-    assert message.headers["x-first-death-reason"] == "expired"
+    assert headers["x-first-death-reason"] == "expired"
 
 
 async def test_reject_publish_with_max_length_policy(

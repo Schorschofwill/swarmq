@@ -21,7 +21,7 @@ import contextlib
 import os
 import time
 import uuid
-from typing import override
+from typing import Literal, TypedDict, override
 
 import httpx
 import psutil
@@ -55,6 +55,18 @@ _MIN_ABS_DELTA = {
     "valkey_clients": 10,  # 10 client connections slack
     "rabbit_channels": 10,  # 10 channels slack
 }
+
+
+_Metric = Literal["rss", "fds", "valkey_clients", "rabbit_channels"]
+
+
+class _Sample(TypedDict):
+    t: float
+    label: str
+    rss: float
+    fds: float
+    valkey_clients: float
+    rabbit_channels: float
 
 
 def _unique_queue() -> str:
@@ -132,7 +144,7 @@ async def test_1h_continuous_load_no_leaks(
     worker_backend = ValkeyBackend(valkey_url)
     worker_app = SwarmQ(worker_broker, worker_backend, queues=[queue])
 
-    samples: list[dict[str, float]] = []
+    samples: list[_Sample] = []
 
     # Persistent monitor client so CLIENT LIST doesn't open a fresh
     # connection each sample (which would self-pollute the metric).
@@ -151,11 +163,11 @@ async def test_1h_continuous_load_no_leaks(
         # Let the worker settle before baseline to avoid counting churn.
         await asyncio.sleep(2.0)
 
-        async def _sample(label: str) -> dict[str, float]:
+        async def _sample(label: str) -> _Sample:
             rss, fds = _process_metrics()
             valkey_clients = await _valkey_client_count(monitor)
             rabbit_channels = await _rabbit_channel_count(rabbitmq_mgmt_url)
-            snap = {
+            snap: _Sample = {
                 "t": time.monotonic(),
                 "label": label,
                 "rss": float(rss),
@@ -230,7 +242,7 @@ async def test_1h_continuous_load_no_leaks(
         flush=True,
     )
 
-    def _drift(metric: str) -> tuple[float, float]:
+    def _drift(metric: _Metric) -> tuple[float, float]:
         """Return (relative_drift, absolute_peak_delta) for metric."""
         values = [s[metric] for s in compare if s[metric] >= 0]
         if len(values) < 2 or values[0] <= 0:
@@ -239,7 +251,7 @@ async def test_1h_continuous_load_no_leaks(
         peak = max(values)
         return abs(peak - base) / base, abs(peak - base)
 
-    def _check(metric: str, label: str) -> None:
+    def _check(metric: _Metric, label: str) -> None:
         rel, abs_ = _drift(metric)
         slack = _MIN_ABS_DELTA[metric]
         # If absolute change is within slack, accept regardless of %.

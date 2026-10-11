@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from typing import override
+from typing import Any, override
 
 import pytest
 import valkey.asyncio as aio_valkey
@@ -48,7 +48,7 @@ def _cleanup_tasks():
     Task._clear_registered_tasks()
 
 
-async def _start_worker(app: SwarmQ) -> asyncio.Task:
+async def _start_worker(app: SwarmQ) -> asyncio.Task[None]:
     """Start the worker as a background Task; returns the Task."""
     worker_task = asyncio.create_task(app.start_worker())
     # Give the worker a moment to connect + declare + consume.
@@ -56,7 +56,7 @@ async def _start_worker(app: SwarmQ) -> asyncio.Task:
     return worker_task
 
 
-async def _stop_worker(app: SwarmQ, worker_task: asyncio.Task) -> None:
+async def _stop_worker(app: SwarmQ, worker_task: asyncio.Task[None]) -> None:
     """Cleanly stop the worker by firing the shutdown event."""
     # Use the internal API to trigger graceful shutdown without SIGTERM.
     for attr in ("_worker",):
@@ -224,7 +224,7 @@ class TestPreStartCancelIntegration:
         broker = RabbitMQBroker(rabbitmq_url)
         backend = ValkeyBackend(valkey_url)
 
-        captured: list[dict] = []
+        captured: list[dict[str, Any]] = []
 
         async with SwarmQ(broker, backend, queues=[queue], concurrency=1) as app:
             await app.broker.declare_queue(queue)

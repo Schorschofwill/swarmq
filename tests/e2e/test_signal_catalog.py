@@ -21,7 +21,7 @@ import contextlib
 import re
 import time
 import uuid
-from typing import Any, override
+from typing import Any, ClassVar, override
 
 import pytest
 
@@ -240,7 +240,8 @@ async def test_signal_worker_heartbeat(
     def _free_port() -> int:
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
-            return s.getsockname()[1]
+            port: int = s.getsockname()[1]
+            return port
 
     queue = _unique_queue()
     broker = RabbitMQBroker(rabbitmq_url)
@@ -495,12 +496,13 @@ async def test_signal_task_retrying(
             retry_backoff="fixed",
             retry_base_delay=0.3,
         )
+        _calls: ClassVar[int] = 0
 
         @override
         async def run(self) -> str:
             # Fail the first attempt, succeed on the retry.
             # Use a module-scope counter via class attribute.
-            RetryOnce._calls = getattr(RetryOnce, "_calls", 0) + 1
+            RetryOnce._calls += 1
             if RetryOnce._calls == 1:
                 raise RuntimeError("transient")
             return "ok"
@@ -768,7 +770,7 @@ async def test_signal_task_expired(
     """
     queue = _unique_queue()
     task_name = _task_name("expired")
-    captured: list[dict] = []
+    captured: list[dict[str, Any]] = []
     expired_event = asyncio.Event()
 
     class ExpiringTask(Task):
@@ -1087,6 +1089,7 @@ async def test_signal_scheduler_standby(
             await asyncio.wait_for(leader.wait(), timeout=_EVENT_TIMEOUT)
             # Simulate lock loss (TTL expiry / takeover): the next renew
             # returns False → leader transitions to standby.
+            assert backend._client is not None
             await backend._client.delete(SCHEDULER_LOCK_KEY)
             await asyncio.wait_for(standby.wait(), timeout=_EVENT_TIMEOUT)
         finally:

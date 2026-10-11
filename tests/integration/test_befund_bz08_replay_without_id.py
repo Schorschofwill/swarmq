@@ -94,6 +94,7 @@ async def _move_back_like_shovel(rabbitmq_url: str, queue: str) -> dict[str, Any
     broker = RabbitMQBroker(rabbitmq_url)
     await broker.connect()
     try:
+        assert broker._connection is not None
         channel = await broker._connection.channel()
         message = await (await channel.get_queue(f"{queue}.XQ")).get(no_ack=True)
         await channel.close()

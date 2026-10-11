@@ -139,7 +139,9 @@ async def _dlq_count(queue: str) -> int:
     try:
         ch = await conn.channel()
         decl = await ch.declare_queue(f"{queue}.XQ", passive=True)
-        return decl.declaration_result.message_count
+        count = decl.declaration_result.message_count
+        assert count is not None
+        return count
     finally:
         await conn.close()
 
@@ -150,6 +152,7 @@ async def _read_exec_counts(task_ids: list[str]) -> dict[str, int]:
     backend = ValkeyBackend(_BACKEND_URL)
     await backend.connect()
     try:
+        assert backend._client is not None
         out: dict[str, int] = {}
         for tid in task_ids:
             raw = await backend._client.get(f"exec_count:{tid}")
@@ -162,6 +165,7 @@ async def _read_exec_counts(task_ids: list[str]) -> dict[str, int]:
 async def _wait_all_started(task_ids: list[str], *, timeout: float = 10.0) -> None:
     """Block until every task has recorded its first execution."""
     deadline = time.monotonic() + timeout
+    counts: dict[str, int] = {}
     while time.monotonic() < deadline:
         counts = await _read_exec_counts(task_ids)
         if all(c >= 1 for c in counts.values()):

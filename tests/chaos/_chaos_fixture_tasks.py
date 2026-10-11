@@ -22,19 +22,31 @@ from __future__ import annotations
 import asyncio
 import ctypes
 import os
-from typing import override
+from typing import TYPE_CHECKING, cast, override
 
 from swarmq.task import Task, TaskInfo
 
+if TYPE_CHECKING:
+    from valkey.asyncio import Valkey
+
+    from swarmq.backend.valkey import ValkeyBackend
+    from swarmq.contracts import ResultBackend
+
 _QUEUE = os.environ.get("CLI_TEST_QUEUE", "chaos_test_default")
+
+
+def _valkey_client(backend: ResultBackend) -> Valkey:
+    """Raw Valkey client of the worker backend (fixture workers always run
+    with ``ValkeyBackend``)."""
+    return cast("ValkeyBackend", backend).client
 
 
 async def _bump_exec_count(task: Task) -> None:
     """Best-effort per-task execution counter in Valkey."""
     if task._backend is not None and task._task_id is not None:
         try:
-            await task._backend._client.incr(f"exec_count:{task._task_id}")
-            await task._backend._client.expire(f"exec_count:{task._task_id}", 300)
+            await _valkey_client(task._backend).incr(f"exec_count:{task._task_id}")
+            await _valkey_client(task._backend).expire(f"exec_count:{task._task_id}", 300)
         except Exception:
             pass
 
@@ -94,8 +106,8 @@ class ChordHeaderSleepTask(Task):
         if run_key and self._backend is not None:
             # Starts per run: a crash mid-fan-in shows up as re-runs.
             try:
-                await self._backend._client.incr(f"chord_header_runs:{run_key}")
-                await self._backend._client.expire(f"chord_header_runs:{run_key}", 300)
+                await _valkey_client(self._backend).incr(f"chord_header_runs:{run_key}")
+                await _valkey_client(self._backend).expire(f"chord_header_runs:{run_key}", 300)
             except Exception:
                 pass
         if seconds:
@@ -116,11 +128,11 @@ class ChordBodyCountTask(Task):
     )
 
     @override
-    async def run(self, results: list, run_key: str = "") -> int:
+    async def run(self, results: list[int], run_key: str = "") -> int:
         if self._backend is not None:
             try:
-                await self._backend._client.incr(f"chord_body:{run_key}")
-                await self._backend._client.expire(f"chord_body:{run_key}", 300)
+                await _valkey_client(self._backend).incr(f"chord_body:{run_key}")
+                await _valkey_client(self._backend).expire(f"chord_body:{run_key}", 300)
             except Exception:
                 pass
         return sum(results)

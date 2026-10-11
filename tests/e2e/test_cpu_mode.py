@@ -11,6 +11,7 @@ import asyncio
 import os
 import signal
 import uuid
+from typing import Any
 
 import pytest
 
@@ -55,7 +56,7 @@ async def _run_burst(app: SwarmQ, timeout: float = 40.0) -> None:
     await asyncio.wait_for(app.start_worker(), timeout=timeout)
 
 
-async def _results(rabbitmq_url: str, valkey_url: str, tids: list[str]) -> list[object]:
+async def _results(rabbitmq_url: str, valkey_url: str, tids: list[str]) -> list[Any]:
     """Der Worker schliesst beim Ende seine Verbindungen — Ergebnisse mit frischer App lesen."""
     reader = SwarmQ(RabbitMQBroker(rabbitmq_url), ValkeyBackend(valkey_url), queues=[_QUEUE])
     async with reader:
@@ -150,7 +151,7 @@ async def test_di_child_is_reused_and_recycled_with_signal(rabbitmq_url, valkey_
     """R6/R7/AE1-Analogon: DI-Tasks teilen ein Kind; nach recycle_max_tasks kommt ein neues
     Kind und WORKER_RECYCLING feuert mit Grund ``tasks``."""
     pytest.importorskip("dishka")
-    recyclings: list[dict] = []
+    recyclings: list[dict[str, Any]] = []
     app = _app(rabbitmq_url, valkey_url, concurrency=1, recycle_max_tasks=2)
 
     @app.on_signal(Signal.WORKER_RECYCLING)

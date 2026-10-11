@@ -107,7 +107,9 @@ def _message(fire_key: str, extra: dict[str, Any] | None = None) -> MagicMock:
     return make_message(payload, headers={"x-swarmq-schedfire": fire_key, **(extra or {})})
 
 
-async def _defer_with_failed_release(worker: Worker, broker: MagicMock, backend: ValkeyBackend, msg: Any) -> dict:
+async def _defer_with_failed_release(
+    worker: Worker, broker: MagicMock, backend: ValkeyBackend, msg: Any
+) -> dict[str, Any]:
     """Cancel-Check und Claim-Freigabe scheitern wie bei einem Valkey-Ausfall."""
     store = backend.schedules
     real_is_cancelled, real_release = backend.is_cancelled, store.release_fire_claim
@@ -119,7 +121,7 @@ async def _defer_with_failed_release(worker: Worker, broker: MagicMock, backend:
         backend.is_cancelled = real_is_cancelled  # type: ignore[method-assign]
         store.release_fire_claim = real_release  # type: ignore[method-assign]
     broker.retry_later.assert_awaited_once()
-    headers: dict = broker.retry_later.await_args.kwargs["headers"]
+    headers: dict[str, Any] = broker.retry_later.await_args.kwargs["headers"]
     broker.retry_later.reset_mock()
     return headers
 
@@ -131,7 +133,7 @@ async def _defer_with_lost_claim_reply(
     msg: Any,
     *,
     written: bool,
-) -> dict:
+) -> dict[str, Any]:
     """Der Claim-Aufruf endet mit einem Transportfehler -- nachdem Valkey den
     Claim geschrieben hat (``written``) oder bevor er ankam; die Freigabe
     scheitert ebenfalls."""
@@ -151,12 +153,12 @@ async def _defer_with_lost_claim_reply(
         store.claim_fire = real_claim  # type: ignore[method-assign]
         store.release_fire_claim = real_release  # type: ignore[method-assign]
     broker.retry_later.assert_awaited_once()
-    headers: dict = broker.retry_later.await_args.kwargs["headers"]
+    headers: dict[str, Any] = broker.retry_later.await_args.kwargs["headers"]
     broker.retry_later.reset_mock()
     return headers
 
 
-def _copy_of(original: Any, headers: dict) -> MagicMock:
+def _copy_of(original: Any, headers: dict[str, Any]) -> MagicMock:
     return make_message(body=original.body, headers=headers)
 
 
@@ -279,7 +281,7 @@ async def test_failed_release_before_requeue_in_place_sends_a_copy_that_runs_onc
         store.release_fire_claim = real_release  # type: ignore[method-assign]
     broker.redeliver.assert_not_awaited()
     broker.retry_later.assert_awaited_once()
-    headers: dict = broker.retry_later.await_args.kwargs["headers"]
+    headers: dict[str, Any] = broker.retry_later.await_args.kwargs["headers"]
     assert not RUNS
 
     await worker._handle_message(_copy_of(original, headers))

@@ -11,6 +11,7 @@ hypothesis-registered ``quick``/``thorough`` profiles from
 from __future__ import annotations
 
 import math
+from typing import Literal, overload
 
 import pytest
 from hypothesis import assume, given
@@ -26,7 +27,7 @@ from swarmq.progress import ProgressInfo
 # verbatim but the Valkey hash is text (UTF-8). Surrogates cannot be
 # UTF-8-encoded, so they're out-of-contract for the writer.
 _TEXT = st.text(
-    alphabet=st.characters(blacklist_categories=("Cs",)),
+    alphabet=st.characters(blacklist_categories=["Cs"]),
     max_size=200,
 )
 
@@ -43,7 +44,7 @@ def _percent_strategy() -> st.SearchStrategy[float]:
 # empty-string input is out-of-contract. Pinning the collapse with a
 # separate regression test below.
 _NONEMPTY_TEXT = st.text(
-    alphabet=st.characters(blacklist_categories=("Cs",)),
+    alphabet=st.characters(blacklist_categories=["Cs"]),
     min_size=1,
     max_size=200,
 )
@@ -69,7 +70,11 @@ def progress_infos(draw) -> ProgressInfo:
     )
 
 
-def _to_hash(info: ProgressInfo, as_bytes: bool = False) -> dict:
+@overload
+def _to_hash(info: ProgressInfo, as_bytes: Literal[False] = False) -> dict[str, str]: ...
+@overload
+def _to_hash(info: ProgressInfo, as_bytes: Literal[True]) -> dict[bytes, bytes]: ...
+def _to_hash(info: ProgressInfo, as_bytes: bool = False) -> dict[str, str] | dict[bytes, bytes]:
     """Mimic the worker-side HSET: every field stringified."""
     raw: dict[str, str] = {
         "current": str(info.current),

@@ -130,7 +130,7 @@ async def test_three_middlewares_pre_forward_post_reverse(
             recorder.append("task:run")
             return "ok"
 
-    middlewares = [_OrderTrackingMiddleware(name, recorder) for name in ("A", "B", "C")]
+    middlewares: list[Middleware] = [_OrderTrackingMiddleware(name, recorder) for name in ("A", "B", "C")]
 
     client_app = SwarmQ(
         RabbitMQBroker(rabbitmq_url),
@@ -185,7 +185,7 @@ async def test_middleware_in_middle_raises_subsequent_still_run(
             recorder.append(f"pre:{self._name}")
             raise RuntimeError(f"boom-from-{self._name}")
 
-    middlewares = [
+    middlewares: list[Middleware] = [
         _OrderTrackingMiddleware("A", recorder),
         RaisingMiddleware("B", recorder),
         _OrderTrackingMiddleware("C", recorder),
@@ -232,7 +232,7 @@ async def test_middleware_chain_sees_message_dict_mutations(
     metrics)."""
     queue = _unique_queue()
     task_name = _task_name("mutate")
-    recorder: list[str] = []
+    recorder: list[object] = []
 
     class OkTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue], max_retries=0)
@@ -244,7 +244,7 @@ async def test_middleware_chain_sees_message_dict_mutations(
     class WriterMiddleware(Middleware):
         @override
         async def pre_execute(self, message: MessageContext) -> None:
-            message["correlation_marker"] = "set-by-A"
+            message["correlation_marker"] = "set-by-A"  # type: ignore[typeddict-unknown-key]  # Test belegt bewusst einen eigenen Schluessel
 
     class ReaderMiddleware(Middleware):
         @override

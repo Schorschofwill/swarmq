@@ -188,7 +188,7 @@ class TestRetryUniqueCombo:
         backend = ValkeyBackend(valkey_url)
         app = SwarmQ(broker, backend, queues=[queue])
 
-        dup_signals: list[dict] = []
+        dup_signals: list[dict[str, Any]] = []
 
         @app.on_signal(Signal.TASK_DUPLICATE_DETECTED)
         async def _on_dup(**kwargs: Any) -> None:
@@ -305,7 +305,7 @@ class TestRetryUniqueCombo:
         broker = RabbitMQBroker(rabbitmq_url)
         backend = ValkeyBackend(valkey_url)
         app = SwarmQ(broker, backend, queues=[queue])
-        dup_signals: list[dict] = []
+        dup_signals: list[dict[str, Any]] = []
 
         @app.on_signal(Signal.TASK_DUPLICATE_DETECTED)
         async def _capture(**kw: Any) -> None:

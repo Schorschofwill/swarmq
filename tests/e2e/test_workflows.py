@@ -105,7 +105,7 @@ async def test_chord_roundtrip(rabbitmq_url, valkey_url):
         task_info = TaskInfo(name=f"merge_{queue}", queues=[queue])
 
         @override
-        async def run(self, results: list) -> int:
+        async def run(self, results: list[int]) -> int:
             return sum(results)
 
     broker = RabbitMQBroker(rabbitmq_url)
@@ -255,7 +255,7 @@ async def test_chord_header_failure_does_not_fire_body(rabbitmq_url, valkey_url)
         task_info = TaskInfo(name=f"body_{queue}", queues=[queue])
 
         @override
-        async def run(self, results: list) -> int:
+        async def run(self, results: list[int]) -> int:
             body_ran.set()
             return sum(results)
 
@@ -334,7 +334,7 @@ async def test_chord_over_composite_header_member_roundtrip(rabbitmq_url, valkey
         task_info = TaskInfo(name=f"ctotal_{queue}", queues=[queue])
 
         @override
-        async def run(self, results: list) -> int:
+        async def run(self, results: list[int]) -> int:
             return sum(results)
 
     broker = RabbitMQBroker(rabbitmq_url)
@@ -471,6 +471,7 @@ async def test_middleware_rejecting_a_group_member_fails_the_workflow(rabbitmq_u
                 await handle.get(timeout=10)
             assert await handle.status() == "failed"
             raw = await backend.get_workflow_state(handle.workflow_id)
+            assert raw is not None
             assert decode_json(raw)["error"]["type"] == "PermissionError"
             # Kein Glied der abgelehnten Front hat einen Schritt-Marker.
             assert not [p for p in await handle.children() if p.startswith("/1/")]

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import signal
+import subprocess
 import time
 import uuid
 
@@ -52,6 +53,7 @@ async def _counter(stack: ChaosStack, key: str) -> int:
     backend = ValkeyBackend(stack.valkey_url)
     await backend.connect()
     try:
+        assert backend._client is not None
         raw = await backend._client.get(key)
         return int(raw) if raw is not None else 0
     finally:
@@ -107,7 +109,7 @@ class TestChordIdempotency:
         # Short execution-guard TTL: B runs the redelivered members only once
         # A's running markers expired (default 60 s > the 60 s wait below).
         proc_a = _spawn_worker(chaos_stack, queue, concurrency=4, env_extra=SHORT_EXECUTION_GUARD_ENV)
-        proc_b: object | None = None
+        proc_b: subprocess.Popen[str] | None = None
         try:
             _wait_for_worker_started(proc_a)
 

@@ -174,11 +174,8 @@ class TestClockSkew:
         task._result_ttl_ms = 60_000
 
         fake_mono = {"now": 500.0}
-        import swarmq.task as task_mod
-
         monkeypatch.setattr(
-            task_mod.time,
-            "monotonic",
+            "swarmq.task.time.monotonic",
             lambda: fake_mono["now"],
         )
 

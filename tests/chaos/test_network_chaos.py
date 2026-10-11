@@ -147,6 +147,7 @@ class TestNetworkChaos:
 
             @override
             async def run(self) -> int:
+                assert self._task_id is not None
                 call_counter[self._task_id] = call_counter.get(self._task_id, 0) + 1
                 return call_counter[self._task_id]
 
@@ -589,6 +590,7 @@ class TestNetworkChaos:
                 await toxiproxy.up("vkey")
                 # Sanity check: pub_backend recovers via its command-
                 # level retry. A ping succeeds when the path is open.
+                assert pub_backend._client is not None
                 for _ in range(20):
                     try:
                         await pub_backend._client.ping()

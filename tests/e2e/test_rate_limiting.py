@@ -32,7 +32,7 @@ async def test_rate_limited_task_delays_but_never_drops(rabbitmq_url: str, valke
     total_messages = 8
     rate_limit = "3/s"
 
-    executed_task_ids: list[str] = []
+    executed_task_ids: list[int] = []
     completed_event = asyncio.Event()
     worker_online_event = asyncio.Event()
     rate_limited_count = 0

@@ -105,8 +105,8 @@ async def test_retry_copy_with_inherited_high_delivery_count_is_not_dead_lettere
         ctx,
         RuntimeError("boom"),
         "boom",
-        {"retry_count": 0},
-        MiddlewareChain([]),  # type: ignore[typeddict-item]
+        {"retry_count": 0},  # type: ignore[typeddict-item]  # Teilkontext genuegt dem Retry-Pfad
+        MiddlewareChain([]),
     )
     assert outcome is Redelivered
 

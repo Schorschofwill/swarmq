@@ -39,7 +39,7 @@ class CpuFail(Task):
 class CpuHang(Task):
     """Blockiert den Kind-Loop synchron — nur ein Kill beendet das (R8)."""
 
-    task_info = TaskInfo(name="cpu_hang", queues=[QUEUE], hard_timeout=1.0, max_retries=0)
+    task_info = TaskInfo(name="cpu_hang", queues=[QUEUE], hard_timeout=1, max_retries=0)
 
     @override
     async def run(self, seconds: float = 30.0) -> None:
@@ -49,7 +49,7 @@ class CpuHang(Task):
 class CpuSubprocess(Task):
     """Startet einen Enkel und blockiert; der Kill muss den Enkel mitnehmen (AE13)."""
 
-    task_info = TaskInfo(name="cpu_subprocess", queues=[QUEUE], hard_timeout=1.0, max_retries=0)
+    task_info = TaskInfo(name="cpu_subprocess", queues=[QUEUE], hard_timeout=1, max_retries=0)
 
     @override
     async def run(self, pid_file: str) -> None:
@@ -124,14 +124,14 @@ try:  # DI-Tasks nur mit installiertem dishka (test-Extra)
         task_info = TaskInfo(name="cpu_di", queues=[QUEUE], max_retries=0)
 
         @override
-        async def run(self, holder: FromDishka[PidHolder]) -> dict[str, int]:  # type: ignore[valid-type]
+        async def run(self, holder: FromDishka[PidHolder]) -> dict[str, int]:
             return {"app_pid": holder.pid, "pid": os.getpid()}
 
     class CpuDiLock(Task):
         task_info = TaskInfo(name="cpu_di_lock", queues=[QUEUE], max_retries=0)
 
         @override
-        async def run(self, lock: FromDishka[asyncio.Lock]) -> int:  # type: ignore[valid-type]
+        async def run(self, lock: FromDishka[asyncio.Lock]) -> int:
             async with lock:
                 await asyncio.sleep(0.01)
             return os.getpid()

@@ -23,6 +23,7 @@ import subprocess
 import sys
 import uuid
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -110,7 +111,7 @@ async def _enqueue(queue: str, module: str, task_name: str, *args: object, count
         return [await app.schedule(task_name, *args, queue=queue) for _ in range(count)]
 
 
-async def _fetch(queue: str, tids: list[str]) -> list[dict]:
+async def _fetch(queue: str, tids: list[str]) -> list[Any]:
     app = SwarmQ(RabbitMQBroker(rabbitmq_amqp_url()), ValkeyBackend(valkey_db_url()), queues=[queue])
     async with app:
         return [await app.get_result(tid, timeout=10.0) for tid in tids]

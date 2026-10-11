@@ -20,6 +20,7 @@ from __future__ import annotations
 import itertools
 import math
 import unicodedata
+from typing import Any
 
 import pytest
 from hypothesis import assume, given, settings
@@ -59,7 +60,7 @@ kwargs_strategy = st.dictionaries(st.text(max_size=10), json_value, max_size=5)
 
 
 @given(args=args_strategy, kwargs=kwargs_strategy)
-def test_determinism_same_args_same_hash(args: list, kwargs: dict) -> None:
+def test_determinism_same_args_same_hash(args: list[Any], kwargs: dict[str, Any]) -> None:
     """Same inputs → same hash, every invocation.
 
     This is the bedrock of SETNX-based dedup: if hash(x) is not stable,
@@ -85,7 +86,7 @@ def test_determinism_same_args_same_hash(args: list, kwargs: dict) -> None:
         max_size=5,
     )
 )
-def test_permutation_invariance_for_dict_kwargs(kwargs: dict) -> None:
+def test_permutation_invariance_for_dict_kwargs(kwargs: dict[str, Any]) -> None:
     """Callsite kwarg-insertion-order must not change the hash.
 
     Python dicts preserve insertion order; we iterate a few
@@ -130,7 +131,7 @@ def test_collision_rate_below_threshold() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _inject_bad_float(container: list | dict, bad: float, depth: int = 0) -> list | dict:
+def _inject_bad_float(container: object, bad: float, depth: int = 0) -> object:
     """Return a new structure with `bad` spliced into a nested position.
 
     Rebuilds dict/list containers recursively so the injected value
@@ -139,7 +140,7 @@ def _inject_bad_float(container: list | dict, bad: float, depth: int = 0) -> lis
     if depth >= 3:
         return bad  # bottomed out — caller wraps this
     if isinstance(container, dict):
-        new: dict = {str(k): v for k, v in container.items()}
+        new: dict[str, Any] = {str(k): v for k, v in container.items()}
         new["__injected__"] = bad
         return new
     if isinstance(container, list):
@@ -164,7 +165,7 @@ nested_container = st.recursive(
     bad=st.sampled_from([math.nan, math.inf, -math.inf]),
 )
 @settings(max_examples=200)
-def test_nan_inf_rejection_in_nested_position(container: list | dict, bad: float) -> None:
+def test_nan_inf_rejection_in_nested_position(container: list[Any] | dict[str, Any], bad: float) -> None:
     """NaN / ±Inf buried in any nested position must raise TypeError.
 
     Guards ADV-003: msgspec encodes NaN→null and Inf→Infinity,

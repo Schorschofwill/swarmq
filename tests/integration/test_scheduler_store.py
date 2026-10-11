@@ -26,6 +26,7 @@ and Fork-1 static-update paths.
 from __future__ import annotations
 
 import uuid
+from typing import Any
 from unittest.mock import AsyncMock
 
 import msgspec
@@ -73,9 +74,9 @@ def _def(
     cron: str | None = "* * * * *",
     fire_ts_ms: int | None = 1_700_000_000_000,
     source: str = "static",
-    **overrides,
+    **overrides: Any,
 ) -> ScheduleDefinition:
-    base = {
+    base: dict[str, Any] = {
         "schedule_name": name,
         "task_name": "ping",
         "args": (),

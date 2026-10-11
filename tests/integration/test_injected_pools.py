@@ -15,6 +15,7 @@ from typing import override
 import aio_pika
 import pytest
 import valkey.asyncio as valkey_asyncio
+from aio_pika.abc import AbstractRobustConnection
 
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
@@ -92,7 +93,7 @@ async def test_injected_connection_and_client_roundtrip_and_caller_reuse(
 async def test_injected_pool_roundtrip_releases_to_pool(rabbitmq_url, valkey_url):
     """Pool variant: swarmq acquires from the caller's pool, publishes,
     and releases the checkout on close — the pool itself stays open."""
-    caller_pool: aio_pika.pool.Pool = aio_pika.pool.Pool(
+    caller_pool: aio_pika.pool.Pool[AbstractRobustConnection] = aio_pika.pool.Pool(
         lambda: aio_pika.connect_robust(rabbitmq_url),
         max_size=2,
     )

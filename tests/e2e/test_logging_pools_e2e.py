@@ -107,7 +107,8 @@ async def _roundtrip(queue: str, value: str) -> str:
     app = SwarmQ(RabbitMQBroker(rabbitmq_amqp_url()), ValkeyBackend(valkey_db_url()), queues=[queue])
     async with app:
         task_id = await app.schedule("pools_task", value, queue=queue)
-        return await app.get_result(task_id, timeout=30)
+        result: str = await app.get_result(task_id, timeout=30)
+        return result
 
 
 def _task_lines(lines: list[str]) -> list[str]:

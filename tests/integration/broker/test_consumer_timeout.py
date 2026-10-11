@@ -335,7 +335,9 @@ async def _consumer_count(node: RabbitMQNode, queue: str) -> int:
     async with connection:
         channel = await connection.channel()
         declared = await channel.declare_queue(queue, passive=True)
-        return int(declared.declaration_result.consumer_count)
+        count = declared.declaration_result.consumer_count
+        assert count is not None
+        return int(count)
 
 
 def _management_consumer_tags(node: RabbitMQNode, queue: str) -> set[str]:

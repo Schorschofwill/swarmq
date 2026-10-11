@@ -19,11 +19,23 @@ from __future__ import annotations
 
 import asyncio
 import os
-from typing import override
+from typing import TYPE_CHECKING, cast, override
 
 from swarmq.task import Task, TaskInfo
 
+if TYPE_CHECKING:
+    from valkey.asyncio import Valkey
+
+    from swarmq.backend.valkey import ValkeyBackend
+    from swarmq.contracts import ResultBackend
+
 _QUEUE = os.environ.get("CLI_TEST_QUEUE", "shutdown_test_default")
+
+
+def _valkey_client(backend: ResultBackend) -> Valkey:
+    """Raw Valkey client of the worker backend (fixture workers always run
+    with ``ValkeyBackend``)."""
+    return cast("ValkeyBackend", backend).client
 
 
 class ShutdownSleepTask(Task):
@@ -49,10 +61,10 @@ class ShutdownSleepTask(Task):
         # after the test completes.
         if self._backend is not None and self._task_id is not None:
             try:
-                await self._backend._client.incr(f"exec_count:{self._task_id}")
+                await _valkey_client(self._backend).incr(f"exec_count:{self._task_id}")
                 # Expire the counter so stray counters from prior runs
                 # don't bloat the DB.
-                await self._backend._client.expire(f"exec_count:{self._task_id}", 300)
+                await _valkey_client(self._backend).expire(f"exec_count:{self._task_id}", 300)
             except Exception:
                 # Best-effort — counter failures must not affect the
                 # shutdown behaviour we're actually measuring.

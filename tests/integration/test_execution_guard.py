@@ -182,6 +182,7 @@ async def test_dlq_retry_runs_again_and_its_redelivery_is_skipped(
         await broker.connect()
         try:
             assert (await broker.retry_dead_letter(queue, task_id))[0] is True
+            assert broker._connection is not None
             channel = await broker._connection.channel()
             message = await (await channel.get_queue(queue)).get(no_ack=True)
             await channel.close()

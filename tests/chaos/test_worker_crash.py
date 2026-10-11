@@ -151,7 +151,9 @@ async def _dlq_count(stack: ChaosStack, queue: str) -> int:
     try:
         ch = await conn.channel()
         decl = await ch.declare_queue(f"{queue}.XQ", passive=True)
-        return decl.declaration_result.message_count
+        count = decl.declaration_result.message_count
+        assert count is not None
+        return count
     finally:
         await conn.close()
 
@@ -160,6 +162,7 @@ async def _read_exec_counts(stack: ChaosStack, task_ids: list[str]) -> dict[str,
     backend = ValkeyBackend(stack.valkey_url)
     await backend.connect()
     try:
+        assert backend._client is not None
         out: dict[str, int] = {}
         for tid in task_ids:
             raw = await backend._client.get(f"exec_count:{tid}")

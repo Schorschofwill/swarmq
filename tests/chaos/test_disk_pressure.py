@@ -121,6 +121,7 @@ async def _fill_until_oom(
     key that triggered OOM. The caller uses this list to DEL in the
     recovery test.
     """
+    assert backend._client is not None
     written: list[str] = []
     for i in range(max_keys):
         key = f"k_{i}"
@@ -170,7 +171,7 @@ class TestDiskPressure:
             with pytest.raises(BackendConnectionError) as bce:
                 await backend.store_result(
                     task_id="t-oom-probe",
-                    result_data=_BIG_VALUE,
+                    data=_BIG_VALUE,
                     ttl_ms=60_000,
                 )
             assert "OOM" in str(bce.value) or "memory" in str(bce.value).lower(), (
@@ -206,6 +207,7 @@ class TestDiskPressure:
         await backend.connect()
         try:
             # Fill until OOM and capture the filler keys.
+            assert backend._client is not None
             written: list[str] = []
             try:
                 await _fill_until_oom(backend)
@@ -229,7 +231,7 @@ class TestDiskPressure:
             with pytest.raises(BackendConnectionError):
                 await backend.store_result(
                     task_id="t-pre-recovery",
-                    result_data=_BIG_VALUE,
+                    data=_BIG_VALUE,
                     ttl_ms=60_000,
                 )
 
@@ -246,7 +248,7 @@ class TestDiskPressure:
             # Recovery: store_result now succeeds.
             await backend.store_result(
                 task_id="t-post-recovery",
-                result_data=b"ok",
+                data=b"ok",
                 ttl_ms=60_000,
             )
             value = await backend.get_result("t-post-recovery")

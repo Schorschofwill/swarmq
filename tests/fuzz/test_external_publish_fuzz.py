@@ -37,7 +37,8 @@ import contextlib
 import json
 import random
 import uuid
-from typing import Any, override
+from collections.abc import AsyncGenerator
+from typing import Any, cast, override
 
 import aio_pika
 import pytest
@@ -48,6 +49,7 @@ from hypothesis import strategies as st
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
+from swarmq.progress import ProgressInfo
 from swarmq.task import Task, TaskInfo
 from tests.chaos.conftest import ChaosStack
 
@@ -234,7 +236,12 @@ class TestPubsubPayloadFuzz:
             app = SwarmQ(broker, backend, queues=[_unique_queue()])
             task_id = f"fuzz-pubsub-{uuid.uuid4().hex[:8]}"
             async with app:
-                iterator = app.client.watch_progress(task_id).__aiter__()
+                # watch_progress ist als AsyncIterator annotiert, liefert aber
+                # einen async Generator; aclose() unten braucht diesen Typ.
+                iterator = cast(
+                    "AsyncGenerator[ProgressInfo]",
+                    app.client.watch_progress(task_id),
+                )
 
                 # Give the iterator a chance to register its pubsub.
                 # We trigger the inner subscribe by running one step

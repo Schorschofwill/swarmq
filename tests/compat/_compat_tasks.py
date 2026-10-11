@@ -70,6 +70,7 @@ class CompatFlakyTask(Task):
 
     @override
     async def run(self) -> str:
+        assert self._task_id is not None
         if await _record("compat_flaky", self._task_id) == 1:
             raise RuntimeError("first attempt fails")
         return RUNTIME
@@ -82,6 +83,7 @@ class CompatPoisonTask(Task):
 
     @override
     async def run(self) -> str:
+        assert self._task_id is not None
         await _record("compat_poison", self._task_id)
         if not await _flag(_QUEUE):
             raise RuntimeError("poison until fixed")
@@ -98,6 +100,7 @@ class CompatSlowRetryTask(Task):
 
     @override
     async def run(self) -> str:
+        assert self._task_id is not None
         if await _record("compat_slow_retry", self._task_id) == 1:
             raise RuntimeError("first attempt fails")
         return RUNTIME

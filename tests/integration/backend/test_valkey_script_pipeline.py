@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
+from typing import cast
 
 import pytest
 
@@ -67,7 +68,7 @@ async def test_claim_succeeds_after_the_script_cache_was_flushed(backend: Valkey
 
 async def test_error_reply_fails_only_its_own_claim(backend: ValkeyBackend) -> None:
     broken = f"pipe-{uuid.uuid4().hex}"
-    await backend.client.hset(run_key(broken), "x", "1")  # GET auf einen Hash: WRONGTYPE
+    await cast("Awaitable[int]", backend.client.hset(run_key(broken), "x", "1"))  # GET auf einen Hash: WRONGTYPE
 
     left, right = f"pipe-{uuid.uuid4().hex}", f"pipe-{uuid.uuid4().hex}"
     results = await asyncio.gather(

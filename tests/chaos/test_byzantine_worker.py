@@ -275,7 +275,7 @@ class TestByzantineWorker:
             queues=[queue],
         )
 
-        worker_task: asyncio.Task | None = None
+        worker_task: asyncio.Task[None] | None = None
         async with client_app:
             try:
                 async with worker_app:

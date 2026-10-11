@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
-from typing import override
+from typing import Any, override
 
 import pytest
 import valkey.asyncio as aio_valkey
@@ -154,7 +154,7 @@ async def test_e2e_faf_cancel_emits_signal_no_result(
     worker_backend = ValkeyBackend(valkey_url)
     worker_app = SwarmQ(worker_broker, worker_backend, queues=[queue], concurrency=1)
 
-    captured: list[dict] = []
+    captured: list[dict[str, Any]] = []
 
     async with client_app:
         await client_broker.declare_queue(queue)
@@ -589,5 +589,6 @@ async def test_e2e_shutdown_during_running_cancel(
         # the handler mid-release.
         from swarmq.locking import lock_key
 
+        assert client_backend._client is not None
         raw = await client_backend._client.get(lock_key(lock_name))
         assert raw is None, f"lock was not released during shutdown-cancel: {raw!r}"

@@ -38,6 +38,7 @@ class CliFlakyTask(Task):
 
     @override
     async def run(self) -> str:
+        assert self._task_id is not None
         if self._task_id not in _flaky_seen:
             _flaky_seen.add(self._task_id)
             raise RuntimeError("first attempt fails")

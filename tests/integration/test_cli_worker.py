@@ -90,7 +90,7 @@ def _spawn_worker(queue_name: str, env_extra: dict[str, str] | None = None):
     )
 
 
-def _wait_for_worker_started(proc: subprocess.Popen, deadline: float) -> None:
+def _wait_for_worker_started(proc: subprocess.Popen[str], deadline: float) -> None:
     """Block until the worker prints worker_started, raises on timeout."""
     while time.monotonic() < deadline:
         # readline blocks; rely on the outer pytest.mark.timeout for hard cap.
@@ -119,7 +119,9 @@ async def _schedule_and_get_result(queue: str, value: str) -> str:
     app = SwarmQ(broker, backend, queues=[queue])
     async with app:
         task_id = await app.schedule("cli_echo", value, queue=queue)
-        return await app.get_result(task_id, timeout=15)
+        result = await app.get_result(task_id, timeout=15)
+        assert isinstance(result, str)
+        return result
 
 
 # Test-Liste U7 (Plan 2026-10-06-0831, Einstiegspunkte):

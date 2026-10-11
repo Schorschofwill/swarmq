@@ -18,12 +18,13 @@ Opt-in under ``-m property``.
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from hypothesis import given
 from hypothesis import strategies as st
 
 from swarmq.serialization import decode_result, encode_json
-from swarmq.workflow import chain, chord, group
+from swarmq.workflow import WorkflowNode, chain, chord, group
 from swarmq.workflow_orchestration import (
     STATUS_COMPLETED,
     build_initial_workflow_state,
@@ -144,7 +145,7 @@ def test_chain_threads_results_under_redelivery(depth, data):
         # Echo returns list(args); each chain hop wraps the previous
         # result in one more list level. Seed step yields [] → final
         # nesting depth == number of hops after the seed.
-        expected: list = []
+        expected: list[Any] = []
         for _ in range(depth - 1):
             expected = [expected]
         assert await driver.final_value() == expected
@@ -190,8 +191,8 @@ def test_group_with_composite_members_aggregates_in_definition_order(shapes, dat
     """
 
     async def _run() -> None:
-        members = []
-        expected = []
+        members: list[WorkflowNode] = []
+        expected: list[Any] = []
         for i, shape in enumerate(shapes):
             if shape == "leaf":
                 members.append(Echo.s(i))
@@ -328,7 +329,7 @@ def test_concurrent_advancers_never_truncate_group_of_parallel_chains(n_chains, 
         # Jeder Zweig ist n_chains-mal in einer Kettentiefe eingewickelt.
         expected_members = []
         for i in range(n_chains):
-            value: list = [i]
+            value: list[Any] = [i]
             for _ in range(depth - 1):
                 value = [value]
             expected_members.append(value)
@@ -350,8 +351,8 @@ def test_concurrent_advancers_on_mixed_group_members_complete(shapes, data):
     Kette, Gruppe, Chord): vollstaendig oder terminal, nie gekuerzt."""
 
     async def _run() -> None:
-        members = []
-        expected = []
+        members: list[WorkflowNode] = []
+        expected: list[Any] = []
         for i, shape in enumerate(shapes):
             if shape == "leaf":
                 members.append(Echo.s(i))

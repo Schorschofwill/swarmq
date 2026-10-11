@@ -1625,15 +1625,14 @@ class _BackendDropGates:
         original = ValkeyBackend.store_result
         gates = self
 
-        async def _spy(backend: ValkeyBackend, *args: Any, **kwargs: Any) -> Any:
+        async def _spy(backend: ValkeyBackend, *args: Any, **kwargs: Any) -> None:
             try:
-                stored = await original(backend, *args, **kwargs)
+                await original(backend, *args, **kwargs)
             except BackendConnectionError:
                 gates.store_failed.set()
                 raise
             if gates.redelivered.is_set():
                 gates.rerun_stored.set()
-            return stored
 
         monkeypatch.setattr(ValkeyBackend, "store_result", _spy)
 

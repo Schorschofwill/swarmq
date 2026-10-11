@@ -33,7 +33,8 @@ import subprocess
 import sys
 import time
 import uuid
-from typing import Any
+from collections.abc import AsyncGenerator
+from typing import Any, cast
 
 import aio_pika
 import pytest
@@ -45,6 +46,7 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.client import Client
 from swarmq.exceptions import ResultSerializationError
 from swarmq.headers import HEADER_UNIQUE_HASH, HEADER_UNIQUE_UNTIL
+from swarmq.progress import ProgressInfo
 from swarmq.task import Task
 from tests.chaos.conftest import ChaosStack
 from tests.support.worker_subprocess import (
@@ -123,7 +125,9 @@ async def _queue_message_count(stack: ChaosStack, queue: str) -> int:
     try:
         ch = await conn.channel()
         decl = await ch.declare_queue(queue, passive=True)
-        return decl.declaration_result.message_count
+        count = decl.declaration_result.message_count
+        assert count is not None
+        return count
     finally:
         await conn.close()
 
@@ -378,7 +382,9 @@ class TestMessageCorruption:
         stop = asyncio.Event()
 
         async def collect() -> None:
-            gen = client.watch_progress(task_id)
+            # watch_progress ist als AsyncIterator annotiert, liefert aber
+            # einen async Generator; aclose() unten braucht diesen Typ.
+            gen = cast("AsyncGenerator[ProgressInfo]", client.watch_progress(task_id))
             try:
                 iterator_ready.set()
                 async for info in gen:

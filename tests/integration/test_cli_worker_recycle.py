@@ -103,7 +103,7 @@ def test_worker_recycles_by_task_count_without_losing_tasks():
     assert asyncio.run(_all_done(queue, tids)) == _N
 
 
-def _drain(proc: subprocess.Popen, sink: list[str]) -> None:
+def _drain(proc: subprocess.Popen[str], sink: list[str]) -> None:
     """Liest den Worker-Ausgabestrom nebenlaeufig mit, damit der Test auf eine
     Logzeile warten kann, ohne den Prozess vorher zu beenden."""
     assert proc.stdout is not None

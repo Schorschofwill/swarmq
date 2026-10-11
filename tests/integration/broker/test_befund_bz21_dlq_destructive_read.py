@@ -53,7 +53,9 @@ async def dlq(rabbitmq_url: str):
     await setup.close()
 
 
-async def test_aborted_dlq_listing_loses_no_message(rabbitmq_url: str, dlq, monkeypatch) -> None:
+async def test_aborted_dlq_listing_loses_no_message(
+    rabbitmq_url: str, dlq: tuple[RabbitMQBroker, str], monkeypatch
+) -> None:
     observer, queue = dlq
     assert await observer.dead_letter_depth(queue) == _MESSAGES
 

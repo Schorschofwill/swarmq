@@ -78,7 +78,9 @@ async def _dlq_count(rabbitmq_url: str, queue: str) -> int:
     try:
         ch = await conn.channel()
         decl = await ch.declare_queue(f"{queue}.XQ", passive=True)
-        return decl.declaration_result.message_count
+        count = decl.declaration_result.message_count
+        assert count is not None
+        return count
     finally:
         await conn.close()
 

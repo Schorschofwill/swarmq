@@ -131,6 +131,7 @@ class TestBackendRestart:
                 raw = await backend2.get_progress(task_id)
                 assert raw is not None, "progress HASH missing after restart — AOF off?"
                 info = ProgressInfo.from_hash(raw)
+                assert info is not None
                 assert info.percent == pytest.approx(42.5)
                 assert info.message == "half-way"
             finally:

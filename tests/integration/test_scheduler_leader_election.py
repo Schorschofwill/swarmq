@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from typing import Any
 
 import pytest
 
@@ -332,7 +333,7 @@ class TestLeaderVersionIntegration:
         """Covers AE9: ein 0.9.0-Leader hält das Lock und schreibt keine
         Version; der 0.10.0-Standby meldet ihn."""
         dispatcher = SignalDispatcher()
-        outdated: list[dict] = []
+        outdated: list[dict[str, Any]] = []
         outdated_evt = asyncio.Event()
 
         @dispatcher.on_signal(Signal.SCHEDULER_LEADER_OUTDATED)

@@ -103,7 +103,13 @@ def _message(task_name: str, queue: str) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def _report_tasks() -> tuple[type[Task], type[Task]]:
+class _ReportTask(Task):
+    """Gemeinsame Basis ohne ``task_info``: wird nicht registriert, typisiert nur ``runs``."""
+
+    runs: ClassVar[list[str]]
+
+
+def _report_tasks() -> tuple[type[_ReportTask], type[_ReportTask]]:
     """Zwei Apps mit gleichnamigem Task.
 
     Erst im Test definiert: Auf Modulebene stuenden beide Klassen unter
@@ -112,7 +118,7 @@ def _report_tasks() -> tuple[type[Task], type[Task]]:
     autouse-Fixture ``_reset_task_registry`` raeumt nach dem Test auf.
     """
 
-    class _ReportA(Task):
+    class _ReportA(_ReportTask):
         task_info = TaskInfo(name="bz10_send_report", queues=["app_a"], rate_limit="1/m")
         runs: ClassVar[list[str]] = []
 
@@ -120,7 +126,7 @@ def _report_tasks() -> tuple[type[Task], type[Task]]:
         async def run(self) -> None:
             type(self).runs.append("a")
 
-    class _ReportB(Task):
+    class _ReportB(_ReportTask):
         task_info = TaskInfo(name="bz10_send_report", queues=["app_b"], rate_limit="1/m")
         runs: ClassVar[list[str]] = []
 

@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 import time
 import uuid
-from typing import override
+from typing import Any, override
 
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
@@ -145,7 +145,7 @@ async def test_schedule_many_get_results(rabbitmq_url: str, valkey_url: str) -> 
         try:
             await asyncio.sleep(0.5)
 
-            tasks = [(task_name, (i, i * 10), {}) for i in range(10)]
+            tasks: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = [(task_name, (i, i * 10), {}) for i in range(10)]
             task_ids = await app.schedule_many(tasks, queue=queue)
             assert len(task_ids) == 10
 

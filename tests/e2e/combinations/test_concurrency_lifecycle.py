@@ -173,7 +173,9 @@ async def _dlq_count(queue: str, rabbitmq_url: str) -> int:
     try:
         ch = await conn.channel()
         decl = await ch.declare_queue(f"{queue}.XQ", passive=True)
-        return decl.declaration_result.message_count
+        count = decl.declaration_result.message_count
+        assert count is not None
+        return count
     finally:
         await conn.close()
 
@@ -557,7 +559,7 @@ class TestRateLimitMaxConcurrencyCombo:
         """TASK_RATE_LIMITED signal fires when the rate limit throttles a task."""
         queue = _uq("rlmc-sig")
         task_name = _task_name("rlmc_sig")
-        rate_limited_signals: list[dict] = []
+        rate_limited_signals: list[dict[str, Any]] = []
         done = asyncio.Event()
 
         class TightRateLimitTask(Task):
@@ -825,7 +827,7 @@ class TestHotReloadInflightLockCombo:
 
         done2 = asyncio.Event()
 
-        class LockedTask2(Task):  # type: ignore[no-redef]
+        class LockedTask2(Task):
             task_info = TaskInfo(
                 name=task_name,
                 queues=[queue],
@@ -1414,10 +1416,11 @@ class TestSchedulerLeaderFailoverCombo:
                 scheduler_lock_ttl=1.0,
                 scheduler_poll_interval=0.1,
             ) as worker_app:
-                worker_app._signal_dispatcher.connect(
-                    Signal.SCHEDULER_LEADER,
-                    lambda **_: leader_elected.set() or asyncio.coroutine(lambda: None)(),
-                )
+
+                async def _on_leader(**_: Any) -> None:
+                    leader_elected.set()
+
+                worker_app._signal_dispatcher.connect(Signal.SCHEDULER_LEADER, _on_leader)
                 tid = await app.schedule(task_name)
                 await asyncio.wait_for(done.wait(), timeout=12.0)
                 result = await app.get_result(tid, timeout=5)
@@ -1701,8 +1704,10 @@ class TestProcessManagerWorkerCrashLockCombo:
         try:
             from swarmq.locking import SCHEDULER_LOCK_KEY
 
+            client = backend._client
+            assert client is not None
             await assert_no_deadlock(
-                lambda: backend._client.exists(SCHEDULER_LOCK_KEY),
+                lambda: client.exists(SCHEDULER_LOCK_KEY),
                 max_wait_s=SHORT_SCHEDULER_LOCK_TTL_S + 2.0,
             )
         finally:

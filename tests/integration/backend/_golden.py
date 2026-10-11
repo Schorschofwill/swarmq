@@ -188,13 +188,13 @@ async def snapshot_keys(backend: ValkeyBackend) -> dict[str, str]:
     await control.write_setpoint("golden-group", Setpoint(low=1, high=2))
     await control.write_status("golden-group", "golden-sup", {"workers": 1}, ttl_s=TTL_MS / 1000)
 
-    keys: dict[str, str] = {}
+    found: dict[str, str] = {}
     for raw in await client.keys("*"):
         key = raw.decode() if isinstance(raw, bytes) else str(raw)
         type_ = await client.type(key)
-        keys[_normalise_key(key)] = type_.decode() if isinstance(type_, bytes) else str(type_)
+        found[_normalise_key(key)] = type_.decode() if isinstance(type_, bytes) else str(type_)
     await client.flushdb()
-    return dict(sorted(keys.items()))
+    return dict(sorted(found.items()))
 
 
 # ---------------------------------------------------------------------------

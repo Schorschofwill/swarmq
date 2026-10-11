@@ -23,8 +23,9 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -97,23 +98,29 @@ def _drain(proc: subprocess.Popen[str], sink: list[str]) -> threading.Thread:
     return t
 
 
-async def _with_store(fn: Callable[[ValkeySetpointStore], object]) -> object:
+async def _with_store[T](fn: Callable[[ValkeySetpointStore], Awaitable[T]]) -> T:
     store = ValkeySetpointStore(valkey_db_url())
     await store.connect()
     try:
-        return await fn(store)  # type: ignore[misc]
+        return await fn(store)
     finally:
         await store.close()
 
 
-def _read_status(group: str, supervisor: str) -> dict | None:
-    return asyncio.run(_with_store(lambda s: s.read_status(group, supervisor)))  # type: ignore[return-value]
+def _read_status(group: str, supervisor: str) -> dict[str, Any] | None:
+    return asyncio.run(_with_store(lambda s: s.read_status(group, supervisor)))
 
 
 def _wait_for_status(
-    group: str, supervisor: str, predicate: Callable[[dict | None], bool], *, timeout_s: float, output: list[str]
-) -> dict | None:
+    group: str,
+    supervisor: str,
+    predicate: Callable[[dict[str, Any] | None], bool],
+    *,
+    timeout_s: float,
+    output: list[str],
+) -> dict[str, Any] | None:
     deadline = time.monotonic() + timeout_s
+    status: dict[str, Any] | None = None
     while time.monotonic() < deadline:
         status = _read_status(group, supervisor)
         if predicate(status):

@@ -969,7 +969,7 @@ class TestCronReportsAcrossApps:
 
             return _app(queue_b)
 
-        async def _online(app: SwarmQ) -> asyncio.Task[None]:
+        async def _online(app: SwarmQ) -> None:
             online = asyncio.Event()
 
             @app.on_signal(Signal.WORKER_ONLINE)
@@ -979,7 +979,6 @@ class TestCronReportsAcrossApps:
             task = asyncio.create_task(app.start_worker())
             tasks.append(task)
             await asyncio.wait_for(online.wait(), timeout=_EVENT_TIMEOUT)
-            return task
 
         tasks: list[asyncio.Task[None]] = []
         app_a = _app(queue_a)

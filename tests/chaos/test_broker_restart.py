@@ -100,7 +100,7 @@ class _App:
             self.worker_backend,
             queues=[queue],
         )
-        self._worker_task: asyncio.Task | None = None
+        self._worker_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         await self.client_app.__aenter__()

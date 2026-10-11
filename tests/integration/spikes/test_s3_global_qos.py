@@ -40,12 +40,17 @@ async def test_global_qos_on_quorum_consume(
     received: list[AbstractIncomingMessage] = []
     error: str | None = None
     try:
+        assert connection.transport is not None
         underlying = connection.transport.connection
         channel = await connection.channel()
         await channel.set_qos(prefetch_count=1, global_=True)
+
+        async def keep(message: AbstractIncomingMessage) -> None:
+            received.append(message)
+
         try:
             for queue in queues:
-                await (await channel.get_queue(queue, ensure=False)).consume(received.append)
+                await (await channel.get_queue(queue, ensure=False)).consume(keep)
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc.args[0]}"
         # Prefetch-Auslieferungen meldet kein Ereignis; die Zahl muss stehen bleiben.

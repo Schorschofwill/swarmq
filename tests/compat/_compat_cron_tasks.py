@@ -21,5 +21,6 @@ class CompatCronTask(Task):
 
     @override
     async def run(self) -> str:
+        assert self._task_id is not None
         await _record(CRON_NAME, self._task_id)
         return RUNTIME

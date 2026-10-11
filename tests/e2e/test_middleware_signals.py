@@ -17,7 +17,7 @@ import pytest
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
-from swarmq.middleware import Middleware
+from swarmq.middleware import MessageContext, Middleware
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 
@@ -48,11 +48,11 @@ async def test_middleware_pre_and_post_execute_fire(rabbitmq_url: str, valkey_ur
 
     class TrackingMiddleware(Middleware):
         @override
-        async def pre_execute(self, message: dict) -> None:
+        async def pre_execute(self, message: MessageContext) -> None:
             events.append(("pre_execute", dict(message), None))
 
         @override
-        async def post_execute(self, message: dict, result: Any = None) -> None:
+        async def post_execute(self, message: MessageContext, result: Any = None) -> None:
             events.append(("post_execute", dict(message), result))
             completed.set()
 
@@ -124,7 +124,7 @@ async def test_middleware_on_error_fires_for_failing_task(rabbitmq_url: str, val
 
     class ErrorTrackingMiddleware(Middleware):
         @override
-        async def on_error(self, message: dict, exception: BaseException) -> None:
+        async def on_error(self, message: MessageContext, exception: BaseException) -> None:
             captured.append((dict(message), exception))
             on_error_called.set()
 
@@ -241,7 +241,7 @@ async def test_pre_enqueue_exception_prevents_enqueue(rabbitmq_url: str, valkey_
 
     class BlockingMiddleware(Middleware):
         @override
-        async def pre_enqueue(self, message: dict) -> None:
+        async def pre_enqueue(self, message: MessageContext) -> None:
             raise ValueError("enqueue blocked by middleware")
 
     broker = RabbitMQBroker(rabbitmq_url)

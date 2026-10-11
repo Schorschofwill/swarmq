@@ -176,7 +176,7 @@ async def test_unicode_args_and_result_roundtrip(
         task_info = TaskInfo(name=task_name, queues=[queue], max_retries=0)
 
         @override
-        async def run(self, data: dict) -> dict:
+        async def run(self, data: dict[str, Any]) -> dict[str, Any]:
             # Echo + add a marker so we know the worker actually
             # received the same bytes (not a re-encoded variant).
             return {"echoed": data, "lengths": {k: len(v) for k, v in data.items()}}
@@ -217,7 +217,7 @@ async def test_empty_containers_and_none_values_roundtrip(
         task_info = TaskInfo(name=task_name, queues=[queue], max_retries=0)
 
         @override
-        async def run(self, data: dict) -> dict:
+        async def run(self, data: dict[str, Any]) -> dict[str, Any]:
             return data
 
     result = await _roundtrip(
@@ -238,7 +238,7 @@ async def test_deeply_nested_dict_roundtrip(
     queue = _unique_queue()
     task_name = _task_name("nested")
 
-    payload: dict = {"v": "leaf"}
+    payload: dict[str, Any] = {"v": "leaf"}
     for i in range(8):
         payload = {f"level_{i}": payload}
 
@@ -246,7 +246,7 @@ async def test_deeply_nested_dict_roundtrip(
         task_info = TaskInfo(name=task_name, queues=[queue], max_retries=0)
 
         @override
-        async def run(self, data: dict) -> str:
+        async def run(self, data: dict[str, Any]) -> str:
             cur: Any = data
             depth = 0
             while isinstance(cur, dict):
@@ -290,7 +290,7 @@ async def test_float_edge_values_roundtrip(
         task_info = TaskInfo(name=task_name, queues=[queue], max_retries=0)
 
         @override
-        async def run(self, data: dict) -> dict:
+        async def run(self, data: dict[str, Any]) -> dict[str, Any]:
             return data
 
     result = await _roundtrip(

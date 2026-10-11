@@ -17,6 +17,7 @@ import pytest
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
+from swarmq.progress import ProgressInfo
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 
@@ -90,7 +91,7 @@ async def test_watch_progress_streams_updates(
     client_backend = ValkeyBackend(valkey_url)
     client_app = SwarmQ(client_broker, client_backend, queues=[queue])
 
-    observed: list = []
+    observed: list[ProgressInfo] = []
 
     async with client_app:
         await client_broker.declare_queue(queue)

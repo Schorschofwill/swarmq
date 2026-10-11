@@ -61,7 +61,9 @@ async def _schedule_and_get_result(queue: str, value: str) -> str:
     app = SwarmQ(RabbitMQBroker(rabbitmq_amqp_url()), ValkeyBackend(valkey_db_url()), queues=[queue])
     async with app:
         task_id = await app.schedule("cli_echo", value, queue=queue)
-        return await app.get_result(task_id, timeout=15)
+        result = await app.get_result(task_id, timeout=15)
+        assert isinstance(result, str)
+        return result
 
 
 _PYTHON_M = [sys.executable, "-m", "swarmq.cli"]

@@ -188,7 +188,7 @@ async def _inject_cron_fires(
             # in the near-past so the scheduler fires it on the next poll.
             fire_ms = now_ms - start_offset_ms + i * spacing_ms
             mapping[task_name] = float(fire_ms)
-        await client.zadd("sq:{sched}:zset", mapping)  # type: ignore[arg-type]
+        await client.zadd("sq:{sched}:zset", mapping)
     finally:
         await client.aclose()
 
@@ -319,7 +319,7 @@ class TestCronCatchupUniqueCombo:
         backend = ValkeyBackend(valkey_url)
         app = SwarmQ(broker, backend, queues=[queue])
 
-        dup_signals: list[dict] = []
+        dup_signals: list[dict[str, Any]] = []
 
         @app.on_signal(Signal.TASK_DUPLICATE_DETECTED)
         async def _on_dup(**kw: Any) -> None:

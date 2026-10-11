@@ -324,7 +324,8 @@ async def assert_no_reader_leak(
             conns = [
                 c
                 for c in child.net_connections(kind="tcp")
-                if c.raddr and c.raddr.port == port and c.status == psutil.CONN_ESTABLISHED
+                # raddr ist ohne Gegenstelle ein leeres Tupel (ohne .port).
+                if getattr(c.raddr, "port", None) == port and c.status == psutil.CONN_ESTABLISHED
             ]
         except psutil.NoSuchProcess, psutil.AccessDenied:
             continue

@@ -20,8 +20,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
-from typing import override
+from typing import Any, override
 
+import aio_pika
 import pytest
 
 from swarmq.app import SwarmQ
@@ -110,7 +111,7 @@ async def test_schedule_many_mixed_success_and_failure(
         async with _running_worker(rabbitmq_url, valkey_url, queue):
             # Interleave 30 success + 20 fail (50 total) so index
             # alignment is tested, not just sorted order.
-            batch: list[tuple[str, tuple, dict]] = []
+            batch: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
             success_indices: list[int] = []
             fail_indices: list[int] = []
             for i in range(50):
@@ -166,7 +167,7 @@ async def test_schedule_many_mixed_success_and_cancellation(
     async with client_app:
         await client_app.broker.declare_queue(queue)
         async with _running_worker(rabbitmq_url, valkey_url, queue):
-            batch = [(task_name, (i,), {}) for i in range(10)]
+            batch: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = [(task_name, (i,), {}) for i in range(10)]
             task_ids = await client_app.schedule_many(batch)
 
             # Cancel the first 4 task_ids BEFORE the worker picks
@@ -233,8 +234,8 @@ async def test_schedule_many_with_unique_dedup_returns_winner_ids(
         await client_app.broker.declare_queue(queue)
         async with _running_worker(rabbitmq_url, valkey_url, queue):
             # 50 originals interleaved with 50 duplicates (same args).
-            originals = [(task_name, (i,), {}) for i in range(50)]
-            dups = [(task_name, (i,), {}) for i in range(50)]
+            originals: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = [(task_name, (i,), {}) for i in range(50)]
+            dups: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = [(task_name, (i,), {}) for i in range(50)]
             batch = originals + dups
 
             task_ids = await client_app.schedule_many(batch)
@@ -290,14 +291,18 @@ async def test_schedule_many_survives_broker_reconnect_midway(
         await client_app.broker.declare_queue(queue)
         async with _running_worker(rabbitmq_url, valkey_url, queue):
             # First half — publish normally.
-            first_half = [(task_name, (i,), {}) for i in range(10)]
+            first_half: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = [(task_name, (i,), {}) for i in range(10)]
             ids_a = await client_app.schedule_many(first_half)
 
             # Trigger a reconnect on the client-side broker.
-            await client_broker._connection.reconnect()
+            connection = client_broker._connection
+            assert isinstance(connection, aio_pika.abc.AbstractRobustConnection)
+            await connection.reconnect()
             # Publish the second half DURING the recovery window; the
             # U1.1 retry wrapper must make this succeed.
-            second_half = [(task_name, (i + 100,), {}) for i in range(10)]
+            second_half: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = [
+                (task_name, (i + 100,), {}) for i in range(10)
+            ]
             ids_b = await client_app.schedule_many(second_half)
 
             assert len(ids_a) == 10

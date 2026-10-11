@@ -149,7 +149,8 @@ async def _echo_roundtrip(queue: str, value: str) -> str:
     app = SwarmQ(RabbitMQBroker(rabbitmq_amqp_url()), ValkeyBackend(valkey_db_url()), queues=[queue])
     async with app:
         task_id = await app.schedule("cli_echo", value, queue=queue)
-        return await app.get_result(task_id, timeout=20)
+        result: str = await app.get_result(task_id, timeout=20)
+        return result
 
 
 _ReloadWorker = tuple[subprocess.Popen[str], _LineCollector, Path, str]

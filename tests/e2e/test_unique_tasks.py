@@ -101,7 +101,7 @@ async def test_submit_button_double_click_dedup(
     client_backend = ValkeyBackend(valkey_url)
     client_app = SwarmQ(client_broker, client_backend, queues=[queue])
 
-    captured_dups: list[dict] = []
+    captured_dups: list[dict[str, Any]] = []
 
     @client_app.on_signal(Signal.TASK_DUPLICATE_DETECTED)
     async def _on_dup(**kwargs: Any) -> None:
@@ -168,7 +168,7 @@ async def test_webhook_idempotency_across_retry_window(
         )
 
         @override
-        async def run(self, event_id: str) -> dict:
+        async def run(self, event_id: str) -> dict[str, str]:
             executions.append(event_id)
             # Short sleep so the parallel schedule hits while we are
             # still owner of the flag.
@@ -244,7 +244,7 @@ async def test_locking_and_unique_combined(
     client_backend = ValkeyBackend(valkey_url)
     client_app = SwarmQ(client_broker, client_backend, queues=[queue])
 
-    captured_dups: list[dict] = []
+    captured_dups: list[dict[str, Any]] = []
 
     @client_app.on_signal(Signal.TASK_DUPLICATE_DETECTED)
     async def _on_dup(**kwargs: Any) -> None:

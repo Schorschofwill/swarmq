@@ -93,14 +93,15 @@ class ToxiproxyClient:
         """Return ``{proxy_name: proxy_dict}`` for all registered proxies."""
         resp = await self._http.get("/proxies")
         resp.raise_for_status()
-        return resp.json()
+        proxies: dict[str, Any] = resp.json()
+        return proxies
 
     async def create_proxy(self, config: ProxyConfig) -> dict[str, Any]:
         """Idempotent-ish: if the proxy already exists with matching listen+upstream,
         return its dict. Otherwise create it. If it exists with different config,
         delete and re-create (tests routinely reuse names across runs)."""
         existing = await self.list_proxies()
-        current = existing.get(config.name)
+        current: dict[str, Any] | None = existing.get(config.name)
         if current is not None:
             same = (
                 current.get("listen", "").endswith(config.listen.split(":")[-1])
@@ -117,7 +118,8 @@ class ToxiproxyClient:
         }
         resp = await self._http.post("/proxies", json=payload)
         resp.raise_for_status()
-        return resp.json()
+        created: dict[str, Any] = resp.json()
+        return created
 
     async def delete_proxy(self, name: str) -> None:
         resp = await self._http.delete(f"/proxies/{name}")
@@ -169,7 +171,8 @@ class ToxiproxyClient:
             json=payload,
         )
         resp.raise_for_status()
-        return resp.json()["name"]
+        toxic_name: str = resp.json()["name"]
+        return toxic_name
 
     async def remove_toxic(self, proxy_name: str, toxic_name: str) -> None:
         resp = await self._http.delete(
@@ -181,7 +184,8 @@ class ToxiproxyClient:
     async def list_toxics(self, proxy_name: str) -> list[dict[str, Any]]:
         resp = await self._http.get(f"/proxies/{proxy_name}/toxics")
         resp.raise_for_status()
-        return resp.json()
+        toxics: list[dict[str, Any]] = resp.json()
+        return toxics
 
     # ---- Bulk operations ----
 

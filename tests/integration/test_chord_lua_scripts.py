@@ -26,6 +26,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.timeout(5)]
 async def manager(valkey_url):
     be = ValkeyBackend(valkey_url)
     await be.connect()
+    assert be._client is not None
     yield ChordManager(be._client)
     await be.close()
 

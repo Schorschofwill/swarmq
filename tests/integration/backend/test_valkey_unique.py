@@ -123,6 +123,7 @@ async def test_release_unique_survives_script_flush(valkey_url: str):
         assert await backend.claim_unique("h-noscript", "t-1", 60_000) is None
         # Forcibly evict every Lua script from Valkey's cache. Next
         # EVALSHA will raise NOSCRIPT; AsyncScript retries with EVAL.
+        assert backend._client is not None
         await backend._client.script_flush()
         assert await backend.release_unique("h-noscript", "t-1") is True
         # And a fresh SETNX claims the key again — proves state is clean.

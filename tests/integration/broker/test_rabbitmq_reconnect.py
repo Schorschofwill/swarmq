@@ -21,6 +21,7 @@ import uuid
 import pytest
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
+from swarmq.contracts import Delivery
 from tests.support.queues import delete_queue_family
 
 pytestmark = [pytest.mark.timeout(20)]
@@ -164,7 +165,7 @@ async def test_qos_prefetch_preserved_across_reconnect(broker, rabbitmq_url):
     declared.append(q)
     await b.declare_queue(q)
 
-    pending_acks: list = []
+    pending_acks: list[Delivery] = []
 
     async def slow_handler(msg) -> None:
         # Intentionally do NOT ack — hold the message to stress prefetch.
