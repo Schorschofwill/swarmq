@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
-from typing import Any
+from typing import Any, cast
 
 from swarmq.logging import get_logger
 from swarmq.valkey_policy import EvictionCheck, assess
@@ -37,13 +37,13 @@ def _int(value: Any) -> int | None:
 
 async def _from_config(client: Any) -> tuple[str | None, int | None]:
     raw = await client.config_get("maxmemory*")
-    values = {_text(k): v for k, v in raw.items()} if isinstance(raw, dict) else {}
+    values = {_text(k): v for k, v in cast("dict[object, object]", raw).items()} if isinstance(raw, dict) else {}
     return _text(values.get("maxmemory-policy")), _int(values.get("maxmemory"))
 
 
 async def _from_info(client: Any) -> tuple[str | None, int | None]:
     raw = await client.info("memory")
-    values = raw if isinstance(raw, dict) else {}
+    values = cast("dict[str, Any]", raw) if isinstance(raw, dict) else {}
     return _text(values.get("maxmemory_policy")), _int(values.get("maxmemory"))
 
 
@@ -52,7 +52,7 @@ async def _used_memory(client: Any) -> int | None:
         raw = await client.info("memory")
     except Exception:  # noqa: BLE001 - Sonde wirft nie, ohne Antwort None
         return None
-    return _int(raw.get("used_memory")) if isinstance(raw, dict) else None
+    return _int(cast("dict[str, Any]", raw).get("used_memory")) if isinstance(raw, dict) else None
 
 
 async def probe_eviction(client: Any, *, memory: bool = False) -> EvictionCheck:
@@ -104,7 +104,7 @@ async def _info_section(client: Any, section: str) -> dict[str, Any]:
             raw = await client.info(section)
     except Exception:  # noqa: BLE001 - Sonde wirft nie, ohne Antwort leer
         return {}
-    return raw if isinstance(raw, dict) else {}
+    return cast("dict[str, Any]", raw) if isinstance(raw, dict) else {}
 
 
 def _flag(value: Any) -> bool | None:

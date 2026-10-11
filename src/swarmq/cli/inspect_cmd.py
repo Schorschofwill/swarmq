@@ -50,7 +50,7 @@ def _format_inspect_table(entries: list[dict[str, Any]]) -> str:
     return _render_table(rows, "(no tasks registered)")
 
 
-async def _run_inspect_async(args: argparse.Namespace) -> None:
+async def _run_inspect_async(args: argparse.Namespace) -> None:  # pyright: ignore[reportUnusedFunction]  # über Fassade/Nachbarmodul importiert
     """Import *args.module* and print TaskInfo metadata for each task.
 
     Read-only; no broker / backend connection. Exposes the declarative dedup configuration so agents and operators

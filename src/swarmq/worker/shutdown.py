@@ -139,7 +139,7 @@ class WorkerShutdown:
         # corresponds to a handler whose finally never ran (typically
         # because the task was cancel()ed before reaching it).
         if self._lock_manager is not None and self._active_handler_locks:
-            for handler_id, locks in list(self._active_handler_locks.items()):  # noqa: B007
+            for locks in list(self._active_handler_locks.values()):
                 for token in locks:
                     kept = self._lock_keeper.drop(token)
                     task_fields = {} if kept is None else {"task_id": kept.task_id, "task_name": kept.task_name}

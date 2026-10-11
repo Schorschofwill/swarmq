@@ -49,6 +49,7 @@ if TYPE_CHECKING:
     from swarmq.app import SwarmQ
     from swarmq.backend.valkey import ValkeyBackend
     from swarmq.broker.rabbitmq import RabbitMQBroker
+    from swarmq.dishka import SwarmQProvider, TaskContext, setup_dishka
     from swarmq.health import HealthChecker, HealthServer, serve_health
     from swarmq.metrics import (
         Metrics,

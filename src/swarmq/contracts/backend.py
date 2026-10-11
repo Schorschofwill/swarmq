@@ -15,11 +15,13 @@ from typing import Protocol, runtime_checkable
 class ResultBackend(Protocol):
     async def connect(self) -> None:
         """Idempotent; Treiberfehler → ``BackendConnectionError``."""
+        ...
 
     async def close(self) -> None: ...
 
     async def ping(self) -> None:
         """Wirft ``BackendConnectionError`` vor ``connect`` oder bei Störung."""
+        ...
 
     # --- Ergebnisse -----------------------------------------------------
     async def store_result(
@@ -30,15 +32,18 @@ class ResultBackend(Protocol):
 
     async def get_results(self, task_ids: Sequence[str]) -> list[bytes | None]:
         """Ein Round-Trip; Reihenfolge wie ``task_ids``."""
+        ...
 
     async def delete_result(self, task_id: str) -> None: ...
 
     async def notify_result(self, task_id: str) -> None:
         """Weckt Wartende. Fehler werden geloggt, nie geworfen."""
+        ...
 
     async def wait_for_result(self, task_id: str, *, timeout: float) -> bytes | None:
         """Liefert das Ergebnis, sobald vorhanden: wacht bei ``notify_result``
         auf, fällt sonst auf Polling zurück; ``None`` bei Ablauf."""
+        ...
 
     # --- Fortschritt ----------------------------------------------------
     async def set_progress(
@@ -49,10 +54,12 @@ class ResultBackend(Protocol):
 
     async def publish_progress(self, task_id: str, payload: bytes) -> None:
         """Fehler werden geloggt, nie geworfen."""
+        ...
 
     def watch_progress(self, task_id: str) -> AsyncIterator[bytes]:
         """Fortschritts-Payloads bis zum Abbruch durch den Aufrufer; überlebt
         Verbindungsabbrüche durch erneutes Abonnieren."""
+        ...
 
     # --- Cancel ---------------------------------------------------------
     async def set_cancel_flag(self, task_id: str, ttl_ms: int, *, op_timeout: float | None = None) -> bool: ...
@@ -63,6 +70,7 @@ class ResultBackend(Protocol):
         """Verkürzt das Flag auf höchstens 1 h (``PEXPIRE … LT``, BZ-23),
         verlängert ein kürzeres nie und löscht nicht. Loggt statt zu werfen;
         die TTL heilt Waisen."""
+        ...
 
     # --- Workflow -------------------------------------------------------
     async def store_workflow_state(
@@ -88,6 +96,7 @@ class ResultBackend(Protocol):
 
     async def wait_for_workflow(self, wf_id: str, *, timeout: float) -> bool:
         """``True`` bei Benachrichtigung vor Ablauf, sonst ``False``."""
+        ...
 
     # --- Dedup ----------------------------------------------------------
     async def claim_unique(
@@ -95,9 +104,11 @@ class ResultBackend(Protocol):
     ) -> str | None:
         """``None`` = beansprucht; sonst der bestehende Owner. Owner bleibt
         String (Wire-Format, Entwurf §4 Ausnahme)."""
+        ...
 
     async def release_unique(self, dedup_hash: str, owner: str, *, op_timeout: float | None = None) -> bool:
         """Owner-Check; ``False`` bei fremdem Owner, fehlendem Flag oder Fehler."""
+        ...
 
 
 @runtime_checkable

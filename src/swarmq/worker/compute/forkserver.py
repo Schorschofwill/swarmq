@@ -17,7 +17,7 @@ import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from swarmq.exceptions import ConfigurationError
 from swarmq.logging import LISTENER_THREAD_NAME, get_logger
@@ -154,7 +154,7 @@ def forkserver_pid() -> int | None:
     try:
         from multiprocessing import forkserver as _fs
 
-        pid = _fs._forkserver._forkserver_pid  # type: ignore[attr-defined]
+        pid = cast("int | None", _fs._forkserver._forkserver_pid)  # type: ignore[attr-defined]  # pyright: ignore[reportAttributeAccessIssue]  # privates stdlib-Detail (KTD14)
     except ImportError, AttributeError:
         return None
     return int(pid) if pid is not None else None

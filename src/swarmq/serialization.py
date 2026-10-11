@@ -6,7 +6,7 @@ import hashlib
 import math
 from datetime import date, datetime, time
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any, TypedDict, cast
 from uuid import UUID
 
 import msgpack
@@ -56,7 +56,7 @@ def _canonical_float(obj: float) -> float:
 
 def _canonical_dict(obj: dict[Any, Any]) -> dict[str, Any]:
     """Sort keys; reject non-str keys (JSON constraint, makes sort stable)."""
-    result = {}
+    result: dict[str, Any] = {}
     for key in sorted(obj.keys()):
         if not isinstance(key, str):
             raise TypeError(f"canonical_encode requires str dict keys; got {type(key).__name__!r}")
@@ -93,11 +93,11 @@ def _canonicalize(obj: Any) -> Any:
     if isinstance(obj, (datetime, date, time)):
         return obj.isoformat()
     if isinstance(obj, dict):
-        return _canonical_dict(obj)
+        return _canonical_dict(cast("dict[object, object]", obj))
     if isinstance(obj, (list, tuple)):
-        return [_canonicalize(item) for item in obj]
+        return [_canonicalize(item) for item in cast("list[object] | tuple[object, ...]", obj)]
     if isinstance(obj, (set, frozenset)):
-        return _canonical_set(obj)
+        return _canonical_set(cast("set[object] | frozenset[object]", obj))
     if isinstance(obj, (bytes, bytearray, memoryview)):
         raise TypeError(
             "canonical_encode does not support bytes; "
@@ -168,9 +168,11 @@ def _msgpack_default(obj: Any) -> msgpack.ExtType:
     if isinstance(obj, UUID):
         return msgpack.ExtType(_EXT_UUID, str(obj).encode())
     if isinstance(obj, set):
-        return msgpack.ExtType(_EXT_SET, msgpack.packb(list(obj), default=_msgpack_default))
+        return msgpack.ExtType(_EXT_SET, msgpack.packb(list(cast("set[object]", obj)), default=_msgpack_default))
     if isinstance(obj, frozenset):
-        return msgpack.ExtType(_EXT_FROZENSET, msgpack.packb(list(obj), default=_msgpack_default))
+        return msgpack.ExtType(
+            _EXT_FROZENSET, msgpack.packb(list(cast("frozenset[object]", obj)), default=_msgpack_default)
+        )
     raise TypeError(f"Unknown type: {type(obj)}")
 
 
@@ -181,7 +183,19 @@ def _msgpack_default(obj: Any) -> msgpack.ExtType:
 # default drift and bounds the recursive set/frozenset ext hook with
 # the same numbers. Far above any sane task result; not configurable on
 # purpose — a result this large is a bug, not a tuning knob.
-_UNPACK_LIMITS: dict[str, int] = {
+if TYPE_CHECKING:
+
+    class _UnpackLimits(TypedDict):
+        """Schluessel von ``_UNPACK_LIMITS`` als Keyword-Argumente von ``unpackb``."""
+
+        max_array_len: int
+        max_map_len: int
+        max_str_len: int
+        max_bin_len: int
+        max_ext_len: int
+
+
+_UNPACK_LIMITS: _UnpackLimits = {
     "max_array_len": 1_000_000,
     "max_map_len": 1_000_000,
     "max_str_len": 64 * 1024 * 1024,
@@ -222,7 +236,7 @@ def _msgpack_ext_hook(code: int, data: bytes) -> Any:
 def encode_result(obj: Any) -> bytes:
     """Serialize obj to msgpack bytes."""
     try:
-        return msgpack.packb(obj, default=_msgpack_default)  # type: ignore[no-any-return]  # msgpack ist untypisiert
+        return msgpack.packb(obj, default=_msgpack_default)
     except (TypeError, ValueError) as exc:
         raise ResultSerializationError(f"Failed to msgpack-encode object of type {type(obj).__name__}: {exc}") from exc
 

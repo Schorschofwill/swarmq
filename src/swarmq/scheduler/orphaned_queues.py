@@ -84,7 +84,7 @@ class SchedulerOrphanedQueues:
         # Kandidaten: Queues, die kein lebender Worker mehr meldet (Valkey-Zeit).
         live_since = snapshot.now_ms - live_window_ms(self._config.scheduler_seen_interval_s)
         candidates = sorted(queue for queue, last in snapshot.last_seen_ms.items() if last < live_since)
-        statuses = await self._broker.queue_statuses(candidates) if candidates else {}
+        statuses: dict[str, QueueStatus | None] = await self._broker.queue_statuses(candidates) if candidates else {}
         # Neue Amtszeit: die Uebergaenge der alten gelten nicht mehr (die
         # Gauge faellt beim Standby auf 0).
         previous = (self._orphaned_queues or {}) if self._orphaned_term == self._term else {}

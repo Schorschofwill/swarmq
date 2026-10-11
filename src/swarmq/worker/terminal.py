@@ -40,7 +40,8 @@ async def fail_workflow_step(
     Zustelllimit begrenzt die Schleife."""
     wf_id = deps.extract_valid_workflow_id(delivery)
     if wf_id is None:
-        if (delivery.headers or {}).get(HEADER_WORKFLOW_ID) is not None:
+        headers: dict[str, Any] = delivery.headers or {}
+        if headers.get(HEADER_WORKFLOW_ID) is not None:
             log.warning("workflow_id_header_invalid", task_id=ctx.task_id, task_name=ctx.task_name)
         return True
     if advancer is None:

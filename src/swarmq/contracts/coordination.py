@@ -37,24 +37,29 @@ class LockObservation:
 class LockStore(Protocol):
     async def acquire(self, name: str, *, owner: str, ttl_ms: int, max_concurrency: int) -> LockToken | None:
         """``None`` bei Konflikt."""
+        ...
 
     async def release(self, token: LockToken) -> bool: ...
 
     async def renew(self, token: LockToken, ttl_ms: int) -> bool:
         """Nur für ``max_concurrency == 1``."""
+        ...
 
     async def extend(self, token: LockToken, ttl_ms: int) -> bool:
         """Frist des eigenen Locks (Mutex oder Semaphor-Slot) auf mindestens
         ``ttl_ms`` ab jetzt setzen -- verkuerzt nie (Plan 0.12.0, MR 13,
         BZ-25). ``False``: Lock weg, abgelaufen oder fremder Halter."""
+        ...
 
     async def force_release(self, name: str, *, max_concurrency: int) -> bool:
         """Operator-Pfad ohne Owner-Check."""
+        ...
 
     async def current_owner(self, name: str) -> str | None: ...
 
     async def observe(self, name: str, *, max_concurrency: int) -> LockObservation:
         """Halter und Rest-TTL eines Locks, ohne ihn zu veraendern."""
+        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,12 +79,14 @@ class RateLimitStore(Protocol):
         Implementierung ``BackendConnectionError`` -- nur dann stellt der
         Worker die Nachricht mit Backoff zurück. Jeder andere Fehler (auch
         ``BackendResponseError``) führt zum Requeue an derselben Stelle."""
+        ...
 
 
 @runtime_checkable
 class ChordStore(Protocol):
     async def record_member(self, wf_id: str, chord_id: str, member_id: str, *, expected: int, ttl_ms: int) -> bool:
         """Idempotent; ``True`` bei jedem Aufruf, sobald ``expected`` erreicht ist."""
+        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,9 +135,11 @@ class LeaderInfo:
 class ScheduleStore(Protocol):
     async def add(self, name: str, payload: bytes, fire_ts_ms: int | None) -> bool:
         """Insert-if-absent; ``False``, wenn ``name`` existiert."""
+        ...
 
     async def put(self, name: str, payload: bytes, fire_ts_ms: int | None) -> None:
         """Überschreibt; ``fire_ts_ms=None`` lässt den Fire-Index unberührt."""
+        ...
 
     async def exists(self, name: str) -> bool: ...
 
@@ -140,6 +149,7 @@ class ScheduleStore(Protocol):
 
     async def fire_ts(self, name: str) -> int | None:
         """Score im Fire-Index; ``None`` ohne Eintrag (deaktiviert, unbekannt)."""
+        ...
 
     async def list_all(self) -> Mapping[str, bytes]: ...
 
@@ -155,12 +165,15 @@ class ScheduleStore(Protocol):
         keinen Score im Fire-Index hat, wird *payload* geschrieben und
         *fire_ts_ms* eingeplant. ``False`` ohne jede Änderung, wenn
         zwischenzeitlich deaktiviert, entfernt, geändert oder eingeplant."""
+        ...
 
     async def disable(self, name: str, payload: bytes) -> bool:
         """Atomar: Definition ersetzen und aus dem Fire-Index nehmen."""
+        ...
 
     async def poll_due(self, now_ms: int, *, limit: int = 100) -> list[tuple[str, int, bytes]]:
         """``(name, fire_ts_ms, payload)`` aller fälligen Einträge."""
+        ...
 
     async def commit_fire(
         self,
@@ -189,6 +202,7 @@ class ScheduleStore(Protocol):
         geschrieben, wenn die gespeicherte Definition noch genau diese ist
         (Plan 2026-10-08-1541, KTD12); sonst rückt nur der Score vor und eine
         zwischenzeitliche Übernahme bleibt stehen."""
+        ...
 
     async def mark_fire_completed(self, fire_key: str, ttl_ms: int) -> bool: ...
 
@@ -205,10 +219,12 @@ class ScheduleStore(Protocol):
         oder mehrere) -- dann gehoert er danach ``owner`` mit neuer TTL
         (Uebernahme durch die eigene Kopie). Ohne ``owner`` speichert der
         Claim einen Platzhalter."""
+        ...
 
     async def release_fire_claim(self, fire_key: str, *, owner: str | None = None) -> None:
         """Gibt den In-Flight-Claim frei; mit ``owner`` nur, wenn er noch
         diesem Token gehoert (atomar)."""
+        ...
 
     async def is_fire_completed(self, fire_key: str) -> bool: ...
 
@@ -219,6 +235,7 @@ class ScheduleStore(Protocol):
         einer da war). ``previous_owner``: zuletzt gesehener Leader; erkennt
         auch den Marker eines Leaders vor 0.12, der nur unter seinem
         Owner-Token liegt (BZ-07)."""
+        ...
 
     async def report_cron(
         self,
@@ -232,9 +249,11 @@ class ScheduleStore(Protocol):
         ``last_seen`` und Payload werden gesetzt; ``first_seen`` nur, wenn
         die Meldung fehlt oder ihr ``last_seen`` älter als *live_window_ms*
         ist (der Abdruck war tot)."""
+        ...
 
     async def cron_reports(self) -> CronReports:
         """Alle Meldungen samt Backend-Zeit des Lesens."""
+        ...
 
     async def known_cron_names(self) -> frozenset[str]:
         """Namen, die je ein Worker gemeldet hat (Plan 0.12.0, MR 11, BZ-11).
@@ -242,14 +261,17 @@ class ScheduleStore(Protocol):
         sondern nur zusammen mit der Definition entfernt (``prune_cron``,
         ``remove``); so erkennt der Leader einen verwaisten Cron auch dann,
         wenn ein Leader vor 0.12 die Meldungen gelöscht hat."""
+        ...
 
     async def forget_known_cron(self, name: str) -> None:
         """Nimmt *name* aus :meth:`known_cron_names` (``schedule remove
         --permanent``); ``prune_cron`` tut es von selbst."""
+        ...
 
     async def prune_cron_reports(self, *, max_age_ms: int) -> int:
         """Löscht atomar die Meldungen, deren ``last_seen`` (Backend-Zeit)
         älter als *max_age_ms* ist; liefert ihre Anzahl."""
+        ...
 
     async def prune_cron(
         self,
@@ -265,13 +287,16 @@ class ScheduleStore(Protocol):
         (Backend-Zeit, mindestens eine Meldung); ohne Frist keine Meldung des
         Namens existiert. Mit *remember_disabled* merkt sich der Store den
         Namen (:meth:`pruned_disabled`). ``True``, wenn entfernt."""
+        ...
 
     async def pruned_disabled(self, name: str) -> bool:
         """``True``, wenn *name* beim Entfernen deaktiviert war (KTD8): das
         Wiederanlegen übernimmt den Zustand."""
+        ...
 
     async def forget_pruned_disabled(self, name: str) -> None:
         """Vergisst die Markierung aus :meth:`pruned_disabled`."""
+        ...
 
     async def ensure_epoch(self, candidate: str) -> str | None:
         """Epoch des Datenbestands (Plan 0.12.0, MR 14, BZ-04), atomar: fehlt
@@ -280,35 +305,43 @@ class ScheduleStore(Protocol):
         Prozess, der ihn schon kannte, hat Valkey seine Daten verloren. Stores
         Dritter duerfen die Methode weglassen (Q15: der Scheduler prueft dann
         nicht)."""
+        ...
 
     async def report_queues(self, queues: Sequence[str], *, ttl_ms: int) -> None:
         """Meldet die Queues, die ein Worker konsumiert, mit der Backend-Zeit
         (Plan 0.12.0, MR 18, BZ-14). Meldet niemand innerhalb von *ttl_ms*,
         verfallen alle Meldungen. Stores Dritter duerfen die Methode weglassen
         (Q15: dann meldet niemand verwaiste Queues)."""
+        ...
 
     async def queue_reports(self) -> QueueReports:
         """Alle Queue-Meldungen samt Backend-Zeit (BZ-14)."""
+        ...
 
     async def forget_queue_reports(self, queues: Sequence[str]) -> None:
         """Entfernt die Meldungen der genannten Queues (BZ-14: leer oder
         fehlend und laenger als 7 d nicht gemeldet)."""
+        ...
 
     async def report_worker_version(self, worker_id: str, version: str, *, ttl_ms: int) -> None:
         """Meldet die swarmq-Version eines Workers; die Meldung gilt *ttl_ms*
         (KTD11, Anzeige in ``schedule status``)."""
+        ...
 
     async def worker_versions(self) -> Mapping[str, str]:
         """Worker-ID → swarmq-Version aller noch gültigen Meldungen."""
+        ...
 
     async def set_leader_version(self, owner: str, version: str, *, ttl_ms: int) -> None:
         """Schreibt die swarmq-Version des Leaders *owner* neben das
         Leader-Lock, mit der TTL des Locks (KTD11)."""
+        ...
 
     async def leader_info(self) -> LeaderInfo:
         """Owner des Leader-Locks und seine Version, gelesen in einem
         Schritt; eine Version, die ein anderer Owner geschrieben hat, gilt
         nicht (KTD11)."""
+        ...
 
 
 GuardStatus = Literal["claimed", "done", "superseded", "running", "orphan_limit"]
@@ -351,16 +384,21 @@ class ExecutionGuardStore(Protocol):
         ``running`` (die Zustellung wird zurückgestellt), lebt der Zustand
         mindestens *backlog_ttl_ms* (BZ-12); ``mark_done``/``mark_superseded``
         verkürzen ihn nie."""
+        ...
 
     async def renew(self, identity: str, *, owner: str, ttl_ms: int) -> bool:
         """Compare-and-PEXPIRE: ``False``, wenn der Marker weg oder fremd ist."""
+        ...
 
     async def mark_done(self, identity: str, *, owner: str, state_ttl_ms: int) -> None:
         """Done-Marker setzen; den Running-Marker nur löschen, wenn er *owner* gehört."""
+        ...
 
     async def mark_superseded(self, identity: str, *, owner: str, retry_count: int, state_ttl_ms: int) -> None:
         """Superseded-Marker mit dem Zähler der Retry-Kopie (nur steigend);
         den eigenen Running-Marker löschen."""
+        ...
 
     async def release(self, identity: str, *, owner: str) -> None:
         """Den eigenen Running-Marker löschen (nicht-terminaler Ausgang)."""
+        ...

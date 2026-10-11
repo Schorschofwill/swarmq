@@ -22,7 +22,7 @@ import weakref
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from swarmq.exceptions import LoggingConfigError
 from swarmq.logging_drain import Deadline, abandon, drain_expired
@@ -53,7 +53,7 @@ class RateLimitedReport:
         self.count = 0
         self.reported = 0
         self._emit = emit
-        self._last_report = float("-inf")
+        self._last_report: float = float("-inf")
 
     def add(self, n: int = 1) -> None:
         """Zaehlt ``n`` weitere Ereignisse; ohne Lock wie der Aufrufer
@@ -73,7 +73,8 @@ class RateLimitedReport:
         count = self.count
         if count <= self.reported:
             return False
-        now = type(self).clock()  # ueber die Klasse: eine Funktion bindet nicht
+        # ueber die Klasse: eine Funktion bindet nicht
+        now: float = type(self).clock()  # pyright: ignore[reportAttributeAccessIssue,reportUnknownMemberType,reportUnknownVariableType]  # Klassenzugriff bindet bewusst nicht
         if not final and now - self._last_report < self.INTERVAL_S:
             return False
         self._last_report = now
@@ -175,7 +176,7 @@ def load_log_config(path: str) -> str:
     if not isinstance(config, dict):
         cause = TypeError(f"expected a mapping, got {type(config).__name__}")
         raise LoggingConfigError(path, cause) from cause
-    config.setdefault("disable_existing_loggers", False)
+    cast("dict[str, Any]", config).setdefault("disable_existing_loggers", False)
     return jsonlib.dumps(config)
 
 
@@ -357,7 +358,7 @@ def _drain_before_multiprocessing_exit(drain: Callable[[], None]) -> None:
     pid = os.getpid()
     if pid == _MP_EXIT_DRAIN_PID:
         return
-    _MP_EXIT_DRAIN_PID = pid
+    _MP_EXIT_DRAIN_PID = pid  # pyright: ignore[reportConstantRedefinition]  # Modul-Zustand je Prozess
     from multiprocessing import util  # schon importiert: Die Queue braucht es
 
     util.Finalize(None, drain, exitpriority=_BEFORE_MULTIPROCESSING_QUEUES)
@@ -381,7 +382,7 @@ def reset_queue_listeners_after_fork() -> None:
     Ein beim Fork gehaltenes Wiederstart-Lock hat im Kind keinen Besitzer
     mehr und wird ersetzt."""
     global _CONFIG_LISTENER_LOCK  # noqa: PLW0603 - Modul-Singleton
-    _CONFIG_LISTENER_LOCK = threading.Lock()
+    _CONFIG_LISTENER_LOCK = threading.Lock()  # pyright: ignore[reportConstantRedefinition]  # nach Fork ersetzt
     CONFIG_LISTENERS.clear()
     for handler, drops in list(_STARTED_HANDLERS.items()):
         # Die Drops des Elternprozesses meldet der Elternprozess.
@@ -447,9 +448,11 @@ def _fresh_queue(inherited: object) -> Any:
     ``multiprocessing``-Queue verbindet das Kind mit dem Elternprozess, eine
     eigene Klasse der App hat einen unbekannten Konstruktor."""
     if type(inherited) is queue.SimpleQueue:
-        return queue.SimpleQueue()
+        fresh_simple: queue.SimpleQueue[Any] = queue.SimpleQueue()
+        return fresh_simple
     if type(inherited) is queue.Queue:
-        return queue.Queue(inherited.maxsize)
+        fresh: queue.Queue[Any] = queue.Queue(inherited.maxsize)
+        return fresh
     return None
 
 
@@ -545,7 +548,7 @@ class FileDraining:
 def _offer_sentinel(listener: logging.handlers.QueueListener, timeout: float) -> bool:
     """Reiht den Sentinel ein, hoechstens ``timeout`` Sekunden lang; ``False``
     bei voller Queue. ``put_nowait`` des stdlib-``stop`` wuerfe dort."""
-    sentinel = listener._sentinel  # type: ignore[attr-defined]
+    sentinel: object = cast("Any", listener)._sentinel  # privates stdlib-Attribut, nicht in typeshed
     target: Any = listener.queue  # ``_QueueLike`` kennt nur ``put_nowait``/``get``
     try:
         if timeout > 0:
@@ -653,7 +656,7 @@ def _report_from_listener(listener: logging.handlers.QueueListener) -> RateLimit
     nach deren Finalizer, ein beendeter Manager --, endet er ohne Traceback;
     was noch in ihr liegt, zaehlt das naechste Leeren als verworfen."""
     reports = ListenerReports(listener.handle)
-    monitor = listener._monitor  # type: ignore[attr-defined]
+    monitor: Callable[[], None] = cast("Any", listener)._monitor  # privates stdlib-Attribut, nicht in typeshed
 
     def serve() -> None:
         # Thread-Ziel des stdlib-``start``.

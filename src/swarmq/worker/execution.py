@@ -112,7 +112,7 @@ class TaskExecutor:
                     task_id=ctx.task_id,
                     task_name=ctx.task_name,
                     queue=ctx.queue,
-                    retry_count=message_dict["retry_count"],
+                    retry_count=message_dict["retry_count"],  # pyright: ignore[reportTypedDictNotRequiredAccess]  # worker-seitig setzt _build_message_dict retry_count immer
                 )
             }
         )

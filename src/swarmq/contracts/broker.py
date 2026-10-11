@@ -36,15 +36,19 @@ class Publisher(Protocol):
 
     async def connect(self) -> None:
         """Idempotent; Treiberfehler → ``BrokerConnectionError``."""
+        ...
 
     async def close(self) -> None:
         """Schließt nur Eigenes; eine geliehene Verbindung bleibt offen."""
+        ...
 
     async def ping(self) -> None:
         """Wirft ``BrokerConnectionError``, wenn nicht verbunden oder nicht bereit."""
+        ...
 
-    async def declare_queue(self, queue: str) -> None:
+    async def declare_queue(self, queue: str, /) -> None:
         """Macht ``queue`` samt Verzögerungs- und Dead-Letter-Ziel zustellbereit; idempotent."""
+        ...
 
     async def publish(
         self,
@@ -53,6 +57,7 @@ class Publisher(Protocol):
         headers: Mapping[str, Any] | None = None,
     ) -> PublishReceipt:
         """Persistente, bestätigte Veröffentlichung; Fehlschlag → ``BrokerConnectionError``."""
+        ...
 
     def set_publish_deadline(self, at: float | None) -> None:
         """Deckelt jeden Publish zusätzlich auf einen absoluten Zeitpunkt.
@@ -67,6 +72,7 @@ class Publisher(Protocol):
         statt vom Supervisor abgeschossen zu werden. Ein Producer ohne
         Worker ruft sie nie und läuft immer gegen die Konfiguration.
         """
+        ...
 
 
 @runtime_checkable
@@ -76,9 +82,11 @@ class Consumer(Protocol):
     async def consume(self, queue: str, on_delivery: DeliveryCallback, *, concurrency: int) -> None:
         """Liefert jede Nachricht genau einmal als ``Delivery``; höchstens
         ``concurrency`` unbestätigte Zustellungen gleichzeitig."""
+        ...
 
     async def cancel_consume(self) -> None:
         """Keine weiteren Zustellungen; bereits zugestellte bleiben bestätigbar."""
+        ...
 
     async def ack(self, delivery: Delivery) -> None:
         """Erledigt. Danach ist kein weiteres Verb auf dieser Zustellung zulässig.
@@ -86,21 +94,25 @@ class Consumer(Protocol):
         Kanal- oder Verbindungsverlust → ``BrokerConnectionError``; die
         Zustellung bleibt unbestätigt und kommt erneut. Gilt ebenso für
         ``redeliver`` und ``route_via_dlx``."""
+        ...
 
     async def redeliver(self, delivery: Delivery) -> None:
         """Transient: dieselbe Nachricht wird ohne Verzögerung erneut zugestellt.
         Kanal- oder Verbindungsverlust → ``BrokerConnectionError``."""
+        ...
 
     async def retry_later(self, delivery: Delivery, *, delay_ms: int, headers: Mapping[str, Any]) -> None:
         """Veröffentlicht Body + ``headers`` an das Verzögerungsziel von
         ``delivery.queue`` (Rückkehr in genau diese Queue nach ``delay_ms``),
         dann Bestätigung des Originals. Publish-Fehler → ``BrokerConnectionError``,
         Original bleibt unbestätigt."""
+        ...
 
     async def dead_letter(self, delivery: Delivery, *, headers: Mapping[str, Any]) -> None:
         """Veröffentlicht Body + ``headers`` an das Dead-Letter-Ziel von
         ``delivery.queue``, dann Bestätigung des Originals. Publish-Fehler →
         ``BrokerConnectionError``, Original bleibt unbestätigt."""
+        ...
 
 
 @runtime_checkable
@@ -135,6 +147,7 @@ class BrokerAdmin(Protocol):
         Terminaler Pfad für nicht dekodierbare oder unbekannte Nachrichten und
         Fallback der Lock-Pfade, wenn ``dead_letter`` scheitert. Kanal- oder
         Verbindungsverlust → ``BrokerConnectionError``."""
+        ...
 
 
 @runtime_checkable

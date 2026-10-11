@@ -8,8 +8,8 @@ import logging
 import logging.config
 import logging.handlers
 import sys
-from collections.abc import Iterator
-from typing import Any
+from collections.abc import Generator
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse, urlunparse
 
 import structlog
@@ -35,6 +35,10 @@ from swarmq.logging_queue import _SwarmqQueueListener as _SwarmqQueueListener
 from swarmq.logging_queue import dropped_log_records as dropped_log_records
 from swarmq.logging_queue import shutdown_logging as shutdown_logging
 from swarmq.logging_settings import LoggingSettings
+
+if TYPE_CHECKING:
+    import threading
+    import weakref
 
 # Der Queue-Kern liegt in ``swarmq.logging_queue`` (Plan 2026-10-06-1811,
 # U1); die Namen oben bleiben aus ``swarmq.logging`` importierbar. Die
@@ -176,23 +180,24 @@ def _configure_next_to_app_handlers(
 
 
 @contextlib.contextmanager
-def _hidden_from_dictconfig(handlers: list[logging.Handler]) -> Iterator[None]:
+def _hidden_from_dictconfig(handlers: list[logging.Handler]) -> Generator[None]:
     """Nimmt ``handlers`` voruebergehend aus ``logging._handlerList``
     (Schluss-Review): Eine ``dictConfig`` schliesst sonst jeden bekannten
     Handler (``_clearExistingHandlers``), auch die eben abgehaengten der App.
     Ein ``FileHandler(mode="w")`` oeffnete danach nie wieder, ein Handler mit
     Hintergrund-Thread waere gestoppt. Danach stehen sie wieder in der Liste,
     damit ``logging.shutdown`` sie bei Prozessende leert."""
-    lock = logging._lock  # type: ignore[attr-defined]
+    # private stdlib-Attribute, in typeshed nicht deklariert
+    lock: threading.RLock = cast("Any", logging)._lock
     with lock:
-        refs = logging._handlerList  # type: ignore[attr-defined]
+        refs: list[weakref.ref[logging.Handler]] = cast("Any", logging)._handlerList
         hidden = [ref for ref in refs if ref() in handlers]
         refs[:] = [ref for ref in refs if ref not in hidden]
     try:
         yield
     finally:
         with lock:
-            logging._handlerList.extend(hidden)  # type: ignore[attr-defined]
+            cast("Any", logging)._handlerList.extend(hidden)
 
 
 def _start_app_queue_listeners() -> None:
@@ -337,7 +342,7 @@ def get_logger(name: str) -> Any:
     )
 
 
-def _error_fields(exc: BaseException) -> dict[str, str]:
+def _error_fields(exc: BaseException) -> dict[str, str]:  # pyright: ignore[reportUnusedFunction]  # paketweit importiert (task, signals, ...)
     """Einheitliches Fehlerschema fuer Logeintraege (R17, KTD11):
     ``error_type`` ist der Klassenname, ``error`` der Text -- bei leerer
     Nachricht (``TimeoutError()``) ebenfalls der Klassenname."""
@@ -345,7 +350,7 @@ def _error_fields(exc: BaseException) -> dict[str, str]:
     return {"error_type": error_type, "error": str(exc) or error_type}
 
 
-def _task_log_context(**fields: Any) -> contextlib.AbstractContextManager[None]:
+def _task_log_context(**fields: Any) -> contextlib.AbstractContextManager[None]:  # pyright: ignore[reportUnusedFunction]  # paketweit importiert
     """Bindet den Task-Kontext fuer einen Block (Plan 2026-10-06-0831, KTD13).
 
     Beim Verlassen werden die vorigen Werte wiederhergestellt; Variablen

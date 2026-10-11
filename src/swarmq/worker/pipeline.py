@@ -55,8 +55,8 @@ from swarmq.worker.gates.delivery_count import DeliveryCountGate
 from swarmq.worker.gates.execution_guard import ExecutionGuard
 from swarmq.worker.gates.expiry import ExpiryGate
 from swarmq.worker.gates.lock import (  # noqa: F401  # Re-Export der Konstanten (Tests)
-    LOCK_CONFLICT_BACKOFF_BASE_MS,
-    LOCK_CONFLICT_BACKOFF_CAP_MS,
+    LOCK_CONFLICT_BACKOFF_BASE_MS,  # pyright: ignore[reportUnusedImport]  # Re-Export fuer Tests
+    LOCK_CONFLICT_BACKOFF_CAP_MS,  # pyright: ignore[reportUnusedImport]  # Re-Export fuer Tests
     LockGate,
     release_acquired_locks,
 )
@@ -361,7 +361,8 @@ class Worker(WorkerLifecycle, WorkerShutdown):
         (log-only) — a Valkey flap must not turn dedup into a liveness
         hazard."""
         unique_hash = self._extract_valid_unique_hash(message)
-        header_unique_until = (message.headers or {}).get(HEADER_UNIQUE_UNTIL)
+        headers: dict[str, Any] = message.headers or {}
+        header_unique_until = headers.get(HEADER_UNIQUE_UNTIL)
         effective_unique_until = header_unique_until or task_info.unique_until
         if unique_hash and effective_unique_until == "start":
             await self._backend.release_unique(
@@ -592,6 +593,9 @@ class Worker(WorkerLifecycle, WorkerShutdown):
         # detached-shield pattern as lock release. None when DI is inactive.
         _di_scope: Any = None
         _di_token: Any = None
+        # Nur gelesen, wenn ``_di_scope`` gesetzt ist (dann immer zugewiesen).
+        is_cancelled = False
+        task_exception: BaseException | None = None
         try:
             # 3b. Check if shutdown is in progress — requeue message
             if self._shutdown_event.is_set():

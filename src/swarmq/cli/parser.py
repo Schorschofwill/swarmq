@@ -40,7 +40,7 @@ def _swarmq_version() -> str:
         return "unknown"
 
 
-def _build_parser() -> argparse.ArgumentParser:
+def _build_parser() -> argparse.ArgumentParser:  # pyright: ignore[reportUnusedFunction]  # über Fassade/Nachbarmodul importiert
     parser = argparse.ArgumentParser(
         prog="swarmq",
         description=(

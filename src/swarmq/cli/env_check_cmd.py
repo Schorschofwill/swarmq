@@ -195,7 +195,7 @@ def _namespace_findings(section: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def _valkey_findings(described: dict[str, Any], mode: str) -> list[dict[str, str]]:
-    findings = []
+    findings: list[dict[str, str]] = []
     if described["eviction"] == "unsafe":
         level = "error" if mode == "strict" else "warning"
         findings.append(
@@ -277,7 +277,7 @@ def _queues_section(state: QueueState | None) -> tuple[dict[str, Any], list[dict
         ]
     if state is None or state.last_seen_ms is None or state.statuses is None:
         return section, []
-    findings = []
+    findings: list[dict[str, str]] = []
     live_since = state.now_ms - state.live_window_ms
     section["checked"] = True
     section["reported"] = len(state.last_seen_ms)
@@ -330,7 +330,7 @@ def build_report(url: str, described: dict[str, Any], mode: str, *, queues: Queu
 
 
 def _render_table(report: dict[str, Any]) -> str:
-    lines = []
+    lines: list[str] = []
     for name in ("valkey", "shutdown", "queues"):
         for key, value in report[name].items():
             lines.append(f"{name}  {key}  {'-' if value is None else value}")

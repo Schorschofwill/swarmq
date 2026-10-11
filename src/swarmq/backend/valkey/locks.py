@@ -7,7 +7,7 @@ Vertrag ``LockStore`` (Token-Typen) über denselben Skripten.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import valkey.asyncio as valkey_asyncio
 
@@ -58,11 +58,14 @@ class LockManager:
         with — same pattern as ``RateLimiter.check``.
         """
         try:
-            seconds, microseconds = await self._client.time()
+            seconds, microseconds = await self._client.time()  # pyright: ignore[reportUnknownMemberType]  # valkey-Typen unvollständig (**kwargs, dict ohne Typargumente)
             now_ms = int(seconds) * 1000 + int(microseconds) // 1000
-            result = await self._acquire_script(
-                keys=[self._keys.lock(lock_name)],
-                args=[owner_token, ttl_ms, max_concurrency, now_ms],
+            result = cast(
+                "int",
+                await self._acquire_script(
+                    keys=[self._keys.lock(lock_name)],
+                    args=[owner_token, ttl_ms, max_concurrency, now_ms],
+                ),
             )
         except BackendConnectionError:
             raise
@@ -80,7 +83,10 @@ class LockManager:
         reserved for cancellation / admin paths.
         """
         try:
-            result = await self._release_script(keys=[self._keys.lock(lock_name)], args=[owner_token, max_concurrency])
+            result = cast(
+                "int",
+                await self._release_script(keys=[self._keys.lock(lock_name)], args=[owner_token, max_concurrency]),
+            )
         except BackendConnectionError:
             raise
         except Exception as exc:
@@ -102,7 +108,9 @@ class LockManager:
                 f"LockManager.renew is mutex-only in this release; got max_concurrency={max_concurrency}"
             )
         try:
-            result = await self._renew_script(keys=[self._keys.lock(lock_name)], args=[owner_token, ttl_ms])
+            result = cast(
+                "int", await self._renew_script(keys=[self._keys.lock(lock_name)], args=[owner_token, ttl_ms])
+            )
         except BackendConnectionError:
             raise
         except Exception as exc:
@@ -118,7 +126,7 @@ class LockManager:
         try:
             now_ms = 0  # Mutex: das Skript liest ``now_ms`` nicht -- ein Roundtrip
             if max_concurrency != 1:
-                seconds, microseconds = await self._client.time()
+                seconds, microseconds = await self._client.time()  # pyright: ignore[reportUnknownMemberType]  # valkey-Typen unvollständig (**kwargs, dict ohne Typargumente)
                 now_ms = int(seconds) * 1000 + int(microseconds) // 1000
             result = await self._extend_script(
                 keys=[self._keys.lock(lock_name)],
@@ -197,9 +205,9 @@ class ValkeyLockStore:
                 if max_concurrency == 1:
                     pipe.get(key)
                 else:
-                    pipe.zrange(key, 0, -1)
+                    pipe.zrange(key, 0, -1)  # pyright: ignore[reportUnknownMemberType]  # valkey-Typen unvollständig (**kwargs, dict ohne Typargumente)
                 pipe.pttl(key)
-                raw, pttl = await pipe.execute()
+                raw, pttl = cast("list[Any]", await pipe.execute())
         except BackendConnectionError:
             raise
         except Exception as exc:

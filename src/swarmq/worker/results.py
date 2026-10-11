@@ -86,14 +86,15 @@ class ResultTail:
         result_ttl = task_info.result_ttl
         if result_ttl is None:
             result_ttl = 0 if task_info.delivery is DeliveryMode.FIRE_AND_FORGET else self._deps.config.result_ttl
-        if result_ttl is None:
+        if result_ttl is None:  # pyright: ignore[reportUnnecessaryComparison]  # defensiv: config.result_ttl kann untypisiert None sein
             result_ttl = 86400  # type: ignore[unreachable]  # Fallback fuer untypisiert gesetztes config.result_ttl=None
         return result_ttl
 
     def _extract_workflow_id(self, delivery: Any, ctx: GateContext) -> str | None:
         deps = self._deps
         wf_id = deps.extract_valid_workflow_id(delivery)
-        if wf_id is None and (delivery.headers or {}).get(HEADER_WORKFLOW_ID) is not None:
+        headers: dict[str, Any] = delivery.headers or {}
+        if wf_id is None and headers.get(HEADER_WORKFLOW_ID) is not None:
             logger.warning(
                 "workflow_id_header_invalid",
                 task_id=ctx.task_id,
@@ -206,7 +207,8 @@ class ResultTail:
                 reason,
                 event="workflow_fail_mark_failed",
             )
-        step_path = (delivery.headers or {}).get(HEADER_WORKFLOW_STEP, "")
+        headers: dict[str, Any] = delivery.headers or {}
+        step_path = headers.get(HEADER_WORKFLOW_STEP, "")
         if not isinstance(step_path, str):
             step_path = ""
         try:

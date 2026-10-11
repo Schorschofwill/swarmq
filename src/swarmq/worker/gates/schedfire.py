@@ -76,7 +76,8 @@ def completed_marker_ttl_ms(config: Any, headers: Any, max_age: int | None) -> i
     ``max_age`` warten, auch wenn das Fire selbst sofort lief. Der Deckel
     ``execution_guard_backlog_ttl_s`` bleibt."""
     base = float(config.scheduler_dedup_ttl)
-    enqueued_at = (headers or {}).get(HEADER_ENQUEUED_AT)
+    header_map: dict[str, Any] = headers or {}
+    enqueued_at = header_map.get(HEADER_ENQUEUED_AT)
     try:
         waited = max(0.0, time.time() - int(enqueued_at)) if enqueued_at is not None else 0.0
     except TypeError, ValueError:
@@ -105,7 +106,8 @@ class SchedfireGate:
            completed marker, the in-flight key expires and the next
            redelivery re-runs (closes the one-marker silent-drop hole).
         """
-        header_value = (delivery.headers or {}).get("x-swarmq-schedfire")
+        headers: dict[str, Any] = delivery.headers or {}
+        header_value = headers.get("x-swarmq-schedfire")
         if not header_value:
             return Continue
         header_value = schedfire_key(header_value, delivery.headers)
@@ -155,7 +157,8 @@ class SchedfireGate:
         # ihres Vorgaengers zur Uebernahme an (der Claim rotiert dabei, eine
         # Broker-Redelivery derselben Kopie bleibt ein Duplikat).
         owner = uuid.uuid4().hex
-        offered = _claim_tokens((delivery.headers or {}).get(HEADER_SCHEDFIRE_CLAIM))
+        claim_headers: dict[str, Any] = delivery.headers or {}
+        offered = _claim_tokens(claim_headers.get(HEADER_SCHEDFIRE_CLAIM))
         # Das Token liegt VOR dem Aufruf am Kontext: geht die Antwort
         # verloren, traegt der Claim ``owner`` (geschrieben) oder noch eines
         # der angebotenen Tokens -- die Kopie bietet alle an.

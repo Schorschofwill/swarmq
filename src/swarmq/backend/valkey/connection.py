@@ -226,7 +226,7 @@ class ValkeyConnection:
                 socket_timeout=_SOCKET_TIMEOUT_S,
                 socket_connect_timeout=_SOCKET_CONNECT_TIMEOUT_S,
             )
-            await self._client.ping()
+            await self._client.ping()  # pyright: ignore[reportUnknownMemberType]  # valkey-Typen unvollständig (**kwargs, dict ohne Typargumente)
         except (ValkeyConnectionError, OSError) as exc:
             raise BackendConnectionError(str(exc)) from exc
         # BZ-04 (Plan 0.12.0, MR 14): verdraengende Policy laut melden.
@@ -256,7 +256,7 @@ class ValkeyConnection:
     async def ping(self) -> None:
         """Wirft ``BackendConnectionError`` vor ``connect()`` oder wenn der
         Server nicht innerhalb von ``_PING_TIMEOUT_S`` antwortet."""
-        await self._run("ping", self._require_client().ping(), _PING_TIMEOUT_S)
+        await self._run("ping", self._require_client().ping(), _PING_TIMEOUT_S)  # pyright: ignore[reportUnknownMemberType]  # valkey-Typen unvollständig (**kwargs, dict ohne Typargumente)
 
     def _require_client(self) -> valkey.asyncio.Valkey:
         if self._client is None:

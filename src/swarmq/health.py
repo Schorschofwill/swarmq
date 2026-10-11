@@ -29,7 +29,7 @@ import asyncio
 import json
 import re
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, NotRequired, TypedDict, cast
 
@@ -266,7 +266,7 @@ async def serve_health(
     *,
     host: str = "127.0.0.1",
     port: int = 8080,
-) -> AsyncIterator[HealthServer]:
+) -> AsyncGenerator[HealthServer]:
     """Async context manager: start HealthServer on enter, stop on exit."""
     server = HealthServer(checker, host=host, port=port)
     await server.start()

@@ -64,7 +64,7 @@ class _SwarmqQueueListener(logging.handlers.QueueListener):
 
     # typeshed kennt nur die oeffentliche Schnittstelle; ``_thread``,
     # ``_monitor`` und ``_sentinel`` sind seit 3.2 unveraendert.
-    queue: _ListenerQueue  # type: ignore[mutable-override]  # stdlib-Attribut, nur im Konstruktor gesetzt
+    queue: _ListenerQueue  # type: ignore[mutable-override]  # stdlib-Attribut, nur im Konstruktor gesetzt  # pyright: ignore[reportIncompatibleVariableOverride]  # engerer Queue-Typ als in typeshed, nur intern gesetzt
     _thread: threading.Thread | None
     _sentinel: None
     _monitor: Any
@@ -177,7 +177,7 @@ def count_dropped(count: int = 1) -> None:
     """Zaehlt verworfene Eintraege, auch aus den Datei-Modus-Queues
     (Plan 2026-10-06-1811, KTD1) und beim Aufgeben eines Leerens (KTD3)."""
     global _DROPPED_TOTAL  # noqa: PLW0603 - Modul-Singleton
-    _DROPPED_TOTAL += count
+    _DROPPED_TOTAL += count  # pyright: ignore[reportConstantRedefinition]  # Modul-Zustand
 
 
 _HANDLERS: weakref.WeakSet[_StructlogQueueHandler] = weakref.WeakSet()
@@ -307,13 +307,13 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
         """Frische Queue und frischer, noch nicht gestarteter Listener: im
         Kind nach dem Fork (KTD5) und beim Leeren (Plan 2026-10-06-1811,
         KTD3)."""
-        self.queue = fresh = _LogQueue(self.queue.maxsize)
+        self.queue = fresh = _LogQueue(self.queue.maxsize)  # pyright: ignore[reportIncompatibleVariableOverride]  # engerer Queue-Typ als in typeshed, nur intern gesetzt
         self._reserve_at = self._reserve_threshold()
         if self.listener is not None:
             # Der alte Listener verweist auf einen Thread, den es im Kind
             # nicht gibt oder der die alte Queue leert.
             # Dieselbe Klasse: der Opt-in-Listener gibt an Root weiter (KTD10).
-            self.listener = type(self.listener)(fresh, *self.listener.handlers)
+            self.listener = type(self.listener)(fresh, *self.listener.handlers)  # pyright: ignore[reportIncompatibleVariableOverride]  # engerer Listener-Typ als in typeshed, nur intern gesetzt
 
 
 _CONTEXT_ATTR = "_swarmq_context"
@@ -393,7 +393,7 @@ _OPTIN_TAKEOVER = False
 """Haelt die Regel "App gewinnt" (KTD4) den Opt-in in diesem Prozess?"""
 
 
-def _enable_log_queue(
+def _enable_log_queue(  # pyright: ignore[reportUnusedFunction]  # ueber swarmq.logging exportiert
     level: str | int,
     *,
     json: bool = False,
@@ -416,26 +416,26 @@ def _enable_log_queue(
     global _OPTIN_HOLDERS  # noqa: PLW0603 - Modul-Singleton
     if _CONFIGURED:
         return False
-    _OPTIN_HOLDERS += 1
+    _OPTIN_HOLDERS += 1  # pyright: ignore[reportConstantRedefinition]  # Modul-Zustand
     if drain_timeout is not None:
         set_drain_timeout(drain_timeout)
     _install_log_queue(level, json=json, queue_size=queue_size)
     return True
 
 
-def _disable_log_queue() -> _Draining | None:
+def _disable_log_queue() -> _Draining | None:  # pyright: ignore[reportUnusedFunction]  # ueber swarmq.logging exportiert
     """Gibt eine Anforderung frei. Die letzte stellt Handler, ``propagate``
     und Level von ``swarmq`` wieder her (KTD10) und schliesst die Queue, in
     O(1) und ohne zu warten (Plan 2026-10-06-1811, KTD4). Das Leeren
     erwartet danach ``_await_log_queue_drained``."""
     global _OPTIN_HOLDERS  # noqa: PLW0603 - Modul-Singleton
-    _OPTIN_HOLDERS = max(_OPTIN_HOLDERS - 1, 0)
+    _OPTIN_HOLDERS = max(_OPTIN_HOLDERS - 1, 0)  # pyright: ignore[reportConstantRedefinition]  # Modul-Zustand
     if _OPTIN_HOLDERS == 0 and not _OPTIN_TAKEOVER:
         return _detach_log_queue()
     return None
 
 
-async def _await_log_queue_drained(draining: _Draining | None, timeout: float) -> None:
+async def _await_log_queue_drained(draining: _Draining | None, timeout: float) -> None:  # pyright: ignore[reportUnusedFunction]  # ueber swarmq.logging exportiert
     """Wartet, ohne den Event-Loop anzuhalten, bis der Listener die
     geschlossene Opt-in-Queue geleert hat (Plan 2026-10-06-1811, KTD4).
 
@@ -498,11 +498,11 @@ def _finish_in_background(draining: _Draining, deadline: Deadline, timeout: floa
     ).start()
 
 
-def _reset_log_queue() -> None:
+def _reset_log_queue() -> None:  # pyright: ignore[reportUnusedFunction]  # ueber swarmq.logging exportiert
     """Hebt den Opt-in unabhaengig von der Zahl der Anforderungen auf."""
     global _OPTIN_HOLDERS, _OPTIN_TAKEOVER  # noqa: PLW0603 - Modul-Singleton
-    _OPTIN_HOLDERS = 0
-    _OPTIN_TAKEOVER = False
+    _OPTIN_HOLDERS = 0  # pyright: ignore[reportConstantRedefinition]  # Modul-Zustand
+    _OPTIN_TAKEOVER = False  # pyright: ignore[reportConstantRedefinition]  # Modul-Zustand
     draining = _detach_log_queue()
     if draining is not None and not draining.wait(Deadline(_DRAIN_TIMEOUT)):
         draining.notify(_DRAIN_TIMEOUT)
@@ -515,8 +515,8 @@ def _install_log_queue(level: str | int | None, *, json: bool, queue_size: int) 
     if _OPTIN_HANDLER is not None:
         return
     logger = logging.getLogger("swarmq")
-    _OPTIN_SAVED = (logger.propagate, logger.level)
-    _OPTIN_HANDLER = _OptinQueueHandler(_LogQueue(queue_size), json=json)
+    _OPTIN_SAVED = (logger.propagate, logger.level)  # pyright: ignore[reportConstantRedefinition]  # Modul-Zustand
+    _OPTIN_HANDLER = _OptinQueueHandler(_LogQueue(queue_size), json=json)  # pyright: ignore[reportConstantRedefinition]  # Modul-Zustand
     logger.addHandler(_OPTIN_HANDLER)
     logger.propagate = False
     if level is not None:
@@ -528,7 +528,7 @@ def _detach_log_queue() -> _Draining | None:
     wiederherstellen, Queue schliessen. Ein neuer Opt-in bekommt danach
     einen frischen Handler mit frischer Queue."""
     global _OPTIN_HANDLER
-    handler, _OPTIN_HANDLER = _OPTIN_HANDLER, None
+    handler, _OPTIN_HANDLER = _OPTIN_HANDLER, None  # pyright: ignore[reportConstantRedefinition]  # Modul-Zustand
     if handler is None:
         return None
     logger = logging.getLogger("swarmq")
@@ -551,7 +551,7 @@ _DRAIN_TIMEOUT = 5.0
 def set_drain_timeout(seconds: float) -> None:
     """Setzt die Frist fuer ``shutdown_logging`` ohne ``timeout`` (KTD11)."""
     global _DRAIN_TIMEOUT  # noqa: PLW0603 - Modul-Singleton
-    _DRAIN_TIMEOUT = seconds
+    _DRAIN_TIMEOUT = seconds  # pyright: ignore[reportConstantRedefinition]  # Modul-Zustand
 
 
 def shutdown_logging(timeout: float | None = None) -> None:
@@ -563,7 +563,7 @@ def shutdown_logging(timeout: float | None = None) -> None:
     Was bis zur Frist nicht geschrieben ist, gilt als verworfen.
     """
     global _CONFIGURED, _APP_TAKEOVER_REPORTED  # noqa: PLW0603 - Modul-Singleton
-    _CONFIGURED = _APP_TAKEOVER_REPORTED = False
+    _CONFIGURED = _APP_TAKEOVER_REPORTED = False  # pyright: ignore[reportConstantRedefinition]  # Modul-Zustand
     _stop_listeners(timeout)
 
 
@@ -709,14 +709,14 @@ _APP_TAKEOVER_REPORTED = False
 """``logging_reconfigured_by_app`` erscheint einmal je Prozess (KTD4)."""
 
 
-def _activate_swarmq_queue_after_app_takeover(*, json: bool, queue_size: int) -> None:
+def _activate_swarmq_queue_after_app_takeover(*, json: bool, queue_size: int) -> None:  # pyright: ignore[reportUnusedFunction]  # ueber swarmq.logging exportiert
     """Nach dem Ersatz durch die App laufen die swarmq-Logs ueber die
     Opt-in-Queue am Logger ``swarmq`` an die Handler der App (KTD4, KTD10):
     Ein blockierender App-Handler haelt den Event-Loop nicht auf (R6). Das
     ``swarmq``-Level bleibt, wie es ist -- die App hat entschieden.
     """
     global _OPTIN_TAKEOVER  # noqa: PLW0603 - Modul-Singleton
-    _OPTIN_TAKEOVER = True
+    _OPTIN_TAKEOVER = True  # pyright: ignore[reportConstantRedefinition]  # Modul-Zustand
     _install_log_queue(None, json=json, queue_size=queue_size)
 
 
@@ -736,8 +736,8 @@ def _after_fork_in_child() -> None:
     setzt die stdlib im Kind schon selbst zurueck.
     """
     global _LISTENER_LOCK, _DROPPED_TOTAL  # noqa: PLW0603 - Modul-Singleton
-    _LISTENER_LOCK = threading.Lock()
-    _DROPPED_TOTAL = 0
+    _LISTENER_LOCK = threading.Lock()  # pyright: ignore[reportConstantRedefinition]  # Modul-Zustand
+    _DROPPED_TOTAL = 0  # pyright: ignore[reportConstantRedefinition]  # Modul-Zustand
     _LISTENERS.clear()
     forget_handler_locks()
     reset_queue_listeners_after_fork()

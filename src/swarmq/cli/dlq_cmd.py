@@ -39,7 +39,7 @@ def _format_dlq_list_table(entries: list[dict[str, Any]]) -> str:
     """One row per DLQ entry — short header summary columns."""
     rows = [("TASK_ID", "TASK_NAME", "RETRIES", "ERROR_PREVIEW", "BODY_BYTES")]
     for e in entries:
-        headers = e.get("headers") or {}
+        headers: dict[str, Any] = e.get("headers") or {}
         retries = headers.get(HEADER_RETRY_COUNT, "-")
         traceback_hdr = headers.get("x-swarmq-traceback", "")
         if isinstance(traceback_hdr, bytes):
@@ -267,7 +267,7 @@ async def _run_dlq_purge(args: argparse.Namespace) -> None:
         await broker.close()
 
 
-async def _run_dlq_async(args: argparse.Namespace) -> None:
+async def _run_dlq_async(args: argparse.Namespace) -> None:  # pyright: ignore[reportUnusedFunction]  # über Fassade/Nachbarmodul importiert
     """Dispatch a parsed 'swarmq dlq <subcommand>' invocation."""
     if args.dlq_command == "list":
         await _run_dlq_list(args)

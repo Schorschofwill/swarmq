@@ -292,7 +292,3 @@ class ScheduleStore:
             fired_ts_ms=fired_ts_ms,
             fired_payload=fired_payload,
         )
-
-
-def _decode_bytes(value: bytes | str) -> str:
-    return value.decode() if isinstance(value, bytes) else value

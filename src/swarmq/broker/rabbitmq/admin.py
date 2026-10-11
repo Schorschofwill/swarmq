@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, cast
 
 import aio_pika
 from aio_pika.exceptions import ChannelNotFoundEntity
@@ -151,15 +151,17 @@ class RabbitMQAdmin(RabbitMQDelivery):
             return None, None, None
         if not isinstance(payload, dict):
             return None, None, None
-        task = payload.get("task")
+        payload_dict = cast("dict[str, Any]", payload)
+        task: object = payload_dict.get("task")
         if not isinstance(task, dict):
-            return None, None, payload
-        task_id = task.get("id")
-        task_name = task.get("name")
+            return None, None, payload_dict
+        task_dict = cast("dict[str, Any]", task)
+        task_id: object = task_dict.get("id")
+        task_name: object = task_dict.get("name")
         return (
             task_id if isinstance(task_id, str) else None,
             task_name if isinstance(task_name, str) else None,
-            payload,
+            payload_dict,
         )
 
     @staticmethod

@@ -525,7 +525,9 @@ def _arg_entry(action: argparse.Action) -> dict[str, Any]:
 
 
 def _walk_commands(parser: argparse.ArgumentParser, prefix: str, out: list[dict[str, Any]]) -> None:
-    subactions = [a for a in parser._actions if isinstance(a, argparse._SubParsersAction)]
+    subactions: list[argparse._SubParsersAction[argparse.ArgumentParser]] = [
+        a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
+    ]
     if not subactions:
         args = [
             _arg_entry(a)

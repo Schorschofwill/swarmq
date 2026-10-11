@@ -155,7 +155,9 @@ enable_error_code = [
     "explicit-override",
 ]
 packages = ["swarmq"]
-mypy_path = "src"
+# typings/: schmale Stubs für msgpack und croniter, gelesen von mypy und
+# basedpyright (stubPath) gleichermaßen (Plan 2026-10-11-1200, KTD8).
+mypy_path = "src:typings"
 
 [[tool.mypy.overrides]]
 # Plan 2026-10-11-1200 (KTD7): Tests ohne Annotationspflicht, aber mit
@@ -165,9 +167,6 @@ disallow_untyped_defs = false
 disallow_incomplete_defs = false
 disallow_untyped_calls = false
 
-[[tool.mypy.overrides]]
-module = ["croniter.*", "msgpack.*"]  # liefern keine Typ-Stubs
-ignore_missing_imports = true
 
 # Zweiter Typprüfer (Plan 2026-10-11-1200, KTD8): basedpyright strict, nur
 # src/, ohne Baseline. Jeder Prüfer beachtet nur seine eigenen Kommentare:

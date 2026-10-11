@@ -9,7 +9,7 @@ laeuft ueber ``route_via_dlx``, das seit U6 ``TASK_REJECTED`` ausloest.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from swarmq.headers import HEADER_RETRY_COUNT, HEADER_UNIQUE_HASH, HEADER_WORKFLOW_ID
 from swarmq.logging import _error_fields, get_logger
@@ -35,7 +35,8 @@ def valid_unique_hash(message: Any) -> str | None:
     amplify a malformed header into a large per-message Valkey key
     (plan Risks / R3.5).
     """
-    unique_hash = (message.headers or {}).get(HEADER_UNIQUE_HASH)
+    headers: dict[str, Any] = message.headers or {}
+    unique_hash = headers.get(HEADER_UNIQUE_HASH)
     if not isinstance(unique_hash, str) or len(unique_hash) != _UNIQUE_HASH_LEN:
         return None
     # Cheap manual hex check — re.match on a 64-char string is
@@ -56,7 +57,8 @@ def valid_workflow_id(message: Any) -> str | None:
     to Valkey as a workflow-state key. Mirrors ``valid_unique_hash``:
     never mark a workflow failed on a malformed id.
     """
-    wf_id = (message.headers or {}).get(HEADER_WORKFLOW_ID)
+    headers: dict[str, Any] = message.headers or {}
+    wf_id = headers.get(HEADER_WORKFLOW_ID)
     if not isinstance(wf_id, str) or len(wf_id) != _WORKFLOW_ID_LEN:
         return None
     for i, c in enumerate(wf_id):
@@ -75,7 +77,8 @@ def attempt_number(message: Any) -> int | None:
     ergibt ``None`` (das Feld fehlt dann im Kontext), statt die Zustellung
     scheitern zu lassen.
     """
-    raw = (message.headers or {}).get(HEADER_RETRY_COUNT, 0)
+    headers: dict[str, Any] = message.headers or {}
+    raw = headers.get(HEADER_RETRY_COUNT, 0)
     if not isinstance(raw, int):
         return None
     return raw + 1
@@ -129,4 +132,7 @@ async def decode_and_validate(deps: GateDeps, message: Any) -> tuple[str, str, s
             error=str(exc),
         )
         return None
-    return task_id, queue, task_name, args, kwargs
+    # mypy engt Any per isinstance auf list[Any] ein (redundanter Cast),
+    # basedpyright auf list[Unknown]; der Cast bedient basedpyright.
+    args_list = cast("list[Any]", args)  # type: ignore[redundant-cast]
+    return task_id, queue, task_name, args_list, cast("dict[str, Any]", kwargs)

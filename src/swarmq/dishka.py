@@ -23,19 +23,31 @@ from __future__ import annotations
 import contextvars
 import inspect
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final, override
+from typing import TYPE_CHECKING, Any, Final, Protocol, cast, override
 
 from swarmq.logging import get_logger
 
 try:  # pragma: no cover - branch exercised via patch.dict in tests
-    import dishka as _dishka  # noqa: F401
+    import dishka as _dishka  # noqa: F401  # pyright: ignore[reportUnusedImport]  # nur Präsenzprüfung des optionalen Pakets
 
     _HAVE_DISHKA = True
 except ImportError:  # pragma: no cover - exercised via patch.dict in tests
-    _HAVE_DISHKA = False
+    _HAVE_DISHKA = False  # pyright: ignore[reportConstantRedefinition]  # Fallback-Zweig des Präsenz-Flags
 
 if TYPE_CHECKING:
     from dishka import AsyncContainer
+
+
+class _NamedTaskInfo(Protocol):
+    name: str
+
+
+class _TaskWithInfo(Protocol):
+    """Strukturelle Sicht auf eine Task-Klasse; ein Import von ``swarmq.task``
+    schlösse einen Zyklus (task → dishka → task)."""
+
+    task_info: _NamedTaskInfo
+
 
 logger = get_logger(__name__)
 
@@ -115,7 +127,7 @@ def get_registered_container() -> AsyncContainer | _Missing:
     return _container
 
 
-def _reset_container() -> None:
+def _reset_container() -> None:  # pyright: ignore[reportUnusedFunction]  # von Tests aufgerufen
     """Test-only: clear the registered container slot."""
     global _container  # noqa: PLW0603 - Modul-Singleton
     _container = _MISSING
@@ -132,7 +144,7 @@ def _key_resolvable(container: object, key: object) -> bool:
     expected, degrading R3b to container-presence-only rather than blocking a
     valid worker on an upstream API change."""
     try:
-        reg = container.registry  # type: ignore[attr-defined]
+        reg: Any = cast("Any", container).registry  # private dishka-Introspektion, absichtlich ungetypt
         while reg is not None:
             if reg.get_factory(key) is not None:
                 return True
@@ -159,7 +171,7 @@ def _reject_ineffective_fromdishka(registered_tasks: list[type], error_cls: type
     lautlos aus und der Parameter bleibt ``None``. Gilt in allen Worker-Modi.
     """
     offenders = [
-        f"{t.task_info.name}: {', '.join(params)}"  # type: ignore[attr-defined]
+        f"{cast('_TaskWithInfo', t).task_info.name}: {', '.join(params)}"
         for t in registered_tasks
         if (params := getattr(t, "_dishka_ineffective_fromdishka", None))
     ]
@@ -194,7 +206,7 @@ def validate_registered_tasks(registered_tasks: list[type]) -> None:
 
     container = get_registered_container()
     if container is _MISSING:
-        names = ", ".join(t.task_info.name for t in di_tasks)  # type: ignore[attr-defined]
+        names = ", ".join(cast("_TaskWithInfo", t).task_info.name for t in di_tasks)
         raise ConfigurationError(
             f"task(s) [{names}] use FromDishka but no Dishka container was "
             f"registered; call swarmq.setup_dishka(container) at module level "
@@ -203,11 +215,12 @@ def validate_registered_tasks(registered_tasks: list[type]) -> None:
 
     missing: list[str] = []
     for task in di_tasks:
-        for key in task._dishka_injected_keys:  # type: ignore[attr-defined]
+        injected_keys: list[object] = cast("Any", task)._dishka_injected_keys  # dynamisch gesetztes Klassenattribut
+        for key in injected_keys:
             if not _key_resolvable(container, key):
                 type_hint = getattr(key, "type_hint", key)
                 name = getattr(type_hint, "__name__", repr(type_hint))
-                missing.append(f"{task.task_info.name} -> {name}")  # type: ignore[attr-defined]
+                missing.append(f"{cast('_TaskWithInfo', task).task_info.name} -> {name}")
     if missing:
         detail = "; ".join(missing)
         raise ConfigurationError(

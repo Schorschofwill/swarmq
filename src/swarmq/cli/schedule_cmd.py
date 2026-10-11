@@ -15,7 +15,7 @@ import sys
 import time
 from collections.abc import Callable, Coroutine, Mapping
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import msgspec
 
@@ -133,7 +133,7 @@ def _parse_payload(args: argparse.Namespace) -> tuple[list[Any], dict[str, Any]]
         raise ConfigurationError(f"--kwargs is not valid JSON: {exc}") from exc
     if not isinstance(parsed_kwargs, dict):
         raise ConfigurationError("--kwargs must be a JSON object")
-    return parsed_args, parsed_kwargs
+    return cast("list[object]", parsed_args), cast("dict[str, Any]", parsed_kwargs)
 
 
 def _resolve_fire_time(args: argparse.Namespace) -> tuple[str | None, int]:
@@ -390,7 +390,7 @@ async def _run_schedule_status(args: argparse.Namespace) -> None:
         await backend.close()
 
 
-async def _run_schedule_async(args: argparse.Namespace) -> None:
+async def _run_schedule_async(args: argparse.Namespace) -> None:  # pyright: ignore[reportUnusedFunction]  # über Fassade/Nachbarmodul importiert
     """Dispatch a parsed 'swarmq schedule <subcommand>' invocation."""
     if args.schedule_command == "list":
         await _run_schedule_list(args)

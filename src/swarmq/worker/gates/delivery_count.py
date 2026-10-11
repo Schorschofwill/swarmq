@@ -82,7 +82,7 @@ class DeliveryCountGate:
         return configured if effective is None else min(configured, effective)
 
     async def apply(self, delivery: Any, ctx: GateContext) -> DeliveryOutcome:
-        headers = delivery.headers or {}
+        headers: dict[str, Any] = delivery.headers or {}
         delivered = _count(headers, DELIVERY_COUNT_HEADER)
         acquired = _count(headers, ACQUIRED_COUNT_HEADER)
         limit = self._limit(delivery)

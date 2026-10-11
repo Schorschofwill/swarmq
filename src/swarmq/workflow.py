@@ -43,7 +43,7 @@ def _node_depth(node: WorkflowNode) -> int:
         return 1 + max((_node_depth(s) for s in node.steps), default=0)
     if isinstance(node, Group):
         return 1 + max((_node_depth(m) for m in node.members), default=0)
-    if isinstance(node, Chord):
+    if isinstance(node, Chord):  # pyright: ignore[reportUnnecessaryIsInstance]  # defensiv fuer ungetypte Aufrufer
         return 1 + max(_node_depth(node.header), _node_depth(node.body))
     raise WorkflowValidationError(f"unknown node type {type(node).__name__}")
 
@@ -65,7 +65,7 @@ def _reject_faf(node: WorkflowNode) -> None:
     elif isinstance(node, Group):
         for member in node.members:
             _reject_faf(member)
-    elif isinstance(node, Chord):
+    elif isinstance(node, Chord):  # pyright: ignore[reportUnnecessaryIsInstance]  # defensiv fuer ungetypte Aufrufer
         _reject_faf(node.header)
         _reject_faf(node.body)
 

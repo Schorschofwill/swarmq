@@ -89,7 +89,7 @@ def _check_logging_settings(args: argparse.Namespace) -> None:
         probe_dict_config(path, load_log_config(path))
 
 
-def _run_worker_check(args: argparse.Namespace) -> int:
+def _run_worker_check(args: argparse.Namespace) -> int:  # pyright: ignore[reportUnusedFunction]  # über Fassade/Nachbarmodul importiert
     """``swarmq worker --check`` dry-run entry-point.
 
     Delegates the validation to
@@ -175,7 +175,7 @@ def _run_worker_check(args: argparse.Namespace) -> int:
         return 0
 
 
-def _is_check_invocation(argv: Sequence[str] | None) -> bool:
+def _is_check_invocation(argv: Sequence[str] | None) -> bool:  # pyright: ignore[reportUnusedFunction]  # über Fassade/Nachbarmodul importiert
     """Detect ``swarmq worker --check`` from the raw argv.
 
     When ``--check`` is on the command
@@ -262,7 +262,7 @@ def _is_check_invocation(argv: Sequence[str] | None) -> bool:
     return False
 
 
-def _emit_argparse_check_error(message: str) -> int:
+def _emit_argparse_check_error(message: str) -> int:  # pyright: ignore[reportUnusedFunction]  # über Fassade/Nachbarmodul importiert
     """Render an argparse failure as a ``--check`` JSON payload.
 
     Keeps the stable field-set (ok, module, module_origin, reload,

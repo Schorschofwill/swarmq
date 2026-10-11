@@ -36,7 +36,7 @@ class ExpiryGate:
         assert task_info is not None
         if task_info.max_age is None:
             return Continue
-        headers = delivery.headers or {}
+        headers: dict[str, Any] = delivery.headers or {}
         enqueued_at = headers.get(HEADER_ENQUEUED_AT)
         if enqueued_at is None:
             return Continue

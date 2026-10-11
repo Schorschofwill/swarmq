@@ -194,7 +194,7 @@ class WorkflowHandle:
         if status == STATUS_CANCELLED:
             raise TaskCancelledError(self.workflow_id)
         if status == STATUS_FAILED:
-            err = state.get("error") or {}
+            err: dict[str, Any] = state.get("error") or {}
             raise TaskError(err.get("message", "workflow failed"))
         # completed — resolve the final result via the terminal task id.
         final_id = state.get("final_result_task_id")
@@ -551,7 +551,7 @@ class WorkflowAdvancer(WorkflowFailure):
         Veröffentlichung. Ohne ``PublishReceipt`` — den nur
         ``Publisher.publish`` erzeugt — ist die Markierung ein Typfehler
         (mypy) und zur Laufzeit ein ``TypeError``."""
-        if not isinstance(receipt, PublishReceipt):
+        if not isinstance(receipt, PublishReceipt):  # pyright: ignore[reportUnnecessaryIsInstance]  # Laufzeitschutz fuer ungetypte Aufrufer (AE5)
             raise TypeError(
                 f"mark_enqueued requires the PublishReceipt returned by Publisher.publish, got {type(receipt).__name__}"
             )
@@ -626,7 +626,7 @@ class WorkflowAdvancer(WorkflowFailure):
             return self._terminal_result_id(wf_id, node.steps[last], f"{path}/{last}", step_tasks, member_path)
         if isinstance(node, Chord):
             return self._terminal_result_id(wf_id, node.body, f"{path}/b", step_tasks, member_path)
-        if isinstance(node, Group):
+        if isinstance(node, Group):  # pyright: ignore[reportUnnecessaryIsInstance]  # defensiv fuer ungetypte Aufrufer
             return aggregate_result_id(wf_id, member_path)
         raise WorkflowValidationError(f"unknown node type {type(node).__name__}")
 

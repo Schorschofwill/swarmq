@@ -10,7 +10,7 @@ import hashlib
 import json
 import uuid
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
 
 from swarmq.headers import HEADER_DLQ_GENERATION, HEADER_REPLAY_ID, HEADER_XDEATH_BASE
 from swarmq.queue_names import is_delay_queue
@@ -28,7 +28,8 @@ def _count_of(entry: Any) -> int:
     kaputter Eintrag zaehlt wie keiner."""
     if not isinstance(entry, Mapping):
         return 0
-    queue, count = entry.get("queue"), entry.get("count")
+    fields = cast("Mapping[str, object]", entry)
+    queue, count = fields.get("queue"), fields.get("count")
     if not isinstance(queue, str) or isinstance(count, bool) or not isinstance(count, int) or count <= 0:
         return 0
     return 0 if is_delay_queue(queue) else count
@@ -46,7 +47,7 @@ def xdeath_count(headers: Mapping[str, Any] | None) -> int:
     aller ``x-death``-Eintraege, deren Queue keine Delay-Queue ist."""
     headers = headers or {}
     deaths = headers.get(HEADER_X_DEATH)
-    counted = sum(_count_of(entry) for entry in deaths) if isinstance(deaths, list) else 0
+    counted = sum(_count_of(entry) for entry in cast("list[object]", deaths)) if isinstance(deaths, list) else 0
     return min(_base_of(headers) + counted, _MAX_XDEATH)
 
 
@@ -126,8 +127,8 @@ def task_id_of(body: bytes) -> str | None:
         payload = json.loads(body)
     except ValueError, TypeError:
         return None
-    task = payload.get("task") if isinstance(payload, dict) else None
-    task_id = task.get("id") if isinstance(task, dict) else None
+    task = cast("dict[str, object]", payload).get("task") if isinstance(payload, dict) else None
+    task_id = cast("dict[str, object]", task).get("id") if isinstance(task, dict) else None
     return task_id if isinstance(task_id, str) else None
 
 

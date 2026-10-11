@@ -371,7 +371,7 @@ class ClientScheduling(ClientScheduleResolve):
         entry: dict[str, Any],
         existing: str,
     ) -> None:
-        payload = {
+        payload: dict[str, Any] = {
             "existing_task_id": existing,
             "task_name": entry["task_name"],
             "dedup_hash": entry["dedup_hash"],

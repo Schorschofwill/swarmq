@@ -198,7 +198,7 @@ class SchedulerUnroutable:
         """Fehlerergebnis unter *task_id*, damit ``get_result()`` endet statt
         in den Timeout zu laufen. Best effort; ein Backend ohne die Methoden
         (Fake, Q15) faellt still auf "kein Ergebnis" zurueck."""
-        ttl_s = self._config.result_ttl if self._config.result_ttl is not None else 86400  # type: ignore[redundant-expr]  # Fallback fuer untypisiert gesetztes None
+        ttl_s = self._config.result_ttl if self._config.result_ttl is not None else 86400  # type: ignore[redundant-expr]  # pyright: ignore[reportUnnecessaryComparison]  # Fallback fuer untypisiert gesetztes None
         if ttl_s <= 0:
             return
         data = encode_result(

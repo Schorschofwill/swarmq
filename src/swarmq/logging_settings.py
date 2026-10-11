@@ -8,8 +8,9 @@ und gibt es aufgeloest an seine Kinder weiter.
 from __future__ import annotations
 
 import threading
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from typing import cast
 
 from swarmq.exceptions import ConfigurationError
 
@@ -255,8 +256,8 @@ def split_csv(raw: str) -> list[str]:
 def validate_logger_levels(pairs: object, source: str) -> tuple[tuple[str, str], ...]:
     """``(NAME, LEVEL)``-Paare pruefen und das Level normalisieren."""
     entries: list[str] = []
-    for pair in pairs if isinstance(pairs, (tuple, list)) else [pairs]:
-        if not (isinstance(pair, (tuple, list)) and len(pair) == _LOGGER_LEVEL_PAIR_LEN):
+    for pair in cast("Sequence[object]", pairs) if isinstance(pairs, (tuple, list)) else [pairs]:
+        if not (isinstance(pair, (tuple, list)) and len(cast("Sequence[object]", pair)) == _LOGGER_LEVEL_PAIR_LEN):
             msg = f"{source} expects (NAME, LEVEL) pairs, got {pair!r}"
             raise ConfigurationError(msg)
         entries.append(f"{pair[0]}={pair[1]}")

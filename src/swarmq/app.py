@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 
     from swarmq.backend.valkey import ValkeyBackend
     from swarmq.broker.rabbitmq import RabbitMQBroker
+    from swarmq.worker import Worker as Worker
     from swarmq.workflow import Chain, Chord, Group, Signature
     from swarmq.workflow_orchestration import WorkflowHandle
 from swarmq.config import SwarmQConfig
@@ -100,7 +101,7 @@ class SwarmQ:
             raise
         except Exception:  # noqa: BLE001 - Backend ohne Abgleich laesst Konfiguration unveraendert (Q15)
             return
-        if effective is None or isinstance(effective, str):
+        if effective is None or isinstance(effective, str):  # pyright: ignore[reportUnnecessaryIsInstance]  # Backends ohne Typpruefung (Q15)
             self.config.namespace = effective
 
     def add_middleware(self, middleware: Middleware) -> None:
@@ -249,7 +250,7 @@ class SwarmQ:
         # loudly here, before any subprocess is created. getattr defaults to
         # True so URL-constructed brokers/backends (and spec'd test mocks
         # without the flag) are unaffected.
-        injected = []
+        injected: list[str] = []
         if not getattr(self.broker, "_owns_connection", True):
             injected.append("broker")
         if not getattr(self.backend, "_owns_client", True):
@@ -270,7 +271,7 @@ class SwarmQ:
         # bind to swarmq.worker.Worker and bypass the facade patch.
         from swarmq import app as _app_module  # noqa: PLW0406 - Fassaden-Attribut bleibt per mock.patch austauschbar
 
-        worker = _app_module.Worker(  # type: ignore[operator]  # PEP-562-Fassaden-Attribut, patchbar
+        worker = _app_module.Worker(  # PEP-562-Fassaden-Attribut, patchbar
             self.broker,
             self.backend,
             self.registry,

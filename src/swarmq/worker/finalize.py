@@ -119,7 +119,8 @@ async def maybe_release_unique(
     # Client.schedule set the header, and we want those overrides
     # to flow end-to-end. TaskInfo is the fallback when the header
     # is absent or malformed.
-    header_mode = (message.headers or {}).get(HEADER_UNIQUE_UNTIL)
+    headers: dict[str, Any] = message.headers or {}
+    header_mode = headers.get(HEADER_UNIQUE_UNTIL)
     mode = header_mode or (task_info.unique_until if task_info is not None else "completion")
     if mode == "start":
         return  # Release already happened at pickup (Unit 10).

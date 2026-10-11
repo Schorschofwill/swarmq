@@ -18,7 +18,8 @@ import threading
 import time
 import traceback
 import weakref
-from collections.abc import Iterable, Iterator
+from collections.abc import Generator, Iterable
+from typing import Any, cast
 
 from swarmq.logging_format import iso_utc
 
@@ -42,7 +43,7 @@ _ACTIVE_DEADLINES: list[Deadline] = []
 
 
 @contextlib.contextmanager
-def draining_until(deadline: Deadline) -> Iterator[None]:
+def draining_until(deadline: Deadline) -> Generator[None]:
     """Meldet ein Leeren mit Frist ``deadline`` an, solange es laeuft."""
     _ACTIVE_DEADLINES.append(deadline)
     try:
@@ -157,7 +158,7 @@ def _stream_of(handler: logging.Handler | None) -> object:
 def _file_of(stream: object) -> tuple[int, int] | None:
     """``(st_dev, st_ino)`` der Datei hinter ``stream``, sonst ``None``."""
     try:
-        info = os.fstat(stream.fileno())  # type: ignore[attr-defined]
+        info = os.fstat(cast("Any", stream).fileno())  # Duck-Typing: beliebiger Stream
     except Exception:  # noqa: BLE001 - kein fd (StringIO), geschlossen, fremde Klasse
         return None
     return info.st_dev, info.st_ino
@@ -168,8 +169,9 @@ def _forget(handlers: set[logging.Handler]) -> None:
     streams = {id(s) for s in stuck}
     _STUCK_STREAMS.update(streams)
     _STUCK_FILES.update(f for s in stuck if (f := _file_of(s)) is not None)
-    with logging._lock:  # type: ignore[attr-defined]
-        refs = logging._handlerList  # type: ignore[attr-defined]
+    # private stdlib-Attribute, in typeshed nicht deklariert
+    with cast("Any", logging)._lock:
+        refs: list[weakref.ref[logging.Handler]] = cast("Any", logging)._handlerList
         refs[:] = [
             ref for ref in refs if (h := ref()) is None or (h not in handlers and id(_stream_of(h)) not in streams)
         ]
@@ -262,7 +264,7 @@ def _flushable(stream: object) -> bool:
     if file in _STUCK_FILES:
         return False
     try:
-        return _writable_now(stream.fileno())  # type: ignore[attr-defined]
+        return _writable_now(cast("Any", stream).fileno())  # Duck-Typing: beliebiger Stream
     except Exception:  # noqa: BLE001 - ohne nutzbaren fd gilt Stream als nicht schreibbar
         return False
 

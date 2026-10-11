@@ -65,7 +65,7 @@ def _frontier(node: WorkflowNode, prefix: str) -> list[tuple[str, Signature]]:
         for i, member in enumerate(node.members):
             out.extend(_frontier(member, f"{prefix}/g{i}"))
         return out
-    if isinstance(node, Chord):
+    if isinstance(node, Chord):  # pyright: ignore[reportUnnecessaryIsInstance]  # defensiv fuer ungetypte Aufrufer
         return _frontier(node.header, f"{prefix}/h")
     raise WorkflowValidationError(f"unknown node type {type(node).__name__}")
 

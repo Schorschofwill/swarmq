@@ -15,7 +15,7 @@ import logging
 import threading
 import weakref
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, cast
 
 from swarmq.logging_drain import Deadline, is_stuck
 
@@ -58,14 +58,14 @@ def hold_handler_locks(handlers: Iterable[logging.Handler]) -> None:
     # ``dictConfig``. Andersherum wartete der stdlib-``before``-Hook (er
     # laeuft nach diesem) auf einen Thread, der ``logging._lock`` haelt und
     # auf ein hier gehaltenes Handler-Lock wartet: ein Deadlock im Fork.
-    module_lock = logging._lock  # type: ignore[attr-defined]
+    module_lock: threading.RLock = cast("Any", logging)._lock  # privates stdlib-Attribut, nicht in typeshed
     if not module_lock.acquire(timeout=deadline.remaining()):
         return
     held = _held()
     held.append(module_lock)
     for handler in targets:
         lock = handler.lock
-        if lock.acquire(timeout=0 if handler in _BUSY else deadline.remaining()):  # type: ignore[union-attr]
+        if lock.acquire(timeout=0 if handler in _BUSY else deadline.remaining()):  # type: ignore[union-attr]  # pyright: ignore[reportOptionalMemberAccess]  # targets enthaelt nur Handler mit Lock
             held.append(lock)
             _BUSY.discard(handler)
         else:

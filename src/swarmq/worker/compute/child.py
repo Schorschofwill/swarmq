@@ -18,7 +18,7 @@ import signal
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from swarmq.logging_drain import exit_code_for, exit_if_log_thread_stuck
 from swarmq.worker.compute.envelope import (
@@ -27,6 +27,9 @@ from swarmq.worker.compute.envelope import (
     error_envelope,
     success_envelope,
 )
+
+if TYPE_CHECKING:
+    from swarmq.task import Task
 
 _PR_SET_PDEATHSIG = 1
 
@@ -100,7 +103,7 @@ def bind_child_process() -> bool:
         return False
 
 
-def _lookup_task_class(task_name: str) -> type:
+def _lookup_task_class(task_name: str) -> type[Task]:
     from swarmq.task import Task
 
     for cls in Task._registered_tasks:
@@ -153,7 +156,7 @@ async def _run_job(job: ComputeJob, channel: Any, slot: int | None) -> ResultEnv
     except LookupError as exc:
         return error_envelope(job.task_id, exc, duration_s=0.0, rss_mb=rss_mb(), **meta)
 
-    task_info = task_class.task_info  # type: ignore[attr-defined]
+    task_info = task_class.task_info
     instance: Any = task_class()
     instance._task_id = job.task_id
     instance._backend = ProgressBackend(channel)

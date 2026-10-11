@@ -7,7 +7,7 @@ den Vertrag ``RateLimitStore`` (``RateLimitDecision``) über demselben Skript.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import valkey.asyncio as valkey_asyncio
 import valkey.exceptions
@@ -44,7 +44,7 @@ class RateLimiter:
         ``docs/recherche-deepening-lua-scripts.md`` §3.1 and complicates
         future Valkey-replication semantics.
         """
-        seconds, microseconds = await self._client.time()
+        seconds, microseconds = await self._client.time()  # pyright: ignore[reportUnknownMemberType]  # valkey-Typen unvollständig (**kwargs, dict ohne Typargumente)
         now_ms = int(seconds) * 1000 + int(microseconds) // 1000
         window_ts = now_ms - (now_ms % config.window_size_ms)
         prev_ts = window_ts - config.window_size_ms
@@ -56,7 +56,9 @@ class RateLimiter:
             self._keys.rate_limit(task_name, window_ts),
             self._keys.rate_limit(task_name, prev_ts),
         ]
-        result = await self._script(keys=keys, args=[config.max_requests, config.window_size_ms, now_ms])
+        result = cast(
+            "list[int]", await self._script(keys=keys, args=[config.max_requests, config.window_size_ms, now_ms])
+        )
         allowed_raw, remaining_raw, retry_raw = result
         return bool(int(allowed_raw)), int(remaining_raw), int(retry_raw)
 

@@ -55,7 +55,7 @@ def check_watchfiles_available() -> None:
     thread.
     """
     try:
-        import watchfiles  # noqa: F401
+        import watchfiles  # noqa: F401  # pyright: ignore[reportUnusedImport]  # nur Praesenzpruefung des optionalen Pakets
     except ImportError as exc:
         raise ConfigurationError(
             "--reload: watchfiles is not installed. Install with:  pip install 'swarmq[reload]'"

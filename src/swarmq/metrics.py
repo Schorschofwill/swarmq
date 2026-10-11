@@ -40,11 +40,13 @@ method. Attaching the HTTP exposition server is a worker-side concern
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncGenerator, Iterator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
-try:
+if TYPE_CHECKING:
+    # Typprüfer sehen die echten (typisierten) Klassen; der None-Fallback
+    # unten existiert nur zur Laufzeit ohne das optionale Paket.
     import prometheus_client
     from prometheus_client import (
         CollectorRegistry,
@@ -55,20 +57,33 @@ try:
     )
     from prometheus_client.core import CounterMetricFamily
 
-    _HAVE_PROMETHEUS = True
-except ImportError:  # pragma: no cover — optional
-    prometheus_client = None  # type: ignore[assignment]
-    CollectorRegistry = None  # type: ignore[assignment,misc]
-    Counter = None  # type: ignore[assignment,misc]
-    Gauge = None  # type: ignore[assignment,misc]
-    Histogram = None  # type: ignore[assignment,misc]
-    generate_latest = None  # type: ignore[assignment]
-    CounterMetricFamily = None  # type: ignore[assignment,misc]
-
-    _HAVE_PROMETHEUS = False
-
-if TYPE_CHECKING:
     from swarmq.signals import SignalDispatcher
+
+    _HAVE_PROMETHEUS: bool = True
+else:
+    try:
+        import prometheus_client
+        from prometheus_client import (
+            CollectorRegistry,
+            Counter,
+            Gauge,
+            Histogram,
+            generate_latest,
+        )
+        from prometheus_client.core import CounterMetricFamily
+
+        _HAVE_PROMETHEUS = True
+    except ImportError:  # pragma: no cover — optional
+        prometheus_client = None  # type: ignore[assignment]
+        CollectorRegistry = None  # type: ignore[assignment,misc]
+        Counter = None  # type: ignore[assignment,misc]
+        Gauge = None  # type: ignore[assignment,misc]
+        Histogram = None  # type: ignore[assignment,misc]
+        generate_latest = None  # type: ignore[assignment]
+        CounterMetricFamily = None  # type: ignore[assignment,misc]
+
+        _HAVE_PROMETHEUS = False
+
 
 # CONTENT_TYPE used by /metrics endpoint. Falls back to the Prometheus
 # text-exposition default when the client is absent so callers do not
@@ -448,7 +463,7 @@ async def serve_metrics(
     metrics: Metrics,
     host: str = "127.0.0.1",
     port: int = 9090,
-) -> AsyncIterator[MetricsServer]:
+) -> AsyncGenerator[MetricsServer]:
     """Async context manager: start MetricsServer on enter, stop on exit."""
     server = MetricsServer(metrics, host=host, port=port)
     await server.start()
