@@ -68,6 +68,17 @@ class ValkeyBackend(ValkeyResults):
     async def close(self) -> None:
         await super().close()
         # Die Stores halten den alten Client; nach close() neu aufbauen.
+        self._drop_stores()
+
+    def reconcile_namespace(self, configured: str | None) -> str | None:
+        keys = self._keys
+        effective = super().reconcile_namespace(configured)
+        if self._keys is not keys:
+            # Die Stores halten den alten KeySpace (Review MR 15, P1-1).
+            self._drop_stores()
+        return effective
+
+    def _drop_stores(self) -> None:
         self._locks = self._rate_limit = self._chords = self._schedules = None
         self._execution_guard = None
 

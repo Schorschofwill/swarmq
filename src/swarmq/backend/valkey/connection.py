@@ -147,6 +147,9 @@ class ValkeyConnection:
             raise ConfigurationError("ValkeyBackend accepts keys or namespace, not both")
         # Namensraum (BZ-10): ohne Angabe aus der Umgebung (Q11, ueber ``config.py``).
         self._keys = keys if keys is not None else _keyspace(namespace)
+        # Ausdruecklich (``namespace=`` oder ``keys=``) geht vor der Konfiguration
+        # (Review MR 15, E1/P1-1, ``reconcile_namespace``).
+        self._namespace_explicit = keys is not None or namespace is not None
         # Ergebnis der Eviction-Pruefung beim Verbinden (BZ-04); ``None``, solange
         # nicht geprueft wurde.
         self.eviction_check: EvictionCheck | None = None
@@ -184,6 +187,25 @@ class ValkeyConnection:
     @property
     def namespace(self) -> str | None:
         """Der Namensraum aller Keys und Kanaele dieses Backends (BZ-10)."""
+        return self._keys.namespace
+
+    def reconcile_namespace(self, configured: str | None) -> str | None:
+        """Den Namensraum mit der Konfiguration abgleichen (Review MR 15, E1/P1-1).
+
+        Ohne ausdruecklichen Parameter uebernimmt das Backend *configured*.
+        Mit ausdruecklichem Parameter gilt er; ist *configured* gesetzt und
+        verschieden, ist das ein ``ConfigurationError`` (Exit 78). Liefert den
+        wirksamen Namensraum, mit dem der Aufrufer die Konfiguration fuellt."""
+        if not self._namespace_explicit:
+            if configured != self._keys.namespace:
+                self._keys = _keyspace(configured or "")
+            return self._keys.namespace
+        if configured is not None and configured != self._keys.namespace:
+            raise ConfigurationError(
+                f"namespace mismatch: ValkeyBackend(namespace={self._keys.namespace or ''!r}) and "
+                f"SWARMQ_NAMESPACE/SwarmQConfig.namespace={configured!r} differ; set the namespace in one "
+                "place or to the same value (the backend parameter wins only when the configuration is unset)"
+            )
         return self._keys.namespace
 
     async def connect(self) -> None:

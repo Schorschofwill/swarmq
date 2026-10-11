@@ -54,6 +54,7 @@ class SwarmQ:
             backend_url=backend._url,
             **config_kwargs,
         )
+        self._reconcile_namespace()
         self.broker._queue_type = self.config.queue_type
         self.broker.publish_timeout_s = self.config.publish_timeout_s
         self.broker.delivery_limit = self.config.delivery_limit
@@ -85,6 +86,21 @@ class SwarmQ:
             # R3.5: bound every setnx_unique on the enqueue path.
             backend_op_timeout=self.config.backend_op_timeout,
         )
+
+    def _reconcile_namespace(self) -> None:
+        """Namensraum von Backend und Konfiguration abgleichen (Review MR 15,
+        E1/P1-1); der wirksame Wert steht danach in ``config.namespace``.
+
+        Q15: ein Backend ohne Abgleich (Fake, Mock, fremde Implementierung)
+        laesst die Konfiguration unveraendert; ``ConfigurationError`` geht durch."""
+        try:
+            effective = self.backend.reconcile_namespace(self.config.namespace)
+        except ConfigurationError:
+            raise
+        except Exception:
+            return
+        if effective is None or isinstance(effective, str):
+            self.config.namespace = effective
 
     def add_middleware(self, middleware: Middleware) -> None:
         """Register a middleware to run for every task lifecycle event.

@@ -609,16 +609,37 @@ All notable changes to SwarmQ. This project follows
 - **`scheduler_fire_unroutable_foreign`** now also names
   `SWARMQ_NAMESPACE` in its hint; separate vhosts need one namespace per
   app. Lock recovery hints (`valkey-cli DEL …`) name the key with the
-  namespace.
+  namespace of the backend.
+- **Backend and configuration agree on one namespace.** An explicit
+  `ValkeyBackend(namespace=…)` (or `keys=`) wins; without it the backend
+  takes `SwarmQConfig.namespace` (code or `SWARMQ_NAMESPACE`) when it is
+  handed to `SwarmQ(...)`, so `SwarmQ(broker, backend, namespace="app1")`
+  now prefixes the keys. An explicit backend namespace fills
+  `app.config.namespace`. Both set and different (also `namespace=""`
+  next to a set `SWARMQ_NAMESPACE`) is a `ConfigurationError`
+  (`namespace mismatch`, exit `78`). `ValkeyBackend.reconcile_namespace`
+  is new ([where the namespace comes from](configuration.md#where-the-namespace-comes-from)).
 
 ### Upgrading to 0.12 (namespace)
 
 - **Order:** first run every component (workers, producers, CLI,
   control service) on 0.12, then set `SWARMQ_NAMESPACE` everywhere in
   the same step. Mixed values split the app.
-- **Only for a new app or after emptying its keys.** The namespace does
+- **Only for a new app or after moving the app.** The namespace does
   not migrate data under `sq:` (schedules, CLI crons, delayed tasks,
-  results, locks). `swarmq check` counts keys without namespace.
+  results, locks). `swarmq check` counts keys without namespace. To move
+  an existing app ([procedure](configuration.md#moving-an-app-into-a-namespace)):
+  stop it completely (Kubernetes `strategy: Recreate` or scale to 0, no
+  rolling update); without `SWARMQ_NAMESPACE` remove its crons and
+  one-shots with `swarmq schedule list` and
+  `swarmq schedule remove --permanent`; with the namespace create its CLI
+  crons and one-shots again; change Valkey ACL patterns from `~sq:*` to
+  `~<namespace>:sq:*` (channels `&sq:*` to `&<namespace>:sq:*`); point
+  tools that read the keys directly (dashboards such as swarmv) at the
+  namespace.
+- **Move every app on the Valkey to 0.12 before.** A leader older than
+  0.12 on the same Valkey keeps firing the old definitions for up to
+  24 hours (until it prunes them): crons run twice.
 - **Rollback limit:** once the namespace is set, roll back only to 0.12
   or later. 0.11.1 refuses to start with `SWARMQ_NAMESPACE` set (exit
   `78`); 0.11.0 would ignore it silently.

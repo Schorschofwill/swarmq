@@ -57,7 +57,7 @@ The CLI prints a descriptive error if either is missing; see the
 | `SWARMQ_DEAD_LETTER_TERMINAL_FAILURES` | `true` | `false` stores the error result of a terminal task failure (`NoRetry`, exception outside `retry_exceptions`, retries exhausted) and acknowledges the message instead of dead-lettering it ([details](../guides/dead-letter-queues.md#switching-off-dead-lettering-of-task-failures)). `TaskInfo.dead_letter` wins. |
 | `SWARMQ_LOCK_WAIT_MAX_S` | `21600` | Upper limit in seconds for how long a message waits for a held task lock, measured from its first conflict (`x-swarmq-lock-wait-since`); afterwards it is dead-lettered with `LockWaitExceeded`. Before that only a stalled holder (same holder longer than its TTL + 60 s) or `max_age` ends the wait. Must be `> 0` and finite ([lock acquisition](../guides/locking-and-dedup.md#lock-acquisition-behaviour)). |
 | `SWARMQ_VALKEY_EVICTION_CHECK` | `strict` | What a worker does when Valkey may evict swarmq keys ([Valkey requirements](#valkey-requirements)): `strict` refuses to start with exit `78` under an evicting `maxmemory-policy` (anything but `noeviction` with a `maxmemory` limit, or with an unknown limit), `warn` logs `valkey_eviction_policy_unsafe` and starts, `off` does not check at all (no query, no warning). A policy that cannot be read (ACL forbids `CONFIG` and `INFO`) never blocks, it only logs `valkey_eviction_policy_unknown`. Case does not matter. Also read by `swarmq check` and by every other `ValkeyBackend` (CLI, producers), where only `off` changes anything. |
-| `SWARMQ_NAMESPACE` | *unset* | Namespace of this app on a shared Valkey ([namespace](#namespace-several-apps-on-one-valkey)): every Valkey key, Pub/Sub channel, the scheduler leader and the control channel move from `sq:…` to `<namespace>:sq:…`. 1–64 characters `A-Z a-z 0-9 _ . -`, starting with a letter or digit, not `sq`; anything else is a configuration error (exit `78`). Empty means unset. Queue names stay unchanged. Every `ValkeyBackend` (worker, producer, CLI, control channel) reads it. Set it only for a new app or after emptying its keys, and only once every component runs 0.12. |
+| `SWARMQ_NAMESPACE` | *unset* | Namespace of this app on a shared Valkey ([namespace](#namespace-several-apps-on-one-valkey)): every Valkey key, Pub/Sub channel, the scheduler leader and the control channel move from `sq:…` to `<namespace>:sq:…`. 1–64 characters `A-Z a-z 0-9 _ . -`, starting with a letter or digit, not `sq`; anything else is a configuration error (exit `78`). Empty means unset. Queue names stay unchanged. Every `ValkeyBackend` (worker, producer, CLI, control channel) reads it, unless it is built with `namespace=` ([where the namespace comes from](#where-the-namespace-comes-from)). Set it only for a new app or after [moving the app](#moving-an-app-into-a-namespace), and only once every component runs 0.12. |
 | `SWARMQ_UNKNOWN_TASK_GRACE_S` | `900.0` | Grace period in seconds for a task name this worker does not register (rolling deploy: producers ahead of the workers). Within it the worker defers the message with backoff (1 s, then as long as it has waited so far, at most 60 s per round) and keeps the first contact in `x-swarmq-unknown-since`; afterwards it dead-letters the message with an error result and `TASK_REJECTED` (`unregistered_task`). `0` switches the grace period off (dead-letter at first contact). Must be `>= 0` ([unregistered tasks](../guides/dead-letter-queues.md#unregistered-tasks-and-rolling-deploys)). |
 | `SWARMQ_MALLOC_TRIM_THRESHOLD` | `131072` | `MALLOC_TRIM_THRESHOLD_` for compute children (glibc growth). |
 | `SWARMQ_MALLOC_ARENA_MAX` | `2` | `MALLOC_ARENA_MAX` for compute children. |
@@ -301,7 +301,8 @@ its own RabbitMQ vhost.
   broken broker no longer stops the crons of all apps.
 - **The namespace does not migrate data.** Keys under `sq:` (schedules,
   CLI crons, delayed tasks, results, locks) are not seen under the new
-  namespace. Set it for a new app, or empty the app's keys first.
+  namespace. Set it for a new app, or move the app as described in
+  [moving an app into a namespace](#moving-an-app-into-a-namespace).
   `swarmq check` shows the namespace and counts keys without it
   ([CLI](cli.md#swarmq-check)).
 - **Rollout:** first run every component (workers, producers, CLI,
@@ -315,6 +316,56 @@ its own RabbitMQ vhost.
   `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S=0`. Otherwise the leadership can
   move to a 0.11 app, and the 0.12 features of the leader (stable
   one-shot IDs, cron dedup, held crons) are off while it leads.
+
+#### Where the namespace comes from
+
+The namespace of the backend applies everywhere: to every key and
+channel, and to the hints in log events and in `swarmq check`.
+
+1. **`ValkeyBackend(..., namespace="app1")`** (or `keys=`) sets it
+   explicitly. `namespace=""` explicitly means *no namespace*.
+2. **Otherwise the configuration applies:** `SWARMQ_NAMESPACE`, or
+   `SwarmQ(broker, backend, namespace="app1")` in code (the environment
+   variable wins over the code value, as for every setting). A backend
+   built without `namespace=` takes this value when it is handed to
+   `SwarmQ(...)`; on its own (CLI, control channel) it reads
+   `SWARMQ_NAMESPACE`.
+3. With an explicit backend parameter and no configured namespace,
+   `SwarmQ(...)` fills `app.config.namespace` from the backend.
+
+If the backend parameter and the configuration are both set and differ
+-- this includes `namespace=""` next to a set `SWARMQ_NAMESPACE` --,
+`SwarmQ(...)` raises `ConfigurationError` (`namespace mismatch`; a
+worker exits with `78`).
+
+#### Moving an app into a namespace
+
+The namespace moves no data, and old and new processes of one app must
+never run side by side. For an existing app without namespace:
+
+1. **Stop the app completely**: every worker and scheduler. On
+   Kubernetes use `strategy: Recreate` or scale the deployment to 0, on
+   Docker stop all its containers. A rolling update would run pods with
+   and without namespace at the same time: two leaders, crons fired
+   twice, results written where the other half does not look.
+2. **Without `SWARMQ_NAMESPACE`**, list the app's schedules with
+   `swarmq schedule list` and delete each of the app's crons and
+   one-shots with `swarmq schedule remove --permanent <name>`. Left
+   under `sq:`, the leader of another app without namespace keeps firing
+   them.
+3. **With `SWARMQ_NAMESPACE`**, create the app's CLI crons and one-shots
+   again (`swarmq schedule add …`). Crons defined in code register
+   themselves when the workers start.
+4. **Move every app on this Valkey to 0.12 first.** A leader older than
+   0.12 keeps firing the old definitions it has seen for up to 24 hours
+   (until it prunes them), so crons run twice.
+5. **Valkey ACLs:** key patterns `~sq:*` become `~<namespace>:sq:*`,
+   channel patterns `&sq:*` become `&<namespace>:sq:*`.
+6. **Tools that read swarmq's keys directly** (dashboards such as
+   swarmv, scripts with `valkey-cli`) must use the namespace too.
+
+Then start the app with the namespace. `swarmq check` with
+`SWARMQ_NAMESPACE` set counts the keys still left without namespace.
 
 ### Namespace requires 0.12
 

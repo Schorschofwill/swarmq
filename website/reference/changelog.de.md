@@ -654,17 +654,40 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   Verbindung.
 - **`scheduler_fire_unroutable_foreign`** nennt im Hinweis jetzt auch
   `SWARMQ_NAMESPACE`; getrennte vhosts brauchen je App einen Namensraum.
-  Die Lock-Hinweise (`valkey-cli DEL …`) nennen den Key mit Namensraum.
+  Die Lock-Hinweise (`valkey-cli DEL …`) nennen den Key mit dem
+  Namensraum des Backends.
+- **Backend und Konfiguration einigen sich auf einen Namensraum.** Ein
+  ausdrückliches `ValkeyBackend(namespace=…)` (oder `keys=`) gilt; ohne
+  es übernimmt das Backend `SwarmQConfig.namespace` (Code oder
+  `SWARMQ_NAMESPACE`), sobald es an `SwarmQ(...)` geht. Damit setzt
+  `SwarmQ(broker, backend, namespace="app1")` jetzt das Präfix der Keys.
+  Ein ausdrücklicher Backend-Namensraum füllt `app.config.namespace`.
+  Beide gesetzt und verschieden (auch `namespace=""` neben gesetztem
+  `SWARMQ_NAMESPACE`) ist ein `ConfigurationError` (`namespace
+  mismatch`, Exit `78`). Neu ist `ValkeyBackend.reconcile_namespace`
+  ([Herkunft des Namensraums](configuration.md#herkunft-des-namensraums)).
 
 ### Upgrade auf 0.12 (Namensraum)
 
 - **Reihenfolge:** erst alle Komponenten (Worker, Producer, CLI,
   Steuerdienst) auf 0.12, dann `SWARMQ_NAMESPACE` überall im selben
   Schritt setzen. Gemischte Werte spalten die App.
-- **Nur für eine neue App oder nach dem Leeren ihrer Keys.** Der
-  Namensraum migriert keine Daten unter `sq:` (Schedules, CLI-Crons,
-  verzögerte Tasks, Ergebnisse, Locks). `swarmq check` zählt Keys ohne
-  Namensraum.
+- **Nur für eine neue App oder nach dem Umzug der App.** Der Namensraum
+  migriert keine Daten unter `sq:` (Schedules, CLI-Crons, verzögerte
+  Tasks, Ergebnisse, Locks). `swarmq check` zählt Keys ohne Namensraum.
+  Umzug einer bestehenden App
+  ([Ablauf](configuration.md#eine-app-in-einen-namensraum-umziehen)): sie
+  vollständig stoppen (Kubernetes `strategy: Recreate` oder auf 0
+  skalieren, kein Rolling Update); ohne `SWARMQ_NAMESPACE` ihre Crons
+  und Oneshots mit `swarmq schedule list` und `swarmq schedule remove
+  --permanent` entfernen; mit Namensraum ihre CLI-Crons und -Oneshots neu
+  anlegen; Valkey-ACL-Muster von `~sq:*` auf `~<namensraum>:sq:*`
+  umstellen (Kanäle `&sq:*` auf `&<namensraum>:sq:*`); Werkzeuge, die
+  die Keys direkt lesen (Dashboards wie swarmv), auf den Namensraum
+  einstellen.
+- **Vorher alle Apps am Valkey auf 0.12 bringen.** Ein Leader älter als
+  0.12 am selben Valkey feuert die alten Definitionen bis zu 24 Stunden
+  weiter (bis er sie aufräumt): Crons laufen doppelt.
 - **Rollback-Grenze:** Nach dem Setzen des Namensraums nur noch auf 0.12
   oder neuer zurück. 0.11.1 verweigert den Start mit gesetztem
   `SWARMQ_NAMESPACE` (Exit `78`); 0.11.0 ignorierte ihn still.

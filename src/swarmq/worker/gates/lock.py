@@ -169,8 +169,14 @@ TerminalDeadLetter = Callable[[Any, GateContext, str, str, dict[str, Any], Publi
 
 class LockGate:
     def _lock_key(self, lock_name: str) -> str:
-        """Valkey-Key des Locks fuer Hinweise, mit Namensraum (BZ-10)."""
-        return KeySpace(self._deps.config.namespace).lock(lock_name)
+        """Valkey-Key des Locks fuer Hinweise, mit Namensraum (BZ-10). Es gilt
+        der Namensraum des Backends (Review MR 15, E1/P1-1); ein Backend ohne
+        lesbaren Namensraum (Q15) faellt auf die Konfiguration zurueck."""
+        configured = self._deps.config.namespace
+        namespace = getattr(self._deps.backend, "namespace", configured)
+        if namespace is not None and not isinstance(namespace, str):
+            namespace = configured
+        return KeySpace(namespace).lock(lock_name)
 
     def __init__(self, deps: GateDeps, *, dead_letter: TerminalDeadLetter) -> None:
         self._deps = deps

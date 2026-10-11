@@ -58,7 +58,7 @@ siehe [Fehlerkatalog](errors.md#configurationerror).
 | `SWARMQ_DEAD_LETTER_TERMINAL_FAILURES` | `true` | `false` speichert bei einem terminalen Task-Fehler (`NoRetry`, Exception außerhalb von `retry_exceptions`, Retries erschöpft) das Fehlerergebnis und bestätigt die Nachricht, statt sie zu dead-lettern ([Details](../guides/dead-letter-queues.md#dead-lettering-von-task-fehlern-abschalten)). `TaskInfo.dead_letter` gewinnt. |
 | `SWARMQ_LOCK_WAIT_MAX_S` | `21600` | Obergrenze in Sekunden, wie lange eine Nachricht auf einen belegten Task-Lock wartet, gemessen ab ihrem ersten Konflikt (`x-swarmq-lock-wait-since`); danach geht sie mit `LockWaitExceeded` in die DLQ. Vorher beendet nur ein hängender Halter (derselbe Halter länger als seine TTL + 60 s) oder `max_age` die Wartezeit. Muss `> 0` und endlich sein ([Lock-Acquisition](../guides/locking-and-dedup.de.md#lock-acquisition-verhalten)). |
 | `SWARMQ_VALKEY_EVICTION_CHECK` | `strict` | Was ein Worker tut, wenn Valkey swarmq-Keys verdrängen kann ([Valkey-Anforderungen](#valkey-anforderungen)): `strict` verweigert unter einer verdrängenden `maxmemory-policy` (alles außer `noeviction` mit `maxmemory`-Grenze oder unbekannter Grenze) den Start mit Exit `78`, `warn` loggt `valkey_eviction_policy_unsafe` und startet, `off` prüft gar nicht (keine Abfrage, keine Warnung). Eine nicht lesbare Policy (ACL verbietet `CONFIG` und `INFO`) blockiert nie, sie loggt nur `valkey_eviction_policy_unknown`. Groß-/Kleinschreibung egal. Auch `swarmq check` und jedes andere `ValkeyBackend` (CLI, Producer) lesen die Variable; dort ändert nur `off` etwas. |
-| `SWARMQ_NAMESPACE` | *ungesetzt* | Namensraum dieser App auf einem gemeinsamen Valkey ([Namensraum](#namensraum-mehrere-apps-auf-einem-valkey)): Jeder Valkey-Key, jeder Pub/Sub-Kanal, der Scheduler-Leader und der Kontrollkanal wandern von `sq:…` nach `<namensraum>:sq:…`. 1–64 Zeichen `A-Z a-z 0-9 _ . -`, beginnend mit Buchstabe oder Ziffer, nicht `sq`; alles andere ist ein Konfigurationsfehler (Exit `78`). Leer heißt ungesetzt. Queue-Namen bleiben unverändert. Jedes `ValkeyBackend` (Worker, Producer, CLI, Kontrollkanal) liest die Variable. Nur für eine neue App oder nach dem Leeren ihrer Keys setzen, und erst, wenn alle Komponenten 0.12 fahren. |
+| `SWARMQ_NAMESPACE` | *ungesetzt* | Namensraum dieser App auf einem gemeinsamen Valkey ([Namensraum](#namensraum-mehrere-apps-auf-einem-valkey)): Jeder Valkey-Key, jeder Pub/Sub-Kanal, der Scheduler-Leader und der Kontrollkanal wandern von `sq:…` nach `<namensraum>:sq:…`. 1–64 Zeichen `A-Z a-z 0-9 _ . -`, beginnend mit Buchstabe oder Ziffer, nicht `sq`; alles andere ist ein Konfigurationsfehler (Exit `78`). Leer heißt ungesetzt. Queue-Namen bleiben unverändert. Jedes `ValkeyBackend` (Worker, Producer, CLI, Kontrollkanal) liest die Variable, außer es wird mit `namespace=` gebaut ([Herkunft des Namensraums](#herkunft-des-namensraums)). Nur für eine neue App oder nach dem [Umzug der App](#eine-app-in-einen-namensraum-umziehen) setzen, und erst, wenn alle Komponenten 0.12 fahren. |
 | `SWARMQ_UNKNOWN_TASK_GRACE_S` | `900.0` | Gnadenfrist in Sekunden für einen Task-Namen, den dieser Worker nicht registriert (Rolling Deploy: Producer vor den Workern). Innerhalb der Frist stellt der Worker die Nachricht mit Backoff zurück (1 s, dann so lang wie bisher gewartet, höchstens 60 s je Runde) und hält den ersten Kontakt in `x-swarmq-unknown-since` fest; danach dead-lettert er sie mit Fehlerergebnis und `TASK_REJECTED` (`unregistered_task`). `0` schaltet die Frist ab (Dead-Letter beim ersten Kontakt). Muss `>= 0` sein ([unregistrierte Tasks](../guides/dead-letter-queues.de.md#unregistrierte-tasks-und-rolling-deploys)). |
 | `SWARMQ_MALLOC_TRIM_THRESHOLD` | `131072` | `MALLOC_TRIM_THRESHOLD_` für Rechenkinder (glibc-Wachstum). |
 | `SWARMQ_MALLOC_ARENA_MAX` | `2` | `MALLOC_ARENA_MAX` für Rechenkinder. |
@@ -303,9 +303,10 @@ ihren eigenen RabbitMQ-vhost.
   Leader mit defektem Broker hält die Crons aller Apps nicht mehr an.
 - **Der Namensraum migriert keine Daten.** Keys unter `sq:` (Schedules,
   CLI-Crons, verzögerte Tasks, Ergebnisse, Locks) sind unter dem neuen
-  Namensraum nicht sichtbar. Für eine neue App setzen oder vorher die
-  Keys der App leeren. `swarmq check` zeigt den Namensraum und zählt
-  Keys ohne ihn ([CLI](cli.md#swarmq-check)).
+  Namensraum nicht sichtbar. Für eine neue App setzen oder die App wie
+  unter [Eine App in einen Namensraum umziehen](#eine-app-in-einen-namensraum-umziehen)
+  umziehen. `swarmq check` zeigt den Namensraum und zählt Keys ohne ihn
+  ([CLI](cli.md#swarmq-check)).
 - **Rollout:** erst alle Komponenten (Worker, Producer, CLI,
   Steuerdienst) auf 0.12, dann den Namensraum überall im selben Schritt
   setzen. Gemischte Werte spalten die App: Ein Producer ohne Namensraum
@@ -318,6 +319,57 @@ ihren eigenen RabbitMQ-vhost.
   zu einer 0.11-App wandern, und die 0.12-Funktionen des Leaders (stabile
   Oneshot-IDs, Cron-Dedup, zurückgehaltene Crons) sind aus, solange sie
   führt.
+
+#### Herkunft des Namensraums
+
+Der Namensraum des Backends gilt überall: für jeden Key und Kanal und
+für die Hinweise in Log-Ereignissen und in `swarmq check`.
+
+1. **`ValkeyBackend(..., namespace="app1")`** (oder `keys=`) setzt ihn
+   ausdrücklich. `namespace=""` heißt ausdrücklich *kein Namensraum*.
+2. **Sonst gilt die Konfiguration:** `SWARMQ_NAMESPACE` oder
+   `SwarmQ(broker, backend, namespace="app1")` im Code (die
+   Umgebungsvariable schlägt den Code-Wert, wie bei jeder Einstellung).
+   Ein Backend ohne `namespace=` übernimmt diesen Wert, sobald es an
+   `SwarmQ(...)` geht; für sich allein (CLI, Kontrollkanal) liest es
+   `SWARMQ_NAMESPACE`.
+3. Mit ausdrücklichem Backend-Parameter und ohne konfigurierten
+   Namensraum füllt `SwarmQ(...)` `app.config.namespace` aus dem Backend.
+
+Sind Backend-Parameter und Konfiguration beide gesetzt und verschieden
+-- auch `namespace=""` neben gesetztem `SWARMQ_NAMESPACE` --, wirft
+`SwarmQ(...)` `ConfigurationError` (`namespace mismatch`; ein Worker
+endet mit Exit `78`).
+
+#### Eine App in einen Namensraum umziehen
+
+Der Namensraum zieht keine Daten um, und alte und neue Prozesse einer
+App dürfen nie nebeneinander laufen. Für eine bestehende App ohne
+Namensraum:
+
+1. **Die App vollständig stoppen**: alle Worker und Scheduler. Unter
+   Kubernetes `strategy: Recreate` verwenden oder das Deployment auf 0
+   skalieren, unter Docker alle ihre Container stoppen. Ein Rolling
+   Update ließe Pods mit und ohne Namensraum gleichzeitig laufen: zwei
+   Leader, doppelt gefeuerte Crons, Ergebnisse dort, wo die andere Hälfte
+   nicht sucht.
+2. **Ohne `SWARMQ_NAMESPACE`** die Termine der App mit `swarmq schedule
+   list` auflisten und jeden Cron und Oneshot der App mit `swarmq
+   schedule remove --permanent <name>` löschen. Bleiben sie unter `sq:`,
+   feuert sie der Leader einer anderen App ohne Namensraum weiter.
+3. **Mit `SWARMQ_NAMESPACE`** die CLI-Crons und -Oneshots der App neu
+   anlegen (`swarmq schedule add …`). Im Code definierte Crons melden
+   sich beim Start der Worker selbst an.
+4. **Vorher alle Apps an diesem Valkey auf 0.12 bringen.** Ein Leader
+   älter als 0.12 feuert die alten Definitionen, die er gesehen hat, bis
+   zu 24 Stunden weiter (bis er sie aufräumt); Crons laufen dann doppelt.
+5. **Valkey-ACLs:** Key-Muster `~sq:*` werden zu `~<namensraum>:sq:*`,
+   Kanal-Muster `&sq:*` zu `&<namensraum>:sq:*`.
+6. **Werkzeuge, die swarmq-Keys direkt lesen** (Dashboards wie swarmv,
+   Skripte mit `valkey-cli`), müssen den Namensraum ebenfalls verwenden.
+
+Danach die App mit Namensraum starten. `swarmq check` mit gesetztem
+`SWARMQ_NAMESPACE` zählt die Keys, die noch ohne Namensraum übrig sind.
 
 ### Namensraum erst ab 0.12
 
