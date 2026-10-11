@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from typing import override
 
 from swarmq.logging import get_logger
 from swarmq.task import Task, TaskInfo
@@ -24,6 +25,7 @@ MARKER = "from-log-config-file"
 
 
 class MarkFilter(logging.Filter):
+    @override
     def filter(self, record: logging.LogRecord) -> bool:
         record.e2e_marker = MARKER
         record.e2e_pid = record.process
@@ -39,6 +41,7 @@ class LogAsyncEcho(Task):
 
     task_info = TaskInfo(name="log_async_echo", queues=[QUEUE], max_retries=0)
 
+    @override
     async def run(self, tag: str) -> dict[str, object]:
         await asyncio.sleep(0.01)
         get_logger("e2e.app").warning("app_task_line", tag=tag)
@@ -50,6 +53,7 @@ class LogCpuSum(Task):
 
     task_info = TaskInfo(name="log_cpu_sum", queues=[QUEUE], max_retries=0)
 
+    @override
     async def run(self, n: int) -> dict[str, object]:
         total = sum(i * i for i in range(n))
         get_logger("e2e.app").warning("app_task_line", tag=f"cpu-{n}")

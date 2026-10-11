@@ -33,6 +33,7 @@ import io
 import json
 import logging
 from collections.abc import Iterator
+from typing import override
 
 import pytest
 import structlog
@@ -45,6 +46,7 @@ class _ListHandler(logging.Handler):
         super().__init__()
         self.records: list[logging.LogRecord] = []
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         self.records.append(record)
 

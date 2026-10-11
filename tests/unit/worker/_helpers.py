@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, override
 
 from swarmq.headers import HEADER_LOCK_WAIT_SINCE
 from swarmq.task import Task, TaskInfo
@@ -12,6 +12,7 @@ from swarmq.task import Task, TaskInfo
 class AddTask(Task):
     task_info = TaskInfo(name="add", queues=["default"])
 
+    @override
     async def run(self, a: int, b: int) -> int:
         return a + b
 

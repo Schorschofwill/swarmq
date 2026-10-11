@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
-from typing import Any
+from typing import Any, override
 
 import pytest
 
@@ -42,13 +42,16 @@ async def test_middleware_pre_and_post_execute_fire(rabbitmq_url: str, valkey_ur
     class EchoTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self, value: int) -> int:
             return value * 2
 
     class TrackingMiddleware(Middleware):
+        @override
         async def pre_execute(self, message: dict) -> None:
             events.append(("pre_execute", dict(message), None))
 
+        @override
         async def post_execute(self, message: dict, result: Any = None) -> None:
             events.append(("post_execute", dict(message), result))
             completed.set()
@@ -115,10 +118,12 @@ async def test_middleware_on_error_fires_for_failing_task(rabbitmq_url: str, val
     class BoomTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self) -> None:
             raise ValueError("boom")
 
     class ErrorTrackingMiddleware(Middleware):
+        @override
         async def on_error(self, message: dict, exception: BaseException) -> None:
             captured.append((dict(message), exception))
             on_error_called.set()
@@ -171,6 +176,7 @@ async def test_signal_task_completed_handler_receives_kwargs(rabbitmq_url: str, 
     class PingTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self) -> str:
             return "pong"
 
@@ -228,11 +234,13 @@ async def test_pre_enqueue_exception_prevents_enqueue(rabbitmq_url: str, valkey_
     class NeverRunTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self) -> str:
             worker_received.set()
             return "should not happen"
 
     class BlockingMiddleware(Middleware):
+        @override
         async def pre_enqueue(self, message: dict) -> None:
             raise ValueError("enqueue blocked by middleware")
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 # 2. Ein Backend-Fehler im Cancel-Monitor loggt ``cancel_monitor_error`` auf
 #    WARNING mit ``task_id``, ``error_type`` und ``error``.
 import asyncio
-from typing import Any
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -29,6 +29,7 @@ pytestmark = [pytest.mark.timeout(5)]
 class FailingFireAndForget(Task):
     task_info = TaskInfo(name="faf_fail_exec_log", queues=["q"], delivery=DeliveryMode.FIRE_AND_FORGET)
 
+    @override
     async def run(self) -> None:
         raise ValueError("boom")
 
@@ -39,6 +40,7 @@ _monitor_failed = asyncio.Event()
 class WaitsForMonitorFailure(Task):
     task_info = TaskInfo(name="waits_for_monitor_failure_exec_log", queues=["q"])
 
+    @override
     async def run(self) -> None:
         await _monitor_failed.wait()
 

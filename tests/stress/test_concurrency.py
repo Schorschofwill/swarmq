@@ -18,7 +18,7 @@ import math
 import os
 import time
 import uuid
-from typing import Any
+from typing import Any, override
 
 import pytest
 import valkey.asyncio as valkey_asyncio
@@ -121,6 +121,7 @@ async def test_10_workers_1000_tasks_each_exact_once(
     class ExecOnceTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self, n: int) -> int:
             # INCR a shared counter plus SADD a set of observed ids to
             # prove no task got silently dropped (counter catches dup,
@@ -218,6 +219,7 @@ async def test_100_parallel_schedule_distinct_task_ids(
     class NoopTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self) -> str:
             return "ok"
 
@@ -257,6 +259,7 @@ async def test_50_parallel_cancels_one_winner(
     class SlowTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self) -> str:
             # Long enough to be reliably mid-flight while the cancels
             # arrive. Cancel delivery is not required for this test —
@@ -316,6 +319,7 @@ async def test_3_scheduler_candidates_no_missed_cron_fires(
             cron="0 0 1 1 *",
         )
 
+        @override
         async def run(self) -> str:
             await valkey_client.incr(counter_key)
             return "ok"
@@ -464,6 +468,7 @@ async def test_200_parallel_update_progress_throttle_holds(
     class DummyProgTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self) -> str:
             return "ok"
 

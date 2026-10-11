@@ -10,6 +10,7 @@ core promise: "swarmq borrows, never closes").
 from __future__ import annotations
 
 import uuid
+from typing import override
 
 import aio_pika
 import pytest
@@ -46,6 +47,7 @@ async def test_injected_connection_and_client_roundtrip_and_caller_reuse(
     class InjectRoundtrip(Task):
         task_info = TaskInfo(name=f"inject_rt_{queue}", queues=[queue])
 
+        @override
         async def run(self) -> str:
             return "ok"
 
@@ -100,6 +102,7 @@ async def test_injected_pool_roundtrip_releases_to_pool(rabbitmq_url, valkey_url
     class InjectPoolTask(Task):
         task_info = TaskInfo(name=f"inject_pool_{queue}", queues=[queue])
 
+        @override
         async def run(self) -> str:
             return "ok"
 

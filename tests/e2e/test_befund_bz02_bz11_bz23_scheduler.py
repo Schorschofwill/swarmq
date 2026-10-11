@@ -30,6 +30,7 @@ import contextlib
 import time
 import uuid
 from collections.abc import AsyncIterator
+from typing import override
 
 import aio_pika
 import msgspec
@@ -129,6 +130,7 @@ async def test_bz02_get_result_of_delayed_task(rabbitmq_url, valkey_url):
     class DelayedTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self) -> str:
             return "done"
 
@@ -148,6 +150,7 @@ async def test_bz02_cancel_prevents_delayed_task(rabbitmq_url, valkey_url):
     class VictimTask(Task):
         task_info = TaskInfo(name=victim_name, queues=[queue])
 
+        @override
         async def run(self) -> None:
             nonlocal victim_ran
             victim_ran = True
@@ -155,6 +158,7 @@ async def test_bz02_cancel_prevents_delayed_task(rabbitmq_url, valkey_url):
     class MarkerTask(Task):
         task_info = TaskInfo(name=marker_name, queues=[queue])
 
+        @override
         async def run(self) -> None:
             marker_done.set()
 
@@ -177,6 +181,7 @@ async def test_bz02_unique_completion_flag_released_after_delayed_run(rabbitmq_u
     class UniqueTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue], unique_for=30)
 
+        @override
         async def run(self, key: int) -> None:
             nonlocal runs
             runs += 1
@@ -245,6 +250,7 @@ async def test_bz11_fire_of_removed_cron_task_dead_letters_with_ttl(rabbitmq_url
     class StillThere(Task):
         task_info = TaskInfo(name=_name("still_there"), queues=[queue])
 
+        @override
         async def run(self) -> None:
             return None
 
@@ -276,6 +282,7 @@ async def test_bz11_removed_cron_once_reported_is_held_by_the_leader(rabbitmq_ur
     class StillThere(Task):
         task_info = TaskInfo(name=_name("still_there"), queues=[queue])
 
+        @override
         async def run(self) -> None:
             return None
 
@@ -344,6 +351,7 @@ async def test_bz23_cancelled_task_waiting_longer_than_result_ttl_does_not_run(
     class VictimTask(Task):
         task_info = TaskInfo(name=victim_name, queues=[queue])
 
+        @override
         async def run(self) -> None:
             nonlocal victim_ran
             victim_ran = True
@@ -351,6 +359,7 @@ async def test_bz23_cancelled_task_waiting_longer_than_result_ttl_does_not_run(
     class MarkerTask(Task):
         task_info = TaskInfo(name=marker_name, queues=[queue])
 
+        @override
         async def run(self) -> None:
             marker_done.set()
 

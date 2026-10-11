@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, override
 
 # Attribute, die jeder LogRecord mitbringt -- alles andere ist ein Feld.
 _STANDARD_RECORD_ATTRS = frozenset(vars(logging.LogRecord("", logging.INFO, "", 0, "", (), None))) | {
@@ -30,6 +30,7 @@ class _CollectingHandler(logging.Handler):
         super().__init__(logging.DEBUG)
         self._entries = entries
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         entry: dict[str, Any] = {
             "event": record.msg,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import override
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -286,6 +287,7 @@ class TestSwarmQAutoDiscovery:
             class AddTask(Task):
                 task_info = TaskInfo(name="add", queues=["default"])
 
+                @override
                 async def run(self, a: int, b: int) -> int:
                     return a + b
 
@@ -574,6 +576,7 @@ class TestSwarmQMiddlewareAndSignals:
             class AddTask(Task):
                 task_info = TaskInfo(name="add", queues=["math"])
 
+                @override
                 async def run(self, a: int, b: int) -> int:
                     return a + b
 
@@ -587,9 +590,11 @@ class TestSwarmQMiddlewareAndSignals:
                     self.pre_calls: list[dict] = []
                     self.post_calls: list[dict] = []
 
+                @override
                 async def pre_enqueue(self, message: dict) -> None:
                     self.pre_calls.append(message)
 
+                @override
                 async def post_enqueue(self, message: dict) -> None:
                     self.post_calls.append(message)
 
@@ -642,6 +647,7 @@ class TestSwarmQMiddlewareAndSignals:
             class NoopTask(Task):
                 task_info = TaskInfo(name="noop", queues=["q"])
 
+                @override
                 async def run(self) -> str:
                     return "ok"
 
@@ -652,9 +658,11 @@ class TestSwarmQMiddlewareAndSignals:
                     self.pre_execute_calls: list[dict] = []
                     self.post_execute_calls: list[tuple[dict, object]] = []
 
+                @override
                 async def pre_execute(self, message: dict) -> None:
                     self.pre_execute_calls.append(dict(message))
 
+                @override
                 async def post_execute(self, message: dict, result: object = None) -> None:
                     self.post_execute_calls.append((dict(message), result))
 

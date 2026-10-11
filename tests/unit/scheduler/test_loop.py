@@ -72,6 +72,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import override
 from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
 
@@ -758,6 +759,7 @@ class TestSchedulerUniqueDedup:
                 cron="*/5 * * * *",
             )
 
+            @override
             async def run(self):
                 return None
 
@@ -794,6 +796,7 @@ class TestSchedulerUniqueDedup:
                 unique_until="completion",
             )
 
+            @override
             async def run(self):
                 return None
 
@@ -835,6 +838,7 @@ class TestSchedulerUniqueDedup:
                 unique_for=60,
             )
 
+            @override
             async def run(self):
                 return None
 
@@ -957,6 +961,7 @@ class TestSchedulerUniqueDedup:
                 unique_for=60,
             )
 
+            @override
             async def run(self):
                 return None
 
@@ -992,6 +997,7 @@ class TestSchedulerUniqueDedup:
                 unique_for=60,
             )
 
+            @override
             async def run(self):
                 return None
 
@@ -1070,6 +1076,7 @@ class TestSchedulerLoopLogging:
         class UniqueCron(Task):
             task_info = TaskInfo(name="dup_task", queues=["default"], cron="*/5 * * * *", unique_for=60)
 
+            @override
             async def run(self):
                 return None
 

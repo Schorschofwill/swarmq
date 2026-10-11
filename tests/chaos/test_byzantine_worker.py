@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from typing import override
 
 import msgpack
 import pytest
@@ -239,6 +240,7 @@ class TestByzantineWorker:
                 unique_for=60,
             )
 
+            @override
             async def run(self, value: int, mode: str = "") -> str:
                 results.append(f"canonical:{value}:{mode}")
                 return f"canonical:{value}:{mode}"
@@ -250,6 +252,7 @@ class TestByzantineWorker:
                 unique_for=60,
             )
 
+            @override
             async def run(self, value: int, mode: str = "") -> str:
                 results.append(f"divergent:{value}:{mode}")
                 return f"divergent:{value}:{mode}"

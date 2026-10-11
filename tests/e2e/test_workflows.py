@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
+from typing import override
 
 import pytest
 
@@ -61,18 +62,21 @@ async def test_chain_roundtrip(rabbitmq_url, valkey_url):
     class Step1(Task):
         task_info = TaskInfo(name=f"s1_{queue}", queues=[queue])
 
+        @override
         async def run(self, seed: str) -> str:
             return f"{seed}-1"
 
     class Step2(Task):
         task_info = TaskInfo(name=f"s2_{queue}", queues=[queue])
 
+        @override
         async def run(self, prev: str) -> str:
             return f"{prev}-2"
 
     class Step3(Task):
         task_info = TaskInfo(name=f"s3_{queue}", queues=[queue])
 
+        @override
         async def run(self, prev: str) -> str:
             return f"{prev}-3"
 
@@ -93,12 +97,14 @@ async def test_chord_roundtrip(rabbitmq_url, valkey_url):
     class Dl(Task):
         task_info = TaskInfo(name=f"dl_{queue}", queues=[queue])
 
+        @override
         async def run(self, n: int) -> int:
             return n * 10
 
     class Merge(Task):
         task_info = TaskInfo(name=f"merge_{queue}", queues=[queue])
 
+        @override
         async def run(self, results: list) -> int:
             return sum(results)
 
@@ -125,6 +131,7 @@ async def test_workflow_cancel_stops_chain(rabbitmq_url, valkey_url):
     class Slow1(Task):
         task_info = TaskInfo(name=f"slow1_{queue}", queues=[queue])
 
+        @override
         async def run(self) -> str:
             ran.append("slow1")
             return "1"
@@ -132,6 +139,7 @@ async def test_workflow_cancel_stops_chain(rabbitmq_url, valkey_url):
     class Slow2(Task):
         task_info = TaskInfo(name=f"slow2_{queue}", queues=[queue])
 
+        @override
         async def run(self, prev: str) -> str:
             ran.append("slow2")
             return "2"
@@ -167,6 +175,7 @@ async def test_workflow_cancel_stops_enqueued_group_members(
     class Member(Task):
         task_info = TaskInfo(name=f"member_{queue}", queues=[queue])
 
+        @override
         async def run(self, n: int) -> int:
             ran.append(n)
             return n
@@ -195,12 +204,14 @@ async def test_chain_step_failure_fails_workflow_with_liveness(rabbitmq_url, val
     class Boom(Task):
         task_info = TaskInfo(name=f"boom_{queue}", queues=[queue], max_retries=0)
 
+        @override
         async def run(self) -> str:
             raise ValueError("boom")
 
     class Never(Task):
         task_info = TaskInfo(name=f"never_{queue}", queues=[queue])
 
+        @override
         async def run(self, prev: str) -> str:
             step2_ran.set()
             return "never"
@@ -229,18 +240,21 @@ async def test_chord_header_failure_does_not_fire_body(rabbitmq_url, valkey_url)
     class Ok(Task):
         task_info = TaskInfo(name=f"ok_{queue}", queues=[queue])
 
+        @override
         async def run(self, n: int) -> int:
             return n
 
     class HeaderBoom(Task):
         task_info = TaskInfo(name=f"hboom_{queue}", queues=[queue], max_retries=0)
 
+        @override
         async def run(self, n: int) -> int:
             raise ValueError("header member failed")
 
     class Body(Task):
         task_info = TaskInfo(name=f"body_{queue}", queues=[queue])
 
+        @override
         async def run(self, results: list) -> int:
             body_ran.set()
             return sum(results)
@@ -275,12 +289,14 @@ async def test_group_with_composite_member_roundtrip(rabbitmq_url, valkey_url):
     class Double(Task):
         task_info = TaskInfo(name=f"double_{queue}", queues=[queue])
 
+        @override
         async def run(self, n: int) -> int:
             return n * 2
 
     class AddOne(Task):
         task_info = TaskInfo(name=f"addone_{queue}", queues=[queue])
 
+        @override
         async def run(self, n: int) -> int:
             return n + 1
 
@@ -303,18 +319,21 @@ async def test_chord_over_composite_header_member_roundtrip(rabbitmq_url, valkey
     class Double(Task):
         task_info = TaskInfo(name=f"cdouble_{queue}", queues=[queue])
 
+        @override
         async def run(self, n: int) -> int:
             return n * 2
 
     class AddOne(Task):
         task_info = TaskInfo(name=f"caddone_{queue}", queues=[queue])
 
+        @override
         async def run(self, n: int) -> int:
             return n + 1
 
     class Total(Task):
         task_info = TaskInfo(name=f"ctotal_{queue}", queues=[queue])
 
+        @override
         async def run(self, results: list) -> int:
             return sum(results)
 
@@ -346,18 +365,21 @@ async def test_workflow_steps_run_through_middleware_and_signals(rabbitmq_url, v
     class M1(Task):
         task_info = TaskInfo(name=f"m1_{queue}", queues=[queue])
 
+        @override
         async def run(self, seed: str) -> str:
             return f"{seed}-1"
 
     class M2(Task):
         task_info = TaskInfo(name=f"m2_{queue}", queues=[queue])
 
+        @override
         async def run(self, prev: str) -> str:
             return f"{prev}-2"
 
     class M3(Task):
         task_info = TaskInfo(name=f"m3_{queue}", queues=[queue])
 
+        @override
         async def run(self, prev: str) -> str:
             return f"{prev}-3"
 
@@ -367,9 +389,11 @@ async def test_workflow_steps_run_through_middleware_and_signals(rabbitmq_url, v
     task_enqueued: list[str] = []
 
     class Counting(Middleware):
+        @override
         async def pre_enqueue(self, message) -> None:
             pre_seen.append((message["step_path"], message["delivery_mode"]))
 
+        @override
         async def post_enqueue(self, message) -> None:
             post_seen.append(message["step_path"])
 
@@ -416,18 +440,21 @@ async def test_middleware_rejecting_a_group_member_fails_the_workflow(rabbitmq_u
     class Head(Task):
         task_info = TaskInfo(name=f"head_{queue}", queues=[queue])
 
+        @override
         async def run(self, seed: str) -> str:
             return seed
 
     class Leg(Task):
         task_info = TaskInfo(name=f"leg_{queue}", queues=[queue])
 
+        @override
         async def run(self, prev: str) -> str:
             return f"{prev}-leg"
 
     published: list[str] = []
 
     class RejectSecond(Middleware):
+        @override
         async def pre_enqueue(self, message) -> None:
             published.append(message["step_path"])
             if message["step_path"].endswith("g1"):

@@ -92,7 +92,7 @@ import os
 import threading
 import weakref
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, override
 
 import pytest
 import structlog
@@ -109,6 +109,7 @@ RECORDS: list[logging.LogRecord] = []
 class CollectingHandler(logging.Handler):
     """Per dictConfig (``"()"``) referenzierbarer Handler."""
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         RECORDS.append(record)
 
@@ -133,6 +134,7 @@ class _Stderr(io.StringIO):
         super().__init__()
         self.events = events
 
+    @override
     def write(self, text: str) -> int:
         if text.strip():
             self.events.append(("stderr", text.strip()))
@@ -194,6 +196,7 @@ def _register_logging_task() -> None:
     class LoggingTask(Task):
         task_info = TaskInfo(name="logging_task", queues=["q"])
 
+        @override
         async def run(self, tag: str) -> str:
             logging.getLogger("app.task").warning("task_line %s", tag)
             return "ok"
@@ -324,6 +327,7 @@ def test_builtin_child_takes_level_and_format_from_the_job(
     class Levels(Task):
         task_info = TaskInfo(name="logging_task", queues=["q"])
 
+        @override
         async def run(self, tag: str) -> str:
             logging.getLogger("app.task").warning("filtered_%s", tag)
             logging.getLogger("app.task").error("kept_%s", tag)
@@ -401,6 +405,7 @@ def test_user_structlog_reaches_the_inherited_app_handlers(events: list[Any]) ->
     class UsesStructlog(Task):
         task_info = TaskInfo(name="logging_task", queues=["q"])
 
+        @override
         async def run(self, tag: str) -> str:
             structlog.get_logger("app.user").warning("user_evt", tag=tag)
             return "ok"
@@ -447,6 +452,7 @@ class _ThreadRecordingHandler(logging.Handler):
         super().__init__()
         self.events = events
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         import threading
 
@@ -465,6 +471,7 @@ def test_swarmq_logs_reach_inherited_app_handlers_via_the_queue_before_the_resul
     class SwarmqLogging(Task):
         task_info = TaskInfo(name="logging_task", queues=["q"])
 
+        @override
         async def run(self, tag: str) -> str:
             get_logger("swarmq.tests.child_queue").warning("swarmq_in_task")
             return "ok"
@@ -491,6 +498,7 @@ def _register_context_task() -> None:
     class ContextTask(Task):
         task_info = TaskInfo(name="logging_task", queues=["q"])
 
+        @override
         async def run(self, tag: str) -> str:
             get_logger("swarmq.tests.child_context").warning("ctx_line", tag=tag)
             return "ok"
@@ -544,6 +552,7 @@ class _BlockedStderr(io.StringIO):
         super().__init__()
         self.opened = threading.Event()
 
+    @override
     def write(self, text: str) -> int:
         self.opened.wait()
         return super().write(text)
@@ -585,6 +594,7 @@ def test_a_blocked_stderr_delays_the_result_at_most_by_the_drain_timeout(
 class _BrokenChannel(_Channel):
     """Rueckkanal, dessen Ergebnisnachricht scheitert (Elternprozess weg)."""
 
+    @override
     def send(self, msg: tuple[Any, ...]) -> None:
         if msg[0] == "result":
             raise BrokenPipeError("pool gone")
@@ -844,6 +854,7 @@ class _LastResort(logging.Handler):
         super().__init__(logging.WARNING)
         self.messages: list[str] = []
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         self.messages.append(record.getMessage())
 

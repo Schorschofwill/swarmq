@@ -27,7 +27,7 @@ Test-Liste (jeder Requeue-Pfad nach gewonnenem Claim):
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -51,6 +51,7 @@ WF_ID = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"
 class LimitedTask(Task):
     task_info = TaskInfo(name="sfrq-limited", queues=["default"], rate_limit="10/m")
 
+    @override
     async def run(self) -> None:
         raise AssertionError("must not run")
 
@@ -58,6 +59,7 @@ class LimitedTask(Task):
 class LockedTask(Task):
     task_info = TaskInfo(name="sfrq-locked", queues=["default"], lock="the-lock", hard_timeout=30)
 
+    @override
     async def run(self) -> None:
         raise AssertionError("must not run")
 
@@ -65,6 +67,7 @@ class LockedTask(Task):
 class FailingTask(Task):
     task_info = TaskInfo(name="sfrq-failing", queues=["default"], max_retries=3)
 
+    @override
     async def run(self) -> None:
         raise RuntimeError("task boom")
 
@@ -181,6 +184,7 @@ async def test_result_store_failure_releases_the_claim_first(worker: Worker, bro
 class StepTask(Task):
     task_info = TaskInfo(name="sfrq-step", queues=["default"])
 
+    @override
     async def run(self) -> str:
         return "ok"
 
@@ -299,6 +303,7 @@ async def test_dead_letter_publish_failure_releases_the_claim_first(worker: Work
 class ExpiringTask(Task):
     task_info = TaskInfo(name="sfrq-expiring", queues=["default"], max_age=1)
 
+    @override
     async def run(self) -> None:
         raise AssertionError("must not run")
 

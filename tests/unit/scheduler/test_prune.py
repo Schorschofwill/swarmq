@@ -27,6 +27,7 @@
 from __future__ import annotations
 
 import dataclasses
+from typing import override
 
 import msgspec
 import pytest
@@ -199,6 +200,7 @@ class TestLeaderPrunes:
         class Nightly(Task):
             task_info = TaskInfo(name="nightly", queues=["default"])
 
+            @override
             async def run(self):
                 return None
 

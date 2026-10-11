@@ -22,6 +22,7 @@ import contextlib
 import subprocess
 import time
 import uuid
+from typing import override
 
 import pytest
 
@@ -140,6 +141,7 @@ class TestBrokerRestart:
         class SleepTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self, idx: int) -> int:
                 # Short work-body — enough to span the restart window.
                 await asyncio.sleep(0.2)
@@ -291,6 +293,7 @@ class TestBrokerRestart:
         class EchoTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self, value: str) -> str:
                 return value
 

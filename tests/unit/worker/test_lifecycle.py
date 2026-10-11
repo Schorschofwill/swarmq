@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import socket
 import time
+from typing import override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -71,6 +72,7 @@ def _default_payload(
 class ShutdownAddTask(Task):
     task_info = TaskInfo(name="shutdown_add", queues=["default"])
 
+    @override
     async def run(self, a: int, b: int) -> int:
         return a + b
 

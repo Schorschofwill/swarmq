@@ -37,6 +37,7 @@ import asyncio
 import dataclasses
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import override
 
 import msgspec
 import pytest
@@ -103,6 +104,7 @@ def _task(**info) -> type[Task]:
     class _T(Task):
         task_info = TaskInfo(**info)
 
+        @override
         async def run(self):
             return None
 

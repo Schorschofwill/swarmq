@@ -39,7 +39,7 @@ import sys
 import threading
 import weakref
 from collections.abc import Iterator
-from typing import Self
+from typing import Self, override
 
 import pytest
 
@@ -61,6 +61,7 @@ APP_RECORDS: list[logging.LogRecord] = []
 class AppHandler(logging.Handler):
     """Per dictConfig (``"()"``) referenzierbarer Handler der App."""
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         APP_RECORDS.append(record)
 
@@ -70,6 +71,7 @@ class BlockingAppHandler(AppHandler):
 
     RELEASE = threading.Event()
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         if record.getMessage() == "evt_r6":
             self.RELEASE.wait(3)
@@ -222,6 +224,7 @@ def _fake_swarmq(monkeypatch: pytest.MonkeyPatch) -> None:
 
         task_info = TaskInfo(name="app_wins_probe", queues=["default"])
 
+        @override
         async def run(self) -> None:
             pass
 

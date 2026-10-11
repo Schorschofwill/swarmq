@@ -30,7 +30,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
-from typing import Any
+from typing import Any, override
 
 import freezegun
 import pytest
@@ -145,6 +145,7 @@ class TestClockSkew:
                 queues=[queue],
             )
 
+            @override
             async def run(self) -> None:
                 return None
 
@@ -221,6 +222,7 @@ class TestClockSkew:
                 unique_for=30,  # 30s server-side TTL
             )
 
+            @override
             async def run(self, n: int) -> int:
                 return n
 

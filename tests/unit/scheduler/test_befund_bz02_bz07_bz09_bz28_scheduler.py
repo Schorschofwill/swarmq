@@ -18,6 +18,7 @@ Test-Liste:
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import override
 from unittest.mock import AsyncMock
 
 import msgspec
@@ -129,6 +130,7 @@ async def test_bz09_cron_unique_for_holds_on_leader_without_task_in_registry(
             unique_for=3600,
         )
 
+        @override
         async def run(self) -> None:
             return None
 

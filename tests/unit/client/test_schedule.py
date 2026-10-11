@@ -4,6 +4,7 @@ schedule/schedule_many, Delay/ETA, Unique/Dedup, Middleware+Signale."""
 from __future__ import annotations
 
 import uuid
+from typing import override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -444,9 +445,11 @@ class TestClientMiddlewareAndSignals:
                 self.pre_calls: list[dict] = []
                 self.post_calls: list[dict] = []
 
+            @override
             async def pre_enqueue(self, message: dict) -> None:
                 self.pre_calls.append(message)
 
+            @override
             async def post_enqueue(self, message: dict) -> None:
                 self.post_calls.append(message)
 
@@ -492,6 +495,7 @@ class TestClientMiddlewareAndSignals:
             def __init__(self) -> None:
                 self.pre_calls: list[dict] = []
 
+            @override
             async def pre_enqueue(self, message: dict) -> None:
                 self.pre_calls.append(message)
 
@@ -539,6 +543,7 @@ async def test_schedule_resolves_delivery_mode_from_registry(broker, backend):
     captured: list[dict] = []
 
     class CaptureMiddleware(Middleware):
+        @override
         async def pre_enqueue(self, message: dict) -> None:
             captured.append(dict(message))
 
@@ -575,6 +580,7 @@ async def test_schedule_default_delivery_mode_without_registry(broker, backend):
     captured: list[dict] = []
 
     class CaptureMiddleware(Middleware):
+        @override
         async def pre_enqueue(self, message: dict) -> None:
             captured.append(dict(message))
 
@@ -1500,6 +1506,7 @@ class TestClientUniqueScheduleMany:
         class BoomMiddleware(Middleware):
             call_count = 0
 
+            @override
             async def pre_enqueue(self, ctx):
                 type(self).call_count += 1
                 if type(self).call_count == 3:
@@ -1532,6 +1539,7 @@ class TestClientPriorityRouting:
                 priority=priority,  # type: ignore[arg-type]
             )
 
+            @override
             async def run(self) -> str:
                 return "ok"
 

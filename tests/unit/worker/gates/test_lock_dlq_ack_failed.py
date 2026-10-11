@@ -17,6 +17,7 @@ Test-Liste:
 from __future__ import annotations
 
 import uuid
+from typing import override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -34,6 +35,7 @@ pytestmark = pytest.mark.timeout(5)
 class _RenderFails(Task):
     task_info = TaskInfo(name="render_fails", queues=["default"], lock="user-{user_id}", hard_timeout=60)
 
+    @override
     async def run(self, user_id: int) -> None:
         return None
 
@@ -76,6 +78,7 @@ async def test_render_error_with_failed_ack_after_publish_is_terminal(worker, br
 class _Locked(Task):
     task_info = TaskInfo(name="locked_cap", queues=["default"], lock="resource", hard_timeout=60)
 
+    @override
     async def run(self) -> None:
         return None
 

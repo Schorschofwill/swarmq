@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from typing import override
 
 import pytest
 import valkey.asyncio as aio_valkey
@@ -89,6 +90,7 @@ class TestPreStartCancelIntegration:
         class SlowTask(Task):
             task_info = TaskInfo(name="slow_q", queues=[queue])
 
+            @override
             async def run(self) -> str:
                 await asyncio.sleep(5)
                 return "should-not-return"
@@ -157,6 +159,7 @@ class TestPreStartCancelIntegration:
         class FastTask(Task):
             task_info = TaskInfo(name="fast", queues=[queue])
 
+            @override
             async def run(self) -> str:
                 return "completed"
 
@@ -213,6 +216,7 @@ class TestPreStartCancelIntegration:
         class TraceTask(Task):
             task_info = TaskInfo(name="trace", queues=[queue])
 
+            @override
             async def run(self) -> int:
                 await asyncio.sleep(5)
                 return 1
@@ -264,6 +268,7 @@ class TestPreStartCancelIntegration:
                 retry_base_delay=1.0,  # 1s delay before retry
             )
 
+            @override
             async def run(self) -> str:
                 raise RuntimeError("first-run-fail")
 
@@ -303,6 +308,7 @@ class TestRunningCancelIntegration:
         class LongTask(Task):
             task_info = TaskInfo(name="long_run", queues=[queue])
 
+            @override
             async def run(self) -> str:
                 await asyncio.sleep(10)
                 return "should-not-return"
@@ -351,6 +357,7 @@ class TestRunningCancelIntegration:
                 hard_timeout=1,
             )
 
+            @override
             async def run(self) -> str:
                 await asyncio.sleep(10)
                 return "never"
@@ -401,6 +408,7 @@ class TestRunningCancelIntegration:
                 hard_timeout=30,
             )
 
+            @override
             async def run(self) -> str:
                 order.append("long_started")
                 await asyncio.sleep(10)
@@ -414,6 +422,7 @@ class TestRunningCancelIntegration:
                 hard_timeout=30,
             )
 
+            @override
             async def run(self) -> str:
                 order.append("short_ran")
                 return "ok"

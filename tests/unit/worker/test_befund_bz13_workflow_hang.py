@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import dataclasses
 import time
-from typing import Any
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -54,6 +54,7 @@ _WF_ID = "01890a5d-ac96-774b-bcce-b302099a8057"
 class RenderLocked(Task):
     task_info = TaskInfo(name="bz13_render", queues=["default"], lock="user-{user_id}", hard_timeout=60)
 
+    @override
     async def run(self, account_id: int) -> None:  # kwarg umbenannt: Template passt nicht mehr
         raise AssertionError("darf nicht laufen")
 
@@ -61,6 +62,7 @@ class RenderLocked(Task):
 class Expiring(Task):
     task_info = TaskInfo(name="bz13_expiring", queues=["default"], max_age=10)
 
+    @override
     async def run(self) -> None:
         raise AssertionError("darf nicht laufen")
 
@@ -68,6 +70,7 @@ class Expiring(Task):
 class Mutex(Task):
     task_info = TaskInfo(name="bz13_mutex", queues=["default"], lock="m", hard_timeout=60)
 
+    @override
     async def run(self) -> None:
         raise AssertionError("darf nicht laufen")
 

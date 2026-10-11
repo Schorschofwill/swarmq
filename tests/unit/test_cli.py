@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from typing import override
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -405,6 +406,7 @@ class TestRunWorkerAsync:
 
             task_info = TaskInfo(name="cli_hook_probe", queues=["default"])
 
+            @override
             async def run(self) -> None:
                 pass
 
@@ -432,6 +434,7 @@ class TestRunWorkerAsync:
 
             task_info = TaskInfo(name="cli_hook_probe_async", queues=["default"])
 
+            @override
             async def run(self) -> None:
                 pass
 
@@ -460,6 +463,7 @@ class TestRunWorkerAsync:
 
             task_info = TaskInfo(name="cli_hook_probe_fail", queues=["default"])
 
+            @override
             async def run(self) -> None:
                 pass
 
@@ -486,6 +490,7 @@ class TestRunWorkerAsync:
 
             task_info = TaskInfo(name="cli_hook_probe_missing", queues=["default"])
 
+            @override
             async def run(self) -> None:
                 pass
 
@@ -504,6 +509,7 @@ class TestRunWorkerAsync:
 
             task_info = TaskInfo(name="cli_hook_probe_nomod", queues=["default"])
 
+            @override
             async def run(self) -> None:
                 pass
 
@@ -524,6 +530,7 @@ class TestRunWorkerAsync:
 
             task_info = TaskInfo(name="cli_slot_probe", queues=["default"])
 
+            @override
             async def run(self) -> None:
                 pass
 
@@ -578,6 +585,7 @@ class TestRunWorkerAsync:
 
             task_info = TaskInfo(name="cli_settings_probe", queues=["default"])
 
+            @override
             async def run(self) -> None:
                 pass
 
@@ -617,6 +625,7 @@ class TestRunWorkerAsync:
 
             task_info = TaskInfo(name="cli_precedence_probe", queues=["default"])
 
+            @override
             async def run(self) -> None:
                 pass
 
@@ -658,6 +667,7 @@ class TestRunWorkerAsync:
 
             task_info = TaskInfo(name="cli_probe", queues=["default"])
 
+            @override
             async def run(self) -> None:
                 pass
 

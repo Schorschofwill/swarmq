@@ -24,6 +24,7 @@ from __future__ import annotations
 #       mit (``exc``): Traceback bzw. ``SystemExit``-Meldung auf fd 2 wie in
 #       ``console_main``
 import os
+from typing import override
 
 import pytest
 
@@ -580,6 +581,7 @@ class TestHardExitAfterTheDrain:
         class BlockedStderr(io.StringIO):
             opened = threading.Event()
 
+            @override
             def write(self, text: str) -> int:
                 self.opened.wait()
                 return super().write(text)

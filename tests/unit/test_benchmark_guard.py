@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from typing import override
 
 BENCH_PATH = Path(__file__).resolve().parents[2] / "benchmarks" / "bench.py"
 
@@ -50,6 +51,7 @@ def test_no_bare_async_for_on_queue_variable() -> None:
             # AsyncFor found inside such a scope is considered safe.
             self._iterator_context_depth = 0
 
+        @override
         def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
             has_iterator_ctx = any(
                 isinstance(item.context_expr, ast.Call)
@@ -65,6 +67,7 @@ def test_no_bare_async_for_on_queue_variable() -> None:
                 if has_iterator_ctx:
                     self._iterator_context_depth -= 1
 
+        @override
         def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
             # Only flag when iterating over a variable that looks like
             # an aio-pika Queue (named 'queue' or ending in '_queue') —
@@ -102,6 +105,7 @@ def test_all_channel_opens_use_bench_channel() -> None:
         def __init__(self) -> None:
             self._current_func: str | None = None
 
+        @override
         def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
             outer, self._current_func = self._current_func, node.name
             try:
@@ -109,6 +113,7 @@ def test_all_channel_opens_use_bench_channel() -> None:
             finally:
                 self._current_func = outer
 
+        @override
         def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
             # nested sync helpers don't matter, but keep the stack honest
             outer, self._current_func = self._current_func, node.name
@@ -117,6 +122,7 @@ def test_all_channel_opens_use_bench_channel() -> None:
             finally:
                 self._current_func = outer
 
+        @override
         def visit_Await(self, node: ast.Await) -> None:
             call = node.value
             if (  # noqa: SIM102

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from typing import override
 
 import pytest
 import valkey.asyncio as valkey_asyncio
@@ -47,6 +48,7 @@ class TestWorkerSchedulerIntegration:
         class NoopTask(Task):
             task_info = TaskInfo(name=f"sched_noop_{queue}", queues=[queue])
 
+            @override
             async def run(self):
                 return "ok"
 

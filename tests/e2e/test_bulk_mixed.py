@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
+from typing import override
 
 import pytest
 
@@ -89,12 +90,14 @@ async def test_schedule_many_mixed_success_and_failure(
     class SuccessTask(Task):
         task_info = TaskInfo(name=succ_name, queues=[queue], max_retries=0)
 
+        @override
         async def run(self, n: int) -> int:
             return n * 2
 
     class FailingTask(Task):
         task_info = TaskInfo(name=fail_name, queues=[queue], max_retries=0)
 
+        @override
         async def run(self, n: int) -> None:
             raise ValueError(f"boom-{n}")
 
@@ -147,6 +150,7 @@ async def test_schedule_many_mixed_success_and_cancellation(
     class SlowTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue], max_retries=0)
 
+        @override
         async def run(self, n: int) -> int:
             run_started.set()
             # Long enough that the cancel-monitor (poll every 200ms by
@@ -217,6 +221,7 @@ async def test_schedule_many_with_unique_dedup_returns_winner_ids(
             unique_for=60,  # seconds
         )
 
+        @override
         async def run(self, n: int) -> int:
             return n
 
@@ -273,6 +278,7 @@ async def test_schedule_many_survives_broker_reconnect_midway(
     class FastTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue], max_retries=0)
 
+        @override
         async def run(self, n: int) -> int:
             return n
 

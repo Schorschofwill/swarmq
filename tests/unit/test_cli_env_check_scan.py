@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+from typing import Any, override
 
 import pytest
 
@@ -34,6 +34,7 @@ class _SlowScan(_FakeValkey):
         super().__init__(keys)
         self.calls = 0
 
+    @override
     async def scan(
         self, cursor: int = 0, match: str | None = None, count: int | None = None
     ) -> tuple[int, list[bytes]]:

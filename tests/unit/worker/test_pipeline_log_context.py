@@ -22,7 +22,7 @@ Test-Liste:
 from __future__ import annotations
 
 import asyncio
-from typing import ClassVar
+from typing import ClassVar, override
 
 import pytest
 import structlog
@@ -44,6 +44,7 @@ _task_logger = get_logger("swarmq.tests.task_context")
 class _LoggingTask(Task):
     task_info = TaskInfo(name="logs_inside", queues=["default"])
 
+    @override
     async def run(self) -> str:
         _task_logger.info("inside_task")
         return "ok"
@@ -160,6 +161,7 @@ class _InterleavedTask(Task):
     started: ClassVar[dict[str, asyncio.Event]] = {}
     proceed: ClassVar[dict[str, asyncio.Event]] = {}
 
+    @override
     async def run(self, tag: str) -> str:
         _task_logger.info("before_wait", tag=tag)
         type(self).started[tag].set()

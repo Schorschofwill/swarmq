@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
+from typing import override
 
 import pytest
 
@@ -159,6 +160,7 @@ async def test_nested_topology_state_roundtrips_unchanged(backend):
     class Noop(Task):
         task_info = TaskInfo(name="noop_nested", queues=["default"])
 
+        @override
         async def run(self, *args) -> None:
             return None
 

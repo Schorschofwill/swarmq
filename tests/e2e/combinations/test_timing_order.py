@@ -38,7 +38,7 @@ import asyncio
 import contextlib
 import time
 import uuid
-from typing import Any
+from typing import Any, override
 
 import pytest
 import valkey.asyncio as valkey_asyncio
@@ -229,6 +229,7 @@ class TestCronCatchupUniqueCombo:
                 unique_until="completion",
             )
 
+            @override
             async def run(self) -> str:
                 nonlocal call_count
                 call_count += 1
@@ -300,6 +301,7 @@ class TestCronCatchupUniqueCombo:
                 unique_until="completion",
             )
 
+            @override
             async def run(self) -> str:
                 nonlocal call_count
                 call_count += 1
@@ -373,6 +375,7 @@ class TestCronCatchupUniqueCombo:
                 # No unique_for — each fire runs independently.
             )
 
+            @override
             async def run(self, fire_idx: int) -> int:
                 nonlocal call_count
                 call_count += 1
@@ -420,6 +423,7 @@ class TestCronCatchupUniqueCombo:
                 unique_until="completion",
             )
 
+            @override
             async def run(self, seq: int) -> int:
                 nonlocal call_count
                 call_count += 1
@@ -489,6 +493,7 @@ class TestCronCatchupRateLimitCombo:
                 rate_limit="10/s",
             )
 
+            @override
             async def run(self, idx: int) -> int:
                 nonlocal call_count
                 call_count += 1
@@ -540,6 +545,7 @@ class TestCronCatchupRateLimitCombo:
                 rate_limit="2/s",
             )
 
+            @override
             async def run(self, idx: int) -> int:
                 nonlocal call_count
                 call_count += 1
@@ -620,6 +626,7 @@ class TestCronCatchupRateLimitCombo:
                 rate_limit="1/s",
             )
 
+            @override
             async def run(self, idx: int) -> int:
                 completed_at.append(time.monotonic())
                 if len(completed_at) >= n_fires:
@@ -669,6 +676,7 @@ class TestCronCatchupRateLimitCombo:
                 rate_limit="1/s",
             )
 
+            @override
             async def run(self, idx: int) -> int:
                 nonlocal call_count
                 call_count += 1
@@ -742,6 +750,7 @@ class TestSoftTimeoutCancelRace:
                 hard_timeout=10,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 done.set()
                 return val + 1
@@ -795,6 +804,7 @@ class TestSoftTimeoutCancelRace:
                 hard_timeout=5,
             )
 
+            @override
             async def run(self) -> str:
                 started.set()
                 await asyncio.sleep(3)
@@ -858,6 +868,7 @@ class TestSoftTimeoutCancelRace:
                 max_retries=0,
             )
 
+            @override
             async def run(self) -> str:
                 started.set()
                 await asyncio.sleep(5)
@@ -924,6 +935,7 @@ class TestSoftTimeoutCancelRace:
                 max_retries=0,
             )
 
+            @override
             async def run(self) -> str:
                 started.set()
                 await asyncio.sleep(5)
@@ -1002,6 +1014,7 @@ class TestHardTimeoutRetryCombo:
                 retry_base_delay=0.2,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 nonlocal attempts
                 attempts += 1
@@ -1051,6 +1064,7 @@ class TestHardTimeoutRetryCombo:
                 retry_base_delay=0.1,
             )
 
+            @override
             async def run(self, payload: str) -> str:
                 nonlocal attempts
                 attempts += 1
@@ -1104,6 +1118,7 @@ class TestHardTimeoutRetryCombo:
                 lock=lock_name,
             )
 
+            @override
             async def run(self, tag: str) -> str:
                 nonlocal attempts
                 attempts += 1
@@ -1156,6 +1171,7 @@ class TestHardTimeoutRetryCombo:
                 retry_base_delay=0.1,
             )
 
+            @override
             async def run(self) -> str:
                 nonlocal attempts
                 attempts += 1
@@ -1220,6 +1236,7 @@ class TestMaxAgeSchedulerCombo:
                 cron="* * * * *",
             )
 
+            @override
             async def run(self) -> str:
                 done.set()
                 return "fresh"
@@ -1279,6 +1296,7 @@ class TestMaxAgeSchedulerCombo:
                 max_age=1,  # 1s — the message will be stale
             )
 
+            @override
             async def run(self) -> str:
                 nonlocal call_count
                 call_count += 1
@@ -1330,6 +1348,7 @@ class TestMaxAgeSchedulerCombo:
                 max_age=1,
             )
 
+            @override
             async def run(self, tag: str) -> str:
                 nonlocal call_count
                 call_count += 1
@@ -1408,6 +1427,7 @@ class TestRateLimitRetryBackoffCombo:
                 retry_base_delay=0.1,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 nonlocal call_count
                 call_count += 1
@@ -1458,6 +1478,7 @@ class TestRateLimitRetryBackoffCombo:
                 retry_base_delay=0.2,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 attempt_times.append(time.monotonic())
                 if len(attempt_times) <= 2:
@@ -1514,6 +1535,7 @@ class TestRateLimitRetryBackoffCombo:
                 retry_base_delay=0.1,
             )
 
+            @override
             async def run(self) -> str:
                 nonlocal attempts
                 attempts += 1
@@ -1563,6 +1585,7 @@ class TestRateLimitRetryBackoffCombo:
                 retry_base_delay=0.1,
             )
 
+            @override
             async def run(self, idx: int) -> int:
                 nonlocal call_count
                 call_count += 1
@@ -1637,6 +1660,7 @@ class TestPriorityLockCombo:
                 hard_timeout=10,
             )
 
+            @override
             async def run(self, tag: str) -> str:
                 results.append(f"high:{tag}")
                 if len(results) >= 2:
@@ -1652,6 +1676,7 @@ class TestPriorityLockCombo:
                 hard_timeout=10,
             )
 
+            @override
             async def run(self, tag: str) -> str:
                 results.append(f"norm:{tag}")
                 if len(results) >= 2:
@@ -1705,6 +1730,7 @@ class TestPriorityLockCombo:
                 hard_timeout=10,
             )
 
+            @override
             async def run(self) -> str:
                 completion_order.append("high")
                 if len(completion_order) >= 2:
@@ -1720,6 +1746,7 @@ class TestPriorityLockCombo:
                 hard_timeout=10,
             )
 
+            @override
             async def run(self) -> str:
                 completion_order.append("low")
                 if len(completion_order) >= 2:
@@ -1777,6 +1804,7 @@ class TestPriorityLockCombo:
                 hard_timeout=10,
             )
 
+            @override
             async def run(self, idx: int) -> int:
                 return idx
 
@@ -1789,6 +1817,7 @@ class TestPriorityLockCombo:
                 hard_timeout=10,
             )
 
+            @override
             async def run(self, idx: int) -> int:
                 all_done.set()
                 return idx + 100
@@ -1861,6 +1890,7 @@ class TestUniqueUntilStartRetryCombo:
                 unique_until="start",
             )
 
+            @override
             async def run(self, val: str) -> str:
                 nonlocal call_count
                 call_count += 1
@@ -1910,6 +1940,7 @@ class TestUniqueUntilStartRetryCombo:
                 unique_until="start",
             )
 
+            @override
             async def run(self, val: int) -> int:
                 nonlocal call_count
                 call_count += 1
@@ -1975,6 +2006,7 @@ class TestUniqueUntilStartRetryCombo:
                 retry_base_delay=0.5,
             )
 
+            @override
             async def run(self, label: str) -> str:
                 nonlocal call_count
                 call_count += 1
@@ -2039,6 +2071,7 @@ class TestUniqueUntilStartRetryCombo:
                 retry_base_delay=0.3,
             )
 
+            @override
             async def run(self, seq: int) -> int:
                 nonlocal call_count
                 call_count += 1

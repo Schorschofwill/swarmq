@@ -21,6 +21,7 @@ import contextlib
 import os
 import time
 import uuid
+from typing import override
 
 import httpx
 import psutil
@@ -119,6 +120,7 @@ async def test_1h_continuous_load_no_leaks(
     class SoakTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self) -> int:
             return 1
 

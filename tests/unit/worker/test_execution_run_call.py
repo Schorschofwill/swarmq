@@ -7,7 +7,7 @@ stand ausserhalb des try, ein TypeError entkam ``_handle_message``.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -22,6 +22,7 @@ from swarmq.worker.gates import GateContext, GateDeps
 class NeedsValue(Task):
     task_info = TaskInfo(name="needs_value_exec", queues=["q"])
 
+    @override
     async def run(self, value: str) -> str:
         return value
 
@@ -29,6 +30,7 @@ class NeedsValue(Task):
 class SyncRun(Task):
     task_info = TaskInfo(name="sync_run_exec", queues=["q"])
 
+    @override
     def run(self) -> int:  # type: ignore[override]  # absichtlich kein Coroutine
         return 1
 

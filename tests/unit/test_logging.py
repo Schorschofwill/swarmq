@@ -17,6 +17,7 @@ import io
 import json
 import logging
 import logging.handlers
+from typing import override
 
 import structlog
 
@@ -172,6 +173,7 @@ class _RaisingRepr:
     dessen ``__repr__`` wirft — ein fremder Record mit diesem Objekt in
     ``args`` liess den Formatter scheitern."""
 
+    @override
     def __repr__(self) -> str:
         raise RuntimeError("repr exploded")
 

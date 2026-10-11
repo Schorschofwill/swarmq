@@ -19,7 +19,7 @@ Test-Liste:
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, override
 
 import pytest
 import valkey.asyncio
@@ -114,10 +114,12 @@ class _HangingValkey(_FakeValkey):
         super().__init__()
         self.never = asyncio.Event()
 
+    @override
     async def config_get(self, pattern: str = "*", *args: Any, **kwargs: Any) -> dict[bytes, bytes]:
         await self.never.wait()
         return {}
 
+    @override
     async def info(self, section: str | None = None, *args: Any, **kwargs: Any) -> dict[str, Any]:
         await self.never.wait()
         return {}

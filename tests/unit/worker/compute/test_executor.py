@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, ClassVar
+from typing import Any, ClassVar, override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -47,6 +47,7 @@ class FakePool:
 class Plain(Task):
     task_info = TaskInfo(name="plain", queues=["q"])
 
+    @override
     async def run(self) -> int:
         return 1
 
@@ -55,6 +56,7 @@ class WithDi(Task):
     task_info = TaskInfo(name="with_di", queues=["q"])
     _dishka_injected_keys: ClassVar[list[str]] = ["x"]
 
+    @override
     async def run(self) -> int:
         return 1
 
@@ -236,6 +238,7 @@ async def test_start_and_aclose_delegate_to_pool(setup):
 class ComputeFireAndForget(Task):
     task_info = TaskInfo(name="compute_faf", queues=["q"], delivery=DeliveryMode.FIRE_AND_FORGET)
 
+    @override
     async def run(self) -> int:
         return 1
 

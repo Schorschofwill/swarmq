@@ -26,7 +26,7 @@ import asyncio
 import contextlib
 import uuid
 from collections.abc import AsyncIterator, Callable
-from typing import Any
+from typing import Any, override
 
 import pytest
 
@@ -57,6 +57,7 @@ def _tasks(queue: str, runs: list[str]) -> Any:
     class FailsOnce(Task):
         task_info = TaskInfo(name="bz08_fails_once", queues=[queue], max_retries=0)
 
+        @override
         async def run(self) -> str:
             runs.append("run")
             if len(runs) == 1:

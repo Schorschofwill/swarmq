@@ -30,7 +30,7 @@ Test-Liste:
 from __future__ import annotations
 
 import dataclasses
-from typing import Any
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -209,6 +209,7 @@ async def test_deferred_cron_fire_keeps_claim_open_and_unique_flag_held(broker, 
 class FailsOnce(Task):
     task_info = TaskInfo(name="grace_fails_once", queues=["default"], max_retries=3)
 
+    @override
     async def run(self) -> None:
         raise ValueError("boom")
 

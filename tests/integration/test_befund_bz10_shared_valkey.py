@@ -36,7 +36,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from typing import Any, ClassVar
+from typing import Any, ClassVar, override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -116,6 +116,7 @@ def _report_tasks() -> tuple[type[Task], type[Task]]:
         task_info = TaskInfo(name="bz10_send_report", queues=["app_a"], rate_limit="1/m")
         runs: ClassVar[list[str]] = []
 
+        @override
         async def run(self) -> None:
             type(self).runs.append("a")
 
@@ -123,6 +124,7 @@ def _report_tasks() -> tuple[type[Task], type[Task]]:
         task_info = TaskInfo(name="bz10_send_report", queues=["app_b"], rate_limit="1/m")
         runs: ClassVar[list[str]] = []
 
+        @override
         async def run(self) -> None:
             type(self).runs.append("b")
 
@@ -158,6 +160,7 @@ class _ExportA(Task):
     started: ClassVar[asyncio.Event]
     finish: ClassVar[asyncio.Event]
 
+    @override
     async def run(self) -> None:
         type(self).started.set()
         await type(self).finish.wait()
@@ -167,6 +170,7 @@ class _ExportB(Task):
     task_info = TaskInfo(name="bz10_export_b", queues=["app_b"], lock="export", hard_timeout=30)
     runs: ClassVar[list[str]] = []
 
+    @override
     async def run(self) -> None:
         type(self).runs.append("b")
 

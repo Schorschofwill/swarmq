@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
-from typing import Any
+from typing import Any, override
 
 import pytest
 
@@ -75,6 +75,7 @@ async def test_watch_progress_streams_updates(
     class StepperTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self) -> int:
             # 10 steps × 120ms = 1.2s total. Throttling at 500ms
             # means the client should observe at least 3 events
@@ -138,6 +139,7 @@ async def test_get_progress_polling_sees_terminal_state(
     class QuickTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self) -> str:
             await self.update_progress(1, 2, "half")
             await asyncio.sleep(0.05)
@@ -194,6 +196,7 @@ async def test_final_flush_bypasses_throttle_for_fast_task(
     class BurstTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self) -> str:
             # Entire loop completes well inside 500ms.
             for i in range(1, 4):

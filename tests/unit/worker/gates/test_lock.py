@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from typing import override
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -412,6 +413,7 @@ class FormatStringLockTask(Task):
         hard_timeout=60,
     )
 
+    @override
     async def run(self, user_id: int, amount: int) -> None:
         return None
 
@@ -533,6 +535,7 @@ class EmptyRenderingLockTask(Task):
         hard_timeout=60,
     )
 
+    @override
     async def run(self, tag: str) -> str:
         return tag
 

@@ -58,7 +58,7 @@ import signal as _signal
 import subprocess
 import time
 import uuid
-from typing import Any
+from typing import Any, override
 
 import pytest
 
@@ -216,6 +216,7 @@ class TestMaxConcurrencyOneRetryCombo:
                 retry_base_delay=0.1,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 nonlocal attempts
                 attempts += 1
@@ -259,6 +260,7 @@ class TestMaxConcurrencyOneRetryCombo:
                 retry_backoff="fixed",
             )
 
+            @override
             async def run(self, marker: str) -> str:
                 nonlocal run_count
                 run_count += 1
@@ -304,6 +306,7 @@ class TestMaxConcurrencyOneRetryCombo:
                 max_concurrency=1,
             )
 
+            @override
             async def run(self, tag: str) -> str:
                 nonlocal concurrent_count, max_concurrent_seen, completed
                 concurrent_count += 1
@@ -366,6 +369,7 @@ class TestLockMaxConcurrencySemaphoreCombo:
                 max_concurrency=2,
             )
 
+            @override
             async def run(self, tag: str) -> str:
                 nonlocal peak_concurrent, current, completed
                 current += 1
@@ -411,6 +415,7 @@ class TestLockMaxConcurrencySemaphoreCombo:
                 max_concurrency=1,
             )
 
+            @override
             async def run(self, tag: str) -> str:
                 nonlocal peak_concurrent, current, completed
                 current += 1
@@ -453,6 +458,7 @@ class TestLockMaxConcurrencySemaphoreCombo:
                 max_concurrency=1,
             )
 
+            @override
             async def run(self) -> str:
                 started_a.set()
                 await asyncio.sleep(0.5)
@@ -467,6 +473,7 @@ class TestLockMaxConcurrencySemaphoreCombo:
                 max_concurrency=1,
             )
 
+            @override
             async def run(self) -> str:
                 started_b.set()
                 await asyncio.sleep(0.5)
@@ -528,6 +535,7 @@ class TestRateLimitMaxConcurrencyCombo:
                 max_concurrency=2,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 done.set()
                 return val * 2
@@ -562,6 +570,7 @@ class TestRateLimitMaxConcurrencyCombo:
                 retry_base_delay=0.5,
             )
 
+            @override
             async def run(self, idx: int) -> int:
                 done.set()
                 return idx
@@ -789,6 +798,7 @@ class TestHotReloadInflightLockCombo:
                 hard_timeout=20,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 done.set()
                 return val + 1
@@ -823,6 +833,7 @@ class TestHotReloadInflightLockCombo:
                 hard_timeout=20,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 done2.set()
                 return val + 2
@@ -864,6 +875,7 @@ class TestHotReloadInflightLockCombo:
                 hard_timeout=15,
             )
 
+            @override
             async def run(self, seq: int) -> int:
                 nonlocal completed_count
                 await asyncio.sleep(0.1)
@@ -970,6 +982,7 @@ class TestBurstModeRetryPendingCombo:
                 queues=[queue],
             )
 
+            @override
             async def run(self, val: int) -> int:
                 done.set()
                 return val
@@ -1025,6 +1038,7 @@ class TestBurstModeRetryPendingCombo:
         class QuickBurstTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self, v: int) -> int:
                 done.set()
                 return v
@@ -1102,6 +1116,7 @@ class TestBurstModeRetryPendingCombo:
                 retry_backoff="fixed",
             )
 
+            @override
             async def run(self, val: int) -> int:
                 nonlocal attempts
                 attempts += 1
@@ -1376,6 +1391,7 @@ class TestSchedulerLeaderFailoverCombo:
         class ScheduledTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self) -> str:
                 done.set()
                 return "fired"
@@ -2067,6 +2083,7 @@ class TestHotReloadSchedulerLeaderCombo:
         class ReloadSchedTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self) -> str:
                 task_fired.set()
                 return "ok"

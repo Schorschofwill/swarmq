@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
+from typing import override
 
 import pytest
 import valkey.asyncio as aio_valkey
@@ -92,6 +93,7 @@ async def test_e2e_queued_cancel_full_stack(
     class SlowTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self) -> str:
             await asyncio.sleep(10)
             return "should-not-return"
@@ -140,6 +142,7 @@ async def test_e2e_faf_cancel_emits_signal_no_result(
             delivery=DeliveryMode.FIRE_AND_FORGET,
         )
 
+        @override
         async def run(self) -> None:
             await asyncio.sleep(10)
 
@@ -211,6 +214,7 @@ async def test_e2e_parallel_cancels_via_gather(
     class SleepTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self) -> str:
             await asyncio.sleep(10)
             return "nope"
@@ -269,6 +273,7 @@ async def test_e2e_cancel_in_retry_delay_full_stack(
             retry_base_delay=1.0,
         )
 
+        @override
         async def run(self) -> str:
             raise RuntimeError("will retry")
 
@@ -324,6 +329,7 @@ async def test_e2e_running_cancel_full_stack(
     class LongRun(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self) -> str:
             await asyncio.sleep(10)
             return "should-not-return"
@@ -384,6 +390,7 @@ async def test_e2e_cancel_with_lock_releases_for_successor(
             hard_timeout=30,
         )
 
+        @override
         async def run(self) -> str:
             await asyncio.sleep(30)
             return "no"
@@ -396,6 +403,7 @@ async def test_e2e_cancel_with_lock_releases_for_successor(
             hard_timeout=30,
         )
 
+        @override
         async def run(self) -> str:
             return "ok"
 
@@ -454,6 +462,7 @@ async def test_e2e_parallel_mixed_cancel_and_complete(
     class MixedTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self, sleep_s: float, marker: int) -> int:
             await asyncio.sleep(sleep_s)
             return marker
@@ -537,6 +546,7 @@ async def test_e2e_shutdown_during_running_cancel(
             hard_timeout=30,
         )
 
+        @override
         async def run(self) -> str:
             await asyncio.sleep(30)
             return "no"

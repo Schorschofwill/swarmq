@@ -86,7 +86,7 @@ import threading
 import types
 import weakref
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, override
 
 import pytest
 import structlog
@@ -111,6 +111,7 @@ FILE_RECORDS: list[logging.LogRecord] = []
 class RecordingHandler(logging.Handler):
     """Per dictConfig-Datei (``"()"``) referenzierbarer Sammel-Handler."""
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         FILE_RECORDS.append(record)
 
@@ -125,6 +126,7 @@ class BlockingRecordingHandler(RecordingHandler):
     """Haelt den Listener der dictConfig beim ersten Eintrag fest, bis
     ``FILE_HANDLER_RELEASE`` gesetzt ist."""
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         if not FILE_HANDLER_ENTERED.is_set():
             FILE_HANDLER_ENTERED.set()
@@ -139,6 +141,7 @@ class PoisonFilter(logging.Filter):
     """Filter am Ziel-Handler, der beim Record ``evt_poison`` wirft -- etwa
     weil eine Kontextvariable fehlt (Analyse S2)."""
 
+    @override
     def filter(self, record: logging.LogRecord) -> bool:
         if record.getMessage() == "evt_poison":
             raise KeyError("correlation_id")
@@ -167,6 +170,7 @@ class ReleasingQueue(queue.Queue[object]):
     """Gibt den blockierten Listener frei, sobald blockierend eingereiht
     wird -- ``put_nowait`` (``block=False``) gibt nicht frei."""
 
+    @override
     def put(self, item: object, block: bool = True, timeout: float | None = None) -> None:
         if block:
             FILE_HANDLER_RELEASE.set()
@@ -184,6 +188,7 @@ class _Stderr(io.StringIO):
         super().__init__()
         self._tty = tty
 
+    @override
     def isatty(self) -> bool:
         return self._tty
 
@@ -900,6 +905,7 @@ class GateRecordingHandler(RecordingHandler):
     """Haelt den Listener der dictConfig bei jedem Record ``evt_hold_*`` fest,
     bis dessen Freigabe in ``GATE_RELEASE`` gesetzt ist."""
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         msg = record.getMessage()
         if msg.startswith("evt_hold_"):

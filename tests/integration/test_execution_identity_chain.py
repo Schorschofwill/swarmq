@@ -22,7 +22,7 @@ import contextlib
 import time
 import uuid
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, override
 
 import pytest
 
@@ -52,6 +52,7 @@ def _tasks(queue: str, attempts: list[int]) -> Any:
     class RetriesOnce(Task):
         task_info = TaskInfo(name="idchain_retries_once", queues=[queue], max_retries=1, retry_base_delay=1.0)
 
+        @override
         async def run(self) -> str:
             attempts.append(len(attempts) + 1)
             if len(attempts) == 1:

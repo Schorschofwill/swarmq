@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from typing import override
 
 import pytest
 
@@ -45,6 +46,7 @@ class TestSchedfireDedupIntegration:
         class PingTask(Task):
             task_info = TaskInfo(name="sf_ping", queues=[queue])
 
+            @override
             async def run(self) -> str:
                 nonlocal call_count
                 call_count += 1
@@ -128,6 +130,7 @@ class TestSchedfireDedupIntegration:
                 retry_base_delay=0.5,
             )
 
+            @override
             async def run(self) -> str:
                 nonlocal call_count
                 call_count += 1

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
+from typing import override
 
 import pytest
 
@@ -38,6 +39,7 @@ async def test_fire_and_forget(rabbitmq_url: str, valkey_url: str) -> None:
             delivery=DeliveryMode.FIRE_AND_FORGET,
         )
 
+        @override
         async def run(self) -> str:
             executed.set()
             return "ignored"
@@ -94,6 +96,7 @@ async def test_retry_exhaustion_dlq(rabbitmq_url: str, valkey_url: str) -> None:
             retry_base_delay=0.3,
         )
 
+        @override
         async def run(self) -> None:
             nonlocal attempt_count
             attempt_count += 1
@@ -168,6 +171,7 @@ async def test_retry_backoff_success(rabbitmq_url: str, valkey_url: str) -> None
             retry_base_delay=0.3,
         )
 
+        @override
         async def run(self) -> str:
             nonlocal attempt_count
             attempt_count += 1
@@ -224,6 +228,7 @@ async def test_soft_timeout_retry(rabbitmq_url: str, valkey_url: str) -> None:
             retry_base_delay=0.3,
         )
 
+        @override
         async def run(self) -> str:
             nonlocal attempt_count
             attempt_count += 1
@@ -271,6 +276,7 @@ async def test_graceful_shutdown(rabbitmq_url: str, valkey_url: str) -> None:
     class SlowTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self) -> str:
             await asyncio.sleep(1)
             return "completed during shutdown"

@@ -15,7 +15,7 @@ import asyncio
 import contextlib
 import math
 import uuid
-from typing import Any
+from typing import Any, override
 
 import pytest
 
@@ -111,6 +111,7 @@ async def test_5mb_task_args_roundtrip(
     class BigArgsTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue], max_retries=0)
 
+        @override
         async def run(self, blob_hex: str) -> int:
             return len(blob_hex)
 
@@ -136,6 +137,7 @@ async def test_10mb_result_payload_roundtrip(
     class BigResultTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue], max_retries=0)
 
+        @override
         async def run(self) -> str:
             return "z" * (10 * 1024 * 1024)
 
@@ -173,6 +175,7 @@ async def test_unicode_args_and_result_roundtrip(
     class UnicodeTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue], max_retries=0)
 
+        @override
         async def run(self, data: dict) -> dict:
             # Echo + add a marker so we know the worker actually
             # received the same bytes (not a re-encoded variant).
@@ -213,6 +216,7 @@ async def test_empty_containers_and_none_values_roundtrip(
     class EmptyTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue], max_retries=0)
 
+        @override
         async def run(self, data: dict) -> dict:
             return data
 
@@ -241,6 +245,7 @@ async def test_deeply_nested_dict_roundtrip(
     class NestedTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue], max_retries=0)
 
+        @override
         async def run(self, data: dict) -> str:
             cur: Any = data
             depth = 0
@@ -284,6 +289,7 @@ async def test_float_edge_values_roundtrip(
     class FloatTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue], max_retries=0)
 
+        @override
         async def run(self, data: dict) -> dict:
             return data
 
@@ -325,6 +331,7 @@ async def test_canonical_encode_rejects_nan_in_unique_args(
             unique_for=10,
         )
 
+        @override
         async def run(self, x: float) -> float:
             return x
 
@@ -356,6 +363,7 @@ async def test_1mb_progress_message_field(
     class BigProgressTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue], max_retries=0)
 
+        @override
         async def run(self) -> str:
             await self.update_progress(1, 1, big_msg)
             return "ok"

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from typing import override
 
 import pytest
 
@@ -49,6 +50,7 @@ async def test_burst_exits_when_queue_empty(
     class NopTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue], max_retries=0)
 
+        @override
         async def run(self) -> str:
             return "ok"
 
@@ -87,6 +89,7 @@ async def test_burst_drains_queue_then_exits(
     class DrainTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue], max_retries=0)
 
+        @override
         async def run(self, n: int) -> int:
             completed.append(n)
             if len(completed) >= 5:
@@ -137,6 +140,7 @@ async def test_burst_waits_for_inflight_before_exit(
     class SlowTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue], max_retries=0)
 
+        @override
         async def run(self) -> str:
             started.set()
             await asyncio.sleep(2.0)

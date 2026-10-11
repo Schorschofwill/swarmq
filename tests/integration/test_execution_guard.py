@@ -19,7 +19,7 @@ import asyncio
 import contextlib
 import uuid
 from collections.abc import AsyncIterator, Callable
-from typing import Any
+from typing import Any, override
 
 import pytest
 
@@ -58,6 +58,7 @@ def _tasks(queue: str, runs: list[str]) -> Any:
     class Counted(Task):
         task_info = TaskInfo(name="guard_counted", queues=[queue])
 
+        @override
         async def run(self) -> str:
             runs.append("run")
             return "ok"
@@ -65,6 +66,7 @@ def _tasks(queue: str, runs: list[str]) -> Any:
     class Failing(Task):
         task_info = TaskInfo(name="guard_failing", queues=[queue], max_retries=0)
 
+        @override
         async def run(self) -> str:
             runs.append("run")
             if len(runs) == 1:

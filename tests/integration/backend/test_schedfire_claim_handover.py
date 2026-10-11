@@ -40,7 +40,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -65,6 +65,7 @@ HOLD: dict[str, asyncio.Event] = {}
 class FireTask(Task):
     task_info = TaskInfo(name="fire-task", queues=["default"])
 
+    @override
     async def run(self) -> str:
         RUNS.append("run")
         if HOLD:

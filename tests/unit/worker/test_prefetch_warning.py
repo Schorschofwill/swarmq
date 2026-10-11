@@ -18,7 +18,7 @@ Test-Liste:
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, override
 
 import pytest
 
@@ -33,6 +33,7 @@ pytestmark = [pytest.mark.timeout(5)]
 class SlowTask(Task):
     task_info = TaskInfo(name="bz20-slow", queues=["a"], hard_timeout=1000)
 
+    @override
     async def run(self) -> None:
         return None
 

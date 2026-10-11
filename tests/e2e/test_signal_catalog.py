@@ -21,7 +21,7 @@ import contextlib
 import re
 import time
 import uuid
-from typing import Any
+from typing import Any, override
 
 import pytest
 
@@ -299,6 +299,7 @@ async def test_signal_task_enqueued(
     class Noop(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self) -> str:
             return "ok"
 
@@ -338,6 +339,7 @@ async def test_signal_task_started(
     class Noop(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self) -> str:
             return "ok"
 
@@ -380,6 +382,7 @@ async def test_signal_task_completed(
     class Noop(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self) -> str:
             return "ok"
 
@@ -431,6 +434,7 @@ async def test_signal_task_failed(
             retry_base_delay=0.1,
         )
 
+        @override
         async def run(self) -> None:
             raise ValueError("boom-failed")
 
@@ -492,6 +496,7 @@ async def test_signal_task_retrying(
             retry_base_delay=0.3,
         )
 
+        @override
         async def run(self) -> str:
             # Fail the first attempt, succeed on the retry.
             # Use a module-scope counter via class attribute.
@@ -546,6 +551,7 @@ async def test_signal_task_cancelled(
     class SlowTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self) -> str:
             await asyncio.sleep(10)
             return "no"
@@ -595,6 +601,7 @@ async def test_signal_task_duplicate_detected(
             unique_for=60,
         )
 
+        @override
         async def run(self, x: int) -> int:
             return x
 
@@ -641,6 +648,7 @@ async def test_signal_task_rate_limited(
             rate_limit="1/h",  # 1 per hour — second immediate fires limiter
         )
 
+        @override
         async def run(self) -> str:
             return "ok"
 
@@ -698,6 +706,7 @@ async def test_signal_task_locked(
             hard_timeout=30,
         )
 
+        @override
         async def run(self) -> str:
             await asyncio.sleep(5)
             return "held"
@@ -710,6 +719,7 @@ async def test_signal_task_locked(
             hard_timeout=30,
         )
 
+        @override
         async def run(self) -> str:
             return "fast"
 
@@ -769,6 +779,7 @@ async def test_signal_task_expired(
             max_age=10,
         )
 
+        @override
         async def run(self) -> str:  # pragma: no cover — never runs
             return "should_not_run"
 
@@ -1117,12 +1128,14 @@ async def test_signal_workflow_step_enqueued(
     class First(Task):
         task_info = TaskInfo(name=first, queues=[queue])
 
+        @override
         async def run(self) -> str:
             return "one"
 
     class Second(Task):
         task_info = TaskInfo(name=second, queues=[queue])
 
+        @override
         async def run(self, prev: str) -> str:
             return f"{prev}-two"
 

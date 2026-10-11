@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+from typing import override
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -83,13 +84,16 @@ async def test_pre_and_post_execution_called(broker, backend, config):
     class LifecycleTask(Task):
         task_info = TaskInfo(name="lifecycle", queues=["default"])
 
+        @override
         async def pre_execution(self) -> None:
             call_order.append("pre")
 
+        @override
         async def run(self) -> str:
             call_order.append("run")
             return "ok"
 
+        @override
         async def post_execution(self) -> None:
             call_order.append("post")
 
@@ -124,6 +128,7 @@ async def test_semaphore_limits_concurrency(broker, backend, config):
     class SlowTask(Task):
         task_info = TaskInfo(name="slow", queues=["default"])
 
+        @override
         async def run(self) -> None:
             nonlocal max_concurrent, current
             async with lock:
@@ -153,6 +158,7 @@ async def test_result_ttl_zero_skips_store(broker, backend, config):
     class NoStoreTask(Task):
         task_info = TaskInfo(name="nostore", queues=["default"], result_ttl=0)
 
+        @override
         async def run(self) -> str:
             return "ignored"
 
@@ -177,6 +183,7 @@ async def test_task_exception_stores_error_result(broker, backend, config):
     class FailTask(Task):
         task_info = TaskInfo(name="fail", queues=["default"])
 
+        @override
         async def run(self) -> None:
             raise ValueError("boom")
 
@@ -208,12 +215,15 @@ async def test_pre_execution_raises_skips_post(broker, backend, config):
     class PreFailTask(Task):
         task_info = TaskInfo(name="prefail", queues=["default"])
 
+        @override
         async def pre_execution(self) -> None:
             raise RuntimeError("pre failed")
 
+        @override
         async def run(self) -> str:
             return "never"
 
+        @override
         async def post_execution(self) -> None:
             nonlocal post_called
             post_called = True
@@ -244,9 +254,11 @@ async def test_post_execution_raises_overwrites_success(broker, backend, config)
     class PostFailTask(Task):
         task_info = TaskInfo(name="postfail", queues=["default"])
 
+        @override
         async def run(self) -> str:
             return "ok"
 
+        @override
         async def post_execution(self) -> None:
             raise RuntimeError("post failed")
 
@@ -275,6 +287,7 @@ async def test_result_serialization_error_stores_error(broker, backend, config):
     class BadResultTask(Task):
         task_info = TaskInfo(name="badresult", queues=["default"])
 
+        @override
         async def run(self) -> object:
             return object()  # not serializable by msgpack
 
@@ -379,6 +392,7 @@ async def test_none_return_stored(broker, backend, config):
     class NoneTask(Task):
         task_info = TaskInfo(name="nonetask", queues=["default"])
 
+        @override
         async def run(self) -> None:
             return None
 
@@ -406,6 +420,7 @@ async def test_semaphore_released_on_error(broker, backend, config):
     class ExplodeTask(Task):
         task_info = TaskInfo(name="explode", queues=["default"])
 
+        @override
         async def run(self) -> None:
             raise RuntimeError("kaboom")
 
@@ -508,6 +523,7 @@ async def test_start_declares_all_config_queues(broker, backend):
     class MultiTask(Task):
         task_info = TaskInfo(name="multi", queues=["q1", "q2", "q3"])
 
+        @override
         async def run(self) -> None:
             pass
 
@@ -533,6 +549,7 @@ async def test_result_ttl_from_task_info(broker, backend, config):
     class TtlTask(Task):
         task_info = TaskInfo(name="ttltask", queues=["default"], result_ttl=300)
 
+        @override
         async def run(self) -> str:
             return "ttl"
 
@@ -571,6 +588,7 @@ async def test_handle_message_binds_contextvars(broker, backend, config):
     class CapTask(Task):
         task_info = TaskInfo(name="captask", queues=["default"])
 
+        @override
         async def run(self) -> str:
             captured_ctx.update(structlog.contextvars.get_contextvars())
             return "ok"
@@ -630,6 +648,7 @@ async def test_fire_and_forget_acks_before_execution(broker, backend, config):
     class FnfTask(Task):
         task_info = TaskInfo(name="fnf", queues=["default"], delivery=DeliveryMode.FIRE_AND_FORGET)
 
+        @override
         async def run(self) -> str:
             nonlocal ack_happened_before_run
             # At the time run() executes, ack should already have been called
@@ -656,6 +675,7 @@ async def test_at_least_once_acks_after_execution(broker, backend, config):
     class AloTask(Task):
         task_info = TaskInfo(name="alo", queues=["default"], delivery=DeliveryMode.AT_LEAST_ONCE)
 
+        @override
         async def run(self) -> str:
             nonlocal ack_count_during_run
             ack_count_during_run = broker.ack.await_count
@@ -687,6 +707,7 @@ async def test_fire_and_forget_with_explicit_result_ttl_stores_result(broker, ba
             result_ttl=3600,
         )
 
+        @override
         async def run(self) -> str:
             return "stored"
 
@@ -718,6 +739,7 @@ async def test_fire_and_forget_without_result_ttl_skips_storage(broker, backend,
             # result_ttl defaults to None
         )
 
+        @override
         async def run(self) -> str:
             return "not stored"
 
@@ -745,6 +767,7 @@ async def test_fire_and_forget_exception_logged_no_nack(broker, backend, config)
             delivery=DeliveryMode.FIRE_AND_FORGET,
         )
 
+        @override
         async def run(self) -> None:
             raise RuntimeError("fnf boom")
 
@@ -773,6 +796,7 @@ async def test_delivery_mode_default_is_at_least_once(broker, backend, config):
     class DefaultDeliveryTask(Task):
         task_info = TaskInfo(name="default_delivery", queues=["default"])
 
+        @override
         async def run(self) -> str:
             return "ok"
 
@@ -785,6 +809,7 @@ async def test_delivery_mode_default_is_at_least_once(broker, backend, config):
     class DefaultDeliveryTask2(Task):
         task_info = TaskInfo(name="default_delivery2", queues=["default"])
 
+        @override
         async def run(self) -> str:
             nonlocal ack_count_during_run
             ack_count_during_run = broker.ack.await_count
@@ -813,6 +838,7 @@ async def test_retry_first_failure_publishes_to_delay_queue(broker, backend, con
     class RetryTask(Task):
         task_info = TaskInfo(name="retry_task", queues=["default"], max_retries=3, retry_base_delay=1.0)
 
+        @override
         async def run(self) -> None:
             raise RuntimeError("transient")
 
@@ -849,6 +875,7 @@ async def test_retry_count_incremented_in_headers(broker, backend, config):
     class RetryTask(Task):
         task_info = TaskInfo(name="retry_inc", queues=["default"], max_retries=3, retry_base_delay=1.0)
 
+        @override
         async def run(self) -> None:
             raise RuntimeError("fail")
 
@@ -888,6 +915,7 @@ async def test_retries_exhausted_sends_to_dlq(broker, backend, config):
     class RetryTask(Task):
         task_info = TaskInfo(name="retry_exhaust", queues=["default"], max_retries=2)
 
+        @override
         async def run(self) -> None:
             raise RuntimeError("still broken")
 
@@ -920,6 +948,7 @@ async def test_retry_exception_overrides_backoff_delay(broker, backend, config):
     class RetryDelayTask(Task):
         task_info = TaskInfo(name="retry_delay", queues=["default"], max_retries=3, retry_base_delay=1.0)
 
+        @override
         async def run(self) -> None:
             raise Retry(delay=60)
 
@@ -949,6 +978,7 @@ async def test_noretry_exception_sends_to_dlq_directly(broker, backend, config):
     class NoRetryTask(Task):
         task_info = TaskInfo(name="noretry_task", queues=["default"], max_retries=10)
 
+        @override
         async def run(self) -> None:
             raise NoRetry("bad input")
 
@@ -982,6 +1012,7 @@ async def test_retry_exceptions_mismatch_sends_to_dlq(broker, backend, config):
             retry_exceptions=[ConnectionError],
         )
 
+        @override
         async def run(self) -> None:
             raise ValueError("not retryable")
 
@@ -1014,6 +1045,7 @@ async def test_retry_exceptions_match_retries(broker, backend, config):
             retry_exceptions=[ConnectionError],
         )
 
+        @override
         async def run(self) -> None:
             raise ConnectionError("connection lost")
 
@@ -1052,6 +1084,7 @@ async def test_max_retries_zero_error_routes_to_dlq(broker, backend, config):
         task_info = TaskInfo(name="no_retry_default", queues=["default"])
         # max_retries defaults to 0
 
+        @override
         async def run(self) -> None:
             raise RuntimeError("error without retry")
 
@@ -1096,6 +1129,7 @@ async def test_fire_and_forget_not_retried(broker, backend, config):
             max_retries=5,
         )
 
+        @override
         async def run(self) -> None:
             raise RuntimeError("fnf failure")
 
@@ -1139,6 +1173,7 @@ async def test_notify_result_after_error(broker, backend, config):
     class ErrorTask(Task):
         task_info = TaskInfo(name="error_notify", queues=["default"])
 
+        @override
         async def run(self) -> None:
             raise ValueError("task failed")
 
@@ -1159,6 +1194,7 @@ async def test_notify_result_after_dlq(broker, backend, config):
     class DlqTask(Task):
         task_info = TaskInfo(name="dlq_notify", queues=["default"], max_retries=1)
 
+        @override
         async def run(self) -> None:
             raise RuntimeError("permanent failure")
 
@@ -1184,6 +1220,7 @@ async def test_notify_result_skipped_when_result_ttl_zero(broker, backend, confi
     class NoTtlTask(Task):
         task_info = TaskInfo(name="no_ttl_notify", queues=["default"], result_ttl=0)
 
+        @override
         async def run(self) -> str:
             return "ignored"
 
@@ -1206,6 +1243,7 @@ async def test_notify_result_failure_does_not_block_ack(broker, backend, config)
     class NotifyFailTask(Task):
         task_info = TaskInfo(name="notify_fail", queues=["default"])
 
+        @override
         async def run(self) -> str:
             return "ok"
 
@@ -1266,6 +1304,7 @@ class TestWorkerMiddlewareAndSignals:
         class OrderTask(Task):
             task_info = TaskInfo(name="order_pre", queues=["default"])
 
+            @override
             async def run(self) -> str:
                 call_order.append("run")
                 return "ok"
@@ -1293,6 +1332,7 @@ class TestWorkerMiddlewareAndSignals:
         class GoodTask(Task):
             task_info = TaskInfo(name="good_post", queues=["default"])
 
+            @override
             async def run(self) -> int:
                 return 42
 
@@ -1324,9 +1364,11 @@ class TestWorkerMiddlewareAndSignals:
         class PostFailTask(Task):
             task_info = TaskInfo(name="post_fail_hook", queues=["default"])
 
+            @override
             async def run(self) -> str:
                 return "ok"
 
+            @override
             async def post_execution(self) -> None:
                 raise RuntimeError("post failed")
 
@@ -1357,6 +1399,7 @@ class TestWorkerMiddlewareAndSignals:
         class BoomTask(Task):
             task_info = TaskInfo(name="boom_hook", queues=["default"])
 
+            @override
             async def run(self) -> None:
                 raise ValueError("boom")
 
@@ -1392,6 +1435,7 @@ class TestWorkerMiddlewareAndSignals:
                 retry_base_delay=1.0,
             )
 
+            @override
             async def run(self) -> None:
                 raise RuntimeError("transient")
 
@@ -1433,6 +1477,7 @@ class TestWorkerMiddlewareAndSignals:
                 retry_base_delay=1.0,
             )
 
+            @override
             async def run(self) -> None:
                 raise RuntimeError("boom")
 
@@ -1470,6 +1515,7 @@ class TestWorkerMiddlewareAndSignals:
                 max_retries=2,
             )
 
+            @override
             async def run(self) -> None:
                 raise RuntimeError("still broken")
 
@@ -1508,6 +1554,7 @@ class TestWorkerMiddlewareAndSignals:
                 retry_base_delay=1.0,
             )
 
+            @override
             async def run(self) -> None:
                 raise RuntimeError("transient")
 
@@ -1600,6 +1647,7 @@ class TestWorkerMiddlewareAndSignals:
         class FailSig(Task):
             task_info = TaskInfo(name="fail_sig", queues=["default"])
 
+            @override
             async def run(self) -> None:
                 raise ValueError("bad thing")
 
@@ -1637,6 +1685,7 @@ class TestWorkerMiddlewareAndSignals:
                 retry_base_delay=1.0,
             )
 
+            @override
             async def run(self) -> None:
                 raise RuntimeError("transient")
 
@@ -1706,6 +1755,7 @@ class TestWorkerMiddlewareAndSignals:
         class KwTask(Task):
             task_info = TaskInfo(name="kw_task", queues=["default"])
 
+            @override
             async def run(self, *args, **kwargs) -> str:
                 return "ok"
 
@@ -1831,6 +1881,7 @@ class TestWorkerMiddlewareAndSignals:
                 max_retries=2,
             )
 
+            @override
             async def run(self) -> None:
                 raise ValueError("boom")
 
@@ -1870,9 +1921,11 @@ class TestWorkerMiddlewareAndSignals:
         captured: list[tuple[str, dict]] = []
 
         class Spy(Middleware):
+            @override
             async def pre_execute(self, message: dict) -> None:
                 captured.append(("pre", dict(message)))
 
+            @override
             async def post_execute(self, message: dict, result: object = None) -> None:
                 captured.append(("post", dict(message)))
 
@@ -2049,6 +2102,7 @@ class _SlowTask(Task):
 
     task_info = TaskInfo(name="slow_run", queues=["default"])
 
+    @override
     async def run(self) -> str:
         await asyncio.sleep(5)
         return "completed"
@@ -2154,6 +2208,7 @@ class TestRunningCancelInHandleMessage:
                 retry_base_delay=1.0,
             )
 
+            @override
             async def run(self) -> str:
                 await asyncio.sleep(5)
                 return "x"
@@ -2232,6 +2287,7 @@ class TestRunningCancelInHandleMessage:
                 delivery=DeliveryMode.FIRE_AND_FORGET,
             )
 
+            @override
             async def run(self) -> None:
                 await asyncio.sleep(5)
 
@@ -2290,6 +2346,7 @@ class TestHardTimeoutVsCancelRace:
                 hard_timeout=2,
             )
 
+            @override
             async def run(self) -> str:
                 await asyncio.sleep(10)
                 return "x"
@@ -2338,6 +2395,7 @@ class TestHardTimeoutVsCancelRace:
                 hard_timeout=1,
             )
 
+            @override
             async def run(self) -> str:
                 await asyncio.sleep(10)
                 return "x"
@@ -2472,6 +2530,7 @@ class TestWorkerUniqueRelease:
         class FailTask(Task):
             task_info = TaskInfo(name="fail", queues=["default"])
 
+            @override
             async def run(self):
                 raise RuntimeError("boom")
 
@@ -2506,6 +2565,7 @@ class TestWorkerUniqueRelease:
                 max_retries=2,
             )
 
+            @override
             async def run(self):
                 raise RuntimeError("try again")
 
@@ -2546,6 +2606,7 @@ class TestWorkerUniqueRelease:
                 max_retries=3,
             )
 
+            @override
             async def run(self):
                 raise NoRetry("do not retry")
 
@@ -2582,6 +2643,7 @@ class TestWorkerUniqueRelease:
                 rate_limit="1/s",
             )
 
+            @override
             async def run(self):
                 return None
 
@@ -2653,6 +2715,7 @@ class TestWorkerUniqueRelease:
                 unique_until="completion",
             )
 
+            @override
             async def run(self, a: int, b: int):
                 return a + b
 
@@ -2830,6 +2893,7 @@ class TestWorkerUniqueRelease:
                 max_retries=1,
             )
 
+            @override
             async def run(self):
                 raise RuntimeError("will retry unless late cancel fires")
 
@@ -2877,6 +2941,7 @@ class TestWorkerUniqueRelease:
                 unique_until="start",
             )
 
+            @override
             async def run(self):
                 return None
 

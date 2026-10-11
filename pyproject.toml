@@ -158,8 +158,29 @@ packages = ["swarmq"]
 mypy_path = "src"
 
 [[tool.mypy.overrides]]
+# Plan 2026-10-11-1200 (KTD7): Tests ohne Annotationspflicht, aber mit
+# geprüften Rümpfen (check_untyped_defs bleibt aus --strict an).
+module = ["tests.*"]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_calls = false
+
+[[tool.mypy.overrides]]
 module = ["croniter.*", "msgpack.*"]  # liefern keine Typ-Stubs
 ignore_missing_imports = true
+
+# Zweiter Typprüfer (Plan 2026-10-11-1200, KTD8): basedpyright strict, nur
+# src/, ohne Baseline. Jeder Prüfer beachtet nur seine eigenen Kommentare:
+# mypy ``# type: ignore[code]``, basedpyright ``# pyright: ignore[rule]``.
+[tool.basedpyright]
+include = ["src/swarmq"]
+pythonVersion = "3.14"
+typeCheckingMode = "strict"
+enableTypeIgnoreComments = false
+reportIgnoreCommentWithoutRule = "error"
+reportUnnecessaryTypeIgnoreComment = "error"
+# Paketinterner Zugriff über Fassaden ist Architektur (wie ruff SLF001).
+reportPrivateUsage = false
 
 [tool.ruff]
 target-version = "py314"

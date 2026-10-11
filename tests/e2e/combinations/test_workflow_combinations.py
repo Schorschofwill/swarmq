@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
+from typing import override
 
 import pytest
 
@@ -59,6 +60,7 @@ async def test_workflow_x_retry_then_success(rabbitmq_url, valkey_url):
         )
         _attempts = 0
 
+        @override
         async def run(self, seed: str) -> str:
             type(self)._attempts += 1
             if type(self)._attempts == 1:
@@ -68,6 +70,7 @@ async def test_workflow_x_retry_then_success(rabbitmq_url, valkey_url):
     class Tail(Task):
         task_info = TaskInfo(name=f"tail_{queue}", queues=[queue])
 
+        @override
         async def run(self, prev: str) -> str:
             return f"{prev}-tail"
 
@@ -95,12 +98,14 @@ async def test_workflow_x_faf_runtime_guard(rabbitmq_url, valkey_url):
             delivery=DeliveryMode.FIRE_AND_FORGET,
         )
 
+        @override
         async def run(self) -> str:
             return "ignored"
 
     class After(Task):
         task_info = TaskInfo(name=f"after_{queue}", queues=[queue])
 
+        @override
         async def run(self, prev: str) -> str:
             return "after"
 

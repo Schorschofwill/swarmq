@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import override
 from unittest.mock import AsyncMock
 
 import pytest
@@ -42,6 +43,7 @@ pytestmark = [pytest.mark.timeout(5)]
 class Echo(Task):
     task_info = TaskInfo(name="echo", queues=["default"])
 
+    @override
     async def run(self, *args) -> list:
         return list(args)
 
@@ -1101,6 +1103,7 @@ async def test_middleware_rejecting_the_second_member_publishes_no_member():
     seen: list[str] = []
 
     class RejectSecondMember(Middleware):
+        @override
         async def pre_enqueue(self, message) -> None:
             seen.append(message["step_path"])
             if message["step_path"] == "/1/g1":
@@ -1129,6 +1132,7 @@ async def test_post_enqueue_failure_does_not_lose_the_step_marker():
     published: list[str] = []
 
     class FailingPost(Middleware):
+        @override
         async def post_enqueue(self, message) -> None:
             raise RuntimeError("metrics sink down")
 

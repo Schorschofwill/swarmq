@@ -59,6 +59,7 @@ BZ-17 (Plan 0.12.0, MR 2) -- begrenzter Fehlertext-Header:
 
 from __future__ import annotations
 
+from typing import override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -79,6 +80,7 @@ _WF_ID = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"
 class DlqTask(Task):
     task_info = TaskInfo(name="dlq-task", queues=["default"])
 
+    @override
     async def run(self) -> str:
         return "ok"
 
@@ -86,6 +88,7 @@ class DlqTask(Task):
 class DlqFafTask(Task):
     task_info = TaskInfo(name="dlq-faf", queues=["default"], delivery=DeliveryMode.FIRE_AND_FORGET)
 
+    @override
     async def run(self) -> None:
         return None
 

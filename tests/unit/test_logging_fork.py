@@ -69,7 +69,7 @@ import threading
 import time
 import weakref
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, override
 from unittest.mock import MagicMock
 
 import pytest
@@ -96,6 +96,7 @@ RELEASE = threading.Event()
 class RecordingHandler(logging.Handler):
     """Per dictConfig (``"()"``) referenzierbarer Sammel-Handler."""
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         with RECORDED:
             RECORDS.append(record)
@@ -106,6 +107,7 @@ class BlockingHandler(RecordingHandler):
     """Haelt den Listener beim ersten Record fest, bis ``RELEASE`` gesetzt
     ist -- im Elternprozess. Im Kind ist ``ENTERED`` schon gesetzt."""
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         if not ENTERED.is_set():
             ENTERED.set()
@@ -399,6 +401,7 @@ class SignallingLock(SpyLock):
         self.owner = owner
         self.taken_by_owner = threading.Event()
 
+    @override
     def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
         acquired = super().acquire(blocking, timeout)
         if acquired and threading.get_ident() == self.owner:

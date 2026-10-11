@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from typing import override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -65,6 +66,7 @@ class GatedTask(Task):
         hard_timeout=60,
     )
 
+    @override
     async def run(self) -> str:
         return "ok"
 
@@ -72,6 +74,7 @@ class GatedTask(Task):
 class PlainTask(Task):
     task_info = TaskInfo(name="pipe-plain", queues=["default"], max_retries=0)
 
+    @override
     async def run(self) -> str:
         return "ok"
 
@@ -79,6 +82,7 @@ class PlainTask(Task):
 class LockedTask(Task):
     task_info = TaskInfo(name="pipe-locked", queues=["default"], lock="resource", hard_timeout=60)
 
+    @override
     async def run(self) -> str:
         return "ok"
 
@@ -86,6 +90,7 @@ class LockedTask(Task):
 class ExpiringTask(Task):
     task_info = TaskInfo(name="pipe-expiring", queues=["default"], max_age=1)
 
+    @override
     async def run(self) -> str:
         return "ok"
 
@@ -93,6 +98,7 @@ class ExpiringTask(Task):
 class FafTask(Task):
     task_info = TaskInfo(name="pipe-faf", queues=["default"], delivery=DeliveryMode.FIRE_AND_FORGET)
 
+    @override
     async def run(self) -> str:
         return "ok"
 
@@ -372,6 +378,7 @@ class TestRejectReasons:
         class Ok(Task):
             task_info = TaskInfo(name="reject-ok", queues=["default"])
 
+            @override
             async def run(self) -> str:
                 return "ok"
 
@@ -397,6 +404,7 @@ class TestRejectReasons:
         class Ok(Task):
             task_info = TaskInfo(name="reject-ok-id", queues=["default"])
 
+            @override
             async def run(self) -> str:
                 return "ok"
 
@@ -422,6 +430,7 @@ class TestRejectReasons:
         class Ok(Task):
             task_info = TaskInfo(name="reject-ok-log", queues=["default"])
 
+            @override
             async def run(self) -> str:
                 return "ok"
 
@@ -446,6 +455,7 @@ class TestRejectReasons:
 class _LockedForLog(Task):
     task_info = TaskInfo(name="locked_for_log", queues=["default"], lock="resource", hard_timeout=60)
 
+    @override
     async def run(self) -> None:
         return None
 
@@ -478,6 +488,7 @@ async def test_lock_release_failure_is_a_warning_with_error_fields(broker, backe
 class _ScheduledForLog(Task):
     task_info = TaskInfo(name="scheduled_for_log", queues=["default"])
 
+    @override
     async def run(self) -> str:
         return "ok"
 
@@ -534,9 +545,11 @@ class _EnqueueRecorder(Middleware):
     def __init__(self, calls: list[str]) -> None:
         self.calls = calls
 
+    @override
     async def pre_enqueue(self, message) -> None:
         self.calls.append(f"pre_enqueue:{message['step_path']}:{message['delivery_mode']}")
 
+    @override
     async def post_enqueue(self, message) -> None:
         self.calls.append(f"post_enqueue:{message['step_path']}")
 

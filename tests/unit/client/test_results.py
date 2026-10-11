@@ -4,6 +4,7 @@ cancel, Fortschritt."""
 from __future__ import annotations
 
 import json
+from typing import override
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -453,6 +454,7 @@ async def test_cancel_of_deferred_task_adds_known_max_age_plus_buffer():
     class Expiring(Task):
         task_info = TaskInfo(name="bz23_expiring", queues=["default"], max_age=600)
 
+        @override
         async def run(self) -> None:
             return None
 

@@ -7,6 +7,8 @@ Pure-logic unit tests — no broker/backend. Tasks self-register via
 
 from __future__ import annotations
 
+from typing import override
+
 import pytest
 
 from swarmq.exceptions import WorkflowValidationError
@@ -28,6 +30,7 @@ from swarmq.workflow import (
 class Fetch(Task):
     task_info = TaskInfo(name="fetch", queues=["default"])
 
+    @override
     async def run(self, url: str) -> str:
         return f"fetched {url}"
 
@@ -35,6 +38,7 @@ class Fetch(Task):
 class Parse(Task):
     task_info = TaskInfo(name="parse", queues=["default"])
 
+    @override
     async def run(self, data: str) -> str:
         return f"parsed {data}"
 
@@ -42,6 +46,7 @@ class Parse(Task):
 class Store(Task):
     task_info = TaskInfo(name="store", queues=["default"])
 
+    @override
     async def run(self, data: str) -> str:
         return f"stored {data}"
 
@@ -49,6 +54,7 @@ class Store(Task):
 class Notify(Task):
     task_info = TaskInfo(name="notify", queues=["default"])
 
+    @override
     async def run(self, msg: str) -> str:
         return f"notified {msg}"
 
@@ -56,6 +62,7 @@ class Notify(Task):
 class FafTask(Task):
     task_info = TaskInfo(name="faf", queues=["default"], delivery=DeliveryMode.FIRE_AND_FORGET)
 
+    @override
     async def run(self, x: int) -> int:
         return x
 

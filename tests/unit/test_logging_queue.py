@@ -88,7 +88,7 @@ import queue
 import sys
 import threading
 import types
-from typing import Any
+from typing import Any, override
 
 import pytest
 
@@ -117,6 +117,7 @@ class _RecordingHandler(logging.Handler):
         self.threads: list[str] = []
         self.written = threading.Event()
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         self.records.append(record)
         self.threads.append(threading.current_thread().name)
@@ -214,6 +215,7 @@ class _BlockingHandler(_RecordingHandler):
         self.entered = threading.Event()
         self.unblock = threading.Event()
 
+    @override
     def handle(self, record: logging.LogRecord) -> logging.LogRecord | bool:
         # Vor ``super().handle``: dort haelt der Handler sein Lock, und ein
         # zweiter Listener (simulierter Fork) kaeme nicht mehr durch.
@@ -233,6 +235,7 @@ class _ReleasingQueue(queue.Queue[logging.LogRecord]):
         super().__init__(maxsize)
         self._unblock = unblock
 
+    @override
     def shutdown(self, immediate: bool = False) -> None:
         super().shutdown(immediate)
         self._unblock.set()
@@ -505,6 +508,7 @@ class _RaisingOnPoison(_RecordingHandler):
     """Ziel-Handler, dessen ``emit`` beim Record ``poison`` wirft, ohne
     ``handleError`` -- wie ein Log-Shipper ohne Verbindung."""
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         if record.getMessage() == "poison":
             raise ConnectionError("log shipper down")
@@ -610,6 +614,7 @@ class _BlockingStream(io.StringIO):
         self.entered = threading.Event()
         self.release = threading.Event()
 
+    @override
     def write(self, s: str) -> int:
         self.entered.set()
         self.release.wait()
@@ -734,6 +739,7 @@ class _AliveThread(_DeadThread):
     """Ein laufender Listener-Thread, ohne dass ein Thread die Queue leert:
     Der Test ruft ``listener.handle`` selbst auf."""
 
+    @override
     def is_alive(self) -> bool:
         return True
 
@@ -777,6 +783,7 @@ class _GateHandler(_RecordingHandler):
         self.release: collections.defaultdict[str, threading.Event] = collections.defaultdict(threading.Event)
         self.seen = threading.Condition()
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         msg = record.getMessage()
         if msg.startswith("hold-"):

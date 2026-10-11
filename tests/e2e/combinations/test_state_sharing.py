@@ -27,7 +27,7 @@ import asyncio
 import contextlib
 import time
 import uuid
-from typing import Any
+from typing import Any, override
 
 import pytest
 
@@ -175,6 +175,7 @@ class TestRetryUniqueCombo:
                 unique_until="completion",
             )
 
+            @override
             async def run(self, payload: str) -> str:
                 nonlocal call_count
                 call_count += 1
@@ -237,6 +238,7 @@ class TestRetryUniqueCombo:
                 unique_until="completion",
             )
 
+            @override
             async def run(self, val: int) -> int:
                 nonlocal call_count
                 call_count += 1
@@ -290,6 +292,7 @@ class TestRetryUniqueCombo:
                 unique_until="completion",
             )
 
+            @override
             async def run(self, tag: str) -> str:
                 nonlocal attempt
                 attempt += 1
@@ -356,6 +359,7 @@ class TestRetryUniqueCombo:
                 unique_until="completion",
             )
 
+            @override
             async def run(self, val: int) -> int:
                 nonlocal call_count
                 call_count += 1
@@ -431,6 +435,7 @@ class TestLockCancelCombo:
                 hard_timeout=10,
             )
 
+            @override
             async def run(self, tag: str) -> str:
                 results.append(tag)
                 if len(results) == 2:
@@ -473,6 +478,7 @@ class TestLockCancelCombo:
                 hard_timeout=20,
             )
 
+            @override
             async def run(self) -> str:
                 await asyncio.sleep(20)
                 return "no"
@@ -485,6 +491,7 @@ class TestLockCancelCombo:
                 hard_timeout=10,
             )
 
+            @override
             async def run(self) -> str:
                 fast_result.append("ran")
                 fast_done.set()
@@ -536,6 +543,7 @@ class TestLockCancelCombo:
                 hard_timeout=30,
             )
 
+            @override
             async def run(self) -> str:
                 long_started.set()
                 await asyncio.sleep(30)
@@ -549,6 +557,7 @@ class TestLockCancelCombo:
                 hard_timeout=10,
             )
 
+            @override
             async def run(self) -> str:
                 return "ok"
 
@@ -693,6 +702,7 @@ class TestLockRetryCombo:
                 retry_base_delay=0.1,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 nonlocal attempts
                 attempts += 1
@@ -745,6 +755,7 @@ class TestLockRetryCombo:
                 retry_base_delay=1.0,  # 1s delay → B gets window
             )
 
+            @override
             async def run(self, attempt_marker: int) -> int:
                 nonlocal a_retry_count
                 a_retry_count += 1
@@ -760,6 +771,7 @@ class TestLockRetryCombo:
                 hard_timeout=10,
             )
 
+            @override
             async def run(self) -> str:
                 b_ran.set()
                 return "b-ran"
@@ -819,6 +831,7 @@ class TestLockRetryCombo:
                 retry_base_delay=0.2,
             )
 
+            @override
             async def run(self, tag: str) -> str:
                 nonlocal attempts
                 attempts += 1
@@ -877,6 +890,7 @@ class TestLockHardTimeoutCombo:
                 hard_timeout=10,
             )
 
+            @override
             async def run(self, tag: str) -> str:
                 results.append(tag)
                 if len(results) == 2:
@@ -926,6 +940,7 @@ class TestLockHardTimeoutCombo:
                 hard_timeout=2,
             )
 
+            @override
             async def run(self) -> str:
                 await asyncio.sleep(60)  # will be killed by hard_timeout
                 return "never"
@@ -938,6 +953,7 @@ class TestLockHardTimeoutCombo:
                 hard_timeout=10,
             )
 
+            @override
             async def run(self) -> str:
                 fast_done.set()
                 return "ok"
@@ -1046,6 +1062,7 @@ class TestProgressCancelCombo:
         class ProgressTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self, steps: int) -> str:
                 for i in range(steps):
                     await self.update_progress(
@@ -1089,6 +1106,7 @@ class TestProgressCancelCombo:
         class LongProgressTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self, total: int) -> str:
                 started.set()
                 for i in range(total):
@@ -1152,6 +1170,7 @@ class TestProgressCancelCombo:
         class RaceProgressTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self, tight_loop: int) -> str:
                 started.set()
                 for i in range(tight_loop):
@@ -1242,6 +1261,7 @@ class TestResultTtlRetryCombo:
                 result_ttl=30,  # 30s — plenty of time to assert
             )
 
+            @override
             async def run(self, val: int) -> int:
                 nonlocal attempts
                 attempts += 1
@@ -1292,6 +1312,7 @@ class TestResultTtlRetryCombo:
                 result_ttl=5,
             )
 
+            @override
             async def run(self, payload: str) -> str:
                 attempt_times.append(time.monotonic())
                 if len(attempt_times) == 1:
@@ -1354,6 +1375,7 @@ class TestResultTtlRetryCombo:
                 result_ttl=2,  # 2s from completion — readable immediately after
             )
 
+            @override
             async def run(self, marker: str) -> str:
                 nonlocal attempts
                 attempts += 1
@@ -1415,6 +1437,7 @@ class TestResultTtlRetryCombo:
                 result_ttl=60,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 nonlocal call_count
                 call_count += 1

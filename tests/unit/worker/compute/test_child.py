@@ -3,7 +3,7 @@
 import asyncio
 import os
 import queue as _queue
-from typing import Any
+from typing import Any, override
 
 import pytest
 
@@ -33,13 +33,16 @@ async def test_run_job_returns_value_and_calls_lifecycle_in_order():
     class Plain(Task):
         task_info = TaskInfo(name="plain", queues=["q"])
 
+        @override
         async def pre_execution(self) -> None:
             calls.append("pre")
 
+        @override
         async def run(self, x: int) -> int:
             calls.append("run")
             return x * 2
 
+        @override
         async def post_execution(self) -> None:
             calls.append("post")
 
@@ -58,6 +61,7 @@ async def test_run_job_envelope_carries_the_pid_of_the_child():
     class Plain(Task):
         task_info = TaskInfo(name="plain", queues=["q"])
 
+        @override
         async def run(self) -> int:
             return 1
 
@@ -71,6 +75,7 @@ async def test_run_job_wraps_exception_typed():
     class Failing(Task):
         task_info = TaskInfo(name="failing", queues=["q"])
 
+        @override
         async def run(self) -> None:
             raise NoRetry("deterministic")
 
@@ -84,6 +89,7 @@ async def test_run_job_soft_timeout_becomes_soft_timeout_error():
     class Slow(Task):
         task_info = TaskInfo(name="slow", queues=["q"], soft_timeout=0.05)
 
+        @override
         async def run(self) -> None:
             await asyncio.sleep(1)
 
@@ -112,6 +118,7 @@ async def test_progress_goes_through_the_shim_queue():
     class Reporting(Task):
         task_info = TaskInfo(name="reporting", queues=["q"])
 
+        @override
         async def run(self) -> str:
             await self.update_progress(1, 2, "half")
             await self.update_progress(2, 2, "done")
@@ -156,12 +163,14 @@ async def test_di_request_scope_commits_on_success_and_rolls_back_on_exception()
     class Good(Task):
         task_info = TaskInfo(name="good_di", queues=["q"])
 
+        @override
         async def run(self, tx: FromDishka[Tx]) -> str:  # type: ignore[valid-type]
             return "ok"
 
     class Bad(Task):
         task_info = TaskInfo(name="bad_di", queues=["q"])
 
+        @override
         async def run(self, tx: FromDishka[Tx]) -> str:  # type: ignore[valid-type]
             raise ValueError("boom")
 
@@ -251,6 +260,7 @@ async def test_serve_jobs_runs_consecutive_jobs_on_one_loop_and_ends_on_none():
     class LoopWitness(Task):
         task_info = TaskInfo(name="loop_witness", queues=["q"])
 
+        @override
         async def run(self, x: int) -> int:
             seen_loops.append(id(asyncio.get_running_loop()))
             return x + 1

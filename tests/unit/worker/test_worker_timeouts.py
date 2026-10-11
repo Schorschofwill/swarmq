@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import override
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -98,6 +99,7 @@ async def test_soft_timeout_fires_when_run_exceeds_limit(broker, backend, config
     class SlowTask(Task):
         task_info = TaskInfo(name="slow_soft", queues=["default"], soft_timeout=0.05)
 
+        @override
         async def run(self) -> str:
             await asyncio.sleep(1)
             return "never"
@@ -133,6 +135,7 @@ async def test_soft_timeout_triggers_retry(broker, backend, config):
             retry_base_delay=0.1,
         )
 
+        @override
         async def run(self) -> str:
             await asyncio.sleep(1)
             return "never"
@@ -175,6 +178,7 @@ async def test_hard_timeout_fires_and_retries(broker, backend, config):
             retry_base_delay=0.1,
         )
 
+        @override
         async def run(self) -> str:
             await asyncio.sleep(1)
             return "never"
@@ -211,6 +215,7 @@ async def test_no_timeouts_normal_behavior(broker, backend, config):
     class NormalTask(Task):
         task_info = TaskInfo(name="normal", queues=["default"])
 
+        @override
         async def run(self, a: int, b: int) -> int:
             return a + b
 
@@ -240,10 +245,12 @@ async def test_soft_timeout_skips_post_execution(broker, backend, config):
     class SoftTimeoutPostTask(Task):
         task_info = TaskInfo(name="soft_post", queues=["default"], soft_timeout=0.05)
 
+        @override
         async def run(self) -> str:
             await asyncio.sleep(1)
             return "never"
 
+        @override
         async def post_execution(self) -> None:
             nonlocal post_called
             post_called = True
@@ -276,6 +283,7 @@ async def test_hard_timeout_exhausted_retries_sends_to_dlq(broker, backend, conf
             retry_base_delay=0.1,
         )
 
+        @override
         async def run(self) -> str:
             await asyncio.sleep(1)
             return "never"
@@ -317,6 +325,7 @@ async def test_only_hard_timeout_no_soft(broker, backend, config):
             retry_base_delay=0.1,
         )
 
+        @override
         async def run(self) -> str:
             await asyncio.sleep(1)
             return "never"
@@ -358,6 +367,7 @@ async def test_fire_and_forget_hard_timeout_logged_no_nack(broker, backend, conf
             hard_timeout=0.05,
         )
 
+        @override
         async def run(self) -> str:
             await asyncio.sleep(1)
             return "never"
@@ -429,6 +439,7 @@ async def test_watchdog_cancelled_when_task_raises_exception(broker, backend, co
             max_retries=0,
         )
 
+        @override
         async def run(self) -> str:
             raise ValueError("boom")
 
@@ -478,6 +489,7 @@ async def test_watchdog_cancelled_when_task_soft_timeouts(broker, backend, confi
             max_retries=0,
         )
 
+        @override
         async def run(self) -> str:
             await asyncio.sleep(1)
             return "never"
@@ -520,6 +532,7 @@ async def test_watchdog_cancelled_on_success(broker, backend, config):
             hard_timeout=5,
         )
 
+        @override
         async def run(self, a: int, b: int) -> int:
             return a + b
 

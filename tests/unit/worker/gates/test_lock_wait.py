@@ -55,7 +55,7 @@ Test-Liste:
 from __future__ import annotations
 
 import dataclasses
-from typing import Any
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -86,6 +86,7 @@ _LEGACY = "x-swarmq-lock-conflict-count"
 class Locked(Task):
     task_info = TaskInfo(name="bz05_locked", queues=["default"], lock="resource", hard_timeout=60)
 
+    @override
     async def run(self) -> None:
         raise AssertionError("darf bei Lock-Konflikt nicht laufen")
 
@@ -332,6 +333,7 @@ async def test_protocol_subclass_without_observe_warns_unsupported(broker, backe
     from swarmq.contracts.coordination import LockStore
 
     class _SubclassStore(LockStore):
+        @override
         async def acquire(self, name: str, *, owner: str, ttl_ms: int, max_concurrency: int) -> None:
             return None
 

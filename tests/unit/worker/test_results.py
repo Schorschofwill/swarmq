@@ -42,6 +42,7 @@ Test-Liste Plan 0.12.0, MR 6 (BZ-03, Q14):
 
 from __future__ import annotations
 
+from typing import override
 from unittest.mock import AsyncMock, MagicMock
 
 from swarmq.exceptions import (
@@ -66,6 +67,7 @@ _WF_ID = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"
 class TailTask(Task):
     task_info = TaskInfo(name="tail-task", queues=["default"])
 
+    @override
     async def run(self) -> str:
         return "ok"
 
@@ -73,6 +75,7 @@ class TailTask(Task):
 class TailFafTask(Task):
     task_info = TaskInfo(name="tail-faf", queues=["default"], delivery=DeliveryMode.FIRE_AND_FORGET)
 
+    @override
     async def run(self) -> None:
         return None
 
@@ -88,6 +91,7 @@ class TailFafStoreTask(Task):
         result_ttl=60,
     )
 
+    @override
     async def run(self) -> str:
         return "ok"
 
@@ -98,6 +102,7 @@ class TailNoStoreTask(Task):
 
     task_info = TaskInfo(name="tail-nostore", queues=["default"], result_ttl=0)
 
+    @override
     async def run(self) -> None:
         return None
 

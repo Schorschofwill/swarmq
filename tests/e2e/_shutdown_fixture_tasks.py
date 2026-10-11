@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from typing import override
 
 from swarmq.task import Task, TaskInfo
 
@@ -41,6 +42,7 @@ class ShutdownSleepTask(Task):
         # SIGTERM test with 10 concurrent 2s sleeps easily fits.
     )
 
+    @override
     async def run(self, seconds: float) -> str:
         # Record the execution before sleeping so a SIGKILL mid-sleep
         # still leaves a breadcrumb. We only care about final count
@@ -72,5 +74,6 @@ class ShutdownAlwaysFailTask(Task):
         retry_base_delay=1.5,
     )
 
+    @override
     async def run(self) -> None:
         raise ValueError("always fails")

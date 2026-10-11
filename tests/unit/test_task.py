@@ -1,5 +1,7 @@
 """Tests for swarmq.task — Task base class and TaskInfo."""
 
+from typing import override
+
 import pytest
 
 from swarmq.task import DeliveryMode, Task, TaskInfo
@@ -67,6 +69,7 @@ async def test_task_subclass_with_run():
     class AddTask(Task):
         task_info = TaskInfo(name="add", queues=["math"])
 
+        @override
         async def run(self, a, b):
             return a + b
 
@@ -88,6 +91,7 @@ async def test_pre_and_post_execution_are_async_nops():
     class SimpleTask(Task):
         task_info = TaskInfo(name="simple", queues=["q"])
 
+        @override
         async def run(self):
             pass
 
@@ -104,6 +108,7 @@ def test_auto_registration_of_task_subclass():
     class RegTask(Task):
         task_info = TaskInfo(name="reg", queues=["q"])
 
+        @override
         async def run(self):
             pass
 
@@ -117,12 +122,14 @@ def test_multiple_subclasses_all_registered():
     class TaskA(Task):
         task_info = TaskInfo(name="a", queues=["q"])
 
+        @override
         async def run(self):
             pass
 
     class TaskB(Task):
         task_info = TaskInfo(name="b", queues=["q"])
 
+        @override
         async def run(self):
             pass
 
@@ -137,6 +144,7 @@ def test_abstract_intermediate_not_registered():
     class BaseWorker(Task):
         """Intermediate class without task_info — should NOT register."""
 
+        @override
         async def run(self):
             pass
 
@@ -153,6 +161,7 @@ def test_clear_registered_tasks_resets():
     class TempTask(Task):
         task_info = TaskInfo(name="temp", queues=["q"])
 
+        @override
         async def run(self):
             pass
 
@@ -445,6 +454,7 @@ def test_task_subclass_with_delay_parameter_raises():
         class BadTask(Task):
             task_info = TaskInfo(name="bad", queues=["q"])
 
+            @override
             async def run(self, delay):  # reserved name
                 return delay
 
@@ -456,6 +466,7 @@ def test_task_subclass_with_eta_parameter_raises():
         class BadTask(Task):
             task_info = TaskInfo(name="bad", queues=["q"])
 
+            @override
             async def run(self, eta):
                 return eta
 
@@ -468,6 +479,7 @@ def test_task_subclass_with_delay_in_kwargs_raises():
         class BadTask(Task):
             task_info = TaskInfo(name="bad", queues=["q"])
 
+            @override
             async def run(self, *, delay=None):
                 return delay
 
@@ -479,6 +491,7 @@ def test_task_subclass_with_non_reserved_params_still_registers():
     class OkTask(Task):
         task_info = TaskInfo(name="ok", queues=["q"])
 
+        @override
         async def run(self, a, b, c):
             return a + b + c
 
@@ -555,6 +568,7 @@ def test_task_subclass_reserved_unique_for_raises():
         class BadTask(Task):
             task_info = TaskInfo(name="bad", queues=["q"])
 
+            @override
             async def run(self, *, unique_for=None):
                 return unique_for
 
@@ -567,6 +581,7 @@ def test_task_subclass_reserved_unique_until_raises():
         class BadTask(Task):
             task_info = TaskInfo(name="bad", queues=["q"])
 
+            @override
             async def run(self, *, unique_until=None):
                 return unique_until
 
@@ -581,6 +596,7 @@ def test_task_subclass_reserved_param_error_mentions_all_reserved():
         class BadTask(Task):
             task_info = TaskInfo(name="bad", queues=["q"])
 
+            @override
             async def run(self, *, delay=None):
                 return delay
 

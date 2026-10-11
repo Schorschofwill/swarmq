@@ -39,6 +39,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import override
 
 import msgspec
 import pytest
@@ -84,6 +85,7 @@ class TestApplyStaticDefinition:
         class Cron5m(Task):
             task_info = TaskInfo(name="cron_5m", queues=["default"], cron="*/5 * * * *")
 
+            @override
             async def run(self):
                 return None
 
@@ -107,6 +109,7 @@ class TestApplyStaticDefinition:
         class SameCron(Task):
             task_info = TaskInfo(name="same", queues=["default"], cron="*/5 * * * *")
 
+            @override
             async def run(self):
                 return None
 
@@ -145,6 +148,7 @@ class TestApplyStaticDefinition:
         class ChangedCron(Task):
             task_info = TaskInfo(name="changed", queues=["default"], cron="*/10 * * * *")
 
+            @override
             async def run(self):
                 return None
 
@@ -186,6 +190,7 @@ class TestApplyStaticDefinition:
         class ChangedDisabledCron(Task):
             task_info = TaskInfo(name="disabled_static", queues=["default"], cron="*/10 * * * *")
 
+            @override
             async def run(self):
                 return None
 
@@ -228,6 +233,7 @@ class TestApplyStaticDefinition:
         class ActiveCron(Task):
             task_info = TaskInfo(name="active_static", queues=["default"], cron="0 */4 * * *")
 
+            @override
             async def run(self):
                 return None
 
@@ -268,6 +274,7 @@ class TestApplyStaticDefinition:
         class CronTask(Task):
             task_info = TaskInfo(name="conflict", queues=["default"], cron="*/10 * * * *")
 
+            @override
             async def run(self):
                 return None
 
@@ -309,6 +316,7 @@ class TestApplyStaticDefinition:
         class SomeCron(Task):
             task_info = TaskInfo(name="mystery", queues=["default"], cron="*/5 * * * *")
 
+            @override
             async def run(self):
                 return None
 
@@ -338,12 +346,14 @@ class TestApplyStaticDefinition:
         class CronA(Task):
             task_info = TaskInfo(name="sync_a", queues=["default"], cron="*/5 * * * *")
 
+            @override
             async def run(self):
                 return None
 
         class CronB(Task):
             task_info = TaskInfo(name="sync_b", queues=["default"], cron="0 3 * * *")
 
+            @override
             async def run(self):
                 return None
 
@@ -365,6 +375,7 @@ class TestApplyStaticDefinitionLogging:
         class LoggedCron(Task):
             task_info = TaskInfo(name="logged", queues=["default"], cron="*/5 * * * *")
 
+            @override
             async def run(self):
                 return None
 
@@ -454,6 +465,7 @@ class TestSyncTimezone:
         class TokyoCron(Task):
             task_info = TaskInfo(name="tokyo", queues=["default"], cron="0 9 * * *", timezone="Asia/Tokyo")
 
+            @override
             async def run(self):
                 return None
 
@@ -475,6 +487,7 @@ class TestSyncTimezone:
         class TokyoCron(Task):
             task_info = TaskInfo(name="tokyo", queues=["default"], cron="0 9 * * *", timezone="Asia/Tokyo")
 
+            @override
             async def run(self):
                 return None
 
@@ -495,6 +508,7 @@ class TestSyncTimezone:
         class PlainCron(Task):
             task_info = TaskInfo(name="plain", queues=["default"], cron="0 9 * * *")
 
+            @override
             async def run(self):
                 return None
 
@@ -522,6 +536,7 @@ class TestSyncTimezone:
         class UtcCron(Task):
             task_info = TaskInfo(name="utc", queues=["default"], cron="0 9 * * *", timezone="UTC")
 
+            @override
             async def run(self):
                 return None
 
@@ -601,6 +616,7 @@ class TestSyncInsertOrUpdate:
         class TzCron(Task):
             task_info = TaskInfo(**info)
 
+            @override
             async def run(self):
                 return None
 

@@ -38,7 +38,7 @@ Test-Liste:
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, override
 from unittest.mock import AsyncMock
 
 import pytest
@@ -163,6 +163,7 @@ class HangingChannel(FakeChannel):
         super().__init__(underlay)
         self.hanging = True
 
+    @override
     async def get_underlay_channel(self) -> FakeUnderlay:
         if self.hanging:
             await asyncio.Event().wait()
@@ -323,6 +324,7 @@ class TestRunningWatch:
                 super().__init__(underlay)
                 self.exploded = asyncio.Event()
 
+            @override
             async def get_underlay_channel(self) -> FakeUnderlay:
                 if not self.exploded.is_set():
                     self.exploded.set()

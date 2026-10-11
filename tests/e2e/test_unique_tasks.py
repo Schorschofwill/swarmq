@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
-from typing import Any
+from typing import Any, override
 
 import pytest
 
@@ -92,6 +92,7 @@ async def test_submit_button_double_click_dedup(
             unique_for=30,  # completion mode is default
         )
 
+        @override
         async def run(self, user_id: int, order_id: int) -> str:
             executions.append((user_id, order_id))
             return f"placed:{order_id}"
@@ -166,6 +167,7 @@ async def test_webhook_idempotency_across_retry_window(
             unique_until="completion",
         )
 
+        @override
         async def run(self, event_id: str) -> dict:
             executions.append(event_id)
             # Short sleep so the parallel schedule hits while we are
@@ -232,6 +234,7 @@ async def test_locking_and_unique_combined(
             hard_timeout=10,
         )
 
+        @override
         async def run(self, user_id: int, tag: str) -> str:
             run_markers.append(f"{user_id}:{tag}")
             await asyncio.sleep(0.15)
@@ -303,6 +306,7 @@ async def test_ttl_expiry_race_owner_check_protects_second_task(
             unique_until="completion",
         )
 
+        @override
         async def run(self, tag: str) -> str:
             marker_hits.append(tag)
             # Run longer than unique_for so the flag expires mid-run.

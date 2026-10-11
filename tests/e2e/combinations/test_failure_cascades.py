@@ -55,7 +55,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
-from typing import Any
+from typing import Any, override
 
 import pytest
 
@@ -195,6 +195,7 @@ class TestDLQUniqueForCombo:
                 unique_until="completion",
             )
 
+            @override
             async def run(self, val: int) -> int:
                 completed.set()
                 return val * 2
@@ -245,6 +246,7 @@ class TestDLQUniqueForCombo:
                 unique_until="completion",
             )
 
+            @override
             async def run(self, val: int) -> int:
                 raise NoRetry("always fails")
 
@@ -308,6 +310,7 @@ class TestDLQUniqueForCombo:
                 unique_until="completion",
             )
 
+            @override
             async def run(self, val: int) -> int:
                 raise NoRetry("always fails")
 
@@ -381,6 +384,7 @@ class TestDLQRetryResultTTLCombo:
                 result_ttl=60,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 nonlocal attempts
                 attempts += 1
@@ -425,6 +429,7 @@ class TestDLQRetryResultTTLCombo:
                 result_ttl=60,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 nonlocal attempts
                 attempts += 1
@@ -481,6 +486,7 @@ class TestDLQRetryResultTTLCombo:
                 result_ttl=60,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 raise NoRetry("immediate fail")
 
@@ -529,6 +535,7 @@ class TestDLQRetryResultTTLCombo:
                 result_ttl=1,  # 1 second TTL
             )
 
+            @override
             async def run(self, val: int) -> int:
                 raise NoRetry("short-ttl fail")
 
@@ -589,13 +596,16 @@ class TestPreExecuteRaiseSignalCombo:
         class SimpleTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self, val: int) -> int:
                 return val + 1
 
         class TrackingMiddleware(Middleware):
+            @override
             async def pre_execute(self, message: MessageContext) -> None:
                 hooks.append("pre_execute")
 
+            @override
             async def post_execute(self, message: MessageContext, result: Any = None) -> None:
                 hooks.append("post_execute")
                 done.set()
@@ -641,14 +651,17 @@ class TestPreExecuteRaiseSignalCombo:
         class SimpleTask2(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self, val: int) -> int:
                 return val * 3
 
         class ThrowingPreMiddleware(Middleware):
+            @override
             async def pre_execute(self, message: MessageContext) -> None:
                 hooks.append("pre_execute_raised")
                 raise RuntimeError("pre_execute intentional fail")
 
+            @override
             async def post_execute(self, message: MessageContext, result: Any = None) -> None:
                 hooks.append("post_execute_ran")
                 done.set()
@@ -694,13 +707,16 @@ class TestPreExecuteRaiseSignalCombo:
         class OkTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self, val: int) -> int:
                 return val
 
         class PreThrowPostTrackMiddleware(Middleware):
+            @override
             async def pre_execute(self, message: MessageContext) -> None:
                 raise ValueError("pre_execute bombs")
 
+            @override
             async def post_execute(self, message: MessageContext, result: Any = None) -> None:
                 post_ran.set()
 
@@ -737,6 +753,7 @@ class TestPreExecuteRaiseSignalCombo:
                 retry_base_delay=0.1,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 nonlocal run_count
                 run_count += 1
@@ -744,6 +761,7 @@ class TestPreExecuteRaiseSignalCombo:
                 return val
 
         class PreThrowMiddleware(Middleware):
+            @override
             async def pre_execute(self, message: MessageContext) -> None:
                 raise RuntimeError("pre_execute always raises")
 
@@ -780,13 +798,16 @@ class TestPreExecuteRaiseSignalCombo:
         class SigTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self, val: int) -> int:
                 return val
 
         class PreRaiseMW(Middleware):
+            @override
             async def pre_execute(self, message: MessageContext) -> None:
                 raise RuntimeError("signal-sequence pre_execute")
 
+            @override
             async def post_execute(self, message: MessageContext, result: Any = None) -> None:
                 done.set()
 
@@ -846,10 +867,12 @@ class TestPostExecuteRaiseRetryCombo:
         class TaskForPost(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self, val: int) -> int:
                 return val + 10
 
         class TrackPostMW(Middleware):
+            @override
             async def post_execute(self, message: MessageContext, result: Any = None) -> None:
                 post_called.set()
 
@@ -881,10 +904,12 @@ class TestPostExecuteRaiseRetryCombo:
         class SuccessTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self, val: int) -> int:
                 return val * 2
 
         class ThrowingPostMW(Middleware):
+            @override
             async def post_execute(self, message: MessageContext, result: Any = None) -> None:
                 raise RuntimeError("post_execute intentional fail")
 
@@ -933,12 +958,14 @@ class TestPostExecuteRaiseRetryCombo:
                 retry_base_delay=0.1,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 nonlocal run_count
                 run_count += 1
                 return val
 
         class AlwaysThrowPostMW(Middleware):
+            @override
             async def post_execute(self, message: MessageContext, result: Any = None) -> None:
                 raise RuntimeError("post always raises")
 
@@ -978,10 +1005,12 @@ class TestPostExecuteRaiseRetryCombo:
         class SigTask2(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self, val: int) -> int:
                 return val
 
         class PostRaiseMW(Middleware):
+            @override
             async def post_execute(self, message: MessageContext, result: Any = None) -> None:
                 done.set()
                 raise RuntimeError("post_execute signal-sequence test")
@@ -1047,6 +1076,7 @@ class TestBrokerReconnectAtMostOnceCombo:
         class SimpleProxiedTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self, val: int) -> int:
                 done.set()
                 return val
@@ -1096,6 +1126,7 @@ class TestBrokerReconnectAtMostOnceCombo:
         class AtMostOnceTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self, val: int) -> int:
                 nonlocal run_count
                 run_count += 1
@@ -1104,6 +1135,7 @@ class TestBrokerReconnectAtMostOnceCombo:
         class SentinelTask(Task):
             task_info = TaskInfo(name=sentinel_name, queues=[queue])
 
+            @override
             async def run(self) -> None:
                 sentinel_done.set()
 
@@ -1163,6 +1195,7 @@ class TestBrokerReconnectAtMostOnceCombo:
                 retry_base_delay=0.1,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 nonlocal run_count
                 run_count += 1
@@ -1231,6 +1264,7 @@ class TestBrokerReconnectAtMostOnceCombo:
                 retry_base_delay=0.2,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 nonlocal run_count
                 run_count += 1
@@ -1317,6 +1351,7 @@ class TestBackendDownResultStoreCombo:
         class BackendProxiedTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self, val: int) -> int:
                 done.set()
                 return val + 5
@@ -1409,6 +1444,7 @@ class TestBackendDownResultStoreCombo:
                 max_retries=0,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 await gates.enter_run()
                 return val
@@ -1481,6 +1517,7 @@ class TestBackendDownResultStoreCombo:
                 retry_base_delay=0.5,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 await gates.enter_run()
                 return val * 2
@@ -1539,6 +1576,7 @@ class TestBackendDownResultStoreCombo:
                 retry_base_delay=0.3,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 await gates.enter_run()
                 return val
@@ -1652,6 +1690,7 @@ class TestLongBackendOutageBeforeStartCombo:
         class OutageTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self, val: int) -> int:
                 runs[val] = runs.get(val, 0) + 1
                 if len(runs) == TestLongBackendOutageBeforeStartCombo.TASKS:
@@ -1745,6 +1784,7 @@ class TestSchedfireClaimAcrossBackendOutageCombo:
         class FireTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self) -> str:
                 runs.append("run")
                 return "ok"
@@ -1861,6 +1901,7 @@ class TestSchedfireRequeueInPlaceAcrossBackendOutageCombo:
         class FireTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self) -> str:
                 runs.append("run")
                 if len(runs) == 1:
@@ -1953,15 +1994,18 @@ class _RateLimitViaProxyBackend(ValkeyBackend):
         super().__init__(url)
         self._rate_limit_backend = ValkeyBackend(rate_limit_url)
 
+    @override
     async def connect(self) -> None:
         await super().connect()
         await self._rate_limit_backend.connect()
 
+    @override
     async def close(self) -> None:
         await self._rate_limit_backend.close()
         await super().close()
 
     @property
+    @override
     def rate_limit(self) -> Any:
         return self._rate_limit_backend.rate_limit
 
@@ -2002,6 +2046,7 @@ class TestRateLimitBlackholeCombo:
         class LimitedTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue], rate_limit="100/s")
 
+            @override
             async def run(self, val: int) -> int:
                 runs.append(val)
                 done.set()

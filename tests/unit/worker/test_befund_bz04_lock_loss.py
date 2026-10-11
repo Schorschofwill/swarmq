@@ -25,7 +25,7 @@ Test-Liste:
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import Any, ClassVar, override
 
 import pytest
 
@@ -49,6 +49,7 @@ class _EvictedMidRun(Task):
     store: ClassVar[InMemoryLockStore]
     second_holder: ClassVar[list[object]] = []
 
+    @override
     async def run(self) -> None:
         # Valkey verdrängt den Lock-Key (volatile-lru) ...
         await type(self).store.force_release(_LOCK, max_concurrency=1)

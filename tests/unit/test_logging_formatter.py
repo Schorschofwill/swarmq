@@ -33,6 +33,7 @@ import json
 import logging
 import logging.config
 from collections.abc import Callable, Iterator
+from typing import override
 
 import pytest
 import structlog
@@ -141,6 +142,7 @@ def test_record_formatted_before_has_no_message_or_asctime(
 class _RaisingRepr:
     """Stellvertreter fuer ``aio_pika.tools.OneShotCallback`` (aio-pika 10)."""
 
+    @override
     def __repr__(self) -> str:
         raise RuntimeError("repr exploded")
 

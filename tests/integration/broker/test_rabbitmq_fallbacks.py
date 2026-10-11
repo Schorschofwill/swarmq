@@ -21,7 +21,7 @@ import contextlib
 import time
 import uuid
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock
 
 import aio_pika
@@ -45,6 +45,7 @@ from tests.support.rabbitmq_faults import publish_failure
 class _LockedTask(Task):
     name = "ctr-locked"
 
+    @override
     async def run(self, value: int) -> int:
         return value
 

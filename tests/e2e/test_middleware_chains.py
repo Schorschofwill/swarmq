@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
-from typing import Any
+from typing import Any, override
 
 import pytest
 
@@ -91,9 +91,11 @@ class _OrderTrackingMiddleware(Middleware):
         self._name = name
         self._recorder = recorder
 
+    @override
     async def pre_execute(self, message: MessageContext) -> None:
         self._recorder.append(f"pre:{self._name}")
 
+    @override
     async def post_execute(
         self,
         message: MessageContext,
@@ -101,6 +103,7 @@ class _OrderTrackingMiddleware(Middleware):
     ) -> None:
         self._recorder.append(f"post:{self._name}")
 
+    @override
     async def on_error(
         self,
         message: MessageContext,
@@ -122,6 +125,7 @@ async def test_three_middlewares_pre_forward_post_reverse(
     class OkTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue], max_retries=0)
 
+        @override
         async def run(self) -> str:
             recorder.append("task:run")
             return "ok"
@@ -170,11 +174,13 @@ async def test_middleware_in_middle_raises_subsequent_still_run(
     class OkTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue], max_retries=0)
 
+        @override
         async def run(self) -> str:
             recorder.append("task:run")
             return "ok"
 
     class RaisingMiddleware(_OrderTrackingMiddleware):
+        @override
         async def pre_execute(self, message: MessageContext) -> None:
             recorder.append(f"pre:{self._name}")
             raise RuntimeError(f"boom-from-{self._name}")
@@ -231,14 +237,17 @@ async def test_middleware_chain_sees_message_dict_mutations(
     class OkTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue], max_retries=0)
 
+        @override
         async def run(self, x: int) -> int:
             return x
 
     class WriterMiddleware(Middleware):
+        @override
         async def pre_execute(self, message: MessageContext) -> None:
             message["correlation_marker"] = "set-by-A"
 
     class ReaderMiddleware(Middleware):
+        @override
         async def pre_execute(self, message: MessageContext) -> None:
             recorder.append(message.get("correlation_marker", "MISSING"))
 
@@ -283,14 +292,17 @@ async def test_middleware_and_signal_handlers_interleave_correctly(
     class OkTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue], max_retries=0)
 
+        @override
         async def run(self) -> str:
             recorder.append("run")
             return "ok"
 
     class SeqMiddleware(Middleware):
+        @override
         async def pre_execute(self, message: MessageContext) -> None:
             recorder.append("pre_execute")
 
+        @override
         async def post_execute(
             self,
             message: MessageContext,

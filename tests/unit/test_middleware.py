@@ -17,6 +17,7 @@ from __future__ import annotations
 # 10. U11: workflow_step_message_context liefert einen MessageContext mit
 #     festem delivery_mode="at_least_once" und den Workflow-Schluesseln
 import inspect
+from typing import override
 
 import pytest
 
@@ -88,21 +89,27 @@ class _RecordingMiddleware(Middleware):
         self.label = label
         self.calls = calls
 
+    @override
     async def pre_enqueue(self, message: dict) -> None:
         self.calls.append((self.label, "pre_enqueue"))
 
+    @override
     async def post_enqueue(self, message: dict) -> None:
         self.calls.append((self.label, "post_enqueue"))
 
+    @override
     async def pre_execute(self, message: dict) -> None:
         self.calls.append((self.label, "pre_execute"))
 
+    @override
     async def post_execute(self, message: dict, result=None) -> None:
         self.calls.append((self.label, "post_execute"))
 
+    @override
     async def on_error(self, message: dict, exception: BaseException) -> None:
         self.calls.append((self.label, "on_error"))
 
+    @override
     async def on_retry(
         self,
         message: dict,
@@ -211,10 +218,12 @@ class _RaisingMiddleware(Middleware):
         self.hook = hook
         self.exc = exc
 
+    @override
     async def pre_enqueue(self, message: dict) -> None:
         if self.hook == "pre_enqueue":
             raise self.exc
 
+    @override
     async def post_execute(self, message: dict, result=None) -> None:
         if self.hook == "post_execute":
             raise self.exc

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterable
+from typing import override
 
 from dishka import FromDishka, Provider, Scope, make_async_container, provide
 
@@ -44,6 +45,7 @@ setup_dishka(container)
 class DiEchoTask(Task):
     task_info = TaskInfo(name="cli_di_echo", queues=[_QUEUE])
 
+    @override
     async def run(
         self,
         value: str,

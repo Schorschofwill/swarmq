@@ -54,6 +54,7 @@ Test-Liste 0.9.0 (viertes Review):
 from __future__ import annotations
 
 import asyncio
+from typing import override
 from unittest.mock import AsyncMock
 
 import pytest
@@ -89,6 +90,7 @@ class TestSchedfireDedup:
         class NoopTask(Task):
             task_info = TaskInfo(name="noop", queues=["default"])
 
+            @override
             async def run(self):
                 return "ok"
 
@@ -113,6 +115,7 @@ class TestSchedfireDedup:
         class NoopTask(Task):
             task_info = TaskInfo(name="noop", queues=["default"])
 
+            @override
             async def run(self):
                 return "ok"
 
@@ -163,6 +166,7 @@ class TestSchedfireDedup:
                 hard_timeout=600,
             )
 
+            @override
             async def run(self):
                 return "ok"
 
@@ -189,6 +193,7 @@ class TestSchedfireDedup:
         class NoopTask(Task):
             task_info = TaskInfo(name="noop", queues=["default"])
 
+            @override
             async def run(self):
                 raise AssertionError("should not run on duplicate")
 
@@ -216,6 +221,7 @@ class TestSchedfireDedup:
         class NoopTask(Task):
             task_info = TaskInfo(name="noop", queues=["default"])
 
+            @override
             async def run(self):
                 raise AssertionError("should not run on inflight-claim-lost")
 
@@ -243,6 +249,7 @@ class TestSchedfireDedup:
         class NoopTask(Task):
             task_info = TaskInfo(name="noop", queues=["default"])
 
+            @override
             async def run(self):
                 raise AssertionError("must not run on backend error")
 
@@ -283,6 +290,7 @@ class TestSchedfireDedup:
         class NoopTask(Task):
             task_info = TaskInfo(name="noop_pass", queues=["default"])
 
+            @override
             async def run(self):
                 raise AssertionError("must not run on backend error")
 
@@ -435,6 +443,7 @@ class TestSchedfireDedup:
         class NoopTask(Task):
             task_info = TaskInfo(name="noop_sched", queues=["default"])
 
+            @override
             async def run(self):
                 return None
 
@@ -484,6 +493,7 @@ class TestSchedfireDedup:
         class NoopTask(Task):
             task_info = TaskInfo(name="noop", queues=["default"])
 
+            @override
             async def run(self):
                 return "ok"
 
@@ -749,6 +759,7 @@ class TestSchedfireGateOutcomes:
 class LongTask(Task):
     task_info = TaskInfo(name="long", queues=["default"], hard_timeout=900)
 
+    @override
     async def run(self) -> None:
         return None
 

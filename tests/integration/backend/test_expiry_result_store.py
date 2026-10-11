@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from typing import override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -33,6 +34,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.timeout(10)]
 class ExpiringTask(Task):
     task_info = TaskInfo(name="int-expiry-task", queues=["default"], max_age=1)
 
+    @override
     async def run(self) -> None:  # pragma: no cover — läuft nie (abgelaufen)
         return None
 

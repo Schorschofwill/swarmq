@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -51,6 +51,7 @@ _LIFECYCLE = ("task_received", "task_started", "task_succeeded", "task_failed", 
 class Succeeds(Task):
     task_info = TaskInfo(name="lifecycle_succeeds", queues=["q"])
 
+    @override
     async def run(self) -> str:
         return "ok"
 
@@ -108,6 +109,7 @@ async def test_successful_task_reports_started_then_succeeded_with_duration(swar
 class Fails(Task):
     task_info = TaskInfo(name="lifecycle_fails", queues=["q"])
 
+    @override
     async def run(self) -> None:
         raise ValueError("boom")
 
@@ -125,6 +127,7 @@ async def test_failing_task_reports_failed_with_error_fields_and_duration(swarmq
 class WaitsForCancel(Task):
     task_info = TaskInfo(name="lifecycle_waits_for_cancel", queues=["q"])
 
+    @override
     async def run(self) -> None:
         await asyncio.Event().wait()  # endet nur durch den Cancel-Monitor
 
@@ -188,6 +191,7 @@ async def test_unknown_task_is_received_but_never_started(worker, swarmq_logs):
 class FailsWithRetry(Task):
     task_info = TaskInfo(name="lifecycle_fails_with_retry", queues=["default"], max_retries=3)
 
+    @override
     async def run(self) -> None:
         raise ValueError("boom")
 
@@ -204,6 +208,7 @@ async def test_failing_task_with_retry_reports_failed_then_retrying(worker, regi
 class FailsFireAndForget(Task):
     task_info = TaskInfo(name="lifecycle_faf_fails", queues=["q"], delivery=DeliveryMode.FIRE_AND_FORGET)
 
+    @override
     async def run(self) -> None:
         raise ValueError("boom")
 

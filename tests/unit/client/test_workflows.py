@@ -10,6 +10,7 @@ markiert den Workflow als fehlgeschlagen (statt ihn als verwaistes
 
 from __future__ import annotations
 
+from typing import override
 from unittest.mock import AsyncMock
 
 import pytest
@@ -26,6 +27,7 @@ from swarmq.workflow_orchestration import STATUS_COMPLETED, STATUS_FAILED, STATU
 class WfA(Task):
     task_info = TaskInfo(name="wf-a", queues=["wfq"])
 
+    @override
     async def run(self, x: str) -> str:
         return x
 
@@ -132,9 +134,11 @@ class _EnqueueSpy(Middleware):
     def __init__(self, calls: list[str]) -> None:
         self.calls = calls
 
+    @override
     async def pre_enqueue(self, message) -> None:
         self.calls.append(f"pre:{message['step_path']}:{message['delivery_mode']}")
 
+    @override
     async def post_enqueue(self, message) -> None:
         self.calls.append(f"post:{message['step_path']}")
 
@@ -187,6 +191,7 @@ async def test_apply_rejected_by_middleware_persists_nothing(broker, backend):
     Zustand, keine Nachricht, die Ausnahme erreicht den Aufrufer."""
 
     class Rejecting(Middleware):
+        @override
         async def pre_enqueue(self, message) -> None:
             raise PermissionError("quota exceeded")
 

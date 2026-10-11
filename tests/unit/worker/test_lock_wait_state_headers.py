@@ -22,7 +22,7 @@ Test-Liste:
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -55,6 +55,7 @@ _STATE = {
 class FailsOnce(Task):
     task_info = TaskInfo(name="lockwait_fails_once", queues=["default"], max_retries=3)
 
+    @override
     async def run(self) -> None:
         raise ValueError("boom")
 
@@ -98,6 +99,7 @@ class LockedAndLimited(Task):
         name="lockwait_limited", queues=["default"], lock="resource", hard_timeout=60, rate_limit="1/m"
     )
 
+    @override
     async def run(self) -> None:
         raise AssertionError("darf nicht laufen")
 

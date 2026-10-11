@@ -15,6 +15,7 @@ import asyncio
 import contextlib
 import time
 import uuid
+from typing import override
 
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
@@ -49,6 +50,7 @@ async def test_retry_from_high_band_returns_to_high_band(rabbitmq_url: str, valk
             retry_base_delay=2.0,
         )
 
+        @override
         async def run(self) -> str:
             attempts.append(1)
             if len(attempts) == 1:

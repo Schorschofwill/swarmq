@@ -29,6 +29,7 @@ import asyncio
 import contextlib
 import time
 from collections.abc import AsyncIterator
+from typing import override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -52,6 +53,7 @@ RUNS: list[str] = []
 class CountedTask(Task):
     task_info = TaskInfo(name="guard-counted", queues=["default"], rate_limit="10/m", lock="res", hard_timeout=60)
 
+    @override
     async def run(self) -> str:
         RUNS.append("run")
         return "ok"
@@ -247,6 +249,7 @@ async def test_redelivery_after_completion_is_acked_and_skipped(broker, backend,
 class ExpiringTask(Task):
     task_info = TaskInfo(name="guard-expiring", queues=["default"], max_age=1)
 
+    @override
     async def run(self) -> str:
         RUNS.append("run")
         return "ok"
@@ -282,6 +285,7 @@ async def test_expired_copy_of_a_running_original_is_deferred_not_dead_lettered(
 class FlakyTask(Task):
     task_info = TaskInfo(name="guard-flaky", queues=["default"], max_retries=1)
 
+    @override
     async def run(self) -> str:
         RUNS.append("run")
         if len(RUNS) == 1:
@@ -309,6 +313,7 @@ async def test_dead_lettered_execution_skips_a_leftover_copy(broker, backend, re
     class FailingTask(Task):
         task_info = TaskInfo(name="guard-failing", queues=["default"], max_retries=0)
 
+        @override
         async def run(self) -> str:
             RUNS.append("run")
             raise RuntimeError("boom")
@@ -326,6 +331,7 @@ async def test_failure_without_dead_lettering_marks_done_via_the_ack(broker, bac
     class NoDlqTask(Task):
         task_info = TaskInfo(name="guard-no-dlq", queues=["default"], max_retries=0, dead_letter=False)
 
+        @override
         async def run(self) -> str:
             RUNS.append("run")
             raise RuntimeError("boom")

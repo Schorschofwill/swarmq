@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import time
 import uuid
+from typing import override
 
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
@@ -30,6 +31,7 @@ async def test_pubsub_get_result_fast(rabbitmq_url: str, valkey_url: str) -> Non
     class NoopTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self) -> str:
             return "done"
 
@@ -81,6 +83,7 @@ async def test_get_result_works_end_to_end(rabbitmq_url: str, valkey_url: str) -
     class EchoTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self, msg: str) -> str:
             return msg
 
@@ -123,6 +126,7 @@ async def test_schedule_many_get_results(rabbitmq_url: str, valkey_url: str) -> 
     class AddTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self, a: int, b: int) -> int:
             return a + b
 
@@ -171,6 +175,7 @@ async def test_classic_queue_roundtrip(rabbitmq_url: str, valkey_url: str) -> No
     class ClassicTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self, x: int) -> int:
             return x * 2
 

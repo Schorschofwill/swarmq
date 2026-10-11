@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -32,6 +33,7 @@ pytestmark = [pytest.mark.timeout(5)]
 class A(Task):
     task_info = TaskInfo(name="a", queues=["default"])
 
+    @override
     async def run(self) -> str:
         return "a"
 
@@ -39,6 +41,7 @@ class A(Task):
 class B(Task):
     task_info = TaskInfo(name="b", queues=["default"])
 
+    @override
     async def run(self, x: str = "") -> str:
         return "b"
 

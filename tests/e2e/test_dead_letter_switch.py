@@ -12,7 +12,7 @@ import asyncio
 import contextlib
 import uuid
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, override
 
 import pytest
 
@@ -56,12 +56,14 @@ async def test_disabled_dead_lettering_returns_the_error_and_leaves_the_dlq_empt
     class FailingTask(Task):
         task_info = TaskInfo(name=f"no_dlq_fail_{suffix}", queues=[queue], max_retries=0)
 
+        @override
         async def run(self) -> None:
             raise RuntimeError("boom without dlq")
 
     class SentinelTask(Task):
         task_info = TaskInfo(name=f"no_dlq_sentinel_{suffix}", queues=[queue])
 
+        @override
         async def run(self) -> str:
             return "done"
 

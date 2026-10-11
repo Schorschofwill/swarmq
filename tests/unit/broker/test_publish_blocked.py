@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from typing import override
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -48,6 +49,7 @@ class _ObservedEvent(asyncio.Event):
         super().__init__()
         self.waiting = asyncio.Event()
 
+    @override
     async def wait(self) -> bool:  # type: ignore[override]
         self.waiting.set()
         return await super().wait()

@@ -18,7 +18,7 @@ import contextlib
 import itertools
 import time
 import uuid
-from typing import Any
+from typing import Any, override
 
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
@@ -85,6 +85,7 @@ async def test_mutex_serialises_concurrent_tasks(rabbitmq_url: str, valkey_url: 
             hard_timeout=60,
         )
 
+        @override
         async def run(self, idx: int) -> int:
             t0 = time.monotonic()
             await asyncio.sleep(0.1)
@@ -137,6 +138,7 @@ async def test_semaphore_admits_at_most_max_concurrency(rabbitmq_url: str, valke
             hard_timeout=60,
         )
 
+        @override
         async def run(self, idx: int) -> int:
             nonlocal in_flight, max_seen
             in_flight += 1
@@ -192,6 +194,7 @@ async def test_format_string_lock_serialises_per_user(rabbitmq_url: str, valkey_
             hard_timeout=60,
         )
 
+        @override
         async def run(self, user_id: int, idx: int) -> int:
             t0 = time.monotonic()
             await asyncio.sleep(0.1)
@@ -250,6 +253,7 @@ async def test_force_release_recovers_wedged_lock(rabbitmq_url: str, valkey_url:
             hard_timeout=60,
         )
 
+        @override
         async def run(self, idx: int) -> int:
             completed.set()
             return idx
@@ -299,6 +303,7 @@ async def test_lock_released_after_task_exception(rabbitmq_url: str, valkey_url:
             hard_timeout=60,
         )
 
+        @override
         async def run(self, should_throw: bool) -> int:
             if should_throw and not state["first_done"]:
                 state["first_done"] = True

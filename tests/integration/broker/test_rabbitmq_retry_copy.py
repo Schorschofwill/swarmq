@@ -25,6 +25,7 @@ from __future__ import annotations
 import contextlib
 import uuid
 from collections.abc import AsyncIterator
+from typing import override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -48,6 +49,7 @@ _DELIVERY_LIMIT = 20
 class FlakyTask(Task):
     task_info = TaskInfo(name="flaky", queues=["default"], max_retries=3, retry_base_delay=0.2)
 
+    @override
     async def run(self) -> None:
         return None
 

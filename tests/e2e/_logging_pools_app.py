@@ -20,7 +20,7 @@ import logging
 import logging.config
 import logging.handlers
 import os
-from typing import Any
+from typing import Any, override
 
 from swarmq.task import Task, TaskInfo
 
@@ -71,6 +71,7 @@ log = logging.getLogger("poolsapp")
 class PoolsTask(Task):
     task_info = TaskInfo(name="pools_task", queues=[os.environ.get("CLI_TEST_QUEUE", "pools")], max_retries=0)
 
+    @override
     async def run(self, value: str) -> str:
         log.info("pools_info_%s", value)
         log.warning("pools_warn_%s", value)

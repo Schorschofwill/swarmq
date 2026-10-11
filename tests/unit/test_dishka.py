@@ -17,6 +17,7 @@ the future import is fine there.
 
 import dataclasses
 import sys
+from typing import override
 from unittest.mock import patch
 
 import pytest
@@ -114,6 +115,7 @@ async def test_lifecycle_injection_through_task_subclass():
     class InjectTask(Task):
         task_info = TaskInfo(name="inject_task", queues=["q"])
 
+        @override
         async def run(self, x: int, svc: FromDishka[Svc]) -> str:  # type: ignore[valid-type]
             return f"{x}:{svc.tid}"
 
@@ -145,6 +147,7 @@ def test_no_fromdishka_means_no_wrapping():
     class PlainTask(Task):
         task_info = TaskInfo(name="plain_task", queues=["q"])
 
+        @override
         async def run(self, x: int) -> int:
             return x * 2
 
@@ -165,6 +168,7 @@ def test_injected_keys_recorded_for_resolvability_check():
     class KeyTask(Task):
         task_info = TaskInfo(name="key_task", queues=["q"])
 
+        @override
         async def run(self, dep: FromDishka[Dep]) -> None:  # type: ignore[valid-type]
             pass
 
@@ -189,6 +193,7 @@ def test_reserved_param_still_fails_with_fromdishka_annotation():
         class BadTask(Task):
             task_info = TaskInfo(name="bad_task", queues=["q"])
 
+            @override
             async def run(self, delay: FromDishka[Dep]) -> None:  # type: ignore[valid-type]
                 pass
 
@@ -208,6 +213,7 @@ def test_wrapped_run_preserves_return_annotation_for_registry():
     class RetTask(Task):
         task_info = TaskInfo(name="ret_task", queues=["q"])
 
+        @override
         async def run(self, dep: FromDishka[Dep]) -> str:  # type: ignore[valid-type]
             return "ok"
 
@@ -238,6 +244,7 @@ def test_validate_di_task_without_container_raises():
     class VT1(Task):
         task_info = TaskInfo(name="vt1", queues=["q"])
 
+        @override
         async def run(self, d: FromDishka[Dep]) -> None:  # type: ignore[valid-type]
             pass
 
@@ -262,6 +269,7 @@ def test_validate_di_task_missing_provider_raises():
     class VT2(Task):
         task_info = TaskInfo(name="vt2", queues=["q"])
 
+        @override
         async def run(self, d: FromDishka[Dep]) -> None:  # type: ignore[valid-type]
             pass
 
@@ -287,6 +295,7 @@ def test_validate_di_task_resolvable_passes():
     class VT3(Task):
         task_info = TaskInfo(name="vt3", queues=["q"])
 
+        @override
         async def run(self, d: FromDishka[Dep]) -> None:  # type: ignore[valid-type]
             pass
 
@@ -384,6 +393,7 @@ def test_optional_fromdishka_annotation_is_recorded_and_rejected_at_start():
     class SilentTask(Task):
         task_info = TaskInfo(name="silent_task", queues=["q"])
 
+        @override
         async def run(self, db: FromDishka[Db] | None = None) -> None:  # type: ignore[valid-type]
             pass
 
@@ -406,6 +416,7 @@ def test_mixed_effective_and_ineffective_params_still_rejected():
     class MixedTask(Task):
         task_info = TaskInfo(name="mixed_task", queues=["q"])
 
+        @override
         async def pre_execution(self, dep: FromDishka[Dep], other: FromDishka[Dep] | None = None) -> None:  # type: ignore[valid-type]
             pass
 
@@ -427,6 +438,7 @@ def test_correct_fromdishka_annotation_records_nothing_ineffective():
     class GoodTask(Task):
         task_info = TaskInfo(name="good_task", queues=["q"])
 
+        @override
         async def run(self, dep: FromDishka[Dep]) -> None:  # type: ignore[valid-type]
             pass
 

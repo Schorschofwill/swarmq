@@ -21,6 +21,7 @@ Test-Liste 0.9.0 (drittes Review):
 from __future__ import annotations
 
 import asyncio
+from typing import override
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -219,6 +220,7 @@ class TestWorkerPreStartCancelCheck:
                 # result_ttl not set → defaults to None → becomes 0 for FAF
             )
 
+            @override
             async def run(self):  # pragma: no cover - should not be called
                 pass
 
@@ -251,6 +253,7 @@ class TestWorkerPreStartCancelCheck:
                 result_ttl=60,
             )
 
+            @override
             async def run(self):  # pragma: no cover
                 pass
 
@@ -356,6 +359,7 @@ class TestWorkerPreStartCancelCheck:
         class RateLimitedTask(Task):
             task_info = TaskInfo(name="rate_add", queues=["default"], rate_limit="10/s")
 
+            @override
             async def run(self, a: int, b: int) -> int:  # pragma: no cover
                 return a + b
 

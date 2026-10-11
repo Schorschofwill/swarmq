@@ -37,7 +37,7 @@ import contextlib
 import json
 import random
 import uuid
-from typing import Any
+from typing import Any, override
 
 import aio_pika
 import pytest
@@ -118,6 +118,7 @@ class TestAmqpHeaderFuzz:
         class CanaryTask(Task):
             task_info = TaskInfo(name=canary_name, queues=[queue], max_retries=0)
 
+            @override
             async def run(self, x: int) -> int:
                 return x + 1
 

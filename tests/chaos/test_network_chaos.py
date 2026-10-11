@@ -43,7 +43,7 @@ import asyncio
 import contextlib
 import json
 import uuid
-from typing import Any
+from typing import Any, override
 
 import pytest
 
@@ -145,6 +145,7 @@ class TestNetworkChaos:
         class OnceTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self) -> int:
                 call_counter[self._task_id] = call_counter.get(self._task_id, 0) + 1
                 return call_counter[self._task_id]
@@ -200,6 +201,7 @@ class TestNetworkChaos:
         class EchoTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self, x: int) -> int:
                 return x
 
@@ -245,6 +247,7 @@ class TestNetworkChaos:
         class EchoTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self, x: int) -> int:
                 return x * 2
 
@@ -299,6 +302,7 @@ class TestNetworkChaos:
         class EchoTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self, x: int) -> int:
                 return x + 100
 
@@ -388,6 +392,7 @@ class TestNetworkChaos:
         class EchoTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self, x: int) -> int:
                 # Sleep long enough that the test can partition Valkey
                 # mid-run. The task body itself does not touch Valkey —

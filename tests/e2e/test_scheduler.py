@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import override
 
 import pytest
 import valkey.asyncio as valkey_asyncio
@@ -146,6 +147,7 @@ class TestDelayAndEta:
         class PingTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self) -> str:
                 nonlocal call_count
                 call_count += 1
@@ -201,6 +203,7 @@ class TestDelayAndEta:
         class AtTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self) -> str:
                 done.set()
                 return "ok"
@@ -251,6 +254,7 @@ class TestCronSchedule:
             # directly to avoid waiting on the natural minute-boundary.
             task_info = TaskInfo(name=task_name, queues=[queue], cron="* * * * *")
 
+            @override
             async def run(self) -> str:
                 done.set()
                 return "ok"
@@ -313,6 +317,7 @@ class TestConsumerDedup:
         class DedupTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self) -> str:
                 nonlocal call_count
                 call_count += 1
@@ -386,6 +391,7 @@ class TestGracefulHandover:
         class NoopTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self) -> str:
                 return "ok"
 
@@ -514,6 +520,7 @@ class TestCliRoundtrip:
         class ClitTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self) -> str:
                 done.set()
                 return "ok"
@@ -592,6 +599,7 @@ class TestRecurringAcrossLeaderChange:
                 cron="* * * * *",
             )
 
+            @override
             async def run(self) -> str:
                 nonlocal call_count
                 call_count += 1
@@ -782,6 +790,7 @@ class TestCronWithRateLimit:
                 rate_limit="1/m",
             )
 
+            @override
             async def run(self) -> str:
                 nonlocal call_count
                 call_count += 1
@@ -954,6 +963,7 @@ class TestCronReportsAcrossApps:
                     timezone=timezone,
                 )
 
+                @override
                 async def run(self) -> None:
                     return None
 
@@ -1075,6 +1085,7 @@ class TestCronPruneAcrossApps:
         class Nightly(Task):
             task_info = TaskInfo(name=name, queues=[queue_b], cron="0 1 * * *")
 
+            @override
             async def run(self) -> None:
                 return None
 

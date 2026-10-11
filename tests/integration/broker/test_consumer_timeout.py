@@ -56,6 +56,7 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
+from typing import override
 
 import aio_pika
 import aiormq.abc
@@ -355,6 +356,7 @@ async def test_43_worker_keeps_consuming_after_timeout_without_zombie(rabbitmq43
 
         task_info = TaskInfo(name="ct_outlives_timeout", queues=[queue])
 
+        @override
         async def run(self) -> str:
             await poll_until(lambda: bool(broker.consumer_watch.self_cancelled_tags), TIMEOUT_DEADLINE_S)
             return "slow"
@@ -362,6 +364,7 @@ async def test_43_worker_keeps_consuming_after_timeout_without_zombie(rabbitmq43
     class Quick(Task):
         task_info = TaskInfo(name="ct_quick", queues=[queue])
 
+        @override
         async def run(self) -> str:
             return "quick"
 
@@ -512,6 +515,7 @@ async def test_long_task_runs_exactly_once_across_the_consumer_timeout(any_rabbi
         class OutlivesTimeout(Task):
             task_info = TaskInfo(name="ct_guard_once", queues=[queue])
 
+            @override
             async def run(self) -> str:
                 runs.append(time.monotonic())
                 await poll_until(lambda: _seen("execution_guard_deferred"), TIMEOUT_DEADLINE_S)
@@ -520,6 +524,7 @@ async def test_long_task_runs_exactly_once_across_the_consumer_timeout(any_rabbi
         class Quick(Task):
             task_info = TaskInfo(name="ct_guard_quick", queues=[queue])
 
+            @override
             async def run(self) -> str:
                 return "quick"
 

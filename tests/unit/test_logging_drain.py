@@ -109,6 +109,7 @@ import queue
 import sys
 import threading
 from collections.abc import Callable, Iterator
+from typing import override
 
 import pytest
 
@@ -140,6 +141,7 @@ class _Gate(logging.Handler):
         self.opened = threading.Event()
         self.messages: list[str] = []
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         self.entered.set()
         self.opened.wait()
@@ -278,6 +280,7 @@ class _Collector(logging.Handler):
         super().__init__()
         self.messages: list[str] = []
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         self.messages.append(record.getMessage())
 
@@ -304,6 +307,7 @@ class _SignallingQueue(queue.Queue[logging.LogRecord]):
         super().__init__(maxsize)
         self.closing = threading.Event()
 
+    @override
     def shutdown(self, immediate: bool = False) -> None:
         super().shutdown(immediate)
         self.closing.set()
@@ -337,6 +341,7 @@ def test_records_logged_while_draining_land_in_a_fresh_queue() -> None:
 class _SlowGate(_Gate):
     """Wie ``_Gate``; ``late`` braucht danach noch 50 ms."""
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         if record.getMessage() == "late":
             threading.Event().wait(0.05)
@@ -439,6 +444,7 @@ class _BlockingStream(io.StringIO):
         self.entered = threading.Event()
         self.opened = threading.Event()
 
+    @override
     def write(self, s: str) -> int:
         self.entered.set()
         self.opened.wait()
@@ -505,6 +511,7 @@ class FileModeGate(logging.Handler):
         super().__init__()
         self.state = FileModeGate.current
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         state = self.state
         state.entered.set()
@@ -598,6 +605,7 @@ class _ThreadRecorder(logging.Handler):
         super().__init__()
         self.seen: list[tuple[str, str]] = []
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         self.seen.append((record.getMessage(), threading.current_thread().name))
 
@@ -764,6 +772,7 @@ class _FlushRecorder(io.StringIO):
         super().__init__()
         self.flushed = 0
 
+    @override
     def flush(self) -> None:
         self.flushed += 1
 
@@ -1061,11 +1070,13 @@ class _BlockingStream(io.StringIO):
         self.entered = threading.Event()
         self.opened = threading.Event()
 
+    @override
     def write(self, text: str) -> int:
         self.entered.set()
         self.opened.wait()
         return super().write(text)
 
+    @override
     def isatty(self) -> bool:
         return False
 

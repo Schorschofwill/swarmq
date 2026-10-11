@@ -89,6 +89,7 @@ import io
 import json
 import logging
 import threading
+from typing import override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -116,6 +117,7 @@ class _Collect(logging.Handler):
         super().__init__(level)
         self.records: list[logging.LogRecord] = []
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         self.records.append(record)
 
@@ -193,6 +195,7 @@ class _Blocking(_Collect):
         self.entered = threading.Event()
         self.release = threading.Event()
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         self.entered.set()
         self.release.wait(5)
@@ -282,6 +285,7 @@ _CORRELATION_ID: contextvars.ContextVar[str] = contextvars.ContextVar("correlati
 class _CorrelationFilter(logging.Filter):
     """Ein Filter der App, der eine Kontextvariable liest."""
 
+    @override
     def filter(self, record: logging.LogRecord) -> bool:
         record.correlation_id = _CORRELATION_ID.get()
         return True
@@ -474,6 +478,7 @@ class _Raising(logging.Handler):
     """Root-Handler der App, dessen ``emit`` wirft, ohne ``handleError``
     -- etwa ein Log-Shipper ohne Verbindung (Analyse S2)."""
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         raise ConnectionError("log shipper down")
 
@@ -486,6 +491,7 @@ class _Arrival(_Collect):
         self.event = event
         self.arrived = threading.Event()
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         super().emit(record)
         if record.getMessage() == self.event:
@@ -513,6 +519,7 @@ _CORRELATION: contextvars.ContextVar[str] = contextvars.ContextVar("correlation_
 class _NeedsCorrelation(logging.Filter):
     """Filter der App, der eine Kontextvariable ohne Standardwert liest."""
 
+    @override
     def filter(self, record: logging.LogRecord) -> bool:
         record.correlation_id = _CORRELATION.get()
         return True

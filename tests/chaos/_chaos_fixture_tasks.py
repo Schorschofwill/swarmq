@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import ctypes
 import os
+from typing import override
 
 from swarmq.task import Task, TaskInfo
 
@@ -48,6 +49,7 @@ class ChaosSleepTask(Task):
         max_retries=0,
     )
 
+    @override
     async def run(self, seconds: float) -> str:
         await _bump_exec_count(self)
         await asyncio.sleep(seconds)
@@ -67,6 +69,7 @@ class ChaosMemoryHogTask(Task):
         max_retries=0,
     )
 
+    @override
     async def run(self, mb: int, seconds: float) -> str:
         await _bump_exec_count(self)
         # Hold the allocation in scope so it shows up in RSS.
@@ -86,6 +89,7 @@ class ChordHeaderSleepTask(Task):
         max_retries=0,
     )
 
+    @override
     async def run(self, n: int, seconds: float = 0.0, run_key: str = "") -> int:
         if run_key and self._backend is not None:
             # Starts per run: a crash mid-fan-in shows up as re-runs.
@@ -111,6 +115,7 @@ class ChordBodyCountTask(Task):
         max_retries=0,
     )
 
+    @override
     async def run(self, results: list, run_key: str = "") -> int:
         if self._backend is not None:
             try:
@@ -135,6 +140,7 @@ class ChaosSegvTask(Task):
         retry_base_delay=0.5,
     )
 
+    @override
     async def run(self) -> None:
         await _bump_exec_count(self)
         # NULL-deref → SIGSEGV. Python never returns from this call.

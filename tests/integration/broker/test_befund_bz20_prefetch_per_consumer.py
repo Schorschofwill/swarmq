@@ -22,6 +22,7 @@ import asyncio
 import contextlib
 import time
 import uuid
+from typing import override
 
 import pytest
 
@@ -68,6 +69,7 @@ async def test_worker_holds_at_most_concurrency_unacked_messages(rabbitmq_url: s
     class BlockingTask(Task):
         task_info = TaskInfo(name=task_name, queues=list(queues))
 
+        @override
         async def run(self) -> str:
             started.set()
             await release.wait()

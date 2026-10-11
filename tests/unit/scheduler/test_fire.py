@@ -22,6 +22,7 @@ Unique beim Fire (Plan 0.12.0, MR 9, BZ-09):
 
 from __future__ import annotations
 
+from typing import override
 from unittest.mock import AsyncMock
 
 import msgspec
@@ -95,6 +96,7 @@ def _register_ping(**unique) -> None:
     class Ping(Task):
         task_info = TaskInfo(name="ping", queues=["default"], **unique)
 
+        @override
         async def run(self) -> None:
             return None
 

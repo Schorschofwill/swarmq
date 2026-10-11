@@ -10,6 +10,7 @@ which needs the names in scope (module-level here, mirroring real usage).
 
 import asyncio
 from collections.abc import AsyncIterable
+from typing import override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -57,6 +58,7 @@ class _SvcProvider(Provider):
 class DiTask(Task):
     task_info = TaskInfo(name="di_task", queues=["default"])
 
+    @override
     async def run(self, x: int, svc: FromDishka[_Svc]) -> int:
         CAPTURED.append(svc.tid)
         return x * 10
@@ -65,6 +67,7 @@ class DiTask(Task):
 class DiFailTask(Task):
     task_info = TaskInfo(name="di_fail", queues=["default"])
 
+    @override
     async def run(self, svc: FromDishka[_Svc]) -> None:
         raise ValueError("boom")
 
@@ -195,6 +198,7 @@ async def test_no_container_registered_skips_di_path(broker, backend, config):
     class PlainTask(Task):
         task_info = TaskInfo(name="plain_w", queues=["default"])
 
+        @override
         async def run(self, x: int) -> int:
             return x + 1
 

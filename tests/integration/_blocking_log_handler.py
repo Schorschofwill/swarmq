@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import logging
 import threading
+from typing import override
 
 _NEVER = threading.Event()
 
 
 class NeverReturns(logging.Handler):
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         _NEVER.wait()
 
@@ -21,5 +23,6 @@ class NeverReturns(logging.Handler):
 class AlwaysRaises(logging.Handler):
     """Log-Ziel, dessen ``emit`` wirft, ohne ``handleError`` (Analyse S2.1)."""
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         raise ConnectionError("log shipper down")

@@ -17,6 +17,7 @@ from __future__ import annotations
 import importlib.metadata
 import os
 from pathlib import Path
+from typing import override
 
 import valkey.asyncio as aio_valkey
 
@@ -67,6 +68,7 @@ class CompatFlakyTask(Task):
         name="compat_flaky", queues=[_QUEUE], max_retries=2, retry_backoff="fixed", retry_base_delay=0.1
     )
 
+    @override
     async def run(self) -> str:
         if await _record("compat_flaky", self._task_id) == 1:
             raise RuntimeError("first attempt fails")
@@ -78,6 +80,7 @@ class CompatPoisonTask(Task):
 
     task_info = TaskInfo(name="compat_poison", queues=[_QUEUE], max_retries=0)
 
+    @override
     async def run(self) -> str:
         await _record("compat_poison", self._task_id)
         if not await _flag(_QUEUE):
@@ -93,6 +96,7 @@ class CompatSlowRetryTask(Task):
         name="compat_slow_retry", queues=[_QUEUE], max_retries=2, retry_backoff="fixed", retry_base_delay=10.0
     )
 
+    @override
     async def run(self) -> str:
         if await _record("compat_slow_retry", self._task_id) == 1:
             raise RuntimeError("first attempt fails")

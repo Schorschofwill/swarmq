@@ -21,6 +21,7 @@ import subprocess
 import sys
 import uuid
 from pathlib import Path
+from typing import override
 
 import pytest
 
@@ -111,6 +112,7 @@ async def _poison_queue(
             retry_base_delay=0.1,
         )
 
+        @override
         async def run(self) -> None:
             raise ValueError("poison")
 

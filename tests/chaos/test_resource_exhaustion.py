@@ -37,6 +37,7 @@ import asyncio
 import contextlib
 import time
 import uuid
+from typing import override
 
 import aio_pika
 import pytest
@@ -117,6 +118,7 @@ class TestResourceExhaustion:
         class SleepTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue], max_retries=0)
 
+            @override
             async def run(self, i: int) -> int:
                 await asyncio.sleep(sleep_s)
                 return i

@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
-from typing import Any
+from typing import Any, override
 
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
@@ -40,6 +40,7 @@ async def test_rate_limited_task_delays_but_never_drops(rabbitmq_url: str, valke
     class RateLimitedEchoTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue], rate_limit=rate_limit)
 
+        @override
         async def run(self, idx: int) -> int:
             executed_task_ids.append(idx)
             if len(executed_task_ids) >= total_messages:

@@ -12,7 +12,7 @@ Test-Liste:
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import ClassVar, override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -32,6 +32,7 @@ class _Locked(Task):
 
     kept_during_run: ClassVar[list[bool]] = []
 
+    @override
     async def run(self) -> None:
         worker = type(self).worker  # type: ignore[attr-defined]
         type(self).kept_during_run.append(worker._lock_keeper.kept == 1)

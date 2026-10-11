@@ -28,7 +28,7 @@ Testliste:
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -48,6 +48,7 @@ class PdfRender(Task):
 
     task_info = TaskInfo(name="bz05_pdf", queues=["default"], lock="pdf", max_concurrency=4, hard_timeout=600)
 
+    @override
     async def run(self) -> None:
         raise AssertionError("darf bei Lock-Konflikt nicht laufen")
 
