@@ -36,6 +36,9 @@ Listen siehe die [Referenz](../reference/index.md).
 
 ## Operations
 
+- [Ausrollen und Upgraden](deployment.md) — Rollout-Reihenfolge,
+  Grace-Periods, vhost und Namensraum, Rechte und Policies,
+  Rollback-Regeln; der Upgrade-Pfad von 0.11 auf 0.12.
 - [Dead-Letter-Queues](dead-letter-queues.md) — DLQ'te Nachrichten
   mit `swarmq dlq` inspizieren, retryen und purgen.
 - [CPU-Modus](cpu-mode.md) — `--pool cpu` führt Task-Körper in
