@@ -4,9 +4,9 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 [Keep a Changelog](https://keepachangelog.com/) und
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.12.0rc1] — 2026-10-11
 
-0.12.0, noch unveröffentlicht. Die Version behebt die Befunde der
+Release-Candidate für 0.12.0 (Installation mit `pip install --pre`). Die Version behebt die Befunde der
 Untersuchung „Betrieb über Zeit“ (BZ-01 bis BZ-29): verlorene und
 doppelt ausgeführte Tasks, Wartezeiten ohne Grenze und Zustand, der
 sich über Wochen Betrieb aufbaut. BZ-20 bleibt eine Grenze und wird
@@ -19,7 +19,7 @@ folgen.
 #### Reihenfolge
 
 1. **Zuerst `swarmq check`** mit 0.12 in einem eigenen virtualenv gegen
-   Produktion ausführen (`pip install swarmq==0.12.*`; es liest nur:
+   Produktion ausführen (`pip install --pre 'swarmq==0.12.*'`; es liest nur:
    `CONFIG GET`, `INFO`, `SCAN`, passive Deklarationen). Unter
    Kubernetes geht das als Init-Container. Exit `78` heißt: Die neuen
    Worker würden den Start verweigern. Das nicht erst beim Ausrollen
