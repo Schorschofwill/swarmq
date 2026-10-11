@@ -97,7 +97,7 @@ Status je Befund: „offen“ oder „behoben (MR n, <Commit>)“. Mit dem Fix i
 | BZ-13 | `tests/unit/worker/test_befund_bz13_workflow_hang.py` | behoben (MR 3, a570112) |
 | BZ-14 | `tests/integration/broker/test_befund_bz14_orphaned_queue.py` | offen |
 | BZ-15 | `tests/integration/broker/test_befund_bz15_queue_args_change.py` | behoben (MR 8, 28dc2f4) |
-| BZ-16 | `tests/integration/broker/test_befund_bz16_connection_blocked.py` | offen |
+| BZ-16 | `tests/integration/broker/test_befund_bz16_connection_blocked.py` | behoben (MR 16, 51bdedb) |
 | BZ-17 | `tests/integration/broker/test_befund_bz17_traceback_header.py` | behoben (MR 2, f588215) |
 | BZ-18 | `tests/unit/process_manager/test_befund_bz18_shutdown_budget.py`, `tests/unit/worker/test_befund_bz18_cleanup_after_grace.py` | offen |
 | BZ-19 | `tests/unit/broker/test_befund_bz19_dead_letter_strategy.py` | behoben (MR 8, 28dc2f4) |
