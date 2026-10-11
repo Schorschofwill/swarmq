@@ -998,7 +998,6 @@ class TestSchedulerUniqueDedup:
 
         async def setnx_side_effect(dedup_hash, *_a, **_kw):
             captured.append(dedup_hash)
-            return None
 
         backend.claim_unique = AsyncMock(side_effect=setnx_side_effect)
         loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)

@@ -6,10 +6,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from importlib.machinery import ModuleSpec
-from typing import TYPE_CHECKING, TypedDict
-
-if TYPE_CHECKING:  # pragma: no cover — import-time only
-    pass
+from typing import TypedDict
 
 from swarmq.exceptions import ConfigurationError
 from swarmq.slots import effective_concurrency, resolve_default_slots, validate_pool_mode

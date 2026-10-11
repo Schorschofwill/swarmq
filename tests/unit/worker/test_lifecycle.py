@@ -80,7 +80,7 @@ class ShutdownAddTask(Task):
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture()
+@pytest.fixture
 def broker():
     b = MagicMock(spec=RabbitMQBroker)
     b.connect = AsyncMock()
@@ -95,7 +95,7 @@ def broker():
     return b
 
 
-@pytest.fixture()
+@pytest.fixture
 def backend():
     be = MagicMock(spec=ValkeyBackend)
     be.connect = AsyncMock()
@@ -109,7 +109,7 @@ def backend():
     return be
 
 
-@pytest.fixture()
+@pytest.fixture
 def config():
     return SwarmQConfig(
         broker_url="amqp://localhost",
@@ -119,14 +119,14 @@ def config():
     )
 
 
-@pytest.fixture()
+@pytest.fixture
 def registry():
     reg = TaskRegistry()
     reg.register(ShutdownAddTask)
     return reg
 
 
-@pytest.fixture()
+@pytest.fixture
 def worker(broker, backend, registry, config):
     return Worker(broker=broker, backend=backend, registry=registry, config=config)
 

@@ -5,12 +5,9 @@ keine Broker-Implementierung mehr (KTD6)."""
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Protocol
+from typing import Protocol
 
 from swarmq.ready_depth import ready_depth_or_none
-
-if TYPE_CHECKING:  # pragma: no cover — import-time only
-    pass
 
 SAMPLE_TIMEOUT_S = 5.0
 

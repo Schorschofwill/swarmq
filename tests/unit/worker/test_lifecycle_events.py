@@ -208,7 +208,7 @@ class FailsFireAndForget(Task):
         raise ValueError("boom")
 
 
-@pytest.fixture()
+@pytest.fixture
 def task_logger_at_warning():
     """``--logger-level swarmq.task=WARNING`` ueber ``configure_logging``;
     das Level von ``swarmq.task`` wird danach zurueckgesetzt."""

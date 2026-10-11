@@ -237,7 +237,7 @@ class HealthServer:
     ) -> None:
         from swarmq._http import write_http_response
 
-        base_path = path.split("?")[0]
+        base_path = path.split("?", maxsplit=1)[0]
         if base_path == "/health":
             body = json.dumps(
                 {

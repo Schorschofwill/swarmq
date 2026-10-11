@@ -317,7 +317,7 @@ class TestRabbitMQBrokerInjection:
 
 
 class TestRabbitMQBrokerDeclareQueue:
-    @pytest.fixture()
+    @pytest.fixture
     def connected_broker(self):
         broker = RabbitMQBroker("amqp://guest:guest@localhost/")
         broker._publish_channel = AsyncMock(is_closed=False)

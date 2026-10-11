@@ -1690,7 +1690,7 @@ class TestLongBackendOutageBeforeStartCombo:
                     xq_depth = await broker.dead_letter_depth(queue)
 
         assert results == [i * 10 for i in range(self.TASKS)]
-        assert runs == {i: 1 for i in range(self.TASKS)}, f"jeder Task genau einmal: {runs}"
+        assert runs == dict.fromkeys(range(self.TASKS), 1), f"jeder Task genau einmal: {runs}"
         assert xq_depth == 0
         deferred = [e for e in logs if e["event"] == "task_deferred_backend_unavailable"]
         assert deferred, "keine Zurueckstellungs-Warnung geloggt"

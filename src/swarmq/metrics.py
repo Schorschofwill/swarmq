@@ -436,7 +436,7 @@ class MetricsServer:
     ) -> None:
         from swarmq._http import write_http_response
 
-        if path.split("?")[0] != "/metrics":
+        if path.split("?", maxsplit=1)[0] != "/metrics":
             await write_http_response(writer, 404, b"not found\n")
             return
         body = self._metrics.render()

@@ -96,14 +96,14 @@ class TestLazyImports:
         implementation must satisfy this — caching is allowed, but the
         object must be the same one ``importlib.import_module`` returns.
         """
-        import swarmq.cli as cli
+        from swarmq import cli
         from swarmq.backend.valkey import ValkeyBackend as CanonicalVB
 
         assert cli.ValkeyBackend is CanonicalVB
 
     def test_cli_getattr_rabbitmq_broker_preserves_identity(self) -> None:
         """``swarmq.cli.RabbitMQBroker`` must be the canonical class."""
-        import swarmq.cli as cli
+        from swarmq import cli
         from swarmq.broker.rabbitmq import RabbitMQBroker as CanonicalRB
 
         assert cli.RabbitMQBroker is CanonicalRB
@@ -114,7 +114,7 @@ class TestLazyImports:
         Regression guard: lazy-loading mechanism must not swallow
         ``AttributeError`` for names outside ``_LAZY_SURFACE``.
         """
-        import swarmq.cli as cli
+        from swarmq import cli
 
         with pytest.raises(AttributeError, match="ThisDoesNotExist"):
             _ = cli.ThisDoesNotExist  # type: ignore[attr-defined]

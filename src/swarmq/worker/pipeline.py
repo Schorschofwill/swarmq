@@ -182,7 +182,7 @@ class Worker(WorkerLifecycle, WorkerShutdown):
             dead_letter=lambda d, c, m, t: self._retry_handler.dead_letter(d, c, m, t),
             on_event=self._count_guard_event,
         )
-        gate_deps.broker = cast(WorkerBroker, GuardedBroker(broker, self._execution_guard))
+        gate_deps.broker = cast("WorkerBroker", GuardedBroker(broker, self._execution_guard))
         # Phase 3b.3: detached lock-release tasks. The shield pattern
         # around _release_acquired_locks protects against run_task
         # cancellation (inner-cancel). Against graceful-shutdown

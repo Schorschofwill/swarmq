@@ -234,7 +234,7 @@ class ValkeyResults(ValkeyConnection):
         raw: dict[bytes, bytes] = await self._run(
             "get_progress", self._require_client().hgetall(self._progress_key(task_id)), op_timeout
         )
-        return raw if raw else None
+        return raw or None
 
     async def publish_progress(self, task_id: str, payload: bytes) -> None:
         """PUBLISH the progress delta to the per-task channel.

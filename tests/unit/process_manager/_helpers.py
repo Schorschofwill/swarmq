@@ -38,7 +38,7 @@ def _fake_process(alive: bool = True, exitcode: int | None = None, pid: int = 12
 
 def _entry_stub(worker_id, shutdown_event, *args):
     """No-op entry — never actually invoked in these unit tests."""
-    return None
+    return
 
 
 def _instant_crash_entry(worker_id, shutdown_event, *args):

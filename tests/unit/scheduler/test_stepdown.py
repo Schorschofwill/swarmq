@@ -78,7 +78,7 @@ def test_a_successful_publish_resets_the_series() -> None:
 
 @pytest.mark.parametrize("name", ["UnroutableMessage", "MessageHeadersTooLarge"])
 def test_errors_that_hit_every_candidate_are_not_counted(name: str) -> None:
-    import swarmq.exceptions as exceptions
+    from swarmq import exceptions
 
     tracker, clock = _tracker(30.0)
     error = getattr(exceptions, name)("x")
@@ -139,7 +139,7 @@ class _FakeTime:
 
 @pytest.fixture
 def clock(monkeypatch: pytest.MonkeyPatch) -> _FakeTime:
-    import swarmq.scheduler.stepdown as stepdown
+    from swarmq.scheduler import stepdown
 
     fake = _FakeTime()
     monkeypatch.setattr(stepdown, "time", fake)

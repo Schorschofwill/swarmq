@@ -69,7 +69,7 @@ class _FakeTime:
 
 @pytest.fixture
 def clock(monkeypatch: pytest.MonkeyPatch) -> _FakeTime:
-    import swarmq.scheduler.stepdown as stepdown
+    from swarmq.scheduler import stepdown
 
     fake = _FakeTime()
     monkeypatch.setattr(stepdown, "time", fake)

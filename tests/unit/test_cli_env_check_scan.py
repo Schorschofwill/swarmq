@@ -52,7 +52,7 @@ def _run_json(capsys: pytest.CaptureFixture[str]) -> tuple[int, dict[str, Any]]:
 def slow(monkeypatch: pytest.MonkeyPatch) -> _SlowScan:
     import valkey.asyncio
 
-    import swarmq.backend.valkey.environment as environment
+    from swarmq.backend.valkey import environment
 
     _install(monkeypatch, [])
     client = _SlowScan(["sq:result:a", "sq:lock:b", "sq:result:c"])

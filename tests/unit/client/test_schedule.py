@@ -917,7 +917,6 @@ class TestClientUniqueSchedule:
 
         async def capture_setnx(h, _tid, _ttl, **_kw):
             captured_hashes.append(h)
-            return None
 
         backend_setnx.claim_unique = AsyncMock(side_effect=capture_setnx)
         await client_setnx.schedule("add", 1, 2, queue="math", unique_for=60)
@@ -934,7 +933,6 @@ class TestClientUniqueSchedule:
 
         async def capture_setnx(h, _tid, _ttl, **_kw):
             captured_hashes.append(h)
-            return None
 
         backend_setnx.claim_unique = AsyncMock(side_effect=capture_setnx)
         await client_setnx.schedule(
@@ -1170,7 +1168,6 @@ class TestClientUniqueDeferred:
 
         async def track_setnx(*args, **kwargs):
             call_order.append("setnx")
-            return None
 
         async def track_store(*args, **kwargs):
             call_order.append("store")

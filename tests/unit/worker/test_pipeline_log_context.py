@@ -49,7 +49,7 @@ class _LoggingTask(Task):
         return "ok"
 
 
-@pytest.fixture()
+@pytest.fixture
 def ctx_worker(worker, registry):
     registry.register(_LoggingTask)
     return worker

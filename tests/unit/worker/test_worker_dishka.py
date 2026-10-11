@@ -86,7 +86,7 @@ def _clear_buffers():
     FINALIZED.clear()
 
 
-@pytest.fixture()
+@pytest.fixture
 def broker():
     b = MagicMock(spec=RabbitMQBroker)
     for m in (
@@ -104,7 +104,7 @@ def broker():
     return b
 
 
-@pytest.fixture()
+@pytest.fixture
 def backend():
     be = MagicMock(spec=ValkeyBackend)
     for m in ("connect", "store_result", "notify_result", "close", "clear_cancel_flag"):
@@ -119,7 +119,7 @@ def backend():
     return be
 
 
-@pytest.fixture()
+@pytest.fixture
 def config():
     return SwarmQConfig(
         broker_url="amqp://localhost",

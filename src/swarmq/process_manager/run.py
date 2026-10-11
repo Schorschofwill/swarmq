@@ -6,10 +6,6 @@ from __future__ import annotations
 import argparse
 import os
 import socket
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:  # pragma: no cover — import-time only
-    pass
 
 from swarmq.exceptions import ConfigurationError
 from swarmq.logging import get_logger

@@ -23,7 +23,7 @@ _REASON_CAP = (
 )
 
 
-def _backoff_with_uniform(monkeypatch: pytest.MonkeyPatch, value: float, **kwargs: float | int | str) -> float:
+def _backoff_with_uniform(monkeypatch: pytest.MonkeyPatch, value: float, **kwargs: float | str) -> float:
     """Wartezeit mit fester Zufallsquelle (Grenze ``random.uniform`` gemockt)."""
     monkeypatch.setattr(backoff.random, "uniform", lambda _lo, _hi: value)
     return calculate_backoff(**kwargs)  # type: ignore[arg-type]

@@ -4,10 +4,6 @@ Pickle-Safety-Validierung (Subprozess-Übergabe)."""
 from __future__ import annotations
 
 import dataclasses
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:  # pragma: no cover — import-time only
-    pass
 
 from swarmq.logging_settings import VALID_LOG_LEVELS, LoggingSettings
 

@@ -129,9 +129,8 @@ async def assert_signal_sequence(
         if strict_order:
             if len(recorded) >= len(expected) and recorded[: len(expected)] == expected:
                 return
-        else:
-            if set(expected) <= set(recorded):
-                return
+        elif set(expected) <= set(recorded):
+            return
         await asyncio.sleep(poll_interval_s)
 
     recorded = recorder.emitted_signals
@@ -210,13 +209,12 @@ async def assert_no_data_loss(
             raise AssertionError(
                 f"data loss under at-least-once: delivered={delivered_count}, expected>={expected_count}"
             )
-    else:
-        if delivered_count != expected_count:
-            raise AssertionError(
-                f"delivery violation under at-most-once: "
-                f"delivered={delivered_count}, expected=={expected_count} "
-                f"({'duplicate' if delivered_count > expected_count else 'drop'})"
-            )
+    elif delivered_count != expected_count:
+        raise AssertionError(
+            f"delivery violation under at-most-once: "
+            f"delivered={delivered_count}, expected=={expected_count} "
+            f"({'duplicate' if delivered_count > expected_count else 'drop'})"
+        )
 
 
 # ---------------------------------------------------------------------------

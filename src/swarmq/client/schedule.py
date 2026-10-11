@@ -289,7 +289,7 @@ class ClientScheduling(ClientScheduleResolve):
             await self._broker.publish(
                 resolved_queue,
                 encode_json(message),
-                headers=headers if headers else None,
+                headers=headers or None,
             )
         except PublishIndeterminate:
             # Die Frist riss beim Warten auf das Publisher-Confirm — der

@@ -128,8 +128,7 @@ async def test_semaphore_limits_concurrency(broker, backend, config):
             nonlocal max_concurrent, current
             async with lock:
                 current += 1
-                if current > max_concurrent:
-                    max_concurrent = current
+                max_concurrent = max(max_concurrent, current)
             await asyncio.sleep(0.05)
             async with lock:
                 current -= 1
@@ -2058,7 +2057,7 @@ class _SlowTask(Task):
 class TestRunningCancelInHandleMessage:
     """Unit-level integration: cancel during _handle_message execution."""
 
-    @pytest.fixture()
+    @pytest.fixture
     def slow_worker(self, broker, backend, config):
         registry = TaskRegistry()
         registry.register(_SlowTask)

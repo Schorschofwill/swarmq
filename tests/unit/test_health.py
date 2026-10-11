@@ -288,7 +288,7 @@ class TestConsumerCheck:
     aktiven Consumer, mit Gnadenfrist ``consumer_ready_grace_s``."""
 
     async def test_not_ready_before_the_first_consume(self):
-        check = consumer_check(lambda: {}, ["q1", "q1.high"], grace_s=30.0)
+        check = consumer_check(dict, ["q1", "q1.high"], grace_s=30.0)
 
         assert await check() == (False, "not consuming: q1, q1.high")
 

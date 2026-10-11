@@ -124,7 +124,7 @@ class _Collect(logging.Handler):
         return [r.getMessage() for r in self.records]
 
 
-@pytest.fixture()
+@pytest.fixture
 def broker() -> MagicMock:
     b = MagicMock(spec=RabbitMQBroker)
     b._url = "amqp://guest:guest@localhost/"
@@ -133,7 +133,7 @@ def broker() -> MagicMock:
     return b
 
 
-@pytest.fixture()
+@pytest.fixture
 def backend() -> MagicMock:
     b = MagicMock(spec=ValkeyBackend)
     b._url = "valkey://localhost:6379/0"
@@ -142,7 +142,7 @@ def backend() -> MagicMock:
     return b
 
 
-@pytest.fixture()
+@pytest.fixture
 def app_handler() -> Iterator[_Collect]:
     """Die App besitzt Root: genau ein Handler, Level INFO."""
     root = logging.getLogger()
@@ -156,7 +156,7 @@ def _listener_threads() -> list[threading.Thread]:
     return [t for t in threading.enumerate() if t.name == LISTENER_THREAD_NAME]
 
 
-@pytest.fixture()
+@pytest.fixture
 def call_handlers_hook(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Haengt sich wie Sentrys ``LoggingIntegration`` an
     ``Logger.callHandlers`` und merkt sich die Nachricht je Aufruf."""

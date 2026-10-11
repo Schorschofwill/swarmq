@@ -186,7 +186,7 @@ class ValkeyLockStore:
         result = raw.decode(errors="replace") if isinstance(raw, bytes) else str(raw)
         # Treat empty string the same as "no owner" — defensive against an
         # upstream writer that SET an empty value.
-        return result if result else None
+        return result or None
 
     async def observe(self, name: str, *, max_concurrency: int) -> LockObservation:
         """Halter und Rest-TTL eines Locks in einem Roundtrip (MULTI/EXEC;
