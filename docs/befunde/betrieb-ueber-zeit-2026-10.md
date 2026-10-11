@@ -95,7 +95,7 @@ Status je Befund: „offen“ oder „behoben (MR n, <Commit>)“. Mit dem Fix i
 | BZ-11 | `tests/e2e/test_befund_bz02_bz11_bz23_scheduler.py` | behoben (MR 11, e4ece7d) |
 | BZ-12 | `tests/unit/worker/gates/test_befund_bz12_marker_ttl.py` | behoben (MR 12, 507b471) |
 | BZ-13 | `tests/unit/worker/test_befund_bz13_workflow_hang.py` | behoben (MR 3, a570112) |
-| BZ-14 | `tests/integration/broker/test_befund_bz14_orphaned_queue.py` | offen |
+| BZ-14 | `tests/integration/broker/test_befund_bz14_orphaned_queue.py` | behoben (MR 18, 183808b); Nachweis vor dem Fix umgeschrieben (Vorzustand gemeldete Queue, Budget 10 s) |
 | BZ-15 | `tests/integration/broker/test_befund_bz15_queue_args_change.py` | behoben (MR 8, 28dc2f4) |
 | BZ-16 | `tests/integration/broker/test_befund_bz16_connection_blocked.py` | behoben (MR 16, 51bdedb) |
 | BZ-17 | `tests/integration/broker/test_befund_bz17_traceback_header.py` | behoben (MR 2, f588215) |
