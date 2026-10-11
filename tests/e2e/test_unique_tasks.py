@@ -72,10 +72,10 @@ async def _running_worker(rabbitmq_url: str, valkey_url: str, queue: str):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_submit_button_double_click_dedup(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """Rapid double-schedule with identical args within unique_for window:
     both calls return the same task_id, TASK_DUPLICATE_DETECTED fires
@@ -142,10 +142,10 @@ async def test_submit_button_double_click_dedup(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_webhook_idempotency_across_retry_window(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """unique_until=completion holds the flag across retry delays.
 
@@ -205,10 +205,10 @@ async def test_webhook_idempotency_across_retry_window(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_locking_and_unique_combined(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """A task guarded by BOTH a lock (R3.4) and unique_for (R3.5):
 
@@ -279,10 +279,10 @@ async def test_locking_and_unique_combined(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_ttl_expiry_race_owner_check_protects_second_task(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """unique_for=1 + task that runs for ~1.5s: flag expires mid-run;
     a second schedule within the window SETNX-succeeds (fresh flag).

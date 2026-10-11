@@ -61,10 +61,10 @@ async def _running_worker(rabbitmq_url: str, valkey_url: str, queue: str):
         await worker_backend.close()
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_watch_progress_streams_updates(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """A 10-step task emits progress; watch_progress yields at least
     three events (throttling-bounded); the final event shows percent
@@ -125,10 +125,10 @@ async def test_watch_progress_streams_updates(
     assert "10" in final.message
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_get_progress_polling_sees_terminal_state(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """After the task completes, one-shot get_progress returns the
     final HASH state (until TTL expires)."""
@@ -163,10 +163,10 @@ async def test_get_progress_polling_sees_terminal_state(
             assert info.message == "done"
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_get_progress_none_for_unknown_task(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """Never-written task_id returns None (not an error)."""
     client_broker = RabbitMQBroker(rabbitmq_url)
@@ -181,10 +181,10 @@ async def test_get_progress_none_for_unknown_task(
         assert info is None
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_final_flush_bypasses_throttle_for_fast_task(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """A task that finishes in <500ms still emits the final update,
     per the force-flush rule on current == total."""

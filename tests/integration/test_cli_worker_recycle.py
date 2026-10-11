@@ -108,7 +108,7 @@ def _drain(proc: subprocess.Popen, sink: list[str]) -> None:
     Logzeile warten kann, ohne den Prozess vorher zu beenden."""
     assert proc.stdout is not None
     for line in proc.stdout:
-        sink.append(line)
+        sink.append(line)  # noqa: PERF402 - jede Zeile muss sofort sichtbar sein, waehrend der Test parallel auf sie wartet
 
 
 def _wait_for_line(sink: list[str], needle: str, timeout: float = 60.0) -> bool:

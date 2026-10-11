@@ -74,7 +74,7 @@ async def test_aborted_dlq_listing_loses_no_message(rabbitmq_url: str, dlq, monk
 
     monkeypatch.setattr(aio_pika.queue.Queue, "get", get_then_die)
     try:
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: PT011 - je nach Zeitpunkt schlaegt _ReaderKilled oder der Folgefehler beim Kopieren/Ack auf der toten Verbindung durch
             await reader.list_dead_letters(queue, limit=100)
     finally:
         monkeypatch.undo()

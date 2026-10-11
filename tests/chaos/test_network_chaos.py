@@ -118,11 +118,11 @@ async def _running_worker(rabbitmq_url: str, valkey_url: str, queue: str):
 class TestNetworkChaos:
     """Grouped so the class-scoped ``chaos_stack`` amortises startup."""
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_500ms_latency_on_valkey_no_spurious_retry(
         self,
         chaos_stack,
         toxiproxy,
-        _cleanup_tasks,
     ):
         """500ms latency on Valkey — task completes exactly once.
 
@@ -179,11 +179,11 @@ class TestNetworkChaos:
                     f"task executed {call_counter.get(tid, 0)} times — 500ms latency triggered spurious retry"
                 )
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_bandwidth_limit_on_rabbitmq(
         self,
         chaos_stack,
         toxiproxy,
-        _cleanup_tasks,
     ):
         """50 kbps bandwidth cap on RabbitMQ — all 5 tasks complete.
 
@@ -224,11 +224,11 @@ class TestNetworkChaos:
                 results = await client_app.get_results(tids, timeout=45)
                 assert results == list(range(5)), f"bandwidth-limited run lost results: {results!r}"
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_packet_loss_via_slicer_recovers(
         self,
         chaos_stack,
         toxiproxy,
-        _cleanup_tasks,
     ):
         """TCP frame slicing on RabbitMQ — aio_pika reassembles.
 
@@ -273,11 +273,11 @@ class TestNetworkChaos:
                 results = await client_app.get_results(tids, timeout=30)
                 assert results == [i * 2 for i in range(5)], f"slicer run lost/corrupted results: {results!r}"
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_full_down_then_recover(
         self,
         chaos_stack,
         toxiproxy,
-        _cleanup_tasks,
     ):
         """Full RabbitMQ proxy down, then up, then schedule succeeds.
 
@@ -338,7 +338,7 @@ class TestNetworkChaos:
                 # depends on aio_pika's internal state at the moment;
                 # we broaden to "any exception" and pin the fact that
                 # the call does NOT silently succeed into a void.
-                with pytest.raises(Exception):
+                with pytest.raises(Exception):  # noqa: PT011 - Ausnahmetyp haengt vom aio_pika-Zustand ab; geprueft wird nur, dass nicht still Erfolg gemeldet wird
                     await asyncio.wait_for(
                         client_app.schedule(task_name, 999),
                         timeout=5.0,
@@ -354,11 +354,11 @@ class TestNetworkChaos:
                 results = await client_app.get_results(tids, timeout=30)
                 assert results == [i + 100 for i in range(5)], f"post-recovery run lost results: {results!r}"
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_partial_partition_worker_sees_broker_not_backend(
         self,
         chaos_stack,
         toxiproxy,
-        _cleanup_tasks,
     ):
         """Valkey proxy down, RabbitMQ healthy — surfaced failure mode.
 
@@ -453,11 +453,11 @@ class TestNetworkChaos:
                     == 14
                 )
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_pubsub_disconnect_resubscribe_via_watch_progress(
         self,
         chaos_stack,
         toxiproxy,
-        _cleanup_tasks,
     ):
         """Pub/Sub disconnect + resubscribe — d2d23f2 end-to-end regression.
 

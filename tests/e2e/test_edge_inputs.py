@@ -98,10 +98,10 @@ async def _roundtrip(
             return await client_app.get_result(tid, timeout=timeout)
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_5mb_task_args_roundtrip(
     rabbitmq_url,
     valkey_url,
-    _cleanup_tasks,
 ):
     """5 MB binary-as-string-of-bytes payload survives publish +
     consume + result round-trip."""
@@ -124,10 +124,10 @@ async def test_5mb_task_args_roundtrip(
     assert result == 5 * 1024 * 1024
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_10mb_result_payload_roundtrip(
     rabbitmq_url,
     valkey_url,
-    _cleanup_tasks,
 ):
     """Task returns 10 MB string; get_result must surface it intact."""
     queue = _unique_queue()
@@ -151,10 +151,10 @@ async def test_10mb_result_payload_roundtrip(
     assert result[-1] == "z"
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_unicode_args_and_result_roundtrip(
     rabbitmq_url,
     valkey_url,
-    _cleanup_tasks,
 ):
     """Emoji (4-byte UTF-8), BOM, Zero-Width-Joiner, RTL marks survive
     JSON-encode + decode roundtrip via msgspec."""
@@ -191,10 +191,10 @@ async def test_unicode_args_and_result_roundtrip(
         )
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_empty_containers_and_none_values_roundtrip(
     rabbitmq_url,
     valkey_url,
-    _cleanup_tasks,
 ):
     """Empty strings, lists, dicts, and None-values in nested
     structures must roundtrip verbatim."""
@@ -225,10 +225,10 @@ async def test_empty_containers_and_none_values_roundtrip(
     assert result == payload
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_deeply_nested_dict_roundtrip(
     rabbitmq_url,
     valkey_url,
-    _cleanup_tasks,
 ):
     """8-level nested dict survives encode + decode."""
     queue = _unique_queue()
@@ -260,10 +260,10 @@ async def test_deeply_nested_dict_roundtrip(
     assert result == "depth=8 value=leaf"
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_float_edge_values_roundtrip(
     rabbitmq_url,
     valkey_url,
-    _cleanup_tasks,
 ):
     """1e300, 1e-300, subnormal — finite floats survive the roundtrip
     unchanged. NaN/Inf are NOT tested here (rejected by canonical_encode
@@ -306,10 +306,10 @@ async def test_float_edge_values_roundtrip(
     assert result["neg_zero"] in (0.0, -0.0)
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_canonical_encode_rejects_nan_in_unique_args(
     rabbitmq_url,
     valkey_url,
-    _cleanup_tasks,
 ):
     """R3.5 regression: NaN/Inf in arguments of a unique-marked task
     surface as ValueError at schedule-time (canonical_encode rejects
@@ -341,10 +341,10 @@ async def test_canonical_encode_rejects_nan_in_unique_args(
             await client_app.schedule(task_name, math.inf)
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_1mb_progress_message_field(
     rabbitmq_url,
     valkey_url,
-    _cleanup_tasks,
 ):
     """1 MB string in update_progress(message=...) — Pub/Sub payload
     + HASH-Field müssen das verkraften ohne crash. Wir testen das

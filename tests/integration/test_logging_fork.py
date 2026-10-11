@@ -123,6 +123,7 @@ def _run(
         capture_output=True,
         text=True,
         timeout=_HANG_DEADLINE_S + 10,
+        check=False,
     )
     assert proc.returncode == 0, proc.stderr
     children = json.loads(proc.stdout)
@@ -251,6 +252,7 @@ def test_a_multiprocessing_queue_keeps_the_parent_listener_as_its_only_consumer(
         capture_output=True,
         text=True,
         timeout=_HANG_DEADLINE_S + 10,
+        check=False,
     )
 
     assert proc.returncode == 0, proc.stderr
@@ -399,6 +401,7 @@ def test_a_multiprocessing_queue_ends_without_traceback_at_interpreter_exit(
         capture_output=True,
         text=True,
         timeout=_HANG_DEADLINE_S + 10,
+        check=False,
     )
 
     assert proc.returncode == 0, proc.stderr[-3000:]

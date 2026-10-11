@@ -90,7 +90,7 @@ def _drain(proc: subprocess.Popen[str], sink: list[str]) -> threading.Thread:
     def run() -> None:
         assert proc.stdout is not None
         for line in proc.stdout:
-            sink.append(line)
+            sink.append(line)  # noqa: PERF402 - jede Zeile muss sofort sichtbar sein, waehrend der Test parallel auf sie wartet
 
     t = threading.Thread(target=run, daemon=True)
     t.start()

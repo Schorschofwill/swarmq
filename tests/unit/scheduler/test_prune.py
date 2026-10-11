@@ -184,12 +184,12 @@ class TestLeaderPrunes:
         assert entry["schedule_name"] == "nightly"
         assert entry["log_level"] == "info"
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_cron_removed_from_task_is_pruned_after_the_period(
         self,
         memory,
         leader,
         clock,
-        _cleanup_tasks,
     ):
         """``cron=`` entfernt, Task bleibt: der Worker meldet den Namen nicht
         mehr; nach der Frist verschwindet der Cron."""

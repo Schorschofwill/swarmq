@@ -72,11 +72,11 @@ async def _stop_worker(app: SwarmQ, worker_task: asyncio.Task) -> None:
 
 
 class TestPreStartCancelIntegration:
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_queued_task_cancel_before_worker_consumes(
         self,
         rabbitmq_url,
         valkey_url,
-        _cleanup_tasks,
     ):
         """Schedule → cancel() → worker consumes → TaskCancelledError.
 
@@ -117,11 +117,11 @@ class TestPreStartCancelIntegration:
             assert await backend.is_cancelled(task_id) is True
             assert 0 < await _cancel_flag_pttl(valkey_url, task_id) <= 3_600_000
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_double_cancel_returns_false_second_time(
         self,
         rabbitmq_url,
         valkey_url,
-        _cleanup_tasks,
     ):
         """Two back-to-back cancel() calls: first True, second False."""
         queue = _unique_queue()
@@ -138,11 +138,11 @@ class TestPreStartCancelIntegration:
             # Clean up the flag.
             await backend.clear_cancel_flag(task_id)
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_cancel_after_completion_has_no_effect(
         self,
         rabbitmq_url,
         valkey_url,
-        _cleanup_tasks,
     ):
         """Task runs to completion → cancel() sets a flag with no effect.
 
@@ -185,11 +185,11 @@ class TestPreStartCancelIntegration:
                 await backend.clear_cancel_flag(task_id)
                 await _stop_worker(app, worker_task)
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_cancel_unknown_task_id_harmless(
         self,
         rabbitmq_url,
         valkey_url,
-        _cleanup_tasks,
     ):
         """cancel() for a task_id that was never scheduled: harmless."""
         broker = RabbitMQBroker(rabbitmq_url)
@@ -201,11 +201,11 @@ class TestPreStartCancelIntegration:
             # Flag exists but will TTL out; manually clean up.
             await backend.clear_cancel_flag(fake_id)
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_signal_task_cancelled_dispatched_on_pre_start(
         self,
         rabbitmq_url,
         valkey_url,
-        _cleanup_tasks,
     ):
         """TASK_CANCELLED signal fires when a queued task is cancelled."""
         queue = _unique_queue()
@@ -243,11 +243,11 @@ class TestPreStartCancelIntegration:
             assert captured[0]["task_id"] == task_id
             assert captured[0]["task_name"] == "trace"
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_cancel_in_retry_delay(
         self,
         rabbitmq_url,
         valkey_url,
-        _cleanup_tasks,
     ):
         """Task fails, lands in DQ with delay, cancel during delay → TaskCancelledError.
 
@@ -291,11 +291,11 @@ class TestPreStartCancelIntegration:
 
 
 class TestRunningCancelIntegration:
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_running_task_cancel_via_monitor(
         self,
         rabbitmq_url,
         valkey_url,
-        _cleanup_tasks,
     ):
         """asyncio.sleep(10) task cancelled 500ms in → TaskCancelledError in <2s."""
         queue = _unique_queue()
@@ -335,11 +335,11 @@ class TestRunningCancelIntegration:
             finally:
                 await _stop_worker(app, worker_task)
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_hard_timeout_still_works_without_cancel(
         self,
         rabbitmq_url,
         valkey_url,
-        _cleanup_tasks,
     ):
         """Regression: task exceeds hard_timeout, no cancel → task fails with timeout."""
         queue = _unique_queue()
@@ -381,11 +381,11 @@ class TestRunningCancelIntegration:
             finally:
                 await _stop_worker(app, worker_task)
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_cancel_with_lock_releases_lock_for_successor(
         self,
         rabbitmq_url,
         valkey_url,
-        _cleanup_tasks,
     ):
         """Task holds lock, cancel greift, lock is released, next task can acquire."""
         queue = _unique_queue()

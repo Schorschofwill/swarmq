@@ -257,7 +257,7 @@ class TestNextFireTimes:
 
     def test_naive_start_raises_value_error(self) -> None:
         """Ein naiver ``start`` haengt nicht von der Zeitzone des Hosts ab."""
-        start = datetime(2026, 10, 8, 12, 0)
+        start = datetime(2026, 10, 8, 12, 0)  # noqa: DTZ001 - naive Zeit ist hier der geprüfte Fehlerfall
 
         with pytest.raises(ValueError, match="timezone-aware"):
             next_fire_times("0 3 * * *", start, timezone=BERLIN)

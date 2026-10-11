@@ -23,7 +23,6 @@ pytestmark = [pytest.mark.integration, pytest.mark.timeout(5)]
 @pytest.fixture
 def _env(monkeypatch, valkey_url):
     monkeypatch.setenv("SWARMQ_BACKEND_URL", valkey_url)
-    yield
 
 
 def _ns_add(**overrides) -> argparse.Namespace:
@@ -41,20 +40,21 @@ def _ns_add(**overrides) -> argparse.Namespace:
     return argparse.Namespace(**base)
 
 
-def _ns_list(format="table"):
+def _ns_list(format="table"):  # noqa: A002 - spiegelt die CLI-Option --format, Aufrufer uebergeben format= per Schluesselwort
     return argparse.Namespace(format=format)
 
 
-def _ns_remove(name, permanent=False, format="table"):
+def _ns_remove(name, permanent=False, format="table"):  # noqa: A002 - spiegelt die CLI-Option --format, Aufrufer uebergeben format= per Schluesselwort
     return argparse.Namespace(name=name, permanent=permanent, format=format)
 
 
-def _ns_status(limit=10, format="table"):
+def _ns_status(limit=10, format="table"):  # noqa: A002 - spiegelt die CLI-Option --format, Aufrufer uebergeben format= per Schluesselwort
     return argparse.Namespace(limit=limit, format=format)
 
 
 class TestAddThenList:
-    async def test_add_then_list_shows_entry(self, _env, valkey_url):
+    @pytest.mark.usefixtures("_env")
+    async def test_add_then_list_shows_entry(self, valkey_url):
         name = f"cron-{uuid.uuid4().hex[:8]}"
         await cli._run_schedule_add(_ns_add(name=name))
 
@@ -63,7 +63,8 @@ class TestAddThenList:
             await cli._run_schedule_list(_ns_list())
         assert name in buf.getvalue()
 
-    async def test_add_duplicate_is_no_op(self, _env, valkey_url):
+    @pytest.mark.usefixtures("_env")
+    async def test_add_duplicate_is_no_op(self, valkey_url):
         name = f"cron-{uuid.uuid4().hex[:8]}"
         await cli._run_schedule_add(_ns_add(name=name))
 
@@ -72,7 +73,8 @@ class TestAddThenList:
             await cli._run_schedule_add(_ns_add(name=name))
         assert "already exists" in buf.getvalue()
 
-    async def test_list_json_format(self, _env, valkey_url):
+    @pytest.mark.usefixtures("_env")
+    async def test_list_json_format(self, valkey_url):
         name = f"cron-{uuid.uuid4().hex[:8]}"
         await cli._run_schedule_add(_ns_add(name=name))
 
@@ -86,7 +88,8 @@ class TestAddThenList:
 
 
 class TestAddWithAt:
-    async def test_add_at_is_one_shot(self, _env, valkey_url):
+    @pytest.mark.usefixtures("_env")
+    async def test_add_at_is_one_shot(self, valkey_url):
         name = f"one-{uuid.uuid4().hex[:8]}"
         await cli._run_schedule_add(_ns_add(name=name, cron=None, at="2027-01-01T00:00:00Z"))
 
@@ -106,7 +109,8 @@ class TestAddWithAt:
 
 
 class TestRemove:
-    async def test_remove_without_permanent_sets_disabled(self, _env, valkey_url):
+    @pytest.mark.usefixtures("_env")
+    async def test_remove_without_permanent_sets_disabled(self, valkey_url):
         name = f"d-{uuid.uuid4().hex[:8]}"
         await cli._run_schedule_add(_ns_add(name=name))
         await cli._run_schedule_remove(_ns_remove(name))
@@ -124,7 +128,8 @@ class TestRemove:
         finally:
             await client.aclose()
 
-    async def test_remove_permanent_deletes_entries(self, _env, valkey_url):
+    @pytest.mark.usefixtures("_env")
+    async def test_remove_permanent_deletes_entries(self, valkey_url):
         name = f"p-{uuid.uuid4().hex[:8]}"
         await cli._run_schedule_add(_ns_add(name=name))
         await cli._run_schedule_remove(_ns_remove(name, permanent=True))
@@ -138,7 +143,8 @@ class TestRemove:
 
 
 class TestStatus:
-    async def test_status_lists_none_when_empty(self, _env):
+    @pytest.mark.usefixtures("_env")
+    async def test_status_lists_none_when_empty(self):
         buf = io.StringIO()
         with redirect_stdout(buf):
             await cli._run_schedule_status(_ns_status())
@@ -146,7 +152,8 @@ class TestStatus:
         assert "LEADER: (none)" in output
         assert "(none in next 24h)" in output
 
-    async def test_status_json_leader_none_upcoming_empty(self, _env):
+    @pytest.mark.usefixtures("_env")
+    async def test_status_json_leader_none_upcoming_empty(self):
         buf = io.StringIO()
         with redirect_stdout(buf):
             await cli._run_schedule_status(_ns_status(format="json"))
@@ -156,7 +163,8 @@ class TestStatus:
         assert data["leader"] is None
         assert data["upcoming"] == []
 
-    async def test_status_shows_leader_when_lock_held(self, _env, valkey_url):
+    @pytest.mark.usefixtures("_env")
+    async def test_status_shows_leader_when_lock_held(self, valkey_url):
         client = valkey_asyncio.Valkey.from_url(valkey_url)
         try:
             await client.set(SCHEDULER_LOCK_KEY, "w1:42:abcdef12")
@@ -172,7 +180,8 @@ class TestStatus:
             await client.delete(SCHEDULER_LOCK_KEY)
             await client.aclose()
 
-    async def test_status_shows_leader_and_worker_versions(self, _env, valkey_url):
+    @pytest.mark.usefixtures("_env")
+    async def test_status_shows_leader_and_worker_versions(self, valkey_url):
         """U13 (KTD11): Leader-Version neben dem Lock, Worker-Versionen."""
         import json
 
@@ -208,7 +217,8 @@ class TestAddRemoveJsonOutput:
     subcommands. Boolean fields let agents distinguish insert-vs-
     no-op and removed-vs-missing without parsing prose."""
 
-    async def test_add_json_reports_inserted_true(self, _env, valkey_url):
+    @pytest.mark.usefixtures("_env")
+    async def test_add_json_reports_inserted_true(self, valkey_url):
         name = f"add-{uuid.uuid4().hex[:8]}"
         buf = io.StringIO()
         with redirect_stdout(buf):
@@ -218,7 +228,8 @@ class TestAddRemoveJsonOutput:
         data = json.loads(buf.getvalue())
         assert data == {"inserted": True, "name": name, "already_exists": False}
 
-    async def test_add_json_reports_already_exists(self, _env, valkey_url):
+    @pytest.mark.usefixtures("_env")
+    async def test_add_json_reports_already_exists(self, valkey_url):
         name = f"dup-{uuid.uuid4().hex[:8]}"
         # First add succeeds
         await cli._run_schedule_add(_ns_add(name=name))
@@ -231,7 +242,8 @@ class TestAddRemoveJsonOutput:
         data = json.loads(buf.getvalue())
         assert data == {"inserted": False, "name": name, "already_exists": True}
 
-    async def test_remove_json_reports_removed_true(self, _env, valkey_url):
+    @pytest.mark.usefixtures("_env")
+    async def test_remove_json_reports_removed_true(self, valkey_url):
         name = f"rm-{uuid.uuid4().hex[:8]}"
         await cli._run_schedule_add(_ns_add(name=name))
 
@@ -243,7 +255,8 @@ class TestAddRemoveJsonOutput:
         data = json.loads(buf.getvalue())
         assert data == {"removed": True, "permanent": True, "name": name}
 
-    async def test_remove_json_reports_missing(self, _env, valkey_url):
+    @pytest.mark.usefixtures("_env")
+    async def test_remove_json_reports_missing(self, valkey_url):
         """Missing name → removed=false, exit still 0. Agents can tell
         no-op from success via the boolean."""
         name = f"ghost-{uuid.uuid4().hex[:8]}"
@@ -256,7 +269,8 @@ class TestAddRemoveJsonOutput:
         data = json.loads(buf.getvalue())
         assert data == {"removed": False, "permanent": True, "name": name}
 
-    async def test_remove_disable_json_reports_removed_bool(self, _env, valkey_url):
+    @pytest.mark.usefixtures("_env")
+    async def test_remove_disable_json_reports_removed_bool(self, valkey_url):
         """Non-permanent remove also reports a removed-bool in JSON
         mode. True when an entry was disabled, False on no-op."""
         name = f"dis-{uuid.uuid4().hex[:8]}"
@@ -294,7 +308,8 @@ class TestPruneOrphans:
             )
         )
 
-    async def test_prune_orphans_removes_only_unreported_static_crons(self, _env, valkey_url):
+    @pytest.mark.usefixtures("_env")
+    async def test_prune_orphans_removes_only_unreported_static_crons(self, valkey_url):
         import json
 
         from swarmq.backend.valkey.schedules import ValkeyScheduleStore

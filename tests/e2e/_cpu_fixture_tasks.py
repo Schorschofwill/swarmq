@@ -39,7 +39,7 @@ class CpuHang(Task):
     task_info = TaskInfo(name="cpu_hang", queues=[QUEUE], hard_timeout=1.0, max_retries=0)
 
     async def run(self, seconds: float = 30.0) -> None:
-        time.sleep(seconds)
+        time.sleep(seconds)  # noqa: ASYNC251 - simuliert synchron blockierenden Rechencode, nur der Kill beendet ihn
 
 
 class CpuSubprocess(Task):
@@ -48,9 +48,9 @@ class CpuSubprocess(Task):
     task_info = TaskInfo(name="cpu_subprocess", queues=[QUEUE], hard_timeout=1.0, max_retries=0)
 
     async def run(self, pid_file: str) -> None:
-        proc = subprocess.Popen(["sleep", "60"])
-        Path(pid_file).write_text(str(proc.pid), encoding="ascii")
-        time.sleep(30)
+        proc = subprocess.Popen(["sleep", "60"])  # noqa: ASYNC220 - Enkelprozess soll synchron im Rechenkind entstehen (AE13)
+        Path(pid_file).write_text(str(proc.pid), encoding="ascii")  # noqa: ASYNC240 - PID muss vor dem Blockieren synchron geschrieben sein
+        time.sleep(30)  # noqa: ASYNC251 - simuliert synchron blockierenden Rechencode, nur der Kill beendet ihn
 
 
 class CpuSlowOnce(Task):
@@ -61,10 +61,10 @@ class CpuSlowOnce(Task):
 
     async def run(self, pid_file: str, seconds: float = 30.0) -> str:
         path = Path(pid_file)
-        if path.exists():
+        if path.exists():  # noqa: ASYNC240 - Rechenkind-Fixture arbeitet bewusst synchron
             return "redelivered"
-        path.write_text(str(os.getpid()), encoding="ascii")
-        time.sleep(seconds)
+        path.write_text(str(os.getpid()), encoding="ascii")  # noqa: ASYNC240 - PID muss vor dem Blockieren synchron geschrieben sein
+        time.sleep(seconds)  # noqa: ASYNC251 - simuliert synchron blockierenden Rechencode, nur der Kill beendet ihn
         return "first"
 
 

@@ -7,10 +7,10 @@
 
 from __future__ import annotations
 
-import os
 import sys
 import threading
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -156,7 +156,7 @@ class TestResolveWatchDirs:
         [entry] = [e for e in swarmq_logs if e["event"] == "watch_dir_inside_venv_or_stdlib"]
         assert entry["log_level"] == "warning"
         assert entry["module_name"] == "structlog"
-        assert entry["resolved_dir"] == os.path.dirname(structlog.__file__)
+        assert entry["resolved_dir"] == str(Path(structlog.__file__).parent)
 
 
 # ---------------------------------------------------------------------------

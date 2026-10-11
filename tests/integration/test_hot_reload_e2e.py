@@ -174,11 +174,11 @@ def _restore_sighup():
     )
 
 
+@pytest.mark.usefixtures("_restore_sighup")
 @pytest.mark.integration
 @pytest.mark.timeout(20)
 def test_full_pipeline_file_write_triggers_execvpe(
     tmp_path: Path,
-    _restore_sighup,
 ) -> None:
     """R5.3 ce-review #9: end-to-end pipeline.
 

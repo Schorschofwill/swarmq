@@ -115,6 +115,7 @@ def chaos_stack() -> Iterator[ChaosStack]:
         subprocess.run(
             ["docker", "info"],
             capture_output=True,
+            check=False,
         ).returncode
         != 0
     ):
@@ -145,6 +146,7 @@ def chaos_stack() -> Iterator[ChaosStack]:
         capture_output=True,
         text=True,
         timeout=120,
+        check=False,
     )
     if up.returncode != 0:
         subprocess.run(

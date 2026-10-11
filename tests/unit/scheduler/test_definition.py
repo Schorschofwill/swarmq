@@ -113,11 +113,11 @@ class TestParseSchedfireKey:
         assert parse_schedfire_key("oneshot:abc-def-123:1234567890") == ("oneshot:abc-def-123", 1234567890)
 
     def test_no_colon_raises(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="missing ':' separator"):
             parse_schedfire_key("no-separator")
 
     def test_non_int_timestamp_raises(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="non-integer timestamp"):
             parse_schedfire_key("sched:not-a-number")
 
 

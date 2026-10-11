@@ -592,7 +592,7 @@ async def test_schedule_default_delivery_mode_without_registry(broker, backend):
 
 
 @pytest.fixture
-def _patched_schedule_store(monkeypatch):
+def patched_schedule_store(monkeypatch):
     """Replace ScheduleStore with an AsyncMock so we can assert calls
     without needing a connected backend + Lua scripts."""
     from swarmq.client import schedule as client_mod
@@ -609,21 +609,21 @@ def _patched_schedule_store(monkeypatch):
 
 class TestClientScheduleDelayEta:
     async def test_schedule_without_delay_or_eta_takes_normal_path(
-        self, client, broker, backend, _patched_schedule_store
+        self, client, broker, backend, patched_schedule_store
     ):
         await client.schedule("add", 1, 2, queue="math")
         # Normal publish path, no ScheduleStore touch
         broker.publish.assert_awaited()
-        _patched_schedule_store.add_schedule.assert_not_awaited()
+        patched_schedule_store.add_schedule.assert_not_awaited()
 
-    async def test_schedule_with_delay_writes_to_store(self, client, broker, backend, _patched_schedule_store):
+    async def test_schedule_with_delay_writes_to_store(self, client, broker, backend, patched_schedule_store):
         tid = await client.schedule("add", 1, 2, queue="math", delay=60.0)
 
         # Normal publish is bypassed for deferred schedules
         broker.publish.assert_not_awaited()
 
-        _patched_schedule_store.add_schedule.assert_awaited_once()
-        definition = _patched_schedule_store.add_schedule.await_args.args[0]
+        patched_schedule_store.add_schedule.assert_awaited_once()
+        definition = patched_schedule_store.add_schedule.await_args.args[0]
         # schedule_name encodes the task_id so that one-shots are
         # discoverable in list_schedules
         assert definition.schedule_name == f"oneshot:{tid}"
@@ -635,54 +635,57 @@ class TestClientScheduleDelayEta:
         now_ms = int(time.time() * 1000)
         assert now_ms + 55_000 <= definition.fire_ts_ms <= now_ms + 65_000
 
-    async def test_schedule_with_delay_persists_returned_task_id(self, client, _patched_schedule_store):
+    async def test_schedule_with_delay_persists_returned_task_id(self, client, patched_schedule_store):
         # BZ-02 (Plan 0.12.0, MR 5): der Leader feuert unter dieser ID.
         tid = await client.schedule("add", 1, 2, queue="math", delay=60.0)
 
-        definition = _patched_schedule_store.add_schedule.await_args.args[0]
+        definition = patched_schedule_store.add_schedule.await_args.args[0]
         assert definition.task_id == tid
 
-    async def test_schedule_with_eta_writes_to_store(self, client, broker, backend, _patched_schedule_store):
+    async def test_schedule_with_eta_writes_to_store(self, client, broker, backend, patched_schedule_store):
         from datetime import UTC, datetime, timedelta
 
         eta = datetime.now(UTC) + timedelta(hours=2)
         await client.schedule("add", queue="math", eta=eta)
 
-        _patched_schedule_store.add_schedule.assert_awaited_once()
-        definition = _patched_schedule_store.add_schedule.await_args.args[0]
+        patched_schedule_store.add_schedule.assert_awaited_once()
+        definition = patched_schedule_store.add_schedule.await_args.args[0]
         expected_ms = int(eta.timestamp() * 1000)
         assert definition.fire_ts_ms == expected_ms
 
-    async def test_schedule_with_both_delay_and_eta_raises(self, client, _patched_schedule_store):
+    @pytest.mark.usefixtures("patched_schedule_store")
+    async def test_schedule_with_both_delay_and_eta_raises(self, client):
         from datetime import UTC, datetime, timedelta
 
         eta = datetime.now(UTC) + timedelta(seconds=60)
         with pytest.raises(ValueError, match="delay OR eta"):
             await client.schedule("add", queue="math", delay=1.0, eta=eta)
 
-    async def test_schedule_with_negative_delay_raises(self, client, _patched_schedule_store):
+    @pytest.mark.usefixtures("patched_schedule_store")
+    async def test_schedule_with_negative_delay_raises(self, client):
         with pytest.raises(ValueError, match="delay"):
             await client.schedule("add", queue="math", delay=-0.5)
 
-    async def test_schedule_with_past_eta_raises(self, client, _patched_schedule_store):
+    @pytest.mark.usefixtures("patched_schedule_store")
+    async def test_schedule_with_past_eta_raises(self, client):
         from datetime import UTC, datetime, timedelta
 
         past = datetime.now(UTC) - timedelta(hours=1)
         with pytest.raises(ValueError, match="eta"):
             await client.schedule("add", queue="math", eta=past)
 
-    async def test_schedule_with_delay_zero_uses_normal_publish(self, client, broker, backend, _patched_schedule_store):
+    async def test_schedule_with_delay_zero_uses_normal_publish(self, client, broker, backend, patched_schedule_store):
         """delay=0 is explicitly sofortiger publish, not a zero-delay
         scheduler detour (plan test-scenario)."""
         await client.schedule("add", queue="math", delay=0)
         broker.publish.assert_awaited()
-        _patched_schedule_store.add_schedule.assert_not_awaited()
+        patched_schedule_store.add_schedule.assert_not_awaited()
 
-    async def test_schedule_reuses_existing_store(self, client, _patched_schedule_store):
+    async def test_schedule_reuses_existing_store(self, client, patched_schedule_store):
         """Lazy-init: second delay-schedule uses the cached store."""
         await client.schedule("add", queue="math", delay=1.0)
         await client.schedule("add", queue="math", delay=2.0)
-        assert _patched_schedule_store.add_schedule.await_count == 2
+        assert patched_schedule_store.add_schedule.await_count == 2
 
     async def test_schedule_with_delay_without_connected_backend_raises(self, client, broker):
         """If backend is not connected, lazy-init must not silently proceed
@@ -1000,12 +1003,12 @@ class TestClientUniqueDeferred:
         self,
         client_setnx,
         backend_setnx,
-        _patched_schedule_store,
+        patched_schedule_store,
     ):
         """delay= + no unique_for → no SETNX, ScheduleDefinition stays source=cli."""
         await client_setnx.schedule("add", 1, queue="math", delay=60.0)
         backend_setnx.claim_unique.assert_not_awaited()
-        definition = _patched_schedule_store.add_schedule.await_args.args[0]
+        definition = patched_schedule_store.add_schedule.await_args.args[0]
         assert definition.source == "cli"
         assert definition.dedup_hash is None
 
@@ -1013,7 +1016,7 @@ class TestClientUniqueDeferred:
         self,
         client_setnx,
         backend_setnx,
-        _patched_schedule_store,
+        patched_schedule_store,
     ):
         """delay=60 + unique_for=300 → SETNX with TTL 360_000ms; hash persisted."""
         task_id = await client_setnx.schedule(
@@ -1035,7 +1038,7 @@ class TestClientUniqueDeferred:
         # so total between 355_000 and 365_000 (slack for clock).
         assert 355_000 <= ttl_ms <= 365_000
 
-        definition = _patched_schedule_store.add_schedule.await_args.args[0]
+        definition = patched_schedule_store.add_schedule.await_args.args[0]
         assert definition.source == "cli_unique"
         assert definition.dedup_hash == dedup_hash
 
@@ -1043,7 +1046,7 @@ class TestClientUniqueDeferred:
         self,
         client_setnx,
         backend_setnx,
-        _patched_schedule_store,
+        patched_schedule_store,
     ):
         """Dup: return existing task_id; no ScheduleStore.add_schedule call."""
         backend_setnx.claim_unique = AsyncMock(return_value="t-existing")
@@ -1055,14 +1058,14 @@ class TestClientUniqueDeferred:
             unique_for=60,
         )
         assert tid == "t-existing"
-        _patched_schedule_store.add_schedule.assert_not_awaited()
+        patched_schedule_store.add_schedule.assert_not_awaited()
 
+    @pytest.mark.usefixtures("patched_schedule_store")
     async def test_deferred_duplicate_emits_signal(
         self,
         broker,
         backend_setnx,
         registry,
-        _patched_schedule_store,
     ):
         """TASK_DUPLICATE_DETECTED dispatched on deferred dedup conflict."""
         from swarmq.signals import Signal, SignalDispatcher
@@ -1095,11 +1098,11 @@ class TestClientUniqueDeferred:
         assert received[0]["source"] == "client.schedule_deferred"
         assert received[0]["task_name"] == "add"
 
+    @pytest.mark.usefixtures("patched_schedule_store")
     async def test_deferred_with_eta_ttl_covers_fire_plus_unique_for(
         self,
         client_setnx,
         backend_setnx,
-        _patched_schedule_store,
     ):
         """eta=now+120s + unique_for=300 → TTL ≈ (300+120)*1000 ms."""
         from datetime import UTC, datetime, timedelta
@@ -1116,11 +1119,11 @@ class TestClientUniqueDeferred:
         # Range allows for any clock drift / asyncio scheduling.
         assert 415_000 <= ttl_ms <= 425_000
 
+    @pytest.mark.usefixtures("patched_schedule_store")
     async def test_deferred_past_eta_clamps_fire_offset_to_zero(
         self,
         client_setnx,
         backend_setnx,
-        _patched_schedule_store,
     ):
         """eta in the past (within 1s lenience) → TTL == unique_for*1000."""
         from datetime import UTC, datetime, timedelta
@@ -1138,11 +1141,11 @@ class TestClientUniqueDeferred:
         # fire_offset clamped to 0, so TTL stays at unique_for * 1000.
         assert ttl_ms == 60_000
 
+    @pytest.mark.usefixtures("patched_schedule_store")
     async def test_deferred_client_modus_requires_explicit_unique_for(
         self,
         broker,
         backend_setnx,
-        _patched_schedule_store,
     ):
         """Without registry, _MISSING → no dedup; explicit unique_for works."""
         client = Client(broker=broker, backend=backend_setnx, registry=None)
@@ -1161,7 +1164,7 @@ class TestClientUniqueDeferred:
         self,
         client_setnx,
         backend_setnx,
-        _patched_schedule_store,
+        patched_schedule_store,
     ):
         """SETNX must happen BEFORE store.add_schedule — dup path skips store."""
         call_order: list[str] = []
@@ -1173,7 +1176,7 @@ class TestClientUniqueDeferred:
             call_order.append("store")
 
         backend_setnx.claim_unique = AsyncMock(side_effect=track_setnx)
-        _patched_schedule_store.add_schedule = AsyncMock(side_effect=track_store)
+        patched_schedule_store.add_schedule = AsyncMock(side_effect=track_store)
 
         await client_setnx.schedule(
             "add",
@@ -1188,7 +1191,7 @@ class TestClientUniqueDeferred:
         self,
         client_setnx,
         backend_setnx,
-        _patched_schedule_store,
+        patched_schedule_store,
     ):
         """store.add_schedule raises after SETNX success → flag released.
 
@@ -1197,7 +1200,7 @@ class TestClientUniqueDeferred:
         of that duration blocks re-schedule silently.
         """
         backend_setnx.release_unique = AsyncMock(return_value=True)
-        _patched_schedule_store.add_schedule = AsyncMock(side_effect=RuntimeError("store error"))
+        patched_schedule_store.add_schedule = AsyncMock(side_effect=RuntimeError("store error"))
 
         with pytest.raises(RuntimeError, match="store error"):
             await client_setnx.schedule(

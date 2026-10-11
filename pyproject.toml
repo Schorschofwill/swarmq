@@ -187,8 +187,6 @@ ignore = [
     "TRY003", "EM101", "EM102",  # Fehlermeldungen direkt am raise sind gewollt
     "TRY400",  # Log-Ausgabe ist durch die Logging-Pläne festgelegt; exception() änderte sie
     "S101",    # alle ``assert`` in src/ sind Typ-Narrowing ohne Seiteneffekt (Analyse 2026-10-11)
-    # --- TEMPORÄR (Plan 2026-10-11-1200, KTD3): offene fachliche Regeln. ---
-    # Jede Unit beginnt mit dem Streichen ihrer Einträge; am Ende ist die Liste leer.
 ]
 
 [tool.ruff.lint.pylint]
@@ -211,11 +209,6 @@ max-complexity = 12
     "TRY", "EM",  # Fake-Exceptions mit Text
     "BLE",      # Fakes fangen bewusst breit
     "T201",     # Ausgaben in Hilfsprozessen der Tests
-    # --- TEMPORÄR (Plan 2026-10-11-1200, KTD3) — U5 streicht diese Einträge. ---
-    "A002", "ASYNC110", "ASYNC210", "ASYNC220", "ASYNC221", "ASYNC240", "ASYNC251",
-    "C401", "DTZ001", "FURB171", "LOG001", "PERF402", "PERF403", "PLC0206", "PLR0124",
-    "PLW1510", "PT011", "PT012", "PT017", "PT019", "PT022", "PTH104", "PTH120",
-    "PTH207", "RET504", "RSE102",
 ]
 
 # E2E-Hardening Phase 3 U3.10 — mutation testing.

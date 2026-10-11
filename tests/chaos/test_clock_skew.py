@@ -124,10 +124,10 @@ class TestClockSkew:
         finally:
             await backend.close()
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_progress_throttle_monotonic_immune_to_wallclock(
         self,
         monkeypatch,
-        _cleanup_tasks,
     ):
         """Task.update_progress throttle uses ``time.monotonic``.
 
@@ -205,10 +205,10 @@ class TestClockSkew:
         await task.update_progress(10, 10)
         assert len(sets) == 3
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_unique_for_ttl_uses_valkey_server_time(
         self,
         chaos_stack,
-        _cleanup_tasks,
     ):
         queue = _unique_queue()
         task_name = _unique_name("u_skew")
@@ -276,10 +276,10 @@ class TestClockSkew:
             assert len(dup_signals) == 1, f"expected exactly one TASK_DUPLICATE_DETECTED signal, got {len(dup_signals)}"
             assert dup_signals[0]["existing_task_id"] == first_id
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_scheduler_cron_handles_wallclock_resync(
         self,
         chaos_stack,
-        _cleanup_tasks,
     ):
         queue = _unique_queue()
         schedule_name = _unique_name("cron_resync")

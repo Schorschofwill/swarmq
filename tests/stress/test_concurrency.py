@@ -102,10 +102,10 @@ def _task_name(prefix: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_10_workers_1000_tasks_each_exact_once(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """Publish 1000 tasks, consume across 10 in-process workers, assert
     each task executed exactly once via a Valkey INCR counter. Proves
@@ -204,10 +204,10 @@ async def test_10_workers_1000_tasks_each_exact_once(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_100_parallel_schedule_distinct_task_ids(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """100 concurrent client.schedule() calls (no workers consuming)
     must all return distinct task_ids. Catches any shared-state race
@@ -238,10 +238,10 @@ async def test_100_parallel_schedule_distinct_task_ids(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_50_parallel_cancels_one_winner(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """Schedule a slow task, then fire 50 concurrent cancel() calls on
     that task_id. Because cancel() is backed by SET NX PX, exactly one
@@ -288,10 +288,10 @@ async def test_50_parallel_cancels_one_winner(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_3_scheduler_candidates_no_missed_cron_fires(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """Three SwarmQ apps compete for scheduler leadership; we force
     100 fires via direct zset re-scoring and verify every one was
@@ -446,10 +446,10 @@ async def test_3_scheduler_candidates_no_missed_cron_fires(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_200_parallel_update_progress_throttle_holds(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """Throttle behaviour under high concurrency.
 
@@ -538,10 +538,10 @@ async def test_200_parallel_update_progress_throttle_holds(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_50_parallel_rate_limit_checks_within_limit(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """50 concurrent RateLimiter.check() calls against a single '5/s'
     key must yield exactly 5 allowed results. Proves the Lua script is

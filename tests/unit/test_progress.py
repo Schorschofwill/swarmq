@@ -84,7 +84,7 @@ class TestProgressInfoFromHash:
 
     def test_non_integer_current_raises(self):
         raw = {b"current": b"not-int", b"total": b"10", b"percent": b"0.0"}
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="invalid literal for int"):
             ProgressInfo.from_hash(raw)
 
     def test_frozen_dataclass(self):

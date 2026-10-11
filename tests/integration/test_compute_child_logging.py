@@ -93,6 +93,7 @@ def _run(
         capture_output=True,
         text=True,
         timeout=50,
+        check=False,
     )
     assert proc.returncode == 0, proc.stderr[-4000:]
     return json.loads(proc.stdout.strip().splitlines()[-1]), proc.stderr

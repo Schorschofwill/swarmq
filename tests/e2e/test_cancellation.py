@@ -68,8 +68,7 @@ async def _run_worker_until(
     worker_task = asyncio.create_task(worker_app.start_worker())
     try:
         await asyncio.sleep(0.4)  # let the worker connect + declare + consume
-        result = await asyncio.wait_for(wait_coro, timeout=timeout)
-        return result
+        return await asyncio.wait_for(wait_coro, timeout=timeout)
     finally:
         worker_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -81,10 +80,10 @@ async def _run_worker_until(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_e2e_queued_cancel_full_stack(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """Full stack: schedule → cancel → worker → TaskCancelledError."""
     queue = _unique_queue()
@@ -125,10 +124,10 @@ async def test_e2e_queued_cancel_full_stack(
         assert 0 < await _cancel_flag_pttl(valkey_url, task_id) <= 3_600_000
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_e2e_faf_cancel_emits_signal_no_result(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """FAF + cancel: TASK_CANCELLED fires, but no result is stored."""
     queue = _unique_queue()
@@ -183,10 +182,10 @@ async def test_e2e_faf_cancel_emits_signal_no_result(
         assert raw is None
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_e2e_cancel_unknown_task_id_is_harmless(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """cancel() for a never-scheduled task_id: True, no side-effect."""
     client_broker = RabbitMQBroker(rabbitmq_url)
@@ -200,10 +199,10 @@ async def test_e2e_cancel_unknown_task_id_is_harmless(
         await client_backend.clear_cancel_flag(fake_id)
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_e2e_parallel_cancels_via_gather(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """10 parallel cancels via asyncio.gather — all should succeed and get TaskCancelledError."""
     queue = _unique_queue()
@@ -253,10 +252,10 @@ async def test_e2e_parallel_cancels_via_gather(
                     await worker_task
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_e2e_cancel_in_retry_delay_full_stack(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """Task retries with delay, cancel during delay, redelivered message is cancelled."""
     queue = _unique_queue()
@@ -313,10 +312,10 @@ async def test_e2e_cancel_in_retry_delay_full_stack(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_e2e_running_cancel_full_stack(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """Task is already running → cancel → TaskCancelledError within poll interval."""
     queue = _unique_queue()
@@ -365,10 +364,10 @@ async def test_e2e_running_cancel_full_stack(
                     await worker_task
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_e2e_cancel_with_lock_releases_for_successor(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """Task holds lock, cancel greift, Lock frei für Nachfolger."""
     queue = _unique_queue()
@@ -443,10 +442,10 @@ async def test_e2e_cancel_with_lock_releases_for_successor(
                     await worker_task
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_e2e_parallel_mixed_cancel_and_complete(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """50 tasks scheduled, 25 get cancelled mid-run, 25 complete — no crosstalk."""
     queue = _unique_queue()
@@ -520,10 +519,10 @@ async def test_e2e_parallel_mixed_cancel_and_complete(
                     await worker_task
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_e2e_shutdown_during_running_cancel(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """SIGTERM during a cancelled run: detached_releases drained, no lock leak."""
     queue = _unique_queue()

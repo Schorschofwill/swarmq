@@ -14,4 +14,4 @@ class LoopBlocker(Task):
     task_info = TaskInfo(name="loop_blocker", queues=[QUEUE], max_retries=0)
 
     async def run(self, seconds: float = 120.0) -> None:
-        time.sleep(seconds)  # blockiert den ganzen Loop — kein Lebenszeichen mehr
+        time.sleep(seconds)  # noqa: ASYNC251 - blockiert absichtlich den ganzen Loop, damit kein Lebenszeichen mehr kommt

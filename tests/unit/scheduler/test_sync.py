@@ -71,6 +71,7 @@ async def _sync(loop, default_timezone: str | None = None) -> None:
 
 
 class TestApplyStaticDefinition:
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_sync_inserts_new_static_crons(
         self,
         backend,
@@ -79,7 +80,6 @@ class TestApplyStaticDefinition:
         lock_manager,
         store,
         signal_dispatcher,
-        _cleanup_tasks,
     ):
         class Cron5m(Task):
             task_info = TaskInfo(name="cron_5m", queues=["default"], cron="*/5 * * * *")
@@ -94,6 +94,7 @@ class TestApplyStaticDefinition:
 
         store.add_schedule.assert_awaited()
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_sync_noop_for_same_static_cron(
         self,
         backend,
@@ -102,7 +103,6 @@ class TestApplyStaticDefinition:
         lock_manager,
         store,
         signal_dispatcher,
-        _cleanup_tasks,
     ):
         class SameCron(Task):
             task_info = TaskInfo(name="same", queues=["default"], cron="*/5 * * * *")
@@ -132,6 +132,7 @@ class TestApplyStaticDefinition:
         store.add_schedule.assert_not_awaited()
         store.update_static_schedule.assert_not_awaited()
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_sync_updates_on_static_cron_change(
         self,
         backend,
@@ -140,7 +141,6 @@ class TestApplyStaticDefinition:
         lock_manager,
         store,
         signal_dispatcher,
-        _cleanup_tasks,
     ):
         class ChangedCron(Task):
             task_info = TaskInfo(name="changed", queues=["default"], cron="*/10 * * * *")
@@ -168,6 +168,7 @@ class TestApplyStaticDefinition:
         store.update_static_schedule.assert_awaited_once()
         store.add_schedule.assert_not_awaited()
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_sync_preserves_disabled_flag_on_static_cron_change(
         self,
         backend,
@@ -176,7 +177,6 @@ class TestApplyStaticDefinition:
         lock_manager,
         store,
         signal_dispatcher,
-        _cleanup_tasks,
     ):
         """Review-finding correctness C-01: an operator-disabled static
         schedule must remain disabled after the cron string is modified
@@ -212,6 +212,7 @@ class TestApplyStaticDefinition:
         assert propagated.disabled is True
         assert propagated.cron == "*/10 * * * *"  # new cron applied
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_sync_disabled_false_stays_false_on_cron_change(
         self,
         backend,
@@ -220,7 +221,6 @@ class TestApplyStaticDefinition:
         lock_manager,
         store,
         signal_dispatcher,
-        _cleanup_tasks,
     ):
         """Inverse regression: the preservation path must not flip a
         disabled=False entry to True."""
@@ -252,6 +252,7 @@ class TestApplyStaticDefinition:
         propagated = store.update_static_schedule.await_args.args[0]
         assert propagated.disabled is False
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_sync_preserves_cli_source_even_on_cron_diff(
         self,
         backend,
@@ -260,7 +261,6 @@ class TestApplyStaticDefinition:
         lock_manager,
         store,
         signal_dispatcher,
-        _cleanup_tasks,
     ):
         """CD11: CLI ownership beats code — even when code has a
         different cron, we must not overwrite a CLI entry."""
@@ -291,6 +291,7 @@ class TestApplyStaticDefinition:
         store.update_static_schedule.assert_not_awaited()
         store.add_schedule.assert_not_awaited()
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_sync_decode_error_does_not_overwrite(
         self,
         backend,
@@ -299,7 +300,6 @@ class TestApplyStaticDefinition:
         lock_manager,
         store,
         signal_dispatcher,
-        _cleanup_tasks,
     ):
         """Unit 5 / M-3: a malformed existing entry must NOT be silently
         overwritten — the source (cli vs static) cannot be determined
@@ -320,6 +320,7 @@ class TestApplyStaticDefinition:
         store.add_schedule.assert_not_awaited()
         store.update_static_schedule.assert_not_awaited()
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_sync_partial_failure_continues_iteration(
         self,
         backend,
@@ -328,7 +329,6 @@ class TestApplyStaticDefinition:
         lock_manager,
         store,
         signal_dispatcher,
-        _cleanup_tasks,
     ):
         """Unit 5 / M-4: a BackendConnectionError on one schedule must
         not abort the sync for the rest. Two tasks defined; first add

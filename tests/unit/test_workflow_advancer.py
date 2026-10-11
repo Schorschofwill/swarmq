@@ -10,6 +10,7 @@ stores the result, and calls advance() with the step's path.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -881,13 +882,16 @@ async def test_refresh_before_fan_in_adopts_fresh_version():
     assert m.cas_calls == 1
 
 
+_GOLDEN_WORKFLOW_STATE = (
+    Path(__file__).resolve().parents[1] / "integration" / "backend" / "golden" / "values" / "workflow_state.json"
+)
+
+
 async def test_golden_state_without_version_decodes_and_first_write_is_version_one():
     """R22: Dokumente aus 0.5.x (die Golden-Fixture) tragen keine ``version``;
     sie gelten als 0 und werden beim ersten Schreiben 1. Die Fixture bleibt
     unveraendert -- ein Bruch hier ist Stop-Condition (b) des Plans."""
-    fixture = (
-        Path(__file__).resolve().parents[1] / "integration" / "backend" / "golden" / "values" / "workflow_state.json"
-    ).read_bytes()
+    fixture = await asyncio.to_thread(_GOLDEN_WORKFLOW_STATE.read_bytes)
     golden = decode_json(fixture)
     assert "version" not in golden
     m = MultiDriver(_node_from_dict(golden["topology"]))

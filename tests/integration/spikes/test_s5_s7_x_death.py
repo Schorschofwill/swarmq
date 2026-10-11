@@ -139,7 +139,8 @@ async def test_republish_after_dead_lettering_keeps_x_death_and_next_dlx_restart
             "payload": parked.body.decode(),
             "payload_encoding": "string",
         }
-        response = httpx.post(f"{node.management_url}/exchanges/%2F/amq.default/publish", auth=AUTH, json=body)
+        async with httpx.AsyncClient() as http:
+            response = await http.post(f"{node.management_url}/exchanges/%2F/amq.default/publish", auth=AUTH, json=body)
         assert response.json() == {"routed": True}
     await _next_second()
 

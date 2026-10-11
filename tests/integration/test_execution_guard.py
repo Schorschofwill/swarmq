@@ -29,6 +29,7 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import TaskError
 from swarmq.serialization import encode_json
 from swarmq.task import Task, TaskInfo
+from tests.support.wait import wait_until
 from tests.unit._log_capture import capture_swarmq_logs
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(20)]
@@ -107,18 +108,16 @@ async def _crash(backend: ValkeyBackend, identity: str) -> None:
 
 
 async def _wait_for(predicate: Callable[[], bool], timeout: float = 10.0) -> None:
-    async with asyncio.timeout(timeout):
-        while not predicate():
-            await asyncio.sleep(0.05)
+    assert await wait_until(predicate, timeout), f"condition not met within {timeout}s"
 
 
+@pytest.mark.usefixtures("_tasks")
 async def test_redelivery_after_a_crashed_worker_runs_once_the_marker_expired(
     rabbitmq_url,
     valkey_url,
     queue,
     guard_backend,
     runs,
-    _tasks,
 ) -> None:
     task_id = uuid.uuid4().hex
     await _crash(guard_backend, task_id)
@@ -130,13 +129,13 @@ async def test_redelivery_after_a_crashed_worker_runs_once_the_marker_expired(
     assert runs == ["run"]
 
 
+@pytest.mark.usefixtures("_tasks")
 async def test_three_crashes_dead_letter_the_execution_as_worker_hung_error(
     rabbitmq_url,
     valkey_url,
     queue,
     guard_backend,
     runs,
-    _tasks,
 ) -> None:
     task_id = uuid.uuid4().hex
     for _ in range(3):
@@ -153,21 +152,19 @@ async def test_three_crashes_dead_letter_the_execution_as_worker_hung_error(
             letters[:] = [e for e in (await app.broker.list_dead_letters(queue))[0] if e["task_id"] == task_id]
             return bool(letters)
 
-        async with asyncio.timeout(10):
-            while not await _dead_lettered():
-                await asyncio.sleep(0.05)
+        assert await wait_until(_dead_lettered, 10), "execution was not dead-lettered within 10s"
 
     assert runs == []
     [letter] = letters
     assert "WorkerHungError" in letter["headers"]["x-swarmq-traceback"]
 
 
+@pytest.mark.usefixtures("_tasks")
 async def test_dlq_retry_runs_again_and_its_redelivery_is_skipped(
     rabbitmq_url,
     valkey_url,
     queue,
     runs,
-    _tasks,
 ) -> None:
     with capture_swarmq_logs() as logs:
         async with _worker(rabbitmq_url, valkey_url, queue) as app:

@@ -104,7 +104,8 @@ def _unique_headers(broker) -> tuple[str, str]:
     return headers["x-swarmq-unique-hash"], headers["x-swarmq-unique-until"]
 
 
-async def test_old_definition_takes_both_unique_values_from_the_registry(loop, backend, broker, _cleanup_tasks):
+@pytest.mark.usefixtures("_cleanup_tasks")
+async def test_old_definition_takes_both_unique_values_from_the_registry(loop, backend, broker):
     """BZ-09: Eine Definition aus 0.11 (ohne ``unique_for``) mischt nicht den
     Default ``unique_until`` der Definition mit ``unique_for`` der Registry."""
     _register_ping(unique_for=3600, unique_until="start")
@@ -116,7 +117,8 @@ async def test_old_definition_takes_both_unique_values_from_the_registry(loop, b
     assert _unique_headers(broker)[1] == "start"
 
 
-async def test_definition_with_unique_for_beats_the_registry(loop, backend, broker, _cleanup_tasks):
+@pytest.mark.usefixtures("_cleanup_tasks")
+async def test_definition_with_unique_for_beats_the_registry(loop, backend, broker):
     _register_ping(unique_for=60, unique_until="completion")
     backend.claim_unique = AsyncMock(return_value=None)
     definition = _definition("nightly", cron="*/5 * * * *", unique_for=3600, unique_until="start")
@@ -199,7 +201,8 @@ async def test_unroutable_cron_fire_releases_the_own_claim(memory_loop, broker):
     assert flag_owner is None
 
 
-async def test_deferred_unroutable_oneshot_releases_the_own_claim(loop, backend, broker, _cleanup_tasks):
+@pytest.mark.usefixtures("_cleanup_tasks")
+async def test_deferred_unroutable_oneshot_releases_the_own_claim(loop, backend, broker):
     """Ein Oneshot behaelt seine task_id (BZ-02); haelt der Leader sein
     eigenes Flag fest, endet der Versuch nach 60 s als Duplikat und der
     Oneshot laeuft nie."""
@@ -215,9 +218,8 @@ async def test_deferred_unroutable_oneshot_releases_the_own_claim(loop, backend,
     )
 
 
-async def test_failed_release_is_logged_and_the_lost_cron_fire_still_commits(
-    loop, backend, broker, store, swarmq_logs, _cleanup_tasks
-):
+@pytest.mark.usefixtures("_cleanup_tasks")
+async def test_failed_release_is_logged_and_the_lost_cron_fire_still_commits(loop, backend, broker, store, swarmq_logs):
     """Q15: ``release_unique`` scheitert oder fehlt (hier ein ``MagicMock``-
     Backend, dessen Methode nicht awaitable ist); das Fire endet normal, das
     Flag laeuft ueber seine TTL ab."""

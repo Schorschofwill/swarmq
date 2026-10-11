@@ -80,7 +80,8 @@ def _app(rabbitmq_url: str, valkey_url: str, **cfg) -> SwarmQ:
     )
 
 
-async def test_fresh_child_per_task_and_results_round_trip(rabbitmq_url, valkey_url, _register_fixture_tasks):
+@pytest.mark.usefixtures("_register_fixture_tasks")
+async def test_fresh_child_per_task_and_results_round_trip(rabbitmq_url, valkey_url):
     """AE2: Tasks ohne DI laufen in je einem eigenen Kind, das danach endet."""
     app = _app(rabbitmq_url, valkey_url, concurrency=2)
     async with app:
@@ -98,7 +99,8 @@ async def test_fresh_child_per_task_and_results_round_trip(rabbitmq_url, valkey_
             os.kill(pid, 0)
 
 
-async def test_hard_timeout_kills_blocking_child_and_dead_letters(rabbitmq_url, valkey_url, _register_fixture_tasks):
+@pytest.mark.usefixtures("_register_fixture_tasks")
+async def test_hard_timeout_kills_blocking_child_and_dead_letters(rabbitmq_url, valkey_url):
     """AE3 (max_retries=0): ein synchron blockierender Task wird nach hard_timeout getoetet."""
     app = _app(rabbitmq_url, valkey_url, concurrency=1)
     async with app:
@@ -109,7 +111,8 @@ async def test_hard_timeout_kills_blocking_child_and_dead_letters(rabbitmq_url, 
     assert "hard timeout" in message
 
 
-async def test_kill_takes_the_grandchild_with_it(rabbitmq_url, valkey_url, _register_fixture_tasks, tmp_path):
+@pytest.mark.usefixtures("_register_fixture_tasks")
+async def test_kill_takes_the_grandchild_with_it(rabbitmq_url, valkey_url, tmp_path):
     """AE13: der Kill trifft die Prozessgruppe, ein ImageMagick-artiger Enkel ueberlebt nicht."""
     pid_file = tmp_path / "grandchild.pid"
     app = _app(rabbitmq_url, valkey_url, concurrency=1)
@@ -130,7 +133,8 @@ async def test_kill_takes_the_grandchild_with_it(rabbitmq_url, valkey_url, _regi
         pytest.fail("grandchild survived the process-group kill")
 
 
-async def test_exception_in_child_reaches_error_path_typed(rabbitmq_url, valkey_url, _register_fixture_tasks):
+@pytest.mark.usefixtures("_register_fixture_tasks")
+async def test_exception_in_child_reaches_error_path_typed(rabbitmq_url, valkey_url):
     """AE9-Teil / KTD5: NoRetry aus dem Kind landet ohne Retry als Fehlerergebnis."""
     app = _app(rabbitmq_url, valkey_url, concurrency=1)
     async with app:
@@ -141,7 +145,8 @@ async def test_exception_in_child_reaches_error_path_typed(rabbitmq_url, valkey_
     assert "deterministic failure" in message
 
 
-async def test_di_child_is_reused_and_recycled_with_signal(rabbitmq_url, valkey_url, _register_fixture_tasks):
+@pytest.mark.usefixtures("_register_fixture_tasks")
+async def test_di_child_is_reused_and_recycled_with_signal(rabbitmq_url, valkey_url):
     """R6/R7/AE1-Analogon: DI-Tasks teilen ein Kind; nach recycle_max_tasks kommt ein neues
     Kind und WORKER_RECYCLING feuert mit Grund ``tasks``."""
     pytest.importorskip("dishka")
@@ -175,9 +180,8 @@ async def _wait_for_pid(pid_file, timeout: float = 20.0) -> int:
     return int(pid_file.read_text(encoding="ascii"))
 
 
-async def test_chaos_child_sigkill_is_a_typed_failure_and_the_slot_stays_usable(
-    rabbitmq_url, valkey_url, _register_fixture_tasks, tmp_path
-):
+@pytest.mark.usefixtures("_register_fixture_tasks")
+async def test_chaos_child_sigkill_is_a_typed_failure_and_the_slot_stays_usable(rabbitmq_url, valkey_url, tmp_path):
     """Chaos (R8/KTD2): stirbt das Rechenkind hart, wird der Task als Fehler
     abgeschlossen (kein Haenger, keine Exception in der Pipeline), und der
     Slot nimmt sofort den naechsten Task an."""
@@ -197,7 +201,8 @@ async def test_chaos_child_sigkill_is_a_typed_failure_and_the_slot_stays_usable(
     assert echo_result == {"value": 10, "pid": echo_result["pid"]}
 
 
-async def test_large_results_and_small_bursts_never_lose_a_result(rabbitmq_url, valkey_url, _register_fixture_tasks):
+@pytest.mark.usefixtures("_register_fixture_tasks")
+async def test_large_results_and_small_bursts_never_lose_a_result(rabbitmq_url, valkey_url):
     """P0 #3 (Sentinel-Wettlauf): das frische Kind endet direkt nach dem Schreiben —
     kein Ergebnis darf als Kindtod enden, weder bei 20 MB noch bei vielen kleinen."""
     app = _app(rabbitmq_url, valkey_url, concurrency=2, burst_idle_timeout=3.0)
@@ -211,9 +216,8 @@ async def test_large_results_and_small_bursts_never_lose_a_result(rabbitmq_url, 
     assert [r["value"] for r in results[6:]] == [i * 2 for i in range(40)]
 
 
-async def test_exception_that_does_not_unpickle_in_the_parent_is_a_typed_failure(
-    rabbitmq_url, valkey_url, _register_fixture_tasks
-):
+@pytest.mark.usefixtures("_register_fixture_tasks")
+async def test_exception_that_does_not_unpickle_in_the_parent_is_a_typed_failure(rabbitmq_url, valkey_url):
     """P0 #1: eine Exception mit eigener __init__-Signatur darf den Pool nicht taub machen."""
     app = _app(rabbitmq_url, valkey_url, concurrency=1, burst_idle_timeout=3.0)
     async with app:
@@ -226,9 +230,8 @@ async def test_exception_that_does_not_unpickle_in_the_parent_is_a_typed_failure
     assert (await _results(rabbitmq_url, valkey_url, [after]))[0]["value"] == 14
 
 
-async def test_di_child_keeps_one_event_loop_for_loop_bound_app_resources(
-    rabbitmq_url, valkey_url, _register_fixture_tasks
-):
+@pytest.mark.usefixtures("_register_fixture_tasks")
+async def test_di_child_keeps_one_event_loop_for_loop_bound_app_resources(rabbitmq_url, valkey_url):
     """P1 #4: ein asyncio.Lock aus dem APP-Scope muss ueber mehrere Jobs desselben Kindes gueltig bleiben."""
     if not hasattr(fixture, "CpuDiLock"):
         pytest.skip("dishka nicht installiert")

@@ -60,7 +60,7 @@ class TestWorkerSubprocessEntry:
         async def fakerun_worker_async(ns):
             # Model a non-cooperative worker that does NOT consult
             # shutdown_event. Exit only when SIGTERM is "delivered".
-            while not worker_exited.is_set():
+            while not worker_exited.is_set():  # noqa: ASYNC110 - pollt ein threading.Event, das der Kill-Pfad aus einem anderen Thread setzt
                 await asyncio.sleep(0.02)
 
         monkeypatch.setattr("swarmq.process_manager.supervisor.os.kill", fake_kill)

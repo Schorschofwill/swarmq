@@ -40,7 +40,7 @@ def _modules_with_prefix_after(import_stmt: str, *prefixes: str) -> set[str]:
         text=True,
         check=True,
     )
-    return set(line for line in result.stdout.strip().splitlines() if line)
+    return {line for line in result.stdout.strip().splitlines() if line}
 
 
 # ---------------------------------------------------------------------------

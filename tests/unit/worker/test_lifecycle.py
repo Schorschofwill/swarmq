@@ -855,8 +855,7 @@ def _make_autowire_worker(**cfg_kwargs) -> Worker:
     backend = MagicMock()
     registry = MagicMock()
     registry.get_all = MagicMock(return_value=[])
-    w = Worker(broker, backend, registry, cfg)
-    return w
+    return Worker(broker, backend, registry, cfg)
 
 
 class TestAutoWire:

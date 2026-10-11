@@ -415,7 +415,7 @@ async def test_dispatch_reraises_cancelled_error():
 
     @dispatcher.on_signal(Signal.TASK_COMPLETED)
     async def handler(**kwargs):
-        raise asyncio.CancelledError()
+        raise asyncio.CancelledError
 
     with pytest.raises(asyncio.CancelledError):
         await dispatcher.dispatch(Signal.TASK_COMPLETED, task_id="t")

@@ -190,10 +190,10 @@ class TestMessageCorruption:
 
     # ----- 1. Corrupt AMQP headers ------------------------------------------
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_corrupt_amqp_headers_dlq_rejection(
         self,
         chaos_stack: ChaosStack,
-        _cleanup_tasks,
     ) -> None:
         """Raw aio_pika publish with garbage headers + malformed body.
 
@@ -299,10 +299,10 @@ class TestMessageCorruption:
 
     # ----- 2. Corrupt result blob in Valkey ---------------------------------
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_corrupt_result_blob_in_valkey_surfaces_serialization_error(
         self,
         chaos_stack: ChaosStack,
-        _cleanup_tasks,
     ) -> None:
         """Overwrite a stored result with garbage → get_result raises
         ResultSerializationError, not a generic crash.
@@ -349,10 +349,10 @@ class TestMessageCorruption:
 
     # ----- 3. Rogue Pub/Sub publisher does not crash watch_progress ---------
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_rogue_pubsub_publisher_does_not_crash_watch_progress(
         self,
         chaos_stack: ChaosStack,
-        _cleanup_tasks,
     ) -> None:
         """Publish garbled bytes to the progress channel while a
         ``watch_progress`` iterator is active.
@@ -472,10 +472,10 @@ class TestMessageCorruption:
 
     # ----- 4. Corrupt unique-hash header ------------------------------------
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_corrupt_unique_hash_header_rejected_or_normalised(
         self,
         chaos_stack: ChaosStack,
-        _cleanup_tasks,
     ) -> None:
         """Valid task body + garbled ``x-swarmq-unique-hash`` header.
 
@@ -555,15 +555,16 @@ class TestMessageCorruption:
                         timeout=8,
                         polling=0.1,
                     )
-                    pinned_outcome = "accepted"
-                    assert result == "slept:0.05", f"unexpected result for bad-unique-hash task: {result!r}"
                 except Exception as exc:
                     # ResultNotReadyError is the expected timeout signal
                     # when the message was routed to DLQ instead.
                     pinned_outcome = "rejected"
-                    assert "not ready" in str(exc).lower() or (type(exc).__name__ == "ResultNotReadyError"), (
+                    assert "not ready" in str(exc).lower() or (type(exc).__name__ == "ResultNotReadyError"), (  # noqa: PT017 - zwei zulaessige Ausgaenge (Ergebnis oder Timeout), pytest.raises wuerde den Erfolgsfall verbieten
                         f"unexpected error shape: {type(exc).__name__}: {exc}"
                     )
+                else:
+                    pinned_outcome = "accepted"
+                    assert result == "slept:0.05", f"unexpected result for bad-unique-hash task: {result!r}"
 
                 # Worker still alive regardless of outcome -- supervisor AND
                 # the same worker child.
@@ -602,10 +603,10 @@ class TestMessageCorruption:
 
     # ----- 5. Manually-broken progress HASH ---------------------------------
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_manually_broken_progress_hash_returns_none(
         self,
         chaos_stack: ChaosStack,
-        _cleanup_tasks,
     ) -> None:
         """Direct HSET of a malformed progress HASH → ``get_progress``
         returns None, never raises.

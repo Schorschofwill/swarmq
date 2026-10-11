@@ -576,7 +576,7 @@ def test_task_subclass_reserved_param_error_mentions_all_reserved():
     so users who hit delay/eta today still see the full picture."""
     Task._clear_registered_tasks()
 
-    with pytest.raises(ValueError) as excinfo:
+    with pytest.raises(ValueError, match="reserved parameter name") as excinfo:
 
         class BadTask(Task):
             task_info = TaskInfo(name="bad", queues=["q"])

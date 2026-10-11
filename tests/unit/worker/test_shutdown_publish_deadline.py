@@ -89,8 +89,8 @@ class TestShutdownCouplesTheDeadline:
         broker.set_publish_deadline.side_effect = deadlines.append
         broker.close.side_effect = RuntimeError("connection already gone")
 
+        worker._request_shutdown()
         with pytest.raises(RuntimeError, match="connection already gone"):
-            worker._request_shutdown()
             await worker._execute_shutdown()
 
         assert deadlines[-1] is None

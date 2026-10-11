@@ -89,6 +89,7 @@ def test_benchmark_all_scenarios_small_load() -> None:
         capture_output=True,
         text=True,
         timeout=180,
+        check=False,
     )
 
     combined = result.stdout + result.stderr
@@ -162,6 +163,7 @@ def test_benchmark_repeat_mode_emits_aggregate() -> None:
         capture_output=True,
         text=True,
         timeout=180,
+        check=False,
     )
 
     combined = result.stdout + result.stderr

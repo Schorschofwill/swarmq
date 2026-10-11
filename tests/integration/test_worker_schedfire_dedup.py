@@ -32,11 +32,11 @@ def _cleanup_tasks():
 
 
 class TestSchedfireDedupIntegration:
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_duplicate_schedfire_executes_only_once(
         self,
         rabbitmq_url,
         valkey_url,
-        _cleanup_tasks,
     ):
         queue = _unique_queue()
         call_count = 0
@@ -99,12 +99,12 @@ class TestSchedfireDedupIntegration:
 
             assert call_count == 1, f"expected exactly one execution, got {call_count}"
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     @pytest.mark.timeout(20)
     async def test_scheduled_task_retry_is_not_dropped(
         self,
         rabbitmq_url,
         valkey_url,
-        _cleanup_tasks,
     ):
         """A scheduled-fire task that fails on its first attempt must be
         retried, not silently dropped (P0-B, 2026-06-02 audit).

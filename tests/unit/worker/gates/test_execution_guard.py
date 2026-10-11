@@ -845,7 +845,7 @@ async def test_failed_superseded_marker_is_retried_with_the_retry_count(
 
 
 async def _until(predicate: object) -> None:
-    while not predicate():  # type: ignore[operator]
+    while not predicate():  # type: ignore[operator]  # noqa: ASYNC110 - Praedikat ueber erfasste Logs, kein Event verfuegbar
         await asyncio.sleep(0)
 
 

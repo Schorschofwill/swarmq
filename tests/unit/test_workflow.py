@@ -172,10 +172,13 @@ def test_excessive_nesting_rejected_at_construction():
     # Building nesting deeper than DEFAULT_MAX_WORKFLOW_DEPTH must raise —
     # group() validates each level, so the rejection fires as soon as the
     # ceiling is crossed (here, inside the loop), not only at the end.
-    with pytest.raises(WorkflowValidationError):
+    def nest_too_deep() -> None:
         node: object = Fetch.s("u")
         for _ in range(DEFAULT_MAX_WORKFLOW_DEPTH + 2):
             node = group(node)  # type: ignore[arg-type]
+
+    with pytest.raises(WorkflowValidationError):
+        nest_too_deep()
 
 
 # --------------------------------------------------------------------------

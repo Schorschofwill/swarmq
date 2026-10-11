@@ -120,7 +120,7 @@ def test_sighup_reexec_starts_workers_again(
     def _pump() -> None:
         assert proc.stdout is not None
         for line in proc.stdout:
-            lines.append(line)
+            lines.append(line)  # noqa: PERF402 - jede Zeile muss sofort sichtbar sein, waehrend der Test parallel auf sie wartet
 
     threading.Thread(target=_pump, daemon=True).start()
     try:

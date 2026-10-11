@@ -63,6 +63,7 @@ def _run_cli(
         env=env,
         capture_output=True,
         text=True,
+        check=False,
         timeout=30,
     )
 
@@ -159,10 +160,10 @@ async def _poison_queue(
     return task_ids
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_dlq_list_finds_poisoned_messages(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     queue = _unique_queue()
     task_name = _task_name("poison")
@@ -187,10 +188,10 @@ async def test_dlq_list_finds_poisoned_messages(
     assert names == {task_name}
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_dlq_list_empty_queue_returns_empty(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     queue = _unique_queue()
     # Declare the main queue (auto-creates the .XQ) but don't poison.
@@ -211,10 +212,10 @@ async def test_dlq_list_empty_queue_returns_empty(
     assert data["entries"] == []
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_dlq_inspect_shows_payload_and_retry_count(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     queue = _unique_queue()
     task_name = _task_name("inspect")
@@ -243,10 +244,10 @@ async def test_dlq_inspect_shows_payload_and_retry_count(
     assert retry_count in (1, "1"), f"unexpected retry-count header: {retry_count!r}"
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_dlq_inspect_unknown_task_id_exits_3(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     queue = _unique_queue()
     # Declare main queue so the XQ exists and the scan doesn't error.
@@ -267,10 +268,10 @@ async def test_dlq_inspect_unknown_task_id_exits_3(
     )
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_dlq_retry_single_republishes_into_main_queue(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     queue = _unique_queue()
     task_name = _task_name("retry1")
@@ -297,10 +298,10 @@ async def test_dlq_retry_single_republishes_into_main_queue(
     assert after_count == 2, f"expected 2 messages left in DLQ after retrying one; got {after_count}"
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_dlq_retry_all_republishes_every_message(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     queue = _unique_queue()
     task_name = _task_name("retryall")
@@ -323,10 +324,10 @@ async def test_dlq_retry_all_republishes_every_message(
     assert after_count == 0
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_dlq_purge_empties_queue(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     queue = _unique_queue()
     task_name = _task_name("purge")
@@ -351,10 +352,10 @@ async def test_dlq_purge_empties_queue(
     assert await _dlq_count(rabbitmq_url, queue) == 0
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_dlq_list_scans_beyond_default_limit(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """Drain-and-republish invariant: list must surface all N messages
     even when N exceeds the implicit prefetch. Poisons 25 messages,

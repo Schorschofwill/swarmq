@@ -632,7 +632,7 @@ def _blocked_listener_with_full_queue(monkeypatch: pytest.MonkeyPatch, *, json_m
     target.setFormatter(build_formatter(json_mode, colors=False))
     recorder = _RecordingHandler()
     handler = _StructlogQueueHandler(queue.Queue(maxsize=1), target, recorder, json=json_mode)
-    log = logging.Logger("swarmq.tests.u3")
+    log = logging.Logger("swarmq.tests.u3")  # noqa: LOG001 - bewusst isolierter Logger ausserhalb der globalen Hierarchie
     log.addHandler(handler)
     log.warning("first")
     assert stream.entered.wait(timeout=1)
@@ -714,7 +714,7 @@ def test_a_drop_with_closed_stderr_neither_raises_nor_goes_uncounted(
         recorder,
         logging.StreamHandler(sys.stderr),
     )
-    log = logging.Logger("swarmq.tests.u3")
+    log = logging.Logger("swarmq.tests.u3")  # noqa: LOG001 - bewusst isolierter Logger ausserhalb der globalen Hierarchie
     log.addHandler(handler)
     log.warning("held")
     assert blocker.entered.wait(timeout=1)
@@ -794,7 +794,7 @@ class _GateHandler(_RecordingHandler):
 def test_stopping_reports_drops_the_rate_limit_held_back(clock: _Clock) -> None:
     target = _GateHandler()
     handler = _StructlogQueueHandler(queue.Queue(maxsize=1), target)
-    log = logging.Logger("swarmq.tests.u3")
+    log = logging.Logger("swarmq.tests.u3")  # noqa: LOG001 - bewusst isolierter Logger ausserhalb der globalen Hierarchie
     log.addHandler(handler)
     try:
         for round_ in ("1", "2"):

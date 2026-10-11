@@ -36,10 +36,10 @@ def _cleanup_tasks():
     Task._clear_registered_tasks()
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_burst_exits_when_queue_empty(
     rabbitmq_url,
     valkey_url,
-    _cleanup_tasks,
 ):
     """Worker started against an empty queue with --burst exits within
     the idle-timeout window."""
@@ -72,10 +72,10 @@ async def test_burst_exits_when_queue_empty(
     assert 1.0 <= elapsed <= 5.0, f"burst exit took {elapsed:.2f}s; expected ~1s + startup"
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_burst_drains_queue_then_exits(
     rabbitmq_url,
     valkey_url,
-    _cleanup_tasks,
 ):
     """Pre-populate a queue, start worker with --burst, verify all
     tasks completed and worker exited."""
@@ -122,10 +122,10 @@ async def test_burst_drains_queue_then_exits(
     assert elapsed <= 10.0, f"burst-drain took {elapsed:.2f}s"
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_burst_waits_for_inflight_before_exit(
     rabbitmq_url,
     valkey_url,
-    _cleanup_tasks,
 ):
     """A slow task picked up just before the idle window must complete
     before the burst worker exits — graceful-drain semantics."""

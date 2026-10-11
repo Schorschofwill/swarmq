@@ -546,6 +546,7 @@ class TestPollLoop:
         headers = broker.publish.await_args.kwargs.get("headers") or {}
         assert headers["x-swarmq-schedfire"] == "drift:1000"
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_unregistered_task_fire_logs_warning(
         self,
         backend,
@@ -554,7 +555,6 @@ class TestPollLoop:
         lock_manager,
         store,
         signal_dispatcher,
-        _cleanup_tasks,
         swarmq_logs,
     ):
         """Härtung R2 P2: ein Schedule, dessen Task umbenannt/entfernt
@@ -741,6 +741,7 @@ class TestStop:
 class TestSchedulerUniqueDedup:
     """Scheduler-side SETNX + commit-on-dup for R3.5 cron/delay fires."""
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_static_cron_without_unique_for_does_not_call_setnx(
         self,
         backend,
@@ -749,7 +750,6 @@ class TestSchedulerUniqueDedup:
         lock_manager,
         store,
         signal_dispatcher,
-        _cleanup_tasks,
     ):
         class PlainCron(Task):
             task_info = TaskInfo(
@@ -775,6 +775,7 @@ class TestSchedulerUniqueDedup:
         headers = broker.publish.await_args.kwargs.get("headers") or {}
         assert "x-swarmq-unique-hash" not in headers
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_static_cron_with_unique_for_sets_flag_and_header(
         self,
         backend,
@@ -783,7 +784,6 @@ class TestSchedulerUniqueDedup:
         lock_manager,
         store,
         signal_dispatcher,
-        _cleanup_tasks,
     ):
         class UniqueCron(Task):
             task_info = TaskInfo(
@@ -814,6 +814,7 @@ class TestSchedulerUniqueDedup:
         assert headers["x-swarmq-unique-until"] == "completion"
         store.commit_fire.assert_awaited_once()
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_static_cron_dup_skips_publish_but_commits(
         self,
         backend,
@@ -822,7 +823,6 @@ class TestSchedulerUniqueDedup:
         lock_manager,
         store,
         signal_dispatcher,
-        _cleanup_tasks,
     ):
         """Dup path: no publish, but commit_fire MUST advance the zset
         otherwise the scheduler re-polls the same entry forever."""
@@ -859,6 +859,7 @@ class TestSchedulerUniqueDedup:
         assert received[0]["source"] == "scheduler.fire"
         assert received[0]["task_name"] == "dup_task"
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_cli_unique_source_skips_scheduler_setnx(
         self,
         backend,
@@ -867,7 +868,6 @@ class TestSchedulerUniqueDedup:
         lock_manager,
         store,
         signal_dispatcher,
-        _cleanup_tasks,
     ):
         """Producer already claimed the flag (Unit 7) — scheduler must not
         re-SETNX or the flag's TTL would reset. Header is propagated from
@@ -900,6 +900,7 @@ class TestSchedulerUniqueDedup:
         # unique_until read directly from the persisted definition.
         assert headers["x-swarmq-unique-until"] == "start"
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_cli_unique_pre_r35_entry_defaults_until_completion(
         self,
         backend,
@@ -908,7 +909,6 @@ class TestSchedulerUniqueDedup:
         lock_manager,
         store,
         signal_dispatcher,
-        _cleanup_tasks,
     ):
         """Legacy entries without unique_until (pre-P1-#5) decode with
         the struct default 'completion'. Ensures backwards-compatibility
@@ -936,6 +936,7 @@ class TestSchedulerUniqueDedup:
         assert headers["x-swarmq-unique-hash"] == "abc123"
         assert headers["x-swarmq-unique-until"] == "completion"
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_setnx_backend_error_skips_publish_and_commit(
         self,
         backend,
@@ -944,7 +945,6 @@ class TestSchedulerUniqueDedup:
         lock_manager,
         store,
         signal_dispatcher,
-        _cleanup_tasks,
     ):
         """Valkey hiccup at SETNX → do NOT publish, do NOT commit. Next
         poll tick retries."""
@@ -971,6 +971,7 @@ class TestSchedulerUniqueDedup:
         broker.publish.assert_not_awaited()
         store.commit_fire.assert_not_awaited()
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_hash_stable_for_same_args_across_fires(
         self,
         backend,
@@ -979,7 +980,6 @@ class TestSchedulerUniqueDedup:
         lock_manager,
         store,
         signal_dispatcher,
-        _cleanup_tasks,
     ):
         """Two fires of the same schedule with same args produce the
         same dedup_hash (Valkey sees repeat owner on second attempt)."""
@@ -1073,7 +1073,8 @@ class TestSchedulerLoopLogging:
             async def run(self):
                 return None
 
-    async def test_dedup_hit_logs_dedup_detected(self, loop, backend, store, swarmq_logs, _cleanup_tasks):
+    @pytest.mark.usefixtures("_cleanup_tasks")
+    async def test_dedup_hit_logs_dedup_detected(self, loop, backend, store, swarmq_logs):
         self._unique_cron_task()
         backend.claim_unique = AsyncMock(return_value="t-existing")
         loop._state = "leader"
@@ -1186,7 +1187,8 @@ class TestSchedulerLoopLogging:
         assert entry["error_type"] == "BackendConnectionError"
         assert entry["error"] == "valkey down"
 
-    async def test_unique_setnx_failure_logs_error_fields(self, loop, backend, store, swarmq_logs, _cleanup_tasks):
+    @pytest.mark.usefixtures("_cleanup_tasks")
+    async def test_unique_setnx_failure_logs_error_fields(self, loop, backend, store, swarmq_logs):
         self._unique_cron_task()
         backend.claim_unique = AsyncMock(side_effect=BackendConnectionError("valkey down"))
         loop._state = "leader"

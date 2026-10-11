@@ -36,11 +36,11 @@ def _cleanup_tasks():
 
 
 class TestWorkerSchedulerIntegration:
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_worker_start_emits_leader_signal_and_shutdown_releases(
         self,
         rabbitmq_url,
         valkey_url,
-        _cleanup_tasks,
     ):
         queue = _unique_queue()
 

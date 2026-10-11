@@ -112,11 +112,9 @@ class TestLockManagerOutageVersusErrorReply:
         manager, _, release_script, renew_script = _make_lock_manager_with_scripts()
         (release_script if op == "release" else renew_script).side_effect = ResponseError("WRONGTYPE")
 
+        call = manager.release("name", "tok", 1) if op == "release" else manager.renew("name", "tok", 60_000)
         with pytest.raises(BackendResponseError, match=f"lock {op} failed"):
-            if op == "release":
-                await manager.release("name", "tok", 1)
-            else:
-                await manager.renew("name", "tok", 60_000)
+            await call
 
 
 class TestLockManagerReturnSemantics:

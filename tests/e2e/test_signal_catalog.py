@@ -130,10 +130,10 @@ async def _running_worker(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_signal_worker_online(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """WORKER_ONLINE fires once when the worker reaches ready state."""
     queue = _unique_queue()
@@ -170,10 +170,10 @@ async def test_signal_worker_online(
     assert _WORKER_ID_FORMAT.match(online_kwargs[0]["worker_id"])
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_signal_worker_shutdown(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """WORKER_SHUTDOWN fires at the start of the graceful shutdown sequence.
 
@@ -221,10 +221,10 @@ async def test_signal_worker_shutdown(
     assert _WORKER_ID_FORMAT.match(captured[0]["worker_id"])
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_signal_worker_heartbeat(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """WORKER_HEARTBEAT — periodic liveness tick from the metrics sampler.
 
@@ -287,10 +287,10 @@ async def test_signal_worker_heartbeat(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_signal_task_enqueued(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """TASK_ENQUEUED fires at client.schedule() time with task_id, task_name, queue."""
     queue = _unique_queue()
@@ -324,10 +324,10 @@ async def test_signal_task_enqueued(
     assert captured[0]["queue"] == queue
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_signal_task_started(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """TASK_STARTED fires when the worker picks up a message."""
     queue = _unique_queue()
@@ -366,10 +366,10 @@ async def test_signal_task_started(
     assert captured[0]["task_name"] == task_name
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_signal_task_completed(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """TASK_COMPLETED fires on successful run with duration_ms."""
     queue = _unique_queue()
@@ -411,10 +411,10 @@ async def test_signal_task_completed(
     assert captured[0]["duration_ms"] > 0
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_signal_task_failed(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """TASK_FAILED fires after retries exhaust; kwargs include exception."""
     queue = _unique_queue()
@@ -471,11 +471,11 @@ async def test_signal_task_failed(
     assert "boom-failed" in str(last["exception"])
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 @pytest.mark.timeout(75)
 async def test_signal_task_retrying(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """TASK_RETRYING fires on the retry decision between attempts."""
     queue = _unique_queue()
@@ -532,10 +532,10 @@ async def test_signal_task_retrying(
     assert first["delay"] > 0
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_signal_task_cancelled(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """TASK_CANCELLED fires when a cancel flag is observed pre-pickup."""
     queue = _unique_queue()
@@ -577,10 +577,10 @@ async def test_signal_task_cancelled(
     assert captured[0]["task_name"] == task_name
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_signal_task_duplicate_detected(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """TASK_DUPLICATE_DETECTED fires when a second schedule() hits the
     dedup flag. existing_task_id, task_name, dedup_hash, source all present."""
@@ -623,10 +623,10 @@ async def test_signal_task_duplicate_detected(
     assert payload["source"] == "client.schedule"
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_signal_task_rate_limited(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """TASK_RATE_LIMITED fires when a rate-limited task exceeds its allowance."""
     queue = _unique_queue()
@@ -676,10 +676,10 @@ async def test_signal_task_rate_limited(
     assert payload["rate_limit_count"] >= 1
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_signal_task_locked(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """TASK_LOCKED fires when a second task contends for the same lock."""
     queue = _unique_queue()
@@ -745,10 +745,10 @@ async def test_signal_task_locked(
     assert payload["lock_conflict_count"] >= 1
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_signal_task_expired(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """TASK_EXPIRED fires when a message's enqueue age exceeds
     TaskInfo(max_age=...) at consume time (R4.4).
@@ -842,10 +842,10 @@ async def test_signal_task_expired(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_signal_scheduler_leader(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """SCHEDULER_LEADER fires on first-time leader election."""
     queue = _unique_queue()
@@ -893,10 +893,10 @@ async def test_signal_scheduler_leader_failover_reference():
     )
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_signal_scheduler_leader_handover(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """SCHEDULER_LEADER_HANDOVER fires when a leader releases its lock
     during graceful shutdown.
@@ -969,10 +969,10 @@ async def test_signal_scheduler_leader_handover(
     assert _WORKER_ID_FORMAT.match(captured[0]["worker_id"])
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_signal_scheduler_heartbeat(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """SCHEDULER_HEARTBEAT fires periodically after leader renews its lock."""
     queue = _unique_queue()
@@ -1014,10 +1014,10 @@ async def test_signal_scheduler_heartbeat(
     assert _WORKER_ID_FORMAT.match(captured[0]["worker_id"])
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_signal_scheduler_standby(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """SCHEDULER_STANDBY — leader loses its lock and steps down.
 
@@ -1103,10 +1103,10 @@ async def test_signal_worker_recycling_reference():
     assert Signal.WORKER_RECYCLING.value == "worker_recycling"
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_signal_workflow_step_enqueued(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """WORKFLOW_STEP_ENQUEUED feuert je Workflow-Schritt — im Client fuer die
     Anfangsfront, im Worker fuer jeden Folgeschritt (U11, R16)."""
@@ -1161,10 +1161,10 @@ async def test_signal_workflow_step_enqueued(
     assert all(c["task_id"] for c in captured)
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_signal_task_rejected(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """TASK_REJECTED feuert, wenn der Worker eine Nachricht ohne
     Diagnose-Header ins ``.XQ`` gibt (U6, R12).

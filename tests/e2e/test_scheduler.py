@@ -132,11 +132,11 @@ async def _flush_valkey(valkey_url):
 
 
 class TestDelayAndEta:
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_delay_fires_task_after_interval(
         self,
         rabbitmq_url,
         valkey_url,
-        _cleanup_tasks,
     ):
         queue = _unique_queue()
         task_name = _task_name("ping")
@@ -188,11 +188,11 @@ class TestDelayAndEta:
                 with contextlib.suppress(asyncio.CancelledError):
                     await worker_task
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_eta_fires_at_timestamp(
         self,
         rabbitmq_url,
         valkey_url,
-        _cleanup_tasks,
     ):
         queue = _unique_queue()
         task_name = _task_name("at")
@@ -236,11 +236,11 @@ class TestDelayAndEta:
 
 
 class TestCronSchedule:
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_cron_schedule_fires_on_leader(
         self,
         rabbitmq_url,
         valkey_url,
-        _cleanup_tasks,
     ):
         queue = _unique_queue()
         task_name = _task_name("cron")
@@ -299,11 +299,11 @@ class TestCronSchedule:
 
 
 class TestConsumerDedup:
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_duplicate_schedfire_exec_once(
         self,
         rabbitmq_url,
         valkey_url,
-        _cleanup_tasks,
     ):
         queue = _unique_queue()
         task_name = _task_name("dedup")
@@ -374,11 +374,11 @@ class TestConsumerDedup:
 
 
 class TestGracefulHandover:
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_handover_before_ttl_expiry(
         self,
         rabbitmq_url,
         valkey_url,
-        _cleanup_tasks,
     ):
         queue = _unique_queue()
         task_name = _task_name("ho")
@@ -500,11 +500,11 @@ class TestGracefulHandover:
 
 
 class TestCliRoundtrip:
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_cli_add_then_scheduler_fires(
         self,
         rabbitmq_url,
         valkey_url,
-        _cleanup_tasks,
         monkeypatch,
     ):
         queue = _unique_queue()
@@ -573,11 +573,11 @@ class TestRecurringAcrossLeaderChange:
     leader changes. Spin up A, fire once, kill A, let B take over,
     fire again. Verify exactly 2 executions — no skip, no duplicate."""
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_no_fires_missed_when_leader_changes(
         self,
         rabbitmq_url,
         valkey_url,
-        _cleanup_tasks,
     ):
         queue = _unique_queue()
         task_name = _task_name("recur")
@@ -685,11 +685,11 @@ class TestCrashFailover:
     the successor emits SCHEDULER_LEADER_FAILOVER — not LEADER — and
     takes over pending work."""
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_failover_signal_fires_on_crash_not_graceful(
         self,
         rabbitmq_url,
         valkey_url,
-        _cleanup_tasks,
     ):
         queue = _unique_queue()
         broker_a = RabbitMQBroker(rabbitmq_url)
@@ -757,11 +757,11 @@ class TestCronWithRateLimit:
     fires the task. Force 3 fires within a 1s rate-limit window, expect
     1 execution (first fire is allowed, subsequent are throttled)."""
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_rate_limit_throttles_scheduler_fires(
         self,
         rabbitmq_url,
         valkey_url,
-        _cleanup_tasks,
     ):
         queue = _unique_queue()
         task_name = _task_name("ratecron")
@@ -911,11 +911,11 @@ async def _wait_adopt_ticks(
 
 
 class TestCronReportsAcrossApps:
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_change_in_never_leader_app_is_adopted(
         self,
         rabbitmq_url,
         valkey_url,
-        _cleanup_tasks,
     ):
         """AE8: App B (nie Leader) stellt ``0 1 * * *`` UTC auf ``0 3 * * *``
         Berlin um. Der Leader aus App A übernimmt die neue Definition; ein
@@ -1036,11 +1036,11 @@ async def _wait_definition_gone(
 
 
 class TestCronPruneAcrossApps:
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_silent_cron_of_another_app_is_pruned_legacy_stays(
         self,
         rabbitmq_url,
         valkey_url,
-        _cleanup_tasks,
     ):
         """AE6: App A und App B teilen ein Valkey, A stellt den Leader. Bs
         Cron bleibt, solange B meldet — auch über die Frist hinaus. Nach Bs

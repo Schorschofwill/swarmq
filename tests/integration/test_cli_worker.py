@@ -168,6 +168,7 @@ def test_cli_worker_unknown_module_exits_with_config_code_quickly() -> None:
         capture_output=True,
         text=True,
         timeout=15,
+        check=False,
     )
     from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
 
@@ -190,6 +191,7 @@ def _run_worker_cli(*args: str, env_extra: dict[str, str] | None = None, timeout
         capture_output=True,
         text=True,
         timeout=timeout,
+        check=False,
     )
 
 

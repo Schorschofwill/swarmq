@@ -20,6 +20,7 @@ Test-Liste:
 
 from __future__ import annotations
 
+import asyncio
 import collections
 import importlib.metadata
 import json
@@ -248,7 +249,8 @@ async def test_dlq_replay_by_new_cli_runs_on_old_worker(
         await client.aclose()
 
     env = {**os.environ, "SWARMQ_BROKER_URL": rabbitmq_url, "SWARMQ_BACKEND_URL": valkey_url}
-    cli = subprocess.run(
+    cli = await asyncio.to_thread(
+        subprocess.run,
         [python_repo, "-m", "swarmq.cli", "dlq", "retry", "--all", "--queue", queue, "--format", "json"],
         cwd=str(REPO_ROOT),
         env=env,

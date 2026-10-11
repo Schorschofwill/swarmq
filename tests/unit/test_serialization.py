@@ -282,7 +282,7 @@ class TestCanonicalEncode:
         assert canonical_encode((), {"id": uid}) == canonical_encode((), {"id": str(uid)})
 
     def test_datetime_normalized_to_isoformat(self):
-        dt = datetime(2026, 1, 1, 12, 0, 0)
+        dt = datetime(2026, 1, 1, 12, 0, 0)  # noqa: DTZ001 - naive Zeit bewusst, die Normalisierung muss auch ohne tzinfo greifen
         assert canonical_encode((), {"ts": dt}) == canonical_encode((), {"ts": dt.isoformat()})
 
     def test_decimal_normalized_to_str(self):

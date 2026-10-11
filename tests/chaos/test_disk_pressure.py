@@ -60,7 +60,7 @@ def oom_valkey() -> Iterator[str]:
     Valkey is AOF-on, no maxmemory, suitable for network tests but not
     for OOM tests. Yields a ``valkey://127.0.0.1:PORT/0`` URL.
     """
-    if subprocess.run(["docker", "info"], capture_output=True).returncode != 0:
+    if subprocess.run(["docker", "info"], capture_output=True, check=False).returncode != 0:
         pytest.skip("docker not available — disk-pressure tests need a daemon")
 
     container = f"swarmq-oom-vkey-{uuid.uuid4().hex[:8]}"
@@ -89,6 +89,7 @@ def oom_valkey() -> Iterator[str]:
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
     if run.returncode != 0:
         pytest.skip(f"could not start constrained valkey container: {run.stderr[-300:] if run.stderr else 'no stderr'}")
@@ -105,6 +106,7 @@ def oom_valkey() -> Iterator[str]:
             ["docker", "rm", "-f", container],
             capture_output=True,
             timeout=15,
+            check=False,
         )
 
 
@@ -155,14 +157,12 @@ class TestDiskPressure:
         await backend.connect()
         try:
             # Prime the backend to near-OOM via direct SETs.
-            with pytest.raises(Exception) as exc_info:
-                await _fill_until_oom(backend)
             # valkey-py raises ResponseError("OOM ...") which is a
-            # ValkeyError subclass. We accept any ValkeyError here;
-            # the real contract check is on store_result below.
-            assert "OOM" in str(exc_info.value) or "memory" in str(exc_info.value).lower(), (
-                f"expected OOM-flavoured error, got {type(exc_info.value).__name__}: {exc_info.value}"
-            )
+            # ValkeyError subclass. We accept any ValkeyError here with an
+            # OOM-flavoured message; the real contract check is on
+            # store_result below.
+            with pytest.raises(Exception, match=r"OOM|(?i:memory)"):
+                await _fill_until_oom(backend)
 
             # Now the user-facing path: store_result must surface
             # this as BackendConnectionError (not Valkey ResponseError
@@ -241,7 +241,7 @@ class TestDiskPressure:
 
             # Give Valkey a breath to finalise memory accounting.
             # (noeviction checks against used_memory at command entry.)
-            time.sleep(0.1)
+            time.sleep(0.1)  # noqa: ASYNC251 - kurze Pause fuer Valkeys Speicherabrechnung, kein nebenlaeufiger Task wird blockiert
 
             # Recovery: store_result now succeeds.
             await backend.store_result(

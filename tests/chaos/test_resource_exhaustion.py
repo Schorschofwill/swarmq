@@ -325,7 +325,7 @@ class TestResourceExhaustion:
             # raise from a silent hang. We accept any exception from
             # the aiormq/aio_pika family; the assertion that matters is
             # "raised, not hung".
-            with pytest.raises(
+            with pytest.raises(  # noqa: PT012 - Block muss den gelieferten Kanal fuer den Teardown merken und Haenger von typisiertem Fehler unterscheiden
                 (
                     _ConnectionNotAllowed,
                     _AiormqAMQPError,

@@ -111,7 +111,7 @@ def test_loop_process_sigkill_kills_the_child_and_the_replacement_finishes_the_t
     def _pump() -> None:
         assert proc.stdout is not None
         for line in proc.stdout:
-            lines.append(line)
+            lines.append(line)  # noqa: PERF402 - jede Zeile muss sofort sichtbar sein, waehrend der Test parallel auf sie wartet
 
     threading.Thread(target=_pump, daemon=True).start()
 

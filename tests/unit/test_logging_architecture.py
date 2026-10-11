@@ -66,9 +66,7 @@ def direct_factory_calls(source: str) -> list[str]:
         name = _dotted(node.func)
         if name is None:
             continue
-        if (name.startswith("structlog.") and name.endswith(".get_logger")) or name in {
-            "logging.getLogger",
-        }:
+        if (name.startswith("structlog.") and name.endswith(".get_logger")) or name == "logging.getLogger":
             found.append(f"{node.lineno}: {name}")
     return found
 

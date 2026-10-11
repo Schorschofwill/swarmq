@@ -175,7 +175,8 @@ async def _wait_all_started(task_ids: list[str], *, timeout: float = 10.0) -> No
 # ---------------------------------------------------------------------------
 
 
-async def test_sigterm_with_inflight_completes_gracefully(_cleanup_tasks) -> None:
+@pytest.mark.usefixtures("_cleanup_tasks")
+async def test_sigterm_with_inflight_completes_gracefully() -> None:
     """Start a worker, pump 10 × 2s-sleep tasks, SIGTERM once they're
     in flight, expect:
       * worker exits cleanly (rc == 0)
@@ -240,7 +241,8 @@ async def test_sigterm_with_inflight_completes_gracefully(_cleanup_tasks) -> Non
 # ---------------------------------------------------------------------------
 
 
-async def test_sigkill_with_inflight_redelivers_no_loss_no_dup(_cleanup_tasks) -> None:
+@pytest.mark.usefixtures("_cleanup_tasks")
+async def test_sigkill_with_inflight_redelivers_no_loss_no_dup() -> None:
     """Start worker A, schedule 10 × 3s sleeps, SIGKILL once all are running,
     spin up worker B, expect:
       * all 10 results eventually stored (no loss)
@@ -323,7 +325,8 @@ async def test_sigkill_with_inflight_redelivers_no_loss_no_dup(_cleanup_tasks) -
 # ---------------------------------------------------------------------------
 
 
-async def test_shutdown_during_retry_delay_lands_on_successor(_cleanup_tasks) -> None:
+@pytest.mark.usefixtures("_cleanup_tasks")
+async def test_shutdown_during_retry_delay_lands_on_successor() -> None:
     """Start worker A, schedule an always-fail task with
     ``max_retries=2`` + ``retry_base_delay=1.5``. Wait until the first
     failure has pushed the task into ``{queue}.DQ``. SIGTERM worker A

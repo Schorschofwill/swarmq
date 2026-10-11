@@ -36,9 +36,7 @@ class _CollectingHandler(logging.Handler):
             "log_level": record.levelname.lower(),
             "logger": record.name,
         }
-        for key, value in vars(record).items():
-            if key not in _STANDARD_RECORD_ATTRS:
-                entry[key] = value
+        entry.update({key: value for key, value in vars(record).items() if key not in _STANDARD_RECORD_ATTRS})
         self._entries.append(entry)
 
 

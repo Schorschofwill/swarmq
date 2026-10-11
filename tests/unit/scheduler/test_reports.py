@@ -110,7 +110,8 @@ def _task(**info) -> type[Task]:
 
 
 class TestStaticDefinitions:
-    def test_only_tasks_with_cron_become_static_definitions(self, _cleanup_tasks):
+    @pytest.mark.usefixtures("_cleanup_tasks")
+    def test_only_tasks_with_cron_become_static_definitions(self):
         cron = _task(name="nightly", queues=["q1", "q2"], cron="0 1 * * *")
         plain = _task(name="plain", queues=["q1"])
 
@@ -118,7 +119,8 @@ class TestStaticDefinitions:
             _static(queue="q1"),
         ]
 
-    def test_effective_timezone_is_resolved(self, _cleanup_tasks):
+    @pytest.mark.usefixtures("_cleanup_tasks")
+    def test_effective_timezone_is_resolved(self):
         own = _task(name="own", queues=["q"], cron="0 1 * * *", timezone="Asia/Tokyo")
         default = _task(name="default", queues=["q"], cron="0 1 * * *")
         utc = _task(name="utc", queues=["q"], cron="0 1 * * *", timezone="UTC")
@@ -127,7 +129,8 @@ class TestStaticDefinitions:
 
         assert zones == {"own": "Asia/Tokyo", "default": "Europe/Berlin", "utc": None}
 
-    def test_unique_settings_of_the_task_are_carried(self, _cleanup_tasks):
+    @pytest.mark.usefixtures("_cleanup_tasks")
+    def test_unique_settings_of_the_task_are_carried(self):
         """BZ-09: der Leader braucht die Task-Klasse nicht, um ``unique_for``
         eines gemeldeten Crons anzuwenden."""
         unique = _task(name="nightly", queues=["default"], cron="0 1 * * *", unique_for=3600, unique_until="start")
@@ -136,7 +139,8 @@ class TestStaticDefinitions:
             _static(unique_for=3600, unique_until="start"),
         ]
 
-    def test_unique_until_without_unique_for_is_not_carried(self, _cleanup_tasks):
+    @pytest.mark.usefixtures("_cleanup_tasks")
+    def test_unique_until_without_unique_for_is_not_carried(self):
         """Ohne ``unique_for`` wirkt ``unique_until`` nicht; die Definition
         bleibt wie vor 0.12 (gleicher Abdruck, kein Übernahme-Schreiben)."""
         plain = _task(name="nightly", queues=["default"], cron="0 1 * * *", unique_until="start")

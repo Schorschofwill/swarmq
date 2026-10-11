@@ -71,6 +71,7 @@ from swarmq.contracts import Delivery
 from swarmq.task import Task, TaskInfo
 from swarmq.worker.settle import contain_delivery_errors
 from tests.support.services import RABBITMQ_42, RABBITMQ_MAIN, RabbitMQNode, require_rabbitmq
+from tests.support.wait import wait_until as poll_until
 from tests.unit._log_capture import capture_swarmq_logs
 
 pytestmark = [pytest.mark.integration]
@@ -355,9 +356,7 @@ async def test_43_worker_keeps_consuming_after_timeout_without_zombie(rabbitmq43
         task_info = TaskInfo(name="ct_outlives_timeout", queues=[queue])
 
         async def run(self) -> str:
-            deadline = time.monotonic() + TIMEOUT_DEADLINE_S
-            while not broker.consumer_watch.self_cancelled_tags and time.monotonic() < deadline:
-                await asyncio.sleep(0.05)
+            await poll_until(lambda: bool(broker.consumer_watch.self_cancelled_tags), TIMEOUT_DEADLINE_S)
             return "slow"
 
     class Quick(Task):
@@ -515,9 +514,7 @@ async def test_long_task_runs_exactly_once_across_the_consumer_timeout(any_rabbi
 
             async def run(self) -> str:
                 runs.append(time.monotonic())
-                deadline = time.monotonic() + TIMEOUT_DEADLINE_S
-                while not _seen("execution_guard_deferred") and time.monotonic() < deadline:
-                    await asyncio.sleep(0.05)
+                await poll_until(lambda: _seen("execution_guard_deferred"), TIMEOUT_DEADLINE_S)
                 return "once"
 
         class Quick(Task):

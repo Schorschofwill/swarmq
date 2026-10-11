@@ -117,8 +117,8 @@ def test_encode_result_roundtrip(result: dict) -> None:
     decoded = decode_result(encoded)
     assert isinstance(decoded, dict)
     assert decoded.keys() == result.keys()
-    for key in result:
-        assert _equal_modulo_float(decoded[key], result[key])
+    for key, value in result.items():
+        assert _equal_modulo_float(decoded[key], value)
 
 
 @given(

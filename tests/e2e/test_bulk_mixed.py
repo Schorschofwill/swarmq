@@ -75,10 +75,10 @@ async def _running_worker(rabbitmq_url: str, valkey_url: str, queue: str):
         await worker_backend.close()
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_schedule_many_mixed_success_and_failure(
     rabbitmq_url,
     valkey_url,
-    _cleanup_tasks,
 ):
     """50 tasks total: 30 succeed, 20 raise. get_results must surface
     both outcomes in the correct slots."""
@@ -133,10 +133,10 @@ async def test_schedule_many_mixed_success_and_failure(
                     assert await client_app.get_result(tid, timeout=8) == idx * 2
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_schedule_many_mixed_success_and_cancellation(
     rabbitmq_url,
     valkey_url,
-    _cleanup_tasks,
 ):
     """Batch of slow tasks; cancel a subset before they run. Cancelled
     slots surface as TaskCancelledError, others complete normally."""
@@ -198,10 +198,10 @@ async def test_schedule_many_mixed_success_and_cancellation(
             assert cancelled_count >= 1, "expected at least one of 4 cancels to land before execution completed"
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_schedule_many_with_unique_dedup_returns_winner_ids(
     rabbitmq_url,
     valkey_url,
-    _cleanup_tasks,
 ):
     """Batch contains 50 unique tasks + 50 duplicates of them (same
     args). Return value length is 100; duplicate slots point to the
@@ -259,10 +259,10 @@ async def test_schedule_many_with_unique_dedup_returns_winner_ids(
                 )
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_schedule_many_survives_broker_reconnect_midway(
     rabbitmq_url,
     valkey_url,
-    _cleanup_tasks,
 ):
     """Force a broker reconnect mid-batch. Phase-1 U1.1 channel-
     recreate must ensure every publish lands — otherwise the batch

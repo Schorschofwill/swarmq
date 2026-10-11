@@ -1069,9 +1069,9 @@ class TestReloadReentrancy:
     Handler merkt den Reload nur vor; das ``busy`` des Reload-Controllers,
     das der FileWatcher liest, kippt sofort."""
 
+    @pytest.mark.usefixtures("_restore_default_signals")
     def test_real_sighup_marks_the_reload_pending_and_busy(
         self,
-        _restore_default_signals,
     ):
         """Main-thread SIGHUP runs the handler synchronously (CPython
         delivers pending signals between bytecodes)."""
@@ -1091,9 +1091,9 @@ class TestReloadReentrancy:
         assert pm.reloader.busy is True
         assert pm._shutting_down is False
 
+    @pytest.mark.usefixtures("_restore_default_signals")
     def test_second_sighup_while_busy_is_idempotent(
         self,
-        _restore_default_signals,
     ):
         """Double-fire raises no exception and keeps exactly one pending
         reload (KTD8: zusammengefasst)."""

@@ -109,10 +109,10 @@ class _OrderTrackingMiddleware(Middleware):
         self._recorder.append(f"err:{self._name}")
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_three_middlewares_pre_forward_post_reverse(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """A=B=C-Kette: pre_execute fires A→B→C; post_execute fires C→B→A."""
     queue = _unique_queue()
@@ -155,10 +155,10 @@ async def test_three_middlewares_pre_forward_post_reverse(
     ], f"unexpected hook order: {recorder!r}"
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_middleware_in_middle_raises_subsequent_still_run(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """B raises in pre_execute. The chain is "swallow" by design
     (middleware.py:_swallow) — A AND C still see pre_execute, the
@@ -214,10 +214,10 @@ async def test_middleware_in_middle_raises_subsequent_still_run(
     ], f"unexpected hook order: {recorder!r}"
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_middleware_chain_sees_message_dict_mutations(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """Middleware A writes a key into message_dict during pre_execute;
     Middleware B reads it. Cross-middleware communication via the
@@ -263,10 +263,10 @@ async def test_middleware_chain_sees_message_dict_mutations(
     assert recorder == ["set-by-A"], f"reader middleware did not observe writer's mutation: {recorder!r}"
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_middleware_and_signal_handlers_interleave_correctly(
     rabbitmq_url: str,
     valkey_url: str,
-    _cleanup_tasks,
 ):
     """Pin the canonical hook+signal sequence per task lifecycle:
     pre_execute → TASK_STARTED → run → post_execute → TASK_COMPLETED.

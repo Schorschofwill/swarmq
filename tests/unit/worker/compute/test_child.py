@@ -192,7 +192,7 @@ def test_release_forkserver_alive_fd_closes_the_inherited_write_end(monkeypatch)
     try:
         childmod.release_forkserver_alive_fd()
         assert fs._forkserver._forkserver_alive_fd is None
-        with pytest.raises(OSError):
+        with pytest.raises(OSError, match=r"\[Errno 9\]"):  # EBADF
             os.fstat(w)
         assert os.read(r, 1) == b""  # EOF: kein Schreibende mehr offen
         childmod.release_forkserver_alive_fd()  # idempotent
@@ -242,7 +242,8 @@ async def test_recv_job_returns_none_on_stop_and_on_an_unreadable_frame():
 
 
 @pytest.mark.timeout(5)
-async def test_serve_jobs_runs_consecutive_jobs_on_one_loop_and_ends_on_none(_quiet_child_logging):
+@pytest.mark.usefixtures("_quiet_child_logging")
+async def test_serve_jobs_runs_consecutive_jobs_on_one_loop_and_ends_on_none():
     import multiprocessing as mp
 
     seen_loops: list[int] = []

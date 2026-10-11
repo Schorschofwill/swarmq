@@ -88,7 +88,8 @@ async def _claim_status(app: SwarmQ, identity: str) -> str:
     return claim.status
 
 
-async def test_retry_copy_through_a_delay_tier_keeps_the_identity(rabbitmq_url, valkey_url, queue, attempts, _tasks):
+@pytest.mark.usefixtures("_tasks")
+async def test_retry_copy_through_a_delay_tier_keeps_the_identity(rabbitmq_url, valkey_url, queue, attempts):
     task_id = f"idchain-{uuid.uuid4().hex[:8]}"
     task = {"id": task_id, "queue": queue, "name": "idchain_retries_once"}
     body = encode_json({"task": task, "args": [], "kwargs": {}})

@@ -207,7 +207,8 @@ pytestmark = [pytest.mark.timeout(120)]
 class TestWorkerCrash:
     """All four tests share a single chaos_stack (class-scoped)."""
 
-    async def test_sigkill_inflight_redelivers_no_loss(self, chaos_stack: ChaosStack, _cleanup_tasks) -> None:
+    @pytest.mark.usefixtures("_cleanup_tasks")
+    async def test_sigkill_inflight_redelivers_no_loss(self, chaos_stack: ChaosStack) -> None:
         """Single 5s-sleep task, SIGKILL the worker mid-execution, a
         second worker takes over and the task completes.
 
@@ -259,7 +260,8 @@ class TestWorkerCrash:
             if proc_b is not None:
                 _kill_subprocess(proc_b)
 
-    async def test_50_inflight_sigkill_no_dlq_entries(self, chaos_stack: ChaosStack, _cleanup_tasks) -> None:
+    @pytest.mark.usefixtures("_cleanup_tasks")
+    async def test_50_inflight_sigkill_no_dlq_entries(self, chaos_stack: ChaosStack) -> None:
         """50 in-flight 3s sleeps, SIGKILL worker A, worker B drains
         all of them, DLQ must stay empty."""
         queue = f"chaos-crash-{uuid.uuid4().hex[:10]}"
@@ -311,7 +313,8 @@ class TestWorkerCrash:
             if proc_b is not None:
                 _kill_subprocess(proc_b)
 
-    async def test_oom_simulation_via_external_kill(self, chaos_stack: ChaosStack, _cleanup_tasks) -> None:
+    @pytest.mark.usefixtures("_cleanup_tasks")
+    async def test_oom_simulation_via_external_kill(self, chaos_stack: ChaosStack) -> None:
         """OOM-kill simulation.
 
         Real docker ``--memory=20m`` isn't portable through the
@@ -370,10 +373,9 @@ class TestWorkerCrash:
         finally:
             _kill_subprocess(proc)
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     @pytest.mark.timeout(300)
-    async def test_segv_panic_redelivers_then_dlqs_after_max_retries(
-        self, chaos_stack: ChaosStack, _cleanup_tasks
-    ) -> None:
+    async def test_segv_panic_redelivers_then_dlqs_after_max_retries(self, chaos_stack: ChaosStack) -> None:
         """SIGSEGV via ``ctypes.string_at(0)`` kills the worker on every
         delivery; the quorum-queue ``x-delivery-limit=20`` terminally
         dead-letters the message to ``{queue}.XQ``.

@@ -95,7 +95,8 @@ def _cleanup_tasks():
 class TestChordIdempotency:
     """One chaos_stack per class (amortised ~10s startup)."""
 
-    async def test_header_redelivery_fires_body_exactly_once(self, chaos_stack: ChaosStack, _cleanup_tasks) -> None:
+    @pytest.mark.usefixtures("_cleanup_tasks")
+    async def test_header_redelivery_fires_body_exactly_once(self, chaos_stack: ChaosStack) -> None:
         """SIGKILL the worker mid-fan-in so unacked header members redeliver
         to a successor. The chord body must still fire exactly once and the
         workflow must complete with the correct aggregate."""
@@ -145,8 +146,9 @@ class TestChordIdempotency:
             if proc_b is not None:
                 _kill_subprocess(proc_b)
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_chords_under_latency_each_fire_body_once(
-        self, chaos_stack: ChaosStack, toxiproxy: ToxiproxyClient, _cleanup_tasks
+        self, chaos_stack: ChaosStack, toxiproxy: ToxiproxyClient
     ) -> None:
         """Run several chords back-to-back while the broker AND backend paths
         carry injected latency + jitter. Each chord must complete correctly

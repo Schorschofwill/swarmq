@@ -89,7 +89,6 @@ import io
 import json
 import logging
 import threading
-from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -143,13 +142,13 @@ def backend() -> MagicMock:
 
 
 @pytest.fixture
-def app_handler() -> Iterator[_Collect]:
+def app_handler() -> _Collect:
     """Die App besitzt Root: genau ein Handler, Level INFO."""
     root = logging.getLogger()
     handler = _Collect()
     root.handlers[:] = [handler]
     root.setLevel(logging.INFO)
-    yield handler
+    return handler
 
 
 def _listener_threads() -> list[threading.Thread]:

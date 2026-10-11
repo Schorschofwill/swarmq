@@ -252,7 +252,7 @@ async def test_cancel_default_ttl_is_24h(client, backend):
 
 @pytest.mark.asyncio
 async def test_cancel_rejects_empty_task_id(client):
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="task_id must be a non-empty string"):
         await client.cancel("")
 
 

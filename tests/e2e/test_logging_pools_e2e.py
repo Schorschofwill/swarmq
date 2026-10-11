@@ -28,7 +28,6 @@ import asyncio
 import json
 import subprocess
 import uuid
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -116,11 +115,10 @@ def _task_lines(lines: list[str]) -> list[str]:
 
 
 @pytest.fixture(autouse=True)
-def _queue_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+def _queue_env(monkeypatch: pytest.MonkeyPatch) -> None:
     # Der Testprozess importiert das App-Modul zum Einreihen -- ohne Modus,
     # also ohne Eingriff in sein eigenes Logging.
     monkeypatch.delenv("POOLS_APP_MODE", raising=False)
-    yield
 
 
 @pytest.mark.parametrize("pool", POOLS)

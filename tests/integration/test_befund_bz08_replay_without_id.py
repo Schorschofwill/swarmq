@@ -105,7 +105,8 @@ async def _move_back_like_shovel(rabbitmq_url: str, queue: str) -> dict[str, Any
         await broker.close()
 
 
-async def test_replay_without_replay_id_runs_the_task_again(rabbitmq_url, valkey_url, queue, runs, _tasks) -> None:
+@pytest.mark.usefixtures("_tasks")
+async def test_replay_without_replay_id_runs_the_task_again(rabbitmq_url, valkey_url, queue, runs) -> None:
     with capture_swarmq_logs() as logs:
         async with _worker(rabbitmq_url, valkey_url, queue) as app:
             task_id = await app.schedule("bz08_fails_once")

@@ -260,6 +260,7 @@ def _run_embedded_app(mode: str) -> dict[str, Any]:
         env=env,
         capture_output=True,
         text=True,
+        check=False,
         timeout=90,
     )
     assert proc.returncode == 0, proc.stdout[-3000:] + proc.stderr[-3000:]
@@ -367,6 +368,7 @@ def _run_check(*args: str) -> tuple[int, dict[str, Any]]:
         env=env,
         capture_output=True,
         text=True,
+        check=False,
         timeout=60,
     )
     [line] = proc.stdout.splitlines()
