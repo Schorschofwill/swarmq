@@ -572,6 +572,67 @@ async def test_progress_forward_survives_gc_while_the_sink_waits(ctx, signals):
 
 
 @pytest.mark.timeout(5)
+async def test_a_finished_progress_forward_is_released(ctx, signals):
+    """Ein zugestellter Fortschritt haelt seinen Weiterleitungs-Task nicht fest:
+    sonst waechst die Taskmenge mit jeder Fortschrittsmeldung."""
+    forwards: list[weakref.ref[asyncio.Task[Any]]] = []
+
+    async def sink(msg: tuple[Any, ...]) -> None:
+        task = asyncio.current_task()
+        assert task is not None
+        forwards.append(weakref.ref(task))
+
+    p = await _make_pool(ctx, slots=1, progress_sink=sink)
+    t1 = asyncio.create_task(p.run(_job("a"), use_di=False))
+    proc = await _started(1)
+    await _ready(p, proc, 0)
+    proc.channel.send(("progress", "a", {"current": "1"}, 1000))
+
+    def _finished() -> bool:
+        task = forwards[0]() if forwards else None
+        return bool(forwards) and (task is None or task.done())
+
+    def _released() -> bool:
+        gc.collect()
+        return forwards[0]() is None
+
+    await _settle(_finished)
+    # Pollend statt einmalig: der Done-Callback laeuft erst eine Loop-Runde nach dem Task-Ende.
+    await _settle(_released, timeout=0.5)
+    proc.channel.send(("result", _result("a", 0)))
+    await t1
+    await p.aclose()
+
+
+@pytest.mark.timeout(5)
+async def test_aclose_cancels_a_hanging_progress_forward_after_the_grace(ctx, signals):
+    """Ein haengender Fortschritts-Sink darf aclose nur end_grace_s kosten und
+    wird danach abgebrochen, statt als verwaister Task weiterzulaufen."""
+    entered = asyncio.Event()
+    never = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def sink(msg: tuple[Any, ...]) -> None:
+        entered.set()
+        try:
+            await never.wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    p = await _make_pool(ctx, slots=1, progress_sink=sink, end_grace_s=0.1)
+    t1 = asyncio.create_task(p.run(_job("a"), use_di=False))
+    proc = await _started(1)
+    await _ready(p, proc, 0)
+    proc.channel.send(("progress", "a", {"current": "1"}, 1000))
+    await asyncio.wait_for(entered.wait(), timeout=2.0)
+    proc.channel.send(("result", _result("a", 0)))
+    await t1
+    await asyncio.wait_for(p.aclose(), timeout=2.0)
+    assert cancelled.is_set(), "der haengende Weiterleitungs-Task laeuft nach aclose weiter"
+
+
+@pytest.mark.timeout(5)
 async def test_cancelled_run_kills_the_child_before_the_slot_is_freed(ctx, signals):
     """KTD3/KTD4: Watchdog/Cancel brechen ``run`` ab — das Kind (samt Prozessgruppe)
     stirbt synchron, ehe der Slot wieder frei wird; der Enkel ueberlebt nicht."""

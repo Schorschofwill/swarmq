@@ -189,9 +189,11 @@ class SlotPool:
                 await self._kill_child(slot.active, reason="close")
             if slot.reuse_child is not None and slot.reuse_child is not slot.active:
                 await self._end_child(slot.reuse_child, reason="close")
-        if self._background:
-            # Begrenzt: ein haengender Recycling-Hook darf den Shutdown nicht aufhalten.
-            _done, pending = await asyncio.wait(set(self._background), timeout=self.end_grace_s)
+        lingering = self._background | self._progress_forwards
+        if lingering:
+            # Begrenzt: ein haengender Recycling-Hook oder Fortschritts-Sink darf den
+            # Shutdown nicht aufhalten.
+            _done, pending = await asyncio.wait(lingering, timeout=self.end_grace_s)
             for task in pending:
                 task.cancel()
             if pending:
