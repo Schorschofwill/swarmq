@@ -28,6 +28,7 @@ except SwarmQError as exc:
 | `SettleFailedAfterPublish` | `BrokerConnectionError` | Worker-intern: Eine Retry- oder Dead-Letter-Kopie ist veröffentlicht, nur das Ack des Originals scheiterte |
 | `MessageHeadersTooLarge` | `BrokerConnectionError` | Die Nachrichten-Header passen auch mit gekürzten Texten nicht in die Hälfte von `frame_max`; nichts wurde gesendet |
 | `UnroutableMessage` | `BrokerConnectionError` | Der Broker hat einen Publish zurückgegeben: Es gibt keine Queue mit diesem Namen; nichts wurde zugestellt |
+| `BrokerPublishBlocked` | `BrokerConnectionError` | Der Broker hat die Publish-Verbindung über die ganze Publish-Frist blockiert (Ressourcenalarm); nichts wurde gesendet |
 | `BackendConnectionError` | `SwarmQError` | Valkey nicht erreichbar |
 | `BackendResponseError` | `BackendConnectionError` | Valkey hat eine Operation mit einem Fehler beantwortet (`WRONGTYPE`, Skriptfehler) |
 | `TaskNotFoundError` | `SwarmQError` | `schedule()` mit unbekanntem Task-Namen |
@@ -521,6 +522,31 @@ beim Broker ankam. Der Worker deklariert seine eigene
 einen verlorenen Cron-Fire fest und versucht einen verzögerten Task
 alle 60 s erneut, bis `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S`
 ([fehlende Queues](../guides/scheduling-and-retries.md#fehlende-queues)).
+
+## `BrokerPublishBlocked`
+
+**Wann geworfen.** Von einem Publish (`send()`, `schedule()`,
+Workflow-Schritte, Cron-Fires, im Worker auch Retry-, Rückstellungs- und
+Dead-Letter-Kopien), wenn RabbitMQ die Publish-Verbindung blockiert hat
+(`connection.blocked`, Speicher- oder Plattenalarm) und sie nicht
+innerhalb von `SWARMQ_PUBLISH_TIMEOUT_S` freigibt (beim Herunterfahren:
+die restliche Gnadenfrist). Unterklasse von `BrokerConnectionError`.
+Der Publish wartet zuerst auf die Freigabe und sendet nichts, solange
+blockiert ist; die WARNING `publish_connection_blocked` markiert das
+Warten. Eine nicht blockierte Verbindung kostet keinen zusätzlichen
+Roundtrip.
+
+**Ursache.** Ein Ressourcenalarm des Brokers. RabbitMQ meldet die
+Blockade nur einer Verbindung, die während des Alarms publiziert; der
+erste Publish nach Beginn des Alarms ist also schon gesendet, hängt und
+endet als `PublishIndeterminate`, spätere werfen diesen Fehler.
+
+**Recovery.** Ein späterer Versuch ist sicher, nichts kam beim Broker
+an; eine `unique_for`-Sperre wird freigegeben. Speicher oder Platte am
+Broker freimachen. Ein Scheduler-Leader zählt den Fehler nicht für den
+Rücktritt: Ein Alarm blockiert jeden Kandidaten. Legt aiormq den
+Blocked-Zustand nicht mehr offen, loggt swarmq einmal
+`publish_blocked_state_unreadable` und publiziert ungeprüft wie vor 0.12.
 
 ## `LockWaitExceeded`
 

@@ -163,6 +163,19 @@ async def test_indeterminate_publish_keeps_the_claim(memory_loop, broker):
     assert broker.publish.await_count == 1
 
 
+async def test_blocked_publish_releases_the_own_claim(memory_loop, broker):
+    """Q14 (Plan 0.12.0, MR 16, BZ-16): ``BrokerPublishBlocked`` heisst, es
+    wurde nichts gesendet; das Flag weicht, der naechste Poll feuert."""
+    from swarmq.exceptions import BrokerPublishBlocked
+
+    broker.publish.side_effect = [BrokerPublishBlocked("resource alarm"), None]
+
+    await memory_loop._poll_tick()
+    await memory_loop._poll_tick()
+
+    assert broker.publish.await_count == 2
+
+
 async def test_publish_failure_keeps_a_cli_unique_claim_of_the_producer(loop, backend, broker):
     """B7: Das Flag eines ``cli_unique``-Oneshots hat der Producer genommen;
     der Leader gibt es bei einem Publish-Fehler nicht frei."""

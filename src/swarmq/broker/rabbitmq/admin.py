@@ -498,14 +498,15 @@ class RabbitMQAdmin(RabbitMQDelivery):
     async def _passive_message_counts(self, names: tuple[str, ...]) -> int:
         """Summe der ``message_count`` von ``names`` ueber einen Wegwerf-Channel,
         der nach NOT_FOUND neu geoeffnet wird (Plan 0.12.0, MR 10)."""
-        if self._connection is None or self._connection.is_closed:
+        connection = self._admin_connection()
+        if connection is None or connection.is_closed:
             raise BrokerConnectionError("broker is not connected")
         total = 0
         channel: aio_pika.abc.AbstractChannel | None = None
         try:
             for name in names:
                 if channel is None or channel.is_closed:
-                    channel = await self._connection.channel()
+                    channel = await connection.channel()
                 try:
                     q = await channel.declare_queue(name, passive=True)
                 except ChannelNotFoundEntity:

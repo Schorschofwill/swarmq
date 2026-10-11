@@ -114,14 +114,6 @@ def memory_alarm():
             time.sleep(0.1)
 
 
-@pytest.mark.befund("BZ-16")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "BZ-16: Worker publiziert und bestätigt über eine Verbindung; ein im Broker-Alarm "
-        "hängender Publish blockiert auch die Acks anderer Nachrichten"
-    ),
-)
 async def test_ack_reaches_broker_while_publish_is_blocked_by_alarm(rabbitmq_url: str, memory_alarm) -> None:
     queue = f"bz16-{uuid.uuid4().hex[:10]}"
     # Classic statt Quorum: der Effekt liegt an der Verbindung, nicht am

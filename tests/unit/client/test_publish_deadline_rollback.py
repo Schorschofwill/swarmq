@@ -114,3 +114,18 @@ async def test_unique_claim_is_released_when_the_publish_is_unroutable(client, b
         await client.schedule("add", 1, 2, queue="math", unique_for=60)
 
     backend.release_unique.assert_awaited_once()
+
+
+async def test_unique_claim_is_released_when_the_publish_connection_stayed_blocked(client, broker, backend):
+    """Q14 (Plan 0.12.0, MR 16, BZ-16): ``BrokerPublishBlocked`` heisst, es
+    wurde nichts gesendet -- anders als ``PublishIndeterminate`` weicht die Sperre."""
+    from swarmq.exceptions import BrokerPublishBlocked
+
+    broker.publish = AsyncMock(side_effect=BrokerPublishBlocked("resource alarm"))
+    backend.claim_unique = AsyncMock(return_value=None)
+    backend.release_unique = AsyncMock()
+
+    with pytest.raises(BrokerPublishBlocked):
+        await client.schedule("add", 1, 2, queue="math", unique_for=60)
+
+    backend.release_unique.assert_awaited_once()

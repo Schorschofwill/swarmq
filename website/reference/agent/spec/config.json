@@ -157,6 +157,12 @@
       "type": "str"
     },
     {
+      "default": "separate",
+      "env_var": "SWARMQ_BROKER_PUBLISH_CONNECTION",
+      "name": "broker_publish_connection",
+      "type": "str"
+    },
+    {
       "default": 1.0,
       "env_var": "SWARMQ_CANCEL_POLL_INTERVAL",
       "name": "cancel_poll_interval",

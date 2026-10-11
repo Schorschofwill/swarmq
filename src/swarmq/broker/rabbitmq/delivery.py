@@ -21,6 +21,7 @@ from typing import Any, cast
 import aio_pika
 from aio_pika.exceptions import ChannelInvalidStateError, ChannelNotFoundEntity, DeliveryError, PublishError
 
+from swarmq.broker.rabbitmq.blocked import UNREADABLE, unblocked_event
 from swarmq.broker.rabbitmq.connection import (
     _CHANNEL_TRANSIENT_ERRORS,
     _PUBLISH_MAX_ATTEMPTS,
@@ -32,6 +33,7 @@ from swarmq.broker.rabbitmq.redeclare import publish_redeclaring_once
 from swarmq.contracts import Delivery, DeliveryCallback, PublishReceipt
 from swarmq.exceptions import (
     BrokerConnectionError,
+    BrokerPublishBlocked,
     PublishIndeterminate,
     SettleFailedAfterPublish,
     UnroutableMessage,
@@ -82,6 +84,8 @@ class RabbitMQDelivery(RabbitMQDeclarations):
     settle_cancel_wait_s: float = 10.0
     #: Wanduhr fuer ``x-swarmq-dead-lettered-at`` und die Rest-TTL (KTD6).
     clock: Callable[[], float] = staticmethod(time.time)
+    #: Fail-open beim unlesbaren Blocked-Zustand meldet je Broker einmal (BZ-16).
+    _blocked_state_unreadable_reported: bool = False
 
     # ------------------------------------------------------------------
     # Publish
@@ -155,16 +159,25 @@ class RabbitMQDelivery(RabbitMQDeclarations):
         # Publishes darf der Verwurf nur den Kanal treffen, auf dem GENAU
         # dieser Vorgang haengen blieb.
         in_flight: list[aio_pika.abc.AbstractChannel] = []
+        blocked: list[bool] = []
         try:
             async with asyncio.timeout(timeout_s) as timeout_cm:
                 # Registrieren, damit ein beginnendes Herunterfahren diesen
                 # bereits laufenden Deckel nachziehen kann (R12, KTD9).
                 self._active_publish_timeouts.add(timeout_cm)
                 try:
+                    await self._wait_while_blocked(routing_key, blocked)
                     return await self._publish_attempts(routing_key, msg, in_flight)
                 finally:
                     self._active_publish_timeouts.discard(timeout_cm)
         except TimeoutError as exc:
+            if blocked:
+                # Nichts gesendet, der Kanal ist gesund: kein Verwurf, und
+                # anders als ``PublishIndeterminate`` sicher wiederholbar.
+                raise BrokerPublishBlocked(
+                    f"publish to {routing_key!r} not sent: the broker blocked the publish "
+                    f"connection (resource alarm) for the whole publish deadline of {timeout_s}s"
+                ) from exc
             # Der Deckel ist gerissen. Ohne Verwurf bliebe die tote
             # Verbindung stehen und jeder Folge-Publish verbrennte erneut
             # die volle Frist (R10).
@@ -182,6 +195,39 @@ class RabbitMQDelivery(RabbitMQDeclarations):
             raise PublishIndeterminate(
                 f"publish to {routing_key!r} exceeded the publish deadline of {timeout_s}s; delivery is indeterminate"
             ) from exc
+
+    async def _wait_while_blocked(self, routing_key: str, blocked: list[bool]) -> None:
+        """Wartet, solange der Broker die Publish-Verbindung blockiert (BZ-16).
+
+        Unblockiert kostet das nur ein synchrones Lesen -- kein Roundtrip,
+        kein ``wait_for``. Blockiert, wuerde ein Publish auf dem Socket
+        haengen und als ``PublishIndeterminate`` enden; das Warten innerhalb
+        der Publish-Frist sendet nichts, bis der Alarm vorbei ist."""
+        event = unblocked_event(self._connection)
+        if event is UNREADABLE:
+            if not self._blocked_state_unreadable_reported:
+                self._blocked_state_unreadable_reported = True
+                logger.warning(
+                    "publish_blocked_state_unreadable",
+                    hint=(
+                        "cannot read the connection.blocked state from aiormq; publishes run "
+                        "unchecked (fail-open) and hang on the socket during a broker alarm"
+                    ),
+                )
+            return
+        if not isinstance(event, asyncio.Event) or event.is_set():
+            return
+        logger.warning(
+            "publish_connection_blocked",
+            routing_key=routing_key,
+            hint=(
+                "the broker blocked the publish connection (resource alarm: memory or disk); "
+                "publishes wait until it is unblocked or the publish deadline expires"
+            ),
+        )
+        blocked.append(True)
+        await event.wait()
+        blocked.clear()
 
     async def _publish_attempts(
         self,

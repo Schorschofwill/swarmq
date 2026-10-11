@@ -675,6 +675,53 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   zu einer 0.11-App wandern, und BZ-02/09/11 (stabile Oneshot-IDs,
   Cron-Dedup, zurückgehaltene Crons) sind aus, solange sie führt.
 
+### Hinzugefügt (Broker-Verbindungen, BZ-16)
+
+- **`SWARMQ_BROKER_PUBLISH_CONNECTION`** (`separate` Default, `shared`;
+  `SwarmQConfig.broker_publish_connection`, `RabbitMQBroker.publish_connection`)
+  ([Konfiguration](configuration.md)).
+- **`swarmq.exceptions.BrokerPublishBlocked`** (Unterklasse von
+  `BrokerConnectionError`) und die Log-Events `publish_connection_blocked`
+  und `publish_blocked_state_unreadable`
+  ([Fehlerkatalog](errors.md#brokerpublishblocked)).
+
+### Geändert (Broker-Verbindungen, BZ-16)
+
+- **Ein Worker konsumiert über eine zweite Verbindung.** Sein erster
+  `consume()` öffnet sie; Consume-Kanal, Acks und Nacks wandern dorthin,
+  Publishes bleiben auf der ersten Verbindung. Bei einem Ressourcenalarm
+  des Brokers blockiert RabbitMQ nur publizierende Verbindungen: Acks
+  kommen weiter beim Broker an, statt hinter einem blockierten Retry- oder
+  Dead-Letter-Publish zu hängen. Producer, die nie konsumieren, und Broker
+  auf injizierter Verbindung oder Pool behalten eine Verbindung.
+- **Queue- und DLQ-Tiefen werden über die Consume-Verbindung gelesen**,
+  falls sie offen ist (auf einer blockierten Publish-Verbindung hängen
+  sie), sonst wie bisher über die Publish-Verbindung.
+- **Publishes warten, solange die Verbindung blockiert ist.** Ein Publish
+  auf einer von RabbitMQ blockierten Verbindung sendet nichts und wartet
+  innerhalb von `SWARMQ_PUBLISH_TIMEOUT_S` auf die Freigabe; nach Ablauf
+  der Frist wirft er `BrokerPublishBlocked` statt `PublishIndeterminate`,
+  behält den Publish-Kanal und gibt eine `unique_for`-Sperre frei. Vorher
+  gingen die Frames auf den blockierten Socket, und der Publish endete als
+  `PublishIndeterminate`. Die Prüfung liest den Zustand synchron (kein
+  Roundtrip). Ein Scheduler-Leader zählt `BrokerPublishBlocked` nicht für
+  den Rücktritt.
+
+### Upgrade auf 0.12 (Broker-Verbindungen)
+
+- **Worker öffnen zwei Verbindungen** zu RabbitMQ (Producer eine).
+  Verbindungslimits (`connection_max`, `max-connections` je vhost,
+  Benutzerlimits) und Alarme auf die Verbindungszahl vor dem Rollout
+  prüfen. `SWARMQ_BROKER_PUBLISH_CONNECTION=shared` behält eine.
+- **Grenzen.** RabbitMQ meldet die Blockade nur einer Verbindung, die
+  während des Alarms publiziert; der erste Publish nach Beginn des Alarms
+  hängt deshalb weiter auf dem Socket und endet als
+  `PublishIndeterminate`. Worker älter als 0.12 behalten eine Verbindung:
+  Im Alarm hängen ihre Acks wie bisher, auch im Mischbetrieb. Der
+  Blocked-Zustand wird aus einem privaten aiormq-Attribut gelesen; fehlt
+  es in einer späteren aiormq-Version, warnt swarmq einmal
+  (`publish_blocked_state_unreadable`) und publiziert ungeprüft wie bisher.
+
 ## [0.11.1] — 2026-10-10
 
 Rollback-Ziel vor 0.12. **Erst alle Apps als eigenes Deployment auf

@@ -57,6 +57,23 @@
     },
     {
       "dlq_on_uncaught": "n/a",
+      "doc": "Die Publish-Verbindung war bis zur Publish-Frist vom Broker blockiert\n(``connection.blocked``, Ressourcenalarm: Speicher oder Platte; BZ-16).\nNichts wurde gesendet; ein spaeterer Versuch ist sicher. Ein Alarm\ntrifft jeden Prozess am Broker gleich, deshalb zaehlt er nicht fuer den\nRuecktritt des Leaders. Unterklasse von :class:`BrokerConnectionError`\n(Q14): bestehende Handler fangen sie weiter.",
+      "exception_class": "swarmq.exceptions.BrokerPublishBlocked",
+      "exit_code_on_cli": 1,
+      "init_params": [],
+      "module": "swarmq.exceptions",
+      "name": "BrokerPublishBlocked",
+      "origin": "library",
+      "parent": "BrokerConnectionError",
+      "retriable": "yes",
+      "transport_field": "stderr line",
+      "when": [
+        "schedule",
+        "run"
+      ]
+    },
+    {
+      "dlq_on_uncaught": "n/a",
       "doc": null,
       "exception_class": "swarmq.exceptions.ConfigurationError",
       "exit_code_on_cli": 78,

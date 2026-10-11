@@ -12,6 +12,7 @@ Test-Liste (``PublishStepdown``, rein):
 - [x] ein erfolgreicher Publish setzt die Serie zurueck
 - [x] gezaehlt wird nur ``BrokerConnectionError`` ohne ``UnroutableMessage``
       und ``MessageHeadersTooLarge`` (Broker-Alarm trifft alle Kandidaten)
+- [x] ``BrokerPublishBlocked`` zaehlt nicht (MR 16)
 - [x] Frist 0 schaltet den Ruecktritt ab
 - [x] nach dem Ruecktritt beginnt eine neue Serie
 """
@@ -85,6 +86,17 @@ def test_errors_that_hit_every_candidate_are_not_counted(name: str) -> None:
     clock.now += 30.0
 
     assert tracker.failure(error) is False
+
+
+def test_a_blocked_broker_does_not_step_down() -> None:
+    # Plan 0.12.0, MR 16 (BZ-16): ein Broker-Alarm blockiert jeden Kandidaten.
+    from swarmq.exceptions import BrokerPublishBlocked
+
+    tracker, clock = _tracker(30.0)
+    tracker.failure(BrokerPublishBlocked("alarm"))
+    clock.now += 30.0
+
+    assert tracker.failure(BrokerPublishBlocked("alarm")) is False
 
 
 def test_other_errors_are_not_counted() -> None:

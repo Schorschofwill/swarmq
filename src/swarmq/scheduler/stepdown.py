@@ -18,7 +18,7 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from swarmq.exceptions import BrokerConnectionError, MessageHeadersTooLarge, UnroutableMessage
+from swarmq.exceptions import BrokerConnectionError, BrokerPublishBlocked, MessageHeadersTooLarge, UnroutableMessage
 from swarmq.logging import _error_fields
 from swarmq.signals import Signal
 
@@ -27,9 +27,9 @@ if TYPE_CHECKING:
     from swarmq.contracts.coordination import LockStore, LockToken
 
 # Fehler, die jeden Kandidaten gleich treffen: ein Ruecktritt liesse die
-# Fuehrung nur rotieren. ``BrokerPublishBlocked`` (Broker-Alarm) kommt mit
-# Plan 0.12.0, MR 16 dazu.
-_NOT_COUNTED: tuple[type[BaseException], ...] = (UnroutableMessage, MessageHeadersTooLarge)
+# Fuehrung nur rotieren. ``BrokerPublishBlocked``: ein Broker-Alarm blockiert
+# jede publizierende Verbindung (Plan 0.12.0, MR 16).
+_NOT_COUNTED: tuple[type[BaseException], ...] = (UnroutableMessage, MessageHeadersTooLarge, BrokerPublishBlocked)
 
 
 class PublishStepdown:

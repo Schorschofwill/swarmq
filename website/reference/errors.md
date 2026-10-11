@@ -27,6 +27,7 @@ except SwarmQError as exc:
 | `SettleFailedAfterPublish` | `BrokerConnectionError` | Worker-internal: a retry or dead-letter copy was published, only the ack of the original failed |
 | `MessageHeadersTooLarge` | `BrokerConnectionError` | Message headers do not fit into half of `frame_max`, even with long texts truncated; nothing was sent |
 | `UnroutableMessage` | `BrokerConnectionError` | The broker returned a publish: no queue with this name exists; nothing was delivered |
+| `BrokerPublishBlocked` | `BrokerConnectionError` | The broker blocked the publish connection (resource alarm) for the whole publish deadline; nothing was sent |
 | `BackendConnectionError` | `SwarmQError` | Cannot reach Valkey |
 | `BackendResponseError` | `BackendConnectionError` | Valkey answered an operation with an error (`WRONGTYPE`, script error) |
 | `TaskNotFoundError` | `SwarmQError` | `schedule()` called with an unknown task name |
@@ -497,6 +498,30 @@ The worker redeclares its own `{queue}.DQ`/`.XQ` once by itself; the
 scheduler leader commits a lost cron fire and retries a deferred task
 every 60 s up to `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S`
 ([missing queues](../guides/scheduling-and-retries.md#missing-queues)).
+
+## `BrokerPublishBlocked`
+
+**When raised.** By a publish (`send()`, `schedule()`, workflow steps,
+cron fires, and inside the worker by retry, deferral and dead-letter
+copies) when RabbitMQ has blocked the publish connection
+(`connection.blocked`, a memory or disk alarm) and does not unblock it
+within `SWARMQ_PUBLISH_TIMEOUT_S` (during shutdown: the remaining grace
+period). Subclass of `BrokerConnectionError`. The publish waits for the
+unblock first and sends nothing while blocked; the WARNING
+`publish_connection_blocked` marks the wait. A connection that is not
+blocked costs no extra round trip.
+
+**Cause.** A broker resource alarm. RabbitMQ announces the block only
+to a connection that publishes during the alarm, so the first publish
+after the alarm starts is already on the wire, hangs and ends as
+`PublishIndeterminate`; later ones raise this error.
+
+**Recovery.** Retrying later is safe, nothing reached the broker; a
+`unique_for` claim is released. Free memory or disk on the broker. A
+scheduler leader does not count it towards stepping down: an alarm
+blocks every candidate. If aiormq no longer exposes the blocked state,
+swarmq logs `publish_blocked_state_unreadable` once and publishes
+unchecked, as before 0.12.
 
 ## `LockWaitExceeded`
 

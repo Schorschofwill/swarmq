@@ -199,6 +199,7 @@ process. See the [CPU mode guide](../guides/cpu-mode.md).
 |---|---|---|
 | Worker process crash | In-flight tasks get redelivered by RabbitMQ as soon as the worker's channel or connection closes | Supervisor restarts the worker (`--processes N` default) |
 | Worker loses broker connection | That worker stops consuming; others continue | `connect_robust()` reconnects; unacked tasks redeliver |
+| Broker resource alarm (memory, disk) | RabbitMQ stops reading from every connection that publishes; publishes wait. Since 0.12 a worker consumes and acknowledges over its own second connection (`SWARMQ_BROKER_PUBLISH_CONNECTION=separate`), so acks and queue-depth reads keep working; a retry or dead-letter copy waits up to `SWARMQ_PUBLISH_TIMEOUT_S`, then the message is handed back (`BrokerPublishBlocked`) | Free memory or disk on the broker; blocked publishes continue on their own once RabbitMQ unblocks |
 | Worker loses backend connection | Checks before execution (schedule-fire dedup, cancel, rate limit, lock) defer the message to the delay queue with growing backoff; a failed result write requeues the message, and the task runs again | `valkey-py` reconnects; deferred messages return after at most `SWARMQ_BACKEND_DEFER_MAX_DELAY` (± 20 %) |
 | RabbitMQ restart | All workers reconnect; unacked messages redeliver | Quorum queues survive single-node loss natively |
 | Valkey restart | Active locks, rate counters, and leader lock expire | Clients and workers re-acquire on next operation |

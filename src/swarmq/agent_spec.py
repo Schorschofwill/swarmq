@@ -131,6 +131,13 @@ _ERROR_SEMANTICS: dict[str, dict[str, Any]] = {
         origin="library", when=["schedule", "run"], retriable="no",
         dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",
     ),
+    "BrokerPublishBlocked": dict(
+        # Der Broker blockierte die Publish-Verbindung (Ressourcenalarm) bis
+        # zur Publish-Frist; nichts wurde gesendet, ein spaeterer Versuch ist
+        # sicher (Plan 0.12.0, MR 16, BZ-16).
+        origin="library", when=["schedule", "run"], retriable="yes",
+        dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",
+    ),
     "BackendConnectionError": dict(
         origin="library", when=["startup", "schedule", "run"], retriable="no",
         dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",

@@ -164,6 +164,13 @@ class RabbitMQConnection:
         self._adoption_log = AdoptionLog()
         self._publish_channel: aio_pika.abc.AbstractChannel | None = None
         self._consume_channel: aio_pika.abc.AbstractChannel | None = None
+        # BZ-16 (Plan 0.12.0, MR 16): ``separate`` konsumiert ueber eine
+        # zweite Verbindung, die erst der erste ``consume()`` oeffnet. Bei
+        # einem Broker-Alarm blockiert RabbitMQ nur publizierende
+        # Verbindungen; Acks laufen dann weiter. ``shared`` = wie vor 0.12.
+        # ``SwarmQ.__init__`` ueberschreibt aus der Konfiguration.
+        self.publish_connection: str = "separate"
+        self._consume_connection: aio_pika.abc.AbstractConnection | None = None
         # Consumer-Wächter (Plan 2026-10-08-1541, U6, KTD3): kennt jeden
         # angemeldeten Consumer und meldet verlorene selbst neu an.
         self._consumer_watch = ConsumerWatch()
@@ -240,9 +247,27 @@ class RabbitMQConnection:
             # on_return_raises: ein basic.return (keine Queue) scheitert als
             # PublishError statt still bestaetigt zu werden (BZ-03).
             self._publish_channel = await self._connection.channel(on_return_raises=True)
-            self._consume_channel = await self._connection.channel()
+            if not self._separate_consume_connection():
+                self._consume_channel = await self._connection.channel()
         except Exception as exc:
             raise BrokerConnectionError(str(exc)) from exc
+
+    def _separate_consume_connection(self) -> bool:
+        """Eigene Consume-Verbindung (BZ-16): nur mit eigener URL. Bei
+        injizierter Verbindung oder Pool gibt es keine URL, dann ``shared``."""
+        return self._owns_connection and self.publish_connection == "separate"
+
+    async def _connection_for_consume(self) -> aio_pika.abc.AbstractConnection | None:
+        """Die Verbindung, auf der der Consume-Kanal liegt; oeffnet die
+        zweite Verbindung beim ersten Bedarf (BZ-16)."""
+        if not self._separate_consume_connection() or self._connection is None:
+            return self._connection
+        if self._consume_connection is None:
+            try:
+                self._consume_connection = await aio_pika.connect_robust(self._url)
+            except Exception as exc:
+                raise BrokerConnectionError(f"consume connection to {sanitize_url(self._url)!r} failed: {exc}") from exc
+        return self._consume_connection
 
     async def _connect_injected(self) -> None:
         # Injected path (producer-only). The borrowed connection (or a
@@ -357,7 +382,11 @@ class RabbitMQConnection:
         await self._drain_pending_channel_closes()
         if self._owns_connection:
             # Owned (URL) path unchanged: closing the connection closes its
-            # channels too.
+            # channels too. Die Consume-Verbindung (BZ-16) zuerst.
+            if self._consume_connection is not None:
+                consume_connection, self._consume_connection = self._consume_connection, None
+                self._consume_channel = None
+                await consume_connection.close()
             if self._connection is not None:
                 await self._connection.close()
                 self._connection = None
@@ -532,8 +561,11 @@ class RabbitMQConnection:
                 return channel, False
             if self._connection is None:
                 raise BrokerConnectionError("broker not connected")
+            connection = self._connection
+            if attr == "_consume_channel":
+                connection = await self._connection_for_consume() or connection
             try:
-                await asyncio.wait_for(self._connection.ready(), timeout=_CHANNEL_READY_TIMEOUT_S)
+                await asyncio.wait_for(connection.ready(), timeout=_CHANNEL_READY_TIMEOUT_S)
             except TimeoutError as exc:
                 raise BrokerConnectionError(
                     f"connection not ready after {_CHANNEL_READY_TIMEOUT_S}s "
@@ -551,9 +583,9 @@ class RabbitMQConnection:
                     # eigene Frist ueberschreiten wuerde.
                     # Nur der Publish-Kanal meldet basic.return (BZ-03).
                     opened = (
-                        self._connection.channel(on_return_raises=True)
+                        connection.channel(on_return_raises=True)
                         if attr == "_publish_channel"
-                        else self._connection.channel()
+                        else connection.channel()
                     )
                     channel = await asyncio.wait_for(opened, timeout=_CHANNEL_READY_TIMEOUT_S)
             except Exception as exc:
@@ -563,15 +595,25 @@ class RabbitMQConnection:
             setattr(self, attr, channel)
             return channel, True
 
+    def _admin_connection(self) -> aio_pika.abc.AbstractConnection | None:
+        """Verbindung fuer Admin-Lesen: die Consume-Verbindung, falls offen
+        (BZ-16) -- im Broker-Alarm haengt auf der publizierenden Verbindung
+        jeder Frame, auch ein passives Declare --, sonst wie bisher."""
+        consume = self._consume_connection
+        if consume is not None and not consume.is_closed:
+            return consume
+        return self._connection
+
     async def _throwaway_channel_message_count(self, name: str) -> int:
         """Message count of one queue via passive declare on a throwaway
         channel (a failed passive-declare closes the channel). A missing
         queue counts as 0. Shared by the admin depth queries."""
-        if self._connection is None or self._connection.is_closed:
+        connection = self._admin_connection()
+        if connection is None or connection.is_closed:
             raise BrokerConnectionError("broker is not connected")
         channel: aio_pika.abc.AbstractChannel | None = None
         try:
-            channel = await self._connection.channel()
+            channel = await connection.channel()
             q = await channel.declare_queue(name, passive=True)
             result = getattr(q, "declaration_result", None)
             if result is not None:

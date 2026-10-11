@@ -31,6 +31,7 @@ class ConfigValidation:
         retry_max_delay: float
         queue_type: str
         queue_dead_letter_strategy: str
+        broker_publish_connection: str
         backend_defer_base_delay: float
         backend_defer_max_delay: float
         scheduler_heartbeat_interval: float
@@ -113,6 +114,7 @@ class ConfigValidation:
             raise ConfigurationError(msg)
         self._validate_eviction_check()
         self._validate_namespace()
+        self._validate_publish_connection()
         if self.queue_dead_letter_strategy == "at-least-once" and self.queue_type != "quorum":
             # Review MR 8, H3: nur Quorum-Queues kennen at-least-once-Dead-Lettering.
             msg = "queue_dead_letter_strategy='at-least-once' requires queue_type='quorum'; use 'auto' or 'legacy'"
@@ -140,6 +142,14 @@ class ConfigValidation:
             self.namespace = validate_namespace(self.namespace)
         except ValueError as exc:
             raise ConfigurationError(f"SWARMQ_NAMESPACE/namespace: {exc}") from exc
+
+    def _validate_publish_connection(self) -> None:
+        if self.broker_publish_connection not in ("separate", "shared"):
+            msg = (
+                "broker_publish_connection must be one of ['separate', 'shared'], "
+                f"got {self.broker_publish_connection!r}"
+            )
+            raise ConfigurationError(msg)
 
     def _validate_eviction_check(self) -> None:
         if self.valkey_eviction_check not in EVICTION_CHECK_MODES:

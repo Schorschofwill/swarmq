@@ -628,6 +628,52 @@ All notable changes to SwarmQ. This project follows
   move to a 0.11 app, and BZ-02/09/11 (stable one-shot IDs, cron dedup,
   held crons) are off while it leads.
 
+### Added (broker connections, BZ-16)
+
+- **`SWARMQ_BROKER_PUBLISH_CONNECTION`** (`separate` default, `shared`;
+  `SwarmQConfig.broker_publish_connection`, `RabbitMQBroker.publish_connection`)
+  ([configuration](configuration.md)).
+- **`swarmq.exceptions.BrokerPublishBlocked`** (subclass of
+  `BrokerConnectionError`) and the log events `publish_connection_blocked`
+  and `publish_blocked_state_unreadable`
+  ([error catalog](errors.md#brokerpublishblocked)).
+
+### Changed (broker connections, BZ-16)
+
+- **A worker consumes over a second connection.** Its first `consume()`
+  opens it; the consume channel, acks and nacks move there, publishes stay
+  on the first connection. During a broker resource alarm RabbitMQ blocks
+  only connections that publish: acks keep reaching the broker instead of
+  hanging behind a blocked retry or dead-letter publish. Producers that
+  never consume, and brokers built on an injected connection or pool, keep
+  one connection.
+- **Queue-depth and DLQ-depth reads use the consume connection** when it
+  is open (they hang on a blocked publish connection), otherwise the
+  publish connection as before.
+- **Publishes wait while the connection is blocked.** A publish on a
+  connection RabbitMQ has blocked sends nothing and waits for the unblock
+  within `SWARMQ_PUBLISH_TIMEOUT_S`; when the deadline passes it raises
+  `BrokerPublishBlocked` instead of `PublishIndeterminate`, keeps the
+  publish channel and releases a `unique_for` claim. Before, the frames
+  went onto the blocked socket and the publish ended as
+  `PublishIndeterminate`. The check reads the state synchronously (no
+  round trip). A scheduler leader does not count `BrokerPublishBlocked`
+  towards stepping down.
+
+### Upgrading to 0.12 (broker connections)
+
+- **Workers open two connections** to RabbitMQ (producers one). Check
+  connection limits (`connection_max`, per-vhost `max-connections`, user
+  limits) and connection-count alerts before the rollout. Set
+  `SWARMQ_BROKER_PUBLISH_CONNECTION=shared` to keep one.
+- **Limits.** RabbitMQ announces a block only to a connection that
+  publishes during the alarm, so the first publish after the alarm starts
+  still hangs on the socket and ends as `PublishIndeterminate`. Workers
+  older than 0.12 keep one connection: during an alarm their acks hang as
+  before, in mixed operation too. The blocked state is read from a private
+  aiormq attribute; if a later aiormq drops it, swarmq warns once
+  (`publish_blocked_state_unreadable`) and publishes unchecked as before.
+
 ## [0.11.1] — 2026-10-10
 
 Rollback target before 0.12. **Roll out 0.11.1 to every app first,

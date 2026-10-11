@@ -110,6 +110,16 @@ class UnroutableMessage(BrokerConnectionError):
     """
 
 
+class BrokerPublishBlocked(BrokerConnectionError):
+    """Die Publish-Verbindung war bis zur Publish-Frist vom Broker blockiert
+    (``connection.blocked``, Ressourcenalarm: Speicher oder Platte; BZ-16).
+    Nichts wurde gesendet; ein spaeterer Versuch ist sicher. Ein Alarm
+    trifft jeden Prozess am Broker gleich, deshalb zaehlt er nicht fuer den
+    Ruecktritt des Leaders. Unterklasse von :class:`BrokerConnectionError`
+    (Q14): bestehende Handler fangen sie weiter.
+    """
+
+
 class BackendConnectionError(SwarmQError):
     pass
 

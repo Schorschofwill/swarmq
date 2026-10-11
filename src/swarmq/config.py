@@ -239,6 +239,11 @@ class SwarmQConfig(ConfigValidation):
     # ``at-least-once`` verlangt es auch von Bestandsqueues (sonst Exit 78);
     # ``legacy`` nutzt immer die Argumente aus 0.11, ohne Warnung.
     queue_dead_letter_strategy: str = "auto"
+    # Eigene Verbindung fuer den Konsum (BZ-16, Plan 0.12.0, MR 16): bei einem
+    # Broker-Alarm blockiert RabbitMQ nur publizierende Verbindungen, Acks
+    # laufen dann weiter. ``shared`` = eine Verbindung wie vor 0.12. Bei
+    # injizierter Verbindung oder Pool gilt immer ``shared``.
+    broker_publish_connection: str = "separate"
     cancel_poll_interval: float = 1.0
     # Upper bound for individual Valkey operations used by the cancel
     # pipeline (is_cancelled / store_result / clear_cancel_flag). Slow
@@ -437,6 +442,7 @@ class SwarmQConfig(ConfigValidation):
         ("SWARMQ_DELIVERY_LIMIT", "delivery_limit", "int"),
         ("SWARMQ_QUEUE_TYPE", "queue_type", "str"),
         ("SWARMQ_QUEUE_DEAD_LETTER_STRATEGY", "queue_dead_letter_strategy", "str"),
+        ("SWARMQ_BROKER_PUBLISH_CONNECTION", "broker_publish_connection", "str"),
         ("SWARMQ_CANCEL_POLL_INTERVAL", "cancel_poll_interval", "float"),
         ("SWARMQ_BACKEND_OP_TIMEOUT", "backend_op_timeout", "float"),
         ("SWARMQ_BACKEND_DEFER_BASE_DELAY", "backend_defer_base_delay", "float"),
