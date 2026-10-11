@@ -74,7 +74,7 @@ from swarmq.task import Task, TaskInfo
 from swarmq.worker import Worker
 from swarmq.worker.gates.lock import holder_fingerprint, lock_conflict_delay_ms
 from tests.support.messages import make_message
-from tests.unit.worker._helpers import _default_payload
+from tests.unit.worker._helpers import _default_payload, as_mock
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -120,7 +120,8 @@ def _message(**headers: Any) -> Any:
 
 
 def _copy(broker: Any) -> dict[str, Any]:
-    return broker.retry_later.await_args.kwargs["headers"]
+    headers: dict[str, Any] = broker.retry_later.await_args.kwargs["headers"]
+    return headers
 
 
 async def test_first_conflict_copy_carries_the_wait_state(broker, backend, config, clock) -> None:
@@ -338,7 +339,7 @@ async def test_protocol_subclass_without_observe_warns_unsupported(broker, backe
             return None
 
     worker = _worker(broker, backend, config)
-    worker._lock_manager = _SubclassStore()  # type: ignore[assignment]
+    worker._lock_manager = _SubclassStore()  # type: ignore[abstract]  # absichtlich unvollstaendige Protocol-Subklasse
 
     for _ in range(2):
         await worker._handle_message(_message(**_stalled(10 * 3_600_000 - 1, ttl_ms=1)))
@@ -352,7 +353,7 @@ async def test_protocol_subclass_without_observe_warns_unsupported(broker, backe
 
 async def test_observe_failure_keeps_waiting(broker, backend, config, clock, swarmq_logs) -> None:
     worker = _worker(broker, backend, config)
-    worker._lock_manager.observe = AsyncMock(side_effect=ConnectionError("valkey away"))
+    as_mock(worker._lock_manager).observe = AsyncMock(side_effect=ConnectionError("valkey away"))
 
     await worker._handle_message(_message(**_stalled(10 * 3_600_000 - 1, ttl_ms=1)))
 
@@ -386,7 +387,7 @@ async def test_gate_tracks_waiting_messages_until_acquired(broker, backend, conf
     await worker._handle_message(_message(**{HEADER_LOCK_WAIT_SINCE: _NOW_MS - 20_000}))
     assert worker._lock_gate.waits.snapshot(now_ms=_NOW_MS) == (1, 20.0)
 
-    worker._lock_manager.acquire = AsyncMock(
+    as_mock(worker._lock_manager).acquire = AsyncMock(
         side_effect=lambda name, *, owner, ttl_ms, max_concurrency: LockToken(name, owner, max_concurrency)
     )
     with patch.object(Locked, "run", AsyncMock(return_value=None)):

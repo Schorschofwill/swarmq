@@ -8,6 +8,7 @@ fire) lives in tests/e2e/test_task_expiry.py.
 from __future__ import annotations
 
 import time
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -21,6 +22,7 @@ from swarmq.worker import Worker, WorkerState
 from swarmq.worker.gates import GateContext
 from swarmq.worker.outcome import Continue, Terminal
 from tests.support.messages import make_message
+from tests.unit.worker._helpers import as_mock
 
 
 class TestTaskInfoMaxAge:
@@ -74,7 +76,7 @@ class TestCheckMaxAgeExpired:
         msg = _expiry_message(int(time.time()) - 99999)
         handled = await _apply(w, msg, ti, task_id="id")
         assert handled is Continue
-        w._broker.dead_letter.assert_not_awaited()
+        as_mock(w._broker).dead_letter.assert_not_awaited()
 
     async def test_returns_false_when_header_missing(self):
         """Pre-R4.4 producers (or external) omit the header — treat as
@@ -104,7 +106,7 @@ class TestCheckMaxAgeExpired:
     async def test_expired_message_routes_to_dlq_and_fires_signal(self):
         w = _make_worker()
         # Capture TASK_EXPIRED payload.
-        captured: list[dict] = []
+        captured: list[dict[str, Any]] = []
 
         @w._signal_dispatcher.on_signal(Signal.TASK_EXPIRED)
         async def _cap(**kw):
@@ -114,9 +116,9 @@ class TestCheckMaxAgeExpired:
         msg = _expiry_message(int(time.time()) - 120)  # 120s old, limit 60
         handled = await _apply(w, msg, ti, task_id="id-xyz")
         assert handled == Terminal.release_only()  # BZ-22 (MR 3)
-        w._broker.dead_letter.assert_awaited_once()
+        as_mock(w._broker).dead_letter.assert_awaited_once()
         # U8: retry_later/dead_letter bestätigen das Original selbst
-        w._broker.ack.assert_not_awaited()
+        as_mock(w._broker).ack.assert_not_awaited()
         assert len(captured) == 1
         assert captured[0]["task_id"] == "id-xyz"
         assert captured[0]["max_age_s"] == 60
@@ -127,8 +129,8 @@ class TestCheckMaxAgeExpired:
         ti = TaskInfo(name="t", queues=["q"], max_age=10)
         msg = _expiry_message(int(time.time()) - 30)
         await _apply(w, msg, ti, task_id="id")
-        w._backend.store_result.assert_awaited_once()
-        call = w._backend.store_result.await_args
+        as_mock(w._backend).store_result.assert_awaited_once()
+        call = as_mock(w._backend).store_result.await_args
         # Seit dem U15-Bugfix gehen kodierte Bytes in den Store (vorher ein
         # dict, das gegen echtes Valkey still scheiterte).
         raw = call.args[1]
@@ -151,17 +153,17 @@ class TestCheckMaxAgeExpired:
         handled = await _apply(w, msg, ti, task_id="id")
 
         assert handled == Terminal.release_only()  # BZ-22 (MR 3)
-        w._backend.store_result.assert_not_awaited()
+        as_mock(w._backend).store_result.assert_not_awaited()
         # DLQ + ack continue regardless.
-        w._broker.dead_letter.assert_awaited_once()
+        as_mock(w._broker).dead_letter.assert_awaited_once()
         # U8: retry_later/dead_letter bestätigen das Original selbst
-        w._broker.ack.assert_not_awaited()
+        as_mock(w._broker).ack.assert_not_awaited()
 
     async def test_expired_dlq_route_tolerates_backend_failure(self):
         w = _make_worker()
         from swarmq.exceptions import BackendConnectionError
 
-        w._backend.store_result = AsyncMock(
+        as_mock(w._backend).store_result = AsyncMock(
             side_effect=BackendConnectionError("valkey down"),
         )
         ti = TaskInfo(name="t", queues=["q"], max_age=10)
@@ -169,9 +171,9 @@ class TestCheckMaxAgeExpired:
         handled = await _apply(w, msg, ti, task_id="id")
         assert handled == Terminal.release_only()  # BZ-22 (MR 3)
         # DLQ + ack still happen even though store_result failed.
-        w._broker.dead_letter.assert_awaited_once()
+        as_mock(w._broker).dead_letter.assert_awaited_once()
         # U8: retry_later/dead_letter bestätigen das Original selbst
-        w._broker.ack.assert_not_awaited()
+        as_mock(w._broker).ack.assert_not_awaited()
 
 
 class TestExpiryErrorFields:
@@ -187,7 +189,7 @@ class TestExpiryErrorFields:
         from swarmq.exceptions import BackendConnectionError
 
         w = _make_worker()
-        w._backend.store_result = AsyncMock(side_effect=BackendConnectionError("valkey down"))
+        as_mock(w._backend).store_result = AsyncMock(side_effect=BackendConnectionError("valkey down"))
         ti = TaskInfo(name="t", queues=["q"], max_age=10)
 
         await _apply(w, _expiry_message(int(time.time()) - 30), ti, task_id="id")
@@ -201,8 +203,8 @@ class TestExpiryErrorFields:
         from swarmq.exceptions import BrokerConnectionError
 
         w = _make_worker()
-        w._broker.dead_letter = AsyncMock(side_effect=BrokerConnectionError("publish nacked"))
-        w._broker.redeliver = AsyncMock()
+        as_mock(w._broker).dead_letter = AsyncMock(side_effect=BrokerConnectionError("publish nacked"))
+        as_mock(w._broker).redeliver = AsyncMock()
         ti = TaskInfo(name="t", queues=["q"], max_age=10)
 
         await _apply(w, _expiry_message(int(time.time()) - 30), ti, task_id="id")
@@ -216,8 +218,8 @@ class TestExpiryErrorFields:
         from swarmq.exceptions import BrokerConnectionError
 
         w = _make_worker()
-        w._broker.dead_letter = AsyncMock(side_effect=BrokerConnectionError("publish nacked"))
-        w._broker.redeliver = AsyncMock(side_effect=BrokerConnectionError("redeliver failed, channel lost"))
+        as_mock(w._broker).dead_letter = AsyncMock(side_effect=BrokerConnectionError("publish nacked"))
+        as_mock(w._broker).redeliver = AsyncMock(side_effect=BrokerConnectionError("redeliver failed, channel lost"))
         ti = TaskInfo(name="t", queues=["q"], max_age=10)
 
         await _apply(w, _expiry_message(int(time.time()) - 30), ti, task_id="id")
@@ -243,11 +245,11 @@ class TestExpiredWorkflowStep:
         from swarmq.worker.outcome import Redelivered
 
         w = _make_worker()
-        w._broker.redeliver = AsyncMock()
-        w._registry.get = MagicMock(side_effect=TaskNotFoundError("t"))
+        as_mock(w._broker).redeliver = AsyncMock()
+        as_mock(w._registry).get = MagicMock(side_effect=TaskNotFoundError("t"))
         w._workflow_advancer = MagicMock()
         w._workflow_advancer.fail = AsyncMock(side_effect=BackendConnectionError("valkey down"))
-        expired: list[dict] = []
+        expired: list[dict[str, Any]] = []
 
         @w._signal_dispatcher.on_signal(Signal.TASK_EXPIRED)
         async def _cap(**kw):
@@ -260,8 +262,8 @@ class TestExpiredWorkflowStep:
         handled = await _apply(w, msg, TaskInfo(name="t", queues=["q"], max_age=60), task_id="id")
 
         assert handled is Redelivered
-        w._broker.redeliver.assert_awaited_once_with(msg)
-        w._broker.dead_letter.assert_not_awaited()
+        as_mock(w._broker).redeliver.assert_awaited_once_with(msg)
+        as_mock(w._broker).dead_letter.assert_not_awaited()
         assert expired == []
 
 
@@ -278,11 +280,11 @@ class TestExpiredUniqueRelease:
         from swarmq.exceptions import BrokerConnectionError
 
         w = _make_worker()
-        w._broker.dead_letter = AsyncMock(side_effect=BrokerConnectionError("down"))
-        w._broker.redeliver = AsyncMock()
+        as_mock(w._broker).dead_letter = AsyncMock(side_effect=BrokerConnectionError("down"))
+        as_mock(w._broker).redeliver = AsyncMock()
         msg = _expiry_message(int(time.time()) - 120)
 
         handled = await _apply(w, msg, TaskInfo(name="t", queues=["q"], max_age=60), task_id="id")
 
         assert handled == Terminal.never_release()
-        w._broker.redeliver.assert_awaited_once_with(msg)
+        as_mock(w._broker).redeliver.assert_awaited_once_with(msg)

@@ -216,7 +216,7 @@ class _BlockingHandler(_RecordingHandler):
         self.unblock = threading.Event()
 
     @override
-    def handle(self, record: logging.LogRecord) -> logging.LogRecord | bool:
+    def handle(self, record: logging.LogRecord) -> bool:
         # Vor ``super().handle``: dort haelt der Handler sein Lock, und ein
         # zweiter Listener (simulierter Fork) kaeme nicht mehr durch.
         if not self.entered.is_set():
@@ -775,12 +775,12 @@ def test_drop_reports_come_at_most_once_per_second_with_the_full_count(
 
 class _GateHandler(_RecordingHandler):
     """Haelt den Listener bei jedem Record ``hold-*`` fest, bis dessen
-    Freigabe gesetzt ist; meldet jeden geschriebenen Record."""
+    Freigabe (``unblock``) gesetzt ist; meldet jeden geschriebenen Record."""
 
     def __init__(self) -> None:
         super().__init__()
         self.entered: collections.defaultdict[str, threading.Event] = collections.defaultdict(threading.Event)
-        self.release: collections.defaultdict[str, threading.Event] = collections.defaultdict(threading.Event)
+        self.unblock: collections.defaultdict[str, threading.Event] = collections.defaultdict(threading.Event)
         self.seen = threading.Condition()
 
     @override
@@ -788,7 +788,7 @@ class _GateHandler(_RecordingHandler):
         msg = record.getMessage()
         if msg.startswith("hold-"):
             self.entered[msg].set()
-            self.release[msg].wait()
+            self.unblock[msg].wait()
         with self.seen:
             super().emit(record)
             self.seen.notify_all()
@@ -809,13 +809,13 @@ def test_stopping_reports_drops_the_rate_limit_held_back(clock: _Clock) -> None:
             assert target.entered[f"hold-{round_}"].wait(timeout=1)
             log.warning("fill-%s", round_)
             log.warning("dropped")
-            target.release[f"hold-{round_}"].set()
+            target.unblock[f"hold-{round_}"].set()
             assert target.wait_for(f"fill-{round_}")
         assert [r.count for r in _drop_reports(target)] == [1]  # type: ignore[attr-defined]
 
         shutdown_logging()
     finally:
-        for event in target.release.values():
+        for event in target.unblock.values():
             event.set()
 
     assert [r.count for r in _drop_reports(target)] == [1, 2]  # type: ignore[attr-defined]

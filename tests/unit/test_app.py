@@ -11,6 +11,7 @@ from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import ConfigurationError
+from swarmq.middleware import MessageContext
 from swarmq.task import Task, TaskInfo
 
 
@@ -250,31 +251,28 @@ class TestSwarmQDelegation:
     @pytest.mark.anyio
     async def test_schedule_delegates_to_client(self, broker, backend):
         app = SwarmQ(broker, backend)
-        app.client.schedule = AsyncMock(return_value="task-id-123")
+        with patch.object(app.client, "schedule", AsyncMock(return_value="task-id-123")) as schedule_mock:
+            result = await app.schedule("my_task", 1, 2, key="val")
 
-        result = await app.schedule("my_task", 1, 2, key="val")
-
-        app.client.schedule.assert_awaited_once_with("my_task", 1, 2, key="val")
+        schedule_mock.assert_awaited_once_with("my_task", 1, 2, key="val")
         assert result == "task-id-123"
 
     @pytest.mark.anyio
     async def test_get_result_delegates_to_client(self, broker, backend):
         app = SwarmQ(broker, backend)
-        app.client.get_result = AsyncMock(return_value=42)
+        with patch.object(app.client, "get_result", AsyncMock(return_value=42)) as get_result_mock:
+            result = await app.get_result("task-id-123", timeout=5, polling=0.1)
 
-        result = await app.get_result("task-id-123", timeout=5, polling=0.1)
-
-        app.client.get_result.assert_awaited_once_with("task-id-123", timeout=5, polling=0.1)
+        get_result_mock.assert_awaited_once_with("task-id-123", timeout=5, polling=0.1)
         assert result == 42
 
     @pytest.mark.anyio
     async def test_run_delegates_to_client(self, broker, backend):
         app = SwarmQ(broker, backend)
-        app.client.run = AsyncMock(return_value="done")
+        with patch.object(app.client, "run", AsyncMock(return_value="done")) as run_mock:
+            result = await app.run("my_task", "a", timeout=3, polling=0.5, x=10)
 
-        result = await app.run("my_task", "a", timeout=3, polling=0.5, x=10)
-
-        app.client.run.assert_awaited_once_with("my_task", "a", timeout=3, polling=0.5, x=10)
+        run_mock.assert_awaited_once_with("my_task", "a", timeout=3, polling=0.5, x=10)
         assert result == "done"
 
 
@@ -434,7 +432,7 @@ class TestSwarmQMiddlewareAndSignals:
         app = SwarmQ(broker, backend)
         mw = Middleware()
 
-        result = app.add_middleware(mw)
+        result = app.add_middleware(mw)  # type: ignore[func-returns-value]  # Test prueft gerade den None-Rueckgabewert
 
         assert result is None
 
@@ -587,15 +585,15 @@ class TestSwarmQMiddlewareAndSignals:
 
             class Spy(Middleware):
                 def __init__(self) -> None:
-                    self.pre_calls: list[dict] = []
-                    self.post_calls: list[dict] = []
+                    self.pre_calls: list[MessageContext] = []
+                    self.post_calls: list[MessageContext] = []
 
                 @override
-                async def pre_enqueue(self, message: dict) -> None:
+                async def pre_enqueue(self, message: MessageContext) -> None:
                     self.pre_calls.append(message)
 
                 @override
-                async def post_enqueue(self, message: dict) -> None:
+                async def post_enqueue(self, message: MessageContext) -> None:
                     self.post_calls.append(message)
 
             spy = Spy()
@@ -655,15 +653,15 @@ class TestSwarmQMiddlewareAndSignals:
 
             class Spy(Middleware):
                 def __init__(self) -> None:
-                    self.pre_execute_calls: list[dict] = []
-                    self.post_execute_calls: list[tuple[dict, object]] = []
+                    self.pre_execute_calls: list[dict[str, object]] = []
+                    self.post_execute_calls: list[tuple[dict[str, object], object]] = []
 
                 @override
-                async def pre_execute(self, message: dict) -> None:
+                async def pre_execute(self, message: MessageContext) -> None:
                     self.pre_execute_calls.append(dict(message))
 
                 @override
-                async def post_execute(self, message: dict, result: object = None) -> None:
+                async def post_execute(self, message: MessageContext, result: object = None) -> None:
                     self.post_execute_calls.append((dict(message), result))
 
             spy = Spy()
@@ -681,7 +679,7 @@ class TestSwarmQMiddlewareAndSignals:
             )
 
             from tests.support.messages import make_message
-            from tests.unit.worker.test_worker import _default_payload
+            from tests.unit.worker._helpers import _default_payload
 
             msg = make_message(_default_payload(name="noop", queue="q", args=[]))
             await worker._handle_message(msg)
@@ -722,22 +720,20 @@ class TestSwarmQPublicAPIExports:
 class TestSwarmQCancel:
     async def test_cancel_delegates_to_client_with_computed_ttl(self, broker, backend):
         app = SwarmQ(broker, backend, result_ttl=60)
-        app.client.cancel = AsyncMock(return_value=True)
-
-        result = await app.cancel("task-abc")
+        with patch.object(app.client, "cancel", AsyncMock(return_value=True)) as cancel_mock:
+            result = await app.cancel("task-abc")
 
         # BZ-23 (Plan 0.12.0, MR 5): ttl_ms = max(24 h, result_ttl) — ein
         # kurzes result_ttl verkuerzt das Flag nicht mehr.
-        app.client.cancel.assert_awaited_once_with("task-abc", ttl_ms=86_400_000)
+        cancel_mock.assert_awaited_once_with("task-abc", ttl_ms=86_400_000)
         assert result is True
 
     async def test_cancel_ttl_follows_result_ttl_above_24h(self, broker, backend):
         app = SwarmQ(broker, backend, result_ttl=172_800)
-        app.client.cancel = AsyncMock(return_value=True)
+        with patch.object(app.client, "cancel", AsyncMock(return_value=True)) as cancel_mock:
+            await app.cancel("task-long")
 
-        await app.cancel("task-long")
-
-        app.client.cancel.assert_awaited_once_with("task-long", ttl_ms=172_800_000)
+        cancel_mock.assert_awaited_once_with("task-long", ttl_ms=172_800_000)
 
     async def test_cancel_uses_default_result_ttl_when_not_overridden(
         self,
@@ -745,12 +741,11 @@ class TestSwarmQCancel:
         backend,
     ):
         app = SwarmQ(broker, backend)
-        app.client.cancel = AsyncMock(return_value=True)
-
-        await app.cancel("task-def")
+        with patch.object(app.client, "cancel", AsyncMock(return_value=True)) as cancel_mock:
+            await app.cancel("task-def")
 
         # Default result_ttl is 86400 → 86_400_000 ms
-        app.client.cancel.assert_awaited_once_with("task-def", ttl_ms=86_400_000)
+        cancel_mock.assert_awaited_once_with("task-def", ttl_ms=86_400_000)
 
     async def test_cancel_returns_false_when_already_cancelled(
         self,
@@ -758,9 +753,8 @@ class TestSwarmQCancel:
         backend,
     ):
         app = SwarmQ(broker, backend)
-        app.client.cancel = AsyncMock(return_value=False)
-
-        result = await app.cancel("task-ghi")
+        with patch.object(app.client, "cancel", AsyncMock(return_value=False)):
+            result = await app.cancel("task-ghi")
         assert result is False
 
 

@@ -29,7 +29,7 @@ import asyncio
 import contextlib
 import time
 from collections.abc import AsyncIterator
-from typing import override
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -38,12 +38,13 @@ from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.config import SwarmQConfig
 from swarmq.contracts import GuardClaim
-from swarmq.contracts.coordination import LockToken, RateLimitDecision
+from swarmq.contracts.coordination import ExecutionGuardStore, LockToken, RateLimitDecision
 from swarmq.registry import TaskRegistry
 from swarmq.task import Task, TaskInfo
 from swarmq.worker import Worker
 from tests.support.inmemory import FakeClock, InMemoryBackend
 from tests.support.messages import make_message
+from tests.unit.worker._helpers import as_mock
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -59,7 +60,7 @@ class CountedTask(Task):
         return "ok"
 
 
-def _payload(name: str, task_id: str = "t-1") -> dict:
+def _payload(name: str, task_id: str = "t-1") -> dict[str, Any]:
     return {"task": {"id": task_id, "queue": "default", "name": name}, "args": [], "kwargs": {}}
 
 
@@ -116,7 +117,9 @@ async def guard_backend() -> AsyncIterator[InMemoryBackend]:
     await impl.close()
 
 
-def _worker(broker: MagicMock, backend: MagicMock, rec: Recorder, store: object, *tasks: type[Task]) -> Worker:
+def _worker(
+    broker: MagicMock, backend: MagicMock, rec: Recorder, store: ExecutionGuardStore, *tasks: type[Task]
+) -> Worker:
     registry = TaskRegistry()
     for task in tasks:
         registry.register(task)
@@ -198,7 +201,7 @@ async def test_cancelled_delivery_frees_running_without_done(broker, backend, re
         await asyncio.Event().wait()
         raise AssertionError("unreachable")
 
-    worker._rate_limiter.check = _blocking_check
+    as_mock(worker._rate_limiter).check = _blocking_check
     handler = asyncio.create_task(worker._handle_message(make_message(_payload("guard-counted"))))
     await asyncio.wait_for(entered.wait(), 1)
 
@@ -358,7 +361,7 @@ async def test_shutdown_nack_comes_before_any_claim(broker, backend, rec, guard_
 
 async def test_rate_limit_requeue_frees_running_before_the_copy(broker, backend, rec, guard_backend) -> None:
     worker = _worker(broker, backend, rec, guard_backend.execution_guard, CountedTask)
-    worker._rate_limiter.check = rec.spy(
+    as_mock(worker._rate_limiter).check = rec.spy(
         "rate_limiter.check",
         RateLimitDecision(allowed=False, remaining=0, retry_after_ms=500),
     )
@@ -386,4 +389,5 @@ async def test_guard_events_reach_the_worker_metrics(broker, backend, rec, guard
     await worker._handle_message(make_message(_payload("guard-counted")))
 
     sample = "swarmq_execution_guard_events_total"
+    assert metrics.registry is not None
     assert metrics.registry.get_sample_value(sample, {"event": "duplicate_skipped"}) == 1.0

@@ -102,4 +102,5 @@ async def test_sampler_reports_the_prefetch_limit(broker: Any, backend: Any) -> 
     await worker._sample_metrics_once()
 
     labels = {"worker_id": config.worker_identity}
+    assert metrics.registry is not None
     assert metrics.registry.get_sample_value("swarmq_worker_prefetch_limit", labels) == 12.0

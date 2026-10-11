@@ -40,7 +40,7 @@ from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 import pytest
-from croniter import CroniterBadCronError
+from croniter import CroniterBadCronError, croniter
 
 from swarmq.scheduler import cron_time, next_fire_times
 
@@ -145,7 +145,7 @@ class TestNextFireTimes:
         sonst 3600 croniter-Schritte (Laufzeit, keine Iterationsgrenze)."""
         start = datetime(2026, 10, 25, 2, 59, 58, tzinfo=ZoneInfo(BERLIN))
 
-        with patch.object(cron_time, "croniter", wraps=cron_time.croniter) as spy:
+        with patch.object(cron_time, "croniter", wraps=croniter) as spy:
             result = _iso("* 2 * * * *", start, timezone=BERLIN, count=3)
 
         assert result == [

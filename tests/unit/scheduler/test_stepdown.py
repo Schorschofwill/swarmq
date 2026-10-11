@@ -38,7 +38,7 @@ class _Clock:
         return self.now
 
 
-def _tracker(window_s: float = 30.0):  # type: ignore[no-untyped-def]
+def _tracker(window_s: float = 30.0):
     from swarmq.scheduler.stepdown import PublishStepdown
 
     clock = _Clock()
@@ -147,14 +147,14 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> _FakeTime:
 
 
 @pytest.fixture
-def leader(backend, broker, config, lock_manager, store, signal_dispatcher, clock):  # type: ignore[no-untyped-def]
+def leader(backend, broker, config, lock_manager, store, signal_dispatcher, clock):
     loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
     loop._state = "leader"
     broker.publish = AsyncMock(side_effect=BrokerConnectionError("ACCESS_REFUSED"))
     return loop
 
 
-def _recorded(signal_dispatcher, signal: Signal) -> list[dict[str, object]]:  # type: ignore[no-untyped-def]
+def _recorded(signal_dispatcher, signal: Signal) -> list[dict[str, object]]:
     seen: list[dict[str, object]] = []
 
     async def _handler(**kw: object) -> None:
@@ -164,7 +164,7 @@ def _recorded(signal_dispatcher, signal: Signal) -> list[dict[str, object]]:  # 
     return seen
 
 
-async def test_leader_steps_down_after_repeated_publish_failures(  # type: ignore[no-untyped-def]
+async def test_leader_steps_down_after_repeated_publish_failures(
     leader, clock, lock_manager, backend, signal_dispatcher, swarmq_logs
 ) -> None:
     standby = _recorded(signal_dispatcher, Signal.SCHEDULER_STANDBY)
@@ -181,7 +181,7 @@ async def test_leader_steps_down_after_repeated_publish_failures(  # type: ignor
     assert [e for e in swarmq_logs if e.get("event") == "scheduler_publish_failures_stepdown"]
 
 
-async def test_a_successful_fire_in_between_keeps_the_leader(leader, clock, broker) -> None:  # type: ignore[no-untyped-def]
+async def test_a_successful_fire_in_between_keeps_the_leader(leader, clock, broker) -> None:
     await leader._fire_one("cron_a", 1_700_000_000_000, _def())
     broker.publish = AsyncMock()
     await leader._fire_one("cron_b", 1_700_000_000_000, _def("cron_b"))
@@ -193,7 +193,7 @@ async def test_a_successful_fire_in_between_keeps_the_leader(leader, clock, brok
     assert leader.state == "leader"
 
 
-async def test_no_candidacy_during_the_cooldown(leader, clock, lock_manager) -> None:  # type: ignore[no-untyped-def]
+async def test_no_candidacy_during_the_cooldown(leader, clock, lock_manager) -> None:
     await leader._fire_one("cron_a", 1_700_000_000_000, _def())
     clock.now += 1.0
     await leader._fire_one("cron_a", 1_700_000_000_000, _def())
@@ -209,7 +209,7 @@ async def test_no_candidacy_during_the_cooldown(leader, clock, lock_manager) -> 
     lock_manager.acquire.assert_awaited_once()
 
 
-async def test_window_zero_keeps_the_leader(  # type: ignore[no-untyped-def]
+async def test_window_zero_keeps_the_leader(
     backend, broker, config, lock_manager, store, signal_dispatcher, clock
 ) -> None:
     import dataclasses
@@ -232,7 +232,7 @@ async def test_window_zero_keeps_the_leader(  # type: ignore[no-untyped-def]
     lock_manager.release.assert_not_awaited()
 
 
-async def test_failed_release_still_steps_down(leader, clock, lock_manager) -> None:  # type: ignore[no-untyped-def]
+async def test_failed_release_still_steps_down(leader, clock, lock_manager) -> None:
     from swarmq.exceptions import BackendConnectionError
 
     lock_manager.release = AsyncMock(side_effect=BackendConnectionError("valkey gone"))

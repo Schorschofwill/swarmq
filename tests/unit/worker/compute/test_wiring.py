@@ -19,6 +19,7 @@ Schluss-Review (Abweichung vom Plan, freigegeben):
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -29,6 +30,7 @@ from swarmq.task import TaskInfo
 from swarmq.worker.compute import wiring
 from swarmq.worker.compute.executor import ComputeExecutor
 from swarmq.worker.compute.forkserver import MAIN_MODULE_ENV, SENTINEL_ENV, ForkserverHandle
+from swarmq.worker.compute.pool import SlotPool
 
 
 class _T:
@@ -86,8 +88,9 @@ async def test_cpu_pool_installs_compute_executor_and_recycle_signal(monkeypatch
         return handle
 
     monkeypatch.setattr(wiring, "start_forkserver", fake_start)
-    monkeypatch.setattr(wiring.SlotPool, "start", AsyncMock())
-    monkeypatch.setattr(wiring.SlotPool, "aclose", AsyncMock())
+    aclose = AsyncMock()
+    monkeypatch.setattr(SlotPool, "start", AsyncMock())
+    monkeypatch.setattr(SlotPool, "aclose", aclose)
     executor = await wiring.start_compute_executor(w)
     assert isinstance(executor, ComputeExecutor)
     assert w._executor is executor
@@ -111,7 +114,7 @@ async def test_cpu_pool_installs_compute_executor_and_recycle_signal(monkeypatch
     assert kwargs["slot"] == 1
     assert kwargs["reason"] == "rss"
     await wiring.close_compute_executor(w)
-    wiring.SlotPool.aclose.assert_awaited_once()
+    aclose.assert_awaited_once()
 
 
 def test_hard_timeout_over_consumer_timeout_warns(swarmq_logs):
@@ -197,14 +200,14 @@ async def test_cpu_pool_sets_main_module_env_before_forkserver_start(monkeypatch
     fake_main.__spec__ = importlib.machinery.ModuleSpec("pkg.mod", None)
     monkeypatch.setitem(sys.modules, "__main__", fake_main)  # wie bei ``python -m pkg.mod``
     monkeypatch.delenv(MAIN_MODULE_ENV, raising=False)
-    seen: dict[str, object] = {}
+    seen: dict[str, Any] = {}
 
     def fake_start(preload, **kw):
         seen["env"], seen["preload"] = os.environ.get(MAIN_MODULE_ENV), preload
         return ForkserverHandle(context=MagicMock(), preload=tuple(preload), pid=42, threads=1)
 
     monkeypatch.setattr(wiring, "start_forkserver", fake_start)
-    monkeypatch.setattr(wiring.SlotPool, "start", AsyncMock())
+    monkeypatch.setattr(SlotPool, "start", AsyncMock())
     await wiring.start_compute_executor(_worker())
     assert seen["env"] == "pkg.mod"
     assert seen["preload"][:2] == ["swarmq.worker.compute.preload", "pkg.mod"]
@@ -237,7 +240,7 @@ async def test_cpu_pool_passes_the_configure_setting_to_the_forkserver(monkeypat
         return ForkserverHandle(context=MagicMock(), preload=tuple(preload), pid=42, threads=1)
 
     monkeypatch.setattr(wiring, "start_forkserver", fake_start)
-    monkeypatch.setattr(wiring.SlotPool, "start", AsyncMock())
+    monkeypatch.setattr(SlotPool, "start", AsyncMock())
     await wiring.start_compute_executor(_worker(configure_logging=configure))
     assert seen["env"] == expected
 

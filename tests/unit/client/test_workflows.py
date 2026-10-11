@@ -70,6 +70,7 @@ async def test_apply_partial_frontier_failure_marks_workflow_failed_via_cas(brok
     assert initial["version"] == 0
     # Fail-Mark: Compare-and-Set gegen Version 0, Payload version 1.
     assert cas.await_count == 1
+    assert cas.await_args is not None
     assert cas.await_args.kwargs["expected_version"] == 0
     failed = decode_json(cas_payloads[0])
     assert failed["status"] == STATUS_FAILED
@@ -161,7 +162,7 @@ async def test_apply_runs_pre_enqueue_for_the_whole_frontier_before_persisting(b
     ]
 
 
-async def test_apply_emits_both_signals_per_step_and_no_pseudo_event(broker, backend):
+async def test_apply_emits_both_signals_per_step_and_no_pseudo_event(broker, backend, monkeypatch):
     """R16/R18: Je Frontschritt feuern ``TASK_ENQUEUED`` (unveraenderter
     Payload) und ``WORKFLOW_STEP_ENQUEUED`` (mit Workflow-Identitaet). Das
     Pseudo-Ereignis mit ``task_name="<workflow>"`` entfaellt — es trug eine
@@ -174,7 +175,7 @@ async def test_apply_emits_both_signals_per_step_and_no_pseudo_event(broker, bac
     async def _dispatch(signal, **kwargs):
         events.append((signal.value, kwargs.get("task_name", "-"), kwargs.get("step_path", "-")))
 
-    client._signal_dispatcher.dispatch = AsyncMock(side_effect=_dispatch)
+    monkeypatch.setattr(client._signal_dispatcher, "dispatch", AsyncMock(side_effect=_dispatch))
 
     await client.apply(group(WfA.s("a"), WfA.s("b")))
 

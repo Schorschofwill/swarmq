@@ -27,7 +27,7 @@
 from __future__ import annotations
 
 import dataclasses
-from typing import override
+from typing import Any, override
 
 import msgspec
 import pytest
@@ -48,7 +48,7 @@ _DAY_MS = 86_400_000
 
 
 def _static(name: str = "nightly", **fields) -> ScheduleDefinition:
-    base = {
+    base: dict[str, Any] = {
         "schedule_name": name,
         "task_name": name,
         "args": (),

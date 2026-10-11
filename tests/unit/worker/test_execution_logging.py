@@ -22,6 +22,7 @@ from swarmq.middleware import MiddlewareChain
 from swarmq.task import DeliveryMode, Task, TaskInfo
 from swarmq.worker.execution import TaskExecutor
 from swarmq.worker.gates import GateContext, GateDeps
+from tests.unit.worker._helpers import partial_message
 
 pytestmark = [pytest.mark.timeout(5)]
 
@@ -65,7 +66,7 @@ def _deps(backend: Any = None) -> GateDeps:
     )
 
 
-def _ctx(task_class: type) -> GateContext:
+def _ctx(task_class: type[Task]) -> GateContext:
     return GateContext(
         task_id="t1",
         task_name=task_class.task_info.name,
@@ -82,7 +83,7 @@ def _entries(logs: list[dict[str, Any]], event: str) -> list[dict[str, Any]]:
 
 
 async def test_fire_and_forget_error_logs_error_type_and_error(swarmq_logs):
-    await TaskExecutor(_deps()).execute(_ctx(FailingFireAndForget), {"retry_count": 0}, MiddlewareChain([]))
+    await TaskExecutor(_deps()).execute(_ctx(FailingFireAndForget), partial_message(retry_count=0), MiddlewareChain([]))
 
     [entry] = _entries(swarmq_logs, "fire_and_forget_error")
     assert entry["log_level"] == "error"
@@ -99,7 +100,9 @@ async def test_cancel_monitor_backend_failure_logs_warning_with_error_fields(swa
 
     backend = MagicMock()
     backend.is_cancelled = failing_is_cancelled
-    await TaskExecutor(_deps(backend)).execute(_ctx(WaitsForMonitorFailure), {"retry_count": 0}, MiddlewareChain([]))
+    await TaskExecutor(_deps(backend)).execute(
+        _ctx(WaitsForMonitorFailure), partial_message(retry_count=0), MiddlewareChain([])
+    )
 
     entry = _entries(swarmq_logs, "cancel_monitor_error")[0]
     assert entry["log_level"] == "warning"

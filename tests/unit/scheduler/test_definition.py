@@ -244,7 +244,7 @@ def _make_store(hget_return=None, hsetnx_return=True, hexists_return=1):
 
 
 def _def(**overrides) -> ScheduleDefinition:
-    base = {
+    base: dict[str, Any] = {
         "schedule_name": "test",
         "task_name": "ping",
         "args": (),

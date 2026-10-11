@@ -481,9 +481,10 @@ class TestSchedfireDedup:
         await w.start()
 
         assert len(created) == 1
-        assert w._scheduler is not None
-        assert w._scheduler.started is True
-        assert w._scheduler.stopped is True
+        sched: object = w._scheduler  # zur Laufzeit das Doppel, nicht ``SchedulerLoop``
+        assert isinstance(sched, _FakeSched)
+        assert sched.started is True
+        assert sched.stopped is True
 
     async def test_dedup_runs_before_cancel_check(self, broker, backend, config):
         """Duplicate schedfire must ack+skip BEFORE cancel-check is reached.

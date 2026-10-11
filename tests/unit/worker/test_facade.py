@@ -9,7 +9,8 @@ import swarmq.worker.pipeline
 
 def test_facade_keeps_identity_of_worker_and_state() -> None:
     assert swarmq.worker.Worker is swarmq.worker.pipeline.Worker
-    assert swarmq.worker.WorkerState is swarmq.worker.pipeline.WorkerState
+    # ``vars``: ``pipeline`` re-exportiert ``WorkerState`` nicht ausdruecklich.
+    assert swarmq.worker.WorkerState is vars(swarmq.worker.pipeline)["WorkerState"]
 
 
 def test_facade_does_not_reexport_patched_names() -> None:

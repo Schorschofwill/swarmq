@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import multiprocessing
+from typing import Any
 
 import pytest
 
@@ -29,11 +30,18 @@ async def _wait_for(pred, timeout=3.0):
         await asyncio.sleep(0.02)
 
 
+def _state(worker: Any) -> WorkerState:
+    # Liest den Zustand frisch: nach ``assert worker._state is RUNNING``
+    # verengte mypy sonst auch den Ausdruck in der Lambda.
+    state: WorkerState = worker._state
+    return state
+
+
 def _arm(worker, **cfg):
     for k, v in cfg.items():
         setattr(worker._config, k, v)
     worker._state = WorkerState.RUNNING
-    events: list[dict] = []
+    events: list[dict[str, Any]] = []
 
     async def _rec(**kw):
         events.append(kw)
@@ -67,7 +75,7 @@ async def test_task_count_threshold_recycles_with_ack(worker, channel, monkeypat
     await _wait_for(lambda: channel.intent_value() == sv.INTENT_RECYCLE)
     assert worker._state is WorkerState.RUNNING  # wartet auf die Bestaetigung
     channel.acknowledge_replacement()
-    await _wait_for(lambda: worker._state is WorkerState.DRAINING)
+    await _wait_for(lambda: _state(worker) is WorkerState.DRAINING)
     assert worker._recycle_ack_missing is False
     assert events
     assert events[0]["kind"] == "worker"
@@ -174,9 +182,9 @@ class TestBindRetryBudget:
         from swarmq.process_manager.entry import worker_subprocess_entry
         from swarmq.supervision import SHUTDOWN_TERM_S
         from swarmq.worker.lifecycle import _LIFECYCLE_DISPATCH_TIMEOUT_S
-        from tests.unit.process_manager.test_entry import _make_test_cfg
+        from tests.unit.process_manager._helpers import _make_test_cfg
 
-        captured: dict = {}
+        captured: dict[str, Any] = {}
 
         async def capture_ns(ns):
             captured["ns"] = ns
@@ -212,7 +220,7 @@ class TestBindRetryBudget:
 
         monkeypatch.setattr(recycling, "start_with_bind_retry", fake_start_with_bind_retry)
         worker._config.bind_retry_budget_s = 12.0
-        started = []
+        started: list[str] = []
         await worker._start_with_bind_retry(lambda: _noop(started))
         assert seen["budget"] == 12.0
         assert started == ["started"]

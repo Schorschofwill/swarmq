@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import override
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -31,7 +31,7 @@ from swarmq.task import DeliveryMode, Task, TaskInfo
 from swarmq.worker import Worker
 from swarmq.workflow_orchestration import WorkflowStep, WorkflowStepEnqueuer
 from tests.support.messages import make_message
-from tests.unit.worker._helpers import _default_payload, lock_wait_exceeded_headers
+from tests.unit.worker._helpers import _default_payload, as_mock, lock_wait_exceeded_headers
 
 _HASH = "a" * 64
 _SCHEDFIRE = "golden-sched:1700000000000"
@@ -103,7 +103,7 @@ class FafTask(Task):
         return "ok"
 
 
-def _payload(name: str, task_id: str = "t-1") -> dict:
+def _payload(name: str, task_id: str = "t-1") -> dict[str, Any]:
     return {"task": {"id": task_id, "queue": "default", "name": name}, "args": [], "kwargs": {}}
 
 
@@ -138,7 +138,7 @@ def backend(rec: Recorder) -> MagicMock:
     return be
 
 
-def _worker(broker: MagicMock, backend: MagicMock, rec: Recorder, *tasks: type[Task], **kwargs: object) -> Worker:
+def _worker(broker: MagicMock, backend: MagicMock, rec: Recorder, *tasks: type[Task], **kwargs: Any) -> Worker:
     registry = TaskRegistry()
     for task in tasks:
         registry.register(task)
@@ -237,7 +237,7 @@ async def test_terminal_release_in_finally_releases_after_ack_and_writes_complet
 async def test_terminal_already_released_does_not_release_twice(broker, backend, rec) -> None:
     """Ende der Lock-Wartezeit (MR 13): Dead-Letter + Freigabe inline — der finally gibt nicht erneut frei."""
     worker = _worker(broker, backend, rec, LockedTask)
-    worker._lock_manager.acquire = rec.spy("lock_manager.acquire", None)
+    as_mock(worker._lock_manager).acquire = rec.spy("lock_manager.acquire", None)
     msg = make_message(
         _payload("pipe-locked"),
         headers={HEADER_UNIQUE_HASH: _HASH, **lock_wait_exceeded_headers(worker._config)},
@@ -303,12 +303,12 @@ class TestRejectReasons:
             registry.register(task)
         config = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x", **cfg)
         worker = Worker(broker=broker, backend=backend, registry=registry, config=config)
-        events: list[dict] = []
+        events: list[dict[str, Any]] = []
 
         async def _dispatch(signal, **kwargs):
             events.append({"signal": signal, **kwargs})
 
-        worker._signal_dispatcher.dispatch = AsyncMock(side_effect=_dispatch)
+        worker._signal_dispatcher.dispatch = AsyncMock(side_effect=_dispatch)  # type: ignore[method-assign]  # Dispatch-Spy
         return worker, broker, events
 
     @staticmethod
@@ -468,7 +468,7 @@ async def test_lock_release_failure_is_a_warning_with_error_fields(broker, backe
     config = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x")
     worker = Worker(broker=broker, backend=backend, registry=registry, config=config)
     worker._lock_manager = MagicMock()
-    worker._lock_manager.acquire = AsyncMock(
+    as_mock(worker._lock_manager).acquire = AsyncMock(
         side_effect=lambda name, *, owner, ttl_ms, max_concurrency: LockToken(
             name=name, owner=owner, max_concurrency=max_concurrency
         )
@@ -580,7 +580,7 @@ async def test_workflow_step_publisher_runs_middleware_then_signals():
     async def _dispatch(signal, **kwargs):
         calls.append(f"signal:{signal.value}:{kwargs.get('step_path', '-')}")
 
-    worker._signal_dispatcher.dispatch = AsyncMock(side_effect=_dispatch)
+    worker._signal_dispatcher.dispatch = AsyncMock(side_effect=_dispatch)  # type: ignore[method-assign]  # Dispatch-Spy
 
     step = WorkflowStep(
         workflow_id="wf-1",

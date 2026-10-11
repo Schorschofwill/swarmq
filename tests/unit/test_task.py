@@ -1,5 +1,6 @@
 """Tests for swarmq.task — Task base class and TaskInfo."""
 
+from collections.abc import Awaitable
 from typing import override
 
 import pytest
@@ -62,7 +63,7 @@ def test_taskinfo_hard_timeout_less_than_soft_raises():
 def test_taskinfo_is_frozen():
     info = TaskInfo(name="task", queues=["q"])
     with pytest.raises(AttributeError):
-        info.name = "other"
+        info.name = "other"  # type: ignore[misc]  # Test prueft gerade die Unveraenderlichkeit
 
 
 async def test_task_subclass_with_run():
@@ -87,6 +88,11 @@ async def test_base_task_run_raises_not_implemented():
         await t.run()
 
 
+async def _result_of(awaitable: Awaitable[object]) -> object:
+    """Liefert das Ergebnis eines Hooks, um ``is None`` pruefen zu koennen."""
+    return await awaitable
+
+
 async def test_pre_and_post_execution_are_async_nops():
     class SimpleTask(Task):
         task_info = TaskInfo(name="simple", queues=["q"])
@@ -96,8 +102,8 @@ async def test_pre_and_post_execution_are_async_nops():
             pass
 
     t = SimpleTask()
-    result_pre = await t.pre_execution()
-    result_post = await t.post_execution()
+    result_pre = await _result_of(t.pre_execution())
+    result_post = await _result_of(t.post_execution())
     assert result_pre is None
     assert result_post is None
 

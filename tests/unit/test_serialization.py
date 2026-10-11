@@ -275,7 +275,7 @@ class TestCanonicalEncode:
         """Invariant: tuples and lists produce equal hashes (JSON encodes
         both as arrays). Required for Scheduler hash-reconstruction after
         ScheduleStore roundtrip (tuples serialized as lists)."""
-        assert canonical_encode((1, 2, 3), {}) == canonical_encode([1, 2, 3], {})
+        assert canonical_encode((1, 2, 3), {}) == canonical_encode([1, 2, 3], {})  # type: ignore[arg-type]  # Invariante: Liste wie Tupel
 
     def test_uuid_normalized_to_str(self):
         uid = UUID("12345678-1234-5678-1234-567812345678")

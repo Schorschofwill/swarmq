@@ -27,7 +27,7 @@ class _Clock:
         return self.now
 
 
-def _tracker(window_s: float = 30.0):  # type: ignore[no-untyped-def]
+def _tracker(window_s: float = 30.0):
     from swarmq.scheduler.stepdown import PublishStepdown
 
     clock = _Clock()
@@ -77,7 +77,7 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> _FakeTime:
 
 
 @pytest.fixture
-def leader(backend, broker, config, lock_manager, store, signal_dispatcher, clock):  # type: ignore[no-untyped-def]
+def leader(backend, broker, config, lock_manager, store, signal_dispatcher, clock):
     from unittest.mock import AsyncMock
 
     from tests.unit.scheduler._helpers import _make_loop
@@ -88,7 +88,7 @@ def leader(backend, broker, config, lock_manager, store, signal_dispatcher, cloc
     return loop
 
 
-async def test_a_new_term_starts_a_new_series(leader, clock, lock_manager) -> None:  # type: ignore[no-untyped-def]
+async def test_a_new_term_starts_a_new_series(leader, clock, lock_manager) -> None:
     from unittest.mock import AsyncMock
 
     from tests.unit.scheduler._helpers import _def
@@ -119,7 +119,7 @@ def test_a_queue_specific_rejection_is_not_counted() -> None:
     assert tracker.failure(PublishRejected("nack")) is False
 
 
-async def test_a_single_broken_cron_does_not_step_down(leader, clock, broker, lock_manager) -> None:  # type: ignore[no-untyped-def]
+async def test_a_single_broken_cron_does_not_step_down(leader, clock, broker, lock_manager) -> None:
     from unittest.mock import AsyncMock
 
     from swarmq.exceptions import PublishRejected
@@ -134,7 +134,7 @@ async def test_a_single_broken_cron_does_not_step_down(leader, clock, broker, lo
     lock_manager.release.assert_not_awaited()
 
 
-async def test_a_single_cron_without_confirms_does_not_step_down(leader, clock, broker, lock_manager) -> None:  # type: ignore[no-untyped-def]
+async def test_a_single_cron_without_confirms_does_not_step_down(leader, clock, broker, lock_manager) -> None:
     # Georg, 2026-10-11: ``PublishIndeterminate`` zaehlt nicht fuer den Ruecktritt.
     from unittest.mock import AsyncMock
 

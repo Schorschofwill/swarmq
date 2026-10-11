@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import pathlib
+from typing import Any
 
 import pytest
 
@@ -106,7 +107,7 @@ class TestLazyImports:
         from swarmq import cli
         from swarmq.broker.rabbitmq import RabbitMQBroker as CanonicalRB
 
-        assert cli.RabbitMQBroker is CanonicalRB
+        assert cli.RabbitMQBroker is CanonicalRB  # type: ignore[attr-defined]  # lazy Re-Export ueber __getattr__
 
     def test_cli_getattr_unknown_attribute_raises(self) -> None:
         """``__getattr__`` must still raise ``AttributeError`` for bogus names.
@@ -117,7 +118,7 @@ class TestLazyImports:
         from swarmq import cli
 
         with pytest.raises(AttributeError, match="ThisDoesNotExist"):
-            _ = cli.ThisDoesNotExist  # type: ignore[attr-defined]
+            _ = cli.ThisDoesNotExist
 
 
 # ---------------------------------------------------------------------------
@@ -260,8 +261,8 @@ class TestCheckDetectionRobustness:
         """
         from swarmq.cli.check_cmd import _is_check_invocation
 
-        assert _is_check_invocation(iter(["worker", "--check"])) is True
-        assert _is_check_invocation(iter(["schedule", "list"])) is False
+        assert _is_check_invocation(iter(["worker", "--check"])) is True  # type: ignore[arg-type]  # prueft Iterator-argv
+        assert _is_check_invocation(iter(["schedule", "list"])) is False  # type: ignore[arg-type]  # prueft Iterator-argv
 
 
 # ---------------------------------------------------------------------------
@@ -278,11 +279,11 @@ class TestConsoleRendererTTY:
     ``setup_logging`` has run, they must re-invoke it.
     """
 
-    def _capture_console_renderer_kwargs(self, monkeypatch) -> list[dict]:
+    def _capture_console_renderer_kwargs(self, monkeypatch) -> list[dict[str, Any]]:
         """Patch ``structlog.dev.ConsoleRenderer`` to record its kwargs."""
         import structlog
 
-        captured: list[dict] = []
+        captured: list[dict[str, Any]] = []
         real = structlog.dev.ConsoleRenderer
 
         def _tap(*args, **kwargs):

@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncGenerator
+from typing import Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -82,8 +84,8 @@ class TestWaitForResult:
         async def _hang(*args: object, **kwargs: object) -> None:
             await asyncio.sleep(60)
 
-        backend, _, _ = _backend(None)
-        backend._client.get = AsyncMock(side_effect=_hang)  # type: ignore[union-attr]
+        backend, client, _ = _backend(None)
+        client.get = AsyncMock(side_effect=_hang)
 
         started = asyncio.get_running_loop().time()
         result = await asyncio.wait_for(backend.wait_for_result("task-id", timeout=0.2), timeout=5)
@@ -129,7 +131,7 @@ def _current(payload: bytes) -> int:
 
 async def _collect(backend: ValkeyBackend, *, until_current: int) -> list[bytes]:
     observed: list[bytes] = []
-    gen = backend.watch_progress("task-x")
+    gen = cast("AsyncGenerator[bytes]", backend.watch_progress("task-x"))
     try:
         async for payload in gen:
             observed.append(payload)
@@ -293,7 +295,7 @@ class TestCompareAndStoreWorkflowState:
 #    Fehlerfelder.
 
 
-def _results_entry(entries: list[dict], event: str) -> dict:
+def _results_entry(entries: list[dict[str, Any]], event: str) -> dict[str, Any]:
     [entry] = [e for e in entries if e["event"] == event and e["logger"] == "swarmq.backend.valkey.results"]
     return entry
 

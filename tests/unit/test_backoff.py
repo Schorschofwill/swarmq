@@ -94,7 +94,6 @@ def test_max_delay_cap_is_respected():
 def test_backoff_above_the_cap_uses_the_jitter_band_from_a_single_draw(
     monkeypatch: pytest.MonkeyPatch, strategy: str
 ) -> None:
-    from swarmq import backoff
 
     drawn: list[tuple[float, float]] = []
 
@@ -103,7 +102,7 @@ def test_backoff_above_the_cap_uses_the_jitter_band_from_a_single_draw(
         return values.pop(0)
 
     values = [1.0, 1.5, 2.0]
-    monkeypatch.setattr(backoff.random, "uniform", _uniform)
+    monkeypatch.setattr("swarmq.backoff.random.uniform", _uniform)
 
     delays = [calculate_backoff(attempt=500, strategy=strategy, base_delay=1.0, max_delay=100.0) for _ in range(3)]
 

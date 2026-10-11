@@ -4,6 +4,8 @@ Werteigenschaften der kleinen Nachrichtentypen."""
 
 from __future__ import annotations
 
+from typing import Any
+
 from swarmq.contracts import (
     Consumer,
     Delivery,
@@ -19,7 +21,7 @@ class _HasPublisherMembers:
     async def close(self) -> None: ...
     async def ping(self) -> None: ...
     async def declare_queue(self, queue: str) -> None: ...
-    async def publish(self, queue: str, body: bytes, headers: dict | None = None) -> PublishReceipt:
+    async def publish(self, queue: str, body: bytes, headers: dict[str, Any] | None = None) -> PublishReceipt:
         return PublishReceipt(queue=queue)
 
     def set_publish_deadline(self, at: float | None) -> None: ...

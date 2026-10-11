@@ -17,11 +17,32 @@ from __future__ import annotations
 # 10. U11: workflow_step_message_context liefert einen MessageContext mit
 #     festem delivery_mode="at_least_once" und den Workflow-Schluesseln
 import inspect
-from typing import override
+from collections.abc import Awaitable
+from typing import Any, override
 
 import pytest
 
-from swarmq.middleware import Middleware, MiddlewareChain
+from swarmq.middleware import MessageContext, Middleware, MiddlewareChain
+
+_Call = tuple[object, ...]
+
+
+def _message() -> MessageContext:
+    """Minimaler gueltiger MessageContext; die Hooks werten ihn nicht aus."""
+    return {
+        "task_id": "t1",
+        "task_name": "echo",
+        "queue": "default",
+        "args": [],
+        "kwargs": {},
+        "delivery_mode": "at_least_once",
+    }
+
+
+async def _result_of(awaitable: Awaitable[object]) -> object:
+    """Liefert das Ergebnis eines Hooks, um ``is None`` pruefen zu koennen."""
+    return await awaitable
+
 
 # ---------------------------------------------------------------------------
 # 1. Middleware base class has 6 async no-op methods
@@ -46,15 +67,15 @@ async def test_middleware_base_class_has_six_async_no_op_methods():
         assert inspect.iscoroutinefunction(method), f"{name} must be async"
 
     # Each hook must be callable without raising, returning None.
-    message = {"task": {"id": "t1"}}
+    message = _message()
     exc = RuntimeError("boom")
 
-    assert await mw.pre_enqueue(message) is None
-    assert await mw.post_enqueue(message) is None
-    assert await mw.pre_execute(message) is None
-    assert await mw.post_execute(message, result="ok") is None
-    assert await mw.on_error(message, exc) is None
-    assert await mw.on_retry(message, exc, retry_count=1, delay=0.5) is None
+    assert await _result_of(mw.pre_enqueue(message)) is None
+    assert await _result_of(mw.post_enqueue(message)) is None
+    assert await _result_of(mw.pre_execute(message)) is None
+    assert await _result_of(mw.post_execute(message, result="ok")) is None
+    assert await _result_of(mw.on_error(message, exc)) is None
+    assert await _result_of(mw.on_retry(message, exc, retry_count=1, delay=0.5)) is None
 
 
 # ---------------------------------------------------------------------------
@@ -66,15 +87,15 @@ async def test_empty_chain_all_run_methods_are_no_ops():
     """Empty chain returns None for every run_* method without raising."""
     chain = MiddlewareChain([])
 
-    message = {"task": {"id": "t1"}}
+    message = _message()
     exc = RuntimeError("boom")
 
-    assert await chain.run_pre_enqueue(message) is None
-    assert await chain.run_post_enqueue(message) is None
-    assert await chain.run_pre_execute(message) is None
-    assert await chain.run_post_execute(message, result="ok") is None
-    assert await chain.run_on_error(message, exception=exc) is None
-    assert await chain.run_on_retry(message, exception=exc, retry_count=1, delay=0.5) is None
+    assert await _result_of(chain.run_pre_enqueue(message)) is None
+    assert await _result_of(chain.run_post_enqueue(message)) is None
+    assert await _result_of(chain.run_pre_execute(message)) is None
+    assert await _result_of(chain.run_post_execute(message, result="ok")) is None
+    assert await _result_of(chain.run_on_error(message, exception=exc)) is None
+    assert await _result_of(chain.run_on_retry(message, exception=exc, retry_count=1, delay=0.5)) is None
 
 
 # ---------------------------------------------------------------------------
@@ -85,41 +106,39 @@ async def test_empty_chain_all_run_methods_are_no_ops():
 class _RecordingMiddleware(Middleware):
     """Records hook invocations to a shared list as (label, hook_name) tuples."""
 
-    def __init__(self, label: str, calls: list[tuple[str, str]]) -> None:
+    def __init__(self, label: str, calls: list[_Call]) -> None:
         self.label = label
         self.calls = calls
 
     @override
-    async def pre_enqueue(self, message: dict) -> None:
+    async def pre_enqueue(self, message: MessageContext) -> None:
         self.calls.append((self.label, "pre_enqueue"))
 
     @override
-    async def post_enqueue(self, message: dict) -> None:
+    async def post_enqueue(self, message: MessageContext) -> None:
         self.calls.append((self.label, "post_enqueue"))
 
     @override
-    async def pre_execute(self, message: dict) -> None:
+    async def pre_execute(self, message: MessageContext) -> None:
         self.calls.append((self.label, "pre_execute"))
 
     @override
-    async def post_execute(self, message: dict, result=None) -> None:
+    async def post_execute(self, message: MessageContext, result: Any = None) -> None:
         self.calls.append((self.label, "post_execute"))
 
     @override
-    async def on_error(self, message: dict, exception: BaseException) -> None:
+    async def on_error(self, message: MessageContext, exception: BaseException) -> None:
         self.calls.append((self.label, "on_error"))
 
     @override
     async def on_retry(
         self,
-        message: dict,
+        message: MessageContext,
         exception: BaseException,
         retry_count: int,
         delay: float,
     ) -> None:
-        self.calls.append(
-            (self.label, "on_retry", retry_count, delay)  # type: ignore[arg-type]
-        )
+        self.calls.append((self.label, "on_retry", retry_count, delay))
 
 
 # ---------------------------------------------------------------------------
@@ -128,13 +147,13 @@ class _RecordingMiddleware(Middleware):
 
 
 async def test_run_pre_execute_calls_in_registration_order():
-    calls: list[tuple[str, str]] = []
+    calls: list[_Call] = []
     a = _RecordingMiddleware("A", calls)
     b = _RecordingMiddleware("B", calls)
     c = _RecordingMiddleware("C", calls)
 
     chain = MiddlewareChain([a, b, c])
-    await chain.run_pre_execute({"task": {"id": "t1"}})
+    await chain.run_pre_execute(_message())
 
     assert calls == [
         ("A", "pre_execute"),
@@ -149,13 +168,13 @@ async def test_run_pre_execute_calls_in_registration_order():
 
 
 async def test_run_post_execute_calls_in_reverse_order():
-    calls: list[tuple[str, str]] = []
+    calls: list[_Call] = []
     a = _RecordingMiddleware("A", calls)
     b = _RecordingMiddleware("B", calls)
     c = _RecordingMiddleware("C", calls)
 
     chain = MiddlewareChain([a, b, c])
-    await chain.run_post_execute({"task": {"id": "t1"}}, result=42)
+    await chain.run_post_execute(_message(), result=42)
 
     assert calls == [
         ("C", "post_execute"),
@@ -170,13 +189,13 @@ async def test_run_post_execute_calls_in_reverse_order():
 
 
 async def test_run_on_error_calls_in_reverse_order():
-    calls: list[tuple[str, str]] = []
+    calls: list[_Call] = []
     a = _RecordingMiddleware("A", calls)
     b = _RecordingMiddleware("B", calls)
     c = _RecordingMiddleware("C", calls)
 
     chain = MiddlewareChain([a, b, c])
-    await chain.run_on_error({"task": {"id": "t1"}}, exception=RuntimeError("boom"))
+    await chain.run_on_error(_message(), exception=RuntimeError("boom"))
 
     assert calls == [
         ("C", "on_error"),
@@ -191,13 +210,13 @@ async def test_run_on_error_calls_in_reverse_order():
 
 
 async def test_run_on_retry_forwards_retry_count_and_delay():
-    calls: list = []
+    calls: list[_Call] = []
     a = _RecordingMiddleware("A", calls)
     b = _RecordingMiddleware("B", calls)
 
     chain = MiddlewareChain([a, b])
     exc = RuntimeError("boom")
-    await chain.run_on_retry({"task": {"id": "t1"}}, exception=exc, retry_count=3, delay=2.5)
+    await chain.run_on_retry(_message(), exception=exc, retry_count=3, delay=2.5)
 
     # Reverse order and payload carries retry_count + delay.
     assert calls == [
@@ -219,18 +238,18 @@ class _RaisingMiddleware(Middleware):
         self.exc = exc
 
     @override
-    async def pre_enqueue(self, message: dict) -> None:
+    async def pre_enqueue(self, message: MessageContext) -> None:
         if self.hook == "pre_enqueue":
             raise self.exc
 
     @override
-    async def post_execute(self, message: dict, result=None) -> None:
+    async def post_execute(self, message: MessageContext, result: Any = None) -> None:
         if self.hook == "post_execute":
             raise self.exc
 
 
 async def test_error_in_post_execute_is_swallowed_and_next_hook_runs(swarmq_logs):
-    calls: list[tuple[str, str]] = []
+    calls: list[_Call] = []
     good_a = _RecordingMiddleware("A", calls)
     good_b = _RecordingMiddleware("B", calls)
     raiser = _RaisingMiddleware("post_execute", RuntimeError("middleware-boom"))
@@ -240,7 +259,7 @@ async def test_error_in_post_execute_is_swallowed_and_next_hook_runs(swarmq_logs
     # then A (still runs).
     chain = MiddlewareChain([good_a, raiser, good_b])
 
-    await chain.run_post_execute({"task": {"id": "t1"}}, result=7)
+    await chain.run_post_execute(_message(), result=7)
     captured = [e for e in swarmq_logs if e["logger"] == "swarmq.middleware"]
 
     assert calls == [
@@ -259,7 +278,7 @@ async def test_middleware_hook_failure_logs_error_fields(swarmq_logs):
     """R17: Typ und Text des Fehlers als eigene Felder."""
     chain = MiddlewareChain([_RaisingMiddleware("post_execute", RuntimeError("middleware-boom"))])
 
-    await chain.run_post_execute({"task": {"id": "t1"}}, result=7)
+    await chain.run_post_execute(_message(), result=7)
 
     [entry] = [e for e in swarmq_logs if e["event"] == "middleware_hook_failed"]
     assert entry["log_level"] == "error"
@@ -274,7 +293,7 @@ async def test_middleware_hook_failure_logs_error_fields(swarmq_logs):
 
 
 async def test_error_in_pre_enqueue_propagates():
-    calls: list[tuple[str, str]] = []
+    calls: list[_Call] = []
     good_a = _RecordingMiddleware("A", calls)
     raiser = _RaisingMiddleware("pre_enqueue", RuntimeError("block-enqueue"))
     good_b = _RecordingMiddleware("B", calls)
@@ -282,7 +301,7 @@ async def test_error_in_pre_enqueue_propagates():
     chain = MiddlewareChain([good_a, raiser, good_b])
 
     with pytest.raises(RuntimeError, match="block-enqueue"):
-        await chain.run_pre_enqueue({"task": {"id": "t1"}})
+        await chain.run_pre_enqueue(_message())
 
     # A must have been called before the raiser; B must NOT have been called.
     assert calls == [("A", "pre_enqueue")]
@@ -299,13 +318,13 @@ async def test_integration_counter_tracks_full_hook_lifecycle():
     """Walk through every chain method and verify counters + per-hook ordering."""
     from collections import Counter
 
-    calls: list[tuple[str, str]] = []
+    calls: list[_Call] = []
     a = _RecordingMiddleware("A", calls)
     b = _RecordingMiddleware("B", calls)
     c = _RecordingMiddleware("C", calls)
 
     chain = MiddlewareChain([a, b, c])
-    message = {"task": {"id": "t1"}}
+    message = _message()
     exc = RuntimeError("boom")
 
     await chain.run_pre_enqueue(message)

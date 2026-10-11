@@ -21,7 +21,7 @@ Test-Liste 0.9.0 (drittes Review):
 from __future__ import annotations
 
 import asyncio
-from typing import override
+from typing import Any, override
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -39,6 +39,7 @@ from tests.support.messages import make_message
 from tests.unit.worker._helpers import (
     AddTask,
     _default_payload,
+    as_mock,
 )
 
 pytestmark = pytest.mark.timeout(5)
@@ -116,7 +117,7 @@ class TestWorkerPreStartCancelCheck:
     ):
         """Signal.TASK_CANCELLED is emitted with task_id + task_name."""
         backend.is_cancelled = AsyncMock(return_value=True)
-        captured: list[tuple] = []
+        captured: list[dict[str, Any]] = []
 
         from swarmq.signals import Signal
 
@@ -371,7 +372,7 @@ class TestWorkerPreStartCancelCheck:
         msg = make_message(_default_payload(name="rate_add"))
         await w._handle_message(msg)
 
-        w._rate_limiter.check.assert_not_awaited()
+        as_mock(w._rate_limiter).check.assert_not_awaited()
 
 
 # ===========================================================================
@@ -405,7 +406,7 @@ class TestWorkflowCancelPickup:
         # No prior result for this step → the cancel marker is written.
         backend.get_result = AsyncMock(return_value=None)
 
-        events: list[dict] = []
+        events: list[dict[str, Any]] = []
 
         @worker._signal_dispatcher.on_signal(Signal.TASK_CANCELLED)
         async def _c(**kw):

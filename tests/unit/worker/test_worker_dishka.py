@@ -9,8 +9,8 @@ which needs the names in scope (module-level here, mirroring real usage).
 """
 
 import asyncio
-from collections.abc import AsyncIterable
-from typing import override
+from collections.abc import AsyncGenerator
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -49,7 +49,7 @@ class _SvcProvider(Provider):
     tc = from_context(di.TaskContext, scope=Scope.REQUEST)
 
     @provide(scope=Scope.REQUEST)
-    async def svc(self, ctx: di.TaskContext) -> AsyncIterable[_Svc]:
+    async def svc(self, ctx: di.TaskContext) -> AsyncGenerator[_Svc, BaseException | None]:
         s = _Svc(ctx)
         exc = yield s
         FINALIZED.append(type(exc).__name__ if exc is not None else "OK")
@@ -72,7 +72,7 @@ class DiFailTask(Task):
         raise ValueError("boom")
 
 
-def _payload(task_id: str, name: str, args: list) -> dict:
+def _payload(task_id: str, name: str, args: list[Any]) -> dict[str, Any]:
     return {
         "task": {"id": task_id, "queue": "default", "name": name},
         "args": args,

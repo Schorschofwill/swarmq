@@ -17,7 +17,7 @@ Test-Liste:
 from __future__ import annotations
 
 import uuid
-from typing import override
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -55,7 +55,7 @@ def _ctx(task_class: type[Task], **overrides: object) -> GateContext:
     return GateContext(**base)  # type: ignore[arg-type]
 
 
-def _events(logs: list[dict], event: str) -> list[dict]:
+def _events(logs: list[dict[str, Any]], event: str) -> list[dict[str, Any]]:
     return [e for e in logs if e["event"] == event]
 
 

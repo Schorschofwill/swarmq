@@ -156,7 +156,8 @@ async def test_app_replacing_root_stops_the_listener_and_reports_once(
     configure_logging(LoggingSettings(format="json"))
     get_logger("swarmq.tests.app_wins").warning("evt_before_import")
     root_listener = _root_listener()
-    assert root_listener.running
+    running_before = root_listener.running
+    assert running_before
     module = _app_module(tmp_path, monkeypatch, _REPLACE_ROOT)
 
     with pytest.raises(ConfigurationError, match="no tasks registered"):

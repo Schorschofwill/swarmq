@@ -28,6 +28,7 @@ Test-Liste 0.9.0 (viertes Review):
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -94,7 +95,7 @@ class TestWorkerRateLimiting:
         from swarmq.signals import SignalDispatcher
 
         dispatcher = SignalDispatcher()
-        seen: list[dict] = []
+        seen: list[dict[str, Any]] = []
 
         @dispatcher.on_signal(Signal.TASK_RATE_LIMITED)
         async def _handler(**kwargs: object) -> None:

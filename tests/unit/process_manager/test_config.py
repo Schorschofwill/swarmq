@@ -22,7 +22,7 @@ class TestWorkerConfig:
         with pytest.raises(TypeError, match="pickle-safe"):
             WorkerConfig(
                 module="x",
-                queues=["a"],
+                queues=["a"],  # type: ignore[arg-type]  # absichtlich falscher Typ: Laufzeitpruefung
                 concurrency=1,
                 log_level="INFO",
                 log_format="human",
@@ -52,7 +52,7 @@ class TestWorkerConfig:
 
         cfg = _make_test_cfg()
         with pytest.raises(dataclasses.FrozenInstanceError):
-            cfg.module = "mutated"
+            cfg.module = "mutated"  # type: ignore[misc]  # absichtlich: frozen muss Zuweisung ablehnen
 
     def test_reload_defaults_to_false_and_empty_watch_dirs(self):
         """R5.3 Unit 2: new fields default to (False, ())."""

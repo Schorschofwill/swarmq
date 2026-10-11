@@ -268,6 +268,7 @@ async def test_orphan_limit_dead_letters_as_worker_hung_error(
 
     assert outcome == Terminal.already_released()
     dead_letter.assert_awaited_once()
+    assert dead_letter.await_args is not None
     args = dead_letter.await_args.args
     assert args[0] is delivery
     assert args[1].task_id == "t-1"
@@ -658,7 +659,7 @@ async def test_claim_that_failed_on_the_client_is_released_in_the_background(
         await real_release(*args, **kwargs)  # type: ignore[arg-type]
         released.set()
 
-    store.claim = claim_then_fail  # type: ignore[method-assign]
+    store.claim = claim_then_fail  # type: ignore[method-assign, assignment]  # Fehler-Doppel um die echte Methode
     store.release = release  # type: ignore[method-assign]
     guard = ExecutionGuard(deps, store=lambda: store, dead_letter=dead_letter)
 
@@ -687,7 +688,7 @@ async def test_background_release_after_a_failed_claim_leaves_a_foreign_marker(
         await real_release(*args, **kwargs)  # type: ignore[arg-type]
         released.set()
 
-    store.claim = fail  # type: ignore[method-assign]
+    store.claim = fail  # type: ignore[method-assign, assignment]  # Fehler-Doppel statt der echten Methode
     store.release = release  # type: ignore[method-assign]
     guard = ExecutionGuard(deps, store=lambda: store, dead_letter=dead_letter)
 

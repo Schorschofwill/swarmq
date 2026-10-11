@@ -17,6 +17,7 @@ import pytest
 from swarmq.config import SwarmQConfig
 from swarmq.signals import Signal
 from swarmq.worker.gates import GateDeps, route_via_dlx
+from tests.unit.worker._helpers import as_mock
 
 pytestmark = [pytest.mark.timeout(5)]
 
@@ -54,8 +55,8 @@ async def test_signal_carries_queue_reason_and_optional_identity():
     deps = _deps()
     await route_via_dlx(deps, _delivery(), reason="body_too_large", error="17 MiB > 16 MiB")
 
-    deps.signals.dispatch.assert_awaited_once()
-    args, kwargs = deps.signals.dispatch.await_args
+    as_mock(deps.signals).dispatch.assert_awaited_once()
+    args, kwargs = as_mock(deps.signals).dispatch.await_args
     assert args[0] is Signal.TASK_REJECTED
     assert kwargs == {
         "queue": "tasks.high",
@@ -76,7 +77,7 @@ async def test_identity_is_passed_through_when_known():
         task_name="nope",
         error="task not found",
     )
-    _args, kwargs = deps.signals.dispatch.await_args
+    _args, kwargs = as_mock(deps.signals).dispatch.await_args
     assert kwargs["task_id"] == "t1"
     assert kwargs["task_name"] == "nope"
 
@@ -88,25 +89,25 @@ async def test_no_signal_when_the_broker_verb_fails():
     deps = _deps(route_fails=True)
     with pytest.raises(RuntimeError, match="broker gone"):
         await route_via_dlx(deps, _delivery(), reason="undecodable")
-    deps.signals.dispatch.assert_not_awaited()
+    as_mock(deps.signals).dispatch.assert_not_awaited()
 
 
 async def test_exactly_one_broker_verb_per_rejection():
     """Ack-Invariante der Pipeline: das Signal ist kein weiteres Verb."""
     deps = _deps()
     await route_via_dlx(deps, _delivery(), reason="undecodable")
-    assert deps.broker.route_via_dlx.await_count == 1
-    deps.broker.dead_letter.assert_not_awaited()
+    assert as_mock(deps.broker).route_via_dlx.await_count == 1
+    as_mock(deps.broker).dead_letter.assert_not_awaited()
 
 
 async def test_fallback_broker_without_route_via_dlx_still_signals():
     """Ein Broker ohne ``route_via_dlx`` veröffentlicht an sein
     Dead-Letter-Ziel -- die Ablehnung ist dieselbe und bleibt sichtbar."""
     deps = _deps()
-    deps.broker.route_via_dlx = None
+    as_mock(deps.broker).route_via_dlx = None
     await route_via_dlx(deps, _delivery(), reason="dlq_publish_failed")
-    deps.broker.dead_letter.assert_awaited_once()
-    deps.signals.dispatch.assert_awaited_once()
+    as_mock(deps.broker).dead_letter.assert_awaited_once()
+    as_mock(deps.signals).dispatch.assert_awaited_once()
 
 
 # BZ-13 (Plan 0.12.0, MR 3): Workflow-Fehlmarkierung am DLX-Fallback, best effort.
@@ -114,15 +115,17 @@ async def test_fallback_broker_without_route_via_dlx_still_signals():
 
 async def test_route_marks_the_workflow_failed_without_redelivery():
     deps = _deps()
-    deps.fail_workflow = AsyncMock(return_value=True)
+    fail_workflow = AsyncMock(return_value=True)
+    deps.fail_workflow = fail_workflow
     delivery = _delivery()
 
     await route_via_dlx(
         deps, delivery, reason="unregistered_task", task_id="t-1", task_name="gone", error="no such task"
     )
 
-    deps.fail_workflow.assert_awaited_once()
-    got_delivery, ctx, message, may_redeliver = deps.fail_workflow.await_args.args
+    fail_workflow.assert_awaited_once()
+    assert fail_workflow.await_args is not None
+    got_delivery, ctx, message, may_redeliver = fail_workflow.await_args.args
     assert got_delivery is delivery
     assert ctx.task_id == "t-1"
     assert ctx.task_name == "gone"
@@ -138,5 +141,5 @@ async def test_failing_workflow_mark_does_not_break_the_route():
 
     await route_via_dlx(deps, _delivery(), reason="unregistered_task", task_id="t-1", task_name="gone")
 
-    deps.broker.route_via_dlx.assert_awaited_once()
-    deps.signals.dispatch.assert_awaited_once()
+    as_mock(deps.broker).route_via_dlx.assert_awaited_once()
+    as_mock(deps.signals).dispatch.assert_awaited_once()

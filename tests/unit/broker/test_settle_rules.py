@@ -37,6 +37,7 @@ Review Phase 2 (2026-10-09):
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -109,7 +110,7 @@ class TestBrokerCancelledTag:
         assert setup.message.settled == [("ack", ["tag-1"])]
 
     async def test_ack_is_withheld_when_the_own_cancel_does_not_come_in_time(
-        self, setup: Setup, swarmq_logs: list[dict]
+        self, setup: Setup, swarmq_logs: list[dict[str, Any]]
     ) -> None:
         await setup.broker_cancels()  # Wächter läuft nicht: niemand meldet ab
         setup.broker.settle_cancel_wait_s = 0.05
@@ -124,7 +125,7 @@ class TestBrokerCancelledTag:
         assert withheld["wait_s"] == 0.05
         assert "redelivers" in withheld["hint"]
 
-    async def test_deferred_ack_is_logged(self, setup: Setup, swarmq_logs: list[dict]) -> None:
+    async def test_deferred_ack_is_logged(self, setup: Setup, swarmq_logs: list[dict[str, Any]]) -> None:
         await setup.broker_cancels()
         setup.broker.start_consumer_watch(interval_s=3600.0)
 

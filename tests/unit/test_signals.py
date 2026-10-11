@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -321,7 +322,7 @@ async def test_task_duplicate_detected_dispatches_with_payload():
     """Signal fires with expected payload keys (existing_task_id,
     task_name, dedup_hash, source)."""
     dispatcher = SignalDispatcher()
-    received: list[dict] = []
+    received: list[dict[str, Any]] = []
 
     @dispatcher.on_signal(Signal.TASK_DUPLICATE_DETECTED)
     async def handler(**kwargs):
@@ -393,7 +394,7 @@ async def test_dispatch_handler_timeout_bounds_hanging_handler():
 @pytest.mark.asyncio
 async def test_dispatch_without_timeout_keeps_legacy_behaviour():
     dispatcher = SignalDispatcher()
-    received: list[dict] = []
+    received: list[dict[str, Any]] = []
 
     @dispatcher.on_signal(Signal.WORKER_ONLINE)
     async def handler(**kwargs):

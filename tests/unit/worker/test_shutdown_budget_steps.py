@@ -39,7 +39,7 @@ from swarmq.worker import lifecycle as _lc
 pytestmark = pytest.mark.timeout(5)
 
 
-def _hang(worker: Any) -> asyncio.Task[None]:
+def _hang(worker: Any) -> asyncio.Task[bool]:
     task = asyncio.create_task(asyncio.Event().wait())
     worker._active_tasks.add(task)
     task.add_done_callback(worker._active_tasks.discard)

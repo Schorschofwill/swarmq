@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -14,6 +15,25 @@ from swarmq.metrics import (
     serve_metrics,
 )
 from swarmq.signals import Signal, SignalDispatcher
+
+if TYPE_CHECKING:
+    from prometheus_client import CollectorRegistry
+
+
+def _registry(m: Metrics) -> CollectorRegistry:
+    """Registry einer aktiven ``Metrics``-Instanz (ohne prometheus_client None)."""
+    assert m.registry is not None
+    return m.registry
+
+
+def _child_value(child: object) -> float:
+    """Aktueller Wert eines gelabelten Counter-/Gauge-Kindes."""
+    from prometheus_client import Counter, Gauge
+
+    assert isinstance(child, Counter | Gauge), child
+    value: float = child._value.get()
+    return value
+
 
 # ---------------------------------------------------------------------------
 # Metrics: Registry und Rendern
@@ -180,18 +200,18 @@ class TestInstallSignalCollectors:
             pytest.skip("prometheus_client missing")
 
         await disp.dispatch(Signal.SCHEDULER_LEADER, worker_id="w1")
-        assert m.scheduler_leader.labels(worker_id="w1")._value.get() == 1
+        assert _child_value(m.scheduler_leader.labels(worker_id="w1")) == 1
 
         # Graceful handover / standby / shutdown all drop it to 0.
         await disp.dispatch(Signal.SCHEDULER_LEADER_HANDOVER, worker_id="w1")
-        assert m.scheduler_leader.labels(worker_id="w1")._value.get() == 0
+        assert _child_value(m.scheduler_leader.labels(worker_id="w1")) == 0
 
         # Failover re-acquire sets it back to 1.
         await disp.dispatch(Signal.SCHEDULER_LEADER_FAILOVER, worker_id="w1")
-        assert m.scheduler_leader.labels(worker_id="w1")._value.get() == 1
+        assert _child_value(m.scheduler_leader.labels(worker_id="w1")) == 1
 
         await disp.dispatch(Signal.WORKER_SHUTDOWN, worker_id="w1")
-        assert m.scheduler_leader.labels(worker_id="w1")._value.get() == 0
+        assert _child_value(m.scheduler_leader.labels(worker_id="w1")) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -332,8 +352,8 @@ class TestRejectedCounter:
             error="bad json",
         )
 
-        assert m.tasks_rejected_total.labels(queue="tasks.high", reason="body_too_large")._value.get() == 2
-        assert m.tasks_rejected_total.labels(queue="tasks.high", reason="undecodable")._value.get() == 1
+        assert _child_value(m.tasks_rejected_total.labels(queue="tasks.high", reason="body_too_large")) == 2
+        assert _child_value(m.tasks_rejected_total.labels(queue="tasks.high", reason="undecodable")) == 1
 
     async def test_dlq_outcome_stays_separate(self):
         """R13: ``TASK_DLQ`` zaehlt weiter nur sich selbst."""
@@ -354,7 +374,7 @@ class TestRejectedCounter:
             task_name=None,
             error="x",
         )
-        assert m.tasks_total.labels(task_name="", queue="q", outcome="dlq")._value.get() == 0
+        assert _child_value(m.tasks_total.labels(task_name="", queue="q", outcome="dlq")) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -385,7 +405,7 @@ class TestLogRecordsDroppedCounter:
         for _ in range(3):
             handler.enqueue(record)
 
-        assert m.registry.get_sample_value(name) == before + 2
+        assert _registry(m).get_sample_value(name) == before + 2
 
 
 async def test_cron_conflict_signal_increments_conflict_counter():
@@ -429,7 +449,7 @@ async def test_leader_outdated_signal_sets_and_clears_gauge():
         leader_version=None,
         outdated=True,
     )
-    assert m.registry.get_sample_value(sample, {"worker_id": "w"}) == 1.0
+    assert _registry(m).get_sample_value(sample, {"worker_id": "w"}) == 1.0
 
     await disp.dispatch(
         Signal.SCHEDULER_LEADER_OUTDATED,
@@ -438,7 +458,7 @@ async def test_leader_outdated_signal_sets_and_clears_gauge():
         leader_version="0.10.0",
         outdated=False,
     )
-    assert m.registry.get_sample_value(sample, {"worker_id": "w"}) == 0.0
+    assert _registry(m).get_sample_value(sample, {"worker_id": "w"}) == 0.0
 
 
 def test_leader_outdated_help_names_the_minimum_version():
@@ -464,7 +484,7 @@ def test_consumer_reregistrations_are_counted_per_queue():
     m.count_consumer_reregistration("q1", "channel_replaced")
 
     sample = "swarmq_consumer_reregistrations_total"
-    assert m.registry.get_sample_value(sample, {"queue": "q1"}) == 2.0
+    assert _registry(m).get_sample_value(sample, {"queue": "q1"}) == 2.0
 
 
 def test_execution_guard_events_are_counted_per_event():
@@ -479,8 +499,8 @@ def test_execution_guard_events_are_counted_per_event():
     m.count_execution_guard_event("lease_lost")
 
     sample = "swarmq_execution_guard_events_total"
-    assert m.registry.get_sample_value(sample, {"event": "duplicate_skipped"}) == 2.0
-    assert m.registry.get_sample_value(sample, {"event": "lease_lost"}) == 1.0
+    assert _registry(m).get_sample_value(sample, {"event": "duplicate_skipped"}) == 2.0
+    assert _registry(m).get_sample_value(sample, {"event": "lease_lost"}) == 1.0
 
 
 async def test_fire_unroutable_signal_increments_unroutable_counter():
@@ -522,7 +542,7 @@ async def test_unknown_task_deferrals_are_counted_per_queue():
             unknown_since=0,
         )
 
-    assert m.registry.get_sample_value("swarmq_tasks_unknown_deferred_total", {"queue": "q1"}) == 2.0
+    assert _registry(m).get_sample_value("swarmq_tasks_unknown_deferred_total", {"queue": "q1"}) == 2.0
 
 
 async def test_scheduler_crons_held_gauge_follows_the_unowned_signal():
@@ -543,6 +563,6 @@ async def test_scheduler_crons_held_gauge_follows_the_unowned_signal():
         held=True,
         held_count=2,
     )
-    assert m.registry.get_sample_value(sample, {"worker_id": "w"}) == 2.0
+    assert _registry(m).get_sample_value(sample, {"worker_id": "w"}) == 2.0
     await disp.dispatch(Signal.SCHEDULER_STANDBY, worker_id="w")
-    assert m.registry.get_sample_value(sample, {"worker_id": "w"}) == 0.0
+    assert _registry(m).get_sample_value(sample, {"worker_id": "w"}) == 0.0

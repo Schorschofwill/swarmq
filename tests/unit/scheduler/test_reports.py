@@ -37,7 +37,7 @@ import asyncio
 import dataclasses
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import override
+from typing import Any, override
 
 import msgspec
 import pytest
@@ -46,7 +46,7 @@ from swarmq.contracts import CronReport, CronReports
 from swarmq.exceptions import BackendConnectionError
 from swarmq.scheduler import ScheduleDefinition, ScheduleStore
 from swarmq.scheduler.reports import choose_reports, cron_fingerprint, static_definitions
-from swarmq.signals import Signal
+from swarmq.signals import Signal, SignalDispatcher
 from swarmq.task import Task, TaskInfo
 from tests.support.inmemory import FakeClock, InMemoryBackend
 from tests.unit.scheduler._helpers import _make_loop
@@ -55,7 +55,7 @@ pytestmark = [pytest.mark.timeout(5)]
 
 
 def _static(**fields) -> ScheduleDefinition:
-    base = {
+    base: dict[str, Any] = {
         "schedule_name": "nightly",
         "task_name": "nightly",
         "args": (),
@@ -215,8 +215,8 @@ class TestConflict:
         assert _choices(old, new)["nightly"].conflict == ()
 
 
-def _utc_ms(*args: int) -> int:
-    return int(datetime(*args, tzinfo=UTC).timestamp() * 1000)
+def _utc_ms(year: int, month: int, day: int, hour: int, minute: int) -> int:
+    return int(datetime(year, month, day, hour, minute, tzinfo=UTC).timestamp() * 1000)
 
 
 _LOCAL_NOW_MS = _utc_ms(2026, 10, 6, 10, 0)
@@ -377,9 +377,9 @@ class TestAdoptReportedCrons:
         memory,
         leader,
         clock,
-        signal_dispatcher,
+        signal_dispatcher: SignalDispatcher,
     ):
-        seen: list[dict] = []
+        seen: list[dict[str, Any]] = []
 
         @signal_dispatcher.on_signal(Signal.SCHEDULER_CRON_CONFLICT)
         async def _on_conflict(**kw) -> None:
@@ -399,10 +399,10 @@ class TestAdoptReportedCrons:
         memory,
         leader,
         clock,
-        signal_dispatcher,
+        signal_dispatcher: SignalDispatcher,
         swarmq_logs,
     ):
-        seen: list[dict] = []
+        seen: list[dict[str, Any]] = []
 
         @signal_dispatcher.on_signal(Signal.SCHEDULER_CRON_CONFLICT)
         async def _on_conflict(**kw) -> None:

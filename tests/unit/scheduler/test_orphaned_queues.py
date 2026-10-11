@@ -295,7 +295,8 @@ async def test_takeover_adopt_does_not_check_only_the_periodic_tick_does(
 
     async def _probe(names: Any) -> dict[str, QueueStatus | None]:
         checked.set()
-        return await probe(names)
+        statuses: dict[str, QueueStatus | None] = await probe(names)
+        return statuses
 
     broker.queue_statuses = AsyncMock(side_effect=_probe)
     adopts: list[int] = []

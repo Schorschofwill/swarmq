@@ -294,7 +294,7 @@ class TestPurityGuard:
         assert arch.purity_violations(graph, "pkg.core", self._FORBIDDEN, alias_modules=["pkg.helper"]) == set()
 
     def test_existing_core_package_without_activation_is_found(self) -> None:
-        graph = {"pkg.core": set(), "pkg.core.x": set(), "pkg.util": set()}
+        graph: dict[str, set[str]] = {"pkg.core": set(), "pkg.core.x": set(), "pkg.util": set()}
         active = frozenset({"pkg.util"})
         existing = [p for p in ("pkg.core", "pkg.util", "pkg.other") if arch.modules_of(graph, p)]
         assert existing == ["pkg.core", "pkg.util"]

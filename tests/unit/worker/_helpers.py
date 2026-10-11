@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import time
-from typing import Any, override
+from typing import Any, cast, override
+from unittest.mock import NonCallableMock
 
 from swarmq.headers import HEADER_LOCK_WAIT_SINCE
+from swarmq.middleware import MessageContext
 from swarmq.task import Task, TaskInfo
 
 
@@ -21,9 +23,9 @@ def _default_payload(
     task_id: str = "abc-123",
     queue: str = "default",
     name: str = "add",
-    args: list | None = None,
-    kwargs: dict | None = None,
-) -> dict:
+    args: list[Any] | None = None,
+    kwargs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return {
         "task": {"id": task_id, "queue": queue, "name": name},
         "args": args if args is not None else [1, 2],
@@ -35,3 +37,27 @@ def lock_wait_exceeded_headers(config: Any) -> dict[str, Any]:
     """Header einer Nachricht, deren Wartezeit auf einen Lock die Obergrenze
     ``lock_wait_max_s`` ueberschritten hat (Plan 0.12.0, MR 13, BZ-05)."""
     return {HEADER_LOCK_WAIT_SINCE: int(time.time() * 1000) - int(config.lock_wait_max_s * 1000) - 1_000}
+
+
+def gauge_value(metric: object) -> float:
+    """Aktueller Wert eines (gelabelten) Prometheus-Gauges; der Test setzt
+    aktive Metriken voraus, ein ``_NoopMetric`` ist hier ein Fehler."""
+    from prometheus_client import Gauge  # lazy: Extra [metrics] optional
+
+    assert isinstance(metric, Gauge)
+    value: float = metric._value.get()
+    return value
+
+
+def partial_message(**fields: Any) -> MessageContext:
+    """Nachrichtenkontext mit nur den Feldern, die der Test braucht (etwa
+    ``retry_count``); zur Laufzeit ein gewoehnliches ``dict``."""
+    return cast("MessageContext", fields)
+
+
+def as_mock(obj: object) -> Any:
+    """Mock hinter einem typisierten Attribut (etwa ``worker._broker``), damit
+    der Test Mock-API (``assert_awaited_once`` ...) nutzen und Methoden
+    ersetzen kann; prueft zur Laufzeit, dass es wirklich ein Mock ist."""
+    assert isinstance(obj, NonCallableMock)
+    return obj

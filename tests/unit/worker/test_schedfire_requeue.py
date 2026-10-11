@@ -40,7 +40,7 @@ from swarmq.worker import Worker
 from swarmq.worker.execution import ExecutionResult
 from swarmq.worker.gates import GateContext, SchedfireClaim
 from tests.support.messages import make_message
-from tests.unit.worker._helpers import _default_payload
+from tests.unit.worker._helpers import _default_payload, partial_message
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -271,7 +271,7 @@ async def test_slot_unavailable_releases_the_claim_first(worker: Worker, broker,
         _claimed_ctx(),
         SlotUnavailable("no ready"),
         "no ready",
-        {"retry_count": 0},
+        partial_message(retry_count=0),
         MiddlewareChain([]),
     )
 

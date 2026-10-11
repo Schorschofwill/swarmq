@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from typing import override
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -106,7 +106,7 @@ class TestWorkerLocking:
         from swarmq.signals import SignalDispatcher
 
         dispatcher = SignalDispatcher()
-        seen: list[dict] = []
+        seen: list[dict[str, Any]] = []
 
         @dispatcher.on_signal(Signal.TASK_LOCKED)
         async def _handler(**kwargs: object) -> None:
@@ -386,12 +386,12 @@ class TestLockRequeueCounter:
         w._lock_manager = MagicMock()
         w._lock_manager.acquire = AsyncMock(return_value=None)
         broker.dead_letter = AsyncMock(side_effect=ConnectionError("broker down"))
-        events: list[dict] = []
+        events: list[dict[str, Any]] = []
 
         async def _dispatch(signal, **kwargs):
             events.append({"signal": signal, **kwargs})
 
-        w._signal_dispatcher.dispatch = AsyncMock(side_effect=_dispatch)
+        w._signal_dispatcher.dispatch = AsyncMock(side_effect=_dispatch)  # type: ignore[method-assign]  # Dispatch-Spy
 
         msg = make_message(_default_payload(name="locked", args=[], kwargs={}))
         msg.headers = lock_wait_exceeded_headers(config)
@@ -866,7 +866,7 @@ class TestLockWaitLimitTerminal:
     def _worker(self, broker, backend, config):
         registry = TaskRegistry()
         registry.register(LockedTask)
-        dlq: list[dict] = []
+        dlq: list[dict[str, Any]] = []
         w = Worker(broker=broker, backend=backend, registry=registry, config=config)
 
         @w._signal_dispatcher.on_signal(Signal.TASK_DLQ)

@@ -4,7 +4,7 @@ schedule/schedule_many, Delay/ETA, Unique/Dedup, Middleware+Signale."""
 from __future__ import annotations
 
 import uuid
-from typing import override
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -17,6 +17,8 @@ from swarmq.registry import TaskRegistry
 from swarmq.serialization import decode_json
 from swarmq.signals import Signal, SignalDispatcher
 from swarmq.task import DeliveryMode, Task, TaskInfo
+
+_Batch = list[tuple[str, tuple[Any, ...], dict[str, Any]]]
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -149,7 +151,7 @@ async def test_schedule_many_empty_list(client, broker):
 
 @pytest.mark.asyncio
 async def test_schedule_many_resolves_queue_from_registry(client, broker, registry):
-    tasks = [("add", (1, 2), {})]
+    tasks: _Batch = [("add", (1, 2), {})]
     task_ids = await client.schedule_many(tasks)
 
     assert len(task_ids) == 1
@@ -287,7 +289,7 @@ class TestClientMiddlewareAndSignals:
         client_with_hooks,
         middleware_chain,
     ):
-        tasks = [
+        tasks: _Batch = [
             ("add", (1, 2), {}),
             ("add", (3, 4), {}),
             ("add", (5, 6), {}),
@@ -307,7 +309,7 @@ class TestClientMiddlewareAndSignals:
         middleware_chain,
         signal_dispatcher,
     ):
-        tasks = [
+        tasks: _Batch = [
             ("add", (1, 2), {}),
             ("add", (3, 4), {}),
             ("add", (5, 6), {}),
@@ -381,7 +383,7 @@ class TestClientMiddlewareAndSignals:
         registry,
     ):
         plain_client = Client(broker=broker, backend=backend, registry=registry)
-        tasks = [("add", (1, 2), {}), ("add", (3, 4), {})]
+        tasks: _Batch = [("add", (1, 2), {}), ("add", (3, 4), {})]
         task_ids = await plain_client.schedule_many(tasks, queue="math")
 
         assert len(task_ids) == 2
@@ -402,7 +404,7 @@ class TestClientMiddlewareAndSignals:
         # Pre_enqueue succeeds for first, raises on second
         middleware_chain.run_pre_enqueue = AsyncMock(side_effect=[None, RuntimeError("veto"), None])
 
-        tasks = [
+        tasks: _Batch = [
             ("add", (1, 2), {}),
             ("add", (3, 4), {}),
             ("add", (5, 6), {}),
@@ -435,22 +437,22 @@ class TestClientMiddlewareAndSignals:
         bug: before the fix, Client captured a MiddlewareChain snapshot at
         __init__ time and appending to the source list had no effect.
         """
-        from swarmq.middleware import Middleware, MiddlewareChain
+        from swarmq.middleware import MessageContext, Middleware, MiddlewareChain
 
         # Live list — tests mutate this after Client construction.
         live_middlewares: list[Middleware] = []
 
         class Spy(Middleware):
             def __init__(self) -> None:
-                self.pre_calls: list[dict] = []
-                self.post_calls: list[dict] = []
+                self.pre_calls: list[MessageContext] = []
+                self.post_calls: list[MessageContext] = []
 
             @override
-            async def pre_enqueue(self, message: dict) -> None:
+            async def pre_enqueue(self, message: MessageContext) -> None:
                 self.pre_calls.append(message)
 
             @override
-            async def post_enqueue(self, message: dict) -> None:
+            async def post_enqueue(self, message: MessageContext) -> None:
                 self.post_calls.append(message)
 
         client = Client(
@@ -489,14 +491,14 @@ class TestClientMiddlewareAndSignals:
         registry,
     ):
         """A real MiddlewareChain instance is wrapped in a lambda internally."""
-        from swarmq.middleware import Middleware, MiddlewareChain
+        from swarmq.middleware import MessageContext, Middleware, MiddlewareChain
 
         class Spy(Middleware):
             def __init__(self) -> None:
-                self.pre_calls: list[dict] = []
+                self.pre_calls: list[MessageContext] = []
 
             @override
-            async def pre_enqueue(self, message: dict) -> None:
+            async def pre_enqueue(self, message: MessageContext) -> None:
                 self.pre_calls.append(message)
 
         spy = Spy()
@@ -538,13 +540,13 @@ class TestClientMiddlewareAndSignals:
 @pytest.mark.asyncio
 async def test_schedule_resolves_delivery_mode_from_registry(broker, backend):
     """Registered task with FIRE_AND_FORGET -> message_dict has that value."""
-    from swarmq.middleware import Middleware, MiddlewareChain
+    from swarmq.middleware import MessageContext, Middleware, MiddlewareChain
 
-    captured: list[dict] = []
+    captured: list[dict[str, Any]] = []
 
     class CaptureMiddleware(Middleware):
         @override
-        async def pre_enqueue(self, message: dict) -> None:
+        async def pre_enqueue(self, message: MessageContext) -> None:
             captured.append(dict(message))
 
     # Registry mock whose TaskInfo has FIRE_AND_FORGET delivery
@@ -575,13 +577,13 @@ async def test_schedule_resolves_delivery_mode_from_registry(broker, backend):
 @pytest.mark.asyncio
 async def test_schedule_default_delivery_mode_without_registry(broker, backend):
     """No registry + explicit queue -> default delivery_mode is 'at_least_once'."""
-    from swarmq.middleware import Middleware, MiddlewareChain
+    from swarmq.middleware import MessageContext, Middleware, MiddlewareChain
 
-    captured: list[dict] = []
+    captured: list[dict[str, Any]] = []
 
     class CaptureMiddleware(Middleware):
         @override
-        async def pre_enqueue(self, message: dict) -> None:
+        async def pre_enqueue(self, message: MessageContext) -> None:
             captured.append(dict(message))
 
     chain = MiddlewareChain([CaptureMiddleware()])
@@ -795,7 +797,7 @@ class TestClientUniqueSchedule:
         from swarmq.signals import Signal, SignalDispatcher
 
         dispatcher = SignalDispatcher()
-        received: list[dict] = []
+        received: list[dict[str, Any]] = []
 
         @dispatcher.on_signal(Signal.TASK_DUPLICATE_DETECTED)
         async def handler(**kwargs):
@@ -1077,7 +1079,7 @@ class TestClientUniqueDeferred:
         from swarmq.signals import Signal, SignalDispatcher
 
         dispatcher = SignalDispatcher()
-        received: list[dict] = []
+        received: list[dict[str, Any]] = []
 
         @dispatcher.on_signal(Signal.TASK_DUPLICATE_DETECTED)
         async def handler(**kwargs):
@@ -1239,7 +1241,7 @@ class TestClientUniqueScheduleMany:
         backend_setnx,
     ):
         """Baseline: no unique_for → no SETNX, only R4.4 enqueued-at header."""
-        tasks = [("add", (1, 2), {}), ("add", (3, 4), {})]
+        tasks: _Batch = [("add", (1, 2), {}), ("add", (3, 4), {})]
         ids = await client_setnx.schedule_many(tasks, queue="math")
         assert len(ids) == 2
         backend_setnx.claim_unique.assert_not_awaited()
@@ -1257,7 +1259,7 @@ class TestClientUniqueScheduleMany:
         backend_setnx,
     ):
         """unique_for=60 → SETNX per task, header carried on publish."""
-        tasks = [("add", (1,), {}), ("add", (2,), {}), ("add", (3,), {})]
+        tasks: _Batch = [("add", (1,), {}), ("add", (2,), {}), ("add", (3,), {})]
         ids = await client_setnx.schedule_many(
             tasks,
             queue="math",
@@ -1288,7 +1290,7 @@ class TestClientUniqueScheduleMany:
 
         backend_setnx.claim_unique = AsyncMock(side_effect=setnx_mock)
 
-        tasks = [("add", (1,), {}), ("add", (2,), {}), ("add", (3,), {})]
+        tasks: _Batch = [("add", (1,), {}), ("add", (2,), {}), ("add", (3,), {})]
         ids = await client_setnx.schedule_many(
             tasks,
             queue="math",
@@ -1314,7 +1316,7 @@ class TestClientUniqueScheduleMany:
         from swarmq.signals import Signal, SignalDispatcher
 
         dispatcher = SignalDispatcher()
-        received: list[dict] = []
+        received: list[dict[str, Any]] = []
 
         @dispatcher.on_signal(Signal.TASK_DUPLICATE_DETECTED)
         async def handler(**kwargs):
@@ -1332,7 +1334,7 @@ class TestClientUniqueScheduleMany:
             registry=registry,
             signal_dispatcher=dispatcher,
         )
-        tasks = [("add", (1,), {}), ("add", (2,), {}), ("add", (3,), {})]
+        tasks: _Batch = [("add", (1,), {}), ("add", (2,), {}), ("add", (3,), {})]
         await client.schedule_many(tasks, queue="math", unique_for=60)
         assert len(received) == 1
         assert received[0]["existing_task_id"] == "t-dup"
@@ -1356,7 +1358,7 @@ class TestClientUniqueScheduleMany:
         registry.get_entry = MagicMock(return_value=entry)
         client = Client(broker=broker, backend=backend_setnx, registry=registry)
 
-        tasks = [("add", (1,), {}), ("add", (2,), {})]
+        tasks: _Batch = [("add", (1,), {}), ("add", (2,), {})]
         await client.schedule_many(tasks, queue="math", unique_for=None)
         backend_setnx.claim_unique.assert_not_awaited()
 
@@ -1378,7 +1380,7 @@ class TestClientUniqueScheduleMany:
         registry.get_entry = MagicMock(return_value=entry)
         client = Client(broker=broker, backend=backend_setnx, registry=registry)
 
-        tasks = [("add", (1,), {}), ("add", (2,), {})]
+        tasks: _Batch = [("add", (1,), {}), ("add", (2,), {})]
         await client.schedule_many(tasks, queue="math")
         assert backend_setnx.claim_unique.await_count == 2
         # All elements use the TaskInfo default TTL.
@@ -1424,7 +1426,7 @@ class TestClientUniqueScheduleMany:
             registry=registry,
             signal_dispatcher=dispatcher,
         )
-        tasks = [("add", (1,), {}), ("add", (2,), {})]
+        tasks: _Batch = [("add", (1,), {}), ("add", (2,), {})]
         ids = await client.schedule_many(tasks, queue="math", unique_for=60)
         assert ids[1] == "t-dup"
         # Only the fresh publish emits TASK_ENQUEUED.
@@ -1452,7 +1454,7 @@ class TestClientUniqueScheduleMany:
         broker.publish = AsyncMock(side_effect=publish_mock)
 
         client = Client(broker=broker, backend=backend_setnx, registry=registry)
-        tasks = [("add", (1,), {}), ("add", (2,), {})]
+        tasks: _Batch = [("add", (1,), {}), ("add", (2,), {})]
 
         with pytest.raises(RuntimeError, match="blip on element 1"):
             await client.schedule_many(tasks, queue="math", unique_for=60)
@@ -1481,7 +1483,7 @@ class TestClientUniqueScheduleMany:
         registry.get_entry = MagicMock(return_value=entry)
 
         client = Client(broker=broker, backend=backend_setnx, registry=registry)
-        tasks = [("add", (1,), {}), ("unknown", (), {})]
+        tasks: _Batch = [("add", (1,), {}), ("unknown", (), {})]
 
         with pytest.raises(TaskNotFoundError):
             await client.schedule_many(tasks, queue="math", unique_for=60)
@@ -1518,7 +1520,7 @@ class TestClientUniqueScheduleMany:
             registry=registry,
             middleware_chain=MiddlewareChain([BoomMiddleware()]),
         )
-        tasks = [("add", (i,), {}) for i in range(3)]
+        tasks: _Batch = [("add", (i,), {}) for i in range(3)]
 
         with pytest.raises(RuntimeError, match="pre_enqueue boom"):
             await client.schedule_many(tasks, queue="math", unique_for=60)
@@ -1596,7 +1598,7 @@ class TestClientPriorityRouting:
 #    WARNING mit ``error_type`` und ``error`` -- der TTL heilt den Claim.
 
 
-def _schedule_events(entries: list[dict], event: str) -> list[dict]:
+def _schedule_events(entries: list[dict[str, Any]], event: str) -> list[dict[str, Any]]:
     return [e for e in entries if e["event"] == event and e["logger"] == "swarmq.client.schedule"]
 
 

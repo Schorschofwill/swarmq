@@ -34,10 +34,12 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import pytest
 from aio_pika.exceptions import PublishError
+from aiormq.abc import DeliveredMessage
 from aiormq.exceptions import ConnectionClosed
 from pamqp.commands import Basic
 
@@ -53,7 +55,7 @@ pytestmark = pytest.mark.timeout(5)
 def _returned(routing_key: str) -> PublishError:
     """Ein ``basic.return`` NO_ROUTE, wie aiormq es mit ``on_return_raises`` wirft."""
     frame = Basic.Return(reply_code=312, reply_text="NO_ROUTE", exchange="", routing_key=routing_key)
-    return PublishError(SimpleNamespace(delivery=frame), frame)
+    return PublishError(cast("DeliveredMessage", SimpleNamespace(delivery=frame)), frame)
 
 
 def _delivery(queue: str = "tasks") -> Delivery:
@@ -61,7 +63,7 @@ def _delivery(queue: str = "tasks") -> Delivery:
 
 
 def _routing_keys(broker: RabbitMQBroker) -> list[str]:
-    publish = broker._publish_channel.default_exchange.publish  # type: ignore[union-attr]
+    publish = cast("AsyncMock", broker._publish_channel).default_exchange.publish
     return [call.kwargs["routing_key"] for call in publish.await_args_list]
 
 
@@ -79,14 +81,14 @@ async def test_unroutable_tier_is_declared_again_and_published_to_once_more() ->
     rabbit = FakeRabbit()
     broker = make_broker(rabbit)
     await broker.declare_queue("tasks")
-    broker._publish_channel.default_exchange.publish.side_effect = [_returned("tasks.DQ.1s"), None]  # type: ignore[union-attr]
+    cast("AsyncMock", broker._publish_channel).default_exchange.publish.side_effect = [_returned("tasks.DQ.1s"), None]
     delivery = _delivery()
 
     await broker.retry_later(delivery, delay_ms=500, headers={})
 
     assert _routing_keys(broker) == ["tasks.DQ.1s", "tasks.DQ.1s"]
     assert _chains(rabbit).count("tasks.DQ.1s") == 2
-    delivery.handle.ack.assert_awaited_once()
+    cast("AsyncMock", delivery.handle).ack.assert_awaited_once()
 
 
 async def test_tier_that_cannot_be_declared_falls_back_to_the_delay_queue_with_one_warning(swarmq_logs) -> None:
@@ -107,8 +109,8 @@ async def test_tier_that_cannot_be_declared_falls_back_to_the_delay_queue_with_o
     assert entry["tier"] == "tasks.DQ.4s"
     assert entry["fallback"] == "tasks.DQ"
     assert entry["error_type"] == "QueueArgumentsMismatch"
-    first.handle.ack.assert_awaited_once()
-    second.handle.ack.assert_awaited_once()
+    cast("AsyncMock", first.handle).ack.assert_awaited_once()
+    cast("AsyncMock", second.handle).ack.assert_awaited_once()
 
 
 async def test_connection_loss_while_declaring_a_tier_leaves_the_original_unacked() -> None:
@@ -117,22 +119,22 @@ async def test_connection_loss_while_declaring_a_tier_leaves_the_original_unacke
     rabbit = FakeRabbit()
     broker = make_broker(rabbit)
     await broker.declare_queue("tasks")
-    broker._publish_channel.default_exchange.publish.side_effect = [_returned("tasks.DQ.1s"), None]  # type: ignore[union-attr]
-    broker._connection.channel = AsyncMock(side_effect=ConnectionClosed(320, "CONNECTION_FORCED"))  # type: ignore[union-attr]
+    cast("AsyncMock", broker._publish_channel).default_exchange.publish.side_effect = [_returned("tasks.DQ.1s"), None]
+    cast("AsyncMock", broker._connection).channel = AsyncMock(side_effect=ConnectionClosed(320, "CONNECTION_FORCED"))
     delivery = _delivery()
 
     with pytest.raises(BrokerConnectionError, match="tasks"):
         await broker.retry_later(delivery, delay_ms=500, headers={})
 
     assert _routing_keys(broker) == ["tasks.DQ.1s"]
-    delivery.handle.ack.assert_not_awaited()
+    cast("AsyncMock", delivery.handle).ack.assert_not_awaited()
 
 
 async def test_hanging_tier_declaration_is_bounded_by_the_publish_deadline() -> None:
     rabbit = FakeRabbit()
     broker = make_broker(rabbit)
     await broker.declare_queue("tasks")
-    broker._publish_channel.default_exchange.publish.side_effect = [_returned("tasks.DQ.1s"), None]  # type: ignore[union-attr]
+    cast("AsyncMock", broker._publish_channel).default_exchange.publish.side_effect = [_returned("tasks.DQ.1s"), None]
     broker.publish_timeout_s = 0.05
     never = asyncio.Event()
 
@@ -145,13 +147,13 @@ async def test_hanging_tier_declaration_is_bounded_by_the_publish_deadline() -> 
         channel.declare_queue = AsyncMock(side_effect=declare_queue)
         return channel
 
-    broker._connection.channel = AsyncMock(side_effect=hanging_channel)  # type: ignore[union-attr]
+    cast("AsyncMock", broker._connection).channel = AsyncMock(side_effect=hanging_channel)
     delivery = _delivery()
 
     with pytest.raises(BrokerConnectionError, match="tasks"):
         await broker.retry_later(delivery, delay_ms=500, headers={})
 
-    delivery.handle.ack.assert_not_awaited()
+    cast("AsyncMock", delivery.handle).ack.assert_not_awaited()
 
 
 async def test_family_not_declared_by_this_process_uses_the_delay_queue() -> None:
@@ -182,7 +184,9 @@ async def test_delay_over_one_hour_stays_in_the_delay_queue() -> None:
         ("classic", "auto", {}),
     ],
 )
-async def test_tier_gets_the_arguments_of_the_delay_queue(queue_type: str, strategy: str, extra: dict) -> None:
+async def test_tier_gets_the_arguments_of_the_delay_queue(
+    queue_type: str, strategy: str, extra: dict[str, Any]
+) -> None:
     rabbit = FakeRabbit()
     broker = make_broker(rabbit, _queue_type=queue_type, dead_letter_strategy=strategy)
     await broker.declare_queue("tasks")
@@ -288,7 +292,7 @@ async def test_unroutable_tier_redeclares_only_the_tier_and_names_it(swarmq_logs
     broker = make_broker(rabbit)
     await broker.declare_queue("tasks")
     del rabbit.queues["tasks.DQ.1s"]
-    broker._publish_channel.default_exchange.publish.side_effect = [_returned("tasks.DQ.1s"), None]  # type: ignore[union-attr]
+    cast("AsyncMock", broker._publish_channel).default_exchange.publish.side_effect = [_returned("tasks.DQ.1s"), None]
     declared_at_start = len(_chains(rabbit))
 
     await broker.retry_later(_delivery(), delay_ms=500, headers={})

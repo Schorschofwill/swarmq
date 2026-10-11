@@ -42,7 +42,7 @@ Test-Liste Plan 0.12.0, MR 6 (BZ-03, Q14):
 
 from __future__ import annotations
 
-from typing import override
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock
 
 from swarmq.exceptions import (
@@ -117,8 +117,14 @@ def _tail(broker, backend, config, task=TailTask):
     return worker._result_tail, worker
 
 
-def _execution(**overrides) -> ExecutionResult:
-    base = {"result_value": "ok", "is_error": False, "is_cancelled": False, "error_message": "", "task_exception": None}
+def _execution(**overrides: Any) -> ExecutionResult:
+    base: dict[str, Any] = {
+        "result_value": "ok",
+        "is_error": False,
+        "is_cancelled": False,
+        "error_message": "",
+        "task_exception": None,
+    }
     base.update(overrides)
     return ExecutionResult(**base)
 

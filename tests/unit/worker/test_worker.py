@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
-from typing import override
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1092,7 +1092,7 @@ async def test_max_retries_zero_error_routes_to_dlq(broker, backend, config):
     reg.register(NoRetryDefaultTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    dlq_signals: list[dict] = []
+    dlq_signals: list[dict[str, Any]] = []
 
     @w._signal_dispatcher.on_signal(_Signal.TASK_DLQ)
     async def _on_dlq(**kw):
@@ -1299,7 +1299,7 @@ class TestWorkerMiddlewareAndSignals:
         call_order: list[str] = []
 
         mw_chain = _make_middleware_chain_mock()
-        mw_chain.run_pre_execute.side_effect = lambda *a, **kw: call_order.append("pre_execute") or None
+        mw_chain.run_pre_execute.side_effect = lambda *a, **kw: call_order.append("pre_execute")
 
         class OrderTask(Task):
             task_info = TaskInfo(name="order_pre", queues=["default"])
@@ -1483,8 +1483,8 @@ class TestWorkerMiddlewareAndSignals:
 
         mw_chain = _make_middleware_chain_mock()
         call_order: list[str] = []
-        mw_chain.run_on_error.side_effect = lambda *a, **kw: call_order.append("on_error") or None
-        mw_chain.run_on_retry.side_effect = lambda *a, **kw: call_order.append("on_retry") or None
+        mw_chain.run_on_error.side_effect = lambda *a, **kw: call_order.append("on_error")
+        mw_chain.run_on_retry.side_effect = lambda *a, **kw: call_order.append("on_retry")
 
         reg = TaskRegistry()
         reg.register(RetryBothTask)
@@ -1916,17 +1916,17 @@ class TestWorkerMiddlewareAndSignals:
     @pytest.mark.asyncio
     async def test_accepts_static_middleware_chain_instance(self, broker, backend, config):
         """Worker with a real MiddlewareChain instance runs its hooks."""
-        from swarmq.middleware import Middleware, MiddlewareChain
+        from swarmq.middleware import MessageContext, Middleware, MiddlewareChain
 
-        captured: list[tuple[str, dict]] = []
+        captured: list[tuple[str, dict[str, Any]]] = []
 
         class Spy(Middleware):
             @override
-            async def pre_execute(self, message: dict) -> None:
+            async def pre_execute(self, message: MessageContext) -> None:
                 captured.append(("pre", dict(message)))
 
             @override
-            async def post_execute(self, message: dict, result: object = None) -> None:
+            async def post_execute(self, message: MessageContext, result: object = None) -> None:
                 captured.append(("post", dict(message)))
 
         chain = MiddlewareChain([Spy()])
@@ -1948,10 +1948,12 @@ class TestWorkerMiddlewareAndSignals:
     @pytest.mark.asyncio
     async def test_factory_exception_nacks_without_requeue(self, broker, backend, config):
         """A broken factory (raises on call) must nack(requeue=False), not crash."""
+        from swarmq.middleware import MiddlewareChain
+
         reg = TaskRegistry()
         reg.register(AddTask)
 
-        def bad_factory() -> object:
+        def bad_factory() -> MiddlewareChain:
             raise RuntimeError("factory broken")
 
         w = Worker(
@@ -2170,7 +2172,7 @@ class TestRunningCancelInHandleMessage:
 
         backend.is_cancelled = AsyncMock(side_effect=is_cancelled_impl)
 
-        captured: list[tuple] = []
+        captured: list[tuple[str, dict[str, Any]]] = []
 
         async def cancelled_handler(**kwargs):
             captured.append(("cancelled", kwargs))

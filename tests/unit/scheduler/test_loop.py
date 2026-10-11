@@ -72,7 +72,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import override
+from typing import Any, override
 from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
 
@@ -104,7 +104,7 @@ class TestElectionLoop:
     async def test_standby_acquire_success_emits_leader(
         self, backend, broker, config, lock_manager, store, signal_dispatcher
     ):
-        events: list[tuple[Signal, dict]] = []
+        events: list[tuple[Signal, dict[str, Any]]] = []
 
         @signal_dispatcher.on_signal(Signal.SCHEDULER_LEADER)
         async def _on_leader(**kwargs):
@@ -223,7 +223,7 @@ class TestElectionLoop:
         über die gesamte Störungsdauer. Nach konsekutiven Renew-Fehlern
         muss der Leader proaktiv heruntertreten, BEVOR die TTL sicher
         abgelaufen ist."""
-        standby_events: list[dict] = []
+        standby_events: list[dict[str, Any]] = []
 
         @signal_dispatcher.on_signal(Signal.SCHEDULER_STANDBY)
         async def _s(**kw):
@@ -255,7 +255,7 @@ class TestElectionLoop:
 
         # One failure short of the limit, then a success, then again
         # one failure short — never steps down.
-        seq: list = [BackendConnectionError("blip") for _ in range(limit - 1)]
+        seq: list[Exception | bool] = [BackendConnectionError("blip") for _ in range(limit - 1)]
         seq.append(True)
         seq.extend(BackendConnectionError("blip") for _ in range(limit - 1))
         lock_manager.renew.side_effect = seq
@@ -345,7 +345,7 @@ class TestLeaderVersion:
         swarmq_logs,
     ):
         """Covers AE9: 0.9.0-Leader (kein Versions-Key)."""
-        signals: list[dict] = []
+        signals: list[dict[str, Any]] = []
 
         @signal_dispatcher.on_signal(Signal.SCHEDULER_LEADER_OUTDATED)
         async def _outdated(**kw):
@@ -379,7 +379,7 @@ class TestLeaderVersion:
         signal_dispatcher,
         swarmq_logs,
     ):
-        signals: list[dict] = []
+        signals: list[dict[str, Any]] = []
 
         @signal_dispatcher.on_signal(Signal.SCHEDULER_LEADER_OUTDATED)
         async def _outdated(**kw):
@@ -405,7 +405,7 @@ class TestLeaderVersion:
         store,
         signal_dispatcher,
     ):
-        signals: list[dict] = []
+        signals: list[dict[str, Any]] = []
 
         @signal_dispatcher.on_signal(Signal.SCHEDULER_LEADER_OUTDATED)
         async def _outdated(**kw):
@@ -582,7 +582,7 @@ class TestPollLoop:
         Nachhol-Fire), aber bisher unsichtbar — ein übersprungener
         täglicher Report fiel niemandem auf. Beim Catch-up muss
         SCHEDULER_FIRE_SKIPPED mit skipped_count emittiert werden."""
-        skipped: list[dict] = []
+        skipped: list[dict[str, Any]] = []
 
         @signal_dispatcher.on_signal(Signal.SCHEDULER_FIRE_SKIPPED)
         async def _sk(**kw):
@@ -608,7 +608,7 @@ class TestPollLoop:
     async def test_no_fire_skipped_signal_on_punctual_fire(
         self, backend, broker, config, lock_manager, store, signal_dispatcher
     ):
-        skipped: list[dict] = []
+        skipped: list[dict[str, Any]] = []
 
         @signal_dispatcher.on_signal(Signal.SCHEDULER_FIRE_SKIPPED)
         async def _sk(**kw):
@@ -842,7 +842,7 @@ class TestSchedulerUniqueDedup:
             async def run(self):
                 return None
 
-        received: list[dict] = []
+        received: list[dict[str, Any]] = []
 
         @signal_dispatcher.on_signal(Signal.TASK_DUPLICATE_DETECTED)
         async def handler(**kwargs):
@@ -1253,8 +1253,8 @@ class TestSchedulerLoopLogging:
         assert entry["signal"] == Signal.SCHEDULER_HEARTBEAT.value
 
 
-def _utc_ms(*args: int) -> int:
-    return int(datetime(*args, tzinfo=UTC).timestamp() * 1000)
+def _utc_ms(year: int, month: int, day: int, hour: int, minute: int) -> int:
+    return int(datetime(year, month, day, hour, minute, tzinfo=UTC).timestamp() * 1000)
 
 
 class TestSchedulerLoopTimezone:
@@ -1291,7 +1291,7 @@ class TestSchedulerLoopTimezone:
     async def test_skipped_fires_are_counted_in_definition_timezone(self, loop, store, signal_dispatcher):
         """Zwischen 00:00 und 10:00 UTC liegt kein Termin ``0 9`` in Tokio
         (09:00 UTC waere es in UTC gewesen) -- also nichts uebersprungen."""
-        skipped: list[dict] = []
+        skipped: list[dict[str, Any]] = []
 
         @signal_dispatcher.on_signal(Signal.SCHEDULER_FIRE_SKIPPED)
         async def _sk(**kw):
@@ -1429,9 +1429,13 @@ class TestTakeoverBetweenPollAndCommit:
 
         await loop._poll_tick()
 
-        stored = msgspec.json.decode(await memory.schedules.get("cron_a"), type=ScheduleDefinition)
+        raw = await memory.schedules.get("cron_a")
+        assert raw is not None
+        stored = msgspec.json.decode(raw, type=ScheduleDefinition)
         assert stored == taken_over
-        assert await memory.schedules.fire_ts("cron_a") > 1_000
+        fire_ts = await memory.schedules.fire_ts("cron_a")
+        assert fire_ts is not None
+        assert fire_ts > 1_000
 
 
 class TestRenewRightAfterTakeover:

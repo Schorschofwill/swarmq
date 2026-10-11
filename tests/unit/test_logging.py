@@ -48,6 +48,7 @@ def test_log_output_is_json_when_log_json_true():
         # Replace the listener's handler stream with a StringIO to capture output
         stream = io.StringIO()
         handler = listener.handlers[0]
+        assert isinstance(handler, logging.StreamHandler)
         handler.stream = stream
 
         logger = structlog.get_logger()
@@ -71,6 +72,7 @@ def test_log_level_filtering_debug_not_output_at_info():
     try:
         stream = io.StringIO()
         handler = listener.handlers[0]
+        assert isinstance(handler, logging.StreamHandler)
         handler.stream = stream
 
         logger = structlog.get_logger()
@@ -92,6 +94,7 @@ def test_contextvars_binding_appears_in_log_output():
     try:
         stream = io.StringIO()
         handler = listener.handlers[0]
+        assert isinstance(handler, logging.StreamHandler)
         handler.stream = stream
 
         structlog.contextvars.clear_contextvars()
@@ -124,7 +127,7 @@ class TestQueueDropVisibility:
 
         from swarmq.logging_queue import _StructlogQueueHandler
 
-        q: _queue.Queue = _queue.Queue(maxsize=1)
+        q: _queue.Queue[logging.LogRecord] = _queue.Queue(maxsize=1)
         handler = _StructlogQueueHandler(q)
         rec = _logging.LogRecord(
             "test",
@@ -152,7 +155,7 @@ class TestQueueDropVisibility:
 
         from swarmq.logging_queue import _StructlogQueueHandler
 
-        q: _queue.Queue = _queue.Queue(maxsize=10)
+        q: _queue.Queue[logging.LogRecord] = _queue.Queue(maxsize=10)
         handler = _StructlogQueueHandler(q)
         rec = _logging.LogRecord(
             "test",
@@ -191,7 +194,7 @@ class TestUnformattableRecord:
     """
 
     @staticmethod
-    def _emit_foreign(*, log_json: bool, args: tuple) -> str:
+    def _emit_foreign(*, log_json: bool, args: tuple[object, ...]) -> str:
         listener = setup_logging(log_level="INFO", log_json=log_json)
         try:
             stream = io.StringIO()

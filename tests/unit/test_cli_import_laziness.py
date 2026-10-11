@@ -145,4 +145,4 @@ class TestPublicSurfaceIdentity:
         import swarmq
 
         with pytest.raises(AttributeError, match="NotARealSymbol"):
-            _ = swarmq.NotARealSymbol  # type: ignore[attr-defined]
+            _ = swarmq.NotARealSymbol

@@ -93,6 +93,7 @@ def test_completed_marker_ttl_follows_the_wait_within_its_caps(monkeypatch: pyte
     ``max(base, max_age + 300)`` und ``execution_guard_backlog_ttl_s``, nie
     unter ``scheduler_dedup_ttl``."""
     config = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x")
+    assert config.scheduler_dedup_ttl is not None
     base_ms = int(config.scheduler_dedup_ttl * 1000)
     monkeypatch.setattr("swarmq.worker.gates.schedfire.time.time", lambda: 1_760_000_000.0)
     waited = {"x-swarmq-enqueued-at": 1_760_000_000 - 7_200}

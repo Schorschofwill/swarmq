@@ -41,7 +41,7 @@ from swarmq.worker import Worker
 from swarmq.worker.execution import TaskExecutor
 from swarmq.worker.gates import GateContext, GateDeps
 from tests.support.messages import make_message
-from tests.unit.worker._helpers import AddTask, _default_payload
+from tests.unit.worker._helpers import AddTask, _default_payload, partial_message
 
 pytestmark = [pytest.mark.timeout(5)]
 
@@ -76,7 +76,7 @@ def _deps(backend: Any = None, **cfg: Any) -> GateDeps:
     )
 
 
-def _ctx(task_class: type) -> GateContext:
+def _ctx(task_class: type[Task]) -> GateContext:
     return GateContext(
         task_id="t1",
         task_name=task_class.task_info.name,
@@ -92,8 +92,8 @@ def _lifecycle(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [e for e in logs if e["event"] in _LIFECYCLE]
 
 
-async def _execute(task_class: type, deps: GateDeps | None = None) -> None:
-    await TaskExecutor(deps or _deps()).execute(_ctx(task_class), {"retry_count": 0}, MiddlewareChain([]))
+async def _execute(task_class: type[Task], deps: GateDeps | None = None) -> None:
+    await TaskExecutor(deps or _deps()).execute(_ctx(task_class), partial_message(retry_count=0), MiddlewareChain([]))
 
 
 async def test_successful_task_reports_started_then_succeeded_with_duration(swarmq_logs):
@@ -150,7 +150,7 @@ async def test_lifecycle_level_info_raises_task_started_to_info(swarmq_logs):
     assert started["log_level"] == "info"
 
 
-def _message(name: str = "add", *, task_id: str = "t-life", headers: dict | None = None) -> Any:
+def _message(name: str = "add", *, task_id: str = "t-life", headers: dict[str, Any] | None = None) -> Any:
     args = [1, 2] if name == "add" else []
     msg = make_message(_default_payload(task_id=task_id, name=name, args=args, kwargs={}), headers=headers)
     msg.queue = "default"

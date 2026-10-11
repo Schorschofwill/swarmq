@@ -16,6 +16,7 @@ from swarmq.worker.compute.envelope import error_envelope, success_envelope
 from swarmq.worker.compute.executor import ComputeExecutor
 from swarmq.worker.compute.pool import ChildDied, SlotUnavailable
 from swarmq.worker.gates import GateContext, GateDeps
+from tests.unit.worker._helpers import partial_message
 
 
 class FakePool:
@@ -84,7 +85,7 @@ def _deps(**cfg: Any) -> GateDeps:
     )
 
 
-def _ctx(task_class: type = Plain, **info: Any) -> GateContext:
+def _ctx(task_class: type[Task] = Plain, **info: Any) -> GateContext:
     task_info = TaskInfo(name=task_class.task_info.name, queues=["q"], **info)
     return GateContext(
         task_id="t1",
@@ -108,7 +109,7 @@ def setup():
 @pytest.mark.timeout(5)
 async def test_success_envelope_becomes_result_and_job_is_minimal(setup):
     deps, pool, ex = setup
-    res = await ex.execute(_ctx(), {"retry_count": 3}, MiddlewareChain([]))
+    res = await ex.execute(_ctx(), partial_message(retry_count=3), MiddlewareChain([]))
     assert res.result_value == 42
     assert not res.is_error
     assert res.di_scope is None
@@ -124,7 +125,7 @@ async def test_success_envelope_becomes_result_and_job_is_minimal(setup):
 @pytest.mark.timeout(5)
 async def test_di_task_selects_reused_child(setup):
     _, pool, ex = setup
-    await ex.execute(_ctx(WithDi), {"retry_count": 0}, MiddlewareChain([]))
+    await ex.execute(_ctx(WithDi), partial_message(retry_count=0), MiddlewareChain([]))
     assert pool.use_di is True
 
 
@@ -132,7 +133,7 @@ async def test_di_task_selects_reused_child(setup):
 async def test_error_envelope_keeps_exception_type_for_retry_path(setup):
     deps, pool, ex = setup
     pool.behaviour = error_envelope("t1", NoRetry("nope"), slot=0)
-    res = await ex.execute(_ctx(), {"retry_count": 0}, MiddlewareChain([]))
+    res = await ex.execute(_ctx(), partial_message(retry_count=0), MiddlewareChain([]))
     assert res.is_error
     assert isinstance(res.task_exception, NoRetry)
     assert [c.args[0].name for c in deps.signals.dispatch.await_args_list][-1] == "TASK_FAILED"
@@ -142,7 +143,7 @@ async def test_error_envelope_keeps_exception_type_for_retry_path(setup):
 async def test_soft_timeout_message_mirrors_today(setup):
     _, pool, ex = setup
     pool.behaviour = error_envelope("t1", SoftTimeoutError("soft timeout after 1s"), slot=0)
-    res = await ex.execute(_ctx(), {"retry_count": 0}, MiddlewareChain([]))
+    res = await ex.execute(_ctx(), partial_message(retry_count=0), MiddlewareChain([]))
     assert res.error_message.startswith("SoftTimeoutError:")
 
 
@@ -150,7 +151,7 @@ async def test_soft_timeout_message_mirrors_today(setup):
 async def test_hard_timeout_kills_child_and_fails_like_watchdog(setup):
     _, pool, ex = setup
     pool.behaviour = "hang"
-    res = await ex.execute(_ctx(hard_timeout=0.05), {"retry_count": 0}, MiddlewareChain([]))
+    res = await ex.execute(_ctx(hard_timeout=0.05), partial_message(retry_count=0), MiddlewareChain([]))
     assert res.is_error
     assert not res.is_cancelled
     assert isinstance(res.task_exception, RuntimeError)
@@ -163,7 +164,7 @@ async def test_cancel_flag_kills_child_and_takes_cancel_path(setup):
     deps, pool, ex = setup
     pool.behaviour = "hang"
     deps.backend.is_cancelled = AsyncMock(return_value=True)
-    res = await ex.execute(_ctx(), {"retry_count": 0}, MiddlewareChain([]))
+    res = await ex.execute(_ctx(), partial_message(retry_count=0), MiddlewareChain([]))
     assert res.is_cancelled
     assert not res.is_error
     assert pool.cancelled == 1
@@ -174,7 +175,7 @@ async def test_cancel_flag_kills_child_and_takes_cancel_path(setup):
 async def test_outer_cancel_during_drain_kills_child_and_returns_error_result(setup):
     _, pool, ex = setup
     pool.behaviour = "hang"
-    handler = asyncio.create_task(ex.execute(_ctx(), {"retry_count": 0}, MiddlewareChain([])))
+    handler = asyncio.create_task(ex.execute(_ctx(), partial_message(retry_count=0), MiddlewareChain([])))
     await asyncio.sleep(0.05)
     handler.cancel()
     res = await handler  # KTD2: kein propagierter CancelledError
@@ -187,7 +188,7 @@ async def test_outer_cancel_during_drain_kills_child_and_returns_error_result(se
 async def test_child_death_is_an_error_result(setup):
     _, pool, ex = setup
     pool.behaviour = ChildDied("pid 7 exited without result")
-    res = await ex.execute(_ctx(), {"retry_count": 0}, MiddlewareChain([]))
+    res = await ex.execute(_ctx(), partial_message(retry_count=0), MiddlewareChain([]))
     assert res.is_error
     assert isinstance(res.task_exception, ChildDied)
     assert not res.slot_unavailable
@@ -197,7 +198,7 @@ async def test_child_death_is_an_error_result(setup):
 async def test_slot_unavailable_is_flagged(setup):
     _, pool, ex = setup
     pool.behaviour = SlotUnavailable("no ready")
-    res = await ex.execute(_ctx(), {"retry_count": 0}, MiddlewareChain([]))
+    res = await ex.execute(_ctx(), partial_message(retry_count=0), MiddlewareChain([]))
     assert res.is_error
     assert res.slot_unavailable
 
@@ -256,7 +257,9 @@ async def test_slot_unavailable_on_fire_and_forget_logs_the_dedicated_loss_messa
     executor_module.logger = fake_logger
     try:
         res = await ex.execute(
-            _ctx(ComputeFireAndForget, delivery=DeliveryMode.FIRE_AND_FORGET), {"retry_count": 0}, MiddlewareChain([])
+            _ctx(ComputeFireAndForget, delivery=DeliveryMode.FIRE_AND_FORGET),
+            partial_message(retry_count=0),
+            MiddlewareChain([]),
         )
     finally:
         executor_module.logger = monkeypatch_target
@@ -277,7 +280,9 @@ async def test_fire_and_forget_error_logs_error_type_and_error(setup, swarmq_log
     _, pool, ex = setup
     pool.behaviour = ChildDied("pid 7 exited without result")
     await ex.execute(
-        _ctx(ComputeFireAndForget, delivery=DeliveryMode.FIRE_AND_FORGET), {"retry_count": 0}, MiddlewareChain([])
+        _ctx(ComputeFireAndForget, delivery=DeliveryMode.FIRE_AND_FORGET),
+        partial_message(retry_count=0),
+        MiddlewareChain([]),
     )
     [entry] = _executor_logs(swarmq_logs, "fire_and_forget_error")
     assert entry["log_level"] == "error"
@@ -312,7 +317,7 @@ async def test_job_carries_the_supervisor_resolved_logging_settings():
     )
     pool = FakePool()
     ex = ComputeExecutor(_deps(logging_settings=settings), pool, worker_id="w1")  # type: ignore[arg-type]
-    await ex.execute(_ctx(), {"retry_count": 0}, MiddlewareChain([]))
+    await ex.execute(_ctx(), partial_message(retry_count=0), MiddlewareChain([]))
     job = pool.job
     assert (job.log_level, job.log_level_explicit, job.log_config, job.log_config_json) == (
         "DEBUG",
@@ -340,7 +345,7 @@ async def test_embedded_job_takes_the_logging_fields_of_swarmq_config():
         log_drain_timeout=1.5,
     )
     ex = ComputeExecutor(deps, pool, worker_id="w1")  # type: ignore[arg-type]
-    await ex.execute(_ctx(), {"retry_count": 0}, MiddlewareChain([]))
+    await ex.execute(_ctx(), partial_message(retry_count=0), MiddlewareChain([]))
     job = pool.job
     assert (job.log_level, job.log_json, job.log_config, job.log_config_json) == ("WARNING", False, None, None)
     assert (job.configure_logging, job.logger_levels, job.log_queue_size) == (
@@ -361,7 +366,7 @@ async def test_embedded_log_config_is_loaded_once_and_travels_as_json(tmp_path):
     ex = ComputeExecutor(_deps(log_config=str(path)), pool, worker_id="w1")  # type: ignore[arg-type]
     path.unlink()  # danach liest niemand mehr die Datei
 
-    await ex.execute(_ctx(), {"retry_count": 0}, MiddlewareChain([]))
+    await ex.execute(_ctx(), partial_message(retry_count=0), MiddlewareChain([]))
     job = pool.job
     assert job.log_config == str(path)
     assert json.loads(job.log_config_json) == {
@@ -376,7 +381,9 @@ async def test_slot_unavailable_on_fire_and_forget_logs_error_type_and_error(set
     _, pool, ex = setup
     pool.behaviour = SlotUnavailable("compute child for slot 0 sent no ready signal")
     await ex.execute(
-        _ctx(ComputeFireAndForget, delivery=DeliveryMode.FIRE_AND_FORGET), {"retry_count": 0}, MiddlewareChain([])
+        _ctx(ComputeFireAndForget, delivery=DeliveryMode.FIRE_AND_FORGET),
+        partial_message(retry_count=0),
+        MiddlewareChain([]),
     )
     [entry] = _executor_logs(swarmq_logs, "compute_slot_unavailable_fire_and_forget_dropped")
     assert entry["error_type"] == "SlotUnavailable"
@@ -393,7 +400,7 @@ async def test_job_carries_the_workflow_id_of_the_delivery(setup):
     ctx = _ctx()
     ctx.workflow_id = "0190a3c4-5d6e-7f80-9a1b-2c3d4e5f6a7b"
 
-    await ex.execute(ctx, {"retry_count": 0}, MiddlewareChain([]))
+    await ex.execute(ctx, partial_message(retry_count=0), MiddlewareChain([]))
 
     assert pool.job.workflow_id == "0190a3c4-5d6e-7f80-9a1b-2c3d4e5f6a7b"
 
@@ -408,7 +415,7 @@ def _lifecycle(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
 @pytest.mark.timeout(5)
 async def test_compute_pool_reports_started_then_succeeded(setup, swarmq_logs):
     _, _, ex = setup
-    await ex.execute(_ctx(), {"retry_count": 0}, MiddlewareChain([]))
+    await ex.execute(_ctx(), partial_message(retry_count=0), MiddlewareChain([]))
 
     started, succeeded = _lifecycle(swarmq_logs)
     assert (started["event"], started["log_level"]) == ("task_started", "debug")
@@ -421,7 +428,7 @@ async def test_compute_pool_succeeded_carries_the_pid_of_the_child(setup, swarmq
     _, pool, ex = setup
     pool.behaviour = success_envelope("t1", 42, slot=0, pid=4242)
 
-    await ex.execute(_ctx(), {"retry_count": 0}, MiddlewareChain([]))
+    await ex.execute(_ctx(), partial_message(retry_count=0), MiddlewareChain([]))
 
     [succeeded] = [e for e in _lifecycle(swarmq_logs) if e["event"] == "task_succeeded"]
     assert succeeded["compute_child"] == 4242
@@ -432,7 +439,7 @@ async def test_compute_pool_failed_carries_error_fields_and_the_pid_of_the_child
     _, pool, ex = setup
     pool.behaviour = error_envelope("t1", ValueError("boom"), slot=0, pid=4242)
 
-    await ex.execute(_ctx(), {"retry_count": 0}, MiddlewareChain([]))
+    await ex.execute(_ctx(), partial_message(retry_count=0), MiddlewareChain([]))
 
     [failed] = [e for e in _lifecycle(swarmq_logs) if e["event"] == "task_failed"]
     assert (failed["log_level"], failed["error_type"], failed["error"]) == ("info", "ValueError", "boom")

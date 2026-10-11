@@ -108,7 +108,7 @@ import os
 import queue
 import sys
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from typing import override
 
 import pytest
@@ -437,7 +437,8 @@ def test_once_the_abandoned_thread_ends_the_next_record_starts_a_fresh_listener(
 
 
 class _BlockingStream(io.StringIO):
-    """stderr auf einer vollen Pipe: ``write`` blockiert bis ``opened``."""
+    """stderr auf einer vollen Pipe bzw. ``sys.stderr`` fuer den eingebauten
+    Handler: ``write`` blockiert, bis ``opened`` gesetzt ist."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -445,10 +446,14 @@ class _BlockingStream(io.StringIO):
         self.opened = threading.Event()
 
     @override
-    def write(self, s: str) -> int:
+    def write(self, text: str) -> int:
         self.entered.set()
         self.opened.wait()
-        return super().write(s)
+        return super().write(text)
+
+    @override
+    def isatty(self) -> bool:
+        return False
 
 
 def test_without_a_timeout_the_configured_drain_timeout_applies(
@@ -997,10 +1002,10 @@ def test_a_record_that_would_start_a_listener_after_the_deadline_counts_as_dropp
     healthy_target = _Gate()
     healthy_target.opened.set()
     healthy = _StructlogQueueHandler(queue.Queue(maxsize=10), healthy_target)
-    real_abandon = logging_queue.abandon
+    from swarmq.logging_drain import abandon as real_abandon
 
-    def abandon_then_log(*args: object) -> None:
-        real_abandon(*args)  # type: ignore[arg-type]
+    def abandon_then_log(thread: threading.Thread, handlers: Iterable[logging.Handler]) -> None:
+        real_abandon(thread, handlers)
         healthy.handle(_record("after-deadline"))  # ein anderer Thread loggt
 
     monkeypatch.setattr(logging_queue, "abandon", abandon_then_log)
@@ -1025,10 +1030,10 @@ def test_file_mode_a_record_that_would_start_a_listener_after_the_deadline_count
     log.warning("first")
     assert _returns_within(lambda: shutdown_logging(timeout=2))
     _stuck, gate = _stuck_handler(maxsize=2)
-    real_abandon = logging_queue.abandon
+    from swarmq.logging_drain import abandon as real_abandon
 
-    def abandon_then_log(*args: object) -> None:
-        real_abandon(*args)  # type: ignore[arg-type]
+    def abandon_then_log(thread: threading.Thread, handlers: Iterable[logging.Handler]) -> None:
+        real_abandon(thread, handlers)
         log.warning("after-deadline")  # ein anderer Thread loggt
 
     monkeypatch.setattr(logging_queue, "abandon", abandon_then_log)
@@ -1059,26 +1064,6 @@ def test_a_child_forked_during_an_expired_drain_starts_its_listener() -> None:
 
     with draining_until(Deadline(0)):
         assert run_in_forked_child(child) == 0
-
-
-class _BlockingStream(io.StringIO):
-    """``sys.stderr`` fuer den eingebauten Handler: blockiert jedes
-    ``write``, bis ``opened`` gesetzt ist."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.entered = threading.Event()
-        self.opened = threading.Event()
-
-    @override
-    def write(self, text: str) -> int:
-        self.entered.set()
-        self.opened.wait()
-        return super().write(text)
-
-    @override
-    def isatty(self) -> bool:
-        return False
 
 
 def test_a_configured_json_setup_writes_a_json_closing_line_for_given_up_builtin_handlers(

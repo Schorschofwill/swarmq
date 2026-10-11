@@ -22,6 +22,7 @@ import multiprocessing
 import signal
 import sys
 import time
+from typing import Any, override
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -43,6 +44,8 @@ from tests.unit.process_manager._helpers import (
     _make_test_cfg,
     _register,
     _report_pdeathsig_entry,
+    as_mock,
+    channel_of,
 )
 
 
@@ -105,7 +108,7 @@ class TestProcessManagerCore:
         erbte sie -- sein SIGTERM blieb anhaengig, der Container endete erst
         per SIGKILL nach dem Stop-Timeout. Das Ziel des Kindprozesses hebt
         die Maske darum selbst auf, bevor irgendein Entry laeuft."""
-        seen: dict[str, object] = {}
+        seen: dict[str, Any] = {}
 
         def entry(worker_id, shutdown_event, *args):
             seen["mask"] = signal.pthread_sigmask(signal.SIG_BLOCK, set())
@@ -224,7 +227,7 @@ class TestProcessManagerRestart:
 
     def test_maybe_restart_spawns_new_worker(self):
         pm = self._pm()
-        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=77))
+        as_mock(pm._ctx).Process = MagicMock(return_value=_fake_process(pid=77))
         old = WorkerInfo(
             process=_fake_process(alive=False, pid=1),
             worker_id=0,
@@ -236,7 +239,7 @@ class TestProcessManagerRestart:
         """ce-review C-01: rolling-window blocks on MAX_RESTARTS
         timestamps inside the window."""
         pm = self._pm()
-        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=99))
+        as_mock(pm._ctx).Process = MagicMock(return_value=_fake_process(pid=99))
         now = time.monotonic()
         # MAX_RESTARTS recent timestamps already in the window.
         old = WorkerInfo(
@@ -252,7 +255,7 @@ class TestProcessManagerRestart:
         """Exact-boundary: 4 timestamps in window, the 5th should
         still be allowed (count reaches but does not exceed MAX)."""
         pm = self._pm()
-        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=88))
+        as_mock(pm._ctx).Process = MagicMock(return_value=_fake_process(pid=88))
         now = time.monotonic()
         old = WorkerInfo(
             process=_fake_process(alive=False, pid=1),
@@ -267,7 +270,7 @@ class TestProcessManagerRestart:
         """Entries older than RESTART_WINDOW are dropped, freeing
         restart budget without a full counter reset."""
         pm = self._pm()
-        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=42))
+        as_mock(pm._ctx).Process = MagicMock(return_value=_fake_process(pid=42))
         now = time.monotonic()
         # All entries older than the window → treated as if fresh.
         old = WorkerInfo(
@@ -286,7 +289,7 @@ class TestProcessManagerRestart:
         still sliding-window-violating) must still block until
         the oldest entry ages out."""
         pm = self._pm()
-        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=55))
+        as_mock(pm._ctx).Process = MagicMock(return_value=_fake_process(pid=55))
         now = time.monotonic()
         # Five restarts spread across the window — oldest at (now-100).
         ts = [now - 100.0 + i for i in range(pm.MAX_RESTARTS)]
@@ -317,7 +320,7 @@ class TestProcessManagerRestart:
 
     def test_check_dead_workers_restarts_crashed(self):
         pm = self._pm()
-        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=500))
+        as_mock(pm._ctx).Process = MagicMock(return_value=_fake_process(pid=500))
         dead = _fake_process(alive=False, exitcode=-11, pid=5)  # segfault
         pm.workers = {5: WorkerInfo(process=dead, worker_id=0)}
         pm._check_dead_workers()
@@ -399,7 +402,12 @@ class TestProcessManagerRestart:
         """Review A6: ``reexec`` blockiert SIGTERM/SIGINT ueber ``execve``
         hinweg. Der neue Supervisor muss sie nach dem Einrichten der Handler
         freigeben, sonst bliebe SIGTERM fuer immer anhaengig."""
-        seen: list[set[signal.Signals]] = []
+        seen: list[set[int | signal.Signals]] = []
+
+        def record_mask() -> int:
+            seen.append(signal.pthread_sigmask(signal.SIG_BLOCK, set()))
+            return 0
+
         pm = ProcessManager(num_workers=0, worker_entry=_entry_stub)
         pm._ctx = MagicMock()
         before = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM, signal.SIGINT})
@@ -410,7 +418,7 @@ class TestProcessManagerRestart:
                 patch.object(
                     pm,
                     "_monitor_loop",
-                    side_effect=lambda: seen.append(signal.pthread_sigmask(signal.SIG_BLOCK, set())) or 0,
+                    side_effect=record_mask,
                 ),
                 patch.object(pm, "_shutdown_all_workers"),
                 patch.object(pm, "_collect_zombies"),
@@ -589,7 +597,7 @@ class TestCrashLoopExhaustion:
 
         import threading
 
-        result: dict = {}
+        result: dict[str, int] = {}
         t = threading.Thread(
             target=lambda: result.update(rc=pm._monitor_loop()),
             daemon=True,
@@ -601,7 +609,7 @@ class TestCrashLoopExhaustion:
         t.join(timeout=2)
         assert still_running, "loop must keep supervising the live worker"
         # Kein Backfill über das reduzierte Ziel hinaus gespawnt.
-        pm._ctx.Process.assert_not_called()
+        as_mock(pm._ctx).Process.assert_not_called()
 
     def test_crash_storm_bounded_and_manager_exits_real_processes(self):
         """Regression mit ECHTEN Subprozessen (kein gemockter
@@ -626,7 +634,7 @@ class TestCrashLoopExhaustion:
         pm._start_worker = counting_start  # type: ignore[method-assign]
         pm._start_all_workers()
 
-        result: dict = {}
+        result: dict[str, int] = {}
         t = threading.Thread(
             target=lambda: result.update(rc=pm._monitor_loop()),
             daemon=True,
@@ -1085,7 +1093,8 @@ class TestReloadReentrancy:
         )
         pm._setup_signals()  # installs the real handler
 
-        assert pm.reloader.busy is False
+        busy_before = pm.reloader.busy
+        assert busy_before is False
         _os.kill(_os.getpid(), signal.SIGHUP)
         assert pm.reloader.pending is True
         assert pm.reloader.busy is True
@@ -1321,7 +1330,7 @@ class TestCleanExitIsNotRefilled:
 
     def test_clean_exit_reduces_target_and_is_not_respawned(self):
         pm = self._pm(n=2)
-        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=500))
+        as_mock(pm._ctx).Process = MagicMock(return_value=_fake_process(pid=500))
         dead = _fake_process(alive=False, exitcode=0, pid=5)
         pm.workers = {
             5: WorkerInfo(process=dead, worker_id=0),
@@ -1331,7 +1340,7 @@ class TestCleanExitIsNotRefilled:
         assert pm._clean_exits == 1
         assert pm._current_target() == 1
         assert list(pm.workers) == [6]
-        pm._ctx.Process.assert_not_called()
+        as_mock(pm._ctx).Process.assert_not_called()
 
     def test_clean_exit_logs_worker_died_as_info(self, swarmq_logs):
         pm = self._pm(n=2)
@@ -1353,7 +1362,7 @@ class TestCleanExitIsNotRefilled:
 
     def test_crash_logs_worker_died_as_warning(self, swarmq_logs):
         pm = self._pm(n=2)
-        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=500))
+        as_mock(pm._ctx).Process = MagicMock(return_value=_fake_process(pid=500))
         pm.workers = {5: WorkerInfo(process=_fake_process(alive=False, exitcode=1, pid=5), worker_id=0)}
         pm._check_dead_workers()
         [entry] = [e for e in swarmq_logs if e["event"] == "worker_died"]
@@ -1376,7 +1385,7 @@ class TestCleanExitIsNotRefilled:
             6: WorkerInfo(process=_fake_process(alive=False, exitcode=0, pid=6), worker_id=1),
         }
         assert pm._monitor_loop() == 0
-        pm._ctx.Process.assert_not_called()
+        as_mock(pm._ctx).Process.assert_not_called()
 
     def test_monitor_loop_exits_one_when_mixed_clean_and_exhausted(self):
         pm = self._pm(n=2)
@@ -1419,7 +1428,7 @@ class TestHeartbeatReplacement:
         pm = self._pm()
         info = pm._start_worker(0)
         assert info.channel is not None
-        args = pm._ctx.Process.call_args.kwargs["args"]
+        args = as_mock(pm._ctx).Process.call_args.kwargs["args"]
         assert args[-1] is info.channel  # als letztes Argument an den Entry
 
     def test_stale_heartbeat_replaces_worker_and_marks_expected_shutdown(self):
@@ -1452,7 +1461,7 @@ class TestHeartbeatReplacement:
         pm._check_heartbeats()
         assert not fresh.expected_shutdown
         assert not just_spawned.expected_shutdown
-        pm._ctx.Process.assert_not_called()
+        as_mock(pm._ctx).Process.assert_not_called()
 
     def test_draining_worker_gets_the_longer_deadline(self):
         import time
@@ -1466,7 +1475,7 @@ class TestHeartbeatReplacement:
         pm.workers = {5: draining}
         pm._check_heartbeats()
         assert draining.expected_shutdown is False  # 5 s < 30 s + 5 s
-        draining.channel.heartbeat.value = time.monotonic() - 40
+        channel_of(draining).heartbeat.value = time.monotonic() - 40
         pm._check_heartbeats()
         assert draining.expected_shutdown is True
 
@@ -1478,7 +1487,7 @@ class TestHeartbeatReplacement:
             info = WorkerInfo(process=_fake_process(pid=pid), worker_id=0, channel=self._channel(time.monotonic() - 9))
             pm.workers = {pid: info}
             pm._check_heartbeats()
-        assert pm._ctx.Process.call_count == 2  # dritter Haenger: Budget erschoepft
+        assert as_mock(pm._ctx).Process.call_count == 2  # dritter Haenger: Budget erschoepft
         assert pm._exhausted_slots == 1
 
     def test_expected_shutdown_is_not_replaced_on_dead(self):
@@ -1491,7 +1500,7 @@ class TestHeartbeatReplacement:
         hung.is_alive.return_value = False
         hung.exitcode = -9
         pm._check_dead_workers()
-        assert pm._ctx.Process.call_count == 1  # kein zweiter Ersatz durch den SIGKILL-Exit
+        assert as_mock(pm._ctx).Process.call_count == 1  # kein zweiter Ersatz durch den SIGKILL-Exit
 
 
 class TestRecycleIntent:
@@ -1596,8 +1605,8 @@ class TestSlotTable:
 
     def _kill(self, pm: ProcessManager, pid: int, exitcode: int = -9) -> None:
         proc = pm.workers[pid].process
-        proc.is_alive.return_value = False
-        proc.exitcode = exitcode
+        as_mock(proc).is_alive.return_value = False
+        as_mock(proc).exitcode = exitcode
 
     def test_crashed_slot_is_refilled_with_the_same_slot(self):
         """Covers AE1: --processes 3 vergibt 0, 1, 2; der Ersatz für Slot 1 trägt Slot 1."""
@@ -1607,7 +1616,7 @@ class TestSlotTable:
         self._kill(pm, 101)
         pm._check_dead_workers()
         assert sorted(w.worker_id for w in pm.workers.values()) == [0, 1, 2]
-        kwargs = pm._ctx.Process.call_args.kwargs
+        kwargs = as_mock(pm._ctx).Process.call_args.kwargs
         assert kwargs["args"][1] == 1
         assert kwargs["name"] == "swarmq-worker-1"
 
@@ -1659,20 +1668,20 @@ class TestSlotTable:
         assert pm._exhausted_slots == 1
         assert pm._current_target() == 2
         self._run_monitor_briefly(pm)
-        assert pm._ctx.Process.call_count == 3  # kein Backfill fuer Slot 2
+        assert as_mock(pm._ctx).Process.call_count == 3  # kein Backfill fuer Slot 2
         assert sorted(w.worker_id for w in pm.workers.values()) == [0, 1]
 
     def test_recycling_replacement_shares_the_slot_until_the_predecessor_exits(self):
         pm = self._pm(n=2)
         pm._start_all_workers()
-        pm.workers[101].channel.request_recycle()
+        channel_of(pm.workers[101]).request_recycle()
         pm._check_heartbeats()
         assert [w.worker_id for w in pm.workers.values()] == [0, 1, 1]
         assert pm.slot_state(1) is SlotState.TRANSITION
         self._kill(pm, 101, exitcode=0)
         pm._check_dead_workers()
         assert pm.slot_state(1) is SlotState.ACTIVE
-        assert pm._ctx.Process.call_count == 3  # kein zweiter Ersatz
+        assert as_mock(pm._ctx).Process.call_count == 3  # kein zweiter Ersatz
         assert pm._current_target() == 2
         assert pm._clean_exits == 0
 
@@ -1680,29 +1689,29 @@ class TestSlotTable:
         pm = self._pm(n=1, heartbeat_timeout_s=10.0)
         pm._start_all_workers()
         hung = pm.workers[100]
-        hung.channel.heartbeat.value = time.monotonic() - 61
+        channel_of(hung).heartbeat.value = time.monotonic() - 61
         pm._check_heartbeats()
         assert [w.worker_id for w in pm.workers.values()] == [0, 0]
         assert pm.slot_state(0) is SlotState.TRANSITION
         pm._terminating = [(info, 0.0) for info, _ in pm._terminating]
         pm._escalate_terminating()
-        hung.process.kill.assert_called_once()
+        as_mock(hung.process).kill.assert_called_once()
         assert pm.slot_state(0) is SlotState.TRANSITION  # der Vorgaenger lebt noch
         self._kill(pm, 100)
         pm._check_dead_workers()
         assert pm.slot_state(0) is SlotState.ACTIVE
-        assert pm._ctx.Process.call_count == 2
+        assert as_mock(pm._ctx).Process.call_count == 2
 
     def test_replacement_dying_before_the_predecessor_keeps_transition_and_respawns(self):
         pm = self._pm(n=1)
         pm._start_all_workers()
-        pm.workers[100].channel.request_recycle()
+        channel_of(pm.workers[100]).request_recycle()
         pm._check_heartbeats()  # Ersatz pid 200 teilt Slot 0 mit dem drainenden Vorgaenger
         self._kill(pm, 200, exitcode=-11)
         pm._check_dead_workers()
         assert pm.slot_state(0) is SlotState.TRANSITION
         assert sorted(pm.workers) == [100, 300]  # Vorgaenger + weiterer Ersatz
-        assert pm._ctx.Process.call_count == 3
+        assert as_mock(pm._ctx).Process.call_count == 3
         assert pm.workers[300].restart_timestamps
         assert pm.workers[300].worker_id == 0
 
@@ -1710,12 +1719,12 @@ class TestSlotTable:
         pm = self._pm(n=1, heartbeat_timeout_s=10.0, delivery_limit=1)  # Budget 2
         pm._start_all_workers()
         pm._hang_timestamps = [time.monotonic()] * 2
-        pm.workers[100].channel.heartbeat.value = time.monotonic() - 61
+        channel_of(pm.workers[100]).heartbeat.value = time.monotonic() - 61
         pm._check_heartbeats()
         assert pm.workers[100].process.is_alive()
         assert pm.slot_state(0) is SlotState.LOCKED
         assert pm._current_target() == 0
-        assert pm._ctx.Process.call_count == 1
+        assert as_mock(pm._ctx).Process.call_count == 1
         self._kill(pm, 100)
         pm._check_dead_workers()
         assert pm.slot_state(0) is SlotState.LOCKED
@@ -1724,7 +1733,7 @@ class TestSlotTable:
     def test_autoscale_target_counts_occupied_slots_not_processes(self):
         pm = self._pm(n=2, autoscale=(1, 4), queue_depth_fn=lambda: 0)
         pm._start_all_workers()
-        pm.workers[101].channel.request_recycle()
+        channel_of(pm.workers[101]).request_recycle()
         pm._check_heartbeats()
         assert len(pm.workers) == 3
         assert pm._current_target() == 2  # Slot 1 im Uebergang zaehlt einmal
@@ -1739,7 +1748,7 @@ class TestSlotTable:
         assert pm._current_target() == 2
         self._run_monitor_briefly(pm)
         assert sorted(w.worker_id for w in pm.workers.values()) == [0, 1]
-        assert pm._ctx.Process.call_count == 3
+        assert as_mock(pm._ctx).Process.call_count == 3
         assert pm.slot_state(1) is SlotState.ACTIVE
 
     def _autoscale_pm(self, depth: int, n: int = 1, bounds: tuple[int, int] = (1, 4)) -> ProcessManager:
@@ -1766,8 +1775,8 @@ class TestSlotTable:
         pm.workers[101].spawned_at = now - 100.0
         pm._autoscale_tick()  # idle_since
         pm._autoscale_tick()
-        pm.workers[100].process.terminate.assert_called_once()
-        pm.workers[101].process.terminate.assert_not_called()
+        as_mock(pm.workers[100].process).terminate.assert_called_once()
+        as_mock(pm.workers[101].process).terminate.assert_not_called()
         assert pm.workers[100].expected_shutdown is True
 
     def test_scale_down_tie_on_spawn_time_frees_the_highest_slot(self):
@@ -1783,20 +1792,20 @@ class TestSlotTable:
             info.spawned_at = now - 100.0
         pm._autoscale_tick()
         pm._autoscale_tick()
-        pm.workers[102].process.terminate.assert_called_once()
-        pm.workers[100].process.terminate.assert_not_called()
-        pm.workers[101].process.terminate.assert_not_called()
+        as_mock(pm.workers[102].process).terminate.assert_called_once()
+        as_mock(pm.workers[100].process).terminate.assert_not_called()
+        as_mock(pm.workers[101].process).terminate.assert_not_called()
 
     def test_slot_in_transition_counts_once_for_the_autoscaler(self):
         pm = self._autoscale_pm(depth=0, n=2, bounds=(2, 4))
         pm._start_all_workers()
-        pm.workers[101].channel.request_recycle()
+        channel_of(pm.workers[101]).request_recycle()
         pm._check_heartbeats()
         assert len(pm.workers) == 3
         pm._autoscale_tick()
         pm._autoscale_tick()
         for info in pm.workers.values():  # 2 belegte Slots == min: kein Scale-Down
-            info.process.terminate.assert_not_called()
+            as_mock(info.process).terminate.assert_not_called()
 
     def test_scale_down_never_picks_the_fresh_replacement_of_a_transition(self):
         pm = self._autoscale_pm(depth=0, n=2)
@@ -1804,13 +1813,13 @@ class TestSlotTable:
         now = time.monotonic()
         pm.workers[100].spawned_at = now - 100.0
         pm.workers[101].spawned_at = now - 50.0
-        pm.workers[100].channel.request_recycle()
+        channel_of(pm.workers[100]).request_recycle()
         pm._check_heartbeats()  # Ersatz pid 200 ist der juengste Prozess, Slot 0 im Uebergang
         pm._autoscale_tick()
         pm._autoscale_tick()
-        pm.workers[101].process.terminate.assert_called_once()
-        pm.workers[200].process.terminate.assert_not_called()
-        pm.workers[100].process.terminate.assert_not_called()
+        as_mock(pm.workers[101].process).terminate.assert_called_once()
+        as_mock(pm.workers[200].process).terminate.assert_not_called()
+        as_mock(pm.workers[100].process).terminate.assert_not_called()
 
     def test_burst_exit_frees_the_slot_without_backfill(self):
         pm = self._pm(n=2)
@@ -1821,7 +1830,7 @@ class TestSlotTable:
         assert pm._clean_exits == 1
         assert pm._current_target() == 1
         self._run_monitor_briefly(pm)
-        assert pm._ctx.Process.call_count == 2
+        assert as_mock(pm._ctx).Process.call_count == 2
         assert list(pm.workers) == [101]
 
     def test_restart_timestamps_travel_to_the_replacement_in_the_same_slot(self):
@@ -2061,13 +2070,14 @@ class TestReloadStateMachine:
         nachdem die Probe gueltig war, aber bevor der Loop den Reload
         beschliesst. Auch dann gewinnt SIGTERM."""
         pm, _ = self._pm(tmp_path)
-        probe = FakeProbe(rc=None)
 
-        def poll():
-            pm._on_shutdown_signal(signal.SIGTERM, None)
-            return 0
+        class _SignallingProbe(FakeProbe):
+            @override
+            def poll(self) -> int | None:
+                pm._on_shutdown_signal(signal.SIGTERM, None)
+                return 0
 
-        probe.poll = poll
+        probe = _SignallingProbe(rc=None)
         pm.reloader = ReloadController(
             pm.reloader.log_config,
             probe_factory=FakeProbeFactory(probe),

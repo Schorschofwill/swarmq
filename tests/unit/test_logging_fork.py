@@ -415,7 +415,7 @@ def test_fork_does_not_deadlock_with_a_thread_holding_the_logging_lock(
     handler = _configure_file_mode(tmp_path)
     (target,) = handler.listener.handlers  # type: ignore[union-attr]
     lock = SignallingLock(owner=threading.get_ident())
-    target.lock = lock  # type: ignore[assignment]
+    target.lock = lock
     holds_module_lock = threading.Event()
 
     def reconfigure() -> None:
@@ -567,7 +567,7 @@ def test_multiprocessing_exit_before_shutdown_logging_writes_all_records(
 
         # Wie im Kind von ``multiprocessing.Process``: keine geerbten
         # Finalizer und Kinder des Testprozesses.
-        multiprocessing.util._finalizer_registry.clear()
+        multiprocessing.util._finalizer_registry.clear()  # type: ignore[attr-defined]  # private API, fehlt in typeshed
         multiprocessing.process._children.clear()  # type: ignore[attr-defined]
         thread_errors: list[object] = []
         threading.excepthook = thread_errors.append
@@ -596,7 +596,7 @@ def test_a_record_after_multiprocessing_closed_the_pipe_is_counted_as_dropped(
 
         from swarmq.logging import dropped_log_records
 
-        multiprocessing.util._finalizer_registry.clear()
+        multiprocessing.util._finalizer_registry.clear()  # type: ignore[attr-defined]  # private API, fehlt in typeshed
         multiprocessing.process._children.clear()  # type: ignore[attr-defined]
         thread_errors: list[object] = []
         threading.excepthook = thread_errors.append
@@ -625,7 +625,7 @@ def test_a_sentinel_left_in_a_closed_queue_is_not_counted_as_dropped(
 
         from swarmq.logging import dropped_log_records
 
-        multiprocessing.util._finalizer_registry.clear()
+        multiprocessing.util._finalizer_registry.clear()  # type: ignore[attr-defined]  # private API, fehlt in typeshed
         multiprocessing.process._children.clear()  # type: ignore[attr-defined]
         handler = _configure_file_mode(tmp_path, queue={"()": "multiprocessing.Queue"})
         listener = handler.listener

@@ -16,6 +16,7 @@ Test-Liste (U2):
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from swarmq.contracts.control import Setpoint
 from swarmq.process_manager.setpoint_store import SetpointUnread, read_setpoint_sync, write_status_sync
@@ -28,7 +29,7 @@ class FakeStore:
         self.connect_error = connect_error
         self.close_error = close_error
         self.closed = False
-        self.status_writes: list[tuple] = []
+        self.status_writes: list[tuple[str, str, dict[str, Any], float]] = []
 
     async def connect(self):
         if self.connect_error is not None:

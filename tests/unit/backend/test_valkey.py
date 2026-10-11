@@ -496,7 +496,7 @@ class TestValkeyBackendClearCancelFlag:
         backend._client = mock_client
 
         # Must not raise
-        result = await backend.clear_cancel_flag("task-abc")
+        result = await backend.clear_cancel_flag("task-abc")  # type: ignore[func-returns-value]  # Laufzeit-Rueckgabe trotz -> None pruefen
         assert result is None
 
 

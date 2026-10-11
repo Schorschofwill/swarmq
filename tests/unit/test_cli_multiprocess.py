@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -559,7 +560,7 @@ class TestCheckValidatesLogging:
     """
 
     @staticmethod
-    def _check(capsys, *extra: str) -> tuple[int, dict]:
+    def _check(capsys, *extra: str) -> tuple[int, dict[str, Any]]:
         import json
 
         rc = main(["worker", "--module=json", "--check", *extra])

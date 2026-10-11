@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import override
+from typing import Any, override
 from unittest.mock import AsyncMock
 
 import pytest
@@ -23,6 +23,7 @@ from swarmq.middleware import Middleware, MiddlewareChain
 from swarmq.serialization import decode_json, decode_result, encode_json, encode_result
 from swarmq.task import Task, TaskInfo
 from swarmq.workflow import _node_from_dict, chain, chord, group
+from swarmq.workflow_enqueue import WorkflowStep
 from swarmq.workflow_orchestration import (
     STATUS_CANCELLED,
     STATUS_COMPLETED,
@@ -44,7 +45,7 @@ class Echo(Task):
     task_info = TaskInfo(name="echo", queues=["default"])
 
     @override
-    async def run(self, *args) -> list:
+    async def run(self, *args) -> list[Any]:
         return list(args)
 
 
@@ -82,7 +83,7 @@ class Driver:
     def __init__(self, workflow):
         self.backend = _connected_backend()
         self.chord = self.backend.chords
-        self.published: list[tuple[str, bytes, dict]] = []
+        self.published: list[tuple[str, bytes, dict[str, str]]] = []
         self.wf_id = "wf-test"
         self.advancer = WorkflowAdvancer(
             self.backend,
@@ -104,7 +105,7 @@ class Driver:
 
     async def _run_step(self, body: bytes) -> str:
         msg = decode_json(body)
-        task_id = msg["task"]["id"]
+        task_id: str = msg["task"]["id"]
         # Echo task: result is the arg list (captures injected predecessor).
         result_value = list(msg["args"])
         await self.backend.store_result(
@@ -159,10 +160,11 @@ class Driver:
             result_value = decode_result(raw)["result"]
             await self.advancer.advance(self.wf_id, step_path, task_id, result_value)
 
-    async def state(self) -> dict:
+    async def state(self) -> dict[str, Any]:
         raw = await self.backend.get_workflow_state(self.wf_id)
         assert raw is not None
-        return decode_json(raw)
+        state: dict[str, Any] = decode_json(raw)
+        return state
 
     async def final_value(self):
         st = await self.state()
@@ -557,10 +559,11 @@ class MultiDriver:
 
     def __init__(self, workflow):
         self.backend = _connected_backend()
-        self.published: list[tuple[str, bytes, dict]] = []
+        self.published: list[tuple[str, bytes, dict[str, str]]] = []
         self.wf_id = "wf-multi"
         self.workflow = workflow
         self.advancer_count = 0
+        self.cas_calls = 0
 
     def advancer(self) -> WorkflowAdvancer:
         self.advancer_count += 1
@@ -596,7 +599,7 @@ class MultiDriver:
             60_000,
         )
 
-    async def seed(self) -> dict:
+    async def seed(self) -> dict[str, Any]:
         state = build_initial_workflow_state(self.wf_id, self.workflow.to_dict())
         frontier = initial_frontier(self.workflow)
         state["step_tasks"] = {sp: f"seed-{sp}" for sp, _ in frontier}
@@ -615,10 +618,11 @@ class MultiDriver:
         await self._store(task_id, msg["task"]["name"], value)
         await self.advancer().advance(self.wf_id, step_path, task_id, value)
 
-    async def state(self) -> dict:
+    async def state(self) -> dict[str, Any]:
         raw = await self.backend.get_workflow_state(self.wf_id)
         assert raw is not None
-        return decode_json(raw)
+        state: dict[str, Any] = decode_json(raw)
+        return state
 
     async def final_value(self):
         fid = (await self.state())["final_result_task_id"]
@@ -1020,14 +1024,14 @@ class TestMarkEnqueuedRequiresReceipt:
             queue = "q"
             message_id = None
 
-        state = {"step_tasks": {}}
+        state: dict[str, Any] = {"step_tasks": {}}
         with pytest.raises(TypeError, match="PublishReceipt"):
             advancer.mark_enqueued(state, "/1", "tid", Fake())
         assert state["step_tasks"] == {}
 
     def test_real_receipt_marks_the_step(self):
         advancer = self._advancer()
-        state = {"step_tasks": {}}
+        state: dict[str, Any] = {"step_tasks": {}}
         advancer.mark_enqueued(state, "/1", "tid", PublishReceipt(queue="default"))
         assert state["step_tasks"] == {"/1": "tid"}
 
@@ -1039,7 +1043,7 @@ class _RecordingPublisher:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple[str, ...]]] = []
-        self.steps: list = []
+        self.steps: list[WorkflowStep] = []
 
     async def pre_enqueue(self, steps) -> None:
         self.calls.append(("pre_enqueue", tuple(s.step_path for s in steps)))
@@ -1176,7 +1180,9 @@ async def test_post_enqueue_failure_does_not_lose_the_step_marker():
     await advancer.advance("wf-post", "/0", "t0", ["a"])
 
     assert published == ["/1"]
-    fresh = decode_json(await backend.get_workflow_state("wf-post"))
+    raw_state = await backend.get_workflow_state("wf-post")
+    assert raw_state is not None
+    fresh = decode_json(raw_state)
     assert "/1" in fresh["step_tasks"]
 
 

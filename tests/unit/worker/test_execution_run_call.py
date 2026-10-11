@@ -17,6 +17,7 @@ from swarmq.middleware import MiddlewareChain
 from swarmq.task import Task, TaskInfo
 from swarmq.worker.execution import TaskExecutor
 from swarmq.worker.gates import GateContext, GateDeps
+from tests.unit.worker._helpers import partial_message
 
 
 class NeedsValue(Task):
@@ -56,7 +57,7 @@ def _deps() -> GateDeps:
     )
 
 
-def _ctx(task_class: type, *args: Any, **kwargs: Any) -> GateContext:
+def _ctx(task_class: type[Task], *args: Any, **kwargs: Any) -> GateContext:
     return GateContext(
         task_id="t1",
         task_name=task_class.task_info.name,
@@ -71,7 +72,7 @@ def _ctx(task_class: type, *args: Any, **kwargs: Any) -> GateContext:
 @pytest.mark.timeout(5)
 async def test_missing_run_argument_is_an_error_result_not_an_escaping_exception():
     ex = TaskExecutor(_deps())
-    result = await ex.execute(_ctx(NeedsValue), {"retry_count": 0}, MiddlewareChain([]))
+    result = await ex.execute(_ctx(NeedsValue), partial_message(retry_count=0), MiddlewareChain([]))
     assert result.is_error
     assert not result.is_cancelled
     assert isinstance(result.task_exception, TypeError)
@@ -81,7 +82,7 @@ async def test_missing_run_argument_is_an_error_result_not_an_escaping_exception
 @pytest.mark.timeout(5)
 async def test_unexpected_keyword_is_an_error_result():
     ex = TaskExecutor(_deps())
-    result = await ex.execute(_ctx(NeedsValue, "ok", extra=1), {"retry_count": 0}, MiddlewareChain([]))
+    result = await ex.execute(_ctx(NeedsValue, "ok", extra=1), partial_message(retry_count=0), MiddlewareChain([]))
     assert result.is_error
     assert isinstance(result.task_exception, TypeError)
 
@@ -89,6 +90,6 @@ async def test_unexpected_keyword_is_an_error_result():
 @pytest.mark.timeout(5)
 async def test_non_coroutine_run_is_an_error_result():
     ex = TaskExecutor(_deps())
-    result = await ex.execute(_ctx(SyncRun), {"retry_count": 0}, MiddlewareChain([]))
+    result = await ex.execute(_ctx(SyncRun), partial_message(retry_count=0), MiddlewareChain([]))
     assert result.is_error
     assert isinstance(result.task_exception, TypeError)

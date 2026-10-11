@@ -278,7 +278,7 @@ class TestClientProgress:
         return backend
 
     @staticmethod
-    def _valid_hash(current: int = 3, total: int = 10) -> dict:
+    def _valid_hash(current: int = 3, total: int = 10) -> dict[bytes, bytes]:
         return {
             b"current": str(current).encode(),
             b"total": str(total).encode(),
@@ -429,7 +429,7 @@ async def _memory_backend():
 
     memory = InMemoryBackend(FakeClock())
     await memory.connect()
-    memory.set_cancel_flag = AsyncMock(wraps=memory.set_cancel_flag)
+    memory.set_cancel_flag = AsyncMock(wraps=memory.set_cancel_flag)  # type: ignore[method-assign]  # Spion um echte Methode
     return memory
 
 

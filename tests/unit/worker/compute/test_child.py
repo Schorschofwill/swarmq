@@ -3,7 +3,7 @@
 import asyncio
 import os
 import queue as _queue
-from typing import Any, override
+from typing import Any, cast, override
 
 import pytest
 
@@ -11,6 +11,10 @@ from swarmq.exceptions import NoRetry, SoftTimeoutError
 from swarmq.task import Task, TaskInfo
 from swarmq.worker.compute import child
 from swarmq.worker.compute.envelope import ComputeJob
+
+# Sekundenbruchteil fuer schnelle Timeout-Tests. ``TaskInfo`` annotiert die
+# Timeouts als ``int``, verarbeitet zur Laufzeit aber jede Zahl.
+_FAST_TIMEOUT_S = cast("int", 0.05)
 
 
 @pytest.fixture(autouse=True)
@@ -87,7 +91,7 @@ async def test_run_job_wraps_exception_typed():
 @pytest.mark.timeout(5)
 async def test_run_job_soft_timeout_becomes_soft_timeout_error():
     class Slow(Task):
-        task_info = TaskInfo(name="slow", queues=["q"], soft_timeout=0.05)
+        task_info = TaskInfo(name="slow", queues=["q"], soft_timeout=_FAST_TIMEOUT_S)
 
         @override
         async def run(self) -> None:
@@ -135,7 +139,7 @@ async def test_progress_goes_through_the_shim_queue():
 async def test_di_request_scope_commits_on_success_and_rolls_back_on_exception():
     """R26 / AE14: yield-Provider sehen Erfolg (None) bzw. die Exception."""
     pytest.importorskip("dishka")
-    from collections.abc import AsyncIterable
+    from collections.abc import AsyncGenerator
 
     from dishka import FromDishka, Provider, Scope, from_context, make_async_container, provide
 
@@ -150,7 +154,7 @@ async def test_di_request_scope_commits_on_success_and_rolls_back_on_exception()
         tc = from_context(di.TaskContext, scope=Scope.REQUEST)
 
         @provide(scope=Scope.REQUEST)
-        async def tx(self, ctx: di.TaskContext) -> AsyncIterable[Tx]:
+        async def tx(self, ctx: di.TaskContext) -> AsyncGenerator[Tx, BaseException | None]:
             # dishka *sendet* die Exception als Yield-Wert (asend), wirft sie nicht.
             exc = yield Tx()
             if exc is None:
@@ -164,14 +168,14 @@ async def test_di_request_scope_commits_on_success_and_rolls_back_on_exception()
         task_info = TaskInfo(name="good_di", queues=["q"])
 
         @override
-        async def run(self, tx: FromDishka[Tx]) -> str:  # type: ignore[valid-type]
+        async def run(self, tx: FromDishka[Tx]) -> str:
             return "ok"
 
     class Bad(Task):
         task_info = TaskInfo(name="bad_di", queues=["q"])
 
         @override
-        async def run(self, tx: FromDishka[Tx]) -> str:  # type: ignore[valid-type]
+        async def run(self, tx: FromDishka[Tx]) -> str:
             raise ValueError("boom")
 
     ok = await child.run_job(_job("good_di"), _queue.Queue())
@@ -200,7 +204,7 @@ def test_release_forkserver_alive_fd_closes_the_inherited_write_end(monkeypatch)
     monkeypatch.setattr(fs._forkserver, "_forkserver_alive_fd", w, raising=False)
     try:
         childmod.release_forkserver_alive_fd()
-        assert fs._forkserver._forkserver_alive_fd is None
+        assert fs._forkserver._forkserver_alive_fd is None  # type: ignore[attr-defined]  # privates stdlib-Attribut
         with pytest.raises(OSError, match=r"\[Errno 9\]"):  # EBADF
             os.fstat(w)
         assert os.read(r, 1) == b""  # EOF: kein Schreibende mehr offen
@@ -227,7 +231,9 @@ async def test_recv_job_delivers_jobs_then_none_on_end_signal_and_eof():
     r, w = mp.Pipe(duplex=False)
     stop = asyncio.Event()
     w.send(_job("plain", 1))
-    assert (await child._recv_job(r, stop)).task_name == "plain"
+    first = await child._recv_job(r, stop)
+    assert first is not None
+    assert first.task_name == "plain"
     w.send(None)
     assert await child._recv_job(r, stop) is None
     w.close()

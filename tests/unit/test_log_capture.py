@@ -86,7 +86,8 @@ def test_restores_swarmq_logger_level_handlers_and_disabled() -> None:
     try:
         with capture_swarmq_logs():
             assert swarmq_logger.level == logging.DEBUG
-            assert not swarmq_logger.disabled
+            disabled_inside = swarmq_logger.disabled
+            assert not disabled_inside
         assert swarmq_logger.level == logging.ERROR
         assert swarmq_logger.disabled is True
         assert swarmq_logger.handlers == old[1]

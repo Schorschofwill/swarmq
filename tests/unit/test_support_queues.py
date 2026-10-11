@@ -33,7 +33,7 @@ def connection(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     channel.is_closed = False
     conn.channel = AsyncMock(return_value=channel)
     conn.test_channel = channel
-    monkeypatch.setattr(queues.aio_pika, "connect", AsyncMock(return_value=conn))
+    monkeypatch.setattr("tests.support.queues.aio_pika.connect", AsyncMock(return_value=conn))
     return conn
 
 

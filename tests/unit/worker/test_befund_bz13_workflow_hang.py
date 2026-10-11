@@ -44,7 +44,7 @@ from swarmq.workflow_orchestration import WorkflowAdvancer
 from tests.support.inmemory import FakeClock, InMemoryBackend
 from tests.support.messages import make_message
 from tests.unit._log_capture import capture_swarmq_logs
-from tests.unit.worker._helpers import AddTask, _default_payload
+from tests.unit.worker._helpers import AddTask, _default_payload, as_mock
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -89,10 +89,10 @@ def _workflow_worker(broker: Any, backend: Any, config: Any, *tasks: type[Task])
     return worker
 
 
-def _step(name: str, *, kwargs: dict[str, Any] | None = None, **headers: Any) -> MagicMock:
+def _step(name: str, *, kwargs: dict[str, Any] | None = None, headers: dict[str, Any] | None = None) -> MagicMock:
     message = make_message(
         _default_payload(task_id="bz13-step", name=name, args=[], kwargs=kwargs or {}),
-        headers={HEADER_WORKFLOW_ID: _WF_ID, HEADER_WORKFLOW_STEP: "/1", **headers},
+        headers={HEADER_WORKFLOW_ID: _WF_ID, HEADER_WORKFLOW_STEP: "/1", **(headers or {})},
     )
     message.queue = "default"
     return message
@@ -130,7 +130,7 @@ async def test_lock_render_error_step_marks_the_workflow_failed(broker, backend,
 async def test_expired_step_marks_the_workflow_failed(broker, backend, config) -> None:
     worker = _workflow_worker(broker, backend, config, Expiring)
 
-    await worker._handle_message(_step("bz13_expiring", **{HEADER_ENQUEUED_AT: int(time.time()) - 100}))
+    await worker._handle_message(_step("bz13_expiring", headers={HEADER_ENQUEUED_AT: int(time.time()) - 100}))
 
     assert broker.dead_letter.await_count == 1, "Voraussetzung: abgelaufener Schritt geht in die DLQ"
     assert _failed_workflows(worker) == [_WF_ID], "Schritt abgelaufen, Workflow nicht fehlmarkiert"
@@ -141,13 +141,13 @@ async def test_stalled_lock_holder_step_marks_the_workflow_failed(broker, backen
     """MR 13 (Abschnitt 6): Stillstand -- derselbe Halter haelt laenger als
     die beobachtete PTTL + 60 s -- statt des Deckels 10."""
     worker = _workflow_worker(broker, backend, config, Mutex)
-    worker._lock_manager.observe = AsyncMock(return_value=LockObservation(frozenset({"holder"}), 90_000))
+    as_mock(worker._lock_manager).observe = AsyncMock(return_value=LockObservation(frozenset({"holder"}), 90_000))
     now_ms = int(time.time() * 1000)
 
     await worker._handle_message(
         _step(
             "bz13_mutex",
-            **{
+            headers={
                 HEADER_LOCK_HOLDER: holder_fingerprint(frozenset({"holder"})),
                 HEADER_LOCK_HOLDER_SINCE: now_ms - 90_000 - 60_000 - 1_000,
                 HEADER_LOCK_HOLDER_TTL_MS: 90_000,
@@ -174,7 +174,7 @@ async def test_advance_with_expired_workflow_state_logs_a_warning() -> None:
     advancer = WorkflowAdvancer(
         backend,
         backend.chords,
-        publisher=_NoopPublisher(),  # type: ignore[arg-type]
+        publisher=_NoopPublisher(),
         resolve_queue=lambda _name: "default",
         make_task_id=lambda wf, path: f"{wf}:{path}",
         unpack=lambda raw: raw,

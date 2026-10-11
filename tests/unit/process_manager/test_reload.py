@@ -124,7 +124,8 @@ def test_a_probe_past_its_deadline_is_killed_and_reported_as_timeout(log_config,
     assert ctl.step() is False
     clock.now += 29.9
     assert ctl.step() is False
-    assert probe.killed is False
+    killed_before_timeout = probe.killed
+    assert killed_before_timeout is False
     clock.now += 0.2
     assert ctl.step() is False
     assert probe.killed is True
@@ -240,7 +241,7 @@ def test_killing_the_real_probe_also_reaps_it():
     proc.wait.assert_called_once()
 
 
-def _blocked() -> set[signal.Signals]:
+def _blocked() -> set[int | signal.Signals]:
     return set(signal.pthread_sigmask(signal.SIG_BLOCK, []))
 
 
@@ -271,7 +272,7 @@ def _pm(**kwargs):
 
 
 def test_execvpe_runs_with_sigterm_and_sigint_blocked(signal_mask):
-    seen: list[set[signal.Signals]] = []
+    seen: list[set[int | signal.Signals]] = []
     with (
         patch("swarmq.process_manager.reload.shutdown_logging"),
         patch("swarmq.process_manager.reload.os.execvpe", side_effect=lambda *a: seen.append(_blocked())),

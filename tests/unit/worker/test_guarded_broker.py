@@ -400,11 +400,11 @@ async def test_orphan_limit_dead_letter_marks_done(
     deps.config = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x")
 
     async def _dead_letter(delivery: object, *_args: object) -> None:
-        await broker.dead_letter(delivery, headers={})
+        await guarded.dead_letter(delivery, headers={})
 
     guard = ExecutionGuard(deps, store=lambda: backend.execution_guard, dead_letter=_dead_letter)
-    broker = GuardedBroker(inner, guard)
-    deps.broker = broker
+    guarded = GuardedBroker(inner, guard)
+    deps.broker = guarded
     for owner in ("a", "b", "c"):
         await backend.execution_guard.claim(
             "t-1",

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from typing import override
+from typing import Any, override
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -412,9 +412,9 @@ class TestRunWorkerAsync:
 
         monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://localhost:5672/")
         monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://localhost:6379/0")
-        sink: dict = {}
+        sink: dict[str, Any] = {}
         self._fake_app(monkeypatch, sink)
-        seen: list = []
+        seen: list[Any] = []
 
         def setup(app):
             seen.append(app)
@@ -440,7 +440,7 @@ class TestRunWorkerAsync:
 
         monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://localhost:5672/")
         monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://localhost:6379/0")
-        sink: dict = {}
+        sink: dict[str, Any] = {}
         self._fake_app(monkeypatch, sink)
         awaited: list[str] = []
 
@@ -538,7 +538,7 @@ class TestRunWorkerAsync:
         monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://localhost:6379/0")
         monkeypatch.setenv("SWARMQ_WORKER_ID", "phx")
 
-        built: dict = {}
+        built: dict[str, Any] = {}
 
         class _FakeApp:
             def __init__(self, broker, backend, **kwargs):
@@ -596,7 +596,7 @@ class TestRunWorkerAsync:
         monkeypatch.setattr(SwarmQ, "__aenter__", AsyncMock())
         monkeypatch.setattr(SwarmQ, "__aexit__", AsyncMock(return_value=False))
         monkeypatch.setattr(SwarmQ, "start_worker", AsyncMock())
-        built: list = []
+        built: list[Any] = []
 
         def setup(app):
             built.append(app)
@@ -645,7 +645,7 @@ class TestRunWorkerAsync:
         monkeypatch.setattr(SwarmQ, "__aenter__", AsyncMock())
         monkeypatch.setattr(SwarmQ, "__aexit__", AsyncMock(return_value=False))
         monkeypatch.setattr(SwarmQ, "start_worker", AsyncMock())
-        built: list = []
+        built: list[Any] = []
         self._hook_module(monkeypatch, setup=built.append)
         ns = self._hook_args("swarmq_test_hooks:setup")
         ns.queues, ns.concurrency, ns.pool = ["cliq"], 20, "io"
@@ -1230,7 +1230,7 @@ class TestDlqNormaliseHeaders:
         assert cli._normalise_headers_for_json({}) == {}
 
     def test_none_treated_as_empty(self):
-        assert cli._normalise_headers_for_json(None) == {}
+        assert cli._normalise_headers_for_json(None) == {}  # type: ignore[arg-type]  # Robustheit: Nachricht ohne Header
 
 
 class TestDlqHandlerOrchestration:
@@ -1567,7 +1567,12 @@ class TestConsoleEntryHardExit:
 
     def test_console_main_hands_the_exit_code_of_main_to_the_hard_exit(self, monkeypatch):
         calls: list[object] = []
-        monkeypatch.setattr(cli, "main", lambda argv=None: calls.append(("main", argv)) or 78)
+
+        def fake_main(argv=None):
+            calls.append(("main", argv))
+            return 78
+
+        monkeypatch.setattr(cli, "main", fake_main)
         monkeypatch.setattr(
             "swarmq.logging_drain.exit_if_log_thread_stuck",
             lambda code: calls.append(("exit_if_log_thread_stuck", code)),

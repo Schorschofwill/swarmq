@@ -3,16 +3,31 @@
 from __future__ import annotations
 
 import os
+from typing import Any
 from unittest.mock import MagicMock
 
 from swarmq.process_manager import (
     WorkerConfig,
 )
+from swarmq.process_manager.slots import WorkerInfo
+from swarmq.supervision import SupervisorChannel
 
 
-def _make_test_cfg(**overrides) -> WorkerConfig:
+def as_mock(obj: object) -> MagicMock:
+    """Gibt ``obj`` als MagicMock zurueck; Tests ersetzen ``_ctx``/Prozesse durch Mocks."""
+    assert isinstance(obj, MagicMock)
+    return obj
+
+
+def channel_of(info: WorkerInfo) -> SupervisorChannel:
+    """Kontrollkanal eines gestarteten Workers (nach ``_start_worker`` immer gesetzt)."""
+    assert info.channel is not None
+    return info.channel
+
+
+def _make_test_cfg(**overrides: Any) -> WorkerConfig:
     """Return a minimal WorkerConfig for unit tests (pickle-safe)."""
-    defaults = {
+    defaults: dict[str, Any] = {
         "module": "dummy.module",
         "queues": ("default",),
         "concurrency": 1,
@@ -28,7 +43,7 @@ def _make_test_cfg(**overrides) -> WorkerConfig:
     return WorkerConfig(**defaults)
 
 
-def _fake_process(alive: bool = True, exitcode: int | None = None, pid: int = 1234):
+def _fake_process(alive: bool = True, exitcode: int | None = None, pid: int = 1234) -> MagicMock:
     p = MagicMock()
     p.is_alive.return_value = alive
     p.exitcode = exitcode

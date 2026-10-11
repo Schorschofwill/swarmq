@@ -22,7 +22,7 @@ Test-Liste:
 from __future__ import annotations
 
 import asyncio
-from typing import ClassVar, override
+from typing import Any, ClassVar, override
 
 import pytest
 import structlog
@@ -56,7 +56,7 @@ def ctx_worker(worker, registry):
     return worker
 
 
-def _inside(entries: list[dict]) -> list[dict]:
+def _inside(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [e for e in entries if e["event"] == "inside_task"]
 
 
@@ -101,7 +101,7 @@ async def test_log_context_carries_the_worker_identity_as_string(broker, backend
     assert entry["worker_id"] == "phx:2"
 
 
-def _message(*, task_id: str = "t-ctx", headers: dict | None = None):
+def _message(*, task_id: str = "t-ctx", headers: dict[str, Any] | None = None):
     msg = make_message(_default_payload(task_id=task_id, name="logs_inside", args=[], kwargs={}), headers=headers)
     msg.queue = "default"
     return msg

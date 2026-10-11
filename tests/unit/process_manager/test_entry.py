@@ -24,7 +24,7 @@ from __future__ import annotations
 #       mit (``exc``): Traceback bzw. ``SystemExit``-Meldung auf fd 2 wie in
 #       ``console_main``
 import os
-from typing import override
+from typing import Any, override
 
 import pytest
 
@@ -112,7 +112,7 @@ class TestWorkerSubprocessEntry:
         spawn N watchers, one per worker, each killing its own PID."""
         import threading
 
-        captured: dict = {}
+        captured: dict[str, Any] = {}
 
         async def capture_ns(ns):
             captured["ns"] = ns
@@ -138,7 +138,7 @@ class TestWorkerSubprocessEntry:
         Speicheradresse."""
         import threading
 
-        captured: dict = {}
+        captured: dict[str, Any] = {}
 
         async def capture_ns(ns):
             captured["ns"] = ns
@@ -154,7 +154,7 @@ class TestWorkerSubprocessEntry:
         assert captured["ns"].worker_slot == 2
 
 
-def _capture_entry_logs(monkeypatch) -> list[dict]:
+def _capture_entry_logs(monkeypatch) -> list[dict[str, Any]]:
     """Faengt die Logsaetze des Entry ab.
 
     ``structlog.testing.capture_logs`` hilft hier nicht: das Entry ruft
@@ -164,7 +164,7 @@ def _capture_entry_logs(monkeypatch) -> list[dict]:
     """
     from swarmq.process_manager import entry as entry_module
 
-    events: list[dict] = []
+    events: list[dict[str, Any]] = []
 
     class _Recorder:
         def error(self, event, **kwargs):
@@ -429,7 +429,7 @@ class TestEntryLogging:
 
         from swarmq.logging_settings import LoggingSettings
 
-        seen: dict = {}
+        seen: dict[str, Any] = {}
 
         async def fake_run(ns):
             seen["level"] = logging.getLogger().level

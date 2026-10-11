@@ -67,18 +67,18 @@ class TestSanitiseError:
 def _free_port() -> int:
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
+    port: int = s.getsockname()[1]
     s.close()
     return port
 
 
-async def _http_get(host: str, port: int, path: str) -> tuple[int, dict, bytes]:
+async def _http_get(host: str, port: int, path: str) -> tuple[int, dict[str, str], bytes]:
     reader, writer = await asyncio.open_connection(host, port)
     writer.write(f"GET {path} HTTP/1.1\r\nHost: x\r\n\r\n".encode())
     await writer.drain()
     status_line = await reader.readline()
     status_code = int(status_line.split()[1])
-    headers: dict = {}
+    headers: dict[str, str] = {}
     while True:
         line = await reader.readline()
         if line in (b"\r\n", b""):

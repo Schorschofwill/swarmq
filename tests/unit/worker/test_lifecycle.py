@@ -33,7 +33,7 @@ from __future__ import annotations
 import asyncio
 import socket
 import time
-from typing import override
+from typing import Any, cast, override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -47,6 +47,7 @@ from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 from swarmq.worker import Worker, WorkerState
 from tests.support.messages import make_message
+from tests.unit.worker._helpers import gauge_value
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -59,9 +60,9 @@ def _default_payload(
     task_id: str = "abc-123",
     queue: str = "default",
     name: str = "shutdown_add",
-    args: list | None = None,
-    kwargs: dict | None = None,
-) -> dict:
+    args: list[Any] | None = None,
+    kwargs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return {
         "task": {"id": task_id, "queue": queue, "name": name},
         "args": args if args is not None else [1, 2],
@@ -532,7 +533,7 @@ class TestMetricsSampler:
         broker.queue_depth = AsyncMock(return_value=12)
         broker.dead_letter_depth = AsyncMock(return_value=3)
 
-        captured: list[dict] = []
+        captured: list[dict[str, Any]] = []
 
         async def _on_heartbeat(**kw):
             captured.append(kw)
@@ -541,9 +542,9 @@ class TestMetricsSampler:
 
         await worker._sample_metrics_once()
 
-        assert m.queue_depth.labels(queue="default", kind="pending")._value.get() == 12
-        assert m.dlq_messages.labels(queue="default")._value.get() == 3
-        assert m.worker_uptime_seconds.labels(worker_id=worker._config.worker_identity)._value.get() >= 5
+        assert gauge_value(m.queue_depth.labels(queue="default", kind="pending")) == 12
+        assert gauge_value(m.dlq_messages.labels(queue="default")) == 3
+        assert gauge_value(m.worker_uptime_seconds.labels(worker_id=worker._config.worker_identity)) >= 5
         assert len(captured) == 1
         assert captured[0]["uptime_seconds"] >= 5
 
@@ -675,14 +676,14 @@ class TestPayloadShapeValidation:
 
     async def test_string_args_not_executed(self, worker, broker):
         # args="hello" would otherwise unpack character-by-character.
-        msg = make_message(_default_payload(args="hello"))
+        msg = make_message(_default_payload(args=cast("Any", "hello")))  # absichtlich falscher Typ
         await worker._handle_message(msg)
         broker.route_via_dlx.assert_awaited_once_with(msg)
         # Task never ran (no result stored).
         assert len(worker._active_tasks) == 0
 
     async def test_non_dict_kwargs_not_executed(self, worker, broker):
-        msg = make_message(_default_payload(kwargs=["not", "a", "dict"]))
+        msg = make_message(_default_payload(kwargs=cast("Any", ["not", "a", "dict"])))  # absichtlich falscher Typ
         await worker._handle_message(msg)
         broker.route_via_dlx.assert_awaited_once_with(msg)
 
@@ -842,7 +843,7 @@ class TestBurstMonitor:
 def _free_port() -> int:
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
+    port: int = s.getsockname()[1]
     s.close()
     return port
 
@@ -880,6 +881,7 @@ class TestAutoWire:
         w = _make_autowire_worker(metrics_port=port, metrics_host="127.0.0.1")
         w._metrics = Metrics()
         install_signal_collectors(w._signal_dispatcher, w._metrics)
+        assert w._config.metrics_port is not None
         w._metrics_server = MetricsServer(
             w._metrics,
             host=w._config.metrics_host,
@@ -1013,20 +1015,20 @@ class TestWorkerIdentityInSignalsAndMetrics:
         broker.queue_depth = AsyncMock(return_value=0)
         broker.dead_letter_depth = AsyncMock(return_value=0)
 
-        captured: list[dict] = []
+        captured: list[dict[str, Any]] = []
         worker._signal_dispatcher.connect(Signal.WORKER_HEARTBEAT, lambda **kw: _collect(captured, kw))
 
         await worker._sample_metrics_once()
 
         assert captured[0]["worker_id"] == "phx:3"
-        assert m.worker_uptime_seconds.labels(worker_id="phx:3")._value.get() >= 5
+        assert gauge_value(m.worker_uptime_seconds.labels(worker_id="phx:3")) >= 5
 
 
-async def _collect(sink: list[dict], kwargs: dict) -> None:
+async def _collect(sink: list[dict[str, Any]], kwargs: dict[str, Any]) -> None:
     sink.append(kwargs)
 
 
-def _pending_scheduler_tasks() -> list[asyncio.Task]:
+def _pending_scheduler_tasks() -> list[asyncio.Task[Any]]:
     names = ("_election_loop", "_poll_loop")
     return [
         t for t in asyncio.all_tasks() if not t.done() and getattr(t.get_coro(), "__qualname__", "").endswith(names)

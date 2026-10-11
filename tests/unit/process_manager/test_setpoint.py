@@ -18,6 +18,7 @@ Test-Liste U5 (Pruefregeln R10, Lesen beim Start):
 from __future__ import annotations
 
 import multiprocessing
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -25,7 +26,7 @@ import pytest
 from swarmq.contracts.control import Setpoint, SetpointUnreadable
 from swarmq.process_manager import ProcessManager, setpoint
 from swarmq.process_manager.slots import SlotState
-from tests.unit.process_manager._helpers import _entry_stub, _fake_process
+from tests.unit.process_manager._helpers import _entry_stub, _fake_process, as_mock
 
 
 class TestValidate:
@@ -56,7 +57,7 @@ class FakeStore:
         self.result = result
         self.fail = fail
         self.read_fail = read_fail
-        self.status_writes: list[dict] = []
+        self.status_writes: list[dict[str, Any]] = []
         self.status_ttls: list[float] = []
         self.status_keys: list[tuple[str, str]] = []
         self.reads = 0
@@ -244,8 +245,8 @@ class TestTick:
         assert len(_drained(pm)) == 2
         for info in pm.workers.values():
             if info.expected_shutdown:
-                info.process.terminate.assert_called_once()
-                info.process.kill.assert_not_called()
+                as_mock(info.process).terminate.assert_called_once()
+                as_mock(info.process).kill.assert_not_called()
 
     def test_fresh_workers_are_not_exempt_from_the_shrink(self):
         store = FakeStore(None)
@@ -270,8 +271,8 @@ class TestTick:
         # Nur Slot 0 war waehlbar: Ziel 1 noch nicht erreicht.
         assert _live_slots(pm) == [1, 2]
         for slot in (1, 2):  # Vorgaenger enden, Uebergang loest sich
-            pm.workers[old[slot]].process.is_alive.return_value = False
-            pm.workers[old[slot]].process.exitcode = 0
+            as_mock(pm.workers[old[slot]].process).is_alive.return_value = False
+            as_mock(pm.workers[old[slot]].process).exitcode = 0
         pm._check_dead_workers()
         setpoint.tick(pm)
         assert len(_live_slots(pm)) == 1
@@ -306,17 +307,17 @@ class TestTick:
         pm._start_all_workers()
         store.result = Setpoint(4, 4)
         setpoint.tick(pm)
-        spawned = pm._ctx.Process.call_count
+        spawned = as_mock(pm._ctx).Process.call_count
         assert pm._current_target() == 4
         assert pm._slots.occupied() == 6
         for info in list(pm.workers.values()):
             if info.expected_shutdown:
-                info.process.is_alive.return_value = False
-                info.process.exitcode = 0
+                as_mock(info.process).is_alive.return_value = False
+                as_mock(info.process).exitcode = 0
         pm._check_dead_workers()
         assert pm._current_target() == 4
         assert pm._slots.occupied() == 4
-        assert pm._ctx.Process.call_count == spawned  # nichts nachgefuellt
+        assert as_mock(pm._ctx).Process.call_count == spawned  # nichts nachgefuellt
 
     def test_fixed_then_range_then_startup_moves_no_exit_condition(self):
         store = FakeStore(Setpoint(4, 4))
@@ -328,8 +329,8 @@ class TestTick:
         setpoint.tick(pm)
         for info in list(pm.workers.values()):
             if info.expected_shutdown:
-                info.process.is_alive.return_value = False
-                info.process.exitcode = 0
+                as_mock(info.process).is_alive.return_value = False
+                as_mock(info.process).exitcode = 0
         pm._check_dead_workers()
         assert pm._clean_exits == 0
         assert pm._exhausted_slots == 0

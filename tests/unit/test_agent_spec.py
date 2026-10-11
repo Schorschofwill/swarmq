@@ -23,6 +23,7 @@ from __future__ import annotations
 import dataclasses
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -48,7 +49,7 @@ def _all_swarmq_errors() -> set[str]:
     """Independently discover the error class names (root + all subclasses)."""
     found = {SwarmQError.__name__}
 
-    def walk(cls: type) -> None:
+    def walk(cls: type[BaseException]) -> None:
         for sub in cls.__subclasses__():
             found.add(sub.__name__)
             walk(sub)
@@ -193,7 +194,7 @@ def test_config_spec_enum_choices_match_validation() -> None:
     assert by_name["queue_type"]["choices"] == ["classic", "quorum"]
     assert by_name["log_lifecycle_level"]["choices"] == by_name["log_level"]["choices"]
     # The documented choices are exactly what the config accepts/rejects.
-    base = {"broker_url": "amqp://x", "backend_url": "valkey://x"}
+    base: dict[str, Any] = {"broker_url": "amqp://x", "backend_url": "valkey://x"}
     for level in by_name["log_level"]["choices"]:
         SwarmQConfig(**base, log_level=level)  # no raise
         SwarmQConfig(**base, log_lifecycle_level=level)
@@ -250,7 +251,7 @@ def test_cli_spec_arguments_match_parser_per_command() -> None:
     leaves = _leaf_commands()
     by_path = {c["path"]: c for c in build_cli_spec()["commands"]}
     for path, parser in leaves.items():
-        spec_flags = set()
+        spec_flags: set[str] = set()
         for arg in by_path[path]["arguments"]:
             spec_flags.update(arg["flags"] or [arg["name"]])
         assert spec_flags == _option_strings(parser), f"mismatch for {path!r}"
@@ -324,7 +325,7 @@ _SCHEMA_FILES = {
 }
 
 
-def _schema_props(schema: dict) -> set[str]:
+def _schema_props(schema: dict[str, Any]) -> set[str]:
     """Property names of a (possibly $ref/$defs) msgspec-generated schema."""
     if "properties" in schema:
         return set(schema["properties"])

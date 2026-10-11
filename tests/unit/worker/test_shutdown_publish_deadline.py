@@ -135,7 +135,9 @@ class TestShutdownCouplesTheDeadline:
         worker._request_shutdown()
         await worker._execute_shutdown()
 
-        budget = deadlines[0] - before
+        first = deadlines[0]
+        assert first is not None
+        budget = first - before
         assert budget == pytest.approx(worker._shutdown_publish_budget(), abs=0.1), (
             "die Endfrist wurde erst nach dem Dispatch verankert und liegt damit um dessen Dauer zu spaet"
         )

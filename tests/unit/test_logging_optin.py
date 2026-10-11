@@ -188,17 +188,17 @@ def test_listener_starts_on_the_first_record_not_at_construction(
 
 
 class _Blocking(_Collect):
-    """Ein langsamer Handler der App: blockiert, bis ``release`` gesetzt ist."""
+    """Ein langsamer Handler der App: blockiert, bis ``unblock`` gesetzt ist."""
 
     def __init__(self) -> None:
         super().__init__()
         self.entered = threading.Event()
-        self.release = threading.Event()
+        self.unblock = threading.Event()
 
     @override
     def emit(self, record: logging.LogRecord) -> None:
         self.entered.set()
-        self.release.wait(5)
+        self.unblock.wait(5)
         super().emit(record)
 
 
@@ -215,7 +215,7 @@ async def test_a_blocking_app_handler_does_not_stall_the_calling_coroutine(
     assert blocking.entered.wait(5)
     _LOG.warning("optin_slow_2")  # Handler blockiert noch: der Aufruf nicht
 
-    blocking.release.set()
+    blocking.unblock.set()
     shutdown_logging()
     assert blocking.events() == ["optin_slow_1", "optin_slow_2"]
 
@@ -437,7 +437,7 @@ def test_after_a_fork_the_opt_in_still_reaches_the_app_without_inherited_records
 
         assert run_in_forked_child(child) == 0
     finally:
-        blocking.release.set()
+        blocking.unblock.set()
 
 
 def test_log_queue_size_bounds_the_opt_in_queue(broker: MagicMock, backend: MagicMock) -> None:
@@ -456,7 +456,7 @@ def test_log_queue_size_bounds_the_opt_in_queue(broker: MagicMock, backend: Magi
 
         assert dropped_log_records() - before == 3
     finally:
-        blocking.release.set()
+        blocking.unblock.set()
 
 
 def test_a_call_handlers_hook_sees_each_opt_in_record_once(
@@ -580,7 +580,7 @@ async def test_leaving_the_app_drains_without_stalling_the_event_loop(
     await other_ran.wait()
 
     assert not leaving.done()
-    blocking.release.set()
+    blocking.unblock.set()
     await leaving
     assert blocking.events() == ["optin_drain_1", "optin_drain_2"]
 
@@ -605,7 +605,7 @@ async def test_leaving_the_app_gives_up_at_the_drain_timeout_and_counts_the_rest
 
         assert dropped_log_records() - before == 1
     finally:
-        blocking.release.set()
+        blocking.unblock.set()
 
 
 @pytest.mark.timeout(5)
@@ -628,7 +628,7 @@ async def test_leaving_the_app_restores_swarmq_before_the_queue_is_drained(
 
     assert not leaving.done()
     assert _swarmq_state() == before
-    blocking.release.set()
+    blocking.unblock.set()
     await leaving
 
 
@@ -653,7 +653,7 @@ async def test_a_new_instance_while_draining_gets_a_fresh_handler_and_queue(
 
     (new_handler,) = logging.getLogger("swarmq").handlers
     assert new_handler is not old_handler
-    blocking.release.set()
+    blocking.unblock.set()
     await leaving
     await second.__aexit__(None, None, None)
     assert sorted(blocking.events()) == ["optin_new", "optin_old"]
@@ -694,7 +694,7 @@ async def test_leaving_the_app_returns_at_the_drain_timeout_with_a_busy_executor
         assert dropped_log_records() - before == 1
     finally:
         app_work_done.set()
-        blocking.release.set()
+        blocking.unblock.set()
         await app_work
 
 
@@ -718,7 +718,7 @@ def test_an_embedded_app_sets_the_drain_timeout_of_shutdown_logging(
 
         assert dropped_log_records() - before == 1
     finally:
-        blocking.release.set()
+        blocking.unblock.set()
 
 
 @pytest.mark.timeout(5)
@@ -741,7 +741,7 @@ def test_a_builtin_setup_lifts_an_opt_in_with_a_stuck_app_handler_in_time(
 
         assert dropped_log_records() - before == 1
     finally:
-        blocking.release.set()
+        blocking.unblock.set()
 
 
 @pytest.mark.timeout(5)
@@ -781,7 +781,7 @@ async def test_cancelling_the_drain_still_counts_and_reports_the_rest(
         assert notices == [1]
         assert dropped_log_records() - before == 1
     finally:
-        blocking.release.set()
+        blocking.unblock.set()
 
 
 @pytest.mark.timeout(5)
@@ -806,7 +806,7 @@ async def test_cancelling_a_drain_that_finishes_in_time_loses_nothing(
     leaving.cancel()
     with pytest.raises(asyncio.CancelledError):
         await leaving
-    blocking.release.set()
+    blocking.unblock.set()
     for thread in _listener_threads():
         thread.join(2)
 
@@ -850,4 +850,4 @@ async def test_leaving_the_app_without_executor_returns_at_the_drain_timeout(
 
         assert dropped_log_records() - before == 1
     finally:
-        blocking.release.set()
+        blocking.unblock.set()

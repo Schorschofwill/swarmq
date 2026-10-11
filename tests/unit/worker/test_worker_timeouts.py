@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import override
+from typing import Any, cast, override
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -18,6 +18,10 @@ from swarmq.task import DeliveryMode, Task, TaskInfo
 from swarmq.worker import Worker
 from tests.support.messages import make_message
 
+# Sekundenbruchteil fuer schnelle Timeout-Tests. ``TaskInfo`` annotiert die
+# Timeouts als ``int``, verarbeitet zur Laufzeit aber jede Zahl.
+_FAST_TIMEOUT_S = cast("int", 0.05)
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -27,9 +31,9 @@ def _default_payload(
     task_id: str = "abc-123",
     queue: str = "default",
     name: str = "add",
-    args: list | None = None,
-    kwargs: dict | None = None,
-) -> dict:
+    args: list[Any] | None = None,
+    kwargs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return {
         "task": {"id": task_id, "queue": queue, "name": name},
         "args": args if args is not None else [1, 2],
@@ -97,7 +101,7 @@ async def test_soft_timeout_fires_when_run_exceeds_limit(broker, backend, config
     """Task with soft_timeout=0.05s, run() sleeps 1s -> error result with SoftTimeoutError."""
 
     class SlowTask(Task):
-        task_info = TaskInfo(name="slow_soft", queues=["default"], soft_timeout=0.05)
+        task_info = TaskInfo(name="slow_soft", queues=["default"], soft_timeout=_FAST_TIMEOUT_S)
 
         @override
         async def run(self) -> str:
@@ -130,7 +134,7 @@ async def test_soft_timeout_triggers_retry(broker, backend, config):
         task_info = TaskInfo(
             name="slow_retry",
             queues=["default"],
-            soft_timeout=0.05,
+            soft_timeout=_FAST_TIMEOUT_S,
             max_retries=3,
             retry_base_delay=0.1,
         )
@@ -173,7 +177,7 @@ async def test_hard_timeout_fires_and_retries(broker, backend, config):
         task_info = TaskInfo(
             name="slow_hard",
             queues=["default"],
-            hard_timeout=0.05,
+            hard_timeout=_FAST_TIMEOUT_S,
             max_retries=3,
             retry_base_delay=0.1,
         )
@@ -243,7 +247,7 @@ async def test_soft_timeout_skips_post_execution(broker, backend, config):
     post_called = False
 
     class SoftTimeoutPostTask(Task):
-        task_info = TaskInfo(name="soft_post", queues=["default"], soft_timeout=0.05)
+        task_info = TaskInfo(name="soft_post", queues=["default"], soft_timeout=_FAST_TIMEOUT_S)
 
         @override
         async def run(self) -> str:
@@ -278,7 +282,7 @@ async def test_hard_timeout_exhausted_retries_sends_to_dlq(broker, backend, conf
         task_info = TaskInfo(
             name="slow_dlq",
             queues=["default"],
-            hard_timeout=0.05,
+            hard_timeout=_FAST_TIMEOUT_S,
             max_retries=2,
             retry_base_delay=0.1,
         )
@@ -320,7 +324,7 @@ async def test_only_hard_timeout_no_soft(broker, backend, config):
         task_info = TaskInfo(
             name="hard_only",
             queues=["default"],
-            hard_timeout=0.05,
+            hard_timeout=_FAST_TIMEOUT_S,
             max_retries=1,
             retry_base_delay=0.1,
         )
@@ -364,7 +368,7 @@ async def test_fire_and_forget_hard_timeout_logged_no_nack(broker, backend, conf
             name="fnf_hard",
             queues=["default"],
             delivery=DeliveryMode.FIRE_AND_FORGET,
-            hard_timeout=0.05,
+            hard_timeout=_FAST_TIMEOUT_S,
         )
 
         @override
@@ -406,13 +410,13 @@ async def test_fire_and_forget_hard_timeout_logged_no_nack(broker, backend, conf
 # ---------------------------------------------------------------------------
 
 
-def _install_watchdog_tracker(worker: Worker) -> list[asyncio.Task]:
+def _install_watchdog_tracker(worker: Worker) -> list[asyncio.Task[Any]]:
     """Patch worker._executor._hard_timeout_watchdog to track spawned watchdog tasks.
 
     Returns a list that the test can inspect after _handle_message completes.
     Each element is the actual asyncio.Task created for the watchdog coroutine.
     """
-    created: list[asyncio.Task] = []
+    created: list[asyncio.Task[Any]] = []
     original = worker._executor._hard_timeout_watchdog
 
     async def tracking_watchdog(run_task, timeout, set_reason_if_unset=None):
@@ -423,7 +427,7 @@ def _install_watchdog_tracker(worker: Worker) -> list[asyncio.Task]:
             created.append(current)
         await original(run_task, timeout, set_reason_if_unset)
 
-    worker._executor._hard_timeout_watchdog = tracking_watchdog  # type: ignore[assignment]
+    worker._executor._hard_timeout_watchdog = tracking_watchdog  # type: ignore[method-assign]  # Tracking-Wrapper um die echte Methode
     return created
 
 
@@ -484,7 +488,7 @@ async def test_watchdog_cancelled_when_task_soft_timeouts(broker, backend, confi
         task_info = TaskInfo(
             name="soft_and_hard",
             queues=["default"],
-            soft_timeout=0.05,
+            soft_timeout=_FAST_TIMEOUT_S,
             hard_timeout=5,
             max_retries=0,
         )

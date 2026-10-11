@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import override
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -15,7 +15,7 @@ from swarmq.exceptions import (
 )
 from swarmq.serialization import encode_json, encode_result
 from swarmq.task import Task, TaskInfo
-from swarmq.workflow import chain, chord, group
+from swarmq.workflow import Signature, WorkflowNode, chain, chord, group
 from swarmq.workflow_orchestration import (
     STATUS_CANCELLED,
     STATUS_COMPLETED,
@@ -51,6 +51,12 @@ class B(Task):
 # --------------------------------------------------------------------------
 
 
+def _signature(node: WorkflowNode) -> Signature:
+    """Engt einen Workflow-Knoten auf ``Signature`` ein (scheitert sonst)."""
+    assert isinstance(node, Signature), node
+    return node
+
+
 def test_frontier_chain_only_first_step():
     f = initial_frontier(chain(A.s(), B.s()))
     assert [(p, s.task_name) for p, s in f] == [("/0", "a")]
@@ -73,14 +79,14 @@ def test_frontier_chain_with_embedded_group_first():
 
 def test_node_at_path_roundtrip_chain():
     wf = chain(A.s(), B.s())
-    assert node_at_path(wf, "/0").task_name == "a"
-    assert node_at_path(wf, "/1").task_name == "b"
+    assert _signature(node_at_path(wf, "/0")).task_name == "a"
+    assert _signature(node_at_path(wf, "/1")).task_name == "b"
 
 
 def test_node_at_path_chord_header_and_body():
     wf = chord(group(A.s(), B.s()), B.s())
-    assert node_at_path(wf, "/h/g0").task_name == "a"
-    assert node_at_path(wf, "/b").task_name == "b"
+    assert _signature(node_at_path(wf, "/h/g0")).task_name == "a"
+    assert _signature(node_at_path(wf, "/b")).task_name == "b"
 
 
 def test_node_at_path_empty_is_root():
@@ -93,7 +99,7 @@ def test_node_at_path_empty_is_root():
 # --------------------------------------------------------------------------
 
 
-def _backend_with_state(state: dict | None) -> MagicMock:
+def _backend_with_state(state: dict[str, Any] | None) -> MagicMock:
     be = MagicMock()
     raw = encode_json(state) if state is not None else None
     be.get_workflow_state = AsyncMock(return_value=raw)

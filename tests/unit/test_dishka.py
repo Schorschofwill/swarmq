@@ -79,26 +79,25 @@ def test_request_container_contextvar_exists():
     assert isinstance(di.request_container, contextvars.ContextVar)
 
 
+class Svc:
+    def __init__(self, ctx: di.TaskContext) -> None:
+        self.tid = ctx.task_id
+
+
 def _make_container_with_svc():
     """Build a container whose REQUEST scope provides a Svc bound to TaskContext."""
     from collections.abc import AsyncIterable
 
-    from dishka import Provider, Scope, make_async_container, provide
-
-    class Svc:
-        def __init__(self, ctx: di.TaskContext) -> None:
-            self.tid = ctx.task_id
+    from dishka import Provider, Scope, from_context, make_async_container, provide
 
     class Prov(Provider):
-        from dishka import from_context
-
         tc = from_context(di.TaskContext, scope=Scope.REQUEST)
 
         @provide(scope=Scope.REQUEST)
         async def svc(self, ctx: di.TaskContext) -> AsyncIterable[Svc]:
             yield Svc(ctx)
 
-    return make_async_container(Prov()), Svc
+    return make_async_container(Prov())
 
 
 @pytest.mark.timeout(5)
@@ -110,13 +109,13 @@ async def test_lifecycle_injection_through_task_subclass():
 
     from swarmq.task import Task, TaskInfo
 
-    container, Svc = _make_container_with_svc()
+    container = _make_container_with_svc()
 
     class InjectTask(Task):
         task_info = TaskInfo(name="inject_task", queues=["q"])
 
         @override
-        async def run(self, x: int, svc: FromDishka[Svc]) -> str:  # type: ignore[valid-type]
+        async def run(self, x: int, svc: FromDishka[Svc]) -> str:
             return f"{x}:{svc.tid}"
 
     # run was wrapped (FromDishka present).
@@ -128,7 +127,7 @@ async def test_lifecycle_injection_through_task_subclass():
     req = await container(context={di.TaskContext: ctx}).__aenter__()
     token = di.request_container.set(req)
     try:
-        result = await InjectTask().run(5)  # svc injected, x positional
+        result = await InjectTask().run(5)  # type: ignore[call-arg]  # svc injected by dishka, x positional
     finally:
         await req.__aexit__(None, None, None)
         di.request_container.reset(token)
@@ -169,7 +168,7 @@ def test_injected_keys_recorded_for_resolvability_check():
         task_info = TaskInfo(name="key_task", queues=["q"])
 
         @override
-        async def run(self, dep: FromDishka[Dep]) -> None:  # type: ignore[valid-type]
+        async def run(self, dep: FromDishka[Dep]) -> None:
             pass
 
     keys = KeyTask._dishka_injected_keys  # type: ignore[attr-defined]
@@ -194,7 +193,7 @@ def test_reserved_param_still_fails_with_fromdishka_annotation():
             task_info = TaskInfo(name="bad_task", queues=["q"])
 
             @override
-            async def run(self, delay: FromDishka[Dep]) -> None:  # type: ignore[valid-type]
+            async def run(self, delay: FromDishka[Dep]) -> None:
                 pass
 
 
@@ -214,7 +213,7 @@ def test_wrapped_run_preserves_return_annotation_for_registry():
         task_info = TaskInfo(name="ret_task", queues=["q"])
 
         @override
-        async def run(self, dep: FromDishka[Dep]) -> str:  # type: ignore[valid-type]
+        async def run(self, dep: FromDishka[Dep]) -> str:
             return "ok"
 
     ann = inspect.get_annotations(RetTask.run, eval_str=True)
@@ -245,7 +244,7 @@ def test_validate_di_task_without_container_raises():
         task_info = TaskInfo(name="vt1", queues=["q"])
 
         @override
-        async def run(self, d: FromDishka[Dep]) -> None:  # type: ignore[valid-type]
+        async def run(self, d: FromDishka[Dep]) -> None:
             pass
 
     di._reset_container()
@@ -270,7 +269,7 @@ def test_validate_di_task_missing_provider_raises():
         task_info = TaskInfo(name="vt2", queues=["q"])
 
         @override
-        async def run(self, d: FromDishka[Dep]) -> None:  # type: ignore[valid-type]
+        async def run(self, d: FromDishka[Dep]) -> None:
             pass
 
     di.setup_dishka(make_async_container())  # no provider for Dep
@@ -296,7 +295,7 @@ def test_validate_di_task_resolvable_passes():
         task_info = TaskInfo(name="vt3", queues=["q"])
 
         @override
-        async def run(self, d: FromDishka[Dep]) -> None:  # type: ignore[valid-type]
+        async def run(self, d: FromDishka[Dep]) -> None:
             pass
 
     di.setup_dishka(make_async_container(DepProvider()))
@@ -394,7 +393,7 @@ def test_optional_fromdishka_annotation_is_recorded_and_rejected_at_start():
         task_info = TaskInfo(name="silent_task", queues=["q"])
 
         @override
-        async def run(self, db: FromDishka[Db] | None = None) -> None:  # type: ignore[valid-type]
+        async def run(self, db: FromDishka[Db] | None = None) -> None:
             pass
 
     assert SilentTask._dishka_ineffective_fromdishka == ["run.db"]  # type: ignore[attr-defined]
@@ -417,7 +416,7 @@ def test_mixed_effective_and_ineffective_params_still_rejected():
         task_info = TaskInfo(name="mixed_task", queues=["q"])
 
         @override
-        async def pre_execution(self, dep: FromDishka[Dep], other: FromDishka[Dep] | None = None) -> None:  # type: ignore[valid-type]
+        async def pre_execution(self, dep: FromDishka[Dep], other: FromDishka[Dep] | None = None) -> None:  # type: ignore[override]  # DI-Parameter erweitern die Signatur absichtlich
             pass
 
     assert MixedTask._dishka_ineffective_fromdishka == ["pre_execution.other"]  # type: ignore[attr-defined]
@@ -439,7 +438,7 @@ def test_correct_fromdishka_annotation_records_nothing_ineffective():
         task_info = TaskInfo(name="good_task", queues=["q"])
 
         @override
-        async def run(self, dep: FromDishka[Dep]) -> None:  # type: ignore[valid-type]
+        async def run(self, dep: FromDishka[Dep]) -> None:
             pass
 
     assert not hasattr(GoodTask, "_dishka_ineffective_fromdishka")

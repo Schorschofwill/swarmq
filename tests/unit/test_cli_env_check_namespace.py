@@ -39,12 +39,13 @@ class _FakeValkey:
         return {b"maxmemory-policy": b"noeviction", b"maxmemory": b"0"}
 
     async def info(self, section: str | None = None, *args: Any, **kwargs: Any) -> dict[str, Any]:
-        return {
+        sections: dict[str, dict[str, Any]] = {
             "memory": {"used_memory": 1, "maxmemory": 0, "maxmemory_policy": "noeviction"},
             "server": {"valkey_version": "8.1.10"},
             "persistence": {"aof_enabled": 1},
             "cluster": {"cluster_enabled": 0},
-        }.get(str(section), {})
+        }
+        return sections.get(str(section), {})
 
     async def scan(
         self, cursor: int = 0, match: str | None = None, count: int | None = None

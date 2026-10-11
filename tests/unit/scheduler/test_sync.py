@@ -39,7 +39,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import override
+from typing import Any, override
 
 import msgspec
 import pytest
@@ -66,7 +66,7 @@ pytestmark = [pytest.mark.timeout(5)]
 async def _sync(loop, default_timezone: str | None = None) -> None:
     """Statische Crons der registrierten Tasks wie gewählte Meldungen
     übernehmen (Uhr: ``swarmq.scheduler.sync.time``, in Tests fixiert)."""
-    now_ms = int(sync_module.time.time() * 1000)
+    now_ms = int(vars(sync_module)["time"].time() * 1000)
     for desired in static_definitions(Task._registered_tasks, default_timezone):
         await loop.apply_static_definition(desired, now_ms)
 
@@ -434,8 +434,8 @@ class TestApplyStaticDefinitionLogging:
         assert entry["error"] == "valkey flap"
 
 
-def _utc_ms(*args: int) -> int:
-    return int(datetime(*args, tzinfo=UTC).timestamp() * 1000)
+def _utc_ms(year: int, month: int, day: int, hour: int, minute: int) -> int:
+    return int(datetime(year, month, day, hour, minute, tzinfo=UTC).timestamp() * 1000)
 
 
 class TestSyncTimezone:
@@ -451,7 +451,8 @@ class TestSyncTimezone:
     @staticmethod
     def _added(store) -> ScheduleDefinition:
         [call] = store.add_schedule.await_args_list
-        return call.args[0]
+        added: ScheduleDefinition = call.args[0]
+        return added
 
     async def test_first_score_uses_taskinfo_timezone(
         self,
@@ -610,7 +611,7 @@ class TestSyncInsertOrUpdate:
 
     @staticmethod
     def _task(**fields):
-        info = {"name": "tz", "queues": ["default"], "cron": "0 9 * * *"}
+        info: dict[str, Any] = {"name": "tz", "queues": ["default"], "cron": "0 9 * * *"}
         info.update(fields)
 
         class TzCron(Task):

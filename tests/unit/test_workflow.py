@@ -20,11 +20,18 @@ from swarmq.workflow import (
     Chord,
     Group,
     Signature,
+    WorkflowNode,
     chain,
     chord,
     group,
     sig,
 )
+
+
+def _signature(node: WorkflowNode) -> Signature:
+    """Engt einen Workflow-Knoten auf ``Signature`` ein (scheitert sonst)."""
+    assert isinstance(node, Signature), node
+    return node
 
 
 class Fetch(Task):
@@ -118,7 +125,7 @@ def test_signature_kwargs_preserved():
 def test_chain_holds_ordered_steps():
     c = chain(Fetch.s("u"), Parse.s(), Store.s())
     assert isinstance(c, Chain)
-    assert [step.task_name for step in c.steps] == ["fetch", "parse", "store"]
+    assert [_signature(step).task_name for step in c.steps] == ["fetch", "parse", "store"]
 
 
 def test_group_holds_members():
@@ -136,7 +143,7 @@ def test_chord_holds_header_and_body():
     ch = chord(group(Fetch.s("a"), Fetch.s("b")), Store.s())
     assert isinstance(ch, Chord)
     assert isinstance(ch.header, Group)
-    assert ch.body.task_name == "store"
+    assert _signature(ch.body).task_name == "store"
 
 
 # --------------------------------------------------------------------------
@@ -182,7 +189,7 @@ def test_excessive_nesting_rejected_at_construction():
     def nest_too_deep() -> None:
         node: object = Fetch.s("u")
         for _ in range(DEFAULT_MAX_WORKFLOW_DEPTH + 2):
-            node = group(node)  # type: ignore[arg-type]
+            node = group(node)
 
     with pytest.raises(WorkflowValidationError):
         nest_too_deep()
@@ -252,4 +259,4 @@ def test_chord_roundtrip():
 def test_immutable_flag_survives_roundtrip():
     c = chain(Fetch.s("u"), Notify.si("done"))
     restored = Chain.from_dict(c.to_dict())
-    assert restored.steps[1].immutable is True
+    assert _signature(restored.steps[1]).immutable is True

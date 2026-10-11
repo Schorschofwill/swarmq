@@ -35,12 +35,12 @@ Test-Liste:
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import pytest
 
-from swarmq.contracts.coordination import LockToken
+from swarmq.contracts.coordination import LockStore, LockToken
 from swarmq.worker.lock_keeper import LockKeeper, keeper_tick_s, keeper_window_s
 
 pytestmark = pytest.mark.timeout(5)
@@ -234,7 +234,7 @@ async def test_protocol_subclass_without_extend_is_not_an_extension(swarmq_logs)
         pass
 
     clock = _Clock()
-    keeper = _keeper(_SubclassStore(), clock)
+    keeper = _keeper(_SubclassStore(), clock)  # type: ignore[abstract]  # absichtlich unvollstaendige Protocol-Subklasse
     keeper.keep(_TOKEN, 90_000, task_id="t1", task_name="locked")
     clock.now += 31.0
 
@@ -288,7 +288,7 @@ async def test_loop_ticks_after_each_sleep() -> None:
             ticks.set()
             await asyncio.Event().wait()
 
-    keeper = LockKeeper(lambda: store, sleep=sleep, now=clock)
+    keeper = LockKeeper(lambda: cast("LockStore", store), sleep=sleep, now=clock)  # Fake kennt nur ``extend``
     keeper.keep(_TOKEN, 90_000, task_id="t1", task_name="locked")
     await asyncio.wait_for(ticks.wait(), timeout=2)
     assert len(store.calls) == 1

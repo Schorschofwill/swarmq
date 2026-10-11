@@ -101,7 +101,7 @@ def _handler(broker, backend, config, task=DlqTask):
     worker._workflow_advancer.fail = AsyncMock()
     # Der Dispatcher steckt bereits in ``GateDeps`` — die Methode am Objekt
     # ersetzen, nicht das Attribut am Worker.
-    worker._signal_dispatcher.dispatch = AsyncMock()
+    worker._signal_dispatcher.dispatch = AsyncMock()  # type: ignore[method-assign]  # Dispatch-Spy
     return worker._retry_handler, worker
 
 
@@ -248,7 +248,7 @@ async def test_task_sent_to_dlq_is_an_error(broker, backend, config, swarmq_logs
 
 
 class _FilteredTask(Task):
-    task_info = TaskInfo(name="filtered-task", queues=["default"], max_retries=3, retry_exceptions=(KeyError,))
+    task_info = TaskInfo(name="filtered-task", queues=["default"], max_retries=3, retry_exceptions=[KeyError])
 
 
 class _ZeroRetryTask(Task):

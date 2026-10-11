@@ -22,7 +22,7 @@ from swarmq.registry import TaskRegistry
 from swarmq.task import Task, TaskInfo
 from swarmq.worker import Worker
 from tests.support.messages import make_message
-from tests.unit.worker._helpers import _default_payload
+from tests.unit.worker._helpers import _default_payload, as_mock
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -43,10 +43,10 @@ def _worker(broker, backend, config) -> Worker:
     registry.register(_Locked)
     worker = Worker(broker=broker, backend=backend, registry=registry, config=config)
     worker._lock_manager = MagicMock()
-    worker._lock_manager.acquire = AsyncMock(
+    as_mock(worker._lock_manager).acquire = AsyncMock(
         side_effect=lambda name, *, owner, ttl_ms, max_concurrency: LockToken(name, owner, max_concurrency)
     )
-    worker._lock_manager.release = AsyncMock(return_value=True)
+    as_mock(worker._lock_manager).release = AsyncMock(return_value=True)
     _Locked.worker = worker  # type: ignore[attr-defined]
     _Locked.kept_during_run = []
     return worker
@@ -59,7 +59,7 @@ async def test_acquired_lock_is_kept_while_the_handler_runs(broker, backend, con
 
     assert _Locked.kept_during_run == [True]
     assert worker._lock_keeper.kept == 0
-    worker._lock_manager.release.assert_awaited_once()
+    as_mock(worker._lock_manager).release.assert_awaited_once()
 
 
 async def test_shutdown_drops_leftover_locks_and_closes_the_keeper_before_backend_close(
@@ -82,7 +82,7 @@ async def test_shutdown_drops_leftover_locks_and_closes_the_keeper_before_backen
     worker._request_shutdown()
     await worker._execute_shutdown()
 
-    worker._lock_manager.release.assert_awaited_once_with(token)
+    as_mock(worker._lock_manager).release.assert_awaited_once_with(token)
     assert kept_at_close == [0]
 
 

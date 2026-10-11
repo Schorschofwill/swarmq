@@ -31,5 +31,8 @@ async def test_sampler_sets_the_lock_wait_gauges(worker, broker) -> None:
     await worker._sample_metrics_once()
 
     labels = {"worker_id": worker._config.worker_identity}
+    assert m.registry is not None
     assert m.registry.get_sample_value("swarmq_lock_waits", labels) == 2.0
-    assert m.registry.get_sample_value("swarmq_lock_wait_oldest_seconds", labels) >= 120.0
+    oldest = m.registry.get_sample_value("swarmq_lock_wait_oldest_seconds", labels)
+    assert oldest is not None
+    assert oldest >= 120.0

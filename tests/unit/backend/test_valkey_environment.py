@@ -83,7 +83,8 @@ async def test_unanswered_policy_query_warns_and_connect_succeeds(
 async def test_result_of_the_check_lies_on_the_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     _install(monkeypatch, _FakeValkey(config={b"maxmemory-policy": b"allkeys-lru", b"maxmemory": b"1048576"}))
     backend = ValkeyBackend("valkey://fake:6399/0")
-    assert backend.eviction_check is None
+    before_connect = backend.eviction_check
+    assert before_connect is None
 
     await backend.connect()
 
