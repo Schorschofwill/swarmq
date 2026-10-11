@@ -87,6 +87,7 @@ die nicht mit den eingebauten von SwarmQ kollidieren (`task_failed`,
 | `SCHEDULER_LEADER_OUTDATED` | Der Scheduler-Leader führt ein swarmq ohne Zeitzonen-Unterstützung aus (`outdated=True`, einmal pro Leader), oder ein aktueller Leader folgt (`outdated=False`) | `worker_id`, `leader`, `leader_version` (`None` = vor 0.10.0), `outdated` |
 | `SCHEDULER_CRON_UNOWNED` | Der Leader beginnt, einen statischen Cron zurückzuhalten, den kein lebender Worker meldet und den er selbst nicht registriert (`held=True`), oder gibt ihn wieder frei (`held=False`); einmal je Übergang | `worker_id`, `schedule_name`, `task_name`, `held`, `held_count` |
 | `SCHEDULER_VALKEY_CHECKED` | Der Leader hat Eviction-Policy und Speicher von Valkey erneut geprüft, höchstens einmal je Stunde (seit 0.12) | `worker_id`, `status`, `policy`, `maxmemory`, `used_memory` |
+| `SCHEDULER_QUEUE_ORPHANED` | Der Leader hat eine gemeldete Queue mit Nachrichten, ohne Consumer und ohne lebenden Worker, der sie meldet, gefunden (`orphaned=True`), oder sie ist nicht mehr verwaist (`orphaned=False`); einmal je Übergang (seit 0.12) | `worker_id`, `queue`, `orphaned`, `message_count`, `orphaned_count` |
 | `SCHEDULER_FIRE_UNROUTABLE` | Der Broker hat einen Publish des Leaders zurückgegeben, weil die Queue fehlt: ein verlorener Cron-Fire (`kind="cron_lost"`) oder ein nach `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S` verworfener verzögerter Task (`kind="oneshot_dropped"`) | `worker_id`, `schedule_name`, `queue`, `kind` |
 
 `TASK_FAILED` gilt pro Versuch: Ein Task mit `max_retries=3`, der immer

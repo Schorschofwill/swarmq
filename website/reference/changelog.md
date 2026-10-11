@@ -11,8 +11,9 @@ All notable changes to SwarmQ. This project follows
 - **`swarmq check`**: read-only check of the environment before an
   upgrade (Valkey eviction policy, `maxmemory`, memory, AOF, version,
   cluster mode; shutdown grace period). Exit `78` when a worker would
-  refuse to start, `0` otherwise, `1` on errors. The check of orphaned
-  queues follows in a later step ([CLI](cli.md#swarmq-check)).
+  refuse to start, `0` otherwise, `1` on errors. With
+  `SWARMQ_BROKER_URL` the section `queues` lists orphaned queues and
+  reported queues without `.XQ` (warnings) ([CLI](cli.md#swarmq-check)).
 - **`SWARMQ_VALKEY_EVICTION_CHECK`** (`strict` default, `warn`, `off`),
   the log events `valkey_eviction_policy_unsafe`,
   `valkey_eviction_policy_unknown` and `valkey_data_loss_detected`, the
@@ -700,6 +701,10 @@ All notable changes to SwarmQ. This project follows
   `PublishIndeterminate`. The check reads the state synchronously (no
   round trip). A scheduler leader does not count `BrokerPublishBlocked`
   towards stepping down.
+- **A worker start cancelled while the consume connection is being opened
+  leaves no connection behind.** aio-pika kept building the half-open
+  connection in the background and reconnected every 5 s; the connection
+  is now closed.
 
 ### Fixed (reading the DLQ, BZ-21)
 
@@ -782,6 +787,40 @@ All notable changes to SwarmQ. This project follows
   locked and no worker is left, the supervisor still exits `1` so the
   orchestrator applies its own backoff. `SlotTable.lock(slot)` without
   `until` still locks for good.
+
+### Added (orphaned queues, BZ-14)
+
+- **The scheduler leader reports orphaned queues.** When a task moved to
+  another queue or `--queues` changed, the backlog of the old queue stayed
+  without a consumer, with no log line and no metric. Now every worker
+  reports the queues it consumes to Valkey on every report tick (new hash
+  `sq:{sched}:report:queues`, queue to last report in ms from Valkey's
+  `TIME`; the key expires 7 days after the last report, golden files
+  `keys.json` and `keys.namespace.json`, additive). On every adoption tick
+  the leader checks the queues no live worker has reported for three
+  ticks (not on the tick right after a takeover, while its own worker is
+  still starting) with a passive declare (no management API): messages and no
+  consumer make a queue orphaned. It logs `scheduler_queue_orphaned`
+  (WARNING) and `scheduler_queue_orphan_resolved` (INFO) once per
+  transition, emits the new signal `SCHEDULER_QUEUE_ORPHANED` and sets the
+  gauge `swarmq_scheduler_queues_orphaned{worker_id}`. Entries of queues
+  that are gone or empty and unreported for 7 days are removed. Each check
+  has a 30 s time limit (`scheduler_queue_check_failed`)
+  ([moving a task to another queue](../guides/defining-tasks.md#moving-a-task-to-another-queue)).
+- **`swarmq check`, section `queues`** (with `SWARMQ_BROKER_URL`): orphaned
+  queues and reported queues whose `.XQ` is missing; findings
+  `orphaned_queue`, `dead_letter_queue_missing`, `queues_unchecked`, all
+  warnings ([CLI](cli.md#swarmq-check)).
+- **Contracts:** `ScheduleStore.report_queues`, `queue_reports` and
+  `forget_queue_reports` with `swarmq.contracts.QueueReports`; the optional
+  broker method `queue_statuses(names)` with
+  `swarmq.contracts.broker.QueueStatus`. Stores and brokers without them
+  skip the check.
+- **Limits.** Only queues a worker of 0.12 or later reported are checked;
+  a queue with any consumer (a worker before 0.12, too) never counts as
+  orphaned. A queue without a report in the last three ticks but a worker
+  that is only restarting slowly can count as orphaned until it consumes
+  again.
 
 ## [0.11.1] — 2026-10-10
 

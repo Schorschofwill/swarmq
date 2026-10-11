@@ -104,6 +104,17 @@ class CronReports:
 
 
 @dataclass(frozen=True, slots=True)
+class QueueReports:
+    """Die von Workern gemeldeten Queues (Plan 0.12.0, MR 18, BZ-14): je Queue
+    der Zeitpunkt der letzten Meldung und die Backend-Zeit des Lesens, beide in
+    ms; der Leader misst die Lebendigkeit gegen ``now_ms``, nicht gegen die
+    eigene Uhr."""
+
+    now_ms: int
+    last_seen_ms: Mapping[str, int]
+
+
+@dataclass(frozen=True, slots=True)
 class LeaderInfo:
     """Scheduler-Leader samt seiner swarmq-Version (Plan 2026-10-08-1541,
     KTD11). ``version`` ist ``None``, wenn der Leader keine Version neben das
@@ -251,6 +262,19 @@ class ScheduleStore(Protocol):
         Prozess, der ihn schon kannte, hat Valkey seine Daten verloren. Stores
         Dritter duerfen die Methode weglassen (Q15: der Scheduler prueft dann
         nicht)."""
+
+    async def report_queues(self, queues: Sequence[str], *, ttl_ms: int) -> None:
+        """Meldet die Queues, die ein Worker konsumiert, mit der Backend-Zeit
+        (Plan 0.12.0, MR 18, BZ-14). Meldet niemand innerhalb von *ttl_ms*,
+        verfallen alle Meldungen. Stores Dritter duerfen die Methode weglassen
+        (Q15: dann meldet niemand verwaiste Queues)."""
+
+    async def queue_reports(self) -> QueueReports:
+        """Alle Queue-Meldungen samt Backend-Zeit (BZ-14)."""
+
+    async def forget_queue_reports(self, queues: Sequence[str]) -> None:
+        """Entfernt die Meldungen der genannten Queues (BZ-14: leer oder
+        fehlend und laenger als 7 d nicht gemeldet)."""
 
     async def report_worker_version(self, worker_id: str, version: str, *, ttl_ms: int) -> None:
         """Meldet die swarmq-Version eines Workers; die Meldung gilt *ttl_ms*

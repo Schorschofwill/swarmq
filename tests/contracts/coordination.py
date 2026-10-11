@@ -72,6 +72,12 @@ macht ``owner`` zum Scheduler-Leader (das Binding erwirbt den Leader-Lock
 # 38. ``ensure_epoch`` legt den Epoch nur an, wenn er fehlt, und liefert
 #     danach immer den ersten Wert (``None`` nur beim Anlegen).
 
+# Test list (Plan 0.12.0, MR 18, BZ-14) -- ScheduleStoreContract:
+# 39. ``report_queues`` meldet jede Queue mit Backend-Zeit (``queue_reports``).
+# 40. eine spaetere Meldung rueckt ``last_seen`` vor.
+# 41. ``forget_queue_reports`` entfernt nur die genannten Queues.
+# 42. meldet niemand innerhalb von ``ttl_ms``, verfallen alle Meldungen (Q5).
+
 # Test list (Review #4, atomare Heilung) -- ScheduleStoreContract:
 # 24. ``replan_if_unchanged`` schreibt Definition und Score, wenn die
 #     gespeicherte Definition die gelesene ist und kein Score existiert.
@@ -692,6 +698,34 @@ class ScheduleStoreContract:
         current = candidate if previous is None else previous
         assert await impl.ensure_epoch(_name("epoch")) == current
         assert await impl.ensure_epoch(_name("epoch")) == current
+
+    async def test_report_queues_records_each_queue_in_backend_time(self, impl: ScheduleStore) -> None:
+        a, b = _name("queue"), _name("queue")
+        await impl.report_queues([a, b], ttl_ms=60_000)
+        snapshot = await impl.queue_reports()
+        assert snapshot.last_seen_ms[a] == snapshot.last_seen_ms[b] <= snapshot.now_ms
+
+    async def test_later_queue_report_advances_last_seen(self, impl: ScheduleStore, clock: Clock) -> None:
+        queue = _name("queue")
+        await impl.report_queues([queue], ttl_ms=60_000)
+        first = (await impl.queue_reports()).last_seen_ms[queue]
+        await clock.advance(0.05)
+        await impl.report_queues([queue], ttl_ms=60_000)
+        assert (await impl.queue_reports()).last_seen_ms[queue] > first
+
+    async def test_queue_reports_expire_without_a_report_within_ttl(self, impl: ScheduleStore, clock: Clock) -> None:
+        queue = _name("queue")
+        await impl.report_queues([queue], ttl_ms=100)
+        await clock.advance(0.2)
+        assert queue not in (await impl.queue_reports()).last_seen_ms
+
+    async def test_forget_queue_reports_removes_only_the_named_queues(self, impl: ScheduleStore) -> None:
+        gone, kept = _name("queue"), _name("queue")
+        await impl.report_queues([gone, kept], ttl_ms=60_000)
+        await impl.forget_queue_reports([gone])
+        reported = (await impl.queue_reports()).last_seen_ms
+        assert gone not in reported
+        assert kept in reported
 
     async def test_leader_info_without_version_key(self, impl: ScheduleStore, leader: Leader) -> None:
         owner = _name("old-leader")

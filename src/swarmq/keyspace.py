@@ -155,6 +155,13 @@ class KeySpace:
         ein Name faellt nur zusammen mit der Definition heraus (Q5)."""
         return f"{self._root}{{sched}}:report:known"
 
+    def sched_report_queues(self) -> str:
+        """Hash Queue-Name -> Zeitpunkt der letzten Meldung (ms, Valkey-``TIME``)
+        der von Workern ab 0.12 konsumierten Queues (BZ-14). TTL je Meldung
+        erneuert; Eintraege leerer oder fehlender Queues entfernt der Leader
+        nach 7 d (Q5)."""
+        return f"{self._root}{{sched}}:report:queues"
+
     def sched_leader_version(self) -> str:
         return f"{self._root}{{sched}}:leader_version"
 

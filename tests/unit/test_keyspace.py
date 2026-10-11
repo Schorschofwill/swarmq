@@ -62,6 +62,7 @@ _TABLE: list[tuple[str, Callable[[], str]]] = [
     ("sq:{sched}:report:first_seen", lambda: _KS.sched_report_first_seen()),
     ("sq:{sched}:report:known", lambda: _KS.sched_report_known()),  # Plan 0.12.0, MR 11 (BZ-11)
     ("sq:{sched}:report:last_seen", lambda: _KS.sched_report_last_seen()),
+    ("sq:{sched}:report:queues", lambda: _KS.sched_report_queues()),  # Plan 0.12.0, MR 18 (BZ-14)
     ("sq:{sched}:worker_version:golden-worker", lambda: _KS.sched_worker_version("golden-worker")),
     ("sq:{sched}:zset", lambda: _KS.sched_zset()),
 ]
@@ -152,6 +153,7 @@ def _all_keys(ks: KeySpace) -> list[str]:
         ks.sched_report_first_seen(),
         ks.sched_report_known(),
         ks.sched_report_last_seen(),
+        ks.sched_report_queues(),
         ks.sched_worker_version("golden-worker"),
         ks.sched_zset(),
     ]

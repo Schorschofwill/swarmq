@@ -473,9 +473,11 @@ swarmq check [--format (table|json)]
 ```
 
 Read-only check of the environment swarmq runs in (new in 0.12). Reads
-`SWARMQ_BACKEND_URL`, `SWARMQ_VALKEY_EVICTION_CHECK` and
-`SWARMQ_SHUTDOWN_TIMEOUT` and sends only `CONFIG GET` and `INFO` to
-Valkey. Run it **before an upgrade**, with the new swarmq version in a
+`SWARMQ_BACKEND_URL`, `SWARMQ_VALKEY_EVICTION_CHECK`,
+`SWARMQ_SHUTDOWN_TIMEOUT`, `SWARMQ_NAMESPACE`, and for the `queues`
+section `SWARMQ_BROKER_URL` and `SWARMQ_SCHEDULER_SEEN_INTERVAL_S`. It
+sends only `CONFIG GET`, `INFO`, `SCAN` and reads to Valkey and passive
+declares to RabbitMQ. Run it **before an upgrade**, with the new swarmq version in a
 separate virtualenv, against production; in Kubernetes optionally as an
 init container ([Valkey requirements](configuration.md#valkey-requirements)).
 Not the same as `swarmq worker --check`, which dry-runs a worker start.
@@ -494,6 +496,14 @@ Sections:
 - `shutdown`: `shutdown_timeout` and `min_grace_period_s`
   (`shutdown_timeout + 15`), the least `terminationGracePeriodSeconds`
   (Kubernetes) or `stop_grace_period` (Docker) to configure.
+- `queues` (since 0.12, only with `SWARMQ_BROKER_URL`, else
+  `checked: false`): the queues workers of 0.12 or later report
+  (`reported`), checked with a passive declare: `orphaned` lists queues
+  with messages, no consumer and no live report for three report ticks
+  (`SWARMQ_SCHEDULER_SEEN_INTERVAL_S`), each with `queue`, `messages` and
+  `last_reported_s_ago`; `missing_dead_letter_queues` lists reported
+  queues whose `.XQ` is gone (the broker drops failed tasks routed there)
+  ([moving a task to another queue](../guides/defining-tasks.md#moving-a-task-to-another-queue)).
 
 `findings` lists each problem with `section`, `level` (`error` or
 `warning`), `code` and `message`: `eviction_policy` (error under
@@ -503,7 +513,9 @@ namespace next to a namespace: apps without `SWARMQ_NAMESPACE` on the
 same Valkey, or data from before the namespace was set, which the
 namespace does not migrate; [namespace](configuration.md#namespace-several-apps-on-one-valkey)),
 `unprefixed_keys_unknown` (`SCAN` failed, is forbidden, or hit its time
-limit before finding a key). An incomplete count reads `at least <n>
+limit before finding a key), `orphaned_queue`, `dead_letter_queue_missing`
+and `queues_unchecked` (Valkey or the broker could not be read for the
+`queues` section). An incomplete count reads `at least <n>
 keys … (count incomplete …)`; in cluster mode the message adds that only
 one node was counted.
 

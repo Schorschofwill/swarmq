@@ -311,6 +311,16 @@ class Metrics:
                 labelnames=("worker_id",),
                 registry=self.registry,
             )
+            # Plan 0.12.0, MR 18 (BZ-14): verwaiste Queues, vom Leader gemeldet.
+            self.scheduler_queues_orphaned: Gauge | _NoopMetric = Gauge(
+                f"{namespace}_scheduler_queues_orphaned",
+                (
+                    "Reported queues the scheduler leader finds with messages, no consumer "
+                    "and no live worker reporting them"
+                ),
+                labelnames=("worker_id",),
+                registry=self.registry,
+            )
             self.registry.register(_LogRecordsDroppedCollector(namespace))
         else:
             noop = _NoopMetric()
@@ -333,6 +343,7 @@ class Metrics:
             self.delay_tiers_unavailable = noop
             self.tasks_unknown_deferred_total = noop
             self.scheduler_crons_held = noop
+            self.scheduler_queues_orphaned = noop
             self.lock_waits = noop
             self.lock_wait_oldest_seconds = noop
             self.valkey_memory_used_ratio = noop
@@ -564,6 +575,12 @@ def _install_scheduler_gauge(
             worker_id=str(kw.get("worker_id", "")),
         ).set(int(kw.get("held_count") or 0))
 
+    @dispatcher.on_signal(Signal.SCHEDULER_QUEUE_ORPHANED)
+    async def _queue_orphaned(**kw: Any) -> None:
+        metrics.scheduler_queues_orphaned.labels(
+            worker_id=str(kw.get("worker_id", "")),
+        ).set(int(kw.get("orphaned_count") or 0))
+
     @dispatcher.on_signal(Signal.SCHEDULER_VALKEY_CHECKED)
     async def _valkey_checked(**kw: Any) -> None:
         maxmemory, used = kw.get("maxmemory"), kw.get("used_memory")
@@ -579,6 +596,7 @@ def _install_scheduler_gauge(
         worker_id = str(kw.get("worker_id", ""))
         metrics.scheduler_leader.labels(worker_id=worker_id).set(0)
         metrics.scheduler_crons_held.labels(worker_id=worker_id).set(0)
+        metrics.scheduler_queues_orphaned.labels(worker_id=worker_id).set(0)
 
 
 def install_signal_collectors(

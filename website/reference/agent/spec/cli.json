@@ -19,7 +19,7 @@
           "type": "str"
         }
       ],
-      "help": "Read-only check of the environment swarmq runs in: Valkey eviction policy, maxmemory, memory, AOF, version and cluster mode, and the grace period the shutdown timeout needs. Run it with the new swarmq version before an upgrade. Exit 0 when nothing blocks, 78 when a worker would refuse to start (evicting maxmemory-policy under SWARMQ_VALKEY_EVICTION_CHECK=strict), 1 on errors. Not the same as 'swarmq worker --check'.",
+      "help": "Read-only check of the environment swarmq runs in: Valkey eviction policy, maxmemory, memory, AOF, version and cluster mode, and the grace period the shutdown timeout needs. With SWARMQ_BROKER_URL also the queues workers report: orphaned queues (messages, no consumer, no live worker) and missing .XQ dead-letter queues. Run it with the new swarmq version before an upgrade. Exit 0 when nothing blocks, 78 when a worker would refuse to start (evicting maxmemory-policy under SWARMQ_VALKEY_EVICTION_CHECK=strict), 1 on errors. Not the same as 'swarmq worker --check'.",
       "path": "check"
     },
     {

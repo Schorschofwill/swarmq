@@ -25,6 +25,7 @@ from swarmq.contracts import (
     LockObservation,
     LockStore,
     LockToken,
+    QueueReports,
     RateLimitDecision,
     RateLimitStore,
     ResultBackend,
@@ -453,6 +454,8 @@ class InMemoryScheduleStore:
         self._pruned_disabled: set[str] = set()
         # Epoch des Datenbestands (BZ-04), ohne TTL.
         self._epoch: str | None = None
+        # Gemeldete Queues (BZ-14): ein Eintrag, TTL je Meldung erneuert.
+        self._queue_reports: _TTLDict[dict[str, int]] = _TTLDict(clock)
 
     async def add(self, name: str, payload: bytes, fire_ts_ms: int | None) -> bool:
         if name in self._defs:
@@ -625,6 +628,21 @@ class InMemoryScheduleStore:
         if previous is None:
             self._epoch = candidate
         return previous
+
+    async def report_queues(self, queues: Sequence[str], *, ttl_ms: int) -> None:
+        reports = dict(self._queue_reports.get("queues") or {})
+        now = self._clock.now_ms()
+        reports.update(dict.fromkeys(queues, now))
+        self._queue_reports.set("queues", reports, ttl_ms)
+
+    async def queue_reports(self) -> QueueReports:
+        return QueueReports(now_ms=self._clock.now_ms(), last_seen_ms=dict(self._queue_reports.get("queues") or {}))
+
+    async def forget_queue_reports(self, queues: Sequence[str]) -> None:
+        reports = self._queue_reports.get("queues")
+        if reports is not None:
+            for queue in queues:
+                reports.pop(queue, None)
 
     async def report_worker_version(self, worker_id: str, version: str, *, ttl_ms: int) -> None:
         self._worker_versions.set(worker_id, version, ttl_ms)

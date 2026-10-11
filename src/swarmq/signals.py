@@ -154,6 +154,13 @@ class Signal(enum.Enum):
                                    once per hour, BZ-04; status "safe",
                                    "unsafe" or "unknown"; maxmemory 0 means
                                    no limit, None unknown)
+      * SCHEDULER_QUEUE_ORPHANED:  worker_id, queue, orphaned, message_count,
+                                   orphaned_count (the leader found a reported
+                                   queue with messages, no consumer and no
+                                   live worker reporting it, orphaned=True, or
+                                   the queue is no longer orphaned,
+                                   orphaned=False; once per transition, BZ-14;
+                                   orphaned_count = orphaned queues afterwards)
 
     Handlers are invoked async; exceptions are swallowed and logged.
     """
@@ -194,6 +201,7 @@ class Signal(enum.Enum):
     SCHEDULER_FIRE_UNROUTABLE = "scheduler_fire_unroutable"
     SCHEDULER_CRON_UNOWNED = "scheduler_cron_unowned"
     SCHEDULER_VALKEY_CHECKED = "scheduler_valkey_checked"
+    SCHEDULER_QUEUE_ORPHANED = "scheduler_queue_orphaned"
 
 
 class SignalDispatcher:

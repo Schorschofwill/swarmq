@@ -15,7 +15,7 @@ import valkey.asyncio as valkey_asyncio
 from valkey.exceptions import ValkeyError
 
 from swarmq.backend.valkey.connection import as_backend_error
-from swarmq.contracts.coordination import CronReport, CronReports, LeaderInfo
+from swarmq.contracts.coordination import CronReport, CronReports, LeaderInfo, QueueReports
 from swarmq.exceptions import BackendConnectionError
 from swarmq.keyspace import KeySpace
 from swarmq.lua import load_script
@@ -79,6 +79,7 @@ class ValkeyScheduleStore:
         self._report_last_seen = k.sched_report_last_seen()
         self._report_keys = [k.sched_report_first_seen(), self._report_last_seen, k.sched_report_def()]
         self._report_known = k.sched_report_known()
+        self._report_queues = k.sched_report_queues()
         self._disabled = k.sched_disabled()
         self._leader_version = k.sched_leader_version()
         self._scheduler_lock = k.scheduler_lock()
@@ -339,6 +340,34 @@ class ValkeyScheduleStore:
 
     async def forget_pruned_disabled(self, name: str) -> None:
         await self._run("forget_pruned_disabled", self._client.srem(self._disabled, name))
+
+    async def report_queues(self, queues: Sequence[str], *, ttl_ms: int) -> None:
+        """Queue-Meldung mit Server-Zeit (BZ-14): erst ``TIME``, dann ``HSET``
+        und ``PEXPIRE`` in einer Transaktion. Kein Lua-Skript: zwei Roundtrips
+        je Meldetakt, nicht je Nachricht."""
+        if not queues:
+            return
+        seconds, micros = await self._run("report_queues", self._client.time())
+        now_ms = int(seconds) * 1000 + int(micros) // 1000
+        async with self._client.pipeline(transaction=True) as pipe:
+            pipe.hset(self._report_queues, mapping=dict.fromkeys(queues, now_ms))
+            pipe.pexpire(self._report_queues, ttl_ms)
+            await self._run("report_queues", pipe.execute())
+
+    async def queue_reports(self) -> QueueReports:
+        """``TIME`` und der Meldungs-Hash in einer Transaktion (BZ-14)."""
+        async with self._client.pipeline(transaction=True) as pipe:
+            pipe.time()
+            pipe.hgetall(self._report_queues)
+            (seconds, micros), raw = await self._run("queue_reports", pipe.execute())
+        return QueueReports(
+            now_ms=int(seconds) * 1000 + int(micros) // 1000,
+            last_seen_ms={_decode(queue): int(last) for queue, last in raw.items()},
+        )
+
+    async def forget_queue_reports(self, queues: Sequence[str]) -> None:
+        if queues:
+            await self._run("forget_queue_reports", self._client.hdel(self._report_queues, *queues))
 
     async def report_worker_version(self, worker_id: str, version: str, *, ttl_ms: int) -> None:
         await self._run(

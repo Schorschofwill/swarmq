@@ -178,6 +178,8 @@ class WorkerLifecycle:
                 self._registry.get_all().values(),
                 self._config.scheduler_timezone,
             ),
+            # BZ-14: die konsumierten Queues (mit Prioritaeten je Band).
+            consumed_queues=self._config.consumed_queues,
         )
         await self._scheduler.start()
 

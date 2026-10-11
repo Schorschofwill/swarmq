@@ -77,6 +77,31 @@ Worker-side, `swarmq worker --queues reports,default` consumes from
 both. See [Scheduling and retries](scheduling-and-retries.md) for
 how `delay=` / `eta=` interact with routing.
 
+### Moving a task to another queue
+
+When a task moves to another queue, or a worker's `--queues` changes,
+messages already in the old queue (and retry copies still waiting in
+its delay queues) stay there: no worker consumes them any more. Since
+0.12 every worker reports the queues it consumes to Valkey
+(`sq:{sched}:report:queues`, timestamps from Valkey's clock). The
+scheduler leader checks the reported queues on every adoption tick
+(`SWARMQ_SCHEDULER_SEEN_INTERVAL_S`, default 60 s; not on the tick right
+after a takeover) with a passive
+declare, without the management API. A queue counts as orphaned when it
+holds messages, has no consumer, and no live worker has reported it for
+three ticks. The leader then logs `scheduler_queue_orphaned` (WARNING,
+once per transition), emits `SCHEDULER_QUEUE_ORPHANED` and sets the gauge
+`swarmq_scheduler_queues_orphaned`; alert on it. `swarmq check` with
+`SWARMQ_BROKER_URL` lists orphaned queues and reported queues without
+their `.XQ` ([CLI](../reference/cli.md#swarmq-check)).
+
+To clear it, run a worker for the old queue until it is drained, move
+the messages, or delete the queue. Limits: only queues a worker of 0.12
+or later has reported are checked; a queue with a consumer (for example
+a worker before 0.12) never counts as orphaned. Entries of queues that
+are gone or empty and have not been reported for 7 days are removed;
+the whole key expires 7 days after the last report of any worker.
+
 ## Arguments and return values
 
 ### What clients can pass

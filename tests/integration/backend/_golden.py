@@ -151,6 +151,8 @@ async def snapshot_keys(backend: ValkeyBackend) -> dict[str, str]:
         SCHEDULE, "0" * 16, value_fixtures()["schedule_definition.json"], live_window_ms=TTL_MS
     )
     await backend.schedules.report_worker_version("golden-worker", "0.10.0", ttl_ms=TTL_MS)
+    # Gemeldete Queues (Plan 0.12.0, MR 18, BZ-14).
+    await backend.schedules.report_queues(["golden"], ttl_ms=TTL_MS)
     # Cron-Aufraeumen (KTD8): ein deaktiviert entfernter Cron landet im Set.
     await backend.schedules.put("golden-pruned", value_fixtures()["schedule_definition.json"], None)
     await backend.schedules.prune_cron(

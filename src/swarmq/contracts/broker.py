@@ -12,11 +12,22 @@ Vertragsbeweis ist mypy strict über die Konformitäts-Anker (KTD1).
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 from swarmq.contracts.message import Delivery, PublishReceipt
 
 DeliveryCallback = Callable[[Delivery], Awaitable[None]]
+
+
+@dataclass(frozen=True, slots=True)
+class QueueStatus:
+    """Zustand einer Queue aus dem passiven Declare (Plan 0.12.0, MR 18,
+    BZ-14): bereitliegende Nachrichten und angemeldete Consumer. Optionale
+    Broker-Faehigkeit ``queue_statuses`` (Q15), nicht Teil von ``BrokerAdmin``."""
+
+    message_count: int
+    consumer_count: int
 
 
 @runtime_checkable

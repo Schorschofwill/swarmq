@@ -26,6 +26,7 @@
   "golden-ns:sq:{sched}:report:first_seen": "hash",
   "golden-ns:sq:{sched}:report:known": "set",
   "golden-ns:sq:{sched}:report:last_seen": "hash",
+  "golden-ns:sq:{sched}:report:queues": "hash",
   "golden-ns:sq:{sched}:worker_version:golden-worker": "string",
   "golden-ns:sq:{sched}:zset": "zset"
 }

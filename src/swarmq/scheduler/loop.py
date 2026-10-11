@@ -32,6 +32,7 @@ from swarmq.scheduler.epoch import SchedulerEpoch
 from swarmq.scheduler.fire import SchedulerFire
 from swarmq.scheduler.fire_plan import SchedulerFirePlan
 from swarmq.scheduler.leader_version import LeaderVersionWatch, SchedulerLeaderVersion, swarmq_version
+from swarmq.scheduler.orphaned_queues import SchedulerOrphanedQueues
 from swarmq.scheduler.prune import SchedulerCronPrune
 from swarmq.scheduler.reports import cron_fingerprint, live_window_ms
 from swarmq.scheduler.stepdown import SchedulerStepdown
@@ -89,6 +90,7 @@ class SchedulerLoop(
     SchedulerStepdown,
     SchedulerEpoch,
     SchedulerValkeyWatch,
+    SchedulerOrphanedQueues,
 ):
     """Embedded scheduler — one instance per worker.
 
@@ -133,6 +135,7 @@ class SchedulerLoop(
         worker_id: str | None = None,
         static_crons: Sequence[ScheduleDefinition] = (),
         version: str | None = None,
+        consumed_queues: Sequence[str] = (),
     ) -> None:
         self._backend = backend
         self._broker = broker
@@ -150,6 +153,8 @@ class SchedulerLoop(
         # Statische Crons dieses Workers (eigene Registry, Zone aufgelöst);
         # gemeldet beim Start und danach im Meldetakt (KTD10).
         self._static_crons = tuple(static_crons)
+        # Konsumierte Queues dieses Workers, gemeldet im Meldetakt (BZ-14).
+        self._consumed_queues = tuple(consumed_queues)
         # swarmq-Version dieses Workers (KTD11), Default aus den Metadaten.
         self._version = version or swarmq_version()
         self._leader_watch = LeaderVersionWatch()
@@ -329,6 +334,7 @@ class SchedulerLoop(
         except Exception as exc:
             # Der Worker arbeitet weiter; der nächste Takt meldet erneut.
             logger.warning("scheduler_cron_report_failed", **_error_fields(exc))
+        await self._report_queues()
         # BZ-04: jeder Loop kennt den Epoch, auch ein späterer Leader.
         await self._observe_epoch()
 
@@ -342,6 +348,9 @@ class SchedulerLoop(
                     await asyncio.wait_for(self._adopt_now.wait(), timeout=interval)
                 except TimeoutError:
                     pass
+                # Uebernahme-Takt direkt nach dem Erwerb: keine Queue-Pruefung
+                # (BZ-14), der eigene Worker startet meist noch (Consumer).
+                takeover = self._adopt_now.is_set()
                 self._adopt_now.clear()
                 if self._state == "leader":
                     try:
@@ -355,6 +364,9 @@ class SchedulerLoop(
                         # BZ-11: der Poll wartet nur auf den ersten Versuch
                         # der Amtszeit, nicht auf dessen Gelingen (fail-open).
                         self._note_adopt_ran()
+                    # BZ-14: ausserhalb des Fire-Locks, mit eigenem Zeitlimit.
+                    if not takeover:
+                        await self.check_orphaned_queues()
         except asyncio.CancelledError:
             return
 

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -263,8 +264,23 @@ class RabbitMQConnection:
         if not self._separate_consume_connection() or self._connection is None:
             return self._connection
         if self._consume_connection is None:
+            # Abbruch waehrend des Aufbaus (etwa ein abgebrochener Worker-Start):
+            # aio-pika baut sonst im Hintergrund weiter auf und verbindet sich
+            # alle 5 s neu. Die angelegte Verbindung wird darum geschlossen.
+            created: list[aio_pika.abc.AbstractRobustConnection] = []
+
+            class _Tracked(aio_pika.RobustConnection):
+                def __init__(self, *args: Any, **kwargs: Any) -> None:
+                    super().__init__(*args, **kwargs)
+                    created.append(self)
+
             try:
-                self._consume_connection = await aio_pika.connect_robust(self._url)
+                self._consume_connection = await aio_pika.connect_robust(self._url, connection_class=_Tracked)
+            except asyncio.CancelledError:
+                for connection in created:
+                    with contextlib.suppress(Exception):
+                        await connection.close()
+                raise
             except Exception as exc:
                 raise BrokerConnectionError(f"consume connection to {sanitize_url(self._url)!r} failed: {exc}") from exc
         return self._consume_connection

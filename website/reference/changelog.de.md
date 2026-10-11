@@ -11,9 +11,9 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 - **`swarmq check`**: prüft vor einem Upgrade nur lesend die Umgebung
   (Valkey-Eviction-Policy, `maxmemory`, Speicher, AOF, Version,
   Cluster-Modus; Gnadenfrist beim Herunterfahren). Exit `78`, wenn ein
-  Worker den Start verweigern würde, sonst `0`, bei Fehlern `1`. Die
-  Prüfung verwaister Queues folgt in einem späteren Schritt
-  ([CLI](cli.de.md#swarmq-check)).
+  Worker den Start verweigern würde, sonst `0`, bei Fehlern `1`. Mit
+  `SWARMQ_BROKER_URL` nennt der Abschnitt `queues` verwaiste Queues und
+  gemeldete Queues ohne `.XQ` (Warnungen) ([CLI](cli.de.md#swarmq-check)).
 - **`SWARMQ_VALKEY_EVICTION_CHECK`** (Default `strict`, `warn`, `off`),
   die Log-Events `valkey_eviction_policy_unsafe`,
   `valkey_eviction_policy_unknown` und `valkey_data_loss_detected`, das
@@ -748,6 +748,10 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   `PublishIndeterminate`. Die Prüfung liest den Zustand synchron (kein
   Roundtrip). Ein Scheduler-Leader zählt `BrokerPublishBlocked` nicht für
   den Rücktritt.
+- **Ein Worker-Start, der während des Aufbaus der Consume-Verbindung
+  abgebrochen wird, hinterlässt keine Verbindung.** aio-pika baute die
+  halb offene Verbindung im Hintergrund weiter auf und verband sich alle
+  5 s neu; jetzt wird sie geschlossen.
 
 ### Behoben (DLQ lesen, BZ-21)
 
@@ -837,6 +841,42 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   endet der Supervisor weiter mit `1`, damit die Orchestrierung ihr
   eigenes Backoff anwendet. `SlotTable.lock(slot)` ohne `until` sperrt
   weiter dauerhaft.
+
+### Hinzugefügt (verwaiste Queues, BZ-14)
+
+- **Der Scheduler-Leader meldet verwaiste Queues.** Zog ein Task in eine
+  andere Queue um oder änderte sich `--queues`, blieb der Rückstand der
+  alten Queue ohne Consumer liegen, ohne Logzeile und ohne Metrik. Jetzt
+  meldet jeder Worker die Queues, die er konsumiert, in jedem Meldetakt an
+  Valkey (neuer Hash `sq:{sched}:report:queues`, Queue auf letzte Meldung
+  in ms aus Valkeys `TIME`; der Key verfällt 7 Tage nach der letzten
+  Meldung, Golden-Dateien `keys.json` und `keys.namespace.json`,
+  additiv). In jedem Übernahme-Takt (nicht im Takt direkt nach einer
+  Übernahme, solange der eigene Worker noch startet) prüft der Leader die
+  Queues, die seit drei Takten kein lebender Worker gemeldet hat, per
+  passivem Declare
+  (ohne Management-API): Nachrichten und kein Consumer heißt verwaist. Er
+  loggt `scheduler_queue_orphaned` (WARNING) und
+  `scheduler_queue_orphan_resolved` (INFO) einmal je Übergang, sendet das
+  neue Signal `SCHEDULER_QUEUE_ORPHANED` und setzt die Gauge
+  `swarmq_scheduler_queues_orphaned{worker_id}`. Einträge fehlender oder
+  leerer Queues, die 7 Tage niemand gemeldet hat, werden entfernt. Jede
+  Prüfung hat ein Zeitlimit von 30 s (`scheduler_queue_check_failed`)
+  ([Task in eine andere Queue verschieben](../guides/defining-tasks.de.md#task-in-eine-andere-queue-verschieben)).
+- **`swarmq check`, Abschnitt `queues`** (mit `SWARMQ_BROKER_URL`):
+  verwaiste Queues und gemeldete Queues ohne `.XQ`; Befunde
+  `orphaned_queue`, `dead_letter_queue_missing`, `queues_unchecked`, alle
+  als Warnung ([CLI](cli.de.md#swarmq-check)).
+- **Verträge:** `ScheduleStore.report_queues`, `queue_reports` und
+  `forget_queue_reports` mit `swarmq.contracts.QueueReports`; die
+  optionale Broker-Methode `queue_statuses(names)` mit
+  `swarmq.contracts.broker.QueueStatus`. Stores und Broker ohne sie lassen
+  die Prüfung aus.
+- **Grenzen.** Geprüft werden nur Queues, die ein Worker ab 0.12 gemeldet
+  hat; eine Queue mit irgendeinem Consumer (auch einem Worker vor 0.12)
+  gilt nie als verwaist. Eine Queue, deren Worker seit drei Takten nicht
+  gemeldet hat, weil er nur langsam neu startet, kann bis zum erneuten
+  Konsumieren als verwaist gelten.
 
 ## [0.11.1] — 2026-10-10
 

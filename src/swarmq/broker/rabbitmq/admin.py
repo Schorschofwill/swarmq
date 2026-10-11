@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Sequence
 from typing import Any
 
 import aio_pika
@@ -17,6 +18,7 @@ from aio_pika.exceptions import ChannelNotFoundEntity
 from swarmq.broker.rabbitmq.connection import RabbitMQConnection, close_channel_quietly
 from swarmq.broker.rabbitmq.delivery import RabbitMQDelivery, dead_letter_ttl_header, message_of, settle
 from swarmq.contracts import Delivery
+from swarmq.contracts.broker import QueueStatus
 from swarmq.exceptions import BrokerConnectionError
 from swarmq.headers import (
     HEADER_DEAD_LETTER_TTL_MS,
@@ -33,6 +35,10 @@ from swarmq.logging import _error_fields, get_logger
 from swarmq.queue_names import delay_tiers
 
 logger = get_logger(__name__)
+
+
+#: declare-ok ohne ``declaration_result`` (Fake): zaehlt wie eine leere Queue.
+_NO_RESULT = object()
 
 
 def _dead_lettered_at_ms(headers: dict[str, Any]) -> int | None:
@@ -575,10 +581,31 @@ class RabbitMQAdmin(RabbitMQDelivery):
     async def _passive_message_counts(self, names: tuple[str, ...]) -> int:
         """Summe der ``message_count`` von ``names`` ueber einen Wegwerf-Channel,
         der nach NOT_FOUND neu geoeffnet wird (Plan 0.12.0, MR 10)."""
+        results = await self._passive_declarations(names)
+        return sum(int(getattr(result, "message_count", 0)) for result in results.values() if result is not None)
+
+    async def queue_statuses(self, names: Sequence[str]) -> dict[str, QueueStatus | None]:
+        """Nachrichten und Consumer je Queue aus dem passiven Declare (Plan
+        0.12.0, MR 18, BZ-14); ``None`` fuer eine fehlende Queue. Ohne
+        Management-API, ueber die Consume-Verbindung, falls offen (MR 16)."""
+        results = await self._passive_declarations(tuple(names))
+        return {
+            name: None
+            if result is None
+            else QueueStatus(
+                message_count=int(getattr(result, "message_count", 0)),
+                consumer_count=int(getattr(result, "consumer_count", 0)),
+            )
+            for name, result in results.items()
+        }
+
+    async def _passive_declarations(self, names: tuple[str, ...]) -> dict[str, Any]:
+        """declare-ok je Name ueber einen Wegwerf-Channel, der nach NOT_FOUND
+        neu geoeffnet wird; ``None`` fuer eine fehlende Queue."""
         connection = self._admin_connection()
         if connection is None or connection.is_closed:
             raise BrokerConnectionError("broker is not connected")
-        total = 0
+        results: dict[str, Any] = {}
         channel: aio_pika.abc.AbstractChannel | None = None
         try:
             for name in names:
@@ -587,22 +614,21 @@ class RabbitMQAdmin(RabbitMQDelivery):
                 try:
                     q = await channel.declare_queue(name, passive=True)
                 except ChannelNotFoundEntity:
-                    # Queue does not exist — counts as 0. The broker closed the
+                    # Queue does not exist. The broker closed the
                     # channel, so ``is_closed`` is already True: close it here
                     # WITHOUT that guard, or a RobustChannel reopens itself and
                     # is never closed (Review MR 10, P0-1; like ``arg_conflict``).
                     await close_channel_quietly(channel)
                     channel = None
+                    results[name] = None
                     continue
-                result = getattr(q, "declaration_result", None)
-                if result is not None:
-                    total += int(getattr(result, "message_count", 0))
+                results[name] = getattr(q, "declaration_result", None) or _NO_RESULT
         except Exception as exc:
             raise BrokerConnectionError(str(exc)) from exc
         finally:
             if channel is not None:
                 await _close_quietly(channel)
-        return total
+        return results
 
     async def dead_letter_depth(self, queue: str) -> int:
         """Return the live message count of ``{queue}.XQ`` (the

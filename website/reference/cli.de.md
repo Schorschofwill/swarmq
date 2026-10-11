@@ -489,9 +489,11 @@ swarmq check [--format (table|json)]
 ```
 
 Prüft nur lesend die Umgebung, in der swarmq läuft (neu in 0.12). Liest
-`SWARMQ_BACKEND_URL`, `SWARMQ_VALKEY_EVICTION_CHECK` und
-`SWARMQ_SHUTDOWN_TIMEOUT` und schickt an Valkey nur `CONFIG GET` und
-`INFO`. **Vor einem Upgrade** mit der neuen swarmq-Version in einem
+`SWARMQ_BACKEND_URL`, `SWARMQ_VALKEY_EVICTION_CHECK`,
+`SWARMQ_SHUTDOWN_TIMEOUT`, `SWARMQ_NAMESPACE` und für den Abschnitt
+`queues` `SWARMQ_BROKER_URL` und `SWARMQ_SCHEDULER_SEEN_INTERVAL_S`.
+Schickt an Valkey nur `CONFIG GET`, `INFO`, `SCAN` und Lesebefehle, an
+RabbitMQ nur passive Declares. **Vor einem Upgrade** mit der neuen swarmq-Version in einem
 eigenen virtualenv gegen Produktion laufen lassen; unter Kubernetes
 optional als Init-Container ([Valkey-Anforderungen](configuration.de.md#valkey-anforderungen)).
 Nicht dasselbe wie `swarmq worker --check`, das einen Worker-Start
@@ -512,6 +514,15 @@ Abschnitte:
   (`shutdown_timeout + 15`), die mindestens einzustellende
   `terminationGracePeriodSeconds` (Kubernetes) bzw. `stop_grace_period`
   (Docker).
+- `queues` (seit 0.12, nur mit `SWARMQ_BROKER_URL`, sonst
+  `checked: false`): die von Workern ab 0.12 gemeldeten Queues
+  (`reported`), per passivem Declare geprüft: `orphaned` nennt Queues mit
+  Nachrichten, ohne Consumer und seit drei Meldetakten
+  (`SWARMQ_SCHEDULER_SEEN_INTERVAL_S`) ohne lebende Meldung, je mit
+  `queue`, `messages` und `last_reported_s_ago`;
+  `missing_dead_letter_queues` nennt gemeldete Queues, deren `.XQ` fehlt
+  (der Broker verwirft dorthin geleitete gescheiterte Tasks)
+  ([Task in eine andere Queue verschieben](../guides/defining-tasks.de.md#task-in-eine-andere-queue-verschieben)).
 
 `findings` nennt jedes Problem mit `section`, `level` (`error` oder
 `warning`), `code` und `message`: `eviction_policy` (unter `strict` ein
@@ -521,7 +532,9 @@ Namensraum neben einem Namensraum: Apps ohne `SWARMQ_NAMESPACE` am
 selben Valkey oder Daten von vor dem Setzen, die der Namensraum nicht
 migriert; [Namensraum](configuration.md#namensraum-mehrere-apps-auf-einem-valkey)),
 `unprefixed_keys_unknown` (`SCAN` gescheitert, verboten oder vor dem
-ersten Fund am Zeitlimit). Eine unvollständige Zählung lautet `at least
+ersten Fund am Zeitlimit), `orphaned_queue`, `dead_letter_queue_missing`
+und `queues_unchecked` (Valkey oder der Broker waren für den Abschnitt
+`queues` nicht lesbar). Eine unvollständige Zählung lautet `at least
 <n> keys … (count incomplete …)`; im Cluster-Modus nennt die Meldung
 zusätzlich, dass nur ein Knoten gezählt wurde.
 
