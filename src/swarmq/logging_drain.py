@@ -22,6 +22,7 @@ from collections.abc import Generator, Iterable
 from typing import Any, cast
 
 from swarmq.logging_format import iso_utc
+from swarmq.logging_stdlib import handler_refs, module_lock
 
 
 class Deadline:
@@ -169,9 +170,8 @@ def _forget(handlers: set[logging.Handler]) -> None:
     streams = {id(s) for s in stuck}
     _STUCK_STREAMS.update(streams)
     _STUCK_FILES.update(f for s in stuck if (f := _file_of(s)) is not None)
-    # private stdlib-Attribute, in typeshed nicht deklariert
-    with cast("Any", logging)._lock:
-        refs: list[weakref.ref[logging.Handler]] = cast("Any", logging)._handlerList
+    with module_lock():
+        refs = handler_refs()
         refs[:] = [
             ref for ref in refs if (h := ref()) is None or (h not in handlers and id(_stream_of(h)) not in streams)
         ]

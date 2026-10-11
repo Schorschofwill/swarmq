@@ -9,7 +9,7 @@ import logging.config
 import logging.handlers
 import sys
 from collections.abc import Generator
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 import structlog
@@ -35,15 +35,12 @@ from swarmq.logging_queue import _SwarmqQueueListener as _SwarmqQueueListener
 from swarmq.logging_queue import dropped_log_records as dropped_log_records
 from swarmq.logging_queue import shutdown_logging as shutdown_logging
 from swarmq.logging_settings import LoggingSettings
-
-if TYPE_CHECKING:
-    import threading
-    import weakref
+from swarmq.logging_stdlib import handler_refs, module_lock
 
 # Der Queue-Kern liegt in ``swarmq.logging_queue`` (Plan 2026-10-06-1811,
 # U1); die Namen oben bleiben aus ``swarmq.logging`` importierbar. Die
-# Prozessflags ``_CONFIGURED`` und ``_APP_TAKEOVER_REPORTED`` gehoeren dem
-# Kern, weil ``shutdown_logging`` sie zuruecksetzt.
+# Prozessflags ``_STATE.configured`` und ``_STATE.app_takeover_reported``
+# gehoeren dem Kern, weil ``shutdown_logging`` sie zuruecksetzt.
 
 
 def root_handler_snapshot() -> tuple[logging.Handler, ...]:
@@ -75,16 +72,16 @@ def react_to_app_logging(before: tuple[logging.Handler, ...]) -> None:
     dictConfig der App ``swarmq.*``-Logger stummgeschaltet, schaltet swarmq
     sie wieder ein und nennt die Zahl im selben Event.
     """
-    if not _queue_core._CONFIGURED:
+    if not _queue_core._STATE.configured:
         # Nichts eingerichtet (R12): das Logging gehoert ganz der App.
         return
     replaced, added = _app_changes(before, tuple(logging.getLogger().handlers))
     reenabled = _reenable_swarmq_loggers()
-    if (replaced or reenabled) and not _queue_core._APP_TAKEOVER_REPORTED:
+    if (replaced or reenabled) and not _queue_core._STATE.app_takeover_reported:
         if replaced:
             _stop_listeners()
             _activate_swarmq_queue_after_app_takeover(**_queue_options(before))
-        _queue_core._APP_TAKEOVER_REPORTED = True
+        _queue_core._STATE.app_takeover_reported = True
         report_app_logging(
             get_logger(__name__),
             "logging_reconfigured_by_app",
@@ -139,7 +136,7 @@ def configure_child_logging(settings: LoggingSettings) -> list[tuple[str, dict[s
     if not settings.configure or not root_handler_snapshot():
         configure_logging(settings)
         return []
-    _queue_core._CONFIGURED = _queue_core._APP_TAKEOVER_REPORTED = True
+    _queue_core._STATE.configured = _queue_core._STATE.app_takeover_reported = True
     if settings.log_config is None:
         # Wie im Worker, der structlog vor dem App-Import einrichtet: Nutzer-
         # Tasks loggen per structlog an die Handler der App (R10, KTD6).
@@ -187,17 +184,16 @@ def _hidden_from_dictconfig(handlers: list[logging.Handler]) -> Generator[None]:
     Ein ``FileHandler(mode="w")`` oeffnete danach nie wieder, ein Handler mit
     Hintergrund-Thread waere gestoppt. Danach stehen sie wieder in der Liste,
     damit ``logging.shutdown`` sie bei Prozessende leert."""
-    # private stdlib-Attribute, in typeshed nicht deklariert
-    lock: threading.RLock = cast("Any", logging)._lock
+    lock = module_lock()
     with lock:
-        refs: list[weakref.ref[logging.Handler]] = cast("Any", logging)._handlerList
+        refs = handler_refs()
         hidden = [ref for ref in refs if ref() in handlers]
         refs[:] = [ref for ref in refs if ref not in hidden]
     try:
         yield
     finally:
         with lock:
-            cast("Any", logging)._handlerList.extend(hidden)
+            handler_refs().extend(hidden)
 
 
 def _start_app_queue_listeners() -> None:
@@ -386,7 +382,7 @@ def configure_logging(settings: LoggingSettings) -> None:
     if not settings.configure:
         # "Logging nicht konfigurieren" (R12): die App ist zustaendig.
         return
-    if _queue_core._CONFIGURED:
+    if _queue_core._STATE.configured:
         get_logger(__name__).debug("logging_already_configured")
         return
     # KTD10: Eingebaut und per Datei ist der Opt-in wirkungslos. Ein bereits
@@ -398,7 +394,7 @@ def configure_logging(settings: LoggingSettings) -> None:
     else:
         _configure_builtin(settings)
     _apply_logger_levels(settings)
-    _queue_core._CONFIGURED = True
+    _queue_core._STATE.configured = True
 
 
 def _configure_from_file(settings: LoggingSettings) -> None:

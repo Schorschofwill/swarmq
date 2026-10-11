@@ -97,7 +97,7 @@ def preserved_root_logger() -> Iterator[None]:
         shutdown_logging()
         # Eine im Test eingerichtete Frist (Plan 2026-10-06-1811, U4) gilt
         # nicht fuer den naechsten.
-        _queue_core._DRAIN_TIMEOUT = LoggingSettings().drain_timeout
+        _queue_core.set_drain_timeout(LoggingSettings().drain_timeout)
         # Ein im Test als Fork-Quelle markierter Prozess (U6, KTD6) startet
         # sonst keinen Listener mehr.
         # Ebenso ein im Test angehaengter Forkserver-Sentinel (U9, KTD9).
