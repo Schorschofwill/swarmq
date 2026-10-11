@@ -751,7 +751,8 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 - **Ein Worker-Start, der während des Aufbaus der Consume-Verbindung
   abgebrochen wird, hinterlässt keine Verbindung.** aio-pika baute die
   halb offene Verbindung im Hintergrund weiter auf und verband sich alle
-  5 s neu; jetzt wird sie geschlossen.
+  5 s neu; jetzt wird sie geschlossen. Dasselbe gilt für die
+  Publish-Verbindung, wenn `connect()` abgebrochen wird.
 
 ### Behoben (DLQ lesen, BZ-21)
 

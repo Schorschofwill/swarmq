@@ -46,7 +46,8 @@ class TestRabbitMQBrokerConnect:
         ) as mock_connect:
             await broker.connect()
 
-        mock_connect.assert_awaited_once_with("amqp://guest:guest@localhost/")
+        mock_connect.assert_awaited_once()
+        assert mock_connect.await_args.args == ("amqp://guest:guest@localhost/",)
         # BZ-16 (MR 16): der Consume-Kanal entsteht erst mit ``consume()`` auf
         # einer eigenen Verbindung.
         assert mock_connection.channel.await_count == 1
@@ -66,7 +67,8 @@ class TestRabbitMQBrokerConnect:
         ) as mock_connect:
             await broker.connect()
 
-        mock_connect.assert_awaited_once_with("amqp://guest:guest@localhost/")
+        mock_connect.assert_awaited_once()
+        assert mock_connect.await_args.args == ("amqp://guest:guest@localhost/",)
         assert mock_connection.channel.await_count == 2
         assert broker._publish_channel is mock_publish_channel
         assert broker._consume_channel is mock_consume_channel

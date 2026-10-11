@@ -87,6 +87,28 @@ async def close_channel_quietly(channel: aio_pika.abc.AbstractChannel | None) ->
         pass
 
 
+
+async def _connect_robust_closing_on_cancel(url: str) -> aio_pika.abc.AbstractRobustConnection:
+    """``aio_pika.connect_robust``, abbruchsicher: Wird der Aufbau abgebrochen
+    (etwa ein abgebrochener Worker-Start), baut aio-pika die angelegte
+    Verbindung sonst im Hintergrund weiter auf und verbindet sich alle 5 s neu.
+    Sie wird darum geschlossen (Plan 0.12.0, MR 18; Publish-Verbindung:
+    Nachtrag, von Georg am 2026-10-11 entschieden)."""
+    created: list[aio_pika.abc.AbstractRobustConnection] = []
+
+    class _Tracked(aio_pika.RobustConnection):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            created.append(self)
+
+    try:
+        return await aio_pika.connect_robust(url, connection_class=_Tracked)
+    except asyncio.CancelledError:
+        for connection in created:
+            with contextlib.suppress(Exception):
+                await connection.close()
+        raise
+
 class RabbitMQConnection:
     def __init__(
         self,
@@ -238,7 +260,7 @@ class RabbitMQConnection:
         # abgeschlossenen Shutdown darf nicht weiterwirken (R12).
         self._publish_deadline_at = None
         try:
-            self._connection = await aio_pika.connect_robust(self._url)
+            self._connection = await _connect_robust_closing_on_cancel(self._url)
             # Channel creation can fail too (vhost misconfigured, per-
             # connection channel cap, broker restart between
             # connect_robust success and channel() call). These two
@@ -264,23 +286,8 @@ class RabbitMQConnection:
         if not self._separate_consume_connection() or self._connection is None:
             return self._connection
         if self._consume_connection is None:
-            # Abbruch waehrend des Aufbaus (etwa ein abgebrochener Worker-Start):
-            # aio-pika baut sonst im Hintergrund weiter auf und verbindet sich
-            # alle 5 s neu. Die angelegte Verbindung wird darum geschlossen.
-            created: list[aio_pika.abc.AbstractRobustConnection] = []
-
-            class _Tracked(aio_pika.RobustConnection):
-                def __init__(self, *args: Any, **kwargs: Any) -> None:
-                    super().__init__(*args, **kwargs)
-                    created.append(self)
-
             try:
-                self._consume_connection = await aio_pika.connect_robust(self._url, connection_class=_Tracked)
-            except asyncio.CancelledError:
-                for connection in created:
-                    with contextlib.suppress(Exception):
-                        await connection.close()
-                raise
+                self._consume_connection = await _connect_robust_closing_on_cancel(self._url)
             except Exception as exc:
                 raise BrokerConnectionError(f"consume connection to {sanitize_url(self._url)!r} failed: {exc}") from exc
         return self._consume_connection

@@ -704,7 +704,8 @@ All notable changes to SwarmQ. This project follows
 - **A worker start cancelled while the consume connection is being opened
   leaves no connection behind.** aio-pika kept building the half-open
   connection in the background and reconnected every 5 s; the connection
-  is now closed.
+  is now closed. The same holds for the publish connection when
+  `connect()` is cancelled.
 
 ### Fixed (reading the DLQ, BZ-21)
 

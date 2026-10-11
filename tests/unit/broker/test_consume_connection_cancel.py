@@ -10,6 +10,8 @@ Event-Loop beim Schliessen). Grenze: ``connect_robust`` und
 
 Test-Liste:
 - [x] Abbruch waehrend ``connect_robust`` -> die angelegte Verbindung wird geschlossen
+- [x] ebenso fuer die Publish-Verbindung in ``connect()`` (Nachtrag, von Georg
+      am 2026-10-11 entschieden)
 """
 
 from __future__ import annotations
@@ -58,6 +60,32 @@ async def test_cancel_during_consume_connect_closes_the_half_built_connection() 
         patch(f"{_MODULE}.RobustConnection", _Robust),
     ):
         task = asyncio.create_task(broker.consume("q1", AsyncMock(), concurrency=1))
+        await asyncio.wait_for(building.wait(), timeout=2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    [half_built] = _Robust.instances
+    half_built.close.assert_awaited_once()
+
+
+async def test_cancel_during_connect_closes_the_half_built_publish_connection() -> None:
+    _Robust.instances = []
+    building = asyncio.Event()
+    never = asyncio.Event()
+
+    async def _connect_robust(url: str, **kwargs: Any) -> Any:
+        kwargs.get("connection_class", _Robust)(url)
+        building.set()
+        await never.wait()
+        raise AssertionError("unreachable")
+
+    broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+    with (
+        patch(f"{_MODULE}.connect_robust", AsyncMock(side_effect=_connect_robust)),
+        patch(f"{_MODULE}.RobustConnection", _Robust),
+    ):
+        task = asyncio.create_task(broker.connect())
         await asyncio.wait_for(building.wait(), timeout=2)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
