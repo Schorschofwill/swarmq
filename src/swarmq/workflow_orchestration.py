@@ -101,7 +101,7 @@ class WorkflowHandle:
         raw = await self._backend.get_workflow_state(self.workflow_id)
         if raw is None:
             raise WorkflowNotFound(self.workflow_id)
-        return decode_json(raw)  # type: ignore[no-any-return]
+        return decode_json(raw)  # type: ignore[no-any-return]  # decode_json liefert Any aus JSON
 
     async def status(self) -> str:
         state = await self._load_state()

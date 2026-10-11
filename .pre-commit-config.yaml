@@ -13,14 +13,14 @@ repos:
         name: ruff format --check
         entry: uv run --frozen ruff format --check
         language: system
-        types: [python]
+        types_or: [python, pyi]
       - id: ruff-check
-        name: ruff check (src, tests)
+        name: ruff check (src, tests, typings)
         entry: uv run --frozen ruff check --no-cache
         language: system
-        types: [python]
+        types_or: [python, pyi]
         # benchmarks/, prototypes/ und scripts/ prüft die CI nicht gegen ALL.
-        files: ^(src|tests)/
+        files: ^(src|tests|typings)/
       - id: mypy
         name: mypy (src, tests)
         entry: uv run --frozen --extra test --extra reload mypy src/swarmq tests

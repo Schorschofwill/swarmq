@@ -369,9 +369,9 @@ def maybe_wrap_task(cls: type) -> None:
         )
 
     if collected:
-        cls._dishka_injected_keys = collected  # type: ignore[attr-defined]
+        cls._dishka_injected_keys = collected  # type: ignore[attr-defined]  # dynamisch gesetztes Klassenattribut
     if ineffective:
-        cls._dishka_ineffective_fromdishka = ineffective  # type: ignore[attr-defined]
+        cls._dishka_ineffective_fromdishka = ineffective  # type: ignore[attr-defined]  # dynamisch gesetztes Klassenattribut
 
 
 if _HAVE_DISHKA:

@@ -134,5 +134,5 @@ async def decode_and_validate(deps: GateDeps, message: Any) -> tuple[str, str, s
         return None
     # mypy engt Any per isinstance auf list[Any] ein (redundanter Cast),
     # basedpyright auf list[Unknown]; der Cast bedient basedpyright.
-    args_list = cast("list[Any]", args)  # type: ignore[redundant-cast]
+    args_list = cast("list[Any]", args)  # type: ignore[redundant-cast]  # mypy engt auf list[Any], basedpyright nur auf list[Unknown]
     return task_id, queue, task_name, args_list, cast("dict[str, Any]", kwargs)

@@ -117,7 +117,7 @@ lint-and-types:
   before_script: []
   script:
     - $UV_RUN ruff format --check .
-    - $UV_RUN ruff check src/ tests/
+    - $UV_RUN ruff check src/ tests/ typings/
     - $UV_RUN mypy src/swarmq tests
     - $UV_RUN basedpyright
 

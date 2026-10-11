@@ -74,13 +74,13 @@ else:
 
         _HAVE_PROMETHEUS = True
     except ImportError:  # pragma: no cover — optional
-        prometheus_client = None  # type: ignore[assignment]
-        CollectorRegistry = None  # type: ignore[assignment,misc]
-        Counter = None  # type: ignore[assignment,misc]
-        Gauge = None  # type: ignore[assignment,misc]
-        Histogram = None  # type: ignore[assignment,misc]
-        generate_latest = None  # type: ignore[assignment]
-        CounterMetricFamily = None  # type: ignore[assignment,misc]
+        prometheus_client = None  # type: ignore[assignment]  # Platzhalter, wenn prometheus_client fehlt
+        CollectorRegistry = None  # type: ignore[assignment,misc]  # Platzhalter, wenn prometheus_client fehlt
+        Counter = None  # type: ignore[assignment,misc]  # Platzhalter, wenn prometheus_client fehlt
+        Gauge = None  # type: ignore[assignment,misc]  # Platzhalter, wenn prometheus_client fehlt
+        Histogram = None  # type: ignore[assignment,misc]  # Platzhalter, wenn prometheus_client fehlt
+        generate_latest = None  # type: ignore[assignment]  # Platzhalter, wenn prometheus_client fehlt
+        CounterMetricFamily = None  # type: ignore[assignment,misc]  # Platzhalter, wenn prometheus_client fehlt
 
         _HAVE_PROMETHEUS = False
 
