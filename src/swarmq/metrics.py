@@ -295,6 +295,14 @@ class Metrics:
                 labelnames=("worker_id",),
                 registry=self.registry,
             )
+            # Plan 0.12.0, MR 14 (BZ-04): Speicherstand des Valkey, vom Leader
+            # stuendlich gemessen; bei ``noeviction`` haelt ein OOM alle Apps an.
+            self.valkey_memory_used_ratio: Gauge | _NoopMetric = Gauge(
+                f"{namespace}_valkey_memory_used_ratio",
+                "Valkey used_memory / maxmemory, measured hourly by the scheduler leader (only with a maxmemory limit)",
+                labelnames=("worker_id",),
+                registry=self.registry,
+            )
             self.registry.register(_LogRecordsDroppedCollector(namespace))
         else:
             noop = _NoopMetric()
@@ -319,6 +327,7 @@ class Metrics:
             self.scheduler_crons_held = noop
             self.lock_waits = noop
             self.lock_wait_oldest_seconds = noop
+            self.valkey_memory_used_ratio = noop
 
     @property
     def enabled(self) -> bool:
@@ -545,6 +554,14 @@ def _install_scheduler_gauge(
         metrics.scheduler_crons_held.labels(
             worker_id=str(kw.get("worker_id", "")),
         ).set(int(kw.get("held_count") or 0))
+
+    @dispatcher.on_signal(Signal.SCHEDULER_VALKEY_CHECKED)
+    async def _valkey_checked(**kw: Any) -> None:
+        maxmemory, used = kw.get("maxmemory"), kw.get("used_memory")
+        if isinstance(maxmemory, int) and maxmemory > 0 and isinstance(used, int):
+            metrics.valkey_memory_used_ratio.labels(
+                worker_id=str(kw.get("worker_id", "")),
+            ).set(used / maxmemory)
 
     @dispatcher.on_signal(Signal.SCHEDULER_STANDBY)
     @dispatcher.on_signal(Signal.SCHEDULER_LEADER_HANDOVER)

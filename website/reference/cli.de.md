@@ -22,6 +22,7 @@ swarmq worker   --module DOTTED.PATH [options]
 swarmq schedule (list | add | remove | status) [options]
 swarmq dlq      (list | inspect | retry | purge) [options]
 swarmq inspect  --module DOTTED.PATH [--format FORMAT]
+swarmq check    [--format FORMAT]
 ```
 
 ## Exit-Codes
@@ -32,7 +33,7 @@ swarmq inspect  --module DOTTED.PATH [--format FORMAT]
 | `1` | Laufzeitfehler: Broker oder Backend unerreichbar, `swarmq dlq`/`schedule` zur Laufzeit gescheitert. Später erneut versuchen ist die richtige Antwort. Außerdem jeder Konfigurationsfehler von `swarmq schedule`, `swarmq dlq` und `swarmq inspect` (fehlende `SWARMQ_BROKER_URL`/`SWARMQ_BACKEND_URL`, ungültiges JSON in `--args`/`--kwargs`, ungültiges `--cron`/`--at`, `inspect --module` nicht gefunden oder ohne registrierte Tasks) und jeder Fehler von `swarmq worker --check`, auch argparse-Fehler. |
 | `2` | Ungültige Argumente (argparse-Usage-Fehler), auch `swarmq dlq retry` mit `task_id` und `--all` zugleich oder mit keinem von beiden (Meldung auf stderr). Nicht unter `swarmq worker --check`: Dort kommen argparse-Fehler als JSON mit Exit `1`. |
 | `3` | `swarmq dlq inspect` / `swarmq dlq retry <task_id>` fand keinen passenden DLQ-Eintrag |
-| `78` | Konfigurationsfehler von `swarmq worker` (`EX_CONFIG`): `ConfigurationError`, Task-Modul nicht importierbar, `--configure`-Hook gescheitert, Portbereich ungültig, ungültige Logging-Einstellungen oder Logging-Konfigurationsdatei (`LoggingConfigError`). Kommt aus dem Elternprozess und aus dem Supervisor, wenn ein Worker-Kind mit `78` endet. Ein erneuter Versuch ohne Änderung ist sinnlos. |
+| `78` | Konfigurationsfehler von `swarmq worker` (`EX_CONFIG`): `ConfigurationError`, Task-Modul nicht importierbar, `--configure`-Hook gescheitert, Portbereich ungültig, ungültige Logging-Einstellungen oder Logging-Konfigurationsdatei (`LoggingConfigError`). Kommt aus dem Elternprozess und aus dem Supervisor, wenn ein Worker-Kind mit `78` endet. Ein erneuter Versuch ohne Änderung ist sinnlos. `swarmq check`: Ein Worker würde in dieser Umgebung den Start verweigern (verdrängende Valkey-`maxmemory-policy` unter `SWARMQ_VALKEY_EVICTION_CHECK=strict`). |
 | `130` | Durch Strg-C unterbrochen (`KeyboardInterrupt`, 128 + `SIGINT`), außerhalb der Behandlung durch den Befehl selbst, etwa während Module importiert werden. Ein laufender Befehl oder Worker behandelt Strg-C als Graceful Shutdown und endet mit `0`. |
 
 `78` folgt `sysexits.h`. Jeder Konfigurationsfehler, ob er im
@@ -477,6 +478,55 @@ TASK           QUEUES        DELIVERY       RETRIES  RATE_LIMIT  LOCK           
 render_invoice pdf           at_least_once  5        -           -                  -           -             -
 send_email     default,mail  at_least_once  3        100/m       -                  -           -             -
 sync_user      users         at_least_once  2        -           user-{user_id}     60          completion    -
+```
+
+## `swarmq check`
+
+```text
+swarmq check [--format (table|json)]
+```
+
+Prüft nur lesend die Umgebung, in der swarmq läuft (neu in 0.12). Liest
+`SWARMQ_BACKEND_URL`, `SWARMQ_VALKEY_EVICTION_CHECK` und
+`SWARMQ_SHUTDOWN_TIMEOUT` und schickt an Valkey nur `CONFIG GET` und
+`INFO`. **Vor einem Upgrade** mit der neuen swarmq-Version in einem
+eigenen virtualenv gegen Produktion laufen lassen; unter Kubernetes
+optional als Init-Container ([Valkey-Anforderungen](configuration.de.md#valkey-anforderungen)).
+Nicht dasselbe wie `swarmq worker --check`, das einen Worker-Start
+probeweise durchläuft.
+
+Abschnitte:
+
+- `valkey`: `maxmemory_policy`, `maxmemory`, `used_memory`, `eviction`
+  (`safe`, `unsafe`, `unknown`), das wirksame `eviction_check`,
+  `aof_enabled`, `version`, `cluster_enabled`, `namespace` und
+  `unprefixed_keys` (beide `null`, solange es keine Namensräume gibt).
+  Werte, die Valkey nicht liefert (ACL), sind `null`.
+- `shutdown`: `shutdown_timeout` und `min_grace_period_s`
+  (`shutdown_timeout + 15`), die mindestens einzustellende
+  `terminationGracePeriodSeconds` (Kubernetes) bzw. `stop_grace_period`
+  (Docker).
+
+`findings` nennt jedes Problem mit `section`, `level` (`error` oder
+`warning`), `code` und `message`: `eviction_policy` (unter `strict` ein
+Fehler, sonst eine Warnung), `eviction_policy_unknown`, `aof_disabled`,
+`cluster`, `version` (älter als 8).
+
+Exit-Codes: `0`, wenn nichts blockiert (Warnungen erlaubt), `78`, wenn
+ein Worker in dieser Umgebung den Start verweigern würde (verdrängende
+Policy unter `SWARMQ_VALKEY_EVICTION_CHECK=strict`), `1`, wenn Valkey
+nicht erreichbar ist oder `SWARMQ_BACKEND_URL` fehlt.
+
+```bash
+$ SWARMQ_BACKEND_URL=valkey://valkey:6379/0 swarmq check --format table
+valkey  url  valkey://valkey:6379/0
+valkey  eviction_check  strict
+valkey  eviction  unsafe
+valkey  maxmemory_policy  volatile-lru
+...
+ERROR  valkey: maxmemory-policy volatile-lru may evict swarmq keys (...)
+WARNING  valkey: AOF is off: (...)
+FAILED
 ```
 
 ## Globale Flags

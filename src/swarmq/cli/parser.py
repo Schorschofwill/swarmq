@@ -24,7 +24,7 @@ from swarmq.cli._shared import (
     _queue_list,
     _watch_dir_path,
 )
-from swarmq.cli.parser_ops import _add_dlq_parser, _add_inspect_parser, _add_schedule_parser
+from swarmq.cli.parser_ops import _add_check_parser, _add_dlq_parser, _add_inspect_parser, _add_schedule_parser
 
 
 def _swarmq_version() -> str:
@@ -63,6 +63,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_schedule_parser(subparsers)
     _add_dlq_parser(subparsers)
     _add_inspect_parser(subparsers)
+    _add_check_parser(subparsers)
     return parser
 
 

@@ -258,6 +258,14 @@ class ValkeyScheduleStore:
         legacy = await self._run("take_handover_marker", self._client.getdel(self._keys.sched_handover(previous_owner)))
         return legacy is not None
 
+    async def ensure_epoch(self, candidate: str) -> str | None:
+        """``SET NX GET`` in einem Schritt (Valkey >= 7): ``None``, wenn der
+        Epoch eben angelegt wurde, sonst der gespeicherte Wert (BZ-04)."""
+        previous = await self._run(
+            "ensure_epoch", self._client.set(self._keys.sched_epoch(), candidate, nx=True, get=True)
+        )
+        return None if previous is None else _decode(previous)
+
     async def report_cron(
         self, name: str, fingerprint: str, payload: bytes, *, live_window_ms: int,
     ) -> None:

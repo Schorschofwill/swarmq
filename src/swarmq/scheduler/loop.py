@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 from swarmq.contracts.coordination import LockToken
 from swarmq.contracts.coordination import ScheduleStore as ContractScheduleStore
 from swarmq.scheduler.definition import ScheduleDefinition, ScheduleStore
+from swarmq.scheduler.epoch import SchedulerEpoch
 from swarmq.scheduler.fire import SchedulerFire
 from swarmq.scheduler.fire_plan import SchedulerFirePlan
 from swarmq.scheduler.leader_version import LeaderVersionWatch, SchedulerLeaderVersion, swarmq_version
@@ -36,6 +37,7 @@ from swarmq.scheduler.reports import cron_fingerprint, live_window_ms
 from swarmq.scheduler.sync import SchedulerCronSync
 from swarmq.scheduler.unowned import SchedulerUnowned
 from swarmq.scheduler.unroutable import SchedulerUnroutable
+from swarmq.scheduler.valkey_watch import SchedulerValkeyWatch
 
 logger = get_logger(__name__)
 
@@ -83,6 +85,8 @@ class SchedulerLoop(
     SchedulerUnroutable,
     SchedulerUnowned,
     SchedulerFire,
+    SchedulerEpoch,
+    SchedulerValkeyWatch,
 ):
     """Embedded scheduler — one instance per worker.
 
@@ -321,6 +325,8 @@ class SchedulerLoop(
         except Exception as exc:
             # Der Worker arbeitet weiter; der nächste Takt meldet erneut.
             logger.warning("scheduler_cron_report_failed", **_error_fields(exc))
+        # BZ-04: jeder Loop kennt den Epoch, auch ein späterer Leader.
+        await self._observe_epoch()
 
     async def _adopt_loop(self) -> None:
         """Leader-Takt der Übernahme (KTD10): sofort nach dem Erwerb der

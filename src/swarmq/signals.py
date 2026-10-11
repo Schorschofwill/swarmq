@@ -148,6 +148,12 @@ class Signal(enum.Enum):
                                    held=True, or releases it again,
                                    held=False; once per transition, BZ-11;
                                    held_count = crons held afterwards)
+      * SCHEDULER_VALKEY_CHECKED:  worker_id, status, policy, maxmemory,
+                                   used_memory (the leader checked Valkey's
+                                   eviction policy and memory again, at most
+                                   once per hour, BZ-04; status "safe",
+                                   "unsafe" or "unknown"; maxmemory 0 means
+                                   no limit, None unknown)
 
     Handlers are invoked async; exceptions are swallowed and logged.
     """
@@ -187,6 +193,7 @@ class Signal(enum.Enum):
     SCHEDULER_LEADER_OUTDATED = "scheduler_leader_outdated"
     SCHEDULER_FIRE_UNROUTABLE = "scheduler_fire_unroutable"
     SCHEDULER_CRON_UNOWNED = "scheduler_cron_unowned"
+    SCHEDULER_VALKEY_CHECKED = "scheduler_valkey_checked"
 
 
 class SignalDispatcher:

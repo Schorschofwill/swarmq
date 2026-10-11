@@ -44,6 +44,7 @@ if TYPE_CHECKING:
 
 import msgspec  # noqa: F401
 
+from swarmq.cli import env_check_cmd
 from swarmq.cli._shared import (
     _DOTTED_IDENTIFIER_RE,
     _FORBIDDEN_WATCH_PREFIXES,
@@ -479,6 +480,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ConfigurationError as exc:
         sys.stderr.write(f"swarmq {args.command}: {exc}\n")
         return CONFIG_ERROR_EXIT_CODE
+    if args.command == "check":
+        # Plan 0.12.0, MR 14 (BZ-04): eigener Einstieg mit eigenem Exit-Code (78).
+        return env_check_cmd.run_env_check(args)
     if args.command == "schedule":
         runner = _run_schedule_async(args)
         error_prefix = f"swarmq schedule {args.schedule_command}"

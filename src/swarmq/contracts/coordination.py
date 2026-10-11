@@ -244,6 +244,14 @@ class ScheduleStore(Protocol):
     async def forget_pruned_disabled(self, name: str) -> None:
         """Vergisst die Markierung aus :meth:`pruned_disabled`."""
 
+    async def ensure_epoch(self, candidate: str) -> str | None:
+        """Epoch des Datenbestands (Plan 0.12.0, MR 14, BZ-04), atomar: fehlt
+        er, wird *candidate* gesetzt und ``None`` geliefert; sonst der
+        gespeicherte Wert. Der Epoch hat keine TTL; fehlt er bei einem
+        Prozess, der ihn schon kannte, hat Valkey seine Daten verloren. Stores
+        Dritter duerfen die Methode weglassen (Q15: der Scheduler prueft dann
+        nicht)."""
+
     async def report_worker_version(self, worker_id: str, version: str, *, ttl_ms: int) -> None:
         """Meldet die swarmq-Version eines Workers; die Meldung gilt *ttl_ms*
         (KTD11, Anzeige in ``schedule status``)."""

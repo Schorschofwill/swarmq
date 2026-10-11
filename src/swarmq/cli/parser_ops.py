@@ -391,3 +391,29 @@ def _add_inspect_parser(subparsers: Any) -> None:
             "Override the default with SWARMQ_DEFAULT_FORMAT=table|json."
         ),
     )
+
+
+def _add_check_parser(subparsers: Any) -> None:
+    """``swarmq check`` -- Betriebsumgebung pruefen (Plan 0.12.0, MR 14)."""
+    check = subparsers.add_parser(
+        "check",
+        help="Check the operating environment (Valkey, shutdown) before an upgrade.",
+        description=(
+            "Read-only check of the environment swarmq runs in: Valkey eviction "
+            "policy, maxmemory, memory, AOF, version and cluster mode, and the "
+            "grace period the shutdown timeout needs. Run it with the new swarmq "
+            "version before an upgrade. Exit 0 when nothing blocks, 78 when a "
+            "worker would refuse to start (evicting maxmemory-policy under "
+            "SWARMQ_VALKEY_EVICTION_CHECK=strict), 1 on errors. Not the same as "
+            "'swarmq worker --check'."
+        ),
+    )
+    check.add_argument(
+        "--format",
+        choices=_FORMAT_CHOICES,
+        default=None,
+        help=(
+            "Output format. Default: 'table' on a TTY, 'json' on a pipe. "
+            "Override the default with SWARMQ_DEFAULT_FORMAT=table|json."
+        ),
+    )

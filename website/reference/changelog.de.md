@@ -8,6 +8,22 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ### Hinzugefügt
 
+- **`swarmq check`**: prüft vor einem Upgrade nur lesend die Umgebung
+  (Valkey-Eviction-Policy, `maxmemory`, Speicher, AOF, Version,
+  Cluster-Modus; Gnadenfrist beim Herunterfahren). Exit `78`, wenn ein
+  Worker den Start verweigern würde, sonst `0`, bei Fehlern `1`. Die
+  Prüfung verwaister Queues folgt in einem späteren Schritt
+  ([CLI](cli.de.md#swarmq-check)).
+- **`SWARMQ_VALKEY_EVICTION_CHECK`** (Default `strict`, `warn`, `off`),
+  die Log-Events `valkey_eviction_policy_unsafe`,
+  `valkey_eviction_policy_unknown` und `valkey_data_loss_detected`, das
+  Signal `SCHEDULER_VALKEY_CHECKED` mit der Gauge
+  `swarmq_valkey_memory_used_ratio{worker_id}`, der Epoch-Key
+  `sq:{sched}:epoch` (ohne TTL, ein Key; Golden-Datei `keys.json`,
+  additiv), `ScheduleStore.ensure_epoch` sowie
+  `ValkeyBackend.eviction_check`/`recheck_eviction`
+  ([Valkey-Anforderungen](configuration.de.md#valkey-anforderungen)).
+
 - **`swarmq.MessageHeadersTooLarge`** (Unterklasse von
   `BrokerConnectionError`): Ein Publish, dessen Header auch mit
   gekürzten Texten nicht in die Hälfte des ausgehandelten `frame_max`
@@ -96,6 +112,17 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   [Konfiguration](configuration.de.md)).
 
 ### Geändert
+
+- **Ein Worker verweigert den Start, wenn Valkey swarmq-Keys verdrängen
+  kann.** Beim Verbinden liest das Backend `maxmemory-policy` und
+  `maxmemory` (`CONFIG GET`, sonst `INFO memory`, höchstens 2 s,
+  scheitert nie). Unter einer verdrängenden Policy (alles außer
+  `noeviction` mit `maxmemory`-Grenze oder unbekannter Grenze) loggt
+  jedes Verbinden `valkey_eviction_policy_unsafe`, und ein Worker mit
+  `SWARMQ_VALKEY_EVICTION_CHECK=strict` (Default) endet mit
+  `ConfigurationError`, Exit `78`. Eine nicht lesbare Policy blockiert
+  nie. Der Scheduler-Leader prüft höchstens einmal je Stunde erneut.
+  Siehe die Upgrade-Hinweise unten.
 
 - **Ein Lock-Konflikt wartet zeitbasiert statt 10 Versuche.** Eine
   Nachricht, deren Task-Lock belegt ist, wird zurückgestellt (100 ms,
@@ -559,6 +586,35 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   eigene TTL sind (gemischte `hard_timeout` unter einem Semaphor-Namen
   werden nicht unterstützt), und ein 0.11-Worker verkürzt den Key
   weiter.
+
+### Behoben (Valkey-Umgebung, BZ-04)
+
+- **Verdrängte Locks und Marker blieben unbemerkt.** Unter `volatile-*`
+  oder `allkeys-*` verdrängte Valkey still Locks, den Leader-Lock, den
+  Ausführungsschutz sowie Unique- und Fired-Marker, und Tasks liefen
+  doppelt. Die Policy wird jetzt geprüft (siehe Geändert). Die interne
+  Empfehlung `volatile-lru` ist zu `noeviction` plus AOF korrigiert.
+- **Ein per `swarmq schedule remove` abgeschalteter Cron kam nach einem
+  Datenverlust von Valkey kommentarlos aktiv zurück.** Jeder Worker
+  merkt sich jetzt den Epoch-Key `sq:{sched}:epoch` und loggt
+  `valkey_data_loss_detected`, wenn er fehlt. Grenzen: Ein Verlust bei
+  gleichzeitigem Neustart aller Prozesse bleibt unerkannt, ebenso ein
+  Verlust seit einem RDB-Snapshot, der den Epoch zurückbringt; die
+  Policy wird nur stündlich geprüft.
+
+### Upgrade auf 0.12 (Valkey-Umgebung)
+
+- **Zuerst `swarmq check` laufen lassen.** Die neue Version in einem
+  eigenen virtualenv installieren (`pip install swarmq==0.12.*`) und
+  `swarmq check` gegen Produktion ausführen; es liest nur (`CONFIG GET`,
+  `INFO`). Unter Kubernetes geht das als Init-Container. Exit `78` heißt:
+  Die neuen Worker würden den Start verweigern.
+- **Exit 78 unter Kubernetes und Docker.** Ein Worker, der den Start
+  verweigert, endet bei jedem Neustart wieder mit `78`: Kubernetes zeigt
+  `CrashLoopBackOff`, Docker mit `restart:`-Policy läuft in eine
+  Schleife. Vor dem Rollout `maxmemory-policy noeviction` setzen oder
+  bewusst `SWARMQ_VALKEY_EVICTION_CHECK=warn` (etwa bei einem
+  Managed-Dienst mit fester Policy, mit bekanntem Risiko).
 
 ## [0.11.1] — 2026-10-10
 

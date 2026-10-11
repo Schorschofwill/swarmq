@@ -21,6 +21,7 @@ swarmq worker   --module DOTTED.PATH [options]
 swarmq schedule (list | add | remove | status) [options]
 swarmq dlq      (list | inspect | retry | purge) [options]
 swarmq inspect  --module DOTTED.PATH [--format FORMAT]
+swarmq check    [--format FORMAT]
 ```
 
 ## Exit codes
@@ -31,7 +32,7 @@ swarmq inspect  --module DOTTED.PATH [--format FORMAT]
 | `1` | Runtime error: broker or backend unreachable, `swarmq dlq`/`schedule` failed at runtime. Retrying later is the right response. Also every configuration error of `swarmq schedule`, `swarmq dlq` and `swarmq inspect` (missing `SWARMQ_BROKER_URL`/`SWARMQ_BACKEND_URL`, invalid `--args`/`--kwargs` JSON, invalid `--cron`/`--at`, `inspect --module` not found or registering no tasks) and every failure of `swarmq worker --check`, including argparse errors. |
 | `2` | Bad arguments (argparse-detected usage error), also `swarmq dlq retry` with both a `task_id` and `--all` or with neither (message on stderr). Not under `swarmq worker --check`, which reports argparse errors as JSON with exit `1`. |
 | `3` | `swarmq dlq inspect` / `swarmq dlq retry <task_id>` found no matching DLQ entry |
-| `78` | Configuration error of `swarmq worker` (`EX_CONFIG`): `ConfigurationError`, task module not importable, `--configure` hook failed, port range invalid, invalid logging settings or logging config file (`LoggingConfigError`). Emitted by the parent process and by the supervisor when a worker child exits `78`. Retrying without a change is pointless. |
+| `78` | Configuration error of `swarmq worker` (`EX_CONFIG`): `ConfigurationError`, task module not importable, `--configure` hook failed, port range invalid, invalid logging settings or logging config file (`LoggingConfigError`). Emitted by the parent process and by the supervisor when a worker child exits `78`. Retrying without a change is pointless. `swarmq check`: a worker would refuse to start in this environment (evicting Valkey `maxmemory-policy` under `SWARMQ_VALKEY_EVICTION_CHECK=strict`). |
 | `130` | Interrupted by Ctrl-C (`KeyboardInterrupt`, 128 + `SIGINT`) outside the command's own handling, for example while modules are imported. A running command or worker treats Ctrl-C as a graceful shutdown and exits `0`. |
 
 `78` follows `sysexits.h`. Every configuration error, whether it
@@ -460,6 +461,53 @@ TASK           QUEUES        DELIVERY       RETRIES  RATE_LIMIT  LOCK           
 render_invoice pdf           at_least_once  5        -           -                  -           -             -
 send_email     default,mail  at_least_once  3        100/m       -                  -           -             -
 sync_user      users         at_least_once  2        -           user-{user_id}     60          completion    -
+```
+
+## `swarmq check`
+
+```text
+swarmq check [--format (table|json)]
+```
+
+Read-only check of the environment swarmq runs in (new in 0.12). Reads
+`SWARMQ_BACKEND_URL`, `SWARMQ_VALKEY_EVICTION_CHECK` and
+`SWARMQ_SHUTDOWN_TIMEOUT` and sends only `CONFIG GET` and `INFO` to
+Valkey. Run it **before an upgrade**, with the new swarmq version in a
+separate virtualenv, against production; in Kubernetes optionally as an
+init container ([Valkey requirements](configuration.md#valkey-requirements)).
+Not the same as `swarmq worker --check`, which dry-runs a worker start.
+
+Sections:
+
+- `valkey`: `maxmemory_policy`, `maxmemory`, `used_memory`, `eviction`
+  (`safe`, `unsafe`, `unknown`), the effective `eviction_check`,
+  `aof_enabled`, `version`, `cluster_enabled`, `namespace` and
+  `unprefixed_keys` (both `null` until namespaces exist). Values Valkey
+  does not report (ACL) are `null`.
+- `shutdown`: `shutdown_timeout` and `min_grace_period_s`
+  (`shutdown_timeout + 15`), the least `terminationGracePeriodSeconds`
+  (Kubernetes) or `stop_grace_period` (Docker) to configure.
+
+`findings` lists each problem with `section`, `level` (`error` or
+`warning`), `code` and `message`: `eviction_policy` (error under
+`strict`, else warning), `eviction_policy_unknown`, `aof_disabled`,
+`cluster`, `version` (older than 8).
+
+Exit codes: `0` when nothing blocks (warnings allowed), `78` when a
+worker would refuse to start in this environment (evicting policy under
+`SWARMQ_VALKEY_EVICTION_CHECK=strict`), `1` when Valkey is unreachable
+or `SWARMQ_BACKEND_URL` is missing.
+
+```bash
+$ SWARMQ_BACKEND_URL=valkey://valkey:6379/0 swarmq check --format table
+valkey  url  valkey://valkey:6379/0
+valkey  eviction_check  strict
+valkey  eviction  unsafe
+valkey  maxmemory_policy  volatile-lru
+...
+ERROR  valkey: maxmemory-policy volatile-lru may evict swarmq keys (...)
+WARNING  valkey: AOF is off: (...)
+FAILED
 ```
 
 ## Global flags

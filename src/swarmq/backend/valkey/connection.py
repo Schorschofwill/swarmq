@@ -24,9 +24,11 @@ from valkey.exceptions import (
 from valkey.exceptions import ConnectionError as ValkeyConnectionError
 from valkey.exceptions import TimeoutError as ValkeyTimeoutError
 
-from swarmq.config import INJECTED_URL
+from swarmq.backend.valkey.environment import log_eviction_check, probe_eviction
+from swarmq.config import INJECTED_URL, env_valkey_eviction_check
 from swarmq.exceptions import BackendConnectionError, BackendResponseError, ConfigurationError
 from swarmq.keyspace import KeySpace
+from swarmq.valkey_policy import EvictionCheck
 
 # Transient transport errors that should be retried transparently by the
 # valkey-py client. Application-level errors (ResponseError, DataError,
@@ -98,6 +100,7 @@ class ValkeyConnection:
         client: valkey.asyncio.Valkey | None = None,
         pool: valkey.asyncio.ConnectionPool | None = None,
         keys: KeySpace | None = None,
+        eviction_check: str | None = None,
     ) -> None:
         """Construct a backend from a URL, an existing client, or a pool.
 
@@ -129,6 +132,11 @@ class ValkeyConnection:
         given = [name for name, present in sources if present]
         # Alle Keys und Kanaele dieses Backends (Plan 0.12.0, Q4).
         self._keys = keys if keys is not None else KeySpace()
+        # Ergebnis der Eviction-Pruefung beim Verbinden (BZ-04); ``None``, solange
+        # nicht geprueft wurde.
+        self.eviction_check: EvictionCheck | None = None
+        # Schalter der Pruefung; ohne Angabe aus der Umgebung (Q11, ueber ``config.py``).
+        self._eviction_mode = eviction_check if eviction_check is not None else env_valkey_eviction_check()
         if not given:
             raise ConfigurationError("ValkeyBackend requires exactly one of: url, client, or pool")
         if len(given) > 1:
@@ -181,6 +189,20 @@ class ValkeyConnection:
             await self._client.ping()
         except (ValkeyConnectionError, OSError) as exc:
             raise BackendConnectionError(str(exc)) from exc
+        # BZ-04 (Plan 0.12.0, MR 14): verdraengende Policy laut melden.
+        if self._eviction_mode != "off":
+            self.eviction_check = await probe_eviction(self._client)
+            log_eviction_check(self.eviction_check)
+
+    async def recheck_eviction(self) -> EvictionCheck | None:
+        """Erneute Pruefung (Leader, stuendlich; BZ-04) samt ``used_memory``;
+        warnt bei Befund wie ``connect``. ``None`` mit ``off`` oder ohne
+        Verbindung. Wirft nie."""
+        if self._eviction_mode == "off" or self._client is None:
+            return None
+        self.eviction_check = await probe_eviction(self._client, memory=True)
+        log_eviction_check(self.eviction_check)
+        return self.eviction_check
 
     async def close(self) -> None:
         if self._client is not None:

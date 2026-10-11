@@ -14,11 +14,11 @@ verbotenes ``CONFIG GET`` (ACL bei Managed-Diensten) wird toleriert.
 Grenze gemockt: ``valkey.asyncio.Valkey.from_url`` liefert einen Fake-Client.
 
 Test-Liste:
-- [x] ``volatile-lru`` -> WARNING beim Verbinden (xfail, BZ-04)
-- [x] ``allkeys-lru`` -> WARNING beim Verbinden (xfail, BZ-04)
+- [x] ``volatile-lru`` -> WARNING beim Verbinden (behoben, MR 14)
+- [x] ``allkeys-lru`` -> WARNING beim Verbinden (behoben, MR 14)
 - [x] ``noeviction`` -> keine Eviction-Warnung (Schutz gegen Fehlalarm, grün)
 - [x] ``CONFIG`` per ACL verboten -> Verbinden gelingt trotzdem und
-      hinterlässt einen Hinweis, dass die Policy nicht prüfbar war (xfail, BZ-04)
+      hinterlässt einen Hinweis, dass die Policy nicht prüfbar war (behoben, MR 14)
 """
 
 from __future__ import annotations
@@ -83,11 +83,6 @@ def _eviction_warnings(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return hits
 
 
-@pytest.mark.befund("BZ-04")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-04: swarmq prueft maxmemory-policy nicht und warnt bei verdraengender Policy nicht",
-)
 @pytest.mark.parametrize("policy", ["volatile-lru", "allkeys-lru"])
 async def test_connect_warns_when_valkey_may_evict_swarmq_keys(
     monkeypatch: pytest.MonkeyPatch, swarmq_logs: list[dict[str, Any]], policy: str
@@ -116,11 +111,6 @@ async def test_connect_does_not_warn_under_noeviction(
     assert _eviction_warnings(swarmq_logs) == []
 
 
-@pytest.mark.befund("BZ-04")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-04: swarmq versucht die Eviction-Policy gar nicht zu pruefen, auch kein Hinweis bei ACL-Verbot",
-)
 async def test_connect_tolerates_forbidden_config_get_but_says_so(
     monkeypatch: pytest.MonkeyPatch, swarmq_logs: list[dict[str, Any]]
 ) -> None:

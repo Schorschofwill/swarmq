@@ -55,6 +55,7 @@ The CLI prints a descriptive error if either is missing; see the
 | `SWARMQ_DEAD_LETTER_TTL_S` | `604800` | Seconds a message the worker dead-letters stays in `{queue}.XQ` ([retention](../guides/dead-letter-queues.md#retention-dead-lettered-messages-expire)); reading does not extend it. `none` keeps messages without limit. Must be `> 0`. The `swarmq dlq` CLI keeps each message's own retention (`x-swarmq-dead-letter-ttl-ms`) and uses this variable only for old stock without it. |
 | `SWARMQ_DEAD_LETTER_TERMINAL_FAILURES` | `true` | `false` stores the error result of a terminal task failure (`NoRetry`, exception outside `retry_exceptions`, retries exhausted) and acknowledges the message instead of dead-lettering it ([details](../guides/dead-letter-queues.md#switching-off-dead-lettering-of-task-failures)). `TaskInfo.dead_letter` wins. |
 | `SWARMQ_LOCK_WAIT_MAX_S` | `21600` | Upper limit in seconds for how long a message waits for a held task lock, measured from its first conflict (`x-swarmq-lock-wait-since`); afterwards it is dead-lettered with `LockWaitExceeded`. Before that only a stalled holder (same holder longer than its TTL + 60 s) or `max_age` ends the wait. Must be `> 0` and finite ([lock acquisition](../guides/locking-and-dedup.md#lock-acquisition-behaviour)). |
+| `SWARMQ_VALKEY_EVICTION_CHECK` | `strict` | What a worker does when Valkey may evict swarmq keys ([Valkey requirements](#valkey-requirements)): `strict` refuses to start with exit `78` under an evicting `maxmemory-policy` (anything but `noeviction` with a `maxmemory` limit, or with an unknown limit), `warn` logs `valkey_eviction_policy_unsafe` and starts, `off` does not check at all (no query, no warning). A policy that cannot be read (ACL forbids `CONFIG` and `INFO`) never blocks, it only logs `valkey_eviction_policy_unknown`. Case does not matter. Also read by `swarmq check` and by every other `ValkeyBackend` (CLI, producers), where only `off` changes anything. |
 | `SWARMQ_UNKNOWN_TASK_GRACE_S` | `900.0` | Grace period in seconds for a task name this worker does not register (rolling deploy: producers ahead of the workers). Within it the worker defers the message with backoff (1 s, then as long as it has waited so far, at most 60 s per round) and keeps the first contact in `x-swarmq-unknown-since`; afterwards it dead-letters the message with an error result and `TASK_REJECTED` (`unregistered_task`). `0` switches the grace period off (dead-letter at first contact). Must be `>= 0` ([unregistered tasks](../guides/dead-letter-queues.md#unregistered-tasks-and-rolling-deploys)). |
 | `SWARMQ_MALLOC_TRIM_THRESHOLD` | `131072` | `MALLOC_TRIM_THRESHOLD_` for compute children (glibc growth). |
 | `SWARMQ_MALLOC_ARENA_MAX` | `2` | `MALLOC_ARENA_MAX` for compute children. |
@@ -148,6 +149,7 @@ Every worker with metrics enabled (`--metrics-port`/`SWARMQ_METRICS_PORT`,
 | `swarmq_scheduler_leader_outdated` | gauge | `worker_id` | `1` while this worker sees a scheduler leader running a swarmq below the minimum leader version (currently 0.12), else `0` ([leader version](../guides/scheduling-and-retries.md#leader-version)). |
 | `swarmq_scheduler_cron_conflicts_total` | counter | `schedule_name` | Leader selection ticks that saw several live definitions of one static cron for more than 10 minutes ([conflicts](../guides/scheduling-and-retries.md#conflicts)). |
 | `swarmq_scheduler_crons_held` | gauge | `worker_id` | Static crons the scheduler leader holds because no live worker reports them and it does not register them itself; `0` when this worker is not leader ([held crons](../guides/scheduling-and-retries.md#crons-nobody-reports-are-held)). |
+| `swarmq_valkey_memory_used_ratio` | gauge | `worker_id` | Valkey `used_memory / maxmemory`, measured by the scheduler leader at most once per hour (signal `SCHEDULER_VALKEY_CHECKED`); only with a `maxmemory` limit. Under `noeviction` a full Valkey refuses writes (OOM) for every app on it; alert well before `1` ([Valkey requirements](#valkey-requirements)). |
 | `swarmq_scheduler_fires_unroutable_total` | counter | `queue`, `kind` | Scheduler fires the broker returned because the queue does not exist: `cron_lost` (lost cron fire) or `oneshot_dropped` (deferred task dropped after `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S`) ([missing queues](../guides/scheduling-and-retries.md#missing-queues)). |
 | `swarmq_consumer_reregistrations_total` | counter | `queue` | Consumers the [consumer watch](../explanation/delivery-semantics.md#consumer-timeout) registered again after the broker ended them; the reason is in the log event `consumer_reregistered`. |
 | `swarmq_execution_guard_events_total` | counter | `event` | Events of the [execution guard](../explanation/delivery-semantics.md#execution-guard): `duplicate_skipped` (redelivery acknowledged and skipped), `deferred` (same execution runs elsewhere), `orphan_limit` (dead-lettered as `WorkerHungError`), `lease_lost` (running marker expired or taken over while the task ran), `defer_stalled` (the deferrals of one redelivery exceeded `SWARMQ_CONSUMER_TIMEOUT_S`; the original runs unusually long or hangs). |
@@ -230,6 +232,51 @@ All ports are validated at config-time: a bad value raises
 | Variable | Default | Description |
 |---|---|---|
 | `SWARMQ_DEFAULT_FORMAT` | *TTY-detect* | Overrides the default `--format` for output-shaped CLI subcommands (`schedule list/add/remove/status`, `dlq list/inspect/retry/purge`, `inspect`). Accepts `table` or `json`; any other value (typo, empty string) is ignored silently and the TTY-aware default applies (`table` on a terminal, `json` on a pipe). An explicit `--format` on the command line always wins. |
+
+### Valkey requirements
+
+swarmq keeps state in Valkey that must never vanish on its own: task
+locks, the scheduler leader lock, the execution guard, unique and fired
+markers, schedules and delayed one-shots. Run Valkey (8 or later) like
+this:
+
+- **`maxmemory-policy noeviction`.** Every other policy lets Valkey
+  evict keys under memory pressure; `volatile-*` evicts exactly the keys
+  with a TTL, which are the locks and markers. The result is tasks
+  running twice. With `noeviction` a full Valkey refuses writes instead
+  (OOM, swarmq treats it as an outage); watch
+  `swarmq_valkey_memory_used_ratio`. Without a `maxmemory` limit
+  (`maxmemory 0`) Valkey never evicts, whatever the policy.
+- **AOF** (`appendonly yes`, `appendfsync everysec`). Without it a
+  restart loses everything since the last RDB snapshot: delayed tasks,
+  CLI crons, and switch-offs by `swarmq schedule remove` (the next
+  report brings such a cron back active).
+- **No cluster mode.** Use a single primary, with replicas if needed.
+- **Managed services:** some fix the policy (ElastiCache Serverless runs
+  `volatile-lru`); they are not suitable. Where `CONFIG` is forbidden by
+  ACL, swarmq reads `INFO memory` instead.
+
+A worker reads `maxmemory-policy` and `maxmemory` when it connects (at
+most 2 s, never fails because of the check) and, with
+`SWARMQ_VALKEY_EVICTION_CHECK=strict` (default), refuses to start with
+exit `78` under an evicting policy. The scheduler leader checks again
+at most once per hour and logs `valkey_eviction_policy_unsafe` if the
+policy changed. Each worker remembers the epoch key `sq:{sched}:epoch`;
+if it disappears (Valkey lost its data: restart without persistence,
+`FLUSHALL`, failover with lost writes) it logs
+`valkey_data_loss_detected`. Limits: a data loss while all processes
+restart at the same time goes unnoticed, so does a loss since an RDB
+snapshot that brings the epoch back, and the policy is checked only
+hourly.
+
+**Before upgrading to 0.12,** run `swarmq check` with the new version in
+a separate virtualenv against production (read-only, see
+[CLI](cli.md#swarmq-check)); in Kubernetes optionally as an init
+container. Exit `78` means the new workers would refuse to start. Do not
+find that out by rolling out: under Kubernetes exit `78` puts the pods
+into `CrashLoopBackOff`, under Docker with a `restart:` policy into a
+restart loop. Fix the policy, or set `SWARMQ_VALKEY_EVICTION_CHECK=warn`
+deliberately.
 
 ### Namespace requires 0.12
 

@@ -19,7 +19,7 @@ Wrapper-Port, nie 6379).
 
 Test-Liste:
 - [x] deaktivierter statischer Cron, FLUSHDB, nächster Sync -> bleibt aus oder
-      lautes WARNING (xfail, BZ-04)
+      lautes WARNING (behoben, MR 14: Epoch ``sq:{sched}:epoch``)
 """
 
 from __future__ import annotations
@@ -67,11 +67,6 @@ async def _get(store: ScheduleStore, name: str) -> ScheduleDefinition:
     return definition
 
 
-@pytest.mark.befund("BZ-04")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-04: nach Valkey-Datenverlust legt der Sync einen per CLI deaktivierten Cron still aktiv neu an",
-)
 async def test_operator_disabled_cron_stays_off_after_valkey_data_loss(valkey_url: str) -> None:
     backend = ValkeyBackend(valkey_url)
     await backend.connect()

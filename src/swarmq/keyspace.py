@@ -130,6 +130,11 @@ class KeySpace:
     def sched_disabled(self) -> str:
         return f"{self._root}{{sched}}:disabled"
 
+    def sched_epoch(self) -> str:
+        """Epoch des Datenbestands (BZ-04): ein Key ohne TTL (Q5-Ausnahme);
+        fehlt er bei einem Prozess, der ihn kannte, hat Valkey Daten verloren."""
+        return f"{self._root}{{sched}}:epoch"
+
     def sched_fired(self, schedfire_key: str) -> str:
         return f"{self._root}sched:fired:{schedfire_key}"
 

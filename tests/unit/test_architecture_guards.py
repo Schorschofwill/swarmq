@@ -60,7 +60,7 @@ _SPLIT_MODULES: dict[str, list[str]] = {
         "connection", "delivery", "admin", "consumer_watch", "topology",  # U5; U6; 0.12 MR 0
         "declarations",  # Plan 0.12.0, MR 8
     ],
-    "swarmq.backend.valkey": ["connection", "results"],  # U17
+    "swarmq.backend.valkey": ["connection", "results", "environment"],  # U17; environment: Plan 0.12.0, MR 14
     # ``decode`` seit U6 (Plan 2026-09-08-001): Header-Pruefung, Size-Cap und
     # Body-Dekodierung aus ``pipeline.py`` gezogen.
     "swarmq.worker": [
@@ -71,7 +71,8 @@ _SPLIT_MODULES: dict[str, list[str]] = {
         "lock_keeper", "lock_wait_tracker",  # Plan 0.12.0, MR 13 (BZ-25, BZ-05)
     ],  # U6-U9
     "swarmq.client": ["schedule", "results", "workflows", "schedule_resolve"],  # U10; Plan 0.12.0, MR 0
-    "swarmq.scheduler": ["definition", "loop", "sync", "fire"],  # U11; fire: Plan 0.12.0, MR 0
+    # U11; fire: Plan 0.12.0, MR 0; valkey_watch: MR 14
+    "swarmq.scheduler": ["definition", "loop", "sync", "fire", "valkey_watch"],
     "swarmq.process_manager": [
         "config", "supervisor", "entry", "sampler", "check", "run",
         "setpoint_store", "setpoint",  # Kontrollkanal U2/U5

@@ -160,7 +160,7 @@ der Loop wieder läuft. Blockierender Code gehört in den
 [CPU-Modus](cpu-mode.md), dort tötet `hard_timeout` den Kindprozess.
 
 Findet die Verlängerung den Lock weg oder übernommen (verdrängt durch
-`maxmemory-policy`, Valkey-Datenverlust oder ein Valkey-Ausfall von
+`maxmemory-policy`, siehe [Valkey-Anforderungen](../reference/configuration.de.md#valkey-anforderungen), Valkey-Datenverlust oder ein Valkey-Ausfall von
 etwa zwei Takten, sobald die Verlängerungen begonnen haben, bei einem
 Takt von 20 s also etwa 40 s), loggt der Worker `task_lock_lost`
 (WARNING, `stage="running"`): Ein zweiter Halter kann jetzt parallel

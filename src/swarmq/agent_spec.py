@@ -368,7 +368,9 @@ def _cli_exit_codes() -> list[dict[str, Any]]:
             "Configuration error of `swarmq worker` (EX_CONFIG): "
             "ConfigurationError, task module not importable, `--configure` "
             "hook failed, invalid logging settings (LoggingConfigError); "
-            "retrying without a change is pointless"
+            "retrying without a change is pointless. `swarmq check`: a worker "
+            "would refuse to start in this environment (evicting Valkey "
+            "maxmemory-policy under SWARMQ_VALKEY_EVICTION_CHECK=strict)"
         )},
         {"code": exit_code_for(KeyboardInterrupt()), "meaning": (
             "Interrupted by Ctrl-C (KeyboardInterrupt, 128 + SIGINT) outside "

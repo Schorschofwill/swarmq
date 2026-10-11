@@ -152,7 +152,7 @@ blocking code into [CPU mode](cpu-mode.md), where `hard_timeout` kills
 the child process.
 
 If the extension finds the lock gone or taken over (evicted by
-`maxmemory-policy`, Valkey data loss, or a Valkey outage of about two
+`maxmemory-policy`, see [Valkey requirements](../reference/configuration.md#valkey-requirements), Valkey data loss, or a Valkey outage of about two
 ticks once the extensions have started, about 40 s with a tick of
 20 s), the worker logs `task_lock_lost` (WARNING, `stage="running"`):
 a second holder may now run in parallel. The same warning with

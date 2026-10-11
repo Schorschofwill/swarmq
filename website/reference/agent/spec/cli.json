@@ -17,6 +17,27 @@
           "positional": false,
           "required": false,
           "type": "str"
+        }
+      ],
+      "help": "Read-only check of the environment swarmq runs in: Valkey eviction policy, maxmemory, memory, AOF, version and cluster mode, and the grace period the shutdown timeout needs. Run it with the new swarmq version before an upgrade. Exit 0 when nothing blocks, 78 when a worker would refuse to start (evicting maxmemory-policy under SWARMQ_VALKEY_EVICTION_CHECK=strict), 1 on errors. Not the same as 'swarmq worker --check'.",
+      "path": "check"
+    },
+    {
+      "arguments": [
+        {
+          "choices": [
+            "table",
+            "json"
+          ],
+          "default": null,
+          "flags": [
+            "--format"
+          ],
+          "help": "Output format. Default: 'table' on a TTY, 'json' on a pipe. Override the default with SWARMQ_DEFAULT_FORMAT=table|json.",
+          "name": "--format",
+          "positional": false,
+          "required": false,
+          "type": "str"
         },
         {
           "default": "default",
@@ -815,7 +836,7 @@
     },
     {
       "code": 78,
-      "meaning": "Configuration error of `swarmq worker` (EX_CONFIG): ConfigurationError, task module not importable, `--configure` hook failed, invalid logging settings (LoggingConfigError); retrying without a change is pointless"
+      "meaning": "Configuration error of `swarmq worker` (EX_CONFIG): ConfigurationError, task module not importable, `--configure` hook failed, invalid logging settings (LoggingConfigError); retrying without a change is pointless. `swarmq check`: a worker would refuse to start in this environment (evicting Valkey maxmemory-policy under SWARMQ_VALKEY_EVICTION_CHECK=strict)"
     },
     {
       "code": 130,

@@ -159,6 +159,8 @@ async def snapshot_keys(backend: ValkeyBackend) -> dict[str, str]:
         "golden-pruned", value_fixtures()["schedule_definition.json"], stale_after_ms=None, remember_disabled=True,
     )
     await backend.schedules.set_leader_version("golden-owner", "0.10.0", ttl_ms=TTL_MS)
+    # Epoch des Datenbestands (Plan 0.12.0, MR 14, BZ-04).
+    await backend.schedules.ensure_epoch("golden-epoch")
     # Ausfuehrungsschutz (Plan 2026-10-08-1541, KTD5): Running-Marker und Zustand.
     await backend.execution_guard.claim(
         TASK_ID, owner="golden-owner", retry_count=0, ttl_ms=TTL_MS, state_ttl_ms=TTL_MS, max_orphans=3,

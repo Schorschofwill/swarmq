@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import socket
 from dataclasses import dataclass, field
-from typing import ClassVar
+from typing import ClassVar, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from swarmq.config_validation import ConfigValidation
@@ -17,6 +17,7 @@ from swarmq.logging_settings import (
     split_csv,
 )
 from swarmq.namespace_guard import reject_namespace
+from swarmq.valkey_policy import EVICTION_CHECK_MODES
 
 # Credential-free placeholder used as ``broker_url`` / ``backend_url`` when a
 # connection object is injected (RabbitMQBroker(connection=...) /
@@ -130,7 +131,19 @@ def parse_env_value(kind: str, raw: str, env_name: str) -> object:
         return _parse_log_format(raw, env_name)
     if kind == "logger_levels":
         return parse_logger_levels(split_csv(raw), env_name)
+    if kind == "mode":
+        # Schalter mit festen Werten (``strict|warn|off``): Gross/Klein egal.
+        return raw.strip().lower()
     return raw
+
+
+def env_valkey_eviction_check() -> str:
+    """``SWARMQ_VALKEY_EVICTION_CHECK`` fuer Backends ohne ``SwarmQConfig``
+    (CLI, Producer; Plan 0.12.0, MR 14). Ungueltige Werte prueft erst
+    ``SwarmQConfig``; hier gelten sie als ``strict``, die Pruefung laeuft also."""
+    raw = os.environ.get("SWARMQ_VALKEY_EVICTION_CHECK", "")
+    mode = cast("str", parse_env_value("mode", raw, "SWARMQ_VALKEY_EVICTION_CHECK"))
+    return mode if mode in EVICTION_CHECK_MODES else "strict"
 
 
 def observability_port_ranges(
@@ -349,6 +362,11 @@ class SwarmQConfig(ConfigValidation):
     # endet die Wartezeit nur, wenn derselbe Halter laenger haelt als seine
     # TTL + 60 s (Stillstand) oder ``max_age`` greift.
     lock_wait_max_s: float = 21600.0
+    # Pruefung der Valkey-Eviction-Policy (Plan 0.12.0, MR 14, BZ-04):
+    # ``strict`` beendet den Worker bei einer verdraengenden Policy mit Exit
+    # 78, ``warn`` warnt nur, ``off`` prueft nicht. Ist die Policy nicht
+    # pruefbar, gibt es in jedem Modus nur eine Warnung.
+    valkey_eviction_check: str = "strict"
     malloc_trim_threshold: int = 131072
     malloc_arena_max: int = 2
     compute_thread_limit: int = 1
@@ -441,6 +459,7 @@ class SwarmQConfig(ConfigValidation):
         ("SWARMQ_DEAD_LETTER_TERMINAL_FAILURES", "dead_letter_terminal_failures", "bool"),
         ("SWARMQ_UNKNOWN_TASK_GRACE_S", "unknown_task_grace_s", "float"),
         ("SWARMQ_LOCK_WAIT_MAX_S", "lock_wait_max_s", "float"),
+        ("SWARMQ_VALKEY_EVICTION_CHECK", "valkey_eviction_check", "mode"),
         ("SWARMQ_MALLOC_TRIM_THRESHOLD", "malloc_trim_threshold", "int"),
         ("SWARMQ_MALLOC_ARENA_MAX", "malloc_arena_max", "int"),
         ("SWARMQ_COMPUTE_THREAD_LIMIT", "compute_thread_limit", "int"),

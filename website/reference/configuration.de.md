@@ -56,6 +56,7 @@ siehe [Fehlerkatalog](errors.md#configurationerror).
 | `SWARMQ_DEAD_LETTER_TTL_S` | `604800` | Sekunden, die eine vom Worker dead-gelettete Nachricht in `{queue}.XQ` bleibt ([Aufbewahrungsfrist](../guides/dead-letter-queues.md#aufbewahrungsfrist-dead-gelettete-nachrichten-verfallen)); Lesen verlängert sie nicht. `none` hält Nachrichten unbegrenzt. Muss `> 0` sein. Die `swarmq dlq`-CLI behält die eigene Frist jeder Nachricht (`x-swarmq-dead-letter-ttl-ms`) und nutzt diese Variable nur für Altbestand ohne sie. |
 | `SWARMQ_DEAD_LETTER_TERMINAL_FAILURES` | `true` | `false` speichert bei einem terminalen Task-Fehler (`NoRetry`, Exception außerhalb von `retry_exceptions`, Retries erschöpft) das Fehlerergebnis und bestätigt die Nachricht, statt sie zu dead-lettern ([Details](../guides/dead-letter-queues.md#dead-lettering-von-task-fehlern-abschalten)). `TaskInfo.dead_letter` gewinnt. |
 | `SWARMQ_LOCK_WAIT_MAX_S` | `21600` | Obergrenze in Sekunden, wie lange eine Nachricht auf einen belegten Task-Lock wartet, gemessen ab ihrem ersten Konflikt (`x-swarmq-lock-wait-since`); danach geht sie mit `LockWaitExceeded` in die DLQ. Vorher beendet nur ein hängender Halter (derselbe Halter länger als seine TTL + 60 s) oder `max_age` die Wartezeit. Muss `> 0` und endlich sein ([Lock-Acquisition](../guides/locking-and-dedup.de.md#lock-acquisition-verhalten)). |
+| `SWARMQ_VALKEY_EVICTION_CHECK` | `strict` | Was ein Worker tut, wenn Valkey swarmq-Keys verdrängen kann ([Valkey-Anforderungen](#valkey-anforderungen)): `strict` verweigert unter einer verdrängenden `maxmemory-policy` (alles außer `noeviction` mit `maxmemory`-Grenze oder unbekannter Grenze) den Start mit Exit `78`, `warn` loggt `valkey_eviction_policy_unsafe` und startet, `off` prüft gar nicht (keine Abfrage, keine Warnung). Eine nicht lesbare Policy (ACL verbietet `CONFIG` und `INFO`) blockiert nie, sie loggt nur `valkey_eviction_policy_unknown`. Groß-/Kleinschreibung egal. Auch `swarmq check` und jedes andere `ValkeyBackend` (CLI, Producer) lesen die Variable; dort ändert nur `off` etwas. |
 | `SWARMQ_UNKNOWN_TASK_GRACE_S` | `900.0` | Gnadenfrist in Sekunden für einen Task-Namen, den dieser Worker nicht registriert (Rolling Deploy: Producer vor den Workern). Innerhalb der Frist stellt der Worker die Nachricht mit Backoff zurück (1 s, dann so lang wie bisher gewartet, höchstens 60 s je Runde) und hält den ersten Kontakt in `x-swarmq-unknown-since` fest; danach dead-lettert er sie mit Fehlerergebnis und `TASK_REJECTED` (`unregistered_task`). `0` schaltet die Frist ab (Dead-Letter beim ersten Kontakt). Muss `>= 0` sein ([unregistrierte Tasks](../guides/dead-letter-queues.de.md#unregistrierte-tasks-und-rolling-deploys)). |
 | `SWARMQ_MALLOC_TRIM_THRESHOLD` | `131072` | `MALLOC_TRIM_THRESHOLD_` für Rechenkinder (glibc-Wachstum). |
 | `SWARMQ_MALLOC_ARENA_MAX` | `2` | `MALLOC_ARENA_MAX` für Rechenkinder. |
@@ -149,6 +150,7 @@ Jeder Worker mit eingeschalteten Metriken (`--metrics-port`/`SWARMQ_METRICS_PORT
 | `swarmq_scheduler_leader_outdated` | Gauge | `worker_id` | `1`, solange dieser Worker einen Scheduler-Leader mit swarmq unter der Mindestversion für Leader (derzeit 0.12) sieht, sonst `0` ([Leader-Version](../guides/scheduling-and-retries.md#leader-version)). |
 | `swarmq_scheduler_cron_conflicts_total` | Counter | `schedule_name` | Auswahltakte des Leaders, in denen mehrere Definitionen eines statischen Crons länger als 10 Minuten gleichzeitig lebten ([Konflikte](../guides/scheduling-and-retries.md#konflikte)). |
 | `swarmq_scheduler_crons_held` | Gauge | `worker_id` | Statische Crons, die der Scheduler-Leader zurückhält, weil kein lebender Worker sie meldet und er sie selbst nicht registriert; `0`, wenn dieser Worker nicht Leader ist ([zurückgehaltene Crons](../guides/scheduling-and-retries.de.md#crons-die-niemand-meldet-werden-zuruckgehalten)). |
+| `swarmq_valkey_memory_used_ratio` | Gauge | `worker_id` | Valkey `used_memory / maxmemory`, vom Scheduler-Leader höchstens einmal je Stunde gemessen (Signal `SCHEDULER_VALKEY_CHECKED`); nur mit `maxmemory`-Grenze. Unter `noeviction` verweigert ein volles Valkey Schreibzugriffe (OOM) für jede App darauf; deutlich vor `1` alarmieren ([Valkey-Anforderungen](#valkey-anforderungen)). |
 | `swarmq_scheduler_fires_unroutable_total` | Counter | `queue`, `kind` | Scheduler-Fires, die der Broker zurückgab, weil die Queue fehlt: `cron_lost` (verlorener Cron-Fire) oder `oneshot_dropped` (verzögerter Task nach `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S` verworfen) ([fehlende Queues](../guides/scheduling-and-retries.md#fehlende-queues)). |
 | `swarmq_consumer_reregistrations_total` | Counter | `queue` | Consumer, die der [Consumer-Wächter](../explanation/delivery-semantics.md#consumer-timeout) neu angemeldet hat, nachdem der Broker sie beendet hatte; der Grund steht im Log-Event `consumer_reregistered`. |
 | `swarmq_execution_guard_events_total` | Counter | `event` | Ereignisse des [Ausführungsschutzes](../explanation/delivery-semantics.md#ausfuhrungsschutz): `duplicate_skipped` (Neuzustellung bestätigt und übersprungen), `deferred` (dieselbe Ausführung läuft anderswo), `orphan_limit` (als `WorkerHungError` dead-gelettert), `lease_lost` (Running-Marker während der Ausführung abgelaufen oder übernommen), `defer_stalled` (die Zurückstellungen einer Neuzustellung überschreiten `SWARMQ_CONSUMER_TIMEOUT_S`; das Original läuft ungewöhnlich lange oder hängt). |
@@ -232,6 +234,51 @@ Alle Ports werden zur Config-Zeit validiert: ein Bad Value raist
 | Variable | Default | Beschreibung |
 |---|---|---|
 | `SWARMQ_DEFAULT_FORMAT` | *TTY-Detect* | Überschreibt den Default für `--format` bei Output-orientierten CLI-Subcommands (`schedule list/add/remove/status`, `dlq list/inspect/retry/purge`, `inspect`). Akzeptiert `table` oder `json`; jeder andere Wert (Tippfehler, Leerstring) wird still ignoriert und der TTY-abhängige Default greift (`table` am Terminal, `json` in einer Pipe). Ein explizites `--format` auf der Kommandozeile gewinnt immer. |
+
+### Valkey-Anforderungen
+
+swarmq hält in Valkey Zustand, der nie von selbst verschwinden darf:
+Task-Locks, den Leader-Lock des Schedulers, den Ausführungsschutz,
+Unique- und Fired-Marker, Zeitpläne und verzögerte One-Shots. Valkey
+(ab 8) deshalb so betreiben:
+
+- **`maxmemory-policy noeviction`.** Jede andere Policy lässt Valkey
+  unter Speicherdruck Keys verdrängen; `volatile-*` verdrängt genau die
+  Keys mit TTL, also Locks und Marker. Folge sind doppelt laufende
+  Tasks. Mit `noeviction` verweigert ein volles Valkey stattdessen
+  Schreibzugriffe (OOM, für swarmq ein Ausfall);
+  `swarmq_valkey_memory_used_ratio` beobachten. Ohne `maxmemory`-Grenze
+  (`maxmemory 0`) verdrängt Valkey nie, gleich welche Policy.
+- **AOF** (`appendonly yes`, `appendfsync everysec`). Ohne AOF verliert
+  ein Neustart alles seit dem letzten RDB-Snapshot: verzögerte Tasks,
+  CLI-Crons und Abschaltungen per `swarmq schedule remove` (die nächste
+  Meldung bringt einen solchen Cron aktiv zurück).
+- **Kein Cluster-Modus.** Ein einzelner Primary, bei Bedarf mit Replikas.
+- **Managed-Dienste:** Manche legen die Policy fest (ElastiCache
+  Serverless läuft mit `volatile-lru`); sie sind ungeeignet. Wo eine ACL
+  `CONFIG` verbietet, liest swarmq `INFO memory`.
+
+Ein Worker liest `maxmemory-policy` und `maxmemory` beim Verbinden
+(höchstens 2 s, scheitert nie an der Prüfung) und verweigert mit
+`SWARMQ_VALKEY_EVICTION_CHECK=strict` (Default) unter einer
+verdrängenden Policy den Start mit Exit `78`. Der Scheduler-Leader prüft
+höchstens einmal je Stunde erneut und loggt `valkey_eviction_policy_unsafe`,
+wenn sich die Policy geändert hat. Jeder Worker merkt sich den
+Epoch-Key `sq:{sched}:epoch`; verschwindet er (Valkey hat seine Daten
+verloren: Neustart ohne Persistenz, `FLUSHALL`, Failover mit verlorenen
+Writes), loggt er `valkey_data_loss_detected`. Grenzen: Ein Datenverlust
+bei gleichzeitigem Neustart aller Prozesse bleibt unerkannt, ebenso ein
+Verlust seit einem RDB-Snapshot, der den Epoch mit zurückbringt, und die
+Policy wird nur stündlich geprüft.
+
+**Vor dem Upgrade auf 0.12** `swarmq check` in der neuen Version in einem
+eigenen virtualenv gegen Produktion laufen lassen (nur lesend, siehe
+[CLI](cli.de.md#swarmq-check)); unter Kubernetes optional als
+Init-Container. Exit `78` heißt: Die neuen Worker würden den Start
+verweigern. Das nicht erst beim Ausrollen herausfinden: Unter Kubernetes
+führt Exit `78` zu `CrashLoopBackOff`, unter Docker mit
+`restart:`-Policy zu einer Neustartschleife. Die Policy korrigieren oder
+bewusst `SWARMQ_VALKEY_EVICTION_CHECK=warn` setzen.
 
 ### Namensraum erst ab 0.12
 

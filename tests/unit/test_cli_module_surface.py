@@ -152,6 +152,7 @@ _CLI_PUBLIC_SURFACE: frozenset[str] = frozenset(
         "_shared",                      # package — shared helpers
         "check_cmd",                    # package — --check handler
         "dlq_cmd",                      # package — dlq subcommand
+        "env_check_cmd",                # package — swarmq check (Plan 0.12.0, MR 14)
         "inspect_cmd",                  # package — inspect subcommand
         "parser",                       # package — argparse tree
         "parser_ops",                   # package — argparse schedule/dlq/inspect (Plan 0.12.0, MR 0)

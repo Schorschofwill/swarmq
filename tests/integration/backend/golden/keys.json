@@ -19,6 +19,7 @@
   "sq:wf:golden-wf-0001": "string",
   "sq:{sched}:defs": "hash",
   "sq:{sched}:disabled": "set",
+  "sq:{sched}:epoch": "string",
   "sq:{sched}:handover": "string",
   "sq:{sched}:leader_version": "string",
   "sq:{sched}:report:def": "hash",

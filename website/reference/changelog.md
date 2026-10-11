@@ -8,6 +8,21 @@ All notable changes to SwarmQ. This project follows
 
 ### Added
 
+- **`swarmq check`**: read-only check of the environment before an
+  upgrade (Valkey eviction policy, `maxmemory`, memory, AOF, version,
+  cluster mode; shutdown grace period). Exit `78` when a worker would
+  refuse to start, `0` otherwise, `1` on errors. The check of orphaned
+  queues follows in a later step ([CLI](cli.md#swarmq-check)).
+- **`SWARMQ_VALKEY_EVICTION_CHECK`** (`strict` default, `warn`, `off`),
+  the log events `valkey_eviction_policy_unsafe`,
+  `valkey_eviction_policy_unknown` and `valkey_data_loss_detected`, the
+  signal `SCHEDULER_VALKEY_CHECKED` with the gauge
+  `swarmq_valkey_memory_used_ratio{worker_id}`, the epoch key
+  `sq:{sched}:epoch` (no TTL, one key; golden file `keys.json`,
+  additive), `ScheduleStore.ensure_epoch` and
+  `ValkeyBackend.eviction_check`/`recheck_eviction`
+  ([Valkey requirements](configuration.md#valkey-requirements)).
+
 - **`swarmq.MessageHeadersTooLarge`** (subclass of
   `BrokerConnectionError`): a publish whose headers do not fit into half
   of the negotiated `frame_max`, even with long texts truncated, raises
@@ -95,6 +110,16 @@ All notable changes to SwarmQ. This project follows
   [configuration](configuration.md)).
 
 ### Changed
+
+- **A worker refuses to start when Valkey may evict swarmq keys.** On
+  connect the backend reads `maxmemory-policy` and `maxmemory` (`CONFIG
+  GET`, else `INFO memory`, at most 2 s, never fails). Under an evicting
+  policy (anything but `noeviction` with a `maxmemory` limit or an
+  unknown limit) every connect logs `valkey_eviction_policy_unsafe`,
+  and a worker with `SWARMQ_VALKEY_EVICTION_CHECK=strict` (default)
+  stops with `ConfigurationError`, exit `78`. A policy that cannot be
+  read never blocks. The scheduler leader checks again at most once per
+  hour. See the upgrade notes below.
 
 - **A lock conflict waits by time instead of 10 attempts.** A message
   whose task lock is held is deferred (100 ms, doubling, at most 60 s)
@@ -518,6 +543,35 @@ All notable changes to SwarmQ. This project follows
   sweeps slots older than its own TTL (mixed `hard_timeout` under one
   semaphore name is not supported), and a 0.11 worker still shortens
   the key.
+
+### Fixed (Valkey environment, BZ-04)
+
+- **Evicted locks and markers went unnoticed.** Under `volatile-*` or
+  `allkeys-*` Valkey silently evicted locks, the leader lock, the
+  execution guard and the unique and fired markers, and tasks ran
+  twice. The policy is now checked (see Changed). The internal
+  recommendation of `volatile-lru` is corrected to `noeviction` plus
+  AOF.
+- **A cron disabled with `swarmq schedule remove` came back active
+  after Valkey lost its data, without a word.** Each worker now
+  remembers the epoch key `sq:{sched}:epoch` and logs
+  `valkey_data_loss_detected` when it is gone. Limits: a loss while all
+  processes restart at once goes unnoticed, so does a loss since an RDB
+  snapshot that restores the epoch; the policy is checked only hourly.
+
+### Upgrading to 0.12 (Valkey environment)
+
+- **Run `swarmq check` first.** Install the new version in a separate
+  virtualenv (`pip install swarmq==0.12.*`) and run `swarmq check`
+  against production; it only reads (`CONFIG GET`, `INFO`). In
+  Kubernetes it can run as an init container. Exit `78` means the new
+  workers would refuse to start.
+- **Exit 78 under Kubernetes and Docker.** A worker that refuses to
+  start exits `78` again on every restart: Kubernetes shows
+  `CrashLoopBackOff`, Docker with a `restart:` policy loops. Set
+  `maxmemory-policy noeviction` before the rollout, or set
+  `SWARMQ_VALKEY_EVICTION_CHECK=warn` deliberately (for example on a
+  managed service with a fixed policy, accepting the risk).
 
 ## [0.11.1] — 2026-10-10
 

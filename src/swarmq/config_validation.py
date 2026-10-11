@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from swarmq.exceptions import ConfigurationError
 from swarmq.logging_settings import VALID_LOG_LEVELS, valid_drain_timeout, validate_logger_levels
+from swarmq.valkey_policy import EVICTION_CHECK_MODES
 
 
 class ConfigValidation:
@@ -44,6 +45,7 @@ class ConfigValidation:
         execution_guard_done_ttl_s: float | None
         unknown_task_grace_s: float
         lock_wait_max_s: float
+        valkey_eviction_check: str
         _POSITIVE_FIELDS: ClassVar[tuple[str, ...]]
         _VALID_POOLS: ClassVar[frozenset[str]]
         _VALID_PRUNE_MODES: ClassVar[tuple[str, ...]]
@@ -106,6 +108,7 @@ class ConfigValidation:
                 f"queue_dead_letter_strategy must be one of {list(strategies)}, got {self.queue_dead_letter_strategy!r}"
             )
             raise ConfigurationError(msg)
+        self._validate_eviction_check()
         if self.queue_dead_letter_strategy == "at-least-once" and self.queue_type != "quorum":
             # Review MR 8, H3: nur Quorum-Queues kennen at-least-once-Dead-Lettering.
             msg = "queue_dead_letter_strategy='at-least-once' requires queue_type='quorum'; use 'auto' or 'legacy'"
@@ -124,6 +127,13 @@ class ConfigValidation:
             msg = (
                 "backend_defer_max_delay must be >= backend_defer_base_delay, "
                 f"got {self.backend_defer_max_delay} < {self.backend_defer_base_delay}"
+            )
+            raise ConfigurationError(msg)
+
+    def _validate_eviction_check(self) -> None:
+        if self.valkey_eviction_check not in EVICTION_CHECK_MODES:
+            msg = (
+                f"valkey_eviction_check must be one of {list(EVICTION_CHECK_MODES)}, got {self.valkey_eviction_check!r}"
             )
             raise ConfigurationError(msg)
 

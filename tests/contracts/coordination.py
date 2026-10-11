@@ -68,6 +68,10 @@ macht ``owner`` zum Scheduler-Leader (das Binding erwirbt den Leader-Lock
 # 37. ``forget_known_cron`` (CLI ``schedule remove --permanent``) entfernt ihn
 #     ebenso.
 
+# Test list (Plan 0.12.0, MR 14, BZ-04) -- ScheduleStoreContract:
+# 38. ``ensure_epoch`` legt den Epoch nur an, wenn er fehlt, und liefert
+#     danach immer den ersten Wert (``None`` nur beim Anlegen).
+
 # Test list (Review #4, atomare Heilung) -- ScheduleStoreContract:
 # 24. ``replan_if_unchanged`` schreibt Definition und Score, wenn die
 #     gespeicherte Definition die gelesene ist und kein Score existiert.
@@ -679,6 +683,15 @@ class ScheduleStoreContract:
         await impl.prune_cron_reports(max_age_ms=100)
         assert await self._reports_of(impl, stale) == []
         assert [r.payload for r in await self._reports_of(impl, fresh)] == [b"f"]
+
+    async def test_epoch_is_created_once_and_then_kept(self, impl: ScheduleStore) -> None:
+        # Der Epoch ist ein einzelner Key je Valkey: ein frueherer Test oder
+        # Worker kann ihn schon angelegt haben.
+        candidate = _name("epoch")
+        previous = await impl.ensure_epoch(candidate)
+        current = candidate if previous is None else previous
+        assert await impl.ensure_epoch(_name("epoch")) == current
+        assert await impl.ensure_epoch(_name("epoch")) == current
 
     async def test_leader_info_without_version_key(self, impl: ScheduleStore, leader: Leader) -> None:
         owner = _name("old-leader")

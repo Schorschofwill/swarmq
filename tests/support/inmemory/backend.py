@@ -451,6 +451,8 @@ class InMemoryScheduleStore:
         self._worker_versions: _TTLDict[str] = _TTLDict(clock)
         # Beim Aufräumen deaktivierte Namen (KTD8)
         self._pruned_disabled: set[str] = set()
+        # Epoch des Datenbestands (BZ-04), ohne TTL.
+        self._epoch: str | None = None
 
     async def add(self, name: str, payload: bytes, fire_ts_ms: int | None) -> bool:
         if name in self._defs:
@@ -617,6 +619,12 @@ class InMemoryScheduleStore:
 
     async def forget_pruned_disabled(self, name: str) -> None:
         self._pruned_disabled.discard(name)
+
+    async def ensure_epoch(self, candidate: str) -> str | None:
+        previous = self._epoch
+        if previous is None:
+            self._epoch = candidate
+        return previous
 
     async def report_worker_version(self, worker_id: str, version: str, *, ttl_ms: int) -> None:
         self._worker_versions.set(worker_id, version, ttl_ms)

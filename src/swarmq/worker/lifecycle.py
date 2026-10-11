@@ -30,6 +30,7 @@ from swarmq.scheduler.reports import static_definitions
 from swarmq.serialization import decode_result
 from swarmq.signals import Signal
 from swarmq.supervision import ForkSourceRejected, RecycleAckTimeout
+from swarmq.worker.eviction_gate import enforce_eviction_policy
 from swarmq.workflow_orchestration import (
     WorkflowAdvancer,
     WorkflowStepEnqueuer,
@@ -407,6 +408,8 @@ class WorkerLifecycle:
         # life of the process — plus the broker connection tasks. This used
         # to start only after WORKER_ONLINE (0.9.0 fix).
         try:
+            # BZ-04 (Plan 0.12.0, MR 14): vor Scheduler und Koordination.
+            enforce_eviction_policy(self._backend, self._config.valkey_eviction_check)
             await self._wire_coordination()
             await self._start_observability()
             self._warn_priority_tasks_without_routing()
