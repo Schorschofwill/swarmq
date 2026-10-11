@@ -508,7 +508,7 @@ Dieses Design ersetzt das aus Revision 1 (Belege, Basis-Header, Vorrangregeln). 
   - **Ende des Keepers:** Eine Lease fällt beim **Freigabeversuch** aus dem Keeper, auch wenn der Versuch scheitert. Der Keeper läuft bis zur letzten Lease oder bis das Backend schließt, nicht über `shutdown_event`.
   - `compute_lock_ttl_ms` wird über `worker.gates.lock` gelesen (Patch-Pfad des Nachweises).
   - **Events:**
-    - `task_lock_lost` mit Feld `lock_name` und `event=lost_while_running|lost_at_release`; geprüft wird mit `is False`.
+    - `task_lock_lost` mit Feld `lock_name` und `stage=running|release` (Nachtrag: das Feld heißt `stage`, weil `event` bei structlog der Meldungsname ist; Review MR 13 ergänzt `stage=expired` ohne Roundtrip, wenn vor der lokalen Frist keine Verlängerung gelang, sowie `task_id`/`task_name` bei `release`); geprüft wird mit `is False`.
     - `task_lock_held_past_hard_timeout`.
 - **BZ-05:**
   - **Fingerprint:** nur die Menge der Owner, ohne Score und PTTL. Sonst sähe jede Erneuerung wie ein Halterwechsel aus.
@@ -519,6 +519,9 @@ Dieses Design ersetzt das aus Revision 1 (Belege, Basis-Header, Vorrangregeln). 
   - **Log:** `task_locked` nur beim ersten Konflikt und danach einmal je Minute. Das Signal `TASK_LOCKED` bleibt (API).
   - **Gauges:** wartende Konflikte und ältester Wartender je Worker.
   - **Nachweise:** BZ-05 Tests 2/3 und BZ-13 :143 werden auf `LockWaitExceeded` bzw. Stillstand umgeschrieben (Abschnitt 6).
+- **Review MR 13 (Nachtrag):**
+  - Verlängert wird ab `t0 + TTL − Fenster` (wie umgesetzt); „bis `t0 + TTL` kein Roundtrip“ galt nicht. Ab `hard_timeout` 30 s kostet ein Task binnen `hard_timeout − 30 s` nichts, bei kürzerem `hard_timeout` wird ab dem ersten Takt verlängert. Nur die Doku wurde korrigiert.
+  - Die Lock-Wartezeit gehört zur Ausführung: Gate-Kopien einer vom Broker neu zugestellten Nachricht verlieren die Lock-Zustands-Header; der neue Header `x-swarmq-lock-wait-gen` (`"<retry>:<replay>"`, additiv, `LOOP_STATE_HEADERS`) erkennt 0.11-Retry-Kopien und `dlq retry` von 0.11. Klassische Queues ohne Zustellzähler setzen die alte Wartezeit fort.
 - **Uhren:** `holder-since`, `wait-since` und `unknown-since` stammen von Worker-Wanduhren. Die Toleranz von ±60 s ist dokumentiert, der Maßstab sind Minuten.
 
 ### MR 14 – BZ-04 Valkey-Umgebung
