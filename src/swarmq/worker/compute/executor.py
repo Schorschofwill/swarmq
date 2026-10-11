@@ -18,6 +18,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, override
 
 from swarmq.cancellation import CANCEL_REASON_CANCEL, CANCEL_REASON_TIMEOUT, CancelReason
+from swarmq.config import DEFAULT_RESULT_TTL_S, resolve_result_ttl
 from swarmq.exceptions import SoftTimeoutError
 from swarmq.logging import _error_fields, get_logger, load_log_config
 from swarmq.logging_settings import LoggingSettings
@@ -106,11 +107,16 @@ class ComputeExecutor(TaskExecutor):
         deps = self._deps
         task_info = ctx.task_info
         assert task_info is not None
-        ttl = task_info.result_ttl
-        if ttl is None:
-            ttl = 0 if task_info.delivery is DeliveryMode.FIRE_AND_FORGET else deps.config.result_ttl
-        if not ttl:
-            ttl = 86400
+        # Progress-TTL wie im Async-Pfad: 0 ("nicht speichern") faellt auf
+        # DEFAULT_RESULT_TTL_S, damit der Fortschritt lesbar bleibt.
+        ttl = (
+            resolve_result_ttl(
+                task_info.result_ttl,
+                deps.config.result_ttl,
+                fire_and_forget=task_info.delivery is DeliveryMode.FIRE_AND_FORGET,
+            )
+            or DEFAULT_RESULT_TTL_S
+        )
         return ComputeJob(
             task_id=ctx.task_id,
             task_name=ctx.task_name,

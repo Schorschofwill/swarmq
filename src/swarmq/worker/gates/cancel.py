@@ -84,7 +84,7 @@ class CancelGate:
             task_class = deps.registry.get(task_name)
             task_info = task_class.task_info
             delivery_mode = task_info.delivery
-            # result_ttl falls through: task → global → 86400.
+            # result_ttl falls through: task → config.result_ttl (Default DEFAULT_RESULT_TTL_S).
             result_ttl = task_info.result_ttl
             if result_ttl is None:
                 result_ttl = 0 if delivery_mode is DeliveryMode.FIRE_AND_FORGET else deps.config.result_ttl

@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Literal
 
 from swarmq.cancellation import build_error_result_dict, build_result_dict
+from swarmq.config import resolve_result_ttl
 from swarmq.exceptions import (
     BackendConnectionError,
     BrokerConnectionError,
@@ -79,16 +80,15 @@ class ResultTail:
             return encode_result(result_data)
 
     def _resolve_result_ttl(self, ctx: GateContext) -> int:
-        """``result_ttl``-Kaskade: task_info → config → 86400-Fallback;
-        FIRE_AND_FORGET ohne explizites TTL speichert nicht (0)."""
+        """``result_ttl``-Kaskade: task_info → config → ``DEFAULT_RESULT_TTL_S``;
+        FIRE_AND_FORGET ohne explizites TTL und 0 speichern nicht (0)."""
         task_info = ctx.task_info
         assert task_info is not None
-        result_ttl = task_info.result_ttl
-        if result_ttl is None:
-            result_ttl = 0 if task_info.delivery is DeliveryMode.FIRE_AND_FORGET else self._deps.config.result_ttl
-        if result_ttl is None:  # pyright: ignore[reportUnnecessaryComparison]  # defensiv: config.result_ttl kann untypisiert None sein
-            result_ttl = 86400  # type: ignore[unreachable]  # Fallback fuer untypisiert gesetztes config.result_ttl=None
-        return result_ttl
+        return resolve_result_ttl(
+            task_info.result_ttl,
+            self._deps.config.result_ttl,
+            fire_and_forget=task_info.delivery is DeliveryMode.FIRE_AND_FORGET,
+        )
 
     def _extract_workflow_id(self, delivery: Any, ctx: GateContext) -> str | None:
         deps = self._deps

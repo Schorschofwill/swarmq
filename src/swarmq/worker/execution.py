@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from swarmq.cancellation import CANCEL_REASON_CANCEL, CANCEL_REASON_TIMEOUT, CancelReason
+from swarmq.config import DEFAULT_RESULT_TTL_S, resolve_result_ttl
 from swarmq.dishka import _MISSING, TaskContext, get_registered_container, request_container
 from swarmq.exceptions import SoftTimeoutError
 from swarmq.logging import _error_fields, get_logger
@@ -72,7 +73,7 @@ class TaskExecutor:
         ``Task.update_progress`` liest die vier Instanzattribute; ruft der
         Task nie update_progress, kosten sie nur ein paar Zyklen. Die
         ``result_ttl``-Kaskade spiegelt den Result-Storage-Pfad
-        (task_info → config → 86400-Fallback).
+        (task_info → config → ``DEFAULT_RESULT_TTL_S``).
         """
         deps = self._deps
         task_info = ctx.task_info
@@ -80,13 +81,16 @@ class TaskExecutor:
         assert task_info is not None
         assert task_class is not None
         task_instance = task_class()
-        progress_result_ttl = task_info.result_ttl
-        if progress_result_ttl is None:
-            progress_result_ttl = 0 if task_info.delivery is DeliveryMode.FIRE_AND_FORGET else deps.config.result_ttl
-        if progress_result_ttl in (None, 0):
-            # result_ttl=0 means "don't store results" — progress gets the
-            # default 24h fallback so it's still inspectable during the run.
-            progress_result_ttl = 86400
+        # result_ttl=0 means "don't store results" — progress gets the
+        # default 24h fallback so it's still inspectable during the run.
+        progress_result_ttl = (
+            resolve_result_ttl(
+                task_info.result_ttl,
+                deps.config.result_ttl,
+                fire_and_forget=task_info.delivery is DeliveryMode.FIRE_AND_FORGET,
+            )
+            or DEFAULT_RESULT_TTL_S
+        )
         task_instance._task_id = ctx.task_id
         task_instance._backend = deps.backend
         task_instance._task_start_time = time.monotonic()

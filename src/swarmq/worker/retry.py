@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from swarmq.backoff import calculate_backoff
 from swarmq.cancellation import build_error_result_dict
+from swarmq.config import DEFAULT_RESULT_TTL_S, resolve_result_ttl
 from swarmq.exceptions import (
     NoRetry,
     Retry,
@@ -255,7 +256,11 @@ class RetryHandler:
             # Wie jedes Ergebnis des Tasks: ``task_info.result_ttl`` vor der
             # Konfiguration (Plan 2026-10-08-1541, U9).
             task_ttl = task_info_for_release.result_ttl if task_info_for_release is not None else None
-            result_ttl = (task_ttl if task_ttl is not None else deps.config.result_ttl) or 86400
+            # Anders als der Erfolgspfad: kein FIRE_AND_FORGET-Zweig, und 0
+            # faellt hier auf DEFAULT_RESULT_TTL_S statt "nicht speichern".
+            result_ttl = (
+                resolve_result_ttl(task_ttl, deps.config.result_ttl, fire_and_forget=False) or DEFAULT_RESULT_TTL_S
+            )
             await deps.backend.store_result(
                 task_id, result_bytes, result_ttl * 1000, op_timeout=deps.config.backend_op_timeout
             )

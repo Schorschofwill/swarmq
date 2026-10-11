@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import msgspec
 
 from swarmq.cancellation import build_error_result_dict
+from swarmq.config import resolve_result_ttl
 from swarmq.exceptions import BackendConnectionError
 from swarmq.logging import _error_fields
 from swarmq.serialization import encode_result
@@ -198,7 +199,9 @@ class SchedulerUnroutable:
         """Fehlerergebnis unter *task_id*, damit ``get_result()`` endet statt
         in den Timeout zu laufen. Best effort; ein Backend ohne die Methoden
         (Fake, Q15) faellt still auf "kein Ergebnis" zurueck."""
-        ttl_s = self._config.result_ttl if self._config.result_ttl is not None else 86400  # type: ignore[redundant-expr]  # pyright: ignore[reportUnnecessaryComparison]  # Fallback fuer untypisiert gesetztes None
+        # Kein Task-Wert: Konfiguration, ein untypisiert gesetztes None faellt
+        # auf DEFAULT_RESULT_TTL_S; <= 0 speichert nicht.
+        ttl_s = resolve_result_ttl(None, self._config.result_ttl, fire_and_forget=False)
         if ttl_s <= 0:
             return
         data = encode_result(

@@ -5,7 +5,7 @@ import re
 
 import pytest
 
-from swarmq.config import SwarmQConfig
+from swarmq.config import DEFAULT_RESULT_TTL_S, SwarmQConfig, resolve_result_ttl
 from swarmq.exceptions import ConfigurationError
 
 
@@ -1125,3 +1125,21 @@ def test_dead_letter_terminal_failures_defaults_on_and_env_switches_off(monkeypa
     assert _cfg().dead_letter_terminal_failures is True
     monkeypatch.setenv("SWARMQ_DEAD_LETTER_TERMINAL_FAILURES", "false")
     assert _cfg().dead_letter_terminal_failures is False
+
+
+@pytest.mark.parametrize(
+    ("task_ttl", "config_ttl", "fire_and_forget", "expected"),
+    [
+        (60, 3600, False, 60),  # Task-Wert vor Konfiguration
+        (60, 3600, True, 60),  # expliziter Task-Wert auch bei FIRE_AND_FORGET
+        (0, 3600, False, 0),  # 0 bleibt 0 (Aufrufer deutet)
+        (None, 3600, False, 3600),  # Konfiguration
+        (None, 3600, True, 0),  # FIRE_AND_FORGET ohne Task-Wert speichert nicht
+        (None, 0, False, 0),
+        (None, None, False, DEFAULT_RESULT_TTL_S),  # untypisiertes None → Fallback
+    ],
+)
+def test_resolve_result_ttl_cascade(
+    task_ttl: int | None, config_ttl: int | None, fire_and_forget: bool, expected: int
+) -> None:
+    assert resolve_result_ttl(task_ttl, config_ttl, fire_and_forget=fire_and_forget) == expected

@@ -34,6 +34,24 @@ INJECTED_URL = "<injected>"
 _UTC_ALIASES: frozenset[str] = frozenset({"UTC", "Etc/UTC"})
 _MAX_PORT = 65535
 
+# Ergebnis-TTL in Sekunden: Default von ``SwarmQConfig.result_ttl`` und
+# Fallback, wenn keine Ebene der Kaskade einen Wert liefert.
+DEFAULT_RESULT_TTL_S = 86400
+
+
+def resolve_result_ttl(task_ttl: int | None, config_ttl: int | None, *, fire_and_forget: bool) -> int:
+    """``result_ttl``-Kaskade in Sekunden: Task-Wert vor Konfiguration.
+
+    FIRE_AND_FORGET ohne Task-Wert ergibt 0 (nicht speichern). Ein (untypisiert
+    gesetztes) ``None`` der Konfiguration faellt auf ``DEFAULT_RESULT_TTL_S``.
+    0 bleibt 0; wie 0 zu deuten ist, entscheidet der Aufrufer.
+    """
+    if task_ttl is not None:
+        return task_ttl
+    if fire_and_forget:
+        return 0
+    return config_ttl if config_ttl is not None else DEFAULT_RESULT_TTL_S
+
 
 def normalize_timezone(value: str | None, field_name: str = "timezone") -> str | None:
     """Cron-Zeitzone pruefen und normalisieren (Plan 2026-10-08-1541, KTD1).
@@ -167,7 +185,7 @@ def observability_port_ranges(
 class SwarmQConfig(ConfigValidation):
     broker_url: str = ""
     backend_url: str = ""
-    result_ttl: int = 86400
+    result_ttl: int = DEFAULT_RESULT_TTL_S
     queues: list[str] = field(default_factory=lambda: ["default"])
     concurrency: int = 10
     # Eingebettet steuern ``log_level``/``log_json`` den Opt-in ``log_queue``
