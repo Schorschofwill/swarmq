@@ -595,7 +595,14 @@ All notable changes to SwarmQ. This project follows
 - **`swarmq check`** fills `namespace` and `unprefixed_keys` (keys
   without namespace next to a namespace) and reports the findings
   `unprefixed_keys` and `unprefixed_keys_unknown`
-  ([CLI](cli.md#swarmq-check)).
+  ([CLI](cli.md#swarmq-check)). `unprefixed_keys_complete` tells a full
+  count from one that `SCAN` cut off at its 5-second limit (then the
+  number is a lower bound, "at least n"); in cluster mode the message
+  says that only one node was counted.
+- **Golden file `channels.namespace.txt`** (additive): the Pub/Sub
+  channels with namespace; `channels.txt` is unchanged. Help texts
+  (`--max-processes`, `schedule list`) and the documentation write keys
+  as `[<namespace>:]sq:…`.
 
 ### Changed (several apps on one Valkey, BZ-10)
 

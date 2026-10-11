@@ -20,6 +20,10 @@ from swarmq.exceptions import BackendConnectionError
 from swarmq.keyspace import KeySpace
 from swarmq.lua import load_script
 
+# Nur ohne Namensraum (Review MR 15, P2-3): die Modulkonstanten und
+# ``fired_key``/``inflight_key``/``handover_key`` nennen die Keys ohne
+# Praefix. Mit ``SWARMQ_NAMESPACE`` liegen sie unter ``<ns>:sq:...``; der
+# Store nimmt dann den KeySpace des Backends (``keys=``).
 _DEFAULT_KEYS = KeySpace()
 
 # The {sched} hash tag co-locates zset, defs and the leader

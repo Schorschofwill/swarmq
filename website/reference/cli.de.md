@@ -199,7 +199,7 @@ swarmq worker --module myapp.tasks --autoscale 2,4 --max-processes 16 --group or
 ```
 
 **Sollwert.** Der steuernde Dienst schreibt je Gruppe einen JSON-Wert nach
-`sq:control:setpoint:<gruppe>`, etwa `{"min": 2, "max": 8}`. Eine feste
+`[<namensraum>:]sq:control:setpoint:<gruppe>` (`<namensraum>:` nur mit `SWARMQ_NAMESPACE`), etwa `{"min": 2, "max": 8}`. Eine feste
 Prozesszahl `N` ist der Sollwert `{"min": N, "max": N}` und schaltet die
 Autoskalierung für die Gruppe ab. Der Supervisor liest den Schlüssel
 einmal, bevor er den ersten Worker startet, und danach alle 5 Sekunden.
@@ -220,7 +220,7 @@ fährt die Gruppe mit ihren Startargumenten hoch und übernimmt den
 Sollwert, sobald das Backend antwortet.
 
 **Rückmeldung.** Jeder Supervisor meldet unter
-`sq:control:status:<gruppe>:<supervisor>` (die Supervisor-Kennung ist
+`[<namensraum>:]sq:control:status:<gruppe>:<supervisor>` (die Supervisor-Kennung ist
 `SWARMQ_WORKER_ID` oder der Hostname, jeweils plus `:p<pid>`): den
 Gruppenschlüssel, den zuletzt gelesenen Sollwert (oder `null`), ob der
 Speicher `present`, `absent` oder `unread` (nicht erreichbar) war, die
@@ -243,10 +243,12 @@ gesperrt; die Rückmeldung nennt ihre Zahl.
 
 **Sicherheit.** Wer auf das Backend schreiben darf, kann die Größe einer
 Worker-Gruppe setzen. Sollwert- und Statusschlüssel liegen unter eigenen
-Präfixen (`sq:control:setpoint:` und `sq:control:status:`), getrennt von
-Task- und Ergebnisschlüsseln, sodass ein Betreiber Schreibrechte für
-Sollwerte und für Rückmeldungen getrennt vergeben kann (etwa per
-Valkey-ACL). Solange der steuernde Dienst keine eigenen Zugangsdaten mit
+Präfixen (`[<namensraum>:]sq:control:setpoint:` und
+`[<namensraum>:]sq:control:status:`), getrennt von Task- und
+Ergebnisschlüsseln, sodass ein Betreiber Schreibrechte für Sollwerte und
+für Rückmeldungen getrennt vergeben kann (etwa per Valkey-ACL wie
+`~<namensraum>:sq:control:setpoint:*`; ohne Namensraum
+`~sq:control:setpoint:*`). Solange der steuernde Dienst keine eigenen Zugangsdaten mit
 so eingeschränkten Schreibrechten hat, kann jeder Task-Erzeuger, der die
 Backend-URL teilt, auch Sollwerte setzen.
 
@@ -502,7 +504,10 @@ Abschnitte:
   `aof_enabled`, `version`, `cluster_enabled`, `namespace`
   (`SWARMQ_NAMESPACE`, ohne ihn `null`) und `unprefixed_keys`: mit
   Namensraum die Zahl der Keys ohne ihn (`sq:*`, per `SCAN` gezählt bis
-  10000), sonst `null`. Werte, die Valkey nicht liefert (ACL), sind `null`.
+  10000 binnen 5 Sekunden), sonst `null`, und `unprefixed_keys_complete`
+  (`false`, wenn `SCAN` das Zeitlimit erreichte: die Zahl ist dann eine
+  Untergrenze). Im Cluster-Modus sieht `SCAN` nur den verbundenen Knoten.
+  Werte, die Valkey nicht liefert (ACL), sind `null`.
 - `shutdown`: `shutdown_timeout` und `min_grace_period_s`
   (`shutdown_timeout + 15`), die mindestens einzustellende
   `terminationGracePeriodSeconds` (Kubernetes) bzw. `stop_grace_period`
@@ -515,7 +520,10 @@ Fehler, sonst eine Warnung), `eviction_policy_unknown`, `aof_disabled`,
 Namensraum neben einem Namensraum: Apps ohne `SWARMQ_NAMESPACE` am
 selben Valkey oder Daten von vor dem Setzen, die der Namensraum nicht
 migriert; [Namensraum](configuration.md#namensraum-mehrere-apps-auf-einem-valkey)),
-`unprefixed_keys_unknown` (`SCAN` gescheitert oder verboten).
+`unprefixed_keys_unknown` (`SCAN` gescheitert, verboten oder vor dem
+ersten Fund am Zeitlimit). Eine unvollständige Zählung lautet `at least
+<n> keys … (count incomplete …)`; im Cluster-Modus nennt die Meldung
+zusätzlich, dass nur ein Knoten gezählt wurde.
 
 Exit-Codes: `0`, wenn nichts blockiert (Warnungen erlaubt), `78`, wenn
 ein Worker in dieser Umgebung den Start verweigern würde (verdrängende

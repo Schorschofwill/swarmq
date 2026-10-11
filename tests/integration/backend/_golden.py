@@ -205,6 +205,17 @@ def channels() -> str:
     return "\n".join(lines) + "\n"
 
 
+def channels_namespace() -> str:
+    """Wie ``channels``, mit Namensraum ``NAMESPACE`` (additiv, Q3)."""
+    backend = ValkeyBackend("valkey://golden", namespace=NAMESPACE)
+    lines = [
+        f"{backend.notify_channel_name(TASK_ID)}\tdone",
+        f"{backend.progress_channel_name(TASK_ID)}\t<json der HASH-Felder>",
+        f"{backend.workflow_notify_channel(WF_ID)}\tdone",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 async def _declared_on_own_channels(queue_type: str, strategy: str, *, tiers: bool = False) -> dict[str, Any]:
     """Die Deklarationen einer neuen Queue-Familie ``golden``. Seit MR 8 laufen
     sie auf eigenen Wegwerf-Channels nach einem passiven Declare (hier
@@ -307,6 +318,7 @@ async def write_all(backend: ValkeyBackend) -> None:
     for name, data in value_fixtures().items():
         (GOLDEN_DIR / "values" / name).write_bytes(data)
     (GOLDEN_DIR / "channels.txt").write_text(channels())
+    (GOLDEN_DIR / "channels.namespace.txt").write_text(channels_namespace())
     (GOLDEN_DIR / "queue_args.json").write_text(json.dumps(await queue_args(), indent=2, sort_keys=True) + "\n")
     (GOLDEN_DIR / "headers.txt").write_text(header_names())
     (GOLDEN_DIR / "lua_contract.txt").write_text(lua_contract())

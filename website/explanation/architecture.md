@@ -106,24 +106,26 @@ The short answer: **nowhere inside SwarmQ itself**. The library is
 stateless — restart a worker, kill a client, and nothing is lost as
 long as RabbitMQ and Valkey are still there.
 
+`[<namespace>:]` stands for the prefix `SWARMQ_NAMESPACE` sets; without a namespace the keys start with `sq:`.
+
 | State | Lives in | Lifetime |
 |---|---|---|
 | Task messages | RabbitMQ queue | Until ack'd or DLQ'd; in `{queue}.XQ` at most `SWARMQ_DEAD_LETTER_TTL_S` (default 7 days) |
-| Results | Valkey key `sq:result:{task_id}` | `result_ttl` seconds (default 24h) |
-| Progress updates | Valkey HASH `sq:progress:{task_id}` | Same TTL as results |
+| Results | Valkey key `[<namespace>:]sq:result:{task_id}` | `result_ttl` seconds (default 24h) |
+| Progress updates | Valkey HASH `[<namespace>:]sq:progress:{task_id}` | Same TTL as results |
 | Rate-limit counters | Valkey sorted set | Sliding window |
-| Locks | Valkey key `sq:lock:{name}` | `hard_timeout + 30 s`; extended in windows while the handler runs longer |
-| Cancel flags | Valkey key `sq:cancel:{task_id}` | `max(24 h, result_ttl)` plus the wait until a deferred task fires and its `max_age` + 300 s; at most 1 h once the worker has handled the cancelled delivery |
-| Dedup markers | Valkey key `sq:unique:{hash}` | `unique_for` seconds |
-| Scheduler entries | Valkey ZSET `sq:{sched}:zset` + HASH `sq:{sched}:defs` | Until fired or removed |
-| Schedule-fire claims | Valkey key `sq:sched:inflight:{fire}` (owner token) | `SWARMQ_SCHEDULER_INFLIGHT_TTL`, at least `hard_timeout` + 30 s |
-| Completed schedule fires | Valkey key `sq:sched:fired:{fire}` | `SWARMQ_SCHEDULER_DEDUP_TTL`, longer the longer the fire waited in the queue (`2 × wait + 300`, capped at `max_age + 300` and `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S`) |
-| Leader election | Valkey key `sq:lock:{sched}:leader` | Heartbeat-renewed |
-| Leader version | Valkey key `sq:{sched}:leader_version` (owner token and version) | Lock TTL, renewed with the lock |
-| Cron reports | Valkey HASHes `sq:{sched}:report:first_seen`, `:report:last_seen`, `:report:def` (one field per cron name and fingerprint) | Deleted after 7 days without a report (or twice `SWARMQ_SCHEDULER_PRUNE_AFTER_S`, if longer) |
-| Crons disabled when pruned | Valkey SET `sq:{sched}:disabled` | Until a worker reports the cron again |
-| Execution guard | Valkey keys `sq:guard:{<task_id>[\|<replay_id>][#<deaths>]}:run` (running marker) and `:state` (done, superseded, orphans) | `SWARMQ_EXECUTION_GUARD_TTL_S`, renewed while the task runs; state `SWARMQ_EXECUTION_GUARD_DONE_TTL_S`, at least `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S` once a redelivery was deferred or an ack failed, at least `SWARMQ_DEAD_LETTER_TTL_S` for replays |
-| Worker versions | Valkey key `sq:{sched}:worker_version:<worker_id>` | 3 × `SWARMQ_SCHEDULER_SEEN_INTERVAL_S` |
+| Locks | Valkey key `[<namespace>:]sq:lock:{name}` | `hard_timeout + 30 s`; extended in windows while the handler runs longer |
+| Cancel flags | Valkey key `[<namespace>:]sq:cancel:{task_id}` | `max(24 h, result_ttl)` plus the wait until a deferred task fires and its `max_age` + 300 s; at most 1 h once the worker has handled the cancelled delivery |
+| Dedup markers | Valkey key `[<namespace>:]sq:unique:{hash}` | `unique_for` seconds |
+| Scheduler entries | Valkey ZSET `[<namespace>:]sq:{sched}:zset` + HASH `[<namespace>:]sq:{sched}:defs` | Until fired or removed |
+| Schedule-fire claims | Valkey key `[<namespace>:]sq:sched:inflight:{fire}` (owner token) | `SWARMQ_SCHEDULER_INFLIGHT_TTL`, at least `hard_timeout` + 30 s |
+| Completed schedule fires | Valkey key `[<namespace>:]sq:sched:fired:{fire}` | `SWARMQ_SCHEDULER_DEDUP_TTL`, longer the longer the fire waited in the queue (`2 × wait + 300`, capped at `max_age + 300` and `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S`) |
+| Leader election | Valkey key `[<namespace>:]sq:lock:{sched}:leader` | Heartbeat-renewed |
+| Leader version | Valkey key `[<namespace>:]sq:{sched}:leader_version` (owner token and version) | Lock TTL, renewed with the lock |
+| Cron reports | Valkey HASHes `[<namespace>:]sq:{sched}:report:first_seen`, `:report:last_seen`, `:report:def` (one field per cron name and fingerprint) | Deleted after 7 days without a report (or twice `SWARMQ_SCHEDULER_PRUNE_AFTER_S`, if longer) |
+| Crons disabled when pruned | Valkey SET `[<namespace>:]sq:{sched}:disabled` | Until a worker reports the cron again |
+| Execution guard | Valkey keys `[<namespace>:]sq:guard:{<task_id>[\|<replay_id>][#<deaths>]}:run` (running marker) and `:state` (done, superseded, orphans) | `SWARMQ_EXECUTION_GUARD_TTL_S`, renewed while the task runs; state `SWARMQ_EXECUTION_GUARD_DONE_TTL_S`, at least `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S` once a redelivery was deferred or an ack failed, at least `SWARMQ_DEAD_LETTER_TTL_S` for replays |
+| Worker versions | Valkey key `[<namespace>:]sq:{sched}:worker_version:<worker_id>` | 3 × `SWARMQ_SCHEDULER_SEEN_INTERVAL_S` |
 
 In-process state — the task registry, the middleware stack, the signal
 dispatcher — is rebuilt on every worker start from your task module.

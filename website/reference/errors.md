@@ -562,7 +562,7 @@ for longer than the limit allows.
 
 **Recovery.** Look at the holder: the log line `lock_wait_exceeded`
 names the lock (`lock_name`), `x-swarmq-lock-name` on the DLQ message
-as well. A wedged lock is removed with `valkey-cli DEL sq:lock:<name>`.
+as well. A wedged lock is removed with `valkey-cli DEL [<namespace>:]sq:lock:<name>`.
 Then replay the message with `swarmq dlq retry`. Raise
 `SWARMQ_LOCK_WAIT_MAX_S` if long waits are expected.
 

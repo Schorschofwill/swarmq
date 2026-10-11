@@ -58,9 +58,9 @@ async def _describe_backend(url: str) -> dict[str, Any]:
         described["namespace"] = backend.namespace
         # Keys ohne Praefix zaehlen nur mit Namensraum etwas: Apps ohne
         # Namensraum auf demselben Valkey oder Daten von vor dem Setzen.
-        described["unprefixed_keys"] = (
-            await count_keys(backend.client, KeySpace(None).stem_pattern()) if backend.namespace else None
-        )
+        counted = await count_keys(backend.client, KeySpace(None).stem_pattern()) if backend.namespace else None
+        described["unprefixed_keys"] = None if counted is None else counted[0]
+        described["unprefixed_keys_complete"] = None if counted is None else counted[1]
         return described
     finally:
         await backend.close()
@@ -69,7 +69,13 @@ async def _describe_backend(url: str) -> dict[str, Any]:
 def _valkey_section(url: str, described: dict[str, Any], mode: str) -> tuple[dict[str, Any], list[dict[str, str]]]:
     from swarmq.logging import sanitize_url
 
-    section = {"url": sanitize_url(url), "eviction_check": mode, "namespace": None, "unprefixed_keys": None}
+    section = {
+        "url": sanitize_url(url),
+        "eviction_check": mode,
+        "namespace": None,
+        "unprefixed_keys": None,
+        "unprefixed_keys_complete": None,
+    }
     section.update(described)
     return section, _valkey_findings(section, mode) + _namespace_findings(section)
 
@@ -91,9 +97,19 @@ def _namespace_findings(section: dict[str, Any]) -> list[dict[str, str]]:
                 "could not count keys without namespace (SCAN failed or is forbidden)",
             )
         ]
+    incomplete = section["unprefixed_keys_complete"] is False
+    if count == 0 and incomplete:
+        return [
+            _finding(
+                "valkey",
+                "warning",
+                "unprefixed_keys_unknown",
+                "could not count keys without namespace: SCAN stopped at its time limit before finding any",
+            )
+        ]
     if count == 0:
         return []
-    amount = f"at least {count}" if count >= COUNT_KEYS_LIMIT else str(count)
+    amount = f"at least {count}" if count >= COUNT_KEYS_LIMIT or incomplete else str(count)
     plain = KeySpace(None).stem_pattern()
     return [
         _finding(
@@ -102,7 +118,9 @@ def _namespace_findings(section: dict[str, Any]) -> list[dict[str, str]]:
             "unprefixed_keys",
             f"{amount} keys without namespace ({plain}) exist next to namespace {section['namespace']!r}: apps "
             "without SWARMQ_NAMESPACE share this Valkey, or data from before the namespace was set; the "
-            f"namespace does not migrate keys, so schedules, results and locks under {plain} are not seen",
+            f"namespace does not migrate keys, so schedules, results and locks under {plain} are not seen"
+            + (" (count incomplete: SCAN stopped at its time limit)" if incomplete else "")
+            + (" (cluster mode: SCAN counted one node only)" if section.get("cluster_enabled") is True else ""),
         )
     ]
 

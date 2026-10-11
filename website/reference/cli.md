@@ -195,7 +195,7 @@ swarmq worker --module myapp.tasks --autoscale 2,4 --max-processes 16 --group or
 ```
 
 **Setpoint.** The controlling service writes one JSON value per group to
-`sq:control:setpoint:<group>`, for example `{"min": 2, "max": 8}`. A
+`[<namespace>:]sq:control:setpoint:<group>` (`<namespace>:` only with `SWARMQ_NAMESPACE`), for example `{"min": 2, "max": 8}`. A
 fixed process count `N` is the setpoint `{"min": N, "max": N}` and
 switches autoscaling off for the group. The supervisor reads the key
 once before it spawns the first worker and then every 5 seconds. A
@@ -215,7 +215,7 @@ the backend is unreachable at start-up, the group comes up with its
 start-up arguments and applies the setpoint once the backend answers.
 
 **Status.** Every supervisor reports under
-`sq:control:status:<group>:<supervisor>` (the supervisor id is
+`[<namespace>:]sq:control:status:<group>:<supervisor>` (the supervisor id is
 `SWARMQ_WORKER_ID` or the hostname plus `:p<pid>`): the group key, the
 last setpoint read (or `null`), whether the store was `present`,
 `absent` or `unread` (unreachable), the effective bounds and their
@@ -237,9 +237,12 @@ locked; the status reports their number.
 
 **Security.** Whoever may write to the backend may set the size of a
 worker group. The setpoint and status keys live under their own
-prefixes (`sq:control:setpoint:` and `sq:control:status:`), separate
-from task and result keys, so an operator can grant write access to
-setpoints and to statuses separately (for example with Valkey ACLs).
+prefixes (`[<namespace>:]sq:control:setpoint:` and
+`[<namespace>:]sq:control:status:`), separate from task and result keys,
+so an operator can grant write access to setpoints and to statuses
+separately (for example with Valkey ACLs such as
+`~<namespace>:sq:control:setpoint:*`; without namespace
+`~sq:control:setpoint:*`).
 Until the controlling service has its own credentials with such
 restricted write access, every task producer that shares the backend
 URL can also set setpoints.
@@ -484,7 +487,10 @@ Sections:
   `aof_enabled`, `version`, `cluster_enabled`, `namespace`
   (`SWARMQ_NAMESPACE`, `null` without) and `unprefixed_keys`: with a
   namespace the number of keys without it (`sq:*`, counted by `SCAN` up
-  to 10000), else `null`. Values Valkey does not report (ACL) are `null`.
+  to 10000 within 5 seconds), else `null`, and `unprefixed_keys_complete`
+  (`false` when `SCAN` hit the time limit: the count is then a lower
+  bound). In cluster mode `SCAN` sees only the node it is connected to.
+  Values Valkey does not report (ACL) are `null`.
 - `shutdown`: `shutdown_timeout` and `min_grace_period_s`
   (`shutdown_timeout + 15`), the least `terminationGracePeriodSeconds`
   (Kubernetes) or `stop_grace_period` (Docker) to configure.
@@ -496,7 +502,10 @@ Sections:
 namespace next to a namespace: apps without `SWARMQ_NAMESPACE` on the
 same Valkey, or data from before the namespace was set, which the
 namespace does not migrate; [namespace](configuration.md#namespace-several-apps-on-one-valkey)),
-`unprefixed_keys_unknown` (`SCAN` failed or is forbidden).
+`unprefixed_keys_unknown` (`SCAN` failed, is forbidden, or hit its time
+limit before finding a key). An incomplete count reads `at least <n>
+keys … (count incomplete …)`; in cluster mode the message adds that only
+one node was counted.
 
 Exit codes: `0` when nothing blocks (warnings allowed), `78` when a
 worker would refuse to start in this environment (evicting policy under

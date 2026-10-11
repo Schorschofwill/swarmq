@@ -112,24 +112,26 @@ Die kurze Antwort: **nirgendwo in SwarmQ selbst**. Die Library ist
 zustandslos — starte einen Worker neu, kille einen Client, und
 nichts geht verloren, solange RabbitMQ und Valkey noch da sind.
 
+`[<namensraum>:]` steht für das Präfix, das `SWARMQ_NAMESPACE` setzt; ohne Namensraum beginnen die Keys mit `sq:`.
+
 | State | Lebt in | Lebensdauer |
 |---|---|---|
 | Task-Nachrichten | RabbitMQ-Queue | Bis zum Ack oder DLQ-Route; in `{queue}.XQ` höchstens `SWARMQ_DEAD_LETTER_TTL_S` (Standard 7 Tage) |
-| Ergebnisse | Valkey-Key `sq:result:{task_id}` | `result_ttl` Sekunden (Default 24h) |
-| Progress-Updates | Valkey HASH `sq:progress:{task_id}` | Dieselbe TTL wie Ergebnisse |
+| Ergebnisse | Valkey-Key `[<namensraum>:]sq:result:{task_id}` | `result_ttl` Sekunden (Default 24h) |
+| Progress-Updates | Valkey HASH `[<namensraum>:]sq:progress:{task_id}` | Dieselbe TTL wie Ergebnisse |
 | Rate-Limit-Counter | Valkey Sorted Set | Sliding Window |
-| Locks | Valkey-Key `sq:lock:{name}` | `hard_timeout + 30 s`; läuft der Handler länger, fensterweise verlängert |
-| Cancel-Flags | Valkey-Key `sq:cancel:{task_id}` | `max(24 h, result_ttl)` plus Wartezeit bis zum Fire eines verzögerten Tasks und dessen `max_age` + 300 s; höchstens 1 h, sobald der Worker die stornierte Zustellung abgeschlossen hat |
-| Dedup-Marker | Valkey-Key `sq:unique:{hash}` | `unique_for` Sekunden |
-| Scheduler-Einträge | Valkey ZSET `sq:{sched}:zset` + HASH `sq:{sched}:defs` | Bis gefeuert oder entfernt |
-| Claims von Schedule-Fires | Valkey-Key `sq:sched:inflight:{fire}` (Owner-Token) | `SWARMQ_SCHEDULER_INFLIGHT_TTL`, mindestens `hard_timeout` + 30 s |
-| Erledigte Schedule-Fires | Valkey-Key `sq:sched:fired:{fire}` | `SWARMQ_SCHEDULER_DEDUP_TTL`, länger, je länger das Fire in der Queue wartete (`2 × Wartezeit + 300`, gedeckelt bei `max_age + 300` und `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S`) |
-| Leader-Election | Valkey-Key `sq:lock:{sched}:leader` | Per Heartbeat erneuert |
-| Leader-Version | Valkey-Key `sq:{sched}:leader_version` (Owner-Token und Version) | Lock-TTL, mit dem Lock erneuert |
-| Cron-Meldungen | Valkey-HASHes `sq:{sched}:report:first_seen`, `:report:last_seen`, `:report:def` (ein Feld je Cron-Name und Fingerabdruck) | Gelöscht nach 7 Tagen ohne Meldung (oder nach dem Doppelten von `SWARMQ_SCHEDULER_PRUNE_AFTER_S`, falls länger) |
-| Beim Aufräumen deaktivierte Crons | Valkey-SET `sq:{sched}:disabled` | Bis ein Worker den Cron wieder meldet |
-| Ausführungsschutz | Valkey-Keys `sq:guard:{<task_id>[\|<replay_id>][#<Tode>]}:run` (Running-Marker) und `:state` (Done, Superseded, Waisen) | `SWARMQ_EXECUTION_GUARD_TTL_S`, verlängert, solange der Task läuft; Zustand `SWARMQ_EXECUTION_GUARD_DONE_TTL_S`, mindestens `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S`, sobald eine Neuzustellung zurückgestellt wurde oder ein Ack scheiterte, mindestens `SWARMQ_DEAD_LETTER_TTL_S` für Wiederholungen |
-| Worker-Versionen | Valkey-Key `sq:{sched}:worker_version:<worker_id>` | 3 × `SWARMQ_SCHEDULER_SEEN_INTERVAL_S` |
+| Locks | Valkey-Key `[<namensraum>:]sq:lock:{name}` | `hard_timeout + 30 s`; läuft der Handler länger, fensterweise verlängert |
+| Cancel-Flags | Valkey-Key `[<namensraum>:]sq:cancel:{task_id}` | `max(24 h, result_ttl)` plus Wartezeit bis zum Fire eines verzögerten Tasks und dessen `max_age` + 300 s; höchstens 1 h, sobald der Worker die stornierte Zustellung abgeschlossen hat |
+| Dedup-Marker | Valkey-Key `[<namensraum>:]sq:unique:{hash}` | `unique_for` Sekunden |
+| Scheduler-Einträge | Valkey ZSET `[<namensraum>:]sq:{sched}:zset` + HASH `[<namensraum>:]sq:{sched}:defs` | Bis gefeuert oder entfernt |
+| Claims von Schedule-Fires | Valkey-Key `[<namensraum>:]sq:sched:inflight:{fire}` (Owner-Token) | `SWARMQ_SCHEDULER_INFLIGHT_TTL`, mindestens `hard_timeout` + 30 s |
+| Erledigte Schedule-Fires | Valkey-Key `[<namensraum>:]sq:sched:fired:{fire}` | `SWARMQ_SCHEDULER_DEDUP_TTL`, länger, je länger das Fire in der Queue wartete (`2 × Wartezeit + 300`, gedeckelt bei `max_age + 300` und `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S`) |
+| Leader-Election | Valkey-Key `[<namensraum>:]sq:lock:{sched}:leader` | Per Heartbeat erneuert |
+| Leader-Version | Valkey-Key `[<namensraum>:]sq:{sched}:leader_version` (Owner-Token und Version) | Lock-TTL, mit dem Lock erneuert |
+| Cron-Meldungen | Valkey-HASHes `[<namensraum>:]sq:{sched}:report:first_seen`, `:report:last_seen`, `:report:def` (ein Feld je Cron-Name und Fingerabdruck) | Gelöscht nach 7 Tagen ohne Meldung (oder nach dem Doppelten von `SWARMQ_SCHEDULER_PRUNE_AFTER_S`, falls länger) |
+| Beim Aufräumen deaktivierte Crons | Valkey-SET `[<namensraum>:]sq:{sched}:disabled` | Bis ein Worker den Cron wieder meldet |
+| Ausführungsschutz | Valkey-Keys `[<namensraum>:]sq:guard:{<task_id>[\|<replay_id>][#<Tode>]}:run` (Running-Marker) und `:state` (Done, Superseded, Waisen) | `SWARMQ_EXECUTION_GUARD_TTL_S`, verlängert, solange der Task läuft; Zustand `SWARMQ_EXECUTION_GUARD_DONE_TTL_S`, mindestens `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S`, sobald eine Neuzustellung zurückgestellt wurde oder ein Ack scheiterte, mindestens `SWARMQ_DEAD_LETTER_TTL_S` für Wiederholungen |
+| Worker-Versionen | Valkey-Key `[<namensraum>:]sq:{sched}:worker_version:<worker_id>` | 3 × `SWARMQ_SCHEDULER_SEEN_INTERVAL_S` |
 
 In-Process-State — die Task-Registry, der Middleware-Stack, der
 Signal-Dispatcher — wird bei jedem Worker-Start aus deinem

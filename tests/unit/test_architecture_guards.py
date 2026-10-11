@@ -441,3 +441,45 @@ class TestBindingGuard:
         assert arch.binding_case_count_mismatches(bindings) == {
             "tests.contracts.coordination.LockStoreContract": {3, 6}
         }
+
+
+# Review MR 15, P2-3: ``KeySpace()`` ohne Argument kennt keinen Namensraum.
+# Erlaubt nur in ``swarmq.keyspace``, ``backend.valkey.connection`` und den
+# ausdruecklich als "nur ohne Namensraum" gekennzeichneten Alias-/Default-
+# Modulen (Modulkonstanten und Store-Defaults, die das Backend immer mit
+# seinem KeySpace ueberschreibt).
+_BARE_KEYSPACE_ALLOWED = (
+    "swarmq.keyspace",
+    "swarmq.backend.valkey.connection",
+    "swarmq.locking",
+    "swarmq.backend.valkey.schedules",
+    "swarmq.backend.valkey.execution_guard",
+    "swarmq.backend.valkey.chords",
+    "swarmq.backend.valkey.locks",
+    "swarmq.backend.valkey.rate_limit",
+)
+
+
+def test_no_namespace_blind_keyspace_outside_the_allowed_modules() -> None:
+    hits = arch.bare_keyspace_calls(_SRC, _PKG, exempt_modules=_BARE_KEYSPACE_ALLOWED)
+    assert not hits, f"KeySpace() ohne Namensraum ausserhalb der erlaubten Module: {hits}"
+
+
+class TestBareKeySpaceGuard:
+    def test_call_without_arguments_is_reported(self, tmp_path: Path) -> None:
+        _write_tree(
+            tmp_path,
+            {
+                "pkg/__init__.py": "",
+                "pkg/store.py": (
+                    "from pkg.keyspace import KeySpace\n"
+                    "A = KeySpace()\n"
+                    "B = KeySpace(None)\n"
+                    "C = KeySpace(namespace)\n"
+                    "D = keyspace.KeySpace()\n"
+                ),
+                "pkg/keyspace.py": "class KeySpace: ...\nX = KeySpace()\n",
+            },
+        )
+        hits = arch.bare_keyspace_calls(tmp_path, "pkg", exempt_modules=["pkg.keyspace"])
+        assert hits == [("pkg.store", 2), ("pkg.store", 5)]

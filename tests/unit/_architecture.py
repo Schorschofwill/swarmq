@@ -302,6 +302,25 @@ def keyspace_literals(
     return sorted(hits)
 
 
+def bare_keyspace_calls(src_root: Path, package: str, *, exempt_modules: Iterable[str] = ()) -> list[tuple[str, int]]:
+    """Aufrufe ``KeySpace()`` ohne Argument als ``(modul, zeile)`` (Review MR 15,
+    P2-3): ein solcher KeySpace kennt keinen Namensraum. ``KeySpace(None)``
+    ist ausdruecklich und zaehlt nicht."""
+    skip_modules = set(exempt_modules)
+    hits: list[tuple[str, int]] = []
+    for name, path in iter_modules(src_root, package).items():
+        if name in skip_modules:
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Call) or node.args or node.keywords:
+                continue
+            func = node.func
+            called = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else None
+            if called == "KeySpace":
+                hits.append((name, node.lineno))
+    return sorted(hits)
+
+
 # ---------------------------------------------------------------------------
 # Patch-Pfade in Tests
 # ---------------------------------------------------------------------------

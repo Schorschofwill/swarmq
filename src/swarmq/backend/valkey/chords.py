@@ -14,6 +14,9 @@ import valkey.asyncio
 from swarmq.keyspace import KeySpace
 from swarmq.lua import load_script
 
+# Nur ohne Namensraum (Review MR 15, P2-3): ``chord_set_key`` und der
+# Store-Default nennen die Keys ohne Praefix; das Backend reicht seinen
+# KeySpace (``keys=``) durch.
 _DEFAULT_KEYS = KeySpace()
 
 

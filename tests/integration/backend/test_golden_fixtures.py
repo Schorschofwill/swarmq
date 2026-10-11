@@ -81,6 +81,15 @@ def test_channels_match_golden() -> None:
     assert g.channels() == (g.GOLDEN_DIR / "channels.txt").read_text()
 
 
+def test_namespaced_channels_match_golden() -> None:
+    # Review MR 15 (Hinweis): Kanaele mit Namensraum additiv (Q3); die Datei
+    # ist ``channels.txt`` mit Praefix ``golden-ns:``.
+    expected = (g.GOLDEN_DIR / "channels.namespace.txt").read_text()
+    assert g.channels_namespace() == expected
+    plain = (g.GOLDEN_DIR / "channels.txt").read_text().splitlines()
+    assert expected.splitlines() == [f"{g.NAMESPACE}:{line}" for line in plain]
+
+
 async def test_queue_arguments_match_golden() -> None:
     expected = json.loads((g.GOLDEN_DIR / "queue_args.json").read_text())
     assert await g.queue_args() == expected

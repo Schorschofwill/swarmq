@@ -639,7 +639,14 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 - **`swarmq check`** füllt `namespace` und `unprefixed_keys` (Keys ohne
   Namensraum neben einem Namensraum) und meldet die Befunde
   `unprefixed_keys` und `unprefixed_keys_unknown`
-  ([CLI](cli.md#swarmq-check)).
+  ([CLI](cli.md#swarmq-check)). `unprefixed_keys_complete` unterscheidet
+  eine vollständige Zählung von einer, die `SCAN` an seinem Zeitlimit von
+  5 Sekunden abbrach (dann ist die Zahl eine Untergrenze, „at least n“);
+  im Cluster-Modus nennt die Meldung, dass nur ein Knoten gezählt wurde.
+- **Golden-Datei `channels.namespace.txt`** (additiv): die
+  Pub/Sub-Kanäle mit Namensraum; `channels.txt` bleibt unverändert.
+  Hilfetexte (`--max-processes`, `schedule list`) und Doku schreiben
+  Keys als `[<namensraum>:]sq:…`.
 
 ### Geändert (mehrere Apps auf einem Valkey, BZ-10)
 

@@ -297,7 +297,7 @@ def _add_worker_parser(subparsers: Any) -> None:
         metavar="N",
         help=(
             "Enable the control channel and declare the headroom: a "
-            "setpoint stored in the backend (sq:control:setpoint:<group>) "
+            "setpoint stored in the backend ([<namespace>:]sq:control:setpoint:<group>) "
             "may raise this supervisor to at most N worker processes. "
             "Slot table, observability port ranges and the default compute "
             "slots per worker are sized from N at start-up; N must be at "

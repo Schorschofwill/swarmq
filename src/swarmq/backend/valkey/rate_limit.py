@@ -29,6 +29,8 @@ class RateLimiter:
 
     def __init__(self, client: valkey_asyncio.Valkey, *, keys: KeySpace | None = None) -> None:
         self._client = client
+        # Ohne ``keys`` nur ohne Namensraum (Review MR 15, P2-3); das Backend
+        # reicht seinen KeySpace durch.
         self._keys = keys if keys is not None else KeySpace()
         self._script = client.register_script(load_script("sliding_window_counter"))
 

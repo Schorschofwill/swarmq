@@ -135,10 +135,13 @@ COUNT_KEYS_LIMIT = 10_000
 _COUNT_TIMEOUT_S = 5.0
 
 
-async def count_keys(client: Any, pattern: str, *, limit: int = COUNT_KEYS_LIMIT) -> int | None:
-    """Keys zu *pattern* per ``SCAN`` zaehlen, hoechstens *limit* (dann
-    *limit*), zusammen hoechstens ``_COUNT_TIMEOUT_S``. ``None``, wenn
-    ``SCAN`` scheitert (ACL, Zeitlimit). Nur lesend; wirft nie."""
+async def count_keys(client: Any, pattern: str, *, limit: int = COUNT_KEYS_LIMIT) -> tuple[int, bool] | None:
+    """Keys zu *pattern* per ``SCAN`` zaehlen: ``(anzahl, vollstaendig)``.
+
+    Hoechstens *limit* (dann *limit*, vollstaendig), zusammen hoechstens
+    ``_COUNT_TIMEOUT_S``. Ein Zeitablauf liefert die bis dahin gezaehlten
+    Keys als Untergrenze, ``vollstaendig`` ``False`` (Review MR 15, P2-5).
+    ``None``, wenn ``SCAN`` scheitert (ACL). Nur lesend; wirft nie."""
     total = 0
     cursor = 0
     try:
@@ -147,8 +150,10 @@ async def count_keys(client: Any, pattern: str, *, limit: int = COUNT_KEYS_LIMIT
                 cursor, keys = await client.scan(cursor, match=pattern, count=1000)
                 total += len(keys)
                 if total >= limit:
-                    return limit
+                    return limit, True
                 if not cursor:
-                    return total
+                    return total, True
+    except TimeoutError:
+        return total, False
     except Exception:
         return None

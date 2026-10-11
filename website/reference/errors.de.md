@@ -591,7 +591,7 @@ Lock, der länger belegt ist, als die Grenze erlaubt.
 **Recovery.** Den Halter ansehen: Die Logzeile `lock_wait_exceeded`
 nennt den Lock (`lock_name`), ebenso `x-swarmq-lock-name` an der
 DLQ-Nachricht. Einen festgefahrenen Lock entfernt
-`valkey-cli DEL sq:lock:<name>`. Danach die Nachricht mit
+`valkey-cli DEL [<namensraum>:]sq:lock:<name>`. Danach die Nachricht mit
 `swarmq dlq retry` wiederholen. `SWARMQ_LOCK_WAIT_MAX_S` anheben, wenn
 lange Wartezeiten erwartet sind.
 
