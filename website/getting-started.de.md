@@ -10,7 +10,9 @@ SwarmQ braucht einen RabbitMQ-Broker und ein Valkey- (oder Redis-)
 Backend. Das Repository liefert eine `docker-compose.yml`, die beides
 lokal hochfährt.
 
-- Python **3.11+** (3.14 in CI getestet)
+- Python **3.14+**
+- RabbitMQ **4.2 oder 4.3** (Quorum-Queues) und Valkey **8** oder neuer
+  ([Valkey-Anforderungen](reference/configuration.md#valkey-anforderungen))
 - Docker, oder ein laufendes RabbitMQ + Valkey-Paar, das du
   kontrollierst
 - Ein Package-Manager — die Beispiele nutzen

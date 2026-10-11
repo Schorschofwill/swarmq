@@ -16,9 +16,16 @@ When `await app.schedule("send_email", to="a@example.com")` returns a
 task_id, SwarmQ promises:
 
 1. The message was accepted by RabbitMQ with a publisher confirm.
-2. A worker will run `SendEmail.run(to="a@example.com")` at least once.
+2. A worker will run `SendEmail.run(to="a@example.com")` at least once,
+   unless the task is cancelled, expires through `max_age` or is
+   dead-lettered before it runs. On quorum queues that still
+   dead-letter at-most-once (created before 0.12, or
+   `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=legacy`) a retry or deferral can
+   be lost on a leader change
+   ([dead-lettering guarantee](#dead-lettering-guarantee)).
 3. The task's result — success, exception, or cancellation — will be
-   written to Valkey at `sq:result:{task_id}` with the configured TTL.
+   written to Valkey at `[<namespace>:]sq:result:{task_id}` with the
+   configured TTL.
 
 It does **not** promise:
 

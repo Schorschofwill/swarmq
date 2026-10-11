@@ -224,7 +224,7 @@ async def get_result(
 Blockiert, bis das Task-Ergebnis verfügbar ist oder `timeout`
 abläuft.
 
-Intern wird `sq:notify:{task_id}` auf Valkey abonniert für ein
+Intern wird `[<namensraum>:]sq:notify:{task_id}` auf Valkey abonniert für ein
 Push-basiertes Warten, mit 5ms-Polling als Fallback. Bei
 `timeout=0` ein einzelnes `GET` ohne Pub/Sub.
 

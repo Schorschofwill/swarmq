@@ -264,7 +264,7 @@ Broker.
 swarmq schedule list [--format (table|json)]
 ```
 
-Listet jeden Schedule in `sq:sched:defs` mit Cron, Next-Fire-Zeit,
+Listet jeden Schedule in `[<namensraum>:]sq:{sched}:defs` mit Cron, Next-Fire-Zeit,
 Queue und Dedup-Zustand auf. Die Spalte `LAST_SEEN` zeigt die jüngste
 [Cron-Meldung](../guides/scheduling-and-retries.md#cron-meldungen-und-leader)
 eines statischen Crons (UTC), `never` für einen statischen Cron, den
@@ -323,7 +323,7 @@ swarmq schedule remove NAME [--permanent] [--format (table|json)]
 Ohne `--permanent` wird der Schedule nur deaktiviert, bleibt aber
 erhalten; er bleibt deaktiviert, wenn sich sein Code ändert. Mit
 `--permanent` wird er hart gelöscht, und eine Markierung aus dem
-Entfernen eines deaktivierten Crons (`sq:{sched}:disabled`) wird
+Entfernen eines deaktivierten Crons (`[<namensraum>:]sq:{sched}:disabled`) wird
 gelöscht, auch wenn der Cron selbst schon weg ist; die nächste Meldung
 legt ihn dann aktiv an. Einen statischen Cron, den ein
 lebender Worker noch meldet, übernimmt der Leader binnen eines
@@ -401,7 +401,9 @@ Braucht `SWARMQ_BROKER_URL`; verbindet sich nicht mit dem Backend.
 swarmq dlq list [--queue QUEUE] [--limit N] [--format (table|json)]
 ```
 
-Drain-and-Republish-Scan — zeigt `task_id`, `task_name`, Retry-Count-
+Liest die DLQ mit Bestätigung und kopiert jede Nachricht an ihr Ende,
+bevor das Original bestätigt wird; ein Leser, der abbricht, verliert
+nichts ([DLQ lesen](../guides/dead-letter-queues.md#dlq-inhalte-auflisten)). Zeigt `task_id`, `task_name`, Retry-Count-
 Header, Fehler-Preview, Body-Größe. `--queue` ist per Default
 `default` (DLQ `default.XQ`), `--limit` `100`. Wiederholte Aufrufe sind safe:
 Nachrichten bleiben mit ihrer Restfrist in der DLQ; Lesen verlängert

@@ -83,7 +83,7 @@ When a task moves to another queue, or a worker's `--queues` changes,
 messages already in the old queue (and retry copies still waiting in
 its delay queues) stay there: no worker consumes them any more. Since
 0.12 every worker reports the queues it consumes to Valkey
-(`sq:{sched}:report:queues`, timestamps from Valkey's clock). The
+(`[<namespace>:]sq:{sched}:report:queues`, timestamps from Valkey's clock). The
 scheduler leader checks the reported queues on every adoption tick
 (`SWARMQ_SCHEDULER_SEEN_INTERVAL_S`, default 60 s; not on the tick right
 after a takeover) with a passive

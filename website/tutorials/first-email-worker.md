@@ -38,7 +38,7 @@ Three files on your disk, one shell per process:
 
 ## Prerequisites
 
-- Python 3.11 or newer (3.14 is tested on CI).
+- Python 3.14 or newer.
 - Docker with Compose v2.
 - A package manager. Commands below use [`uv`](https://docs.astral.sh/uv/);
   swap to `pip`/`poetry` if you prefer.
@@ -62,7 +62,7 @@ Drop in a `docker-compose.yml`:
 ```yaml title="docker-compose.yml"
 services:
   rabbitmq:
-    image: rabbitmq:3.13-management
+    image: rabbitmq:4.3-management
     ports:
       - "5672:5672"
       - "15672:15672"

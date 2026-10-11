@@ -66,15 +66,18 @@ Alle Befunde stammen aus Code- und Doku-Analyse. Keiner ist durch einen Test bes
 - Signaturänderungen werden nicht geprüft (D-12).
 
 ## Doku-Befunde
-- Alte Lock-TTL-Formel in `architecture.md:115` und `locking-and-dedup.md:44` (EN/DE).
-- Der Lock-Guide widerspricht dem Code.
-- Doku nennt Python 3.11+, verlangt wird 3.14.
-- Mindestversionen für RabbitMQ und Valkey fehlen.
-- Valkey-Anforderungen fehlen: noeviction, AOF, kein Cluster.
-- Ein Deploy-Leitfaden fehlt: Reihenfolge, Grace-Period, Readiness.
-- `architecture.md:202` (DQ) und `:204` (Valkey-Neustart harmlos) sind falsch.
-- B20 und B21 sind offen.
-- Die Fehlertabelle im Workflow-Guide ist unvollständig.
+
+Status nach MR 19 (2026-10-11) in Klammern.
+
+- Alte Lock-TTL-Formel in `architecture.md:115` und `locking-and-dedup.md:44` (EN/DE). (erledigt: `hard_timeout + 30 s`)
+- Der Lock-Guide widerspricht dem Code. (erledigt, MR 13: zeitbasiertes Warten)
+- Doku nennt Python 3.11+, verlangt wird 3.14. (erledigt, MR 19)
+- Mindestversionen für RabbitMQ und Valkey fehlen. (erledigt, MR 19: Getting Started, Deploy-Leitfaden)
+- Valkey-Anforderungen fehlen: noeviction, AOF, kein Cluster. (erledigt, MR 14)
+- Ein Deploy-Leitfaden fehlt: Reihenfolge, Grace-Period, Readiness. (erledigt, MR 19: `website/guides/deployment.md`)
+- `architecture.md:202` (DQ) und `:204` (Valkey-Neustart harmlos) sind falsch. (erledigt, MR 19)
+- B20 und B21 sind offen. (erledigt, MR 19: DLQ-Umschlag und Scheduler-Eintrag in `message-formats`)
+- Die Fehlertabelle im Workflow-Guide ist unvollständig. (erledigt, MR 3 und MR 19)
 
 ## Nachweis-Tests
 

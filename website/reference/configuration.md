@@ -124,7 +124,7 @@ with exit `78`.
 | `SWARMQ_METRICS_PORT` | *unset* | **Base port** for `/metrics`. The worker in slot `s` serves on `SWARMQ_METRICS_PORT + s`; an embedded worker without a slot serves on the base port itself. Requires `pip install swarmq[metrics]`. Must be `1..65535`. |
 | `SWARMQ_METRICS_HOST` | `127.0.0.1` | Bind address for the metrics server. Set `0.0.0.0` when Prometheus scrapes from another host or container. |
 | `SWARMQ_HEALTH_PORT` | *unset* | **Base port** for `/health` and `/ready`, same slot offset. Must be `1..65535`. |
-| `SWARMQ_HEALTH_HOST` | `127.0.0.1` | Bind address for the health server. |
+| `SWARMQ_HEALTH_HOST` | `127.0.0.1` | Bind address for the health server. Set `0.0.0.0` for Kubernetes `httpGet` probes: the kubelet probes the pod IP, not loopback. |
 | `SWARMQ_METRICS_SAMPLE_INTERVAL` | `10.0` | Seconds between samples of the `swarmq_queue_depth`, `swarmq_dlq_messages` and `swarmq_worker_uptime_seconds` gauges; the same tick dispatches `WORKER_HEARTBEAT`. Must be `> 0`. The sampler only runs when metrics are enabled. |
 | `SWARMQ_WORKER_ID` | hostname | Base of the worker identity that appears as `worker_id` in signals, metric labels and the log context. See [worker identity](#worker-identity). |
 
@@ -267,7 +267,7 @@ most 2 s, never fails because of the check) and, with
 `SWARMQ_VALKEY_EVICTION_CHECK=strict` (default), refuses to start with
 exit `78` under an evicting policy. The scheduler leader checks again
 at most once per hour and logs `valkey_eviction_policy_unsafe` if the
-policy changed. Each worker remembers the epoch key `sq:{sched}:epoch`;
+policy changed. Each worker remembers the epoch key `[<namespace>:]sq:{sched}:epoch`;
 if it disappears (Valkey lost its data: restart without persistence,
 `FLUSHALL`, failover with lost writes) it logs
 `valkey_data_loss_detected`. Limits: a data loss while all processes

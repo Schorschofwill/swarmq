@@ -125,7 +125,7 @@ beenden `swarmq worker` mit Exit `78`.
 | `SWARMQ_METRICS_PORT` | *ungesetzt* | **Basisport** für `/metrics`. Der Worker in Slot `s` serviert auf `SWARMQ_METRICS_PORT + s`; ein eingebetteter Worker ohne Slot serviert auf dem Basisport selbst. Braucht `pip install swarmq[metrics]`. Muss `1..65535` sein. |
 | `SWARMQ_METRICS_HOST` | `127.0.0.1` | Bind-Adresse für den Metrics-Server. `0.0.0.0` setzen, wenn Prometheus von einem anderen Host oder Container scrapt. |
 | `SWARMQ_HEALTH_PORT` | *ungesetzt* | **Basisport** für `/health` und `/ready`, derselbe Slot-Versatz. Muss `1..65535` sein. |
-| `SWARMQ_HEALTH_HOST` | `127.0.0.1` | Bind-Adresse für den Health-Server. |
+| `SWARMQ_HEALTH_HOST` | `127.0.0.1` | Bind-Adresse für den Health-Server. Für Kubernetes-`httpGet`-Probes `0.0.0.0` setzen: Das Kubelet prüft die Pod-IP, nicht Loopback. |
 | `SWARMQ_METRICS_SAMPLE_INTERVAL` | `10.0` | Sekunden zwischen zwei Abtastungen der Gauges `swarmq_queue_depth`, `swarmq_dlq_messages` und `swarmq_worker_uptime_seconds`; derselbe Takt löst `WORKER_HEARTBEAT` aus. Muss `> 0` sein. Der Sampler läuft nur bei eingeschalteten Metriken. |
 | `SWARMQ_WORKER_ID` | Hostname | Basis der Worker-Identität, die als `worker_id` in Signalen, Metrik-Labels und im Logkontext erscheint. Siehe [Worker-Identität](#worker-identitat). |
 
@@ -270,7 +270,7 @@ Ein Worker liest `maxmemory-policy` und `maxmemory` beim Verbinden
 verdrängenden Policy den Start mit Exit `78`. Der Scheduler-Leader prüft
 höchstens einmal je Stunde erneut und loggt `valkey_eviction_policy_unsafe`,
 wenn sich die Policy geändert hat. Jeder Worker merkt sich den
-Epoch-Key `sq:{sched}:epoch`; verschwindet er (Valkey hat seine Daten
+Epoch-Key `[<namensraum>:]sq:{sched}:epoch`; verschwindet er (Valkey hat seine Daten
 verloren: Neustart ohne Persistenz, `FLUSHALL`, Failover mit verlorenen
 Writes), loggt er `valkey_data_loss_detected`. Grenzen: Ein Datenverlust
 bei gleichzeitigem Neustart aller Prozesse bleibt unerkannt, ebenso ein

@@ -85,7 +85,7 @@ Zieht ein Task in eine andere Queue um oder ändert sich `--queues` eines
 Workers, bleiben Nachrichten in der alten Queue (und Retry-Kopien, die
 noch in ihren Delay-Queues warten) liegen: Kein Worker konsumiert sie
 mehr. Seit 0.12 meldet jeder Worker die Queues, die er konsumiert, an
-Valkey (`sq:{sched}:report:queues`, Zeitstempel von der Valkey-Uhr). Der
+Valkey (`[<namensraum>:]sq:{sched}:report:queues`, Zeitstempel von der Valkey-Uhr). Der
 Scheduler-Leader prüft die gemeldeten Queues in jedem Übernahme-Takt
 (`SWARMQ_SCHEDULER_SEEN_INTERVAL_S`, Standard 60 s; nicht im Takt direkt
 nach einer Übernahme) per passivem

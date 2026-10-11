@@ -258,7 +258,7 @@ Requires `SWARMQ_BACKEND_URL`; does not connect to the broker.
 swarmq schedule list [--format (table|json)]
 ```
 
-Lists every schedule in `sq:sched:defs` with its cron, next fire
+Lists every schedule in `[<namespace>:]sq:{sched}:defs` with its cron, next fire
 time, queue, and dedup state. The column `LAST_SEEN` shows the newest
 [cron report](../guides/scheduling-and-retries.md#cron-reports-and-the-leader)
 of a static cron (UTC), `never` for a static cron no worker has ever
@@ -314,7 +314,7 @@ swarmq schedule remove NAME [--permanent] [--format (table|json)]
 
 Without `--permanent`, the schedule is disabled but kept; it stays
 disabled when its code changes. With `--permanent`, it is hard-deleted,
-and a mark from pruning a disabled cron (`sq:{sched}:disabled`) is
+and a mark from pruning a disabled cron (`[<namespace>:]sq:{sched}:disabled`) is
 cleared, also when the cron itself is already gone; the next report then
 creates it enabled. A static cron that a live worker still reports is adopted again by the
 leader within one `SWARMQ_SCHEDULER_SEEN_INTERVAL_S`; it only stays
@@ -389,7 +389,9 @@ Operate on `{queue}.XQ`, the broker-level dead-letter queue. Needs
 swarmq dlq list [--queue QUEUE] [--limit N] [--format (table|json)]
 ```
 
-Drain-and-republish scan — shows `task_id`, `task_name`, retry-count
+Reads the DLQ with acknowledgement and copies each message to its end
+before acknowledging the original, so a reader that dies loses
+nothing ([reading the DLQ](../guides/dead-letter-queues.md#listing-dlq-contents)). Shows `task_id`, `task_name`, retry-count
 header, error preview, body size. `--queue` defaults to `default` (DLQ
 `default.XQ`), `--limit` to `100`. Repeated calls are safe: messages
 stay in the DLQ with their remaining retention; reading does not

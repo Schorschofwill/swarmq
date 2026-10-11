@@ -237,6 +237,7 @@ Workflows auf.
 | Eine Middleware wirft in `pre_enqueue` für einen der ersten Schritte (im Client) | `apply()` wirft diese Exception; nichts wird gespeichert oder publiziert. |
 | Eine Middleware wirft in `pre_enqueue` für einen späteren Schritt (im Worker) | Kein Schritt dieser Front wird publiziert; der Workflow ist `failed`, und `get()` wirft `TaskError` mit der Nachricht der Exception. Siehe [Middleware bei Workflow-Schritten](middleware.md#workflow-schritte). |
 | Der Task eines Schritts ist nicht registriert | Im Client wirft `apply()` `TaskNotFoundError`. Im Worker, der den Schritt einreiht, wird der Workflow `failed`, und `get()` wirft `TaskError`. |
+| Die Queue des nächsten Schritts existiert nicht (noch kein Worker hat sie deklariert) | Der Worker markiert den Workflow sofort als `failed` (gespeicherter Fehlertyp `UnroutableMessage`, Log `workflow_advance_unroutable`), statt den Schritt bis zum Delivery-Limit neu zuzustellen; `get()` wirft `TaskError`. Worker vor Producern starten ([fehlende Queues](scheduling-and-retries.md#fehlende-queues)). |
 | Ein mit `sig()` gebauter Schritt ist `FIRE_AND_FORGET` (oder speichert kein Ergebnis, `result_ttl=0`) | Zur Laufzeit erkannt: Der Workflow ist `failed` (gespeicherter Fehlertyp `WorkflowValidationError`); `get()` wirft `TaskError`. |
 | Der Workflow wird abgebrochen | `get()` wirft `TaskCancelledError`. |
 | `get()` läuft in den Timeout, während der Workflow noch läuft | `ResultNotReadyError`; der Workflow läuft weiter, rufe `get()` erneut auf. |

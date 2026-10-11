@@ -262,7 +262,7 @@ old.
   every app; raising the period in one app alone has no effect while
   another app leads.
 - **Disabled crons come back disabled.** The leader remembers a cron
-  that was disabled when it was removed (`sq:{sched}:disabled`); when a
+  that was disabled when it was removed (`[<namespace>:]sq:{sched}:disabled`); when a
   worker reports it again, it is created disabled and the leader logs
   `scheduler_cron_revived_disabled` (WARNING). This also applies after
   `schedule prune --orphans`. If the name now belongs to a different
@@ -305,7 +305,7 @@ A cron counts as unowned when all of the following hold:
   for example because Valkey was unreachable, it fires as before —
   fail-open);
 - a worker from 0.12 has reported the name at some point
-  (`sq:{sched}:report:known`, a set of names that is only removed
+  (`[<namespace>:]sq:{sched}:report:known`, a set of names that is only removed
   together with the definition, by the prune or by `swarmq schedule
   remove --permanent`);
 - no live report of the name exists;
@@ -327,7 +327,7 @@ app holds the leadership, removed crons fire as before (their fires
 end in the `.XQ` with a retention once a 0.12 worker gives up on them,
 see [unregistered tasks](dead-letter-queues.md#unregistered-tasks-and-rolling-deploys)).
 Crons reported only by workers before 0.12 are never in
-`sq:{sched}:report:known` and are not held.
+`[<namespace>:]sq:{sched}:report:known` and are not held.
 
 ### Conflicts
 
@@ -391,7 +391,7 @@ with the next report of a worker that defines it.
 A leader that stops cleanly leaves a short-lived handover marker, so
 its successor sends `SCHEDULER_LEADER` instead of
 `SCHEDULER_LEADER_FAILOVER`. From 0.12 the marker sits under one fixed
-key, `sq:{sched}:handover`, and the successor reads it with a single
+key, `[<namespace>:]sq:{sched}:handover`, and the successor reads it with a single
 `GETDEL`. Before, it scanned the whole Valkey database, which could
 take longer than the lock TTL on a large database and cost the new
 leader its lock again. Right after the takeover the leader also renews

@@ -234,6 +234,7 @@ workflows.
 | A middleware `pre_enqueue` raises for one of the first steps (in the client) | `apply()` raises that exception; nothing is persisted or published. |
 | A middleware `pre_enqueue` raises for a later step (in the worker) | No step of that front is published; the workflow is `failed` and `get()` raises `TaskError` with the exception's message. See [middleware for workflow steps](middleware.md#workflow-steps). |
 | A step's task is not registered | In the client, `apply()` raises `TaskNotFoundError`. In the worker that enqueues the step, the workflow is `failed` and `get()` raises `TaskError`. |
+| The queue of the next step does not exist (no worker has declared it yet) | The worker marks the workflow `failed` at once (recorded error type `UnroutableMessage`, log `workflow_advance_unroutable`) instead of redelivering the step up to the delivery limit; `get()` raises `TaskError`. Start workers before producers ([missing queues](scheduling-and-retries.md#missing-queues)). |
 | A step built with `sig()` turns out to be `FIRE_AND_FORGET` (or stores no result, `result_ttl=0`) | Caught at run time: the workflow is `failed` (recorded error type `WorkflowValidationError`); `get()` raises `TaskError`. |
 | The workflow is cancelled | `get()` raises `TaskCancelledError`. |
 | `get()` times out while the workflow is still running | `ResultNotReadyError`; the workflow keeps running, call `get()` again. |

@@ -274,7 +274,7 @@ alt ist.
   wirkt nicht, solange eine andere App den Leader stellt.
 - **Deaktivierte Crons kommen deaktiviert zurück.** Der Leader merkt
   sich einen Cron, der beim Entfernen deaktiviert war
-  (`sq:{sched}:disabled`); meldet ihn ein Worker wieder, wird er
+  (`[<namensraum>:]sq:{sched}:disabled`); meldet ihn ein Worker wieder, wird er
   deaktiviert angelegt, und der Leader loggt
   `scheduler_cron_revived_disabled` (WARNING). Das gilt auch nach
   `schedule prune --orphans`. Gehört der Name inzwischen zu einem
@@ -318,7 +318,7 @@ Ein Cron gilt als verwaist, wenn alles Folgende zutrifft:
   5 s; ohne Meldungen, etwa weil Valkey nicht erreichbar war, feuert er
   wie bisher — fail-open).
 - Ein Worker ab 0.12 hat den Namen irgendwann gemeldet
-  (`sq:{sched}:report:known`, ein Set von Namen, das nur zusammen mit
+  (`[<namensraum>:]sq:{sched}:report:known`, ein Set von Namen, das nur zusammen mit
   der Definition entfernt wird, durch das Aufräumen oder durch
   `swarmq schedule remove --permanent`).
 - Es gibt keine lebende Meldung des Namens.
@@ -342,7 +342,7 @@ Fires enden mit Aufbewahrungsfrist in der `.XQ`, sobald ein
 0.12-Worker sie aufgibt, siehe
 [unregistrierte Tasks](dead-letter-queues.de.md#unregistrierte-tasks-und-rolling-deploys)).
 Crons, die nur Worker vor 0.12 melden, stehen nie in
-`sq:{sched}:report:known` und werden nicht zurückgehalten.
+`[<namensraum>:]sq:{sched}:report:known` und werden nicht zurückgehalten.
 
 ### Konflikte
 
@@ -410,7 +410,7 @@ mit der nächsten Meldung eines Workers zurück, der ihn definiert.
 Ein Leader, der sauber stoppt, hinterlässt einen kurzlebigen
 Handover-Marker, damit sein Nachfolger `SCHEDULER_LEADER` statt
 `SCHEDULER_LEADER_FAILOVER` sendet. Ab 0.12 liegt der Marker unter
-einem festen Key, `sq:{sched}:handover`, und der Nachfolger liest ihn
+einem festen Key, `[<namensraum>:]sq:{sched}:handover`, und der Nachfolger liest ihn
 mit einem einzigen `GETDEL`. Bisher durchsuchte er die ganze
 Valkey-Datenbank; bei einer großen Datenbank konnte das länger dauern
 als die Lock-TTL und den neuen Leader sein Lock gleich wieder kosten.

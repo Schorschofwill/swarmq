@@ -65,10 +65,14 @@ means the feature is not active.
 | `x-swarmq-rate-limit-count` | `int` | Worker (rate limit) | How often the message bounced off its rate limit. |
 | `x-swarmq-workflow-id` | `string` | Client / Worker | Workflow the message belongs to (workflow steps only). |
 | `x-swarmq-workflow-step` | `string` | Client / Worker | Step path inside the workflow (workflow steps only). |
-| `x-delivery-count`, `x-acquired-count` | `int` | RabbitMQ (quorum queues) | Broker delivery counters; the worker checks `x-delivery-count` against `SWARMQ_DELIVERY_LIMIT`. Every copy SwarmQ publishes (retry, deferral, rate-limit, lock) drops them, so the copy is a new message with its own delivery budget. |
+| `x-delivery-count`, `x-acquired-count` | `int` | RabbitMQ (quorum queues) | Broker delivery counters; the worker checks both against the [effective delivery limit](../../explanation/delivery-semantics.md#effective-delivery-limit) (the smaller of `SWARMQ_DELIVERY_LIMIT` and the queue's `x-delivery-limit`; RabbitMQ 4.3 counts a requeue only in `x-acquired-count`). Every copy SwarmQ publishes (retry, deferral, rate-limit, lock, DLQ reads by `swarmq dlq`) drops them, so the copy is a new message with its own delivery budget. |
 | `x-death` | `array` | RabbitMQ | Broker-native DLX audit trail. Every copy SwarmQ publishes drops it after moving its count into `x-swarmq-xdeath-base`. |
 
 ## Task result (Valkey)
+
+Keys below are written without the optional namespace prefix: with
+`SWARMQ_NAMESPACE` set, every key and channel starts with
+`<namespace>:sq:` instead of `sq:`.
 
 Stored at `sq:result:{task_id}`, encoded with msgpack, TTL equal to
 the resolved `result_ttl`.
@@ -138,8 +142,9 @@ malformed and returned as `None`.
 
 ## Scheduler entry
 
-Stored in the Valkey ZSET `sq:sched:fire` (score = fire timestamp
-in ms) with the definition at `sq:sched:defs:{name}`.
+Stored in the Valkey ZSET `sq:{sched}:zset` (member = schedule name,
+score = fire timestamp in ms) with the definition in the HASH
+`sq:{sched}:defs` (field = schedule name).
 
 ```jsonc
 {
@@ -165,11 +170,19 @@ in ms) with the definition at `sq:sched:defs:{name}`.
 | `kwargs` | `object<any>` | Keyword args at fire time. |
 | `queue` | `string` | Override for `TaskInfo.queues[0]`. |
 | `cron` | `string \| null` | 5-field cron; `null` for one-shot schedules. |
-| `fire_ts_ms` | `int` | Next fire time. |
-| `source` | `string` | `"cli"`, `"cli_unique"`, `"python"`, etc. |
+| `fire_ts_ms` | `int \| null` | Next fire time. |
+| `source` | `string` | `"static"` (cron defined in code), `"cli"` or `"cli_unique"` (CLI schedules and one-shots). |
+| `disabled` | `bool` | `true` after `schedule remove` (without `--permanent`). |
+| `last_fire_at` | `int \| null` | Unix ms of the last fire. |
 | `dedup_hash` | `string \| null` | SHA-256 hex when dedup is armed. |
 | `unique_until` | `"start" \| "completion"` | Dedup release mode. |
-| `disabled` | `bool` | `true` after `schedule remove` (without `--permanent`). |
+| `timezone` | `string \| null` | IANA zone of `cron`; `null` means UTC. |
+| `task_id` | `string \| null` | Since 0.12: the ID `schedule(delay=\|eta=)` returned; a one-shot fires under it. `null` for crons. |
+| `unroutable_since` | `int \| null` | Since 0.12: Unix ms of the first fire of a one-shot whose queue did not exist. |
+| `unique_for` | `int \| null` | Since 0.12: `TaskInfo.unique_for` of a cron, reported by the worker. |
+
+Fields added later come at the end with a `null` default, so entries
+written by older versions still decode.
 
 ## DLQ envelope
 
@@ -184,10 +197,9 @@ json` return envelopes of this shape:
     {
       "task_id": "01HV...",
       "task_name": "send_email",
-      "queue": "emails.XQ",
-      "body_size": 312,
+      "queue": "emails",
       "headers": {"x-swarmq-retry-count": 3, "x-swarmq-traceback": "..."},
-      "body": {"task": {...}, "args": [], "kwargs": {...}}
+      "body_size": 312
     }
   ],
   "scanned": 1,
@@ -207,12 +219,18 @@ Found:
   "scanned": 17,
   "task_id": "01HV...",
   "task_name": "send_email",
-  "queue": "emails.XQ",
-  "body_size": 312,
+  "queue": "emails",
   "headers": { ... },
-  "body": { ... }
+  "body": {"task": {...}, "args": [], "kwargs": {...}},
+  "body_raw": "{\"task\": ...}",
+  "body_size": 312
 }
 ```
+
+`queue` is the main queue; the messages are read from `{queue}.XQ`.
+`dlq list` carries no body (use `dlq inspect`). `body` is the decoded
+task body, `null` when it is not a JSON object; `body_raw` is the body as
+UTF-8 text (invalid bytes replaced).
 
 Not found (exit code `3`):
 
@@ -262,8 +280,11 @@ Single task_id:
 
 ## Cancel flag
 
-Stored at `sq:cancel:{task_id}` in Valkey with TTL
-`result_ttl × 1000` ms. The value is a fixed marker string —
+Stored at `sq:cancel:{task_id}` in Valkey with a TTL of
+`max(24 h, result_ttl)`, plus the wait until a deferred task fires and
+its `max_age` + 300 s when the client's registry knows the task. Once
+the worker has handled the cancelled delivery it shortens the TTL to
+at most 1 h (`PEXPIRE … LT`) instead of deleting the key. The value is a fixed marker string —
 presence is the signal.
 
 | Key shape | Type | Semantics |

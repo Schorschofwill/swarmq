@@ -219,7 +219,7 @@ async def get_result(
 
 Block until the task result is available, or `timeout` elapses.
 
-Internally subscribes to `sq:notify:{task_id}` on Valkey for a
+Internally subscribes to `[<namespace>:]sq:notify:{task_id}` on Valkey for a
 push-based wait, with 5ms-interval polling as a fallback. When
 `timeout=0`, performs a single `GET` without Pub/Sub.
 

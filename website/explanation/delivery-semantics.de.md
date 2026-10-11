@@ -17,10 +17,15 @@ task_id zurückgibt, verspricht SwarmQ:
 
 1. Die Nachricht wurde von RabbitMQ mit Publisher-Confirm akzeptiert.
 2. Ein Worker wird `SendEmail.run(to="a@example.com")` mindestens
-   einmal ausführen.
+   einmal ausführen, außer der Task wird abgebrochen, verfällt über
+   `max_age` oder geht vor dem Lauf in die DLQ. Auf Quorum-Queues, die
+   noch at-most-once dead-lettern (vor 0.12 angelegt oder
+   `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=legacy`), kann ein Retry oder eine
+   Rückstellung bei einem Leaderwechsel verloren gehen
+   ([Garantie beim Dead-Lettering](#garantie-beim-dead-lettering)).
 3. Das Ergebnis des Tasks — Success, Exception oder Cancellation —
-   wird nach Valkey unter `sq:result:{task_id}` mit konfigurierter
-   TTL geschrieben.
+   wird nach Valkey unter `[<namensraum>:]sq:result:{task_id}` mit
+   konfigurierter TTL geschrieben.
 
 Es verspricht **nicht**:
 
