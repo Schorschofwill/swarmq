@@ -268,7 +268,8 @@ class TestAdoptReportedCrons:
         await leader.adopt_reported_crons()
 
         stored, score = await self._stored(memory)
-        assert stored is not None and stored.timezone == "Europe/Berlin"
+        assert stored is not None
+        assert stored.timezone == "Europe/Berlin"
         # 01:00 Berlin (Sommerzeit) = 23:00 UTC am Vortag.
         assert score == stored.fire_ts_ms == _utc_ms(2026, 10, 6, 23, 0)
 
@@ -323,8 +324,10 @@ class TestAdoptReportedCrons:
         assert await self._stored(memory) == (None, None)
         assert (await self._stored(memory, "other"))[0] is not None
         [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_cron_report_invalid"]
-        assert entry["log_level"] == "error" and entry["schedule_name"] == "nightly"
-        assert entry["error_type"] and entry["error"]
+        assert entry["log_level"] == "error"
+        assert entry["schedule_name"] == "nightly"
+        assert entry["error_type"]
+        assert entry["error"]
 
     async def test_undecodable_report_is_not_adopted(self, memory, leader, swarmq_logs):
         await memory.schedules.report_cron("nightly", "fp", b"{broken", live_window_ms=180_000)
@@ -359,7 +362,8 @@ class TestAdoptReportedCrons:
         await leader.adopt_reported_crons()
 
         [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_cron_conflict"]
-        assert entry["log_level"] == "warning" and entry["schedule_name"] == "nightly"
+        assert entry["log_level"] == "warning"
+        assert entry["schedule_name"] == "nightly"
         assert sorted(entry["fingerprints"]) == sorted(cron_fingerprint(_static(queue=q)) for q in ("app-a", "app-b"))
 
     async def test_long_lived_conflict_emits_signal(
@@ -380,7 +384,8 @@ class TestAdoptReportedCrons:
         await leader.adopt_reported_crons()
 
         [kw] = seen
-        assert kw["worker_id"] == "w-1" and kw["schedule_name"] == "nightly"
+        assert kw["worker_id"] == "w-1"
+        assert kw["schedule_name"] == "nightly"
         assert len(kw["fingerprints"]) == 2
 
     async def test_short_overlap_neither_logs_nor_signals(
@@ -430,7 +435,8 @@ class TestAdoptReportedCrons:
         await leader.adopt_reported_crons()
 
         [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_cron_reports_read_failed"]
-        assert entry["log_level"] == "warning" and entry["error"] == "valkey down"
+        assert entry["log_level"] == "warning"
+        assert entry["error"] == "valkey down"
 
     async def test_failed_prune_is_logged_without_raising(
         self,
@@ -449,7 +455,8 @@ class TestAdoptReportedCrons:
 
         assert (await self._stored(memory))[0] is not None
         [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_cron_reports_prune_failed"]
-        assert entry["log_level"] == "warning" and entry["error"] == "valkey flap"
+        assert entry["log_level"] == "warning"
+        assert entry["error"] == "valkey flap"
 
     async def test_definitions_without_reports_stay_untouched(self, memory, leader):
         """Upgrade von 0.9.0: bestehende ``defs`` bleiben, bis Meldungen
@@ -518,7 +525,8 @@ class TestAdoptReportedCrons:
         await leader.adopt_reported_crons()
 
         stored, score = await self._stored(memory)
-        assert stored is not None and stored.disabled is True
+        assert stored is not None
+        assert stored.disabled is True
         assert score is None
 
     async def test_failed_healing_is_logged_and_does_not_stop_the_tick(
@@ -545,7 +553,8 @@ class TestAdoptReportedCrons:
 
         assert (await self._stored(memory, "other"))[0] is not None
         [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_sync_update_failed"]
-        assert entry["schedule_name"] == "nightly" and entry["error"] == "valkey flap"
+        assert entry["schedule_name"] == "nightly"
+        assert entry["error"] == "valkey flap"
 
 
 class TestWorkerReports:
@@ -629,7 +638,8 @@ class TestWorkerReports:
             await worker.stop()
 
         entries = [e for e in swarmq_logs if e["event"] == "scheduler_cron_report_failed"]
-        assert entries and entries[0]["log_level"] == "warning"
+        assert entries
+        assert entries[0]["log_level"] == "warning"
         assert entries[0]["error"] == "valkey down"
 
     async def test_reports_are_repeated_every_seen_interval(

@@ -457,7 +457,8 @@ class TestShutdownLockDrain:
         assert entry["logger"] == "swarmq.worker.lifecycle"
         assert entry["log_level"] == "warning"
         assert entry["lock_name"] == "res-X"
-        assert entry["error_type"] == "ConnectionError" and entry["error"] == "valkey down"
+        assert entry["error_type"] == "ConnectionError"
+        assert entry["error"] == "valkey down"
 
     @pytest.mark.asyncio
     async def test_scheduler_stop_failure_is_a_warning_with_error_fields(self, worker, backend, swarmq_logs):
@@ -473,7 +474,8 @@ class TestShutdownLockDrain:
         [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_stop_failed"]
         assert entry["logger"] == "swarmq.worker.lifecycle"
         assert entry["log_level"] == "warning"
-        assert entry["error_type"] == "TimeoutError" and entry["error"] == "TimeoutError"
+        assert entry["error_type"] == "TimeoutError"
+        assert entry["error"] == "TimeoutError"
         backend.close.assert_awaited_once()
 
     async def test_partial_cancel_consume_is_a_warning_with_error_fields(self, worker, broker, swarmq_logs):
@@ -573,7 +575,8 @@ class TestMetricsSampler:
         [entry] = [e for e in swarmq_logs if e["event"] == "metrics_sample_failed"]
         assert entry["log_level"] == "warning"
         assert entry["queue"] == "default"
-        assert entry["error_type"] == "RuntimeError" and entry["error"] == "channel in weird state"
+        assert entry["error_type"] == "RuntimeError"
+        assert entry["error"] == "channel in weird state"
 
     async def test_sample_metrics_once_survives_arbitrary_error(
         self,
@@ -660,7 +663,8 @@ class TestMetricsSampler:
 
         [entry] = [e for e in swarmq_logs if e["event"] == "metrics_sampler_iteration_failed"]
         assert entry["log_level"] == "warning"
-        assert entry["error_type"] == "RuntimeError" and entry["error"] == "transient sampler explosion"
+        assert entry["error_type"] == "RuntimeError"
+        assert entry["error"] == "transient sampler explosion"
 
 
 class TestPayloadShapeValidation:

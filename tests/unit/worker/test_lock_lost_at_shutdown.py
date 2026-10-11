@@ -34,7 +34,8 @@ async def test_lost_leftover_lock_is_reported_at_shutdown(worker, swarmq_logs) -
 
     [lost] = [e for e in swarmq_logs if e["event"] == "task_lock_lost"]
     assert lost["log_level"] == "warning"
-    assert lost["lock_name"] == "res-lost" and lost["stage"] == "release"
+    assert lost["lock_name"] == "res-lost"
+    assert lost["stage"] == "release"
     assert worker._active_handler_locks == {}
 
 
@@ -50,7 +51,8 @@ async def test_lost_leftover_lock_names_the_task(worker, swarmq_logs) -> None:
     await worker._execute_shutdown()
 
     [lost] = [e for e in swarmq_logs if e["event"] == "task_lock_lost"]
-    assert lost["task_id"] == "sd-1" and lost["task_name"] == "locked"
+    assert lost["task_id"] == "sd-1"
+    assert lost["task_name"] == "locked"
 
 
 async def test_release_acquired_locks_names_the_task_from_the_lease(swarmq_logs) -> None:
@@ -73,4 +75,6 @@ async def test_release_acquired_locks_names_the_task_from_the_lease(swarmq_logs)
     )
 
     [lost] = [e for e in swarmq_logs if e["event"] == "task_lock_lost"]
-    assert lost["task_id"] == "rl-1" and lost["task_name"] == "locked" and lost["stage"] == "release"
+    assert lost["task_id"] == "rl-1"
+    assert lost["task_name"] == "locked"
+    assert lost["stage"] == "release"

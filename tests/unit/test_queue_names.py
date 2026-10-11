@@ -69,7 +69,8 @@ def test_seven_delay_tiers_from_one_second_to_one_hour_at_most_factor_four_apart
         f"orders.DQ.{label}" for label in ("1s", "4s", "15s", "1m", "4m", "15m", "1h")
     )
     limits = [limit for _, limit in DELAY_TIERS]
-    assert limits[0] == 1_000 and limits[-1] == 3_600_000
+    assert limits[0] == 1_000
+    assert limits[-1] == 3_600_000
     assert all(upper <= 4 * lower for lower, upper in itertools.pairwise(limits))
 
 

@@ -121,7 +121,8 @@ class TestHealthChecker:
         broker, _ = await self._connected_stubs()
         ok, err = await HealthChecker(broker, backend).check_backend()
         assert ok is False
-        assert err is not None and "not connected" in err
+        assert err is not None
+        assert "not connected" in err
 
     async def test_check_backend_fail_on_timeout(self):
         broker, backend = await self._connected_stubs()
@@ -132,7 +133,8 @@ class TestHealthChecker:
         backend.ping = hang
         ok, err = await HealthChecker(broker, backend, timeout_s=0.1).check_backend()
         assert ok is False
-        assert err is not None and "TimeoutError" in err
+        assert err is not None
+        assert "TimeoutError" in err
 
     async def test_check_backend_failure_logs_warning_with_error_fields(self, swarmq_logs):
         backend = InMemoryBackend(FakeClock())
@@ -249,7 +251,8 @@ class TestComputeReadiness:
         snapshot = await HealthChecker(broker, backend, checks={"compute": dead}).check_all()
         assert snapshot["ready"] is False
         assert snapshot["compute"] == {"ok": False, "error": "forkserver not running"}
-        assert snapshot["broker"]["ok"] and snapshot["backend"]["ok"]
+        assert snapshot["broker"]["ok"]
+        assert snapshot["backend"]["ok"]
 
     async def test_compute_check_success_and_absence(self):
         broker, backend = await self._stubs()
@@ -258,7 +261,8 @@ class TestComputeReadiness:
             return True, None
 
         ok = await HealthChecker(broker, backend, checks={"compute": alive}).check_all()
-        assert ok["ready"] is True and ok["compute"] == {"ok": True, "error": None}
+        assert ok["ready"] is True
+        assert ok["compute"] == {"ok": True, "error": None}
         plain = await HealthChecker(broker, backend).check_all()
         assert "compute" not in plain
 

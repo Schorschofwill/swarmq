@@ -387,7 +387,8 @@ async def test_undecodable_result_logs_error_type_and_error(ctx, signals, swarmq
     [entry] = [e for e in swarmq_logs if e["event"] == "compute_result_undecodable"]
     assert entry["log_level"] == "error"
     assert entry["error_type"] == "UnpicklingError"
-    assert entry["error"] and "UnpicklingError" not in entry["error"]
+    assert entry["error"]
+    assert "UnpicklingError" not in entry["error"]
 
 
 @pytest.mark.timeout(5)
@@ -434,7 +435,8 @@ async def test_cancel_during_handshake_kills_the_started_child(ctx, signals):
     t1.cancel()
     with pytest.raises(asyncio.CancelledError):
         await t1
-    assert signals and signals[0][0] == "kill"  # vor Ready: per PID
+    assert signals
+    assert signals[0][0] == "kill"
     assert not proc.is_alive()
     assert p._free.qsize() == 1
     await p.aclose()
@@ -445,8 +447,10 @@ async def test_handshake_timeout_is_slot_unavailable_not_child_death(ctx, signal
     p = await _make_pool(ctx, slots=1, handshake_timeout_s=0.05)
     with pytest.raises(SlotUnavailable):
         await p.run(_job("a"), use_di=False)
-    assert p.stats.unavailable == 1 and p.stats.died == 0
-    assert signals and signals[0][0] == "kill"  # vor Ready: Kill per PID, nicht killpg
+    assert p.stats.unavailable == 1
+    assert p.stats.died == 0
+    assert signals
+    assert signals[0][0] == "kill"
     await p.aclose()
 
 
@@ -491,7 +495,8 @@ async def test_immortal_child_blocks_the_slot(ctx, signals):
     t1.cancel()
     with pytest.raises(asyncio.CancelledError):
         await t1
-    assert not p.healthy and all(i < 0 for i in p._free._queue)  # blockierter Slot kommt nicht zurueck, nur Poison
+    assert not p.healthy
+    assert all(i < 0 for i in p._free._queue)
     proc.die()
     await p.aclose()
 
@@ -556,11 +561,13 @@ async def test_repeated_handshake_failures_mark_the_pool_unhealthy_until_a_ready
     """Review #17: dauerhafte SlotUnavailable-Fehler duerfen nicht still jede Nachricht bis
     zum Delivery-Limit requeuen — der Pool meldet sich ueber /ready als ungesund."""
     p = await _make_pool(ctx, slots=1, handshake_timeout_s=0.05)
-    assert p.healthy and p.unhealthy_after == 3
+    assert p.healthy
+    assert p.unhealthy_after == 3
     for _ in range(3):
         with pytest.raises(SlotUnavailable):
             await p.run(_job("a"), use_di=False)
-    assert not p.healthy and p.consecutive_unavailable == 3
+    assert not p.healthy
+    assert p.consecutive_unavailable == 3
     t = asyncio.create_task(p.run(_job("b"), use_di=False))
     proc = await _started(4)
     await _ready(p, proc, 0)
@@ -638,7 +645,8 @@ async def test_process_start_failure_is_slot_unavailable_and_counts_against_heal
     FakeCtx.fail_next_start = True
     with pytest.raises(SlotUnavailable, match="could not start"):
         await p.run(_job("a"), use_di=False)
-    assert p.stats.unavailable == 1 and p.consecutive_unavailable == 1
+    assert p.stats.unavailable == 1
+    assert p.consecutive_unavailable == 1
     assert FakeCtx.started == []
     assert p._free.qsize() == 1
     await p.aclose()
@@ -657,7 +665,8 @@ async def test_all_slots_blocked_fails_fast_and_marks_the_pool_unhealthy(ctx, si
     t1.cancel()
     with pytest.raises(asyncio.CancelledError):
         await t1
-    assert p.stats.blocked_slots == {0} and not p.healthy
+    assert p.stats.blocked_slots == {0}
+    assert not p.healthy
     with pytest.raises(SlotUnavailable):
         await waiter
     with pytest.raises(SlotUnavailable):
@@ -682,7 +691,8 @@ async def test_aclose_is_not_held_hostage_by_a_hanging_recycle_hook(ctx, signals
     new = await _started(2)
     await _ready(p, new, 0)
     await asyncio.wait_for(p.aclose(), timeout=2.0)
-    assert not old.is_alive() and not new.is_alive()
+    assert not old.is_alive()
+    assert not new.is_alive()
 
 
 @pytest.mark.timeout(5)
@@ -848,8 +858,10 @@ async def test_a_failed_recycle_replacement_logs_error_fields(ctx, signals, swar
     await _settle(lambda: p.stats.recycled == 1)
 
     [entry] = [e for e in swarmq_logs if e["event"] == "compute_recycle_replacement_failed"]
-    assert entry["log_level"] == "warning" and entry["slot"] == 0
-    assert entry["error_type"] == "SlotUnavailable" and "2 threads" in entry["error"]
+    assert entry["log_level"] == "warning"
+    assert entry["slot"] == 0
+    assert entry["error_type"] == "SlotUnavailable"
+    assert "2 threads" in entry["error"]
     old.die()
     await p.aclose()
 

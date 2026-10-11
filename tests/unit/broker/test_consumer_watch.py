@@ -63,7 +63,8 @@ class TestBrokerCancelOnOpenChannel:
     async def test_missing_tag_on_unchanged_channel_is_cancelled_and_reregistered(self):
         watch, queue, callback = _watched()
         await watch.tick()
-        assert queue.cancelled == [] and queue.consumed == []
+        assert queue.cancelled == []
+        assert queue.consumed == []
 
         queue.channel.underlay.consumers.pop("tag-1")  # basic.cancel vom Broker
         await watch.tick()
@@ -101,7 +102,8 @@ class TestBrokerCancelOnOpenChannel:
         assert queue.consumed == []
         assert watch.tags() == [("q1", "tag-1")]
         [failed] = [e for e in swarmq_logs if e["event"] == "consumer_cancel_failed"]
-        assert failed["queue"] == "q1" and failed["error_type"] == "RuntimeError"
+        assert failed["queue"] == "q1"
+        assert failed["error_type"] == "RuntimeError"
 
         queue.cancel_error = None
         await watch.tick()
@@ -120,7 +122,8 @@ class TestReplacedChannel:
         queue.channel.underlay.consumers["tag-1"] = object()  # Restore mit gleichem Tag
         await watch.tick()
 
-        assert queue.cancelled == [] and queue.consumed == []
+        assert queue.cancelled == []
+        assert queue.consumed == []
         assert watch.tags() == [("q1", "tag-1")]
 
     async def test_tag_missing_two_ticks_on_replaced_channel_is_reregistered(self, swarmq_logs):
@@ -129,7 +132,8 @@ class TestReplacedChannel:
         queue.channel.underlay = FakeUnderlay()
 
         await watch.tick()
-        assert queue.cancelled == [] and queue.consumed == []
+        assert queue.cancelled == []
+        assert queue.consumed == []
         await watch.tick()
 
         # Der alte Tag muss auch aus ``RobustQueue._consumers``, sonst legt der
@@ -148,7 +152,8 @@ class TestReplacedChannel:
 
         await watch.tick()
 
-        assert queue.cancelled == [] and queue.consumed == []
+        assert queue.cancelled == []
+        assert queue.consumed == []
 
 
 class HangingChannel(FakeChannel):
@@ -174,7 +179,8 @@ class TestHangingChannel:
         await watch.tick()
 
         [entry] = [e for e in swarmq_logs if e["event"] == "consumer_watch_channel_timeout"]
-        assert entry["queue"] == "q1" and entry["timeout_s"] == 0.01
+        assert entry["queue"] == "q1"
+        assert entry["timeout_s"] == 0.01
         channel.hanging = False
         await watch.tick()
         channel.underlay.consumers.pop("tag-1")
@@ -209,7 +215,8 @@ class TestFailedConsume:
         await watch.tick()
 
         [failed] = [e for e in swarmq_logs if e["event"] == "consumer_reregister_failed"]
-        assert failed["queue"] == "q1" and failed["error_type"] == "RuntimeError"
+        assert failed["queue"] == "q1"
+        assert failed["error_type"] == "RuntimeError"
         queue.consume_error = None
         await watch.tick()
 

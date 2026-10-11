@@ -94,7 +94,8 @@ def test_copy_headers_moves_x_death_into_the_base_and_keeps_the_rest() -> None:
 def test_generation_id_is_a_deterministic_sha1_of_the_identity() -> None:
     gen = generation_id("t-1|r1#3")
     assert gen == "g" + hashlib.sha1(b"t-1|r1#3").hexdigest()[:39]
-    assert len(gen) == 40 and gen == generation_id("t-1|r1#3")
+    assert len(gen) == 40
+    assert gen == generation_id("t-1|r1#3")
     assert generation_id("t-1|r1#4") != gen
 
 

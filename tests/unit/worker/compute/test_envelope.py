@@ -10,7 +10,9 @@ from swarmq.worker.compute import envelope as env
 
 def test_success_envelope_keeps_picklable_value():
     e = env.success_envelope("t1", {"a": 1})
-    assert e.ok and e.value == {"a": 1} and e.error() is None
+    assert e.ok
+    assert e.value == {"a": 1}
+    assert e.error() is None
     assert pickle.loads(pickle.dumps(e)).value == {"a": 1}
 
 

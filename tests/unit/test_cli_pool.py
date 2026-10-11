@@ -20,7 +20,8 @@ class TestResolvePool:
     def test_default_is_io(self, monkeypatch):
         monkeypatch.delenv("SWARMQ_POOL", raising=False)
         args = _args()
-        assert resolve_pool(args) == "io" and args.pool == "io"
+        assert resolve_pool(args) == "io"
+        assert args.pool == "io"
 
     def test_flag_wins_over_environment(self, monkeypatch):
         monkeypatch.setenv("SWARMQ_POOL", "cpu")
@@ -30,7 +31,8 @@ class TestResolvePool:
     def test_environment_applies_without_flag(self, monkeypatch):
         monkeypatch.setenv("SWARMQ_POOL", "cpu")
         args = _args()
-        assert resolve_pool(args) == "cpu" and args.pool == "cpu"
+        assert resolve_pool(args) == "cpu"
+        assert args.pool == "cpu"
 
     def test_invalid_environment_value_is_a_configuration_error(self, monkeypatch):
         monkeypatch.setenv("SWARMQ_POOL", "gpu")
@@ -56,7 +58,8 @@ class TestPreparePoolArgs:
         monkeypatch.delenv("SWARMQ_POOL", raising=False)
         args = _args(pool="cpu")
         prepare_pool_args(args)
-        assert args.concurrency >= 1 and args.concurrency_source in ("affinity", "cgroup")
+        assert args.concurrency >= 1
+        assert args.concurrency_source in ("affinity", "cgroup")
 
     def test_cpu_from_environment_resolves_slots_and_rejects_autoscale(self, monkeypatch):
         """Review #12: SWARMQ_POOL=cpu ohne Flag lief frueher als CPU-Modus mit zehn IO-Slots
@@ -64,7 +67,8 @@ class TestPreparePoolArgs:
         monkeypatch.setenv("SWARMQ_POOL", "cpu")
         args = _args()
         prepare_pool_args(args)
-        assert args.pool == "cpu" and args.concurrency_source != "default"
+        assert args.pool == "cpu"
+        assert args.concurrency_source != "default"
         with pytest.raises(ConfigurationError):
             prepare_pool_args(_args(autoscale=(1, 4)))
 
@@ -74,7 +78,8 @@ class TestPreparePoolArgs:
         many = _args(pool="cpu", processes=1000)
         prepare_pool_args(one)
         prepare_pool_args(many)
-        assert many.concurrency == 1 and one.concurrency >= many.concurrency
+        assert many.concurrency == 1
+        assert one.concurrency >= many.concurrency
 
 
 class TestCheckWithInvalidPool:
@@ -89,8 +94,10 @@ class TestCheckWithInvalidPool:
         out = capsys.readouterr().out.strip().splitlines()
         payload = json.loads(out[-1])
         assert rc == 1
-        assert payload["ok"] is False and payload["error_type"] == "ConfigurationError"
-        assert "SWARMQ_POOL" in payload["error"] and payload["pool"] == "gpu"
+        assert payload["ok"] is False
+        assert payload["error_type"] == "ConfigurationError"
+        assert "SWARMQ_POOL" in payload["error"]
+        assert payload["pool"] == "gpu"
 
 
 class TestHeadroomDividesTheCpuSlots:

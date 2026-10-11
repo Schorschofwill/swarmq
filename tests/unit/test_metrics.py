@@ -450,7 +450,8 @@ def test_leader_outdated_help_names_the_minimum_version():
     [help_line] = [
         line for line in m.render().decode().splitlines() if line.startswith("# HELP swarmq_scheduler_leader_outdated ")
     ]
-    assert "before 0.12" in help_line and "timezone" not in help_line
+    assert "before 0.12" in help_line
+    assert "timezone" not in help_line
 
 
 def test_consumer_reregistrations_are_counted_per_queue():

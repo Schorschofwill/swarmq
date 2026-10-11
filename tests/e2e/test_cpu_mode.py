@@ -91,7 +91,8 @@ async def test_fresh_child_per_task_and_results_round_trip(rabbitmq_url, valkey_
     values = sorted(r["value"] for r in results)
     assert values == [0, 2, 4, 6, 8, 10]
     pids = {r["pid"] for r in results}
-    assert len(pids) == 6 and os.getpid() not in pids
+    assert len(pids) == 6
+    assert os.getpid() not in pids
     for pid in pids:
         with pytest.raises(ProcessLookupError):
             os.kill(pid, 0)
@@ -159,8 +160,10 @@ async def test_di_child_is_reused_and_recycled_with_signal(rabbitmq_url, valkey_
     for r in results:
         assert r["app_pid"] == r["pid"]  # APP-Singleton lebt im Kind, nicht im Loop
     pids = [r["pid"] for r in results]
-    assert len(set(pids)) >= 2 and len(set(pids)) <= 3  # Wiederverwendung + Recycling
-    assert recyclings and all(r["kind"] == "compute_child" and r["reason"] == "tasks" for r in recyclings)
+    assert len(set(pids)) >= 2
+    assert len(set(pids)) <= 3
+    assert recyclings
+    assert all(r["kind"] == "compute_child" and r["reason"] == "tasks" for r in recyclings)
 
 
 async def _wait_for_pid(pid_file, timeout: float = 20.0) -> int:

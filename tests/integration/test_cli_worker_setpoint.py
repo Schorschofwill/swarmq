@@ -140,9 +140,12 @@ def test_runtime_setpoint_applies_reverts_and_the_status_expires_after_exit() ->
             output=output,
         )
         assert started is not None
-        assert started["effective"] == {"min": 1, "max": 1} and started["source"] == "startup"
-        assert started["store"] == "absent" and started["setpoint"] is None
-        assert started["headroom"] == 4 and started["group"] == group
+        assert started["effective"] == {"min": 1, "max": 1}
+        assert started["source"] == "startup"
+        assert started["store"] == "absent"
+        assert started["setpoint"] is None
+        assert started["headroom"] == 4
+        assert started["group"] == group
 
         # U6: Sollwert 3..3 wirkt innerhalb eines Abtastintervalls (plus Startzeit der Kinder).
         asyncio.run(_with_store(lambda s: s.write_setpoint(group, Setpoint(3, 3))))
@@ -154,7 +157,9 @@ def test_runtime_setpoint_applies_reverts_and_the_status_expires_after_exit() ->
             timeout_s=30,
             output=output,
         )
-        assert applied is not None and applied["source"] == "setpoint" and applied["store"] == "present"
+        assert applied is not None
+        assert applied["source"] == "setpoint"
+        assert applied["store"] == "present"
         assert time.monotonic() - written_at < 3 * DEFAULT_SAMPLE_INTERVAL_S
 
         # AE9: entfernter Sollwert -> Startargumente; die zwei ueberzaehligen Worker enden sanft.
@@ -166,7 +171,8 @@ def test_runtime_setpoint_applies_reverts_and_the_status_expires_after_exit() ->
             timeout_s=40,
             output=output,
         )
-        assert reverted is not None and reverted["effective"] == {"min": 1, "max": 1}
+        assert reverted is not None
+        assert reverted["effective"] == {"min": 1, "max": 1}
         assert reverted["store"] == "absent"
 
         proc.send_signal(signal.SIGTERM)

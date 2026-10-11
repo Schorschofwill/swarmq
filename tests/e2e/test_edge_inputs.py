@@ -147,7 +147,8 @@ async def test_10mb_result_payload_roundtrip(
     )
     assert isinstance(result, str)
     assert len(result) == 10 * 1024 * 1024
-    assert result[0] == "z" and result[-1] == "z"
+    assert result[0] == "z"
+    assert result[-1] == "z"
 
 
 async def test_unicode_args_and_result_roundtrip(
@@ -372,6 +373,8 @@ async def test_1mb_progress_message_field(
             assert result == "ok"
             info = await client_app.client.get_progress(tid)
             assert info is not None
-            assert info.current == 1 and info.total == 1
+            assert info.current == 1
+            assert info.total == 1
             assert len(info.message) == 1 * 1024 * 1024
-            assert info.message[0] == "M" and info.message[-1] == "M"
+            assert info.message[0] == "M"
+            assert info.message[-1] == "M"

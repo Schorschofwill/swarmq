@@ -128,7 +128,8 @@ def test_basicconfig_has_no_effect_and_json_applies_to_every_task_line(pool: str
     lines = _task_lines(_run_worker(pool, "basic", "--log-format", "json", tmp_path=tmp_path))
 
     events = [json.loads(line)["event"] for line in lines]  # jede Zeile ist JSON
-    assert "pools_info_v1" in events and "pools_warn_v1" in events, lines
+    assert "pools_info_v1" in events, lines
+    assert "pools_warn_v1" in events, lines
 
 
 @pytest.mark.parametrize("pool", POOLS)

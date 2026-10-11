@@ -189,13 +189,15 @@ async def test_same_holder_keeps_since_new_holder_resets(broker, backend, config
     worker = _worker(broker, backend, config, observation=LockObservation(frozenset({"h1"}), 20_000))
     await worker._handle_message(_message(**held))
     same = _copy(broker)
-    assert same[HEADER_LOCK_HOLDER_SINCE] == _NOW_MS - 30_000 and same[HEADER_LOCK_HOLDER_TTL_MS] == 90_000
+    assert same[HEADER_LOCK_HOLDER_SINCE] == _NOW_MS - 30_000
+    assert same[HEADER_LOCK_HOLDER_TTL_MS] == 90_000
 
     worker = _worker(broker, backend, config, observation=LockObservation(frozenset({"h2"}), 70_000))
     await worker._handle_message(_message(**held))
     changed = _copy(broker)
     assert changed[HEADER_LOCK_HOLDER] == holder_fingerprint(frozenset({"h2"}))
-    assert changed[HEADER_LOCK_HOLDER_SINCE] == _NOW_MS and changed[HEADER_LOCK_HOLDER_TTL_MS] == 70_000
+    assert changed[HEADER_LOCK_HOLDER_SINCE] == _NOW_MS
+    assert changed[HEADER_LOCK_HOLDER_TTL_MS] == 70_000
 
 
 def _stalled(held_ms: int, ttl_ms: int = 90_000, waited_ms: int | None = None) -> dict[str, Any]:
@@ -284,7 +286,8 @@ async def test_store_without_observe_waits_until_the_limit_and_warns_once(
     broker.dead_letter.assert_not_awaited()  # kein Deckel, kein Stillstand
     assert broker.retry_later.await_count == 2
     warned = [e for e in swarmq_logs if e["event"] == "lock_observe_unsupported"]
-    assert len(warned) == 1 and warned[0]["log_level"] == "warning"
+    assert len(warned) == 1
+    assert warned[0]["log_level"] == "warning"
 
     await worker._handle_message(_message(**{HEADER_LOCK_WAIT_SINCE: _NOW_MS - 21_600_000}))
     assert broker.dead_letter.await_count == 1
@@ -300,7 +303,8 @@ async def test_magicmock_store_is_treated_as_not_measurable(broker, backend, con
     broker.dead_letter.assert_not_awaited()
     broker.retry_later.assert_awaited_once()
     events = {e["event"] for e in swarmq_logs}
-    assert "lock_observe_unsupported" in events and "lock_observe_failed" not in events
+    assert "lock_observe_unsupported" in events
+    assert "lock_observe_failed" not in events
 
 
 async def test_asyncmock_store_is_treated_as_not_measurable(broker, backend, config, clock, swarmq_logs) -> None:
@@ -317,7 +321,8 @@ async def test_asyncmock_store_is_treated_as_not_measurable(broker, backend, con
     broker.dead_letter.assert_not_awaited()
     broker.retry_later.assert_awaited_once()
     events = {e["event"] for e in swarmq_logs}
-    assert "lock_observe_unsupported" in events and "lock_observe_failed" not in events
+    assert "lock_observe_unsupported" in events
+    assert "lock_observe_failed" not in events
 
 
 async def test_protocol_subclass_without_observe_warns_unsupported(broker, backend, config, clock, swarmq_logs) -> None:
@@ -339,7 +344,8 @@ async def test_protocol_subclass_without_observe_warns_unsupported(broker, backe
     broker.dead_letter.assert_not_awaited()
     assert broker.retry_later.await_count == 2
     warned = [e for e in swarmq_logs if e["event"] == "lock_observe_unsupported"]
-    assert len(warned) == 1 and warned[0]["log_level"] == "warning"
+    assert len(warned) == 1
+    assert warned[0]["log_level"] == "warning"
 
 
 async def test_observe_failure_keeps_waiting(broker, backend, config, clock, swarmq_logs) -> None:
@@ -351,7 +357,8 @@ async def test_observe_failure_keeps_waiting(broker, backend, config, clock, swa
     broker.dead_letter.assert_not_awaited()
     broker.retry_later.assert_awaited_once()
     [failed] = [e for e in swarmq_logs if e["event"] == "lock_observe_failed"]
-    assert failed["log_level"] == "warning" and failed["lock_name"] == "resource"
+    assert failed["log_level"] == "warning"
+    assert failed["lock_name"] == "resource"
 
 
 @pytest.mark.parametrize(("prior", "logged"), [(0, True), (1, False), (10, False), (11, True), (30, True)])

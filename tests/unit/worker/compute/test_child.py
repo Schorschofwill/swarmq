@@ -44,7 +44,8 @@ async def test_run_job_returns_value_and_calls_lifecycle_in_order():
             calls.append("post")
 
     env = await child.run_job(_job("plain", 21), _queue.Queue())
-    assert env.ok and env.value == 42
+    assert env.ok
+    assert env.value == 42
     assert calls == ["pre", "run", "post"]
     assert env.duration_s >= 0
 
@@ -119,7 +120,8 @@ async def test_progress_goes_through_the_shim_queue():
     env = await child.run_job(_job("reporting"), progress)
     assert env.ok
     kinds = [msg[0] for msg in progress.sent]
-    assert kinds and set(kinds) <= {"progress", "publish"}
+    assert kinds
+    assert set(kinds) <= {"progress", "publish"}
 
 
 @pytest.mark.timeout(5)
@@ -165,7 +167,8 @@ async def test_di_request_scope_commits_on_success_and_rolls_back_on_exception()
 
     ok = await child.run_job(_job("good_di"), _queue.Queue())
     bad = await child.run_job(_job("bad_di"), _queue.Queue())
-    assert ok.ok and not bad.ok
+    assert ok.ok
+    assert not bad.ok
     assert events == [("commit", "tid-1"), ("rollback", "ValueError", "tid-1")]
 
 

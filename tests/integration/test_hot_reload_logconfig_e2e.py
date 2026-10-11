@@ -309,5 +309,6 @@ def test_by_default_the_real_probe_checks_the_file(tmp_path: Path) -> None:
     ctl.request()
     deadline = time.monotonic() + 5
     while not ctl.step():
-        assert ctl.busy and time.monotonic() < deadline
+        assert ctl.busy
+        assert time.monotonic() < deadline
         time.sleep(0.01)

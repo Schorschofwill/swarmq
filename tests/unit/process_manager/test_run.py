@@ -137,7 +137,8 @@ class TestReloadRoutingThroughCLI:
             )
         # At least one warning carries the ignore event name.
         [entry] = [e for e in swarmq_logs if e["event"] == "watch_dir_ignored_without_reload"]
-        assert entry["log_level"] == "warning" and entry["watch_dirs"] == ["/tmp"]
+        assert entry["log_level"] == "warning"
+        assert entry["watch_dirs"] == ["/tmp"]
 
 
 class TestRunMultiProcessWorker:

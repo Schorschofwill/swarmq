@@ -385,7 +385,8 @@ async def test_marker_failure_does_not_block_the_verb(
 
     inner.redeliver.assert_awaited_once_with(delivery)
     [failed] = [e for e in logs if e["event"] == "execution_guard_finish_failed"]
-    assert failed["log_level"] == "warning" and failed["marker"] == "release"
+    assert failed["log_level"] == "warning"
+    assert failed["marker"] == "release"
 
 
 async def test_orphan_limit_dead_letter_marks_done(

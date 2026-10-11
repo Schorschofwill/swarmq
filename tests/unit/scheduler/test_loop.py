@@ -330,7 +330,8 @@ class TestLeaderVersion:
         assert loop.state == "leader"
         [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_leader_version_write_failed"]
         assert entry["log_level"] == "warning"
-        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+        assert entry["error_type"] == "BackendConnectionError"
+        assert entry["error"] == "valkey down"
 
     async def test_outdated_leader_is_reported_once_per_change(
         self,
@@ -361,7 +362,8 @@ class TestLeaderVersion:
         assert (entry["leader"], entry["leader_version"], entry["version"]) == ("old:1:aa", None, "0.10.0")
         # KTD11 (Plan 2026-10-09-2314, MR 5): Hinweis nennt die Mindestversion,
         # nicht mehr nur die Zeitzonen.
-        assert "0.12 or later" in entry["hint"] and "timezone" not in entry["hint"]
+        assert "0.12 or later" in entry["hint"]
+        assert "timezone" not in entry["hint"]
         assert signals == [
             {"worker_id": "w-1", "leader": "old:1:aa", "leader_version": None, "outdated": True},
         ]
@@ -442,10 +444,12 @@ class TestLeaderVersion:
 
         await loop._election_tick()
 
-        assert loop.state == "standby" and loop._prev_leader_seen is True
+        assert loop.state == "standby"
+        assert loop._prev_leader_seen is True
         [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_leader_version_check_failed"]
         assert entry["log_level"] == "warning"
-        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+        assert entry["error_type"] == "BackendConnectionError"
+        assert entry["error"] == "valkey down"
 
     async def test_report_tick_reports_own_version(
         self,
@@ -1078,8 +1082,10 @@ class TestSchedulerLoopLogging:
         await loop._poll_tick()
 
         entry = self._entry(swarmq_logs, "dedup_detected")
-        assert entry["log_level"] == "info" and entry["existing_task_id"] == "t-existing"
-        assert entry["task_name"] == "dup_task" and entry["source"] == "scheduler.fire"
+        assert entry["log_level"] == "info"
+        assert entry["existing_task_id"] == "t-existing"
+        assert entry["task_name"] == "dup_task"
+        assert entry["source"] == "scheduler.fire"
         assert entry["dedup_hash"]
 
     async def test_handover_marker_failure_logs_error_fields(self, loop, backend, swarmq_logs):
@@ -1088,7 +1094,8 @@ class TestSchedulerLoopLogging:
         await loop.stop()
         entry = self._entry(swarmq_logs, "scheduler_handover_marker_failed")
         assert entry["log_level"] == "warning"
-        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+        assert entry["error_type"] == "BackendConnectionError"
+        assert entry["error"] == "valkey down"
 
     async def test_lock_release_failure_logs_error_fields(self, loop, lock_manager, swarmq_logs):
         loop._state = "leader"
@@ -1096,7 +1103,8 @@ class TestSchedulerLoopLogging:
         await loop.stop()
         entry = self._entry(swarmq_logs, "scheduler_lock_release_failed")
         assert entry["log_level"] == "warning"
-        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+        assert entry["error_type"] == "BackendConnectionError"
+        assert entry["error"] == "valkey down"
 
     async def test_election_tick_error_logs_error_fields(self, loop, swarmq_logs, monkeypatch):
         async def _boom():
@@ -1107,7 +1115,8 @@ class TestSchedulerLoopLogging:
         await loop._election_loop()
         entry = self._entry(swarmq_logs, "scheduler_election_tick_error")
         assert entry["log_level"] == "warning"
-        assert entry["error_type"] == "RuntimeError" and entry["error"] == "tick broke"
+        assert entry["error_type"] == "RuntimeError"
+        assert entry["error"] == "tick broke"
 
     async def test_renew_error_logs_error_fields(self, loop, lock_manager, swarmq_logs):
         loop._state = "leader"
@@ -1115,7 +1124,8 @@ class TestSchedulerLoopLogging:
         await loop._election_tick()
         entry = self._entry(swarmq_logs, "scheduler_renew_error")
         assert entry["log_level"] == "warning"
-        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+        assert entry["error_type"] == "BackendConnectionError"
+        assert entry["error"] == "valkey down"
         assert entry["consecutive_failures"] == 1
 
     async def test_acquire_error_logs_error_fields(self, loop, lock_manager, swarmq_logs):
@@ -1123,14 +1133,16 @@ class TestSchedulerLoopLogging:
         await loop._election_tick()
         entry = self._entry(swarmq_logs, "scheduler_acquire_error")
         assert entry["log_level"] == "warning"
-        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+        assert entry["error_type"] == "BackendConnectionError"
+        assert entry["error"] == "valkey down"
 
     async def test_handover_marker_read_failure_logs_error_fields(self, loop, backend, swarmq_logs):
         backend.schedules.take_handover_marker.side_effect = BackendConnectionError("valkey down")
         await loop._election_tick()
         entry = self._entry(swarmq_logs, "scheduler_handover_marker_read_failed")
         assert entry["log_level"] == "warning"
-        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+        assert entry["error_type"] == "BackendConnectionError"
+        assert entry["error"] == "valkey down"
 
     async def test_cron_adopt_failure_logs_error_fields(self, loop, swarmq_logs, monkeypatch):
         """U12: die Übernahme der Cron-Meldungen läuft im eigenen Leader-Takt;
@@ -1150,7 +1162,8 @@ class TestSchedulerLoopLogging:
             await loop.stop()
         entry = self._entry(swarmq_logs, "scheduler_cron_adopt_failed")
         assert entry["log_level"] == "warning"
-        assert entry["error_type"] == "RuntimeError" and entry["error"] == "adopt broke"
+        assert entry["error_type"] == "RuntimeError"
+        assert entry["error"] == "adopt broke"
 
     async def test_poll_tick_error_logs_error_fields(self, loop, swarmq_logs, monkeypatch):
         async def _boom():
@@ -1162,14 +1175,16 @@ class TestSchedulerLoopLogging:
         await loop._poll_loop()
         entry = self._entry(swarmq_logs, "scheduler_poll_tick_error")
         assert entry["log_level"] == "warning"
-        assert entry["error_type"] == "RuntimeError" and entry["error"] == "poll broke"
+        assert entry["error_type"] == "RuntimeError"
+        assert entry["error"] == "poll broke"
 
     async def test_poll_due_failure_logs_error_fields(self, loop, store, swarmq_logs):
         store.poll_due.side_effect = BackendConnectionError("valkey down")
         await loop._poll_tick()
         entry = self._entry(swarmq_logs, "scheduler_poll_due_failed")
         assert entry["log_level"] == "warning"
-        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+        assert entry["error_type"] == "BackendConnectionError"
+        assert entry["error"] == "valkey down"
 
     async def test_unique_setnx_failure_logs_error_fields(self, loop, backend, store, swarmq_logs, _cleanup_tasks):
         self._unique_cron_task()
@@ -1179,7 +1194,8 @@ class TestSchedulerLoopLogging:
         await loop._poll_tick()
         entry = self._entry(swarmq_logs, "scheduler_unique_setnx_failed")
         assert entry["log_level"] == "warning"
-        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+        assert entry["error_type"] == "BackendConnectionError"
+        assert entry["error"] == "valkey down"
         assert entry["schedule_name"] == "dup_task"
 
     async def test_publish_failure_logs_error_fields(self, loop, broker, store, swarmq_logs):
@@ -1190,7 +1206,8 @@ class TestSchedulerLoopLogging:
         await loop._poll_tick()
         entry = self._entry(swarmq_logs, "scheduler_publish_failed")
         assert entry["log_level"] == "warning"
-        assert entry["error_type"] == "RuntimeError" and entry["error"] == "conn refused"
+        assert entry["error_type"] == "RuntimeError"
+        assert entry["error"] == "conn refused"
         assert entry["schedule_name"] == d.schedule_name
 
     async def test_commit_failure_logs_error_fields(self, loop, store, swarmq_logs):
@@ -1201,8 +1218,10 @@ class TestSchedulerLoopLogging:
         await loop._poll_tick()
         entry = self._entry(swarmq_logs, "scheduler_commit_failed")
         assert entry["log_level"] == "warning"
-        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
-        assert entry["schedule_name"] == d.schedule_name and entry["dup_detected"] is False
+        assert entry["error_type"] == "BackendConnectionError"
+        assert entry["error"] == "valkey down"
+        assert entry["schedule_name"] == d.schedule_name
+        assert entry["dup_detected"] is False
 
     async def test_duplicate_signal_dispatch_error_logs_error_fields(
         self, loop, signal_dispatcher, swarmq_logs, monkeypatch
@@ -1211,7 +1230,8 @@ class TestSchedulerLoopLogging:
         await loop._emit_duplicate_detected(existing_task_id="t-1", task_name="dup_task", dedup_hash="h")
         entry = self._entry(swarmq_logs, "scheduler_duplicate_signal_dispatch_error")
         assert entry["log_level"] == "warning"
-        assert entry["error_type"] == "RuntimeError" and entry["error"] == "dispatch broke"
+        assert entry["error_type"] == "RuntimeError"
+        assert entry["error"] == "dispatch broke"
         assert entry["task_name"] == "dup_task"
 
     async def test_signal_dispatch_error_logs_error_fields(self, loop, signal_dispatcher, swarmq_logs, monkeypatch):
@@ -1219,7 +1239,8 @@ class TestSchedulerLoopLogging:
         await loop._emit(Signal.SCHEDULER_HEARTBEAT)
         entry = self._entry(swarmq_logs, "scheduler_signal_dispatch_error")
         assert entry["log_level"] == "warning"
-        assert entry["error_type"] == "RuntimeError" and entry["error"] == "dispatch broke"
+        assert entry["error_type"] == "RuntimeError"
+        assert entry["error"] == "dispatch broke"
         assert entry["signal"] == Signal.SCHEDULER_HEARTBEAT.value
 
 
@@ -1309,7 +1330,8 @@ class TestNextFireFailure:
         assert broker.publish.await_count == 1
         assert headers["x-swarmq-schedfire"] == "good:1000"
         [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_next_fire_failed"]
-        assert entry["schedule_name"] == "broken" and entry["error_type"]
+        assert entry["schedule_name"] == "broken"
+        assert entry["error_type"]
 
     async def test_broken_entry_leaves_the_fire_index(self, loop, store):
         """Ohne Folgezeit kein neuer Score: der Eintrag verlaesst den
@@ -1344,7 +1366,8 @@ class TestNextFireFailure:
 
         assert broker.publish.await_args.kwargs["headers"]["x-swarmq-schedfire"] == "good:1000"
         [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_park_failed"]
-        assert entry["schedule_name"] == "broken" and entry["error_type"]
+        assert entry["schedule_name"] == "broken"
+        assert entry["error_type"]
 
     async def test_park_owner_mismatch_is_logged(self, loop, store, swarmq_logs):
         """Liste 21 (Review-Befund #3): das abgelehnte Parken bleibt sichtbar."""

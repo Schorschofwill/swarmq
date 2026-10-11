@@ -144,7 +144,8 @@ async def test_foreign_hint_names_vhost_and_namespace(loop, swarmq_logs):
     await loop._fire_one("cron_a", _SCORE_MS, _cron())
 
     [foreign] = _loop_events(swarmq_logs, "scheduler_fire_unroutable_foreign")
-    assert "vhost" in foreign["hint"] and "SWARMQ_NAMESPACE" in foreign["hint"]
+    assert "vhost" in foreign["hint"]
+    assert "SWARMQ_NAMESPACE" in foreign["hint"]
 
 
 @pytest.mark.parametrize("error", [BrokerConnectionError("down"), PublishIndeterminate("deadline")])

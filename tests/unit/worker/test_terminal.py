@@ -79,7 +79,9 @@ async def test_step_that_already_succeeded_does_not_fail_its_workflow() -> None:
 
     advancer.fail.assert_not_awaited()
     [entry] = [e for e in logs if e["event"] == "workflow_fail_skipped_step_done"]
-    assert entry["log_level"] == "info" and entry["workflow_id"] == _WF_ID and entry["task_id"] == "step-1"
+    assert entry["log_level"] == "info"
+    assert entry["workflow_id"] == _WF_ID
+    assert entry["task_id"] == "step-1"
 
 
 @pytest.mark.parametrize(

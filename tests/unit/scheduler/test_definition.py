@@ -350,8 +350,10 @@ class TestScheduleStoreRemoveAndDisable:
         store, _ = _make_store(hget_return=b"{not valid json")
         await store.disable_schedule("corrupt")
         [entry] = [e for e in swarmq_logs if e["event"] == "schedule_def_malformed_skipped"]
-        assert entry["log_level"] == "warning" and entry["schedule_name"] == "corrupt"
-        assert entry["error_type"] == "DecodeError" and entry["error"]
+        assert entry["log_level"] == "warning"
+        assert entry["schedule_name"] == "corrupt"
+        assert entry["error_type"] == "DecodeError"
+        assert entry["error"]
         assert "hint" in entry
 
     async def test_disable_schedule_passes_updated_def_with_disabled_true(self):
@@ -394,8 +396,10 @@ class TestScheduleStoreListSchedules:
         schedules.list_all.return_value = {"bad": b"{not valid json"}
         await store.list_schedules()
         [entry] = [e for e in swarmq_logs if e["event"] == "schedule_def_malformed_skipped"]
-        assert entry["log_level"] == "warning" and entry["schedule_name"] == "bad"
-        assert entry["error_type"] == "DecodeError" and entry["error"]
+        assert entry["log_level"] == "warning"
+        assert entry["schedule_name"] == "bad"
+        assert entry["error_type"] == "DecodeError"
+        assert entry["error"]
 
     async def test_list_schedules_skips_incompatible_schema(self):
         good = msgspec.json.encode(_def(schedule_name="good"))
@@ -419,8 +423,10 @@ class TestScheduleStorePollAndCommit:
         schedules.poll_due.return_value = [("bad", 1_000, b"{broken"), ("good", 2_000, msgspec.json.encode(good))]
         assert await store.poll_due(5_000) == [("good", 2_000, good)]
         [entry] = [e for e in swarmq_logs if e["event"] == "schedule_def_malformed_parked"]
-        assert entry["log_level"] == "warning" and entry["schedule_name"] == "bad"
-        assert entry["error_type"] == "DecodeError" and entry["error"]
+        assert entry["log_level"] == "warning"
+        assert entry["schedule_name"] == "bad"
+        assert entry["error_type"] == "DecodeError"
+        assert entry["error"]
 
     async def test_poll_due_with_owner_parks_undecodable_definition(self):
         """Liste 12."""
@@ -439,14 +445,16 @@ class TestScheduleStorePollAndCommit:
         schedules.commit_fire.side_effect = BackendConnectionError("down")
         assert await store.poll_due(5_000, owner_token="chief") == [("good", 2_000, good)]
         [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_park_failed"]
-        assert entry["schedule_name"] == "bad" and entry["error_type"] == "BackendConnectionError"
+        assert entry["schedule_name"] == "bad"
+        assert entry["error_type"] == "BackendConnectionError"
 
     async def test_commit_fire_encodes_next_definition(self):
         d = _def(schedule_name="s", last_fire_at=5)
         store, schedules = _make_store()
         assert await store.commit_fire("s", 1_900, d, "chief") is True
         kwargs = schedules.commit_fire.await_args.kwargs
-        assert kwargs["next_fire_ts_ms"] == 1_900 and kwargs["owner"] == "chief"
+        assert kwargs["next_fire_ts_ms"] == 1_900
+        assert kwargs["owner"] == "chief"
         assert msgspec.json.decode(kwargs["payload"], type=ScheduleDefinition) == d
 
     async def test_commit_fire_forwards_fired_score(self):
@@ -471,7 +479,8 @@ class TestScheduleStorePollAndCommit:
         store, schedules, _ = await self._polled_store(1_000)
         await store.commit_fire("s", 1_900, _def(schedule_name="s"), "chief", fired_ts_ms=1_500)
         kwargs = schedules.commit_fire.await_args.kwargs
-        assert kwargs["fired_payload"] is None and kwargs["fired_ts_ms"] == 1_500
+        assert kwargs["fired_payload"] is None
+        assert kwargs["fired_ts_ms"] == 1_500
 
     async def test_commit_fire_without_poll_passes_no_payload(self):
         store, schedules = _make_store()
@@ -488,7 +497,8 @@ class TestScheduleStorePollAndCommit:
         store, schedules = _make_store()
         await store.commit_fire("once", -1, None, "chief")
         kwargs = schedules.commit_fire.await_args.kwargs
-        assert kwargs["next_fire_ts_ms"] is None and kwargs["payload"] is None
+        assert kwargs["next_fire_ts_ms"] is None
+        assert kwargs["payload"] is None
 
 
 class TestScheduleStoreErrorWrapping:

@@ -154,7 +154,8 @@ class TestStartForkserver:
         message = str(info.value)
         assert "has 2 threads" in message
         assert LISTENER_THREAD_NAME in message
-        assert "log_queue=True" in message and "SWARMQ_LOG_QUEUE" in message
+        assert "log_queue=True" in message
+        assert "SWARMQ_LOG_QUEUE" in message
         assert "BLAS" not in message
 
     def test_stdlib_queue_listener_thread_is_blamed_on_the_app(self, monkeypatch, tmp_path):
@@ -167,8 +168,10 @@ class TestStartForkserver:
                 proc_root=_tasks(tmp_path, 42, "python3", "Thread-1 (_moni"),
             )
         message = str(info.value)
-        assert "QueueListener" in message and "--configure" in message
-        assert "BLAS" not in message and "log_queue=True" not in message
+        assert "QueueListener" in message
+        assert "--configure" in message
+        assert "BLAS" not in message
+        assert "log_queue=True" not in message
 
     def test_other_threads_get_the_blas_hint_and_are_named(self, monkeypatch, tmp_path):
         monkeypatch.setattr(fsmod, "forkserver_pid", lambda: 42)
@@ -180,8 +183,10 @@ class TestStartForkserver:
                 proc_root=_tasks(tmp_path, 42, "python3", "OpenBLAS-1"),
             )
         message = str(info.value)
-        assert "OpenBLAS-1" in message and "BLAS/OpenMP" in message
-        assert "QueueListener" not in message and "log_queue=True" not in message
+        assert "OpenBLAS-1" in message
+        assert "BLAS/OpenMP" in message
+        assert "QueueListener" not in message
+        assert "log_queue=True" not in message
 
     def test_missing_proc_is_a_warning_not_an_error(self, monkeypatch, tmp_path):
         ctx = _fake_ctx([])

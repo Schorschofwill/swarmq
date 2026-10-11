@@ -103,7 +103,9 @@ async def test_tier_that_cannot_be_declared_falls_back_to_the_delay_queue_with_o
     assert _chains(rabbit).count("tasks.DQ.4s") == 1
     [entry] = [e for e in swarmq_logs if e["event"] == "delay_tier_unavailable"]
     assert entry["log_level"] == "warning"
-    assert entry["queue"] == "tasks" and entry["tier"] == "tasks.DQ.4s" and entry["fallback"] == "tasks.DQ"
+    assert entry["queue"] == "tasks"
+    assert entry["tier"] == "tasks.DQ.4s"
+    assert entry["fallback"] == "tasks.DQ"
     assert entry["error_type"] == "QueueArgumentsMismatch"
     first.handle.ack.assert_awaited_once()
     second.handle.ack.assert_awaited_once()

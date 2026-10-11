@@ -194,7 +194,8 @@ class TestExpiryErrorFields:
 
         [entry] = [e for e in swarmq_logs if e["event"] == "task_expired_result_store_failed"]
         assert entry["log_level"] == "warning"
-        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+        assert entry["error_type"] == "BackendConnectionError"
+        assert entry["error"] == "valkey down"
 
     async def test_dlq_publish_failure_carries_error_fields(self, swarmq_logs):
         from swarmq.exceptions import BrokerConnectionError
@@ -208,7 +209,8 @@ class TestExpiryErrorFields:
 
         [entry] = [e for e in swarmq_logs if e["event"] == "task_expired_dlq_publish_failed"]
         assert entry["log_level"] == "warning"
-        assert entry["error_type"] == "BrokerConnectionError" and entry["error"] == "publish nacked"
+        assert entry["error_type"] == "BrokerConnectionError"
+        assert entry["error"] == "publish nacked"
 
     async def test_double_failure_carries_error_fields_of_the_nack(self, swarmq_logs):
         from swarmq.exceptions import BrokerConnectionError

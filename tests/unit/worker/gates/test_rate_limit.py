@@ -356,7 +356,8 @@ class TestRateLimitGateOutcomes:
         msg = make_message(_default_payload(), headers={"x-swarmq-rate-limit-count": 2})
         assert await worker._rate_limit_gate.apply(msg, self._ctx()) is Redelivered
         kwargs = broker.retry_later.await_args.kwargs
-        assert kwargs["delay_ms"] == 1500 and kwargs["headers"]["x-swarmq-rate-limit-count"] == 3
+        assert kwargs["delay_ms"] == 1500
+        assert kwargs["headers"]["x-swarmq-rate-limit-count"] == 3
         broker.ack.assert_not_awaited()  # retry_later bestätigt selbst (U8)
 
     async def test_limited_copy_drops_broker_delivery_counters(self, worker, broker):
@@ -369,7 +370,8 @@ class TestRateLimitGateOutcomes:
         msg = make_message(_default_payload(), headers={"x-delivery-count": 18, "x-acquired-count": 30})
         await worker._rate_limit_gate.apply(msg, self._ctx())
         headers = broker.retry_later.await_args.kwargs["headers"]
-        assert "x-delivery-count" not in headers and "x-acquired-count" not in headers
+        assert "x-delivery-count" not in headers
+        assert "x-acquired-count" not in headers
         assert headers["x-swarmq-rate-limit-count"] == 1
 
     async def test_limited_copy_drops_backend_defer_count(self, worker, broker):
@@ -403,9 +405,11 @@ class TestRateLimitGateOutcomes:
 
         [entry] = [e for e in swarmq_logs if e["log_level"] in ("warning", "error")]
         assert entry["event"] == "task_deferred_backend_unavailable"
-        assert entry["gate"] == "rate_limit" and entry["stage"] == "check"
+        assert entry["gate"] == "rate_limit"
+        assert entry["stage"] == "check"
         assert entry["task_id"] == self._ctx().task_id
-        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "down"
+        assert entry["error_type"] == "BackendConnectionError"
+        assert entry["error"] == "down"
 
     @pytest.mark.timeout(5)
     async def test_hanging_check_is_deferred_after_backend_op_timeout(self, worker, broker, swarmq_logs):
@@ -427,7 +431,8 @@ class TestRateLimitGateOutcomes:
         broker.redeliver.assert_not_awaited()
         [entry] = [e for e in swarmq_logs if e["log_level"] in ("warning", "error")]
         assert entry["event"] == "task_deferred_backend_unavailable"
-        assert entry["gate"] == "rate_limit" and entry["stage"] == "check"
+        assert entry["gate"] == "rate_limit"
+        assert entry["stage"] == "check"
         assert entry["error_type"] == "BackendConnectionError"
 
     async def test_check_failure_logs_error_fields(self, worker, swarmq_logs):
@@ -438,8 +443,10 @@ class TestRateLimitGateOutcomes:
 
         [entry] = [e for e in swarmq_logs if e["event"] == "rate_limit_check_failed"]
         assert entry["logger"] == "swarmq.worker.gates.rate_limit"
-        assert entry["log_level"] == "error" and entry["task_id"] == self._ctx().task_id
-        assert entry["error_type"] == "RuntimeError" and entry["error"] == "bug"
+        assert entry["log_level"] == "error"
+        assert entry["task_id"] == self._ctx().task_id
+        assert entry["error_type"] == "RuntimeError"
+        assert entry["error"] == "bug"
 
     async def test_check_error_reply_takes_the_old_requeue_path(self, worker, broker, swarmq_logs):
         from swarmq.exceptions import BackendResponseError
@@ -464,7 +471,8 @@ class TestRateLimitGateOutcomes:
 
         [entry] = [e for e in swarmq_logs if e["event"] == "rate_limit_requeue_failed"]
         assert entry["log_level"] == "error"
-        assert entry["error_type"] == "ConnectionError" and entry["error"] == "broker gone"
+        assert entry["error_type"] == "ConnectionError"
+        assert entry["error"] == "broker gone"
 
 
 async def test_limited_copy_of_a_claimed_fire_carries_the_claim_token(broker, backend, config):

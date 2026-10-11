@@ -485,7 +485,8 @@ def setup_logging(log_level: str = "INFO", log_json: bool = True) -> logging.han
     structlog.reset_defaults()
     configure_logging(LoggingSettings(level=log_level, format="json" if log_json else "human"))
     handler = logging.getLogger().handlers[0]
-    assert isinstance(handler, _StructlogQueueHandler) and handler.listener is not None
+    assert isinstance(handler, _StructlogQueueHandler)
+    assert handler.listener is not None
     return handler.listener
 
 

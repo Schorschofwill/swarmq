@@ -237,7 +237,8 @@ def test_relative_log_config_applies_in_supervisor_workers_and_compute_children(
     started = [e for e in entries if e["event"] == "worker_started"]
     assert len(started) == 2, output[-4000:]
     worker_pids = {e["e2e_pid"] for e in started}
-    assert len(worker_pids) == 2 and supervisor_pid not in worker_pids
+    assert len(worker_pids) == 2
+    assert supervisor_pid not in worker_pids
 
     # Rechenkind: App-Zeilen aus dem Task, im Kind erzeugt, mit Kind-Kontext
     app_lines = [e for e in entries if e["event"] == "app_task_line"]
@@ -323,7 +324,8 @@ def test_cli_format_and_level_beat_env_in_supervisor_and_workers(
     assert sum("worker_started" in line for line in lines) == 2, output[-4000:]
     assert any("worker_spawned" in line or "supervisor" in line for line in lines), output[-4000:]
     assert any("task_succeeded" in line and tid in line for line in lines), output[-4000:]
-    assert "task_received" not in output and "task_started" not in output
+    assert "task_received" not in output
+    assert "task_started" not in output
     assert "[debug" not in output
     assert "\x1b[" not in output
     [result] = asyncio.run(_results(rabbitmq_url, valkey_url, queue, [tid]))

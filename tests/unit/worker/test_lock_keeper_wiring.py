@@ -105,7 +105,8 @@ async def test_gate_without_keep_lock_acquires_as_before(broker, backend, config
     )
 
     assert await gate.apply(make_message(_default_payload(name="kept", args=[], kwargs={})), ctx) is Continue
-    assert len(ctx.acquired_locks) == 1 and worker._lock_keeper.kept == 0
+    assert len(ctx.acquired_locks) == 1
+    assert worker._lock_keeper.kept == 0
 
 
 async def test_abort_teardown_closes_the_keeper(broker, backend, config) -> None:

@@ -901,7 +901,8 @@ async def test_golden_state_without_version_decodes_and_first_write_is_version_o
     fresh = await m.state()
     assert fresh["version"] == 1
     assert set(fresh["step_tasks"]) == {"/0", "/1/h/g0", "/1/h/g1"}
-    assert fresh["v"] == golden["v"] and fresh["topology"] == golden["topology"]
+    assert fresh["v"] == golden["v"]
+    assert fresh["topology"] == golden["topology"]
 
 
 async def test_expired_member_result_raises_workflow_result_expired():
@@ -1189,4 +1190,5 @@ async def test_fail_with_missing_workflow_state_logs_a_warning(swarmq_logs) -> N
     await advancer.fail("wf-gone", "TaskError", "boom")
 
     [entry] = [e for e in swarmq_logs if e["event"] == "workflow_state_missing"]
-    assert entry["log_level"] == "warning" and entry["workflow_id"] == "wf-gone"
+    assert entry["log_level"] == "warning"
+    assert entry["workflow_id"] == "wf-gone"

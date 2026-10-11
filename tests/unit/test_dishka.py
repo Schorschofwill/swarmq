@@ -307,7 +307,8 @@ def test_module_imports_without_dishka_and_core_symbols_usable():
     from pathlib import Path
 
     spec = importlib.util.spec_from_file_location("swarmq._dishka_noimport_probe", Path(di.__file__))
-    assert spec is not None and spec.loader is not None
+    assert spec is not None
+    assert spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     # Block dishka AND register the probe module under its own name so the
     # frozen+slots dataclass can resolve cls.__module__ during creation

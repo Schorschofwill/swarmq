@@ -189,8 +189,6 @@ ignore = [
     "S101",    # alle ``assert`` in src/ sind Typ-Narrowing ohne Seiteneffekt (Analyse 2026-10-11)
     # --- TEMPORÄR (Plan 2026-10-11-1200, KTD3): offene fachliche Regeln. ---
     # Jede Unit beginnt mit dem Streichen ihrer Einträge; am Ende ist die Liste leer.
-    # U5 (src/ und tests/):
-    "PT018",
 ]
 
 [tool.ruff.lint.pylint]

@@ -52,14 +52,16 @@ elif _MODE in ("cookbook", "cookbook_start"):
     if _MODE == "cookbook_start":
         # Cookbook wortwoertlich: Start beim Import -- auch im Forkserver.
         _handler = logging.getHandlerByName("queue_handler")
-        assert isinstance(_handler, logging.handlers.QueueHandler) and _handler.listener is not None
+        assert isinstance(_handler, logging.handlers.QueueHandler)
+        assert _handler.listener is not None
         _handler.listener.start()
 
 
 def start_listener(app: Any) -> None:
     """``--configure``-Hook: startet den Listener der App (Cookbook-Muster)."""
     handler = logging.getHandlerByName("queue_handler")
-    assert isinstance(handler, logging.handlers.QueueHandler) and handler.listener is not None
+    assert isinstance(handler, logging.handlers.QueueHandler)
+    assert handler.listener is not None
     handler.listener.start()
 
 

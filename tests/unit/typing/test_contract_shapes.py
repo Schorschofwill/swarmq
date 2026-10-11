@@ -95,7 +95,8 @@ _FORGED_RECEIPT = """
 @pytest.mark.timeout(120)
 def test_sync_ack_is_rejected_by_mypy_strict(tmp_path: Path, mypy_cache: Path) -> None:
     out = _run_mypy(_SYNC_ACK, tmp_path, mypy_cache)
-    assert "error" in out and "def ack(" in out, out
+    assert "error" in out, out
+    assert "def ack(" in out, out
 
 
 @pytest.mark.timeout(120)
@@ -108,4 +109,5 @@ def test_conforming_consumer_passes_mypy_strict(tmp_path: Path, mypy_cache: Path
 def test_forged_receipt_is_a_type_error(tmp_path: Path, mypy_cache: Path) -> None:
     """AE5-Vorbereitung: ein selbstgebautes Objekt ist kein ``PublishReceipt``."""
     out = _run_mypy(_FORGED_RECEIPT, tmp_path, mypy_cache)
-    assert "error" in out and "PublishReceipt" in out, out
+    assert "error" in out, out
+    assert "PublishReceipt" in out, out

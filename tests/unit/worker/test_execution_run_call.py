@@ -70,7 +70,8 @@ def _ctx(task_class: type, *args: Any, **kwargs: Any) -> GateContext:
 async def test_missing_run_argument_is_an_error_result_not_an_escaping_exception():
     ex = TaskExecutor(_deps())
     result = await ex.execute(_ctx(NeedsValue), {"retry_count": 0}, MiddlewareChain([]))
-    assert result.is_error and not result.is_cancelled
+    assert result.is_error
+    assert not result.is_cancelled
     assert isinstance(result.task_exception, TypeError)
     assert "value" in result.error_message
 
@@ -79,11 +80,13 @@ async def test_missing_run_argument_is_an_error_result_not_an_escaping_exception
 async def test_unexpected_keyword_is_an_error_result():
     ex = TaskExecutor(_deps())
     result = await ex.execute(_ctx(NeedsValue, "ok", extra=1), {"retry_count": 0}, MiddlewareChain([]))
-    assert result.is_error and isinstance(result.task_exception, TypeError)
+    assert result.is_error
+    assert isinstance(result.task_exception, TypeError)
 
 
 @pytest.mark.timeout(5)
 async def test_non_coroutine_run_is_an_error_result():
     ex = TaskExecutor(_deps())
     result = await ex.execute(_ctx(SyncRun), {"retry_count": 0}, MiddlewareChain([]))
-    assert result.is_error and isinstance(result.task_exception, TypeError)
+    assert result.is_error
+    assert isinstance(result.task_exception, TypeError)

@@ -77,7 +77,8 @@ class TaskExecutor:
         deps = self._deps
         task_info = ctx.task_info
         task_class = ctx.task_class
-        assert task_info is not None and task_class is not None
+        assert task_info is not None
+        assert task_class is not None
         task_instance = task_class()
         progress_result_ttl = task_info.result_ttl
         if progress_result_ttl is None:

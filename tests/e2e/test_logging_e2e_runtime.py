@@ -401,7 +401,8 @@ def test_check_accepts_a_valid_log_config(valid_cfg: Path) -> None:
     rc, payload = _run_check("--log-config", str(valid_cfg))
     assert rc == 0, payload
     assert payload["ok"] is True
-    assert payload["error"] is None and payload["error_type"] is None
+    assert payload["error"] is None
+    assert payload["error_type"] is None
 
 
 def test_check_reports_a_log_config_that_dictconfig_rejects(tmp_path: Path) -> None:

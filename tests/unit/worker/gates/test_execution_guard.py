@@ -164,7 +164,8 @@ async def test_done_marker_acks_and_skips(
     assert outcome == Terminal.never_release()
     deps.broker.ack.assert_awaited_once_with(delivery)
     [skipped] = [e for e in logs if e["event"] == "duplicate_delivery_skipped"]
-    assert skipped["reason"] == "done" and skipped["task_id"] == "t-1"
+    assert skipped["reason"] == "done"
+    assert skipped["task_id"] == "t-1"
 
 
 async def test_attempt_overtaken_by_a_retry_acks_and_skips(
@@ -223,7 +224,8 @@ async def test_successive_deferral_counts_up_and_waits_longer(
     assert call.kwargs["headers"]["x-swarmq-guard-defer-count"] == 4
     assert 6400 <= call.kwargs["delay_ms"] <= 9600
     [deferred] = [e for e in logs if e["event"] == "execution_guard_deferred"]
-    assert deferred["defer_count"] == 4 and deferred["delay_ms"] == call.kwargs["delay_ms"]
+    assert deferred["defer_count"] == 4
+    assert deferred["delay_ms"] == call.kwargs["delay_ms"]
 
 
 async def test_failed_deferral_publish_falls_back_to_redeliver(
@@ -267,10 +269,13 @@ async def test_orphan_limit_dead_letters_as_worker_hung_error(
     assert outcome == Terminal.already_released()
     dead_letter.assert_awaited_once()
     args = dead_letter.await_args.args
-    assert args[0] is delivery and args[1].task_id == "t-1"
-    assert "WorkerHungError" in args[2] and args[3] == "WorkerHungError"
+    assert args[0] is delivery
+    assert args[1].task_id == "t-1"
+    assert "WorkerHungError" in args[2]
+    assert args[3] == "WorkerHungError"
     [limit] = [e for e in logs if e["event"] == "execution_guard_orphan_limit"]
-    assert limit["orphans"] == 3 and limit["log_level"] == "error"
+    assert limit["orphans"] == 3
+    assert limit["log_level"] == "error"
 
 
 async def test_unreachable_backend_defers_like_backend_defer(deps: MagicMock, dead_letter: AsyncMock) -> None:
@@ -453,7 +458,8 @@ async def test_lost_marker_is_logged_counted_and_not_touched(
         await guard.settle(delivery)
 
     [lost] = [e for e in logs if e["event"] == "execution_guard_lease_lost"]
-    assert lost["log_level"] == "warning" and lost["task_id"] == "t-1"
+    assert lost["log_level"] == "warning"
+    assert lost["task_id"] == "t-1"
     assert events == ["lease_lost"]
     await clock.advance(30)
     # Der fremde Marker steht noch (ein Dritter sieht ihn als laufend).
@@ -725,7 +731,8 @@ async def test_deferral_crossing_the_consumer_timeout_warns_but_keeps_deferring(
     deps.broker.retry_later.assert_awaited_once()
     dead_letter.assert_not_awaited()
     [stalled] = [e for e in logs if e["event"] == "execution_guard_defer_stalled"]
-    assert stalled["log_level"] == "warning" and stalled["task_id"] == "t-1"
+    assert stalled["log_level"] == "warning"
+    assert stalled["task_id"] == "t-1"
     assert stalled["defer_count"] == 2
     assert "defer_stalled" in events
 
@@ -870,7 +877,9 @@ async def test_retrying_a_failed_marker_gives_up_after_about_one_ttl(
 
     assert len(calls) == 5  # der Versuch im Verb plus vier nachgeholte
     [gave_up] = [e for e in logs if e["event"] == "execution_guard_finish_gave_up"]
-    assert gave_up["log_level"] == "warning" and gave_up["marker"] == "release" and gave_up["attempts"] == 4
+    assert gave_up["log_level"] == "warning"
+    assert gave_up["marker"] == "release"
+    assert gave_up["attempts"] == 4
 
 
 async def _sleep_forever(_delay: float) -> None:

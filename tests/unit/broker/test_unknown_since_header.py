@@ -29,7 +29,8 @@ async def test_dead_letter_stamp_drops_unknown_since() -> None:
     broker = _broker()
     await broker._publish_to_dead_letter_queue("tasks", b"body", headers={HEADER_UNKNOWN_SINCE: 1, "x-keep": 1})
     headers = broker._publish_channel.default_exchange.publish.call_args.args[0].headers
-    assert HEADER_UNKNOWN_SINCE not in headers and headers["x-keep"] == 1
+    assert HEADER_UNKNOWN_SINCE not in headers
+    assert headers["x-keep"] == 1
 
 
 def _dlq_broker(*messages: Any) -> Any:
@@ -51,5 +52,6 @@ async def test_dlq_retry_drops_unknown_since_from_a_dlx_copy() -> None:
     broker = _dlq_broker(Mock(body=body, headers={HEADER_UNKNOWN_SINCE: 1, "x-death": []}))
     found, _ = await broker.retry_dead_letter("tasks", "t-1")
     [(routing_key, msg)] = broker.published
-    assert found is True and routing_key == "tasks"
+    assert found is True
+    assert routing_key == "tasks"
     assert HEADER_UNKNOWN_SINCE not in msg.headers

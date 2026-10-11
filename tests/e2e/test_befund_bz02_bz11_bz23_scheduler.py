@@ -309,8 +309,10 @@ async def test_bz11_removed_cron_once_reported_is_held_by_the_leader(rabbitmq_ur
             interval=0.2,
         )
 
-    assert transitions[0]["schedule_name"] == removed and transitions[0]["held"] is True
-    assert next_fire is not None and next_fire > due_ms
+    assert transitions[0]["schedule_name"] == removed
+    assert transitions[0]["held"] is True
+    assert next_fire is not None
+    assert next_fire > due_ms
     assert xq_empty, "zurueckgehaltener Cron hat trotzdem gefeuert"
 
 

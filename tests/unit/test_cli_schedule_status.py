@@ -54,7 +54,8 @@ async def test_json_carries_leader_version(monkeypatch) -> None:
     data = json.loads(await _status(monkeypatch, backend, "json"))
     assert data["leader"] == "host:1:aa"
     assert data["leader_version"] == "0.10.0"
-    assert data["upcoming"] == [] and isinstance(data["now_ms"], int)
+    assert data["upcoming"] == []
+    assert isinstance(data["now_ms"], int)
 
 
 async def test_json_lists_reporting_workers_with_version(monkeypatch) -> None:

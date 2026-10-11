@@ -45,7 +45,8 @@ async def test_dead_letter_stamp_drops_the_lock_wait_state() -> None:
     broker = _broker()
     await broker._publish_to_dead_letter_queue("tasks", b"body", headers={**_STATE, "x-swarmq-lock-name": "r"})
     headers = broker._publish_channel.default_exchange.publish.call_args.args[0].headers
-    assert not set(_STATE) & set(headers) and headers["x-swarmq-lock-name"] == "r"
+    assert not set(_STATE) & set(headers)
+    assert headers["x-swarmq-lock-name"] == "r"
 
 
 async def test_dlq_retry_drops_the_lock_wait_state() -> None:

@@ -196,7 +196,8 @@ class LockGate:
         lock_manager = deps.lock_manager()
         if task_info.lock is None or lock_manager is None:
             return Continue
-        assert ctx.task_class is not None and ctx.handler_id is not None
+        assert ctx.task_class is not None
+        assert ctx.handler_id is not None
 
         # Render the lock name once. A render failure is a user
         # configuration bug — route to DLQ with a clear header, do NOT

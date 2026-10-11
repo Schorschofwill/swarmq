@@ -181,7 +181,8 @@ class TestLeaderPrunes:
         assert await memory.schedules.get("nightly") is None
         assert await memory.schedules.fire_ts("nightly") is None
         [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_cron_pruned"]
-        assert entry["schedule_name"] == "nightly" and entry["log_level"] == "info"
+        assert entry["schedule_name"] == "nightly"
+        assert entry["log_level"] == "info"
 
     async def test_cron_removed_from_task_is_pruned_after_the_period(
         self,
@@ -313,7 +314,8 @@ class TestLeaderPrunes:
         await leader.adopt_reported_crons()
 
         [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_cron_revived_disabled"]
-        assert entry["log_level"] == "warning" and entry["schedule_name"] == "nightly"
+        assert entry["log_level"] == "warning"
+        assert entry["schedule_name"] == "nightly"
         assert "schedule remove --permanent" in entry["hint"]
 
     async def test_reports_outlive_a_period_longer_than_seven_days(
@@ -383,7 +385,8 @@ class TestLeaderPrunes:
         assert await memory.schedules.get("first") is not None
         assert await memory.schedules.get("second") is None
         [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_cron_prune_failed"]
-        assert entry["log_level"] == "warning" and entry["schedule_name"] == "first"
+        assert entry["log_level"] == "warning"
+        assert entry["schedule_name"] == "first"
         assert entry["error"] == "valkey flap"
 
     async def test_unreadable_definitions_are_logged_and_reports_still_pruned(
@@ -404,5 +407,6 @@ class TestLeaderPrunes:
         await leader.adopt_reported_crons()
 
         [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_cron_prune_failed"]
-        assert entry["log_level"] == "warning" and entry["error"] == "valkey down"
+        assert entry["log_level"] == "warning"
+        assert entry["error"] == "valkey down"
         assert (await memory.schedules.cron_reports()).reports == ()

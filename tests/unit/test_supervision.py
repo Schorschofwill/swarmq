@@ -49,7 +49,8 @@ def test_locked_slots_are_shared_by_all_channels_of_a_supervisor():
     first = sv.SupervisorChannel.create(ctx, locked_slots=shared)
     second = sv.SupervisorChannel.create(ctx, locked_slots=shared)
     shared.value = 2
-    assert first.locked_slots_value() == 2 and second.locked_slots_value() == 2
+    assert first.locked_slots_value() == 2
+    assert second.locked_slots_value() == 2
 
 
 def test_channel_without_shared_locked_slots_reports_none():

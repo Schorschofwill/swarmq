@@ -74,7 +74,8 @@ async def test_lost_lock_is_reported_when_the_holder_releases(
     await worker._handle_message(make_message(_default_payload(name="bz04_evicted_mid_run", args=[], kwargs={})))
 
     # Nachweis der Folge: zwei Halter desselben Mutex gleichzeitig.
-    assert _EvictedMidRun.second_holder and _EvictedMidRun.second_holder[0] is not None
+    assert _EvictedMidRun.second_holder
+    assert _EvictedMidRun.second_holder[0] is not None
     assert await store.current_owner(_LOCK) == "other-worker"
 
     lost = [e for e in swarmq_logs if e["log_level"] in ("warning", "error") and e.get("lock_name") == _LOCK]

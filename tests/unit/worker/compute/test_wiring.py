@@ -89,7 +89,8 @@ async def test_cpu_pool_installs_compute_executor_and_recycle_signal(monkeypatch
     monkeypatch.setattr(wiring.SlotPool, "start", AsyncMock())
     monkeypatch.setattr(wiring.SlotPool, "aclose", AsyncMock())
     executor = await wiring.start_compute_executor(w)
-    assert isinstance(executor, ComputeExecutor) and w._executor is executor
+    assert isinstance(executor, ComputeExecutor)
+    assert w._executor is executor
     assert seen["preload"] == [
         "swarmq.worker.compute.preload",
         "__main__",
@@ -100,12 +101,15 @@ async def test_cpu_pool_installs_compute_executor_and_recycle_signal(monkeypatch
     assert seen["kw"] == {"thread_limit": 1, "malloc_trim_threshold": 131072, "malloc_arena_max": 2}
     assert w._compute_handle is handle
     pool = executor._pool
-    assert pool.recycle_rss_mb == 250 and pool.recycle_max_tasks == 1000  # R28-Voreinstellung
+    assert pool.recycle_rss_mb == 250
+    assert pool.recycle_max_tasks == 1000
     await pool._on_recycle(1, "rss", 320.0)
     w._signal_dispatcher.dispatch.assert_awaited_once()
     args, kwargs = w._signal_dispatcher.dispatch.await_args
     assert args[0] is Signal.WORKER_RECYCLING
-    assert kwargs["kind"] == "compute_child" and kwargs["slot"] == 1 and kwargs["reason"] == "rss"
+    assert kwargs["kind"] == "compute_child"
+    assert kwargs["slot"] == 1
+    assert kwargs["reason"] == "rss"
     await wiring.close_compute_executor(w)
     wiring.SlotPool.aclose.assert_awaited_once()
 
@@ -142,7 +146,8 @@ async def test_forkserver_ready_reports_an_unhealthy_pool(monkeypatch, tmp_path)
     monkeypatch.setattr(wiring, "forkserver_pid", lambda: None)
     worker = SimpleNamespace(_compute_handle=object(), _executor=SimpleNamespace(pool_healthy=False))
     ok, reason = await wiring.forkserver_ready(worker, proc_root=tmp_path)
-    assert ok is False and "unhealthy" in (reason or "")
+    assert ok is False
+    assert "unhealthy" in (reason or "")
     worker._executor.pool_healthy = True
     assert (await wiring.forkserver_ready(worker, proc_root=tmp_path)) == (True, None)
 
@@ -176,7 +181,8 @@ def test_preload_includes_the_child_runtime_modules():
         "swarmq.logging",
         "swarmq.worker.compute.child",
     ]
-    assert preload.count("__main__") == 1 and "tests.demo_tasks" in preload
+    assert preload.count("__main__") == 1
+    assert "tests.demo_tasks" in preload
 
 
 @pytest.mark.timeout(5)

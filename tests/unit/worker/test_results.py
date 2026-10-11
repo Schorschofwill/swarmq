@@ -292,11 +292,15 @@ async def test_advance_bug_and_failed_fail_mark_log_fixed_events_with_error_fiel
     await tail.finish(msg, _ctx(), _execution())
 
     [advance] = _events(swarmq_logs, "workflow_advance_failed")
-    assert advance["log_level"] == "error" and advance["workflow_id"] == _WF_ID
-    assert advance["error_type"] == "RuntimeError" and advance["error"] == "advance bug"
+    assert advance["log_level"] == "error"
+    assert advance["workflow_id"] == _WF_ID
+    assert advance["error_type"] == "RuntimeError"
+    assert advance["error"] == "advance bug"
     [mark] = _events(swarmq_logs, "workflow_fail_mark_error")
-    assert mark["log_level"] == "error" and mark["workflow_id"] == _WF_ID
-    assert mark["error_type"] == "ValueError" and mark["error"] == "bad state doc"
+    assert mark["log_level"] == "error"
+    assert mark["workflow_id"] == _WF_ID
+    assert mark["error_type"] == "ValueError"
+    assert mark["error"] == "bad state doc"
     assert mark["redelivered"] is False
 
 
@@ -309,8 +313,10 @@ async def test_cancel_branch_fail_mark_error_logs_workflow_fail_mark_failed(brok
     await tail.finish(msg, _ctx(), _execution(is_cancelled=True, result_value=None))
 
     [entry] = _events(swarmq_logs, "workflow_fail_mark_failed")
-    assert entry["log_level"] == "error" and entry["redelivered"] is True
-    assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "down"
+    assert entry["log_level"] == "error"
+    assert entry["redelivered"] is True
+    assert entry["error_type"] == "BackendConnectionError"
+    assert entry["error"] == "down"
 
 
 async def test_faf_guard_fail_mark_error_logs_workflow_faf_fail_mark_error(broker, backend, config, swarmq_logs):
@@ -322,7 +328,8 @@ async def test_faf_guard_fail_mark_error_logs_workflow_faf_fail_mark_error(broke
     await tail.finish(msg, _ctx(TailNoStoreTask), _execution(result_value=None))
 
     [entry] = _events(swarmq_logs, "workflow_faf_fail_mark_error")
-    assert entry["log_level"] == "error" and entry["redelivered"] is False
+    assert entry["log_level"] == "error"
+    assert entry["redelivered"] is False
     assert entry["workflow_id"] == _WF_ID
 
 
@@ -332,8 +339,10 @@ async def test_notify_failure_logs_warning_with_error_fields(broker, backend, co
     await tail.finish(make_message(_default_payload(name="tail-task")), _ctx(), _execution())
 
     [entry] = _events(swarmq_logs, "publish_notification_failed")
-    assert entry["log_level"] == "warning" and entry["task_id"] == "abc-123"
-    assert entry["error_type"] == "ConnectionError" and entry["error"] == "pubsub down"
+    assert entry["log_level"] == "warning"
+    assert entry["task_id"] == "abc-123"
+    assert entry["error_type"] == "ConnectionError"
+    assert entry["error"] == "pubsub down"
 
 
 async def test_unserializable_result_logs_error_with_error_fields(broker, backend, config, swarmq_logs):
@@ -342,7 +351,8 @@ async def test_unserializable_result_logs_error_with_error_fields(broker, backen
 
     [entry] = _events(swarmq_logs, "result_serialization_failed")
     assert entry["log_level"] == "error"
-    assert entry["error_type"] == "ResultSerializationError" and entry["error"]
+    assert entry["error_type"] == "ResultSerializationError"
+    assert entry["error"]
 
 
 async def test_backend_store_error_at_least_once_logs_warning_with_error_fields_and_task_context(
@@ -356,8 +366,10 @@ async def test_backend_store_error_at_least_once_logs_warning_with_error_fields_
 
     [entry] = _events(swarmq_logs, "backend_connection_error")
     assert entry["log_level"] == "warning"
-    assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
-    assert entry["task_id"] == "t-store" and entry["task_name"] == "tail-task"
+    assert entry["error_type"] == "BackendConnectionError"
+    assert entry["error"] == "valkey down"
+    assert entry["task_id"] == "t-store"
+    assert entry["task_name"] == "tail-task"
 
 
 async def test_backend_store_error_fire_and_forget_logs_error_because_the_result_is_lost(
@@ -370,7 +382,8 @@ async def test_backend_store_error_fire_and_forget_logs_error_because_the_result
 
     [entry] = _events(swarmq_logs, "backend_connection_error")
     assert entry["log_level"] == "error"
-    assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+    assert entry["error_type"] == "BackendConnectionError"
+    assert entry["error"] == "valkey down"
 
 
 def _wf_message(name: str = "tail-task"):
@@ -384,8 +397,10 @@ async def test_advance_backend_error_at_least_once_logs_warning_with_error_field
     await tail.finish(_wf_message(), _ctx(), _execution())
 
     [entry] = _events(swarmq_logs, "workflow_advance_backend_error")
-    assert entry["log_level"] == "warning" and entry["workflow_id"] == _WF_ID
-    assert entry["error_type"] == "WorkflowStateConflict" and entry["error"] == "25 rounds lost"
+    assert entry["log_level"] == "warning"
+    assert entry["workflow_id"] == _WF_ID
+    assert entry["error_type"] == "WorkflowStateConflict"
+    assert entry["error"] == "25 rounds lost"
 
 
 async def test_advance_backend_error_fire_and_forget_logs_error(broker, backend, config, swarmq_logs):
@@ -397,7 +412,8 @@ async def test_advance_backend_error_fire_and_forget_logs_error(broker, backend,
 
     [entry] = _events(swarmq_logs, "workflow_advance_backend_error")
     assert entry["log_level"] == "error"
-    assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+    assert entry["error_type"] == "BackendConnectionError"
+    assert entry["error"] == "valkey down"
 
 
 async def test_advance_broker_error_at_least_once_logs_warning_with_error_fields(broker, backend, config, swarmq_logs):
@@ -407,8 +423,10 @@ async def test_advance_broker_error_at_least_once_logs_warning_with_error_fields
     await tail.finish(_wf_message(), _ctx(), _execution())
 
     [entry] = _events(swarmq_logs, "workflow_advance_broker_error")
-    assert entry["log_level"] == "warning" and entry["workflow_id"] == _WF_ID
-    assert entry["error_type"] == "BrokerConnectionError" and entry["error"] == "publish nacked"
+    assert entry["log_level"] == "warning"
+    assert entry["workflow_id"] == _WF_ID
+    assert entry["error_type"] == "BrokerConnectionError"
+    assert entry["error"] == "publish nacked"
 
 
 async def test_advance_broker_error_fire_and_forget_logs_error(broker, backend, config, swarmq_logs):
@@ -419,7 +437,8 @@ async def test_advance_broker_error_fire_and_forget_logs_error(broker, backend, 
 
     [entry] = _events(swarmq_logs, "workflow_advance_broker_error")
     assert entry["log_level"] == "error"
-    assert entry["error_type"] == "BrokerConnectionError" and entry["error"] == "publish nacked"
+    assert entry["error_type"] == "BrokerConnectionError"
+    assert entry["error"] == "publish nacked"
 
 
 async def test_unroutable_advance_fail_marks_workflow_and_acks_without_redeliver(broker, backend, config):

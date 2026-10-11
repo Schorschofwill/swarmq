@@ -132,10 +132,13 @@ async def test_lost_while_running_is_reported_once_and_the_lease_dropped(swarmq_
     await keeper.tick_once()
     await keeper.tick_once()
 
-    assert len(store.calls) == 1 and keeper.kept == 0
+    assert len(store.calls) == 1
+    assert keeper.kept == 0
     [lost] = [e for e in swarmq_logs if e["event"] == "task_lock_lost"]
-    assert lost["log_level"] == "warning" and lost["stage"] == "running"
-    assert lost["lock_name"] == "resource" and lost["task_id"] == "t1"
+    assert lost["log_level"] == "warning"
+    assert lost["stage"] == "running"
+    assert lost["lock_name"] == "resource"
+    assert lost["task_id"] == "t1"
 
 
 async def test_extend_failure_is_retried_next_tick(swarmq_logs) -> None:
@@ -147,7 +150,8 @@ async def test_extend_failure_is_retried_next_tick(swarmq_logs) -> None:
 
     await keeper.tick_once()
     [failed] = [e for e in swarmq_logs if e["event"] == "lock_extend_failed"]
-    assert failed["log_level"] == "warning" and failed["error_type"] == "ConnectionError"
+    assert failed["log_level"] == "warning"
+    assert failed["error_type"] == "ConnectionError"
     assert keeper.kept == 1
     await keeper.tick_once()
     assert len(store.calls) == 2
@@ -164,7 +168,9 @@ async def test_holding_past_the_original_ttl_warns_once(swarmq_logs) -> None:
         await keeper.tick_once()
 
     past = [e for e in swarmq_logs if e["event"] == "task_lock_held_past_hard_timeout"]
-    assert len(past) == 1 and past[0]["log_level"] == "warning" and past[0]["lock_name"] == "resource"
+    assert len(past) == 1
+    assert past[0]["log_level"] == "warning"
+    assert past[0]["lock_name"] == "resource"
     assert keeper.kept == 1  # weiter gehalten, solange der Handler lebt
     keeper.close()
 
@@ -179,7 +185,9 @@ async def test_drop_removes_the_lease_and_ends_the_keeper() -> None:
     clock.now += 31.0
     await keeper.tick_once()
 
-    assert store.calls == [] and keeper.kept == 0 and not keeper.keeps(_TOKEN)
+    assert store.calls == []
+    assert keeper.kept == 0
+    assert not keeper.keeps(_TOKEN)
     keeper.drop(_TOKEN)  # idempotent
 
 
@@ -196,7 +204,8 @@ async def test_store_without_extend_is_reported_once_and_the_lease_dropped(swarm
     await keeper.tick_once()
 
     [entry] = [e for e in swarmq_logs if e["event"] == "lock_extend_unsupported"]
-    assert entry["log_level"] == "warning" and entry["lock_name"] == "resource"
+    assert entry["log_level"] == "warning"
+    assert entry["lock_name"] == "resource"
     assert keeper.kept == 0
 
 
@@ -211,7 +220,8 @@ async def test_asyncmock_store_is_not_an_extension(swarmq_logs) -> None:
     await keeper.tick_once()
 
     [entry] = [e for e in swarmq_logs if e["event"] == "lock_extend_unsupported"]
-    assert entry["log_level"] == "warning" and entry["lock_name"] == "resource"
+    assert entry["log_level"] == "warning"
+    assert entry["lock_name"] == "resource"
     assert keeper.kept == 0
 
 
@@ -232,7 +242,8 @@ async def test_protocol_subclass_without_extend_is_not_an_extension(swarmq_logs)
     await keeper.tick_once()
 
     [entry] = [e for e in swarmq_logs if e["event"] == "lock_extend_unsupported"]
-    assert entry["log_level"] == "warning" and entry["task_id"] == "t1"
+    assert entry["log_level"] == "warning"
+    assert entry["task_id"] == "t1"
     assert keeper.kept == 0
 
 
@@ -309,7 +320,8 @@ async def test_loop_survives_a_failing_tick(swarmq_logs) -> None:
 
     assert calls == 2
     [failed] = [e for e in swarmq_logs if e["event"] == "lock_keeper_tick_failed"]
-    assert failed["log_level"] == "warning" and failed["error_type"] == "RuntimeError"
+    assert failed["log_level"] == "warning"
+    assert failed["error_type"] == "RuntimeError"
     keeper.close()
 
 
@@ -341,7 +353,8 @@ async def test_at_most_32_extensions_run_at_once() -> None:
     assert peak == 32
     gate.set()
     await asyncio.wait_for(tick, timeout=2)
-    assert peak == 32 and inflight == 0
+    assert peak == 32
+    assert inflight == 0
     keeper.close()
 
 
@@ -359,7 +372,10 @@ async def test_surely_expired_lock_is_reported_without_a_round_trip(swarmq_logs)
     clock.now += 31.0  # 1091 > Frist t0 + 90 s
     await keeper.tick_once()
 
-    assert len(store.calls) == calls and keeper.kept == 0
+    assert len(store.calls) == calls
+    assert keeper.kept == 0
     [lost] = [e for e in swarmq_logs if e["event"] == "task_lock_lost"]
-    assert lost["stage"] == "expired" and lost["log_level"] == "warning"
-    assert lost["task_id"] == "t1" and lost["lock_name"] == "resource"
+    assert lost["stage"] == "expired"
+    assert lost["log_level"] == "warning"
+    assert lost["task_id"] == "t1"
+    assert lost["lock_name"] == "resource"

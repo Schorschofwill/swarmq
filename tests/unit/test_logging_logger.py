@@ -218,7 +218,8 @@ def _current_line() -> int:
     import inspect
 
     frame = inspect.currentframe()
-    assert frame is not None and frame.f_back is not None
+    assert frame is not None
+    assert frame.f_back is not None
     return frame.f_back.f_lineno
 
 

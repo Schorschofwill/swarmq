@@ -202,7 +202,8 @@ async def test_deferred_cron_fire_keeps_claim_open_and_unique_flag_held(broker, 
     backend.schedules.release_fire_claim.assert_awaited_once()
     backend.release_unique.assert_not_awaited()
     headers = broker.retry_later.await_args.kwargs["headers"]
-    assert headers[HEADER_SCHEDFIRE_CLAIM] and headers[HEADER_UNIQUE_HASH] == "a" * 64
+    assert headers[HEADER_SCHEDFIRE_CLAIM]
+    assert headers[HEADER_UNIQUE_HASH] == "a" * 64
 
 
 class FailsOnce(Task):

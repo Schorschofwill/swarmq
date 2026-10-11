@@ -69,7 +69,10 @@ async def test_task_count_threshold_recycles_with_ack(worker, channel, monkeypat
     channel.acknowledge_replacement()
     await _wait_for(lambda: worker._state is WorkerState.DRAINING)
     assert worker._recycle_ack_missing is False
-    assert events and events[0]["kind"] == "worker" and events[0]["reason"] == "tasks" and events[0]["value"] == 2.0
+    assert events
+    assert events[0]["kind"] == "worker"
+    assert events[0]["reason"] == "tasks"
+    assert events[0]["value"] == 2.0
     assert worker._drain_timeout_override == float(worker._config.shutdown_timeout)
 
 
@@ -103,7 +106,8 @@ async def test_rss_threshold_wins_over_task_count(worker, channel, monkeypatch):
     channel.acknowledge_replacement()
     await worker._signal_dispatcher.dispatch(Signal.TASK_COMPLETED, task_id="t", task_name="n", queue="q")
     await _wait_for(lambda: worker._state is WorkerState.DRAINING)
-    assert events[0]["reason"] == "rss" and events[0]["value"] == 320.0
+    assert events[0]["reason"] == "rss"
+    assert events[0]["value"] == 320.0
 
 
 def test_drain_timeout_uses_largest_hard_timeout_plus_buffer(worker):

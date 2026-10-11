@@ -92,7 +92,8 @@ def test_a_full_scan_is_complete(monkeypatch: pytest.MonkeyPatch, capsys: pytest
 
     assert (report["valkey"]["unprefixed_keys"], report["valkey"]["unprefixed_keys_complete"]) == (2, True)
     [finding] = report["findings"]
-    assert finding["message"].startswith("2 keys") and "incomplete" not in finding["message"]
+    assert finding["message"].startswith("2 keys")
+    assert "incomplete" not in finding["message"]
 
 
 def test_cluster_mode_says_only_one_node_was_counted(

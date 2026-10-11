@@ -174,9 +174,11 @@ async def test_fail_mark_error_logs_workflow_id_and_error_fields(broker, backend
     await handler.dead_letter(msg, _ctx(), "boom", "RuntimeError")
 
     [entry] = _events(swarmq_logs, "workflow_fail_mark_failed")
-    assert entry["log_level"] == "error" and entry["workflow_id"] == _WF_ID
+    assert entry["log_level"] == "error"
+    assert entry["workflow_id"] == _WF_ID
     assert entry["redelivered"] is False
-    assert entry["error_type"] == "ValueError" and entry["error"] == "bad state doc"
+    assert entry["error_type"] == "ValueError"
+    assert entry["error"] == "bad state doc"
 
 
 async def test_result_store_failure_logs_warning_with_error_fields(broker, backend, config, swarmq_logs):
@@ -186,7 +188,8 @@ async def test_result_store_failure_logs_warning_with_error_fields(broker, backe
 
     [entry] = _events(swarmq_logs, "dlq_result_store_failed")
     assert entry["log_level"] == "warning"
-    assert entry["error_type"] == "ConnectionError" and entry["error"] == "valkey down"
+    assert entry["error_type"] == "ConnectionError"
+    assert entry["error"] == "valkey down"
 
 
 async def test_notify_failure_in_dead_letter_logs_warning_with_error_fields(broker, backend, config, swarmq_logs):
@@ -195,8 +198,10 @@ async def test_notify_failure_in_dead_letter_logs_warning_with_error_fields(brok
     await handler.dead_letter(make_message(_default_payload(name="dlq-task")), _ctx(), "boom", "RuntimeError")
 
     [entry] = _events(swarmq_logs, "publish_notification_failed")
-    assert entry["log_level"] == "warning" and entry["task_id"] == "abc-123"
-    assert entry["error_type"] == "ConnectionError" and entry["error"] == "pubsub down"
+    assert entry["log_level"] == "warning"
+    assert entry["task_id"] == "abc-123"
+    assert entry["error_type"] == "ConnectionError"
+    assert entry["error"] == "pubsub down"
 
 
 async def test_dlq_publish_failure_logs_error_with_error_fields(broker, backend, config, swarmq_logs):
@@ -206,7 +211,8 @@ async def test_dlq_publish_failure_logs_error_with_error_fields(broker, backend,
 
     [entry] = _events(swarmq_logs, "dlq_publish_failed")
     assert entry["log_level"] == "error"
-    assert entry["error_type"] == "ConnectionError" and entry["error"] == "broker gone"
+    assert entry["error_type"] == "ConnectionError"
+    assert entry["error"] == "broker gone"
 
 
 async def test_retry_publish_failure_logs_error_with_error_fields(broker, backend, config, swarmq_logs):
@@ -224,7 +230,8 @@ async def test_retry_publish_failure_logs_error_with_error_fields(broker, backen
 
     [entry] = _events(swarmq_logs, "retry_publish_failed")
     assert entry["log_level"] == "error"
-    assert entry["error_type"] == "ConnectionError" and entry["error"] == "broker gone"
+    assert entry["error_type"] == "ConnectionError"
+    assert entry["error"] == "broker gone"
 
 
 async def test_task_sent_to_dlq_is_an_error(broker, backend, config, swarmq_logs):
@@ -356,7 +363,8 @@ async def test_disabled_dead_lettering_stores_error_result_and_acks(broker, back
     broker.ack.assert_awaited_once_with(msg)
     assert outcome == Terminal.release_in_finally()
     task_id, result_bytes, ttl_ms = backend.store_result.await_args.args
-    assert task_id == "abc-123" and ttl_ms == 120_000
+    assert task_id == "abc-123"
+    assert ttl_ms == 120_000
     assert b"Traceback: boom" in result_bytes
     dispatched = [c.args[0] for c in worker._signal_dispatcher.dispatch.await_args_list]
     assert Signal.TASK_DLQ not in dispatched

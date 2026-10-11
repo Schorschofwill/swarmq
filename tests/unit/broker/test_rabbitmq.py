@@ -987,7 +987,8 @@ class TestDeadLetterTtl:
         broker = self._dlq_broker(stamped)
         found, _ = await broker.retry_dead_letter("tasks", "t-1")
         [(routing_key, msg)] = broker.published
-        assert found is True and routing_key == "tasks"
+        assert found is True
+        assert routing_key == "tasks"
         assert msg.properties.expiration is None
         assert "x-swarmq-dead-lettered-at" not in msg.headers
 

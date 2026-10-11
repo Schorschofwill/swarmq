@@ -80,7 +80,8 @@ def test_unreported_queue_with_backlog_and_no_consumer_is_orphaned() -> None:
     assert report["queues"]["orphaned"] == [{"queue": "old", "messages": 4, "last_reported_s_ago": 3600}]
     [finding] = report["findings"]
     assert (finding["section"], finding["level"], finding["code"]) == ("queues", "warning", "orphaned_queue")
-    assert "old" in finding["message"] and "4 messages" in finding["message"]
+    assert "old" in finding["message"]
+    assert "4 messages" in finding["message"]
 
 
 @pytest.mark.parametrize(

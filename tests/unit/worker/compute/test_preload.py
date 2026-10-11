@@ -89,7 +89,8 @@ def test_import_registers_named_main_module_as_dunder_main(fresh_modules, monkey
     importlib.import_module(PRELOAD)
     main = sys.modules["__main__"]
     assert main is sys.modules[FIXTURE_MAIN]
-    assert main.__spec__ is not None and main.__spec__.name == FIXTURE_MAIN  # so prueft spawn._fixup_main_from_name
+    assert main.__spec__ is not None
+    assert main.__spec__.name == FIXTURE_MAIN
     assert main.EXECUTIONS == 1
 
 

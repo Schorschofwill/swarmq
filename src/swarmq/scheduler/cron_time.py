@@ -114,7 +114,8 @@ def _last_second_of_doubled_phase(moment: datetime) -> datetime:
     local = datetime.fromtimestamp(moment.timestamp(), zone)
     later = local.utcoffset()
     earlier = local.replace(fold=0).utcoffset()
-    assert later is not None and earlier is not None
+    assert later is not None
+    assert earlier is not None
     shift = int((earlier - later).total_seconds())
     lo = int(local.timestamp()) - shift  # noch alter Offset
     hi = int(local.timestamp())  # schon neuer Offset

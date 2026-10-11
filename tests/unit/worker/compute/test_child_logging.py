@@ -334,7 +334,8 @@ def test_builtin_child_takes_level_and_format_from_the_job(
     child.child_once(_job(log_level="ERROR", log_json=False), _Channel(events), 0)
 
     lines = [item[1] for item in events if isinstance(item, tuple) and item[0] == "stderr"]
-    assert len(lines) == 1 and "kept_t1" in lines[0]
+    assert len(lines) == 1
+    assert "kept_t1" in lines[0]
     assert not lines[0].startswith("{")  # human, nicht JSON
 
 

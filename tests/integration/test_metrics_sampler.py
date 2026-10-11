@@ -70,7 +70,8 @@ async def test_sampler_populates_gauges_from_real_broker(
             await asyncio.wait_for(beat.wait(), timeout=20)
             # One full sample completed → gauges carry real values.
             m = worker._metrics
-            assert m is not None and m.enabled
+            assert m is not None
+            assert m.enabled
             assert m.queue_depth.labels(queue=queue, kind="pending")._value.get() == 0
             assert m.dlq_messages.labels(queue=queue)._value.get() == 1
             worker_id = heartbeats[0]["worker_id"]

@@ -304,7 +304,9 @@ async def test_other_apps_cron_is_published_through_that_apps_broker(valkey_url:
     await _run_two_apps(valkey_url, broker_a, broker_b, published_b, ("bz10-a", "bz10-b"))
 
     queues_a = [c.args[0] for c in broker_a.publish.await_args_list]
-    assert published_b.is_set() and "app_b" not in queues_a, (
+    msg = (
         f"der Cron von App B ging ueber den Broker von App A (Queues: {queues_a}); "
         "liegen die Apps auf getrennten Brokern/vhosts, landet er dort ohne Consumer"
     )
+    assert published_b.is_set(), msg
+    assert "app_b" not in queues_a, msg

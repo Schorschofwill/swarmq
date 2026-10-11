@@ -323,7 +323,8 @@ class TestRejectReasons:
         (rejected,) = self._rejections(events)
         assert rejected["reason"] == "body_too_large"
         assert rejected["queue"] == "tasks.high"
-        assert rejected["task_id"] is None and rejected["task_name"] is None
+        assert rejected["task_id"] is None
+        assert rejected["task_name"] is None
 
     async def test_undecodable_body(self, broker, backend):
         worker, _broker, events = self._worker_with_spy(broker, backend)
@@ -438,7 +439,8 @@ class TestRejectReasons:
         [entry] = [e for e in swarmq_logs if e["event"] == "middleware_chain_factory_failed"]
         assert entry["logger"] == "swarmq.worker.pipeline"
         assert entry["log_level"] == "error"
-        assert entry["error_type"] == "RuntimeError" and entry["error"] == "factory exploded"
+        assert entry["error_type"] == "RuntimeError"
+        assert entry["error"] == "factory exploded"
 
 
 class _LockedForLog(Task):
@@ -469,7 +471,8 @@ async def test_lock_release_failure_is_a_warning_with_error_fields(broker, backe
     assert entry["logger"] == "swarmq.worker.pipeline"
     assert entry["log_level"] == "warning"
     assert entry["lock_name"] == "resource"
-    assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+    assert entry["error_type"] == "BackendConnectionError"
+    assert entry["error"] == "valkey down"
 
 
 class _ScheduledForLog(Task):
@@ -496,8 +499,10 @@ async def test_schedfire_finalize_failure_is_a_warning_with_error_fields(broker,
     [entry] = [e for e in swarmq_logs if e["event"] == "schedfire_finalize_failed"]
     assert entry["logger"] == "swarmq.worker.pipeline"
     assert entry["log_level"] == "warning"
-    assert entry["schedfire_key"] == "cron_a:1700000000000" and entry["terminal"] is True
-    assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+    assert entry["schedfire_key"] == "cron_a:1700000000000"
+    assert entry["terminal"] is True
+    assert entry["error_type"] == "BackendConnectionError"
+    assert entry["error"] == "valkey down"
 
 
 @pytest.mark.timeout(5)

@@ -179,7 +179,8 @@ class TestWatchProgress:
         with patch("swarmq.backend.valkey.results.asyncio.sleep", new=AsyncMock()):
             observed = await _collect(backend, until_current=10)
         currents = [_current(p) for p in observed]
-        assert 7 in currents and currents[-1] == 10
+        assert 7 in currents
+        assert currents[-1] == 10
         assert pubsub.subscribe.await_count == 2
 
     async def test_resubscribe_also_failing_keeps_trying(self) -> None:
@@ -197,7 +198,8 @@ class TestWatchProgress:
         with patch("swarmq.backend.valkey.results.asyncio.sleep", new=AsyncMock()):
             observed = await _collect(backend, until_current=10)
         currents = [_current(p) for p in observed]
-        assert 3 in currents and 10 in currents
+        assert 3 in currents
+        assert 10 in currents
 
     async def test_finally_cleans_up_on_break(self) -> None:
         backend, pubsub = self._progress_backend(_hash(1, 10))

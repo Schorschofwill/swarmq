@@ -85,5 +85,7 @@ def test_workflow_state_cas_script_decodes_version_but_never_encodes():
     assert "redis.call('SET'" in script
     assert "'PX'" in script
     # Vertrag: ein Schluessel, drei Argumente (Version, Payload, TTL).
-    assert "KEYS[1]" in script and "KEYS[2]" not in script
-    assert "ARGV[3]" in script and "ARGV[4]" not in script
+    assert "KEYS[1]" in script
+    assert "KEYS[2]" not in script
+    assert "ARGV[3]" in script
+    assert "ARGV[4]" not in script

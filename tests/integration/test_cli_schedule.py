@@ -313,7 +313,8 @@ class TestPruneOrphans:
             with redirect_stdout(buf):
                 await cli._run_schedule_list(_ns_list(format="json"))
             seen = {e["schedule_name"]: e["last_seen_ms"] for e in json.loads(buf.getvalue())}
-            assert seen[legacy] is None and seen[by_cli] is None
+            assert seen[legacy] is None
+            assert seen[by_cli] is None
             assert isinstance(seen[reported], int)
 
             buf = io.StringIO()

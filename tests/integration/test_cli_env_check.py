@@ -108,4 +108,5 @@ def test_unreachable_broker_exits_1(
     captured = capsys.readouterr()
     assert code == 1
     assert captured.out == ""
-    assert "swarmq check:" in captured.err and "127.0.0.1:1" in captured.err
+    assert "swarmq check:" in captured.err
+    assert "127.0.0.1:1" in captured.err

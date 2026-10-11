@@ -102,8 +102,11 @@ def test_worker_help_describes_current_supervisor_reload_and_check_semantics() -
     assert "Missing 'watchfiles' exits with code 78 (1 under --check)" in text
     # --check: Basis-Ports sind erlaubt; beschrieben wird, was geprueft wird.
     assert "multi-process mode is not combined" not in text
-    assert "port ranges" in text and "65535" in text
-    assert "--log-config" in text and "--max-processes" in text
+    assert "port ranges" in text
+    assert "65535" in text
+    assert "--log-config" in text
+    assert "--max-processes" in text
     # Neustart per execvpe mit dem sys.orig_argv-Schnappschuss, nicht execvp.
-    assert "os.execvp()" not in text and "execvp)" not in text
+    assert "os.execvp()" not in text
+    assert "execvp)" not in text
     assert "os.execvpe()" in text

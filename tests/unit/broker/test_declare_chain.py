@@ -183,8 +183,10 @@ async def test_changed_queue_type_raises_queue_arguments_mismatch() -> None:
 
     assert isinstance(exc_info.value, ConfigurationError)
     message = str(exc_info.value)
-    assert "'tasks'" in message and "x-queue-type" in message
-    assert "'quorum'" in message and "'classic'" in message
+    assert "'tasks'" in message
+    assert "x-queue-type" in message
+    assert "'quorum'" in message
+    assert "'classic'" in message
 
 
 async def test_strict_mode_refuses_an_existing_at_most_once_queue() -> None:

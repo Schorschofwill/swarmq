@@ -38,7 +38,8 @@ def test_unlock_expired_releases_only_expired_locks() -> None:
     table.lock(2, until=20.0)
     assert table.unlock_expired(9.9) == []
     assert table.unlock_expired(10.0) == [0]
-    assert table.state(0) is SlotState.FREE and table.state(2) is SlotState.LOCKED
+    assert table.state(0) is SlotState.FREE
+    assert table.state(2) is SlotState.LOCKED
     assert table.locked() == 1
 
 
@@ -106,7 +107,8 @@ def test_unlock_and_lock_events_name_the_cooldown(monkeypatch: pytest.MonkeyPatc
     (locked,) = [e for e in swarmq_logs if e["event"] == "worker_restart_limit_exceeded"]
     assert locked["cooldown_s"] == pm.SLOT_COOLDOWN_S
     (unlocked,) = [e for e in swarmq_logs if e["event"] == "worker_slot_unlocked"]
-    assert unlocked["worker_id"] == 1 and unlocked["cooldown_s"] == pm.SLOT_COOLDOWN_S
+    assert unlocked["worker_id"] == 1
+    assert unlocked["cooldown_s"] == pm.SLOT_COOLDOWN_S
     assert unlocked["locked_slots"] == 0
 
 
@@ -120,7 +122,8 @@ def test_channels_report_the_locked_slots(monkeypatch: pytest.MonkeyPatch) -> No
     pm.workers = {1: survivor, 2: crashed}
     pm._check_dead_workers()
     pm._unlock_expired_slots()
-    assert survivor.channel is not None and survivor.channel.locked_slots_value() == 1
+    assert survivor.channel is not None
+    assert survivor.channel.locked_slots_value() == 1
 
     clock.now += pm.SLOT_COOLDOWN_S
     pm._unlock_expired_slots()

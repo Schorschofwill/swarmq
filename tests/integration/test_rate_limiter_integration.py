@@ -87,7 +87,8 @@ class TestCheck:
         config = parse_rate_limit("10/m")
 
         result = await limiter.check(task_name, config)
-        assert isinstance(result, tuple) and len(result) == 3
+        assert isinstance(result, tuple)
+        assert len(result) == 3
         allowed, remaining, retry = result
         assert isinstance(allowed, bool)
         assert isinstance(remaining, int)

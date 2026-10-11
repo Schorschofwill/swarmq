@@ -631,7 +631,8 @@ class TestLockGateOutcomes:
         )
         ctx = self._ctx()
         assert await worker._lock_gate.apply(make_message(_default_payload()), ctx) is Continue
-        assert len(ctx.acquired_locks) == 1 and ctx.acquired_locks[0].name == "resource"
+        assert len(ctx.acquired_locks) == 1
+        assert ctx.acquired_locks[0].name == "resource"
         assert worker._active_handler_locks[ctx.handler_id] == ctx.acquired_locks
 
     async def test_conflict_under_cap_is_redelivered_with_exponential_delay(self, worker, broker):
@@ -649,7 +650,8 @@ class TestLockGateOutcomes:
         msg = make_message(_default_payload(), headers={"x-delivery-count": 18, "x-acquired-count": 30})
         await worker._lock_gate.apply(msg, self._ctx())
         headers = broker.retry_later.await_args.kwargs["headers"]
-        assert "x-delivery-count" not in headers and "x-acquired-count" not in headers
+        assert "x-delivery-count" not in headers
+        assert "x-acquired-count" not in headers
         assert headers[HEADER_LOCK_CONFLICTS] == 1
 
     async def test_conflict_copy_drops_backend_defer_count(self, worker, broker):
@@ -716,8 +718,10 @@ class TestLockGateLogging:
         )
 
         entry = self._entry(swarmq_logs, "lock_render_dlq_failed")
-        assert entry["log_level"] == "error" and entry["lock_template"] == "user-{user_id}"
-        assert entry["error_type"] == "BrokerConnectionError" and entry["error"] == "down"
+        assert entry["log_level"] == "error"
+        assert entry["lock_template"] == "user-{user_id}"
+        assert entry["error_type"] == "BrokerConnectionError"
+        assert entry["error"] == "down"
 
     async def test_empty_render_dlq_failure_logs_its_own_fixed_event(self, worker, broker, swarmq_logs):
         worker._lock_manager = MagicMock()
@@ -727,8 +731,10 @@ class TestLockGateLogging:
         )
 
         entry = self._entry(swarmq_logs, "lock_empty_render_dlq_failed")
-        assert entry["log_level"] == "error" and entry["lock_template"] == "{tag}"
-        assert entry["error_type"] == "BrokerConnectionError" and entry["error"] == "down"
+        assert entry["log_level"] == "error"
+        assert entry["lock_template"] == "{tag}"
+        assert entry["error_type"] == "BrokerConnectionError"
+        assert entry["error"] == "down"
 
     async def test_render_failure_logs_error_fields(self, worker, swarmq_logs):
         worker._lock_manager = MagicMock()
@@ -737,8 +743,10 @@ class TestLockGateLogging:
         )
 
         entry = self._entry(swarmq_logs, "lock_name_render_failed")
-        assert entry["log_level"] == "error" and entry["lock_template"] == "user-{user_id}"
-        assert entry["error_type"] == "ValueError" and "failed to render lock name" in entry["error"]
+        assert entry["log_level"] == "error"
+        assert entry["lock_template"] == "user-{user_id}"
+        assert entry["error_type"] == "ValueError"
+        assert "failed to render lock name" in entry["error"]
 
     async def test_acquire_backend_error_logs_one_deferral_line(self, worker, swarmq_logs):
         worker._lock_manager = MagicMock()
@@ -747,8 +755,11 @@ class TestLockGateLogging:
 
         [entry] = [e for e in swarmq_logs if e["log_level"] in ("warning", "error")]
         assert entry["event"] == "task_deferred_backend_unavailable"
-        assert entry["gate"] == "lock" and entry["stage"] == "acquire" and entry["lock_name"] == "resource"
-        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+        assert entry["gate"] == "lock"
+        assert entry["stage"] == "acquire"
+        assert entry["lock_name"] == "resource"
+        assert entry["error_type"] == "BackendConnectionError"
+        assert entry["error"] == "valkey down"
 
     @pytest.mark.timeout(5)
     async def test_hanging_acquire_is_deferred_after_backend_op_timeout(self, worker, broker, swarmq_logs):
@@ -768,7 +779,8 @@ class TestLockGateLogging:
         assert ctx.acquired_locks == []
         [entry] = [e for e in swarmq_logs if e["log_level"] in ("warning", "error")]
         assert entry["event"] == "task_deferred_backend_unavailable"
-        assert entry["gate"] == "lock" and entry["stage"] == "acquire"
+        assert entry["gate"] == "lock"
+        assert entry["stage"] == "acquire"
         assert entry["error_type"] == "BackendConnectionError"
 
     async def test_acquire_failure_logs_error_fields(self, worker, swarmq_logs):
@@ -777,8 +789,10 @@ class TestLockGateLogging:
         await worker._lock_gate.apply(make_message(_default_payload()), self._ctx())
 
         entry = self._entry(swarmq_logs, "lock_acquire_failed")
-        assert entry["log_level"] == "error" and entry["lock_name"] == "resource"
-        assert entry["error_type"] == "RuntimeError" and entry["error"] == "bug"
+        assert entry["log_level"] == "error"
+        assert entry["lock_name"] == "resource"
+        assert entry["error_type"] == "RuntimeError"
+        assert entry["error"] == "bug"
 
     async def test_acquire_error_reply_takes_the_old_requeue_path(self, worker, broker, swarmq_logs):
         from swarmq.exceptions import BackendResponseError
@@ -791,7 +805,8 @@ class TestLockGateLogging:
         broker.retry_later.assert_not_awaited()
         broker.redeliver.assert_awaited_once()
         entry = self._entry(swarmq_logs, "lock_acquire_failed")
-        assert entry["error_type"] == "BackendResponseError" and entry["error"] == "WRONGTYPE"
+        assert entry["error_type"] == "BackendResponseError"
+        assert entry["error"] == "WRONGTYPE"
 
     async def test_conflict_dlq_failure_at_wait_limit_logs_error_fields(self, worker, broker, swarmq_logs):
         worker._lock_manager = MagicMock()
@@ -802,8 +817,10 @@ class TestLockGateLogging:
         await worker._lock_gate.apply(msg, self._ctx())
 
         entry = self._entry(swarmq_logs, "lock_conflict_dlq_failed")
-        assert entry["log_level"] == "error" and entry["lock_conflicts"] == 8
-        assert entry["error_type"] == "BrokerConnectionError" and entry["error"] == "down"
+        assert entry["log_level"] == "error"
+        assert entry["lock_conflicts"] == 8
+        assert entry["error_type"] == "BrokerConnectionError"
+        assert entry["error"] == "down"
         assert "note" in entry
 
     async def test_conflict_requeue_failure_logs_error_fields(self, worker, broker, swarmq_logs):
@@ -813,8 +830,10 @@ class TestLockGateLogging:
         await worker._lock_gate.apply(make_message(_default_payload()), self._ctx())
 
         entry = self._entry(swarmq_logs, "lock_conflict_requeue_failed")
-        assert entry["log_level"] == "error" and entry["lock_name"] == "resource"
-        assert entry["error_type"] == "BrokerConnectionError" and entry["error"] == "down"
+        assert entry["log_level"] == "error"
+        assert entry["lock_name"] == "resource"
+        assert entry["error_type"] == "BrokerConnectionError"
+        assert entry["error"] == "down"
 
 
 async def test_conflict_copy_of_a_claimed_fire_carries_the_claim_token(broker, backend, config):

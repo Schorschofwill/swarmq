@@ -498,7 +498,8 @@ class TestProcessManagerRestart:
             assert pm.run() == 1
         [entry] = [e for e in swarmq_logs if e["event"] == "reload_execvp_failed"]
         assert entry["log_level"] == "error"
-        assert entry["error_type"] == "PermissionError" and entry["error"] == "python not executable"
+        assert entry["error_type"] == "PermissionError"
+        assert entry["error"] == "python not executable"
 
     def test_file_watcher_stop_failure_logs_error_fields(self, swarmq_logs):
         pm = ProcessManager(num_workers=0, worker_entry=_entry_stub)
@@ -515,7 +516,8 @@ class TestProcessManagerRestart:
             assert pm.run() == 0
         [entry] = [e for e in swarmq_logs if e["event"] == "file_watcher_stop_failed"]
         assert entry["log_level"] == "warning"
-        assert entry["error_type"] == "RuntimeError" and entry["error"] == "inotify stuck"
+        assert entry["error_type"] == "RuntimeError"
+        assert entry["error"] == "inotify stuck"
 
 
 class TestCrashLoopExhaustion:
@@ -682,7 +684,8 @@ class TestProcessManagerAutoscale:
         pm._queue_depth_fn = failing_depth
         pm._autoscale_tick()
         [entry] = [e for e in swarmq_logs if e["event"] == "autoscale_sample_failed"]
-        assert entry["log_level"] == "warning" and entry["error_type"] == "ConnectionError"
+        assert entry["log_level"] == "warning"
+        assert entry["error_type"] == "ConnectionError"
         assert entry["error"] == "amqp://user:***@rabbit/vh"
 
     def test_scale_up_when_depth_exceeds_threshold(self):
@@ -1169,7 +1172,8 @@ class TestFileWatcherIntegration:
             assert kwargs["watch_dirs"] == ("/tmp",)
             is_busy = kwargs["is_busy"]
             trigger = kwargs["trigger"]
-            assert callable(is_busy) and callable(trigger)
+            assert callable(is_busy)
+            assert callable(trigger)
 
             # is_busy reads pm._reload_requested live — static-False
             # closure would fail this.
@@ -1334,7 +1338,8 @@ class TestCleanExitIsNotRefilled:
         pm.workers = {5: WorkerInfo(process=_fake_process(alive=False, exitcode=0, pid=5), worker_id=0)}
         pm._check_dead_workers()
         [entry] = [e for e in swarmq_logs if e["event"] == "worker_died"]
-        assert entry["log_level"] == "info" and entry["exitcode"] == 0
+        assert entry["log_level"] == "info"
+        assert entry["exitcode"] == 0
 
     def test_expected_shutdown_logs_worker_died_as_info(self, swarmq_logs):
         pm = self._pm(n=2)
@@ -1343,7 +1348,8 @@ class TestCleanExitIsNotRefilled:
         pm.workers = {5: info}
         pm._check_dead_workers()
         [entry] = [e for e in swarmq_logs if e["event"] == "worker_died"]
-        assert entry["log_level"] == "info" and entry["expected"] is True
+        assert entry["log_level"] == "info"
+        assert entry["expected"] is True
 
     def test_crash_logs_worker_died_as_warning(self, swarmq_logs):
         pm = self._pm(n=2)
@@ -1351,7 +1357,8 @@ class TestCleanExitIsNotRefilled:
         pm.workers = {5: WorkerInfo(process=_fake_process(alive=False, exitcode=1, pid=5), worker_id=0)}
         pm._check_dead_workers()
         [entry] = [e for e in swarmq_logs if e["event"] == "worker_died"]
-        assert entry["log_level"] == "warning" and entry["exitcode"] == 1
+        assert entry["log_level"] == "warning"
+        assert entry["exitcode"] == 1
 
     def test_expected_shutdown_does_not_count_as_clean_exit(self):
         pm = self._pm(n=2)
@@ -1426,7 +1433,8 @@ class TestHeartbeatReplacement:
         assert pm.workers[5].expected_shutdown is True
         hung.terminate.assert_called_once()
         assert 500 in pm.workers  # Ersatz gestartet
-        assert pm._exhausted_slots == 0 and len(pm._hang_timestamps) == 1
+        assert pm._exhausted_slots == 0
+        assert len(pm._hang_timestamps) == 1
         # SIGKILL erst nach der Frist
         pm._escalate_terminating()
         hung.kill.assert_not_called()
@@ -1442,7 +1450,8 @@ class TestHeartbeatReplacement:
         just_spawned = WorkerInfo(process=_fake_process(pid=6), worker_id=1, channel=self._channel(None))
         pm.workers = {5: fresh, 6: just_spawned}
         pm._check_heartbeats()
-        assert not fresh.expected_shutdown and not just_spawned.expected_shutdown
+        assert not fresh.expected_shutdown
+        assert not just_spawned.expected_shutdown
         pm._ctx.Process.assert_not_called()
 
     def test_draining_worker_gets_the_longer_deadline(self):
@@ -1509,7 +1518,8 @@ class TestRecycleIntent:
         old.is_alive.return_value = False
         old.exitcode = 0
         pm._check_dead_workers()
-        assert pm._clean_exits == 0 and pm._ctx.Process.call_count == 1
+        assert pm._clean_exits == 0
+        assert pm._ctx.Process.call_count == 1
         assert pm._current_target() == 1
 
     def test_acknowledged_recycler_that_freezes_in_drain_is_killed_not_replaced(self):
@@ -1533,7 +1543,8 @@ class TestRecycleIntent:
         old = _fake_process(pid=5)
         pm.workers = {5: WorkerInfo(process=old, worker_id=0, channel=ch)}
         pm._check_heartbeats()  # Absicht -> Ersatz + ack
-        assert pm._ctx.Process.call_count == 1 and old.terminate.call_count == 0
+        assert pm._ctx.Process.call_count == 1
+        assert old.terminate.call_count == 0
         fresh = SupervisorChannel.create(multiprocessing.get_context("spawn"))  # der Ersatz schlaegt
         fresh.heartbeat.value = time.monotonic()
         pm.workers[500].channel = fresh
@@ -1597,7 +1608,8 @@ class TestSlotTable:
         pm._check_dead_workers()
         assert sorted(w.worker_id for w in pm.workers.values()) == [0, 1, 2]
         kwargs = pm._ctx.Process.call_args.kwargs
-        assert kwargs["args"][1] == 1 and kwargs["name"] == "swarmq-worker-1"
+        assert kwargs["args"][1] == 1
+        assert kwargs["name"] == "swarmq-worker-1"
 
     def test_autoscale_upper_bound_defines_the_slot_table(self):
         pm = self._pm(n=2, autoscale=(1, 4), queue_depth_fn=lambda: 0)
@@ -1661,7 +1673,8 @@ class TestSlotTable:
         pm._check_dead_workers()
         assert pm.slot_state(1) is SlotState.ACTIVE
         assert pm._ctx.Process.call_count == 3  # kein zweiter Ersatz
-        assert pm._current_target() == 2 and pm._clean_exits == 0
+        assert pm._current_target() == 2
+        assert pm._clean_exits == 0
 
     def test_hang_replacement_keeps_the_slot_in_transition_until_the_kill_lands(self):
         pm = self._pm(n=1, heartbeat_timeout_s=10.0)
@@ -1690,7 +1703,8 @@ class TestSlotTable:
         assert pm.slot_state(0) is SlotState.TRANSITION
         assert sorted(pm.workers) == [100, 300]  # Vorgaenger + weiterer Ersatz
         assert pm._ctx.Process.call_count == 3
-        assert pm.workers[300].restart_timestamps and pm.workers[300].worker_id == 0
+        assert pm.workers[300].restart_timestamps
+        assert pm.workers[300].worker_id == 0
 
     def test_exhausted_hang_budget_locks_the_slot_while_the_predecessor_lives(self):
         pm = self._pm(n=1, heartbeat_timeout_s=10.0, delivery_limit=1)  # Budget 2
@@ -1700,10 +1714,12 @@ class TestSlotTable:
         pm._check_heartbeats()
         assert pm.workers[100].process.is_alive()
         assert pm.slot_state(0) is SlotState.LOCKED
-        assert pm._current_target() == 0 and pm._ctx.Process.call_count == 1
+        assert pm._current_target() == 0
+        assert pm._ctx.Process.call_count == 1
         self._kill(pm, 100)
         pm._check_dead_workers()
-        assert pm.slot_state(0) is SlotState.LOCKED and not pm.workers
+        assert pm.slot_state(0) is SlotState.LOCKED
+        assert not pm.workers
 
     def test_autoscale_target_counts_occupied_slots_not_processes(self):
         pm = self._pm(n=2, autoscale=(1, 4), queue_depth_fn=lambda: 0)
@@ -1719,7 +1735,8 @@ class TestSlotTable:
         pm.workers[101].expected_shutdown = True  # Ende ohne Ersatz: Slot 1 wird frei
         self._kill(pm, 101, exitcode=0)
         pm._check_dead_workers()
-        assert pm.slot_state(1) is SlotState.FREE and pm._current_target() == 2
+        assert pm.slot_state(1) is SlotState.FREE
+        assert pm._current_target() == 2
         self._run_monitor_briefly(pm)
         assert sorted(w.worker_id for w in pm.workers.values()) == [0, 1]
         assert pm._ctx.Process.call_count == 3
@@ -1801,9 +1818,11 @@ class TestSlotTable:
         self._kill(pm, 100, exitcode=0)
         pm._check_dead_workers()
         assert pm.slot_state(0) is SlotState.FREE
-        assert pm._clean_exits == 1 and pm._current_target() == 1
+        assert pm._clean_exits == 1
+        assert pm._current_target() == 1
         self._run_monitor_briefly(pm)
-        assert pm._ctx.Process.call_count == 2 and list(pm.workers) == [101]
+        assert pm._ctx.Process.call_count == 2
+        assert list(pm.workers) == [101]
 
     def test_restart_timestamps_travel_to_the_replacement_in_the_same_slot(self):
         pm = self._pm(n=2)

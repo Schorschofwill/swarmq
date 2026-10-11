@@ -23,7 +23,8 @@ def test_continue_and_redelivered_are_singletons() -> None:
     assert Continue is Continue
     assert Redelivered is Redelivered
     assert Continue != Redelivered
-    assert isinstance(Continue, DeliveryOutcome) and isinstance(Redelivered, DeliveryOutcome)
+    assert isinstance(Continue, DeliveryOutcome)
+    assert isinstance(Redelivered, DeliveryOutcome)
     assert isinstance(Terminal(True, True), DeliveryOutcome)
 
 

@@ -536,7 +536,8 @@ class TestSchedfireGateOutcomes:
         msg = make_message(_default_payload(), headers={"x-swarmq-schedfire": "s:1"})
         await worker._schedfire_gate.apply(msg, self._ctx())
         kwargs = backend.schedules.claim_fire.await_args.kwargs
-        assert isinstance(kwargs["owner"], str) and kwargs["owner"]
+        assert isinstance(kwargs["owner"], str)
+        assert kwargs["owner"]
         assert kwargs["takeover"] == ()
 
     async def test_claim_offers_carried_token_for_takeover(self, worker, backend):
@@ -677,9 +678,12 @@ class TestSchedfireGateOutcomes:
         await worker._schedfire_gate.apply(msg, self._ctx())
 
         [entry] = [e for e in swarmq_logs if e["log_level"] == "warning"]
-        assert entry["event"] == "task_deferred_backend_unavailable" and entry["gate"] == "schedfire"
-        assert entry["stage"] == "completed_check" and entry["schedfire_key"] == "s:1"
-        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+        assert entry["event"] == "task_deferred_backend_unavailable"
+        assert entry["gate"] == "schedfire"
+        assert entry["stage"] == "completed_check"
+        assert entry["schedfire_key"] == "s:1"
+        assert entry["error_type"] == "BackendConnectionError"
+        assert entry["error"] == "valkey down"
 
     async def test_inflight_claim_backend_error_logs_one_deferral_line(self, worker, backend, swarmq_logs):
         from swarmq.exceptions import BackendConnectionError
@@ -690,8 +694,10 @@ class TestSchedfireGateOutcomes:
 
         [entry] = [e for e in swarmq_logs if e["log_level"] == "warning"]
         assert entry["event"] == "task_deferred_backend_unavailable"
-        assert entry["stage"] == "inflight_claim" and entry["schedfire_key"] == "s:1"
-        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+        assert entry["stage"] == "inflight_claim"
+        assert entry["schedfire_key"] == "s:1"
+        assert entry["error_type"] == "BackendConnectionError"
+        assert entry["error"] == "valkey down"
 
     @pytest.mark.timeout(5)
     async def test_hanging_completed_check_is_deferred_after_backend_op_timeout(
@@ -713,7 +719,8 @@ class TestSchedfireGateOutcomes:
         assert await worker._schedfire_gate.apply(msg, self._ctx()) is Redelivered
         broker.retry_later.assert_awaited_once()
         [entry] = [e for e in swarmq_logs if e["log_level"] == "warning"]
-        assert entry["stage"] == "completed_check" and entry["error_type"] == "BackendConnectionError"
+        assert entry["stage"] == "completed_check"
+        assert entry["error_type"] == "BackendConnectionError"
 
     @pytest.mark.timeout(5)
     async def test_hanging_inflight_claim_is_deferred_after_backend_op_timeout(
@@ -735,7 +742,8 @@ class TestSchedfireGateOutcomes:
         assert await worker._schedfire_gate.apply(msg, self._ctx()) is Redelivered
         broker.retry_later.assert_awaited_once()
         [entry] = [e for e in swarmq_logs if e["log_level"] == "warning"]
-        assert entry["stage"] == "inflight_claim" and entry["error_type"] == "BackendConnectionError"
+        assert entry["stage"] == "inflight_claim"
+        assert entry["error_type"] == "BackendConnectionError"
 
 
 class LongTask(Task):

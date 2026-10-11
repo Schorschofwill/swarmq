@@ -101,7 +101,8 @@ def test_error_catalog_entries_are_fully_shaped() -> None:
         assert entry["origin"] in _ORIGIN
         assert entry["retriable"] in _RETRIABLE
         assert entry["dlq_on_uncaught"] in _DLQ
-        assert isinstance(entry["when"], list) and entry["when"]
+        assert isinstance(entry["when"], list)
+        assert entry["when"]
         assert set(entry["when"]) <= _WHEN
         assert entry["exit_code_on_cli"] is None or isinstance(entry["exit_code_on_cli"], int)
         assert entry["doc"] is None or isinstance(entry["doc"], str)
@@ -336,7 +337,8 @@ def test_message_schemas_cover_expected_formats() -> None:
     schemas = build_message_schemas()
     assert set(schemas) == _SCHEMA_FILES
     for body in schemas.values():
-        assert isinstance(body, dict) and body
+        assert isinstance(body, dict)
+        assert body
         assert "type" in body or "$ref" in body
 
 

@@ -107,9 +107,14 @@ def setup():
 async def test_success_envelope_becomes_result_and_job_is_minimal(setup):
     deps, pool, ex = setup
     res = await ex.execute(_ctx(), {"retry_count": 3}, MiddlewareChain([]))
-    assert res.result_value == 42 and not res.is_error and res.di_scope is None
-    assert pool.job.args == (1, 2) and pool.job.kwargs == {"k": "v"} and pool.job.retry_count == 3
-    assert pool.job.worker_id == "w1" and pool.use_di is False
+    assert res.result_value == 42
+    assert not res.is_error
+    assert res.di_scope is None
+    assert pool.job.args == (1, 2)
+    assert pool.job.kwargs == {"k": "v"}
+    assert pool.job.retry_count == 3
+    assert pool.job.worker_id == "w1"
+    assert pool.use_di is False
     dispatched = [c.args[0].name for c in deps.signals.dispatch.await_args_list]
     assert dispatched == ["TASK_STARTED", "TASK_COMPLETED"]
 
@@ -126,7 +131,8 @@ async def test_error_envelope_keeps_exception_type_for_retry_path(setup):
     deps, pool, ex = setup
     pool.behaviour = error_envelope("t1", NoRetry("nope"), slot=0)
     res = await ex.execute(_ctx(), {"retry_count": 0}, MiddlewareChain([]))
-    assert res.is_error and isinstance(res.task_exception, NoRetry)
+    assert res.is_error
+    assert isinstance(res.task_exception, NoRetry)
     assert [c.args[0].name for c in deps.signals.dispatch.await_args_list][-1] == "TASK_FAILED"
 
 
@@ -143,8 +149,10 @@ async def test_hard_timeout_kills_child_and_fails_like_watchdog(setup):
     _, pool, ex = setup
     pool.behaviour = "hang"
     res = await ex.execute(_ctx(hard_timeout=0.05), {"retry_count": 0}, MiddlewareChain([]))
-    assert res.is_error and not res.is_cancelled
-    assert isinstance(res.task_exception, RuntimeError) and "hard timeout after 0.05s" in res.error_message
+    assert res.is_error
+    assert not res.is_cancelled
+    assert isinstance(res.task_exception, RuntimeError)
+    assert "hard timeout after 0.05s" in res.error_message
     assert pool.cancelled == 1  # der Pool toetet im Cancel-Pfad, nicht der Executor
 
 
@@ -154,7 +162,8 @@ async def test_cancel_flag_kills_child_and_takes_cancel_path(setup):
     pool.behaviour = "hang"
     deps.backend.is_cancelled = AsyncMock(return_value=True)
     res = await ex.execute(_ctx(), {"retry_count": 0}, MiddlewareChain([]))
-    assert res.is_cancelled and not res.is_error
+    assert res.is_cancelled
+    assert not res.is_error
     assert pool.cancelled == 1
     assert [c.args[0].name for c in deps.signals.dispatch.await_args_list][-1] == "TASK_CANCELLED"
 
@@ -167,7 +176,8 @@ async def test_outer_cancel_during_drain_kills_child_and_returns_error_result(se
     await asyncio.sleep(0.05)
     handler.cancel()
     res = await handler  # KTD2: kein propagierter CancelledError
-    assert res.is_error and "drain" in res.error_message
+    assert res.is_error
+    assert "drain" in res.error_message
     assert pool.cancelled == 1
 
 
@@ -176,7 +186,9 @@ async def test_child_death_is_an_error_result(setup):
     _, pool, ex = setup
     pool.behaviour = ChildDied("pid 7 exited without result")
     res = await ex.execute(_ctx(), {"retry_count": 0}, MiddlewareChain([]))
-    assert res.is_error and isinstance(res.task_exception, ChildDied) and not res.slot_unavailable
+    assert res.is_error
+    assert isinstance(res.task_exception, ChildDied)
+    assert not res.slot_unavailable
 
 
 @pytest.mark.timeout(5)
@@ -184,7 +196,8 @@ async def test_slot_unavailable_is_flagged(setup):
     _, pool, ex = setup
     pool.behaviour = SlotUnavailable("no ready")
     res = await ex.execute(_ctx(), {"retry_count": 0}, MiddlewareChain([]))
-    assert res.is_error and res.slot_unavailable
+    assert res.is_error
+    assert res.slot_unavailable
 
 
 @pytest.mark.timeout(5)
@@ -207,7 +220,8 @@ async def test_progress_sink_failure_logs_warning_with_error_type_and_error(setu
         if e["logger"] == "swarmq.worker.compute.executor" and e["event"] == "compute_progress_forward_failed"
     ]
     assert entry["log_level"] == "warning"
-    assert entry["error_type"] == "ConnectionError" and entry["error"] == "valkey down"
+    assert entry["error_type"] == "ConnectionError"
+    assert entry["error"] == "valkey down"
 
 
 @pytest.mark.timeout(5)
@@ -215,7 +229,8 @@ async def test_start_and_aclose_delegate_to_pool(setup):
     _, pool, ex = setup
     await ex.start()
     await ex.aclose()
-    assert pool.started and pool.closed
+    assert pool.started
+    assert pool.closed
 
 
 class ComputeFireAndForget(Task):
@@ -242,7 +257,8 @@ async def test_slot_unavailable_on_fire_and_forget_logs_the_dedicated_loss_messa
         )
     finally:
         executor_module.logger = monkeypatch_target
-    assert res.is_error and res.slot_unavailable
+    assert res.is_error
+    assert res.slot_unavailable
     events = [call.args[0] for call in fake_logger.error.call_args_list]
     assert "compute_slot_unavailable_fire_and_forget_dropped" in events
     assert "fire_and_forget_error" not in events
@@ -362,7 +378,8 @@ async def test_slot_unavailable_on_fire_and_forget_logs_error_type_and_error(set
     [entry] = _executor_logs(swarmq_logs, "compute_slot_unavailable_fire_and_forget_dropped")
     assert entry["error_type"] == "SlotUnavailable"
     assert entry["error"] == "compute child for slot 0 sent no ready signal"
-    assert entry["task_id"] and "hint" in entry
+    assert entry["task_id"]
+    assert "hint" in entry
 
 
 @pytest.mark.timeout(5)

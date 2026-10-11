@@ -206,7 +206,8 @@ class LockStoreContract:
         name = _name("sem")
         t1 = await impl.acquire(name, owner="a", ttl_ms=60_000, max_concurrency=2)
         t2 = await impl.acquire(name, owner="b", ttl_ms=60_000, max_concurrency=2)
-        assert t1 is not None and t2 is not None
+        assert t1 is not None
+        assert t2 is not None
         assert await impl.acquire(name, owner="c", ttl_ms=60_000, max_concurrency=2) is None
         assert await impl.release(t1) is True
         assert await impl.acquire(name, owner="c", ttl_ms=60_000, max_concurrency=2) is not None
@@ -235,11 +236,14 @@ class LockStoreContract:
         await impl.acquire(sem, owner="b", ttl_ms=60_000, max_concurrency=3)
 
         seen = await impl.observe(mutex, max_concurrency=1)
-        assert seen.owners == frozenset({"a"}) and 0 < seen.pttl_ms <= 60_000
+        assert seen.owners == frozenset({"a"})
+        assert 0 < seen.pttl_ms <= 60_000
         seen = await impl.observe(sem, max_concurrency=3)
-        assert seen.owners == frozenset({"a", "b"}) and 0 < seen.pttl_ms <= 60_000
+        assert seen.owners == frozenset({"a", "b"})
+        assert 0 < seen.pttl_ms <= 60_000
         gone = await impl.observe(_name("lock"), max_concurrency=1)
-        assert gone.owners == frozenset() and gone.pttl_ms == -2
+        assert gone.owners == frozenset()
+        assert gone.pttl_ms == -2
 
 
 @pytest.mark.timeout(5)
@@ -334,7 +338,8 @@ class ScheduleStoreContract:
         await impl.add(a, b"A", fire_ts_ms=None)
         await impl.add(b, b"B", fire_ts_ms=5_000)
         listing = await impl.list_all()
-        assert listing[a] == b"A" and listing[b] == b"B"
+        assert listing[a] == b"A"
+        assert listing[b] == b"B"
 
     async def test_poll_due_returns_only_due_entries_with_fire_time(self, impl: ScheduleStore) -> None:
         early, late = _name("sched"), _name("sched")
@@ -809,4 +814,5 @@ class ScheduleStoreContract:
         await impl.report_cron(other, "fp1", b"def", live_window_ms=60_000)
         await impl.forget_known_cron(name)
         known = await impl.known_cron_names()
-        assert name not in known and other in known
+        assert name not in known
+        assert other in known

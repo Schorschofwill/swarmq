@@ -59,5 +59,7 @@ async def test_slot_unavailable_logs_warning_with_error_fields(swarmq_logs):
         MagicMock(), _ctx(), SlotUnavailable("no ready"), "no ready", {"retry_count": 0}, MagicMock()
     )
     [entry] = [e for e in swarmq_logs if e["event"] == "compute_slot_unavailable_redeliver"]
-    assert entry["log_level"] == "warning" and entry["task_id"] == "t1"
-    assert entry["error_type"] == "SlotUnavailable" and entry["error"] == "no ready"
+    assert entry["log_level"] == "warning"
+    assert entry["task_id"] == "t1"
+    assert entry["error_type"] == "SlotUnavailable"
+    assert entry["error"] == "no ready"

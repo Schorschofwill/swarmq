@@ -123,8 +123,11 @@ async def test_route_marks_the_workflow_failed_without_redelivery():
 
     deps.fail_workflow.assert_awaited_once()
     got_delivery, ctx, message, may_redeliver = deps.fail_workflow.await_args.args
-    assert got_delivery is delivery and ctx.task_id == "t-1" and ctx.task_name == "gone"
-    assert message == "no such task" and may_redeliver is False
+    assert got_delivery is delivery
+    assert ctx.task_id == "t-1"
+    assert ctx.task_name == "gone"
+    assert message == "no such task"
+    assert may_redeliver is False
 
 
 async def test_failing_workflow_mark_does_not_break_the_route():

@@ -271,7 +271,8 @@ def test_a_pipe_drained_only_after_the_deadline_ends_without_a_fatal_error(
         )
         os.close(w)
         try:
-            assert proc.stdout is not None and proc.stdin is not None
+            assert proc.stdout is not None
+            assert proc.stdin is not None
             ready, _, _ = select.select([proc.stdout], [], [], _HANG_DEADLINE_S + 5)
             assert ready, "Kind meldet nichts: das Leeren haengt"
             assert proc.stdout.readline().strip() == b"deadline_passed"

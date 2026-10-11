@@ -1380,7 +1380,8 @@ class TestBackendDownResultStoreCombo:
            queue and its ``.DQ``;
         3. no silent dead-lettering -- ``.XQ`` is empty.
         """
-        assert gates.store_failed.is_set() and gates.rerun_stored.is_set()
+        assert gates.store_failed.is_set()
+        assert gates.rerun_stored.is_set()
         assert await broker.queue_depth(queue) == 0
         assert await broker.dead_letter_depth(queue) == 0
 

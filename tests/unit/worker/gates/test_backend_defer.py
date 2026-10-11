@@ -329,7 +329,9 @@ async def test_failed_deferral_log_keeps_stage_context_and_backend_error(worker,
     )
 
     [entry] = [e for e in swarmq_logs if e["event"] == "task_defer_failed_redelivered"]
-    assert entry["stage"] == "completed_check" and entry["schedfire_key"] == "s:1"
+    assert entry["stage"] == "completed_check"
+    assert entry["schedfire_key"] == "s:1"
     assert entry["backend_error_type"] == "BackendConnectionError"
     assert entry["backend_error"] == "valkey down"
-    assert entry["error_type"] == "BrokerConnectionError" and entry["error"] == "rmq down"
+    assert entry["error_type"] == "BrokerConnectionError"
+    assert entry["error"] == "rmq down"

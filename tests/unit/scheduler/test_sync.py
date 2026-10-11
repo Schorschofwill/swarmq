@@ -373,7 +373,8 @@ class TestApplyStaticDefinitionLogging:
     @staticmethod
     def _entry(logs, event):
         [entry] = [e for e in logs if e["event"] == event]
-        assert entry["logger"] == "swarmq.scheduler.sync" and entry["schedule_name"] == "logged"
+        assert entry["logger"] == "swarmq.scheduler.sync"
+        assert entry["schedule_name"] == "logged"
         return entry
 
     async def test_hget_failure_logs_error_fields(self, loop, backend, swarmq_logs):
@@ -381,7 +382,8 @@ class TestApplyStaticDefinitionLogging:
         await _sync(loop)
         entry = self._entry(swarmq_logs, "scheduler_sync_hget_failed")
         assert entry["log_level"] == "warning"
-        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+        assert entry["error_type"] == "BackendConnectionError"
+        assert entry["error"] == "valkey down"
 
     async def test_add_failure_logs_error_fields(self, loop, backend, store, swarmq_logs):
         backend.schedules.get.return_value = None
@@ -389,14 +391,17 @@ class TestApplyStaticDefinitionLogging:
         await _sync(loop)
         entry = self._entry(swarmq_logs, "scheduler_sync_add_failed")
         assert entry["log_level"] == "warning"
-        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey flap"
+        assert entry["error_type"] == "BackendConnectionError"
+        assert entry["error"] == "valkey flap"
 
     async def test_decode_error_logs_error_fields(self, loop, backend, swarmq_logs):
         backend.schedules.get.return_value = b"{not valid json"
         await _sync(loop)
         entry = self._entry(swarmq_logs, "scheduler_sync_decode_error_skipped")
-        assert entry["log_level"] == "error" and "hint" in entry
-        assert entry["error_type"] == "DecodeError" and entry["error"]
+        assert entry["log_level"] == "error"
+        assert "hint" in entry
+        assert entry["error_type"] == "DecodeError"
+        assert entry["error"]
 
     async def test_update_failure_logs_error_fields(self, loop, backend, store, swarmq_logs):
         existing = ScheduleDefinition(
@@ -414,7 +419,8 @@ class TestApplyStaticDefinitionLogging:
         await _sync(loop)
         entry = self._entry(swarmq_logs, "scheduler_sync_update_failed")
         assert entry["log_level"] == "warning"
-        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey flap"
+        assert entry["error_type"] == "BackendConnectionError"
+        assert entry["error"] == "valkey flap"
 
 
 def _utc_ms(*args: int) -> int:
@@ -655,7 +661,8 @@ class TestSyncInsertOrUpdate:
         await _sync(sync_loop)
 
         stored, score = await self._stored(memory)
-        assert stored.timezone == "Asia/Tokyo" and stored.disabled is True
+        assert stored.timezone == "Asia/Tokyo"
+        assert stored.disabled is True
         assert score is None
 
     async def test_changed_timezone_keeps_due_score(self, memory, sync_loop):
