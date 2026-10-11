@@ -610,8 +610,9 @@ All notable changes to SwarmQ. This project follows
 
 - **A scheduler leader whose broker keeps failing steps down.** After at
   least 2 failed publishes (`BrokerConnectionError`, not counting
-  `UnroutableMessage`, `MessageHeadersTooLarge`, `BrokerPublishBlocked`
-  and `PublishRejected`: what hits every candidate or one queue) over at
+  `UnroutableMessage`, `MessageHeadersTooLarge`, `BrokerPublishBlocked`,
+  `PublishRejected` and `PublishIndeterminate`: what hits every candidate
+  or one queue; real connection errors count) over at
   least `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S` without a success in
   between, it
   releases the leader lock without a handover marker (the successor

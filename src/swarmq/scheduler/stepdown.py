@@ -10,7 +10,8 @@ sich 2 x ``scheduler_lock_ttl`` nicht erneut.
 Nicht gezaehlt wird, was jeden Kandidaten gleich trifft oder an einer Queue
 haengt (``_NOT_COUNTED``): ein anderer vhost ohne die Queue endet als
 ``UnroutableMessage``, ein Broker-Alarm als ``BrokerPublishBlocked``, ein
-negatives Confirm einer Queue als ``PublishRejected`` (Review MR 15, P2-2).
+negatives Confirm einer Queue als ``PublishRejected`` (Review MR 15, P2-2),
+ausbleibende Confirms als ``PublishIndeterminate`` (Georg, 2026-10-11).
 Die Serie beginnt neu, wenn zwischen zwei Fehlern mehr als die Frist liegt,
 und mit jeder neuen Amtszeit (Review MR 15, P2-1).
 
@@ -29,6 +30,7 @@ from swarmq.exceptions import (
     BrokerConnectionError,
     BrokerPublishBlocked,
     MessageHeadersTooLarge,
+    PublishIndeterminate,
     PublishRejected,
     UnroutableMessage,
 )
@@ -44,11 +46,14 @@ if TYPE_CHECKING:
 # jede publizierende Verbindung (Plan 0.12.0, MR 16). ``PublishRejected``:
 # die Ablehnung haengt an einer Queue, nicht an der Verbindung; ein einzelner
 # kaputter Cron kostet nicht die Fuehrung (Review MR 15, P2-2).
+# ``PublishIndeterminate``: ausbleibende Confirms einer Queue ebenso (von
+# Georg am 2026-10-11 entschieden).
 _NOT_COUNTED: tuple[type[BaseException], ...] = (
     UnroutableMessage,
     MessageHeadersTooLarge,
     BrokerPublishBlocked,
     PublishRejected,
+    PublishIndeterminate,
 )
 
 

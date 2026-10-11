@@ -6,6 +6,8 @@ Test-Liste:
 - [x] eine neue Amtszeit (Lock verloren, neu gewonnen) beginnt eine neue Serie
 - [x] ``PublishRejected`` (Queue-spezifische Ablehnung) zaehlt nicht
 - [x] ein einzelner kaputter Cron (wiederholt ``PublishRejected``) fuehrt nicht zum Ruecktritt
+- [x] ein einzelner Cron, dessen Confirms ausbleiben (``PublishIndeterminate``), loest keinen Ruecktritt aus
+      (von Georg am 2026-10-11 entschieden)
 """
 
 from __future__ import annotations
@@ -126,6 +128,22 @@ async def test_a_single_broken_cron_does_not_step_down(leader, clock, broker, lo
     broker.publish = AsyncMock(side_effect=PublishRejected("publish to 'full' failed after 5 attempts"))
     for _ in range(5):
         await leader._fire_one("cron_full", 1_700_000_000_000, _def("cron_full"))
+        clock.now += 1.0
+
+    assert leader.state == "leader"
+    lock_manager.release.assert_not_awaited()
+
+
+async def test_a_single_cron_without_confirms_does_not_step_down(leader, clock, broker, lock_manager) -> None:  # type: ignore[no-untyped-def]
+    # Georg, 2026-10-11: ``PublishIndeterminate`` zaehlt nicht fuer den Ruecktritt.
+    from unittest.mock import AsyncMock
+
+    from swarmq.exceptions import PublishIndeterminate
+    from tests.unit.scheduler._helpers import _def
+
+    broker.publish = AsyncMock(side_effect=PublishIndeterminate("publish to 'slow' exceeded the publish deadline"))
+    for _ in range(5):
+        await leader._fire_one("cron_slow", 1_700_000_000_000, _def("cron_slow"))
         clock.now += 1.0
 
     assert leader.state == "leader"

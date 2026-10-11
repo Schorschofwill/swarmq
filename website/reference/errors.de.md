@@ -450,7 +450,10 @@ hängen geblieben; der Broker hat sie vielleicht, vielleicht nicht.
 wenn der Task idempotent ist oder mit `unique_for` eingereiht wurde
 (SwarmQ behält in diesem Fall den Dedup-Claim, eine Wiederholung im
 Fenster wird also abgewiesen statt doppelt zu laufen). Siehe die Warnung
-unter [`BrokerConnectionError`](#brokerconnectionerror).
+unter [`BrokerConnectionError`](#brokerconnectionerror). Ein
+Scheduler-Leader zählt den Fehler nicht für den Rücktritt: Ausbleibende
+Confirms hängen meist an einer Queue (etwa einer Quorum-Queue ohne
+Quorum), nicht an der Verbindung des Leaders.
 
 ```python
 from swarmq import BrokerConnectionError, PublishIndeterminate

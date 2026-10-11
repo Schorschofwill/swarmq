@@ -428,7 +428,10 @@ sent; the broker may or may not have it.
 idempotent or was submitted with `unique_for` (SwarmQ keeps the dedup
 claim in this case, so a retry within the window is refused instead of
 running twice). See the warning under
-[`BrokerConnectionError`](#brokerconnectionerror).
+[`BrokerConnectionError`](#brokerconnectionerror). A scheduler leader
+does not count it towards stepping down: missing confirms usually hang
+on one queue (for example a quorum queue without quorum), not on the
+leader's connection.
 
 ```python
 from swarmq import BrokerConnectionError, PublishIndeterminate

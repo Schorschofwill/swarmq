@@ -655,8 +655,9 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 - **Ein Scheduler-Leader, dessen Broker wiederholt scheitert, tritt
   zurück.** Nach mindestens 2 gescheiterten Publishes
   (`BrokerConnectionError`, ohne `UnroutableMessage`,
-  `MessageHeadersTooLarge`, `BrokerPublishBlocked` und `PublishRejected`:
-  was jeden Kandidaten oder eine Queue trifft) über mindestens
+  `MessageHeadersTooLarge`, `BrokerPublishBlocked`, `PublishRejected` und
+  `PublishIndeterminate`: was jeden Kandidaten oder eine Queue trifft;
+  echte Verbindungsfehler zählen) über mindestens
   `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S` ohne Erfolg dazwischen gibt er
   das Leader-Lock ohne Handover-Marker frei (der Nachfolger sendet
   `SCHEDULER_LEADER_FAILOVER`), sendet `SCHEDULER_STANDBY` und bewirbt
