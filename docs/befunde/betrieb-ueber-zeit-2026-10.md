@@ -85,7 +85,7 @@ Status je Befund: „offen“ oder „behoben (MR n, <Commit>)“. Mit dem Fix i
 | BZ-01 | `tests/integration/broker/test_befund_bz01_delay_queue_hol.py` | behoben (MR 10, 31d9bff) |
 | BZ-02 | `tests/e2e/test_befund_bz02_bz11_bz23_scheduler.py`, `tests/unit/scheduler/test_befund_bz02_bz07_bz09_bz28_scheduler.py` | behoben (MR 5, 0ff3af5) |
 | BZ-03 | `tests/integration/broker/test_befund_bz03_unroutable_publish.py` | behoben (MR 6, 183291e) |
-| BZ-04 | `tests/integration/test_befund_bz04_disabled_cron_data_loss.py`, `tests/unit/backend/test_befund_bz04_eviction_policy.py`, `tests/unit/worker/test_befund_bz04_lock_loss.py` | teilweise (Laufzeit, MR 13, 1c5682b): `test_befund_bz04_lock_loss.py` grün; Valkey-Umgebung (Eviction-Policy, Cron-Datenverlust) in MR 14 |
+| BZ-04 | `tests/integration/test_befund_bz04_disabled_cron_data_loss.py`, `tests/unit/backend/test_befund_bz04_eviction_policy.py`, `tests/unit/worker/test_befund_bz04_lock_loss.py` | behoben (MR 13 Laufzeit, MR 14 Umgebung, 8142d5f) |
 | BZ-05 | `tests/unit/worker/test_befund_bz05_lock_conflict_cap.py` | behoben (MR 13, ff8c098); Nachweise 2/3 auf `LockWaitExceeded` umgeschrieben |
 | BZ-06 | `tests/unit/worker/test_befund_bz06_unknown_task.py` | behoben (MR 11, 7af55b6) |
 | BZ-07 | `tests/unit/scheduler/test_befund_bz02_bz07_bz09_bz28_scheduler.py` | behoben (MR 4, ddcb11b) |
