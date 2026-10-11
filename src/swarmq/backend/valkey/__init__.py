@@ -20,12 +20,7 @@ from swarmq.backend.valkey.execution_guard import ValkeyExecutionGuardStore
 from swarmq.backend.valkey.locks import ValkeyLockStore
 from swarmq.backend.valkey.rate_limit import ValkeyRateLimitStore
 from swarmq.backend.valkey.results import ValkeyResults
-from swarmq.backend.valkey.schedules import (
-    ValkeyScheduleStore,
-    fired_key,
-    handover_key,
-    inflight_key,
-)
+from swarmq.backend.valkey.schedules import ValkeyScheduleStore
 from swarmq.locking import SCHEDULER_LOCK_NAME
 
 
@@ -83,13 +78,13 @@ class ValkeyBackend(ValkeyResults):
 
 
     def _sched_fired_key(self, schedfire_key: str) -> str:
-        return fired_key(schedfire_key)
+        return self._keys.sched_fired(schedfire_key)
 
     def _sched_inflight_key(self, schedfire_key: str) -> str:
-        return inflight_key(schedfire_key)
+        return self._keys.sched_inflight(schedfire_key)
 
     def _sched_handover_key(self, owner_token: str) -> str:
-        return handover_key(owner_token)
+        return self._keys.sched_handover(owner_token)
 
 
 

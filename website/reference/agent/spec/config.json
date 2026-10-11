@@ -241,6 +241,12 @@
       "type": "float"
     },
     {
+      "default": null,
+      "env_var": "SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S",
+      "name": "scheduler_publish_stepdown_s",
+      "type": "float | None"
+    },
+    {
       "default": false,
       "env_var": "SWARMQ_BURST_MODE",
       "name": "burst_mode",
@@ -401,6 +407,12 @@
       "env_var": "SWARMQ_VALKEY_EVICTION_CHECK",
       "name": "valkey_eviction_check",
       "type": "str"
+    },
+    {
+      "default": null,
+      "env_var": "SWARMQ_NAMESPACE",
+      "name": "namespace",
+      "type": "str | None"
     },
     {
       "default": 131072,

@@ -60,6 +60,10 @@ class SchedulerFire:
             task_id: str,
         ) -> None: ...
 
+        def _note_publish_ok(self) -> None: ...
+
+        async def _note_publish_failure(self, exc: BaseException) -> None: ...
+
         def _plan_next_fire(self, schedule_name: str, definition: ScheduleDefinition, now_ms: int) -> int | None: ...
 
         async def _park_unplannable(
@@ -299,7 +303,11 @@ class SchedulerFire:
             # sein; das Flag bleibt.
             if not isinstance(exc, PublishIndeterminate):
                 await self._release_own_claim(schedule_name, own_claim, task_id)
+            # BZ-10: wiederholte Fehler kosten die Fuehrung (``stepdown.py``).
+            await self._note_publish_failure(exc)
             return False
+        else:
+            self._note_publish_ok()
         return True
 
     async def _release_own_claim(self, schedule_name: str, own_claim: str | None, task_id: str) -> None:

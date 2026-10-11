@@ -499,9 +499,10 @@ Abschnitte:
 
 - `valkey`: `maxmemory_policy`, `maxmemory`, `used_memory`, `eviction`
   (`safe`, `unsafe`, `unknown`), das wirksame `eviction_check`,
-  `aof_enabled`, `version`, `cluster_enabled`, `namespace` und
-  `unprefixed_keys` (beide `null`, solange es keine Namensräume gibt).
-  Werte, die Valkey nicht liefert (ACL), sind `null`.
+  `aof_enabled`, `version`, `cluster_enabled`, `namespace`
+  (`SWARMQ_NAMESPACE`, ohne ihn `null`) und `unprefixed_keys`: mit
+  Namensraum die Zahl der Keys ohne ihn (`sq:*`, per `SCAN` gezählt bis
+  10000), sonst `null`. Werte, die Valkey nicht liefert (ACL), sind `null`.
 - `shutdown`: `shutdown_timeout` und `min_grace_period_s`
   (`shutdown_timeout + 15`), die mindestens einzustellende
   `terminationGracePeriodSeconds` (Kubernetes) bzw. `stop_grace_period`
@@ -510,11 +511,16 @@ Abschnitte:
 `findings` nennt jedes Problem mit `section`, `level` (`error` oder
 `warning`), `code` und `message`: `eviction_policy` (unter `strict` ein
 Fehler, sonst eine Warnung), `eviction_policy_unknown`, `aof_disabled`,
-`cluster`, `version` (älter als 8).
+`cluster`, `version` (älter als 8), `unprefixed_keys` (Keys ohne
+Namensraum neben einem Namensraum: Apps ohne `SWARMQ_NAMESPACE` am
+selben Valkey oder Daten von vor dem Setzen, die der Namensraum nicht
+migriert; [Namensraum](configuration.md#namensraum-mehrere-apps-auf-einem-valkey)),
+`unprefixed_keys_unknown` (`SCAN` gescheitert oder verboten).
 
 Exit-Codes: `0`, wenn nichts blockiert (Warnungen erlaubt), `78`, wenn
 ein Worker in dieser Umgebung den Start verweigern würde (verdrängende
-Policy unter `SWARMQ_VALKEY_EVICTION_CHECK=strict`), `1`, wenn Valkey
+Policy unter `SWARMQ_VALKEY_EVICTION_CHECK=strict`, ungültiger
+`SWARMQ_NAMESPACE`), `1`, wenn Valkey
 nicht erreichbar ist oder `SWARMQ_BACKEND_URL` fehlt.
 
 ```bash

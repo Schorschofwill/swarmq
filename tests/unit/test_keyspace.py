@@ -100,3 +100,117 @@ def test_handover_scan_pattern_finds_handover_markers_only() -> None:
 def test_prefixes_are_the_stem_of_their_keys() -> None:
     assert _KS.lock("x") == _KS.lock_prefix + "x"
     assert _KS.sched_worker_version("w") == _KS.sched_worker_version_prefix + "w"
+
+
+# ---------------------------------------------------------------------------
+# Namensraum (Plan 0.12.0, MR 15, BZ-10)
+# ---------------------------------------------------------------------------
+#
+# Test-Liste:
+# - [x] ``KeySpace("app1")`` setzt ``app1:`` vor jeden Key und Kanal; die
+#       Hash-Tags bleiben unveraendert
+# - [x] Muster und Praefixe tragen den Namensraum (SCAN findet nur eigene Keys)
+# - [x] ``keys.namespace.json`` ist ``keys.json`` mit Praefix (Golden additiv)
+# - [x] ungueltige Namensraeume: Doppelpunkt, Glob-Zeichen, Leerzeichen, zu lang,
+#       ``sq`` -> ``ValueError``; leer -> kein Namensraum
+
+
+def test_namespace_prefixes_a_key() -> None:
+    assert KeySpace("app1").result(TASK_ID) == "app1:sq:result:golden-task-0001"
+
+
+_NS = KeySpace("app1")
+
+
+def _all_keys(ks: KeySpace) -> list[str]:
+    """Jede Key-Familie einmal, mit den IDs aus ``_TABLE``."""
+    return [
+        ks.cancel(TASK_ID),
+        ks.control_setpoint("golden-group"),
+        ks.control_status("golden-group", "golden-sup"),
+        ks.guard_run(TASK_ID),
+        ks.guard_state(TASK_ID),
+        ks.lock("golden-lock"),
+        ks.lock("golden-sem"),
+        ks.scheduler_lock(),
+        ks.progress(TASK_ID),
+        ks.result(TASK_ID),
+        ks.rate_limit("golden-task", "<window>"),
+        ks.sched_fired(f"{SCHEDULE}:{FIRE_TS_MS}"),
+        ks.sched_handover("golden-owner"),
+        ks.sched_inflight(f"{SCHEDULE}:{FIRE_TS_MS + 60_000}"),
+        ks.unique(DEDUP_HASH),
+        ks.workflow_cancel(WF_ID),
+        ks.chord(WF_ID, "c1"),
+        ks.workflow(WF_ID),
+        ks.sched_defs(),
+        ks.sched_disabled(),
+        ks.sched_epoch(),
+        ks.sched_handover_latest(),
+        ks.sched_leader_version(),
+        ks.sched_report_def(),
+        ks.sched_report_first_seen(),
+        ks.sched_report_known(),
+        ks.sched_report_last_seen(),
+        ks.sched_worker_version("golden-worker"),
+        ks.sched_zset(),
+    ]
+
+
+def test_namespace_prefixes_every_key_and_keeps_the_hash_tags() -> None:
+    plain = _all_keys(_KS)
+    assert set(plain) == _golden_keys()
+    assert _all_keys(_NS) == ["app1:" + key for key in plain]
+
+
+def test_namespace_prefixes_channels_patterns_and_stems() -> None:
+    assert [_NS.notify_channel(TASK_ID), _NS.progress_channel(TASK_ID), _NS.workflow_notify_channel(WF_ID)] == [
+        "app1:" + _KS.notify_channel(TASK_ID),
+        "app1:" + _KS.progress_channel(TASK_ID),
+        "app1:" + _KS.workflow_notify_channel(WF_ID),
+    ]
+    assert _NS.sched_handover_pattern() == "app1:sq:sched:handover:*"
+    assert _NS.lock_prefix == "app1:sq:lock:"
+    assert _NS.sched_worker_version_prefix == "app1:sq:{sched}:worker_version:"
+    # SCAN ohne Namensraum findet keine Keys einer App mit Namensraum (und umgekehrt).
+    assert not fnmatch.fnmatchcase(_NS.sched_handover("o"), _KS.sched_handover_pattern())
+    assert not fnmatch.fnmatchcase(_KS.sched_handover("o"), _NS.sched_handover_pattern())
+
+
+def test_namespaced_golden_is_the_golden_with_the_prefix() -> None:
+    """Golden additiv (Q3): ``keys.json`` bleibt byte-identisch, die Keys mit
+    Namensraum stehen in einer eigenen Datei (Namensraum ``golden-ns``)."""
+    plain = json.loads((_GOLDEN / "keys.json").read_text())
+    namespaced = json.loads((_GOLDEN / "keys.namespace.json").read_text())
+    assert namespaced == {f"golden-ns:{key}": type_ for key, type_ in plain.items()}
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["a:b", "app*", "app?", "a[b]", "a{b}", "a b", "-app", ".app", "x" * 65, "sq", "SQ", "ä"],
+)
+def test_invalid_namespace_is_rejected(value: str) -> None:
+    from swarmq.keyspace import validate_namespace
+
+    with pytest.raises(ValueError, match="namespace"):
+        validate_namespace(value)
+
+
+@pytest.mark.parametrize("value", ["app1", "billing-prod", "a.b_c", "A" * 64])
+def test_valid_namespace_is_returned(value: str) -> None:
+    from swarmq.keyspace import validate_namespace
+
+    assert validate_namespace(value) == value
+
+
+@pytest.mark.parametrize("value", [None, ""])
+def test_empty_namespace_means_none(value: str | None) -> None:
+    from swarmq.keyspace import validate_namespace
+
+    assert validate_namespace(value) is None
+
+
+def test_keyspace_rejects_an_invalid_namespace_and_treats_empty_as_none() -> None:
+    with pytest.raises(ValueError, match="namespace"):
+        KeySpace("a:b")
+    assert KeySpace("").result(TASK_ID) == _KS.result(TASK_ID)

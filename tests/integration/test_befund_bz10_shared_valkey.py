@@ -14,24 +14,26 @@ Ein Leader mit defektem Broker bleibt Leader und hält alle Crons aller Apps an.
 Die Tests bilden „zwei Apps“ als zwei getrennte Registries/Queues mit je eigener
 Valkey-Verbindung und eigenem (gemocktem) Broker auf **demselben** Test-Valkey
 nach. Erwartet ist jeweils, dass die Apps sich nicht gegenseitig beeinflussen.
-Ob swarmq das über einen Namensraum je App lösen soll oder „eine App pro
-Valkey-DB“ als Anforderung dokumentiert, ist eine Produktentscheidung.
+Entscheidung (Register, Plan 0.12.0, MR 15): ein optionaler Namensraum je App
+(``SWARMQ_NAMESPACE``) trennt Keys, Kanäle und Leader; ohne Namensraum tritt ein
+Leader mit defektem Broker zurück. Die Tests 1, 2 und 4 geben den Apps darum
+je einen Namensraum (Plan Abschnitt 6, vor dem Fix umgeschrieben); Test 3
+läuft bewusst ohne Namensraum (geteilter Leader, Rücktritt).
 
 Test-Liste:
-- [x] gleichnamiger Task mit Rate-Limit 1/m in App A und App B: B läuft,
-      nachdem A sein Budget verbraucht hat (xfail, BZ-10)
-- [x] gleichnamiger Lock in App A und App B: B läuft, während A den Lock hält
-      (xfail, BZ-10)
-- [x] Leader (App A) mit defektem Broker: der Cron von App B feuert trotzdem
-      innerhalb weniger Poll-Takte (xfail, BZ-10)
-- [x] gesunder Leader (App A): der Cron von App B wird über den Broker von
-      App B publiziert, nicht über den von A (xfail, BZ-10)
+- [x] gleichnamiger Task mit Rate-Limit 1/m in App A und App B (je eigener
+      Namensraum): B läuft, nachdem A sein Budget verbraucht hat
+- [x] gleichnamiger Lock in App A und App B (je eigener Namensraum): B läuft,
+      während A den Lock hält
+- [x] Leader (App A, ohne Namensraum) mit defektem Broker: er tritt zurück, und
+      der Cron von App B feuert über den Broker von B
+- [x] gesunder Leader (App A), je eigener Namensraum: der Cron von App B wird
+      über den Broker von App B publiziert, nicht über den von A
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import time
 import uuid
 from typing import Any, ClassVar
@@ -73,14 +75,16 @@ def _broker_mock() -> MagicMock:
     return b
 
 
-async def _app_worker(valkey_url: str, task_cls: type[Task], queue: str) -> tuple[Worker, MagicMock, ValkeyBackend]:
+async def _app_worker(
+    valkey_url: str, task_cls: type[Task], queue: str, namespace: str | None = None
+) -> tuple[Worker, MagicMock, ValkeyBackend]:
     """Eine „App“: eigene Registry, eigene Queue, eigene Valkey-Verbindung."""
-    backend = ValkeyBackend(valkey_url)
+    backend = ValkeyBackend(valkey_url, namespace=namespace)
     await backend.connect()
     broker = _broker_mock()
     registry = TaskRegistry()
     registry.register(task_cls)
-    config = SwarmQConfig(broker_url="amqp://unused", backend_url=valkey_url, queues=[queue])
+    config = SwarmQConfig(broker_url="amqp://unused", backend_url=valkey_url, queues=[queue], namespace=namespace)
     worker = Worker(broker=broker, backend=backend, registry=registry, config=config)
     # Die Koordinationsvertraege wie in ``_wire_coordination`` -- ohne Scheduler.
     worker._rate_limiter = backend.rate_limit
@@ -125,15 +129,10 @@ def _report_tasks() -> tuple[type[Task], type[Task]]:
     return _ReportA, _ReportB
 
 
-@pytest.mark.befund("BZ-10")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-10: gleichnamige Tasks zweier Apps teilen den Rate-Limit-Key sq:rl:{task_name}",
-)
 async def test_same_task_name_in_two_apps_does_not_share_the_rate_limit(valkey_url: str) -> None:
     _ReportA, _ReportB = _report_tasks()
-    worker_a, _broker_a, backend_a = await _app_worker(valkey_url, _ReportA, "app_a")
-    worker_b, broker_b, backend_b = await _app_worker(valkey_url, _ReportB, "app_b")
+    worker_a, _broker_a, backend_a = await _app_worker(valkey_url, _ReportA, "app_a", "bz10-a")
+    worker_b, broker_b, backend_b = await _app_worker(valkey_url, _ReportB, "app_b", "bz10-b")
     try:
         await worker_a._handle_message(_message("bz10_send_report", "app_a"))
         assert _ReportA.runs == ["a"]
@@ -172,16 +171,11 @@ class _ExportB(Task):
         type(self).runs.append("b")
 
 
-@pytest.mark.befund("BZ-10")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-10: gleichnamige Locks zweier Apps teilen den Key sq:lock:<name> und schliessen sich aus",
-)
 async def test_same_lock_name_in_two_apps_does_not_block_the_other_app(valkey_url: str) -> None:
     _ExportA.started, _ExportA.finish = asyncio.Event(), asyncio.Event()
     _ExportB.runs = []
-    worker_a, _broker_a, backend_a = await _app_worker(valkey_url, _ExportA, "app_a")
-    worker_b, broker_b, backend_b = await _app_worker(valkey_url, _ExportB, "app_b")
+    worker_a, _broker_a, backend_a = await _app_worker(valkey_url, _ExportA, "app_a", "bz10-a")
+    worker_b, broker_b, backend_b = await _app_worker(valkey_url, _ExportB, "app_b", "bz10-b")
     running_a = asyncio.create_task(worker_a._handle_message(_message("bz10_export_a", "app_a")))
     try:
         await asyncio.wait_for(_ExportA.started.wait(), timeout=3)
@@ -205,9 +199,9 @@ async def test_same_lock_name_in_two_apps_does_not_block_the_other_app(valkey_ur
 
 
 async def _scheduler(
-    valkey_url: str, broker: MagicMock, owner: str, dispatcher: SignalDispatcher
+    valkey_url: str, broker: MagicMock, owner: str, dispatcher: SignalDispatcher, namespace: str | None = None
 ) -> tuple[SchedulerLoop, ValkeyBackend]:
-    backend = ValkeyBackend(valkey_url)
+    backend = ValkeyBackend(valkey_url, namespace=namespace)
     await backend.connect()
     config = SwarmQConfig(
         broker_url="amqp://unused",
@@ -215,6 +209,7 @@ async def _scheduler(
         scheduler_poll_interval=0.1,
         scheduler_heartbeat_interval=0.2,
         scheduler_lock_ttl=1.0,
+        namespace=namespace,
     )
     loop = SchedulerLoop(
         backend=backend,
@@ -246,9 +241,14 @@ async def _run_two_apps(
     broker_a: MagicMock,
     broker_b: MagicMock,
     published_b: asyncio.Event,
-    publish_attempted_a: asyncio.Event,
+    namespaces: tuple[str | None, str | None] = (None, None),
 ) -> None:
-    """App A wird Leader, danach startet App B; App B hat einen faelligen Cron."""
+    """App A wird Leader, danach startet App B; App B hat einen faelligen Cron.
+
+    Wartet ohne ``suppress`` darauf, dass der Cron von B publiziert wird
+    (Plan 0.12.0, MR 15): ein Timeout laesst den Test scheitern, statt ihn
+    still weiterlaufen zu lassen. Zeit genug fuer einen Ruecktritt von A
+    (2 Fehler ueber 1 s) und die Uebernahme durch B."""
     d_a = SignalDispatcher()
     a_leader = asyncio.Event()
 
@@ -256,19 +256,16 @@ async def _run_two_apps(
     async def _on_leader(**_kw: Any) -> None:
         a_leader.set()
 
-    loop_a, backend_a = await _scheduler(valkey_url, broker_a, f"A-{uuid.uuid4().hex[:6]}", d_a)
-    loop_b, backend_b = await _scheduler(valkey_url, broker_b, f"B-{uuid.uuid4().hex[:6]}", SignalDispatcher())
+    ns_a, ns_b = namespaces
+    loop_a, backend_a = await _scheduler(valkey_url, broker_a, f"A-{uuid.uuid4().hex[:6]}", d_a, ns_a)
+    loop_b, backend_b = await _scheduler(valkey_url, broker_b, f"B-{uuid.uuid4().hex[:6]}", SignalDispatcher(), ns_b)
     try:
         await loop_a.start()
         await asyncio.wait_for(a_leader.wait(), timeout=3)
         await loop_b.start()
         assert await ScheduleStore(backend_b).add_schedule(_app_b_cron())
 
-        await asyncio.wait_for(publish_attempted_a.wait(), timeout=3)
-        # Zehn Poll-Takte und mehrere Lock-TTLs Zeit, damit ein gesunder
-        # Scheduler den Cron von B uebernehmen koennte.
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(published_b.wait(), timeout=3)
+        await asyncio.wait_for(published_b.wait(), timeout=8)
     finally:
         await loop_a.stop()
         await loop_b.stop()
@@ -276,11 +273,6 @@ async def _run_two_apps(
         await backend_b.close()
 
 
-@pytest.mark.befund("BZ-10")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-10: ein Leader mit defektem Broker bleibt Leader und haelt die Crons aller Apps an",
-)
 async def test_leader_with_broken_broker_does_not_stop_the_other_apps_crons(valkey_url: str) -> None:
     attempted_a, published_b = asyncio.Event(), asyncio.Event()
     broker_a = _broker_mock()
@@ -293,19 +285,15 @@ async def test_leader_with_broken_broker_does_not_stop_the_other_apps_crons(valk
     broker_b = _broker_mock()
     broker_b.publish = AsyncMock(side_effect=lambda *_a, **_kw: published_b.set())
 
-    await _run_two_apps(valkey_url, broker_a, broker_b, published_b, attempted_a)
+    await _run_two_apps(valkey_url, broker_a, broker_b, published_b)
 
+    assert attempted_a.is_set(), "App A war Leader und haette den Cron von B zuerst versuchen muessen"
     assert published_b.is_set(), (
         f"der Cron von App B feuerte nicht: App A ist Leader, ihr Broker scheitert "
         f"({broker_a.publish.await_count} Publish-Versuche), und sie bleibt Leader"
     )
 
 
-@pytest.mark.befund("BZ-10")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-10: der Leader einer App publiziert die Crons der anderen App ueber seinen eigenen Broker",
-)
 async def test_other_apps_cron_is_published_through_that_apps_broker(valkey_url: str) -> None:
     attempted_a, published_b = asyncio.Event(), asyncio.Event()
     broker_a = _broker_mock()
@@ -313,7 +301,7 @@ async def test_other_apps_cron_is_published_through_that_apps_broker(valkey_url:
     broker_b = _broker_mock()
     broker_b.publish = AsyncMock(side_effect=lambda *_a, **_kw: published_b.set())
 
-    await _run_two_apps(valkey_url, broker_a, broker_b, published_b, attempted_a)
+    await _run_two_apps(valkey_url, broker_a, broker_b, published_b, ("bz10-a", "bz10-b"))
 
     queues_a = [c.args[0] for c in broker_a.publish.await_args_list]
     assert published_b.is_set() and "app_b" not in queues_a, (

@@ -56,6 +56,7 @@ The CLI prints a descriptive error if either is missing; see the
 | `SWARMQ_DEAD_LETTER_TERMINAL_FAILURES` | `true` | `false` stores the error result of a terminal task failure (`NoRetry`, exception outside `retry_exceptions`, retries exhausted) and acknowledges the message instead of dead-lettering it ([details](../guides/dead-letter-queues.md#switching-off-dead-lettering-of-task-failures)). `TaskInfo.dead_letter` wins. |
 | `SWARMQ_LOCK_WAIT_MAX_S` | `21600` | Upper limit in seconds for how long a message waits for a held task lock, measured from its first conflict (`x-swarmq-lock-wait-since`); afterwards it is dead-lettered with `LockWaitExceeded`. Before that only a stalled holder (same holder longer than its TTL + 60 s) or `max_age` ends the wait. Must be `> 0` and finite ([lock acquisition](../guides/locking-and-dedup.md#lock-acquisition-behaviour)). |
 | `SWARMQ_VALKEY_EVICTION_CHECK` | `strict` | What a worker does when Valkey may evict swarmq keys ([Valkey requirements](#valkey-requirements)): `strict` refuses to start with exit `78` under an evicting `maxmemory-policy` (anything but `noeviction` with a `maxmemory` limit, or with an unknown limit), `warn` logs `valkey_eviction_policy_unsafe` and starts, `off` does not check at all (no query, no warning). A policy that cannot be read (ACL forbids `CONFIG` and `INFO`) never blocks, it only logs `valkey_eviction_policy_unknown`. Case does not matter. Also read by `swarmq check` and by every other `ValkeyBackend` (CLI, producers), where only `off` changes anything. |
+| `SWARMQ_NAMESPACE` | *unset* | Namespace of this app on a shared Valkey ([namespace](#namespace-several-apps-on-one-valkey)): every Valkey key, Pub/Sub channel, the scheduler leader and the control channel move from `sq:…` to `<namespace>:sq:…`. 1–64 characters `A-Z a-z 0-9 _ . -`, starting with a letter or digit, not `sq`; anything else is a configuration error (exit `78`). Empty means unset. Queue names stay unchanged. Every `ValkeyBackend` (worker, producer, CLI, control channel) reads it. Set it only for a new app or after emptying its keys, and only once every component runs 0.12. |
 | `SWARMQ_UNKNOWN_TASK_GRACE_S` | `900.0` | Grace period in seconds for a task name this worker does not register (rolling deploy: producers ahead of the workers). Within it the worker defers the message with backoff (1 s, then as long as it has waited so far, at most 60 s per round) and keeps the first contact in `x-swarmq-unknown-since`; afterwards it dead-letters the message with an error result and `TASK_REJECTED` (`unregistered_task`). `0` switches the grace period off (dead-letter at first contact). Must be `>= 0` ([unregistered tasks](../guides/dead-letter-queues.md#unregistered-tasks-and-rolling-deploys)). |
 | `SWARMQ_MALLOC_TRIM_THRESHOLD` | `131072` | `MALLOC_TRIM_THRESHOLD_` for compute children (glibc growth). |
 | `SWARMQ_MALLOC_ARENA_MAX` | `2` | `MALLOC_ARENA_MAX` for compute children. |
@@ -113,6 +114,7 @@ with exit `78`.
 | `SWARMQ_SCHEDULER_PRUNE` | `on` | What the leader does with a static cron that was reported once and that no worker has reported for `SWARMQ_SCHEDULER_PRUNE_AFTER_S`: `on` removes it, `log` only logs `scheduler_cron_prune_skipped`, `off` does nothing. The scheduler leader's value applies, whichever app it belongs to: set the same value in every app on the Valkey. Requires every app on the Valkey to run 0.10.0 or later ([removing crons](../guides/scheduling-and-retries.md#removing-crons-no-app-reports-anymore)). |
 | `SWARMQ_SCHEDULER_PRUNE_AFTER_S` | `86400.0` | Period in seconds after which a silent static cron is removed. Must be at least `3 × SWARMQ_SCHEDULER_SEEN_INTERVAL_S`. Cron reports are kept for twice this period, at least 7 days. The scheduler leader's value applies: set the same value in every app on the Valkey. |
 | `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S` | `86400.0` | How long, in seconds, the leader keeps retrying a deferred task (`delay=`/`eta=`) whose queue does not exist, counted from the first unroutable attempt; it retries every 60 s and then drops the task with an error result. Must be > 0. The scheduler leader's value applies ([missing queues](../guides/scheduling-and-retries.md#missing-queues)). |
+| `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S` | `SWARMQ_SCHEDULER_LOCK_TTL` | The scheduler leader releases the leader lock after at least 2 failed publishes (`BrokerConnectionError`, not counting `UnroutableMessage` and `MessageHeadersTooLarge`) spread over at least this many seconds, with no successful publish in between; it then does not apply again for `2 × SWARMQ_SCHEDULER_LOCK_TTL`, so a worker whose broker works takes over (it emits `SCHEDULER_LEADER_FAILOVER`). `0` disables the step-down. Must be `≥ 0`. Set `0` while apps older than 0.12 share the Valkey without namespace ([namespace](#namespace-several-apps-on-one-valkey)). |
 
 ### Observability
 
@@ -278,6 +280,41 @@ into `CrashLoopBackOff`, under Docker with a `restart:` policy into a
 restart loop. Fix the policy, or set `SWARMQ_VALKEY_EVICTION_CHECK=warn`
 deliberately.
 
+### Namespace (several apps on one Valkey)
+
+Without a namespace all apps on one Valkey share the keys under `sq:`:
+rate limits and task locks with the same name, unique hashes and one
+scheduler leader for all apps. That leader publishes the crons of every
+app through its own broker. Set `SWARMQ_NAMESPACE` per app to separate
+them: every key and Pub/Sub channel, the leader lock and the control
+channel then live under `<namespace>:sq:…` (the hash tags such as
+`{sched}` stay the same). Queue names are not prefixed: give every app
+its own RabbitMQ vhost.
+
+- **Separate vhosts need a namespace.** With one leader for all apps a
+  cron of app B goes through the broker of app A; on another vhost the
+  queue does not exist there and the fire is lost
+  (`scheduler_fire_unroutable_foreign`).
+- **Without namespace** the leader steps down after repeated publish
+  failures (`SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S`), so a leader with a
+  broken broker no longer stops the crons of all apps.
+- **The namespace does not migrate data.** Keys under `sq:` (schedules,
+  CLI crons, delayed tasks, results, locks) are not seen under the new
+  namespace. Set it for a new app, or empty the app's keys first.
+  `swarmq check` shows the namespace and counts keys without it
+  ([CLI](cli.md#swarmq-check)).
+- **Rollout:** first run every component (workers, producers, CLI,
+  control service) on 0.12, then set the namespace everywhere in the
+  same step. Mixed values split the app: a producer without namespace
+  writes results and schedules where the worker does not look.
+- **Rollback:** once the namespace is set, roll back only to 0.12 or
+  later. 0.11.1 refuses to start with `SWARMQ_NAMESPACE` set (see below);
+  0.11.0 would silently ignore it.
+- **While apps older than 0.12 share the Valkey without namespace**, set
+  `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S=0`. Otherwise the leadership can
+  move to a 0.11 app, and the 0.12 features of the leader (stable
+  one-shot IDs, cron dedup, held crons) are off while it leads.
+
 ### Namespace requires 0.12
 
 `SWARMQ_NAMESPACE` belongs to swarmq 0.12 and later. 0.11.1 rejects it:
@@ -285,9 +322,10 @@ if it is set and not empty, worker, scheduler and `SwarmQ(...)` stop
 with `ConfigurationError` (`swarmq worker`: exit 78), and so do the CLI
 commands `swarmq schedule`, `swarmq dlq` and `swarmq inspect` (exit 78,
 before any connection). `swarmq worker --check` reports it as an error
-(exit 1). Without that
-check a rollback to 0.11.x would silently run without the namespace,
-on different Valkey keys. Unset the variable or run swarmq >= 0.12.
+(exit 1). Without that check a rollback to 0.11.x would silently run
+without the namespace, on different Valkey keys. From 0.12 on the
+variable is supported, and only an invalid value stops these entry
+points (exit `78`; `swarmq worker --check`: exit 1).
 
 ## `SwarmQConfig` kwargs
 

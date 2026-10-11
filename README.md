@@ -176,7 +176,8 @@ Things to know:
 - **Scheduler** — cron with an IANA time zone per task and a fixed
   rule for clock changes, delayed (`eta=...`), recurring with
   leader-election failover; every worker reports its crons, so several
-  apps can share one Valkey.
+  apps can share one Valkey (with separate RabbitMQ vhosts, give each app
+  its own `SWARMQ_NAMESPACE`).
 - **Progress tracking** — `Task.update_progress(current, total, msg)`
   + `app.get_progress` / `app.watch_progress` AsyncIterator.
 - **Dependency injection** (`pip install swarmq[dishka]`) — register a

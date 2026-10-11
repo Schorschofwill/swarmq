@@ -42,8 +42,11 @@ class ValkeyResults(ValkeyConnection):
         pool: valkey.asyncio.ConnectionPool | None = None,
         keys: KeySpace | None = None,
         eviction_check: str | None = None,
+        namespace: str | None = None,
     ) -> None:
-        super().__init__(url, client=client, pool=pool, keys=keys, eviction_check=eviction_check)
+        super().__init__(
+            url, client=client, pool=pool, keys=keys, eviction_check=eviction_check, namespace=namespace
+        )
         # R3.5: Lua script is lazy-registered on first use (registration
         # requires a connected client). See _ensure_unique_release_script.
         self._unique_release_script: Any = None

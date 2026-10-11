@@ -34,6 +34,7 @@ from swarmq.scheduler.fire_plan import SchedulerFirePlan
 from swarmq.scheduler.leader_version import LeaderVersionWatch, SchedulerLeaderVersion, swarmq_version
 from swarmq.scheduler.prune import SchedulerCronPrune
 from swarmq.scheduler.reports import cron_fingerprint, live_window_ms
+from swarmq.scheduler.stepdown import SchedulerStepdown
 from swarmq.scheduler.sync import SchedulerCronSync
 from swarmq.scheduler.unowned import SchedulerUnowned
 from swarmq.scheduler.unroutable import SchedulerUnroutable
@@ -85,6 +86,7 @@ class SchedulerLoop(
     SchedulerUnroutable,
     SchedulerUnowned,
     SchedulerFire,
+    SchedulerStepdown,
     SchedulerEpoch,
     SchedulerValkeyWatch,
 ):
@@ -157,6 +159,8 @@ class SchedulerLoop(
         self._unroutable_logged_at: dict[str, float] = {}
 
         self._state: _SchedulerState = "standby"
+        # Ruecktritt nach Publish-Fehlern (BZ-10, ``stepdown.py``).
+        self._init_stepdown()
         self._prev_leader_seen = False
         """Set to True when election sees the lock held by *someone*
         (acquire returned False). Used together with the
@@ -419,6 +423,8 @@ class SchedulerLoop(
             return
 
         # state == "standby"
+        if self._in_stepdown_cooldown():
+            return
         try:
             acquired = (
                 await self._lock_manager.acquire(

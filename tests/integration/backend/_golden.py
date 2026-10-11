@@ -49,6 +49,8 @@ from swarmq.workflow import Signature, chain, chord, group
 from swarmq.workflow_orchestration import build_initial_workflow_state
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
+# Namensraum fuer ``keys.namespace.json`` (Plan 0.12.0, MR 15, BZ-10).
+NAMESPACE = "golden-ns"
 SRC_DIR = Path(__file__).resolve().parents[3] / "src" / "swarmq"
 
 TASK_ID = "golden-task-0001"
@@ -127,7 +129,7 @@ def value_fixtures() -> dict[str, bytes]:
 # keys.json — gegen echtes Valkey
 # ---------------------------------------------------------------------------
 
-_RL_WINDOW = re.compile(r"^(sq:rl:\{[^}]+\}:)\d+$")
+_RL_WINDOW = re.compile(r"^((?:[^:]+:)?sq:rl:\{[^}]+\}:)\d+$")
 
 
 def _normalise_key(key: str) -> str:
@@ -165,14 +167,17 @@ async def snapshot_keys(backend: ValkeyBackend) -> dict[str, str]:
     await backend.execution_guard.claim(
         TASK_ID, owner="golden-owner", retry_count=0, ttl_ms=TTL_MS, state_ttl_ms=TTL_MS, max_orphans=3,
     )
-    locks = LockManager(client)
+    # Die Stores mit dem KeySpace des Backends: mit Namensraum liegen auch
+    # Locks, Rate-Limit, Chords und Kontrollkanal darunter (BZ-10).
+    keys = backend._keys
+    locks = LockManager(client, keys=keys)
     await locks.acquire("golden-lock", "golden-owner", TTL_MS, 1)
     await locks.acquire("{sched}:leader", "golden-owner", TTL_MS, 1)
     await locks.acquire("golden-sem", "golden-owner", TTL_MS, 2)
-    await RateLimiter(client).check("golden-task", RateLimitConfig(max_requests=10, window_size_ms=60_000))
-    await ChordManager(client).record_and_check_complete(WF_ID, "c1", "m1", 2, TTL_MS)
+    await RateLimiter(client, keys=keys).check("golden-task", RateLimitConfig(max_requests=10, window_size_ms=60_000))
+    await ChordManager(client, keys=keys).record_and_check_complete(WF_ID, "c1", "m1", 2, TTL_MS)
     # Kontrollkanal (Plan 0.12.0, MR 0): Sollwert und Rueckmeldung.
-    control = ValkeySetpointStore(client=client)
+    control = ValkeySetpointStore(client=client, keys=keys)
     await control.write_setpoint("golden-group", Setpoint(low=1, high=2))
     await control.write_status("golden-group", "golden-sup", {"workers": 1}, ttl_s=TTL_MS / 1000)
 
@@ -297,6 +302,8 @@ def lua_contract() -> str:
 async def write_all(backend: ValkeyBackend) -> None:
     (GOLDEN_DIR / "values").mkdir(parents=True, exist_ok=True)
     (GOLDEN_DIR / "keys.json").write_text(json.dumps(await snapshot_keys(backend), indent=2) + "\n")
+    namespaced = ValkeyBackend(client=backend.client, namespace=NAMESPACE)
+    (GOLDEN_DIR / "keys.namespace.json").write_text(json.dumps(await snapshot_keys(namespaced), indent=2) + "\n")
     for name, data in value_fixtures().items():
         (GOLDEN_DIR / "values" / name).write_bytes(data)
     (GOLDEN_DIR / "channels.txt").write_text(channels())

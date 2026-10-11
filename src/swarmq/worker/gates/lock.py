@@ -59,7 +59,8 @@ from swarmq.headers import (
     HEADER_RETRY_COUNT,
     LOCK_WAIT_STATE_HEADERS,
 )
-from swarmq.locking import compute_lock_ttl_ms, lock_key
+from swarmq.keyspace import KeySpace
+from swarmq.locking import compute_lock_ttl_ms
 from swarmq.logging import _error_fields, get_logger
 from swarmq.signals import Signal
 from swarmq.worker.gates import (
@@ -167,6 +168,10 @@ TerminalDeadLetter = Callable[[Any, GateContext, str, str, dict[str, Any], Publi
 
 
 class LockGate:
+    def _lock_key(self, lock_name: str) -> str:
+        """Valkey-Key des Locks fuer Hinweise, mit Namensraum (BZ-10)."""
+        return KeySpace(self._deps.config.namespace).lock(lock_name)
+
     def __init__(self, deps: GateDeps, *, dead_letter: TerminalDeadLetter) -> None:
         self._deps = deps
         self._dead_letter = dead_letter
@@ -311,7 +316,7 @@ class LockGate:
                 f"{LOCK_WAIT_EXCEEDED_ERROR_TYPE}: lock wait limit reached: waited {waited_ms / 1000:.0f} s "
                 f"({conflicts} conflicts) on lock "
                 f"{lock_name!r}, SWARMQ_LOCK_WAIT_MAX_S={deps.config.lock_wait_max_s:g}; "
-                f"recover a wedged lock via valkey-cli DEL {lock_key(lock_name)}"
+                f"recover a wedged lock via valkey-cli DEL {self._lock_key(lock_name)}"
             )
             return await self._wait_over(delivery, ctx, lock_name, conflicts, waited_ms, "max_wait", message)
 
@@ -321,7 +326,7 @@ class LockGate:
                 f"{LOCK_WAIT_EXCEEDED_ERROR_TYPE}: lock holder stalled: the same holder has held lock "
                 f"{lock_name!r} for {held_ms / 1000:.0f} s, "
                 f"longer than its TTL + {LOCK_STALL_GRACE_MS // 1000} s ({conflicts} conflicts, waited "
-                f"{waited_ms / 1000:.0f} s); recover a wedged lock via valkey-cli DEL {lock_key(lock_name)}"
+                f"{waited_ms / 1000:.0f} s); recover a wedged lock via valkey-cli DEL {self._lock_key(lock_name)}"
             )
             return await self._wait_over(delivery, ctx, lock_name, conflicts, waited_ms, "stalled", message)
 
@@ -454,7 +459,7 @@ class LockGate:
             **_error_fields(exc),
             note=f"message routed via broker DLX to {ctx.queue}.XQ "
             "without diagnostic headers; recover wedged lock "
-            f"via valkey-cli DEL {lock_key(lock_name)}",
+            f"via valkey-cli DEL {self._lock_key(lock_name)}",
         )
         # Terminal DLX fallback — route first, then release.
         await route_via_dlx(

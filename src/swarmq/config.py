@@ -10,13 +10,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from swarmq.config_validation import ConfigValidation
 from swarmq.exceptions import ConfigurationError
+from swarmq.keyspace import validate_namespace
 from swarmq.logging_settings import (
     VALID_LOG_FORMATS,
     LoggingSettings,
     parse_logger_levels,
     split_csv,
 )
-from swarmq.namespace_guard import reject_namespace
 from swarmq.valkey_policy import EVICTION_CHECK_MODES
 
 # Credential-free placeholder used as ``broker_url`` / ``backend_url`` when a
@@ -146,6 +146,16 @@ def env_valkey_eviction_check() -> str:
     return mode if mode in EVICTION_CHECK_MODES else "strict"
 
 
+def env_namespace() -> str | None:
+    """``SWARMQ_NAMESPACE`` fuer Backends ohne ``SwarmQConfig`` (CLI, Producer,
+    Kontrollkanal; Plan 0.12.0, MR 15, BZ-10). Leer oder ungesetzt: kein
+    Namensraum; ein ungueltiger Wert ist ein ``ConfigurationError`` (Exit 78)."""
+    try:
+        return validate_namespace(os.environ.get("SWARMQ_NAMESPACE", ""))
+    except ValueError as exc:
+        raise ConfigurationError(f"SWARMQ_NAMESPACE: {exc}") from exc
+
+
 def observability_port_ranges(
     base_metrics: int | None, base_health: int | None, upper: int
 ) -> tuple[list[int] | None, list[int] | None]:
@@ -272,6 +282,12 @@ class SwarmQConfig(ConfigValidation):
     # verzoegerten Task, dessen Queue fehlt, alle 60 s zurueck und verwirft ihn
     # nach dieser Frist ab dem ersten unroutbaren Versuch (Fehlerergebnis).
     scheduler_unroutable_oneshot_max_s: float = 86400.0
+    # Ruecktritt des Leaders (Plan 0.12.0, MR 15, BZ-10): nach mindestens 2
+    # Publish-Fehlern (``BrokerConnectionError`` ohne Unroutable/Header zu
+    # gross) ueber mindestens so viele Sekunden gibt er das Lock frei und
+    # bewirbt sich 2 x ``scheduler_lock_ttl`` nicht. ``None``:
+    # ``scheduler_lock_ttl``; 0 schaltet den Ruecktritt ab.
+    scheduler_publish_stepdown_s: float | None = None
     # R4.5 Burst-Mode: when True, the worker exits cleanly once all
     # configured queues have been idle for `burst_idle_timeout` seconds
     # without delivering a single message. Used for batch/cron-style
@@ -367,6 +383,11 @@ class SwarmQConfig(ConfigValidation):
     # 78, ``warn`` warnt nur, ``off`` prueft nicht. Ist die Policy nicht
     # pruefbar, gibt es in jedem Modus nur eine Warnung.
     valkey_eviction_check: str = "strict"
+    # Namensraum der App auf einem gemeinsamen Valkey (Plan 0.12.0, MR 15,
+    # BZ-10): ``<ns>:`` vor allen Keys, Pub/Sub-Kanaelen, dem Leader und dem
+    # Kontrollkanal. Queue-Namen bleiben ohne Praefix (eigener vhost je App).
+    # ``None`` (Default) heisst ``sq:`` wie bisher.
+    namespace: str | None = None
     malloc_trim_threshold: int = 131072
     malloc_arena_max: int = 2
     compute_thread_limit: int = 1
@@ -431,6 +452,7 @@ class SwarmQConfig(ConfigValidation):
         ("SWARMQ_SCHEDULER_PRUNE", "scheduler_prune", "str"),
         ("SWARMQ_SCHEDULER_PRUNE_AFTER_S", "scheduler_prune_after_s", "float"),
         ("SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S", "scheduler_unroutable_oneshot_max_s", "float"),
+        ("SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S", "scheduler_publish_stepdown_s", "float"),
         ("SWARMQ_MAX_MESSAGE_BODY_BYTES", "max_message_body_bytes", "int"),
         # R4.5 Burst-Mode / R4.3 Priorities / R5.1-R5.2 Metrics+Health.
         # Port-Ranges werden beim Parsen validiert, damit eine kaputte
@@ -460,6 +482,7 @@ class SwarmQConfig(ConfigValidation):
         ("SWARMQ_UNKNOWN_TASK_GRACE_S", "unknown_task_grace_s", "float"),
         ("SWARMQ_LOCK_WAIT_MAX_S", "lock_wait_max_s", "float"),
         ("SWARMQ_VALKEY_EVICTION_CHECK", "valkey_eviction_check", "mode"),
+        ("SWARMQ_NAMESPACE", "namespace", "str"),
         ("SWARMQ_MALLOC_TRIM_THRESHOLD", "malloc_trim_threshold", "int"),
         ("SWARMQ_MALLOC_ARENA_MAX", "malloc_arena_max", "int"),
         ("SWARMQ_COMPUTE_THREAD_LIMIT", "compute_thread_limit", "int"),
@@ -592,7 +615,6 @@ class SwarmQConfig(ConfigValidation):
         self.log_drain_timeout = settings.drain_timeout
 
     def __post_init__(self) -> None:
-        reject_namespace()
         self._apply_env_overrides()
         self._apply_logging_settings()
         self._apply_slot_port_offset()
@@ -602,6 +624,9 @@ class SwarmQConfig(ConfigValidation):
         # consumer-side SETNX dedup.
         if self.scheduler_dedup_ttl is None:
             self.scheduler_dedup_ttl = max(60.0, self.retry_max_delay + 300.0)
+
+        if self.scheduler_publish_stepdown_s is None:
+            self.scheduler_publish_stepdown_s = self.scheduler_lock_ttl
 
         if self.execution_guard_done_ttl_s is None:
             self.execution_guard_done_ttl_s = max(

@@ -481,9 +481,10 @@ Sections:
 
 - `valkey`: `maxmemory_policy`, `maxmemory`, `used_memory`, `eviction`
   (`safe`, `unsafe`, `unknown`), the effective `eviction_check`,
-  `aof_enabled`, `version`, `cluster_enabled`, `namespace` and
-  `unprefixed_keys` (both `null` until namespaces exist). Values Valkey
-  does not report (ACL) are `null`.
+  `aof_enabled`, `version`, `cluster_enabled`, `namespace`
+  (`SWARMQ_NAMESPACE`, `null` without) and `unprefixed_keys`: with a
+  namespace the number of keys without it (`sq:*`, counted by `SCAN` up
+  to 10000), else `null`. Values Valkey does not report (ACL) are `null`.
 - `shutdown`: `shutdown_timeout` and `min_grace_period_s`
   (`shutdown_timeout + 15`), the least `terminationGracePeriodSeconds`
   (Kubernetes) or `stop_grace_period` (Docker) to configure.
@@ -491,11 +492,15 @@ Sections:
 `findings` lists each problem with `section`, `level` (`error` or
 `warning`), `code` and `message`: `eviction_policy` (error under
 `strict`, else warning), `eviction_policy_unknown`, `aof_disabled`,
-`cluster`, `version` (older than 8).
+`cluster`, `version` (older than 8), `unprefixed_keys` (keys without
+namespace next to a namespace: apps without `SWARMQ_NAMESPACE` on the
+same Valkey, or data from before the namespace was set, which the
+namespace does not migrate; [namespace](configuration.md#namespace-several-apps-on-one-valkey)),
+`unprefixed_keys_unknown` (`SCAN` failed or is forbidden).
 
 Exit codes: `0` when nothing blocks (warnings allowed), `78` when a
 worker would refuse to start in this environment (evicting policy under
-`SWARMQ_VALKEY_EVICTION_CHECK=strict`), `1` when Valkey is unreachable
+`SWARMQ_VALKEY_EVICTION_CHECK=strict`, invalid `SWARMQ_NAMESPACE`), `1` when Valkey is unreachable
 or `SWARMQ_BACKEND_URL` is missing.
 
 ```bash

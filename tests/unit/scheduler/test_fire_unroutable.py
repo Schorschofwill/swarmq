@@ -12,6 +12,7 @@ Test-Liste:
 - [x] Cron unroutbar: WARNING ``scheduler_fire_unroutable``, gedrosselt je Cron und 10 min
 - [x] Drossel-Tabelle bleibt begrenzt (abgelaufene Eintraege fallen weg)
 - [x] fremd gemeldeter Cron: zusaetzlich ``scheduler_fire_unroutable_foreign``
+- [x] dessen Hinweis nennt vhost und ``SWARMQ_NAMESPACE`` (BZ-10, MR 15)
 - [x] anderer Publish-Fehler: weiterhin kein Commit
 - [x] Oneshot unroutbar: Commit mit Score ``now + 60 s`` und ``unroutable_since = now``
 - [x] Oneshot erneut unroutbar: ``unroutable_since`` bleibt beim ersten Versuch
@@ -134,6 +135,16 @@ async def test_unroutable_cron_reported_by_another_worker_logs_foreign_hint(loop
 
     [foreign] = _loop_events(swarmq_logs, "scheduler_fire_unroutable_foreign")
     assert (foreign["schedule_name"], foreign["queue"], foreign["log_level"]) == ("cron_a", "missing", "warning")
+
+
+async def test_foreign_hint_names_vhost_and_namespace(loop, swarmq_logs):
+    """BZ-10 (MR 15): getrennte vhosts brauchen je App einen Namensraum."""
+    loop._reported_names = frozenset({"cron_a"})
+
+    await loop._fire_one("cron_a", _SCORE_MS, _cron())
+
+    [foreign] = _loop_events(swarmq_logs, "scheduler_fire_unroutable_foreign")
+    assert "vhost" in foreign["hint"] and "SWARMQ_NAMESPACE" in foreign["hint"]
 
 
 @pytest.mark.parametrize("error", [BrokerConnectionError("down"), PublishIndeterminate("deadline")])

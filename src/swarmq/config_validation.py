@@ -11,6 +11,7 @@ import math
 from typing import TYPE_CHECKING, ClassVar
 
 from swarmq.exceptions import ConfigurationError
+from swarmq.keyspace import validate_namespace
 from swarmq.logging_settings import VALID_LOG_LEVELS, valid_drain_timeout, validate_logger_levels
 from swarmq.valkey_policy import EVICTION_CHECK_MODES
 
@@ -46,6 +47,8 @@ class ConfigValidation:
         unknown_task_grace_s: float
         lock_wait_max_s: float
         valkey_eviction_check: str
+        namespace: str | None
+        scheduler_publish_stepdown_s: float | None
         _POSITIVE_FIELDS: ClassVar[tuple[str, ...]]
         _VALID_POOLS: ClassVar[frozenset[str]]
         _VALID_PRUNE_MODES: ClassVar[tuple[str, ...]]
@@ -109,6 +112,7 @@ class ConfigValidation:
             )
             raise ConfigurationError(msg)
         self._validate_eviction_check()
+        self._validate_namespace()
         if self.queue_dead_letter_strategy == "at-least-once" and self.queue_type != "quorum":
             # Review MR 8, H3: nur Quorum-Queues kennen at-least-once-Dead-Lettering.
             msg = "queue_dead_letter_strategy='at-least-once' requires queue_type='quorum'; use 'auto' or 'legacy'"
@@ -129,6 +133,13 @@ class ConfigValidation:
                 f"got {self.backend_defer_max_delay} < {self.backend_defer_base_delay}"
             )
             raise ConfigurationError(msg)
+
+    def _validate_namespace(self) -> None:
+        # BZ-10: leer gilt wie ungesetzt (auch 0.11.1 behandelt "" so).
+        try:
+            self.namespace = validate_namespace(self.namespace)
+        except ValueError as exc:
+            raise ConfigurationError(f"SWARMQ_NAMESPACE/namespace: {exc}") from exc
 
     def _validate_eviction_check(self) -> None:
         if self.valkey_eviction_check not in EVICTION_CHECK_MODES:
@@ -166,6 +177,10 @@ class ConfigValidation:
             raise ConfigurationError(msg)
 
     def _validate_scheduler_relations(self) -> None:
+        stepdown = self.scheduler_publish_stepdown_s
+        if stepdown is not None and not (math.isfinite(stepdown) and stepdown >= 0):
+            msg = f"scheduler_publish_stepdown_s must be >= 0 and finite (0 disables), got {stepdown!r}"
+            raise ConfigurationError(msg)
         if self.scheduler_lock_ttl < self.scheduler_heartbeat_interval * 2:
             msg = (
                 "scheduler_lock_ttl must be at least 2x "

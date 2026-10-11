@@ -616,6 +616,65 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   bewusst `SWARMQ_VALKEY_EVICTION_CHECK=warn` (etwa bei einem
   Managed-Dienst mit fester Policy, mit bekanntem Risiko).
 
+### Hinzugefügt (mehrere Apps auf einem Valkey, BZ-10)
+
+- **`SWARMQ_NAMESPACE`** (`SwarmQConfig.namespace`, Default ungesetzt)
+  und `ValkeyBackend(..., namespace=...)`: Jeder Valkey-Key, jeder
+  Pub/Sub-Kanal, der Scheduler-Leader und der Kontrollkanal wandern von
+  `sq:…` nach `<namensraum>:sq:…`; die Hash-Tags bleiben gleich,
+  Queue-Namen bekommen kein Präfix. Ohne Namensraum bleibt alles
+  byte-identisch (Golden-Datei `keys.json` unverändert; die Keys mit
+  Namensraum stehen in der neuen Golden-Datei `keys.namespace.json`).
+  Neu sind `ValkeyBackend.namespace` und
+  `swarmq.keyspace.validate_namespace`
+  ([Namensraum](configuration.md#namensraum-mehrere-apps-auf-einem-valkey)).
+- **`SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S`** (Default
+  `SWARMQ_SCHEDULER_LOCK_TTL`, `0` schaltet ab) und das Log-Event
+  `scheduler_publish_failures_stepdown`.
+- **`swarmq check`** füllt `namespace` und `unprefixed_keys` (Keys ohne
+  Namensraum neben einem Namensraum) und meldet die Befunde
+  `unprefixed_keys` und `unprefixed_keys_unknown`
+  ([CLI](cli.md#swarmq-check)).
+
+### Geändert (mehrere Apps auf einem Valkey, BZ-10)
+
+- **Ein Scheduler-Leader, dessen Broker wiederholt scheitert, tritt
+  zurück.** Nach mindestens 2 gescheiterten Publishes
+  (`BrokerConnectionError`, ohne `UnroutableMessage` und
+  `MessageHeadersTooLarge`) über mindestens
+  `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S` ohne Erfolg dazwischen gibt er
+  das Leader-Lock ohne Handover-Marker frei (der Nachfolger sendet
+  `SCHEDULER_LEADER_FAILOVER`), sendet `SCHEDULER_STANDBY` und bewirbt
+  sich 2 × Lock-TTL nicht erneut. Vorher blieb er Leader und hielt die
+  Crons aller Apps am Valkey an.
+- **`SWARMQ_NAMESPACE` wird unterstützt.** 0.11.1 lehnte die Variable
+  ab; 0.12 übernimmt einen gültigen Wert und stoppt nur bei einem
+  ungültigen (`ConfigurationError`, Exit `78`; `swarmq worker --check`:
+  Exit 1), in Workern, `SwarmQ(...)` und den CLI-Befehlen, vor jeder
+  Verbindung.
+- **`scheduler_fire_unroutable_foreign`** nennt im Hinweis jetzt auch
+  `SWARMQ_NAMESPACE`; getrennte vhosts brauchen je App einen Namensraum.
+  Die Lock-Hinweise (`valkey-cli DEL …`) nennen den Key mit Namensraum.
+
+### Upgrade auf 0.12 (Namensraum)
+
+- **Reihenfolge:** erst alle Komponenten (Worker, Producer, CLI,
+  Steuerdienst) auf 0.12, dann `SWARMQ_NAMESPACE` überall im selben
+  Schritt setzen. Gemischte Werte spalten die App.
+- **Nur für eine neue App oder nach dem Leeren ihrer Keys.** Der
+  Namensraum migriert keine Daten unter `sq:` (Schedules, CLI-Crons,
+  verzögerte Tasks, Ergebnisse, Locks). `swarmq check` zählt Keys ohne
+  Namensraum.
+- **Rollback-Grenze:** Nach dem Setzen des Namensraums nur noch auf 0.12
+  oder neuer zurück. 0.11.1 verweigert den Start mit gesetztem
+  `SWARMQ_NAMESPACE` (Exit `78`); 0.11.0 ignorierte ihn still.
+- **Getrennte RabbitMQ-vhosts an einem Valkey brauchen je App einen
+  Namensraum.**
+- **Solange Apps älter als 0.12 ohne Namensraum am Valkey laufen,**
+  `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S=0` setzen. Sonst kann die Führung
+  zu einer 0.11-App wandern, und BZ-02/09/11 (stabile Oneshot-IDs,
+  Cron-Dedup, zurückgehaltene Crons) sind aus, solange sie führt.
+
 ## [0.11.1] — 2026-10-10
 
 Rollback-Ziel vor 0.12. **Erst alle Apps als eigenes Deployment auf

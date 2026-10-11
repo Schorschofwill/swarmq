@@ -101,8 +101,9 @@ class SchedulerUnroutable:
                     task_name=definition.task_name,
                     hint=(
                         "this cron is reported by a worker of another app whose queue does not "
-                        "exist on this leader's broker; check that all apps sharing this "
-                        "Valkey use the same RabbitMQ vhost"
+                        "exist on this leader's broker; apps sharing this Valkey must use the "
+                        "same RabbitMQ vhost, or each app sets its own SWARMQ_NAMESPACE "
+                        "(required with separate vhosts)"
                     ),
                 )
         await self._emit(

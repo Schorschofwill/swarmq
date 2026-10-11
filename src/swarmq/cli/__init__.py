@@ -470,13 +470,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "worker":
         return _run_worker_command(args)
-    # Patch 0.11.1 (Review P2-3): schedule/dlq/inspect bauen Backend bzw.
-    # Broker direkt, ohne ``SwarmQConfig``; die Namensraum-Sperre muss hier
-    # greifen, bevor eine Verbindung entsteht.
-    from swarmq.namespace_guard import reject_namespace
+    # BZ-10 (Plan 0.12.0, MR 15): schedule/dlq/inspect/check bauen Backend bzw.
+    # Broker direkt, ohne ``SwarmQConfig``; ein ungueltiger Namensraum muss
+    # hier scheitern, bevor eine Verbindung entsteht.
+    from swarmq.config import env_namespace
 
     try:
-        reject_namespace()
+        env_namespace()
     except ConfigurationError as exc:
         sys.stderr.write(f"swarmq {args.command}: {exc}\n")
         return CONFIG_ERROR_EXIT_CODE

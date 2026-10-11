@@ -573,6 +573,61 @@ All notable changes to SwarmQ. This project follows
   `SWARMQ_VALKEY_EVICTION_CHECK=warn` deliberately (for example on a
   managed service with a fixed policy, accepting the risk).
 
+### Added (several apps on one Valkey, BZ-10)
+
+- **`SWARMQ_NAMESPACE`** (`SwarmQConfig.namespace`, default unset) and
+  `ValkeyBackend(..., namespace=...)`: every Valkey key, Pub/Sub
+  channel, the scheduler leader and the control channel move from
+  `sq:…` to `<namespace>:sq:…`; the hash tags stay the same, queue names
+  are not prefixed. Without a namespace everything stays byte-identical
+  (golden file `keys.json` unchanged; the namespaced keys are in the new
+  golden file `keys.namespace.json`). `ValkeyBackend.namespace` and
+  `swarmq.keyspace.validate_namespace` are new
+  ([namespace](configuration.md#namespace-several-apps-on-one-valkey)).
+- **`SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S`** (default
+  `SWARMQ_SCHEDULER_LOCK_TTL`, `0` disables) and the log event
+  `scheduler_publish_failures_stepdown`.
+- **`swarmq check`** fills `namespace` and `unprefixed_keys` (keys
+  without namespace next to a namespace) and reports the findings
+  `unprefixed_keys` and `unprefixed_keys_unknown`
+  ([CLI](cli.md#swarmq-check)).
+
+### Changed (several apps on one Valkey, BZ-10)
+
+- **A scheduler leader whose broker keeps failing steps down.** After at
+  least 2 failed publishes (`BrokerConnectionError`, not counting
+  `UnroutableMessage` and `MessageHeadersTooLarge`) over at least
+  `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S` without a success in between, it
+  releases the leader lock without a handover marker (the successor
+  emits `SCHEDULER_LEADER_FAILOVER`), emits `SCHEDULER_STANDBY` and does
+  not apply again for 2 × lock TTL. Before, it stayed leader and stopped
+  the crons of every app on the Valkey.
+- **`SWARMQ_NAMESPACE` is supported.** 0.11.1 refused it; 0.12 accepts a
+  valid value and stops only on an invalid one (`ConfigurationError`,
+  exit `78`; `swarmq worker --check`: exit 1), in workers, `SwarmQ(...)`
+  and the CLI commands, before any connection.
+- **`scheduler_fire_unroutable_foreign`** now also names
+  `SWARMQ_NAMESPACE` in its hint; separate vhosts need one namespace per
+  app. Lock recovery hints (`valkey-cli DEL …`) name the key with the
+  namespace.
+
+### Upgrading to 0.12 (namespace)
+
+- **Order:** first run every component (workers, producers, CLI,
+  control service) on 0.12, then set `SWARMQ_NAMESPACE` everywhere in
+  the same step. Mixed values split the app.
+- **Only for a new app or after emptying its keys.** The namespace does
+  not migrate data under `sq:` (schedules, CLI crons, delayed tasks,
+  results, locks). `swarmq check` counts keys without namespace.
+- **Rollback limit:** once the namespace is set, roll back only to 0.12
+  or later. 0.11.1 refuses to start with `SWARMQ_NAMESPACE` set (exit
+  `78`); 0.11.0 would ignore it silently.
+- **Separate RabbitMQ vhosts on one Valkey need a namespace per app.**
+- **While apps older than 0.12 share the Valkey without namespace,** set
+  `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S=0`. Otherwise the leadership can
+  move to a 0.11 app, and BZ-02/09/11 (stable one-shot IDs, cron dedup,
+  held crons) are off while it leads.
+
 ## [0.11.1] — 2026-10-10
 
 Rollback target before 0.12. **Roll out 0.11.1 to every app first,

@@ -57,6 +57,7 @@ siehe [Fehlerkatalog](errors.md#configurationerror).
 | `SWARMQ_DEAD_LETTER_TERMINAL_FAILURES` | `true` | `false` speichert bei einem terminalen Task-Fehler (`NoRetry`, Exception außerhalb von `retry_exceptions`, Retries erschöpft) das Fehlerergebnis und bestätigt die Nachricht, statt sie zu dead-lettern ([Details](../guides/dead-letter-queues.md#dead-lettering-von-task-fehlern-abschalten)). `TaskInfo.dead_letter` gewinnt. |
 | `SWARMQ_LOCK_WAIT_MAX_S` | `21600` | Obergrenze in Sekunden, wie lange eine Nachricht auf einen belegten Task-Lock wartet, gemessen ab ihrem ersten Konflikt (`x-swarmq-lock-wait-since`); danach geht sie mit `LockWaitExceeded` in die DLQ. Vorher beendet nur ein hängender Halter (derselbe Halter länger als seine TTL + 60 s) oder `max_age` die Wartezeit. Muss `> 0` und endlich sein ([Lock-Acquisition](../guides/locking-and-dedup.de.md#lock-acquisition-verhalten)). |
 | `SWARMQ_VALKEY_EVICTION_CHECK` | `strict` | Was ein Worker tut, wenn Valkey swarmq-Keys verdrängen kann ([Valkey-Anforderungen](#valkey-anforderungen)): `strict` verweigert unter einer verdrängenden `maxmemory-policy` (alles außer `noeviction` mit `maxmemory`-Grenze oder unbekannter Grenze) den Start mit Exit `78`, `warn` loggt `valkey_eviction_policy_unsafe` und startet, `off` prüft gar nicht (keine Abfrage, keine Warnung). Eine nicht lesbare Policy (ACL verbietet `CONFIG` und `INFO`) blockiert nie, sie loggt nur `valkey_eviction_policy_unknown`. Groß-/Kleinschreibung egal. Auch `swarmq check` und jedes andere `ValkeyBackend` (CLI, Producer) lesen die Variable; dort ändert nur `off` etwas. |
+| `SWARMQ_NAMESPACE` | *ungesetzt* | Namensraum dieser App auf einem gemeinsamen Valkey ([Namensraum](#namensraum-mehrere-apps-auf-einem-valkey)): Jeder Valkey-Key, jeder Pub/Sub-Kanal, der Scheduler-Leader und der Kontrollkanal wandern von `sq:…` nach `<namensraum>:sq:…`. 1–64 Zeichen `A-Z a-z 0-9 _ . -`, beginnend mit Buchstabe oder Ziffer, nicht `sq`; alles andere ist ein Konfigurationsfehler (Exit `78`). Leer heißt ungesetzt. Queue-Namen bleiben unverändert. Jedes `ValkeyBackend` (Worker, Producer, CLI, Kontrollkanal) liest die Variable. Nur für eine neue App oder nach dem Leeren ihrer Keys setzen, und erst, wenn alle Komponenten 0.12 fahren. |
 | `SWARMQ_UNKNOWN_TASK_GRACE_S` | `900.0` | Gnadenfrist in Sekunden für einen Task-Namen, den dieser Worker nicht registriert (Rolling Deploy: Producer vor den Workern). Innerhalb der Frist stellt der Worker die Nachricht mit Backoff zurück (1 s, dann so lang wie bisher gewartet, höchstens 60 s je Runde) und hält den ersten Kontakt in `x-swarmq-unknown-since` fest; danach dead-lettert er sie mit Fehlerergebnis und `TASK_REJECTED` (`unregistered_task`). `0` schaltet die Frist ab (Dead-Letter beim ersten Kontakt). Muss `>= 0` sein ([unregistrierte Tasks](../guides/dead-letter-queues.de.md#unregistrierte-tasks-und-rolling-deploys)). |
 | `SWARMQ_MALLOC_TRIM_THRESHOLD` | `131072` | `MALLOC_TRIM_THRESHOLD_` für Rechenkinder (glibc-Wachstum). |
 | `SWARMQ_MALLOC_ARENA_MAX` | `2` | `MALLOC_ARENA_MAX` für Rechenkinder. |
@@ -114,6 +115,7 @@ beenden `swarmq worker` mit Exit `78`.
 | `SWARMQ_SCHEDULER_PRUNE` | `on` | Was der Leader mit einem statischen Cron tut, der einmal gemeldet wurde und den seit `SWARMQ_SCHEDULER_PRUNE_AFTER_S` kein Worker mehr gemeldet hat: `on` entfernt ihn, `log` loggt nur `scheduler_cron_prune_skipped`, `off` tut nichts. Es gilt der Wert des Scheduler-Leaders, egal aus welcher App: in jeder App auf dem Valkey denselben Wert setzen. Setzt voraus, dass jede App auf dem Valkey mindestens 0.10.0 fährt ([Crons entfernen](../guides/scheduling-and-retries.md#crons-entfernen-die-keine-app-mehr-meldet)). |
 | `SWARMQ_SCHEDULER_PRUNE_AFTER_S` | `86400.0` | Frist in Sekunden, nach der ein verstummter statischer Cron entfernt wird. Muss mindestens `3 × SWARMQ_SCHEDULER_SEEN_INTERVAL_S` betragen. Cron-Meldungen werden doppelt so lange aufbewahrt, mindestens 7 Tage. Es gilt der Wert des Scheduler-Leaders: in jeder App auf dem Valkey denselben Wert setzen. |
 | `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S` | `86400.0` | Wie lange in Sekunden der Leader einen verzögerten Task (`delay=`/`eta=`) erneut versucht, dessen Queue fehlt, gezählt ab dem ersten unroutbaren Versuch; er versucht es alle 60 s und verwirft den Task danach mit einem Fehlerergebnis. Muss > 0 sein. Es gilt der Wert des Scheduler-Leaders ([fehlende Queues](../guides/scheduling-and-retries.md#fehlende-queues)). |
+| `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S` | `SWARMQ_SCHEDULER_LOCK_TTL` | Der Scheduler-Leader gibt das Leader-Lock frei, wenn mindestens 2 Publishes scheitern (`BrokerConnectionError`, ohne `UnroutableMessage` und `MessageHeadersTooLarge`), verteilt über mindestens so viele Sekunden und ohne erfolgreichen Publish dazwischen; danach bewirbt er sich `2 × SWARMQ_SCHEDULER_LOCK_TTL` nicht, und ein Worker mit funktionierendem Broker übernimmt (er sendet `SCHEDULER_LEADER_FAILOVER`). `0` schaltet den Rücktritt ab. Muss `≥ 0` sein. `0` setzen, solange Apps älter als 0.12 ohne Namensraum am selben Valkey laufen ([Namensraum](#namensraum-mehrere-apps-auf-einem-valkey)). |
 
 ### Observability
 
@@ -280,6 +282,42 @@ führt Exit `78` zu `CrashLoopBackOff`, unter Docker mit
 `restart:`-Policy zu einer Neustartschleife. Die Policy korrigieren oder
 bewusst `SWARMQ_VALKEY_EVICTION_CHECK=warn` setzen.
 
+### Namensraum (mehrere Apps auf einem Valkey)
+
+Ohne Namensraum teilen sich alle Apps eines Valkey die Keys unter `sq:`:
+Rate-Limits und Task-Locks gleichen Namens, Unique-Hashes und einen
+Scheduler-Leader für alle Apps. Dieser Leader publiziert die Crons
+jeder App über seinen eigenen Broker. `SWARMQ_NAMESPACE` je App trennt
+sie: Jeder Key und Pub/Sub-Kanal, das Leader-Lock und der Kontrollkanal
+liegen dann unter `<namensraum>:sq:…` (die Hash-Tags wie `{sched}`
+bleiben gleich). Queue-Namen bekommen kein Präfix: Jede App braucht
+ihren eigenen RabbitMQ-vhost.
+
+- **Getrennte vhosts brauchen einen Namensraum.** Mit einem Leader für
+  alle Apps geht ein Cron von App B über den Broker von App A; auf einem
+  anderen vhost fehlt dort die Queue, und der Fire ist verloren
+  (`scheduler_fire_unroutable_foreign`).
+- **Ohne Namensraum** tritt der Leader nach wiederholten
+  Publish-Fehlern zurück (`SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S`); ein
+  Leader mit defektem Broker hält die Crons aller Apps nicht mehr an.
+- **Der Namensraum migriert keine Daten.** Keys unter `sq:` (Schedules,
+  CLI-Crons, verzögerte Tasks, Ergebnisse, Locks) sind unter dem neuen
+  Namensraum nicht sichtbar. Für eine neue App setzen oder vorher die
+  Keys der App leeren. `swarmq check` zeigt den Namensraum und zählt
+  Keys ohne ihn ([CLI](cli.md#swarmq-check)).
+- **Rollout:** erst alle Komponenten (Worker, Producer, CLI,
+  Steuerdienst) auf 0.12, dann den Namensraum überall im selben Schritt
+  setzen. Gemischte Werte spalten die App: Ein Producer ohne Namensraum
+  schreibt Ergebnisse und Termine dorthin, wo der Worker nicht sucht.
+- **Rollback:** Nach dem Setzen des Namensraums nur noch auf 0.12 oder
+  neuer. 0.11.1 verweigert den Start mit gesetztem `SWARMQ_NAMESPACE`
+  (siehe unten); 0.11.0 ignorierte ihn still.
+- **Solange Apps älter als 0.12 ohne Namensraum am Valkey laufen**,
+  `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S=0` setzen. Sonst kann die Führung
+  zu einer 0.11-App wandern, und die 0.12-Funktionen des Leaders (stabile
+  Oneshot-IDs, Cron-Dedup, zurückgehaltene Crons) sind aus, solange sie
+  führt.
+
 ### Namensraum erst ab 0.12
 
 `SWARMQ_NAMESPACE` gehört zu swarmq 0.12 und später. 0.11.1 lehnt die
@@ -287,9 +325,10 @@ Variable ab: Ist sie gesetzt und nicht leer, brechen Worker, Scheduler
 und `SwarmQ(...)` mit `ConfigurationError` ab (`swarmq worker`:
 Exit 78), ebenso die CLI-Befehle `swarmq schedule`, `swarmq dlq` und
 `swarmq inspect` (Exit 78, vor jeder Verbindung). `swarmq worker
---check` meldet ihn als Fehler (Exit 1). Ohne diese Prüfung liefe ein Rollback auf 0.11.x still ohne
-Namensraum, auf anderen Valkey-Keys. Die Variable entfernen oder
-swarmq >= 0.12 fahren.
+--check` meldet ihn als Fehler (Exit 1). Ohne diese Prüfung liefe ein
+Rollback auf 0.11.x still ohne Namensraum, auf anderen Valkey-Keys. Ab
+0.12 wird die Variable unterstützt; nur ein ungültiger Wert stoppt diese
+Einstiege (Exit `78`; `swarmq worker --check`: Exit 1).
 
 ## `SwarmQConfig`-kwargs
 

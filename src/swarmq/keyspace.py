@@ -9,24 +9,58 @@ Das Wire-Format ist durch ``tests/integration/backend/golden/keys.json`` und
 ``channels.txt`` festgeschrieben. Die Hash-Tags (``{sched}``, ``{<identity>}``,
 ``{<task_name>}``) legen zusammen genutzte Keys in einen Cluster-Slot.
 
-``namespace`` ist vorbereitet (BZ-10); bis dahin gilt nur ``None``, der
-heutige Stamm ``sq:``.
+``namespace`` (BZ-10, Plan 0.12.0, MR 15) setzt ``<ns>:`` vor jeden Key und
+Kanal: ``<ns>:sq:...``. Die Hash-Tags bleiben unveraendert. Ohne Namensraum
+(``None``) gilt der Stamm ``sq:`` byte-identisch wie bisher.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 _ROOT = "sq:"
+
+# Erlaubt: Buchstaben, Ziffern, ``_ . -``, beginnend mit Buchstabe oder Ziffer,
+# hoechstens 64 Zeichen. Ausgeschlossen sind damit ``:`` (Trenner im Key) und
+# die Glob-Zeichen ``* ? [ ]`` (SCAN-Muster) sowie ``{ }`` (Hash-Tags).
+_NAMESPACE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
+
+
+def validate_namespace(value: str | None) -> str | None:
+    """Den Namensraum pruefen (BZ-10); leer oder ``None`` heisst: keiner.
+
+    ``ValueError`` bei einem ungueltigen Wert. ``sq`` ist ausgeschlossen, weil
+    ``sq:sq:...`` wie ein Key ohne Namensraum aussaehe (``swarmq check``
+    zaehlt Keys ohne Praefix ueber ``sq:*``)."""
+    if not value:
+        return None
+    if not _NAMESPACE_RE.fullmatch(value) or value.lower() == "sq":
+        msg = (
+            f"invalid namespace {value!r}: use 1-64 characters A-Z, a-z, 0-9, '_', '.', '-', "
+            "starting with a letter or digit, not 'sq'"
+        )
+        raise ValueError(msg)
+    return value
 
 
 @dataclass(frozen=True)
 class KeySpace:
     namespace: str | None = None
 
+    def __post_init__(self) -> None:
+        # Leer gilt wie ``None``; ein ungueltiger Wert wirft ``ValueError``.
+        object.__setattr__(self, "namespace", validate_namespace(self.namespace))
+
     @property
     def _root(self) -> str:
+        if self.namespace:
+            return f"{self.namespace}:{_ROOT}"
         return _ROOT
+
+    def stem_pattern(self) -> str:
+        """SCAN-Muster ueber alle Keys dieses Namensraums (``swarmq check``)."""
+        return f"{self._root}*"
 
     # -- Ergebnisse, Flags, Fortschritt -------------------------------------
 

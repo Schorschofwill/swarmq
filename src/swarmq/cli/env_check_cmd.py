@@ -45,29 +45,66 @@ def _finding(section: str, level: str, code: str, message: str) -> dict[str, str
 async def _describe_backend(url: str) -> dict[str, Any]:
     # Lazy: ``swarmq --help`` bleibt ohne valkey-Import (R-1a).
     from swarmq.backend.valkey import ValkeyBackend
-    from swarmq.backend.valkey.environment import describe_valkey
+    from swarmq.backend.valkey.environment import count_keys, describe_valkey
+    from swarmq.keyspace import KeySpace
 
     # ``off``: die Pruefung beim Verbinden wuerde nur ins Log warnen; hier
-    # landet das Ergebnis im Bericht.
+    # landet das Ergebnis im Bericht. Der Namensraum kommt aus
+    # ``SWARMQ_NAMESPACE`` (BZ-10).
     backend = ValkeyBackend(url, eviction_check="off")
     await backend.connect()
     try:
-        return await describe_valkey(backend.client)
+        described = await describe_valkey(backend.client)
+        described["namespace"] = backend.namespace
+        # Keys ohne Praefix zaehlen nur mit Namensraum etwas: Apps ohne
+        # Namensraum auf demselben Valkey oder Daten von vor dem Setzen.
+        described["unprefixed_keys"] = (
+            await count_keys(backend.client, KeySpace(None).stem_pattern()) if backend.namespace else None
+        )
+        return described
     finally:
         await backend.close()
 
 
 def _valkey_section(url: str, described: dict[str, Any], mode: str) -> tuple[dict[str, Any], list[dict[str, str]]]:
-    from swarmq.keyspace import KeySpace
     from swarmq.logging import sanitize_url
 
-    section = {"url": sanitize_url(url), "eviction_check": mode, **described}
-    # TODO(Plan 0.12.0, MR 15/BZ-10): mit ``SWARMQ_NAMESPACE`` den Namensraum
-    # anzeigen und Keys ohne Praefix (``sq:*`` neben ``<ns>:sq:*``) zaehlen.
-    # Bis dahin gibt es keinen Namensraum, also auch nichts zu vergleichen.
-    section["namespace"] = KeySpace().namespace
-    section["unprefixed_keys"] = None
-    return section, _valkey_findings(described, mode)
+    section = {"url": sanitize_url(url), "eviction_check": mode, "namespace": None, "unprefixed_keys": None}
+    section.update(described)
+    return section, _valkey_findings(section, mode) + _namespace_findings(section)
+
+
+def _namespace_findings(section: dict[str, Any]) -> list[dict[str, str]]:
+    """BZ-10: Keys ohne Praefix neben einem Namensraum (Warnung, Exit 0)."""
+    from swarmq.backend.valkey.environment import COUNT_KEYS_LIMIT
+    from swarmq.keyspace import KeySpace
+
+    if section["namespace"] is None:
+        return []
+    count = section["unprefixed_keys"]
+    if count is None:
+        return [
+            _finding(
+                "valkey",
+                "warning",
+                "unprefixed_keys_unknown",
+                "could not count keys without namespace (SCAN failed or is forbidden)",
+            )
+        ]
+    if count == 0:
+        return []
+    amount = f"at least {count}" if count >= COUNT_KEYS_LIMIT else str(count)
+    plain = KeySpace(None).stem_pattern()
+    return [
+        _finding(
+            "valkey",
+            "warning",
+            "unprefixed_keys",
+            f"{amount} keys without namespace ({plain}) exist next to namespace {section['namespace']!r}: apps "
+            "without SWARMQ_NAMESPACE share this Valkey, or data from before the namespace was set; the "
+            f"namespace does not migrate keys, so schedules, results and locks under {plain} are not seen",
+        )
+    ]
 
 
 def _valkey_findings(described: dict[str, Any], mode: str) -> list[dict[str, str]]:

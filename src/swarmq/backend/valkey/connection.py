@@ -25,7 +25,7 @@ from valkey.exceptions import ConnectionError as ValkeyConnectionError
 from valkey.exceptions import TimeoutError as ValkeyTimeoutError
 
 from swarmq.backend.valkey.environment import log_eviction_check, probe_eviction
-from swarmq.config import INJECTED_URL, env_valkey_eviction_check
+from swarmq.config import INJECTED_URL, env_namespace, env_valkey_eviction_check
 from swarmq.exceptions import BackendConnectionError, BackendResponseError, ConfigurationError
 from swarmq.keyspace import KeySpace
 from swarmq.valkey_policy import EvictionCheck
@@ -92,6 +92,17 @@ _SOCKET_CONNECT_TIMEOUT_S = 5.0
 _PING_TIMEOUT_S = 2.0
 
 
+def _keyspace(namespace: str | None) -> KeySpace:
+    """KeySpace aus dem Parameter, sonst aus ``SWARMQ_NAMESPACE``; ein
+    ungueltiger Wert ist ein ``ConfigurationError`` (Exit 78)."""
+    if namespace is None:
+        return KeySpace(env_namespace())
+    try:
+        return KeySpace(namespace)
+    except ValueError as exc:
+        raise ConfigurationError(f"namespace: {exc}") from exc
+
+
 class ValkeyConnection:
     def __init__(
         self,
@@ -101,6 +112,7 @@ class ValkeyConnection:
         pool: valkey.asyncio.ConnectionPool | None = None,
         keys: KeySpace | None = None,
         eviction_check: str | None = None,
+        namespace: str | None = None,
     ) -> None:
         """Construct a backend from a URL, an existing client, or a pool.
 
@@ -131,7 +143,10 @@ class ValkeyConnection:
         ]
         given = [name for name, present in sources if present]
         # Alle Keys und Kanaele dieses Backends (Plan 0.12.0, Q4).
-        self._keys = keys if keys is not None else KeySpace()
+        if keys is not None and namespace is not None:
+            raise ConfigurationError("ValkeyBackend accepts keys or namespace, not both")
+        # Namensraum (BZ-10): ohne Angabe aus der Umgebung (Q11, ueber ``config.py``).
+        self._keys = keys if keys is not None else _keyspace(namespace)
         # Ergebnis der Eviction-Pruefung beim Verbinden (BZ-04); ``None``, solange
         # nicht geprueft wurde.
         self.eviction_check: EvictionCheck | None = None
@@ -165,6 +180,11 @@ class ValkeyConnection:
             self._url = url
             self._client = None
             self._owns_client = True
+
+    @property
+    def namespace(self) -> str | None:
+        """Der Namensraum aller Keys und Kanaele dieses Backends (BZ-10)."""
+        return self._keys.namespace
 
     async def connect(self) -> None:
         # Idempotent, and a no-op when a client was injected: the borrowed

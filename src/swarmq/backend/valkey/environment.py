@@ -128,3 +128,27 @@ async def describe_valkey(client: Any) -> dict[str, Any]:
         "aof_enabled": _flag(persistence.get("aof_enabled")),
         "cluster_enabled": _flag(cluster.get("cluster_enabled")),
     }
+
+
+#: Obergrenze der Zaehlung in ``count_keys`` und deren Zeitlimit.
+COUNT_KEYS_LIMIT = 10_000
+_COUNT_TIMEOUT_S = 5.0
+
+
+async def count_keys(client: Any, pattern: str, *, limit: int = COUNT_KEYS_LIMIT) -> int | None:
+    """Keys zu *pattern* per ``SCAN`` zaehlen, hoechstens *limit* (dann
+    *limit*), zusammen hoechstens ``_COUNT_TIMEOUT_S``. ``None``, wenn
+    ``SCAN`` scheitert (ACL, Zeitlimit). Nur lesend; wirft nie."""
+    total = 0
+    cursor = 0
+    try:
+        async with asyncio.timeout(_COUNT_TIMEOUT_S):
+            while True:
+                cursor, keys = await client.scan(cursor, match=pattern, count=1000)
+                total += len(keys)
+                if total >= limit:
+                    return limit
+                if not cursor:
+                    return total
+    except Exception:
+        return None

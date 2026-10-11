@@ -34,6 +34,18 @@ async def test_keys_and_types_match_golden(backend: ValkeyBackend) -> None:
     assert await g.snapshot_keys(backend) == expected
 
 
+async def test_namespaced_keys_and_types_match_golden(valkey_url: str) -> None:
+    """BZ-10 (Plan 0.12.0, MR 15): mit Namensraum ``golden-ns`` liegt jeder
+    Key unter ``golden-ns:sq:...``; Golden additiv in ``keys.namespace.json``."""
+    expected = json.loads((g.GOLDEN_DIR / "keys.namespace.json").read_text())
+    backend = ValkeyBackend(valkey_url, namespace=g.NAMESPACE)
+    await backend.connect()
+    try:
+        assert await g.snapshot_keys(backend) == expected
+    finally:
+        await backend.close()
+
+
 def test_result_envelope_is_byte_identical_and_decodes_to_fixed_input() -> None:
     fixture = (g.GOLDEN_DIR / "values" / "result.msgpack").read_bytes()
     assert g.value_fixtures()["result.msgpack"] == fixture
