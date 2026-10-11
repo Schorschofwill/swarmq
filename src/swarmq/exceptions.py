@@ -120,6 +120,17 @@ class BrokerPublishBlocked(BrokerConnectionError):
     """
 
 
+class PublishRejected(BrokerConnectionError):
+    """Der Broker hat den Publish fuer diese Queue ueber alle Versuche
+    abgelehnt: negatives Publisher-Confirm (``basic.nack``), etwa eine volle
+    Queue mit ``x-overflow=reject-publish`` oder eine Quorum-Queue ohne
+    Quorum (Review MR 15, P2-2). Die Verbindung ist gesund; der Fehler haengt
+    an der Queue, deshalb zaehlt er nicht fuer den Ruecktritt des Leaders.
+    Unterklasse von :class:`BrokerConnectionError` (Q14): bestehende Handler
+    fangen sie weiter.
+    """
+
+
 class BackendConnectionError(SwarmQError):
     pass
 

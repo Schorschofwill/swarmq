@@ -587,6 +587,11 @@ All notable changes to SwarmQ. This project follows
 - **`SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S`** (default
   `SWARMQ_SCHEDULER_LOCK_TTL`, `0` disables) and the log event
   `scheduler_publish_failures_stepdown`.
+- **`swarmq.exceptions.PublishRejected`** (subclass of
+  `BrokerConnectionError`): a publish that the broker answered with a
+  negative confirm in every attempt (for example `reject-publish` on a
+  full queue). Before it was a plain `BrokerConnectionError` with the
+  same text ([error catalog](errors.md#publishrejected)).
 - **`swarmq check`** fills `namespace` and `unprefixed_keys` (keys
   without namespace next to a namespace) and reports the findings
   `unprefixed_keys` and `unprefixed_keys_unknown`
@@ -596,12 +601,17 @@ All notable changes to SwarmQ. This project follows
 
 - **A scheduler leader whose broker keeps failing steps down.** After at
   least 2 failed publishes (`BrokerConnectionError`, not counting
-  `UnroutableMessage` and `MessageHeadersTooLarge`) over at least
-  `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S` without a success in between, it
+  `UnroutableMessage`, `MessageHeadersTooLarge`, `BrokerPublishBlocked`
+  and `PublishRejected`: what hits every candidate or one queue) over at
+  least `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S` without a success in
+  between, it
   releases the leader lock without a handover marker (the successor
   emits `SCHEDULER_LEADER_FAILOVER`), emits `SCHEDULER_STANDBY` and does
   not apply again for 2 × lock TTL. Before, it stayed leader and stopped
-  the crons of every app on the Valkey.
+  the crons of every app on the Valkey. A gap longer than
+  `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S` between two failures, and every
+  new term as leader, start a new series; a single broken cron queue does
+  not cost the leadership.
 - **`SWARMQ_NAMESPACE` is supported.** 0.11.1 refused it; 0.12 accepts a
   valid value and stops only on an invalid one (`ConfigurationError`,
   exit `78`; `swarmq worker --check`: exit 1), in workers, `SwarmQ(...)`

@@ -29,6 +29,7 @@ except SwarmQError as exc:
 | `MessageHeadersTooLarge` | `BrokerConnectionError` | Die Nachrichten-Header passen auch mit gekürzten Texten nicht in die Hälfte von `frame_max`; nichts wurde gesendet |
 | `UnroutableMessage` | `BrokerConnectionError` | Der Broker hat einen Publish zurückgegeben: Es gibt keine Queue mit diesem Namen; nichts wurde zugestellt |
 | `BrokerPublishBlocked` | `BrokerConnectionError` | Der Broker hat die Publish-Verbindung über die ganze Publish-Frist blockiert (Ressourcenalarm); nichts wurde gesendet |
+| `PublishRejected` | `BrokerConnectionError` | Der Broker hat den Publish an diese Queue in jedem Versuch abgelehnt (negatives Publisher-Confirm); die Verbindung ist gesund |
 | `BackendConnectionError` | `SwarmQError` | Valkey nicht erreichbar |
 | `BackendResponseError` | `BackendConnectionError` | Valkey hat eine Operation mit einem Fehler beantwortet (`WRONGTYPE`, Skriptfehler) |
 | `TaskNotFoundError` | `SwarmQError` | `schedule()` mit unbekanntem Task-Namen |
@@ -547,6 +548,27 @@ Broker freimachen. Ein Scheduler-Leader zählt den Fehler nicht für den
 Rücktritt: Ein Alarm blockiert jeden Kandidaten. Legt aiormq den
 Blocked-Zustand nicht mehr offen, loggt swarmq einmal
 `publish_blocked_state_unreadable` und publiziert ungeprüft wie vor 0.12.
+
+## `PublishRejected`
+
+**Wann geworfen.** Von einem Publish (`send()`, `schedule()`,
+Workflow-Schritte, Cron-Fires, Kopien im Worker), wenn RabbitMQ jeden der
+5 Versuche mit einem negativen Publisher-Confirm (`basic.nack`)
+beantwortet. Unterklasse von `BrokerConnectionError`; der Text ist
+derselbe wie vor 0.12 (`publish to '<queue>' failed after 5 attempts:
+…`).
+
+**Ursache.** Die Queue lehnt die Nachricht ab, nicht die Verbindung: eine
+volle Queue mit `x-overflow=reject-publish` (seit 0.12 Default neuer
+Quorum-Queues, zusammen mit einer `max-length`-Policy) oder eine
+Quorum-Queue ohne Quorum ihrer Mitglieder.
+
+**Abhilfe.** Ein späterer Versuch ist sicher, der Broker hat die
+Nachricht nicht gespeichert; ein `unique_for`-Claim wird freigegeben. Die
+Queue reparieren (Längenlimit anheben oder entfernen, Quorum
+wiederherstellen). Ein Scheduler-Leader zählt den Fehler nicht für den
+Rücktritt: Eine kaputte Cron-Queue ließe die Führung sonst nur wandern,
+ohne zu helfen.
 
 ## `LockWaitExceeded`
 

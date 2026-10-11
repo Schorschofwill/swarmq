@@ -179,6 +179,23 @@
     },
     {
       "dlq_on_uncaught": "n/a",
+      "doc": "Der Broker hat den Publish fuer diese Queue ueber alle Versuche\nabgelehnt: negatives Publisher-Confirm (``basic.nack``), etwa eine volle\nQueue mit ``x-overflow=reject-publish`` oder eine Quorum-Queue ohne\nQuorum (Review MR 15, P2-2). Die Verbindung ist gesund; der Fehler haengt\nan der Queue, deshalb zaehlt er nicht fuer den Ruecktritt des Leaders.\nUnterklasse von :class:`BrokerConnectionError` (Q14): bestehende Handler\nfangen sie weiter.",
+      "exception_class": "swarmq.exceptions.PublishRejected",
+      "exit_code_on_cli": 1,
+      "init_params": [],
+      "module": "swarmq.exceptions",
+      "name": "PublishRejected",
+      "origin": "library",
+      "parent": "BrokerConnectionError",
+      "retriable": "yes",
+      "transport_field": "stderr line",
+      "when": [
+        "schedule",
+        "run"
+      ]
+    },
+    {
+      "dlq_on_uncaught": "n/a",
       "doc": "Eine vorhandene Queue hat andere Argumente als die Konfiguration, und\nswarmq kann sie nicht uebernehmen (BZ-15), etwa ein geaenderter\n``SWARMQ_QUEUE_TYPE``. RabbitMQ aendert die Argumente einer bestehenden\nQueue nie; ein Neustart aendert daran nichts, darum Exit 78 statt einer\nNeustartschleife. ``x-delivery-limit``, ``x-dead-letter-strategy`` und\n``x-overflow`` werden dagegen uebernommen.",
       "exception_class": "swarmq.exceptions.QueueArgumentsMismatch",
       "exit_code_on_cli": 78,

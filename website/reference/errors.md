@@ -28,6 +28,7 @@ except SwarmQError as exc:
 | `MessageHeadersTooLarge` | `BrokerConnectionError` | Message headers do not fit into half of `frame_max`, even with long texts truncated; nothing was sent |
 | `UnroutableMessage` | `BrokerConnectionError` | The broker returned a publish: no queue with this name exists; nothing was delivered |
 | `BrokerPublishBlocked` | `BrokerConnectionError` | The broker blocked the publish connection (resource alarm) for the whole publish deadline; nothing was sent |
+| `PublishRejected` | `BrokerConnectionError` | The broker rejected the publish to this queue in every attempt (negative publisher confirm); the connection is healthy |
 | `BackendConnectionError` | `SwarmQError` | Cannot reach Valkey |
 | `BackendResponseError` | `BackendConnectionError` | Valkey answered an operation with an error (`WRONGTYPE`, script error) |
 | `TaskNotFoundError` | `SwarmQError` | `schedule()` called with an unknown task name |
@@ -522,6 +523,25 @@ scheduler leader does not count it towards stepping down: an alarm
 blocks every candidate. If aiormq no longer exposes the blocked state,
 swarmq logs `publish_blocked_state_unreadable` once and publishes
 unchecked, as before 0.12.
+
+## `PublishRejected`
+
+**When raised.** By a publish (`send()`, `schedule()`, workflow steps,
+cron fires, worker copies) when RabbitMQ answers every one of the 5
+attempts with a negative publisher confirm (`basic.nack`). Subclass of
+`BrokerConnectionError`; the message text is the same as before 0.12
+(`publish to '<queue>' failed after 5 attempts: …`).
+
+**Cause.** The queue refuses the message, not the connection: a full
+queue with `x-overflow=reject-publish` (the default for new quorum
+queues since 0.12, together with a `max-length` policy), or a quorum
+queue without a quorum of its members.
+
+**Recovery.** Retrying later is safe, the broker did not store the
+message; a `unique_for` claim is released. Fix the queue (raise or
+remove the length limit, restore the quorum). A scheduler leader does
+not count it towards stepping down: one broken cron queue would
+otherwise move the leadership around without helping.
 
 ## `LockWaitExceeded`
 

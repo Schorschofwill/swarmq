@@ -462,6 +462,7 @@ class SchedulerLoop(
 
         # BZ-11: neue Amtszeit -- die Meldungen der alten gelten nicht mehr.
         self._begin_term(int(self._wall_time() * 1000))
+        self._reset_publish_stepdown()
         self._state = "leader"
         self._renew_failures = 0  # fresh term, fresh renew budget
         await self._write_leader_version()

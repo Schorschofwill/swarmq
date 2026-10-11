@@ -138,6 +138,13 @@ _ERROR_SEMANTICS: dict[str, dict[str, Any]] = {
         origin="library", when=["schedule", "run"], retriable="yes",
         dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",
     ),
+    "PublishRejected": dict(
+        # Der Broker lehnte den Publish fuer diese Queue ueber alle Versuche
+        # ab (negatives Confirm, etwa reject-publish); die Verbindung ist
+        # gesund (Review MR 15, P2-2).
+        origin="library", when=["schedule", "run"], retriable="yes",
+        dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",
+    ),
     "BackendConnectionError": dict(
         origin="library", when=["startup", "schedule", "run"], retriable="no",
         dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",

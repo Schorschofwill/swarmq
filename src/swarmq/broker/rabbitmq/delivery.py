@@ -35,6 +35,7 @@ from swarmq.exceptions import (
     BrokerConnectionError,
     BrokerPublishBlocked,
     PublishIndeterminate,
+    PublishRejected,
     SettleFailedAfterPublish,
     UnroutableMessage,
 )
@@ -284,9 +285,11 @@ class RabbitMQDelivery(RabbitMQDeclarations):
                 # exhaustion.
                 if attempt < _PUBLISH_MAX_ATTEMPTS - 1:
                     await asyncio.sleep(0.05 * (2**attempt))
-        raise BrokerConnectionError(
-            f"publish to {routing_key!r} failed after {_PUBLISH_MAX_ATTEMPTS} attempts: {last_exc}"
-        ) from last_exc
+        # Review MR 15, P2-2: ein negatives Confirm haengt an der Queue, nicht
+        # an der Verbindung (der Scheduler zaehlt es nicht fuer den Ruecktritt).
+        error = PublishRejected if isinstance(last_exc, DeliveryError) else BrokerConnectionError
+        message = f"publish to {routing_key!r} failed after {_PUBLISH_MAX_ATTEMPTS} attempts: {last_exc}"
+        raise error(message) from last_exc
 
     # ------------------------------------------------------------------
     # Consume

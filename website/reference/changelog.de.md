@@ -631,6 +631,11 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 - **`SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S`** (Default
   `SWARMQ_SCHEDULER_LOCK_TTL`, `0` schaltet ab) und das Log-Event
   `scheduler_publish_failures_stepdown`.
+- **`swarmq.exceptions.PublishRejected`** (Unterklasse von
+  `BrokerConnectionError`): ein Publish, den der Broker in jedem Versuch
+  mit einem negativen Confirm beantwortet hat (etwa `reject-publish` an
+  einer vollen Queue). Vorher ein schlichter `BrokerConnectionError` mit
+  demselben Text ([Fehlerkatalog](errors.md#publishrejected)).
 - **`swarmq check`** füllt `namespace` und `unprefixed_keys` (Keys ohne
   Namensraum neben einem Namensraum) und meldet die Befunde
   `unprefixed_keys` und `unprefixed_keys_unknown`
@@ -640,13 +645,17 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 - **Ein Scheduler-Leader, dessen Broker wiederholt scheitert, tritt
   zurück.** Nach mindestens 2 gescheiterten Publishes
-  (`BrokerConnectionError`, ohne `UnroutableMessage` und
-  `MessageHeadersTooLarge`) über mindestens
+  (`BrokerConnectionError`, ohne `UnroutableMessage`,
+  `MessageHeadersTooLarge`, `BrokerPublishBlocked` und `PublishRejected`:
+  was jeden Kandidaten oder eine Queue trifft) über mindestens
   `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S` ohne Erfolg dazwischen gibt er
   das Leader-Lock ohne Handover-Marker frei (der Nachfolger sendet
   `SCHEDULER_LEADER_FAILOVER`), sendet `SCHEDULER_STANDBY` und bewirbt
   sich 2 × Lock-TTL nicht erneut. Vorher blieb er Leader und hielt die
-  Crons aller Apps am Valkey an.
+  Crons aller Apps am Valkey an. Eine Lücke länger als
+  `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S` zwischen zwei Fehlern und jede
+  neue Amtszeit als Leader beginnen eine neue Serie; eine einzelne kaputte
+  Cron-Queue kostet nicht die Führung.
 - **`SWARMQ_NAMESPACE` wird unterstützt.** 0.11.1 lehnte die Variable
   ab; 0.12 übernimmt einen gültigen Wert und stoppt nur bei einem
   ungültigen (`ConfigurationError`, Exit `78`; `swarmq worker --check`:

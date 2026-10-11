@@ -1,11 +1,18 @@
 """Ruecktritt des Leaders nach wiederholten Publish-Fehlern (Plan 0.12.0, MR 15, BZ-10).
 
 Ohne Namensraum teilen sich alle Apps eines Valkey einen Leader; dessen Wahl
-haengt nur an Valkey. Scheitert sein Broker (anderer vhost, fehlende Rechte,
-Ausfall), hielt er bisher die Crons aller Apps an. Nach mindestens 2
+haengt nur an Valkey. Scheitert sein Broker (Ausfall, fehlende
+Schreibrechte), hielt er bisher die Crons aller Apps an. Nach mindestens 2
 Publish-Fehlern ueber mindestens ``scheduler_publish_stepdown_s`` gibt er das
 Lock frei (ohne Handover-Marker: der Nachfolger meldet FAILOVER) und bewirbt
 sich 2 x ``scheduler_lock_ttl`` nicht erneut.
+
+Nicht gezaehlt wird, was jeden Kandidaten gleich trifft oder an einer Queue
+haengt (``_NOT_COUNTED``): ein anderer vhost ohne die Queue endet als
+``UnroutableMessage``, ein Broker-Alarm als ``BrokerPublishBlocked``, ein
+negatives Confirm einer Queue als ``PublishRejected`` (Review MR 15, P2-2).
+Die Serie beginnt neu, wenn zwischen zwei Fehlern mehr als die Frist liegt,
+und mit jeder neuen Amtszeit (Review MR 15, P2-1).
 
 Mixin ueber dem ``SchedulerLoop``-Zustand; Logger ueber ``self._log``
 (``swarmq.scheduler.loop``, Q17). Die Uhr ist ``time.monotonic`` dieses
@@ -18,7 +25,13 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from swarmq.exceptions import BrokerConnectionError, BrokerPublishBlocked, MessageHeadersTooLarge, UnroutableMessage
+from swarmq.exceptions import (
+    BrokerConnectionError,
+    BrokerPublishBlocked,
+    MessageHeadersTooLarge,
+    PublishRejected,
+    UnroutableMessage,
+)
 from swarmq.logging import _error_fields
 from swarmq.signals import Signal
 
@@ -28,8 +41,15 @@ if TYPE_CHECKING:
 
 # Fehler, die jeden Kandidaten gleich treffen: ein Ruecktritt liesse die
 # Fuehrung nur rotieren. ``BrokerPublishBlocked``: ein Broker-Alarm blockiert
-# jede publizierende Verbindung (Plan 0.12.0, MR 16).
-_NOT_COUNTED: tuple[type[BaseException], ...] = (UnroutableMessage, MessageHeadersTooLarge, BrokerPublishBlocked)
+# jede publizierende Verbindung (Plan 0.12.0, MR 16). ``PublishRejected``:
+# die Ablehnung haengt an einer Queue, nicht an der Verbindung; ein einzelner
+# kaputter Cron kostet nicht die Fuehrung (Review MR 15, P2-2).
+_NOT_COUNTED: tuple[type[BaseException], ...] = (
+    UnroutableMessage,
+    MessageHeadersTooLarge,
+    BrokerPublishBlocked,
+    PublishRejected,
+)
 
 
 class PublishStepdown:
@@ -40,6 +60,7 @@ class PublishStepdown:
         self._clock = clock if clock is not None else _monotonic
         self._count = 0
         self._first_at = 0.0
+        self._last_at = 0.0
 
     def failure(self, exc: BaseException) -> bool:
         if self._window_s <= 0:
@@ -47,8 +68,12 @@ class PublishStepdown:
         if not isinstance(exc, BrokerConnectionError) or isinstance(exc, _NOT_COUNTED):
             return False
         now = self._clock()
-        if self._count == 0:
+        if self._count == 0 or now - self._last_at > self._window_s:
+            # Review MR 15, P2-1: ein laengerer Abstand als die Frist beginnt
+            # eine neue Serie (vereinzelte Fehler ueber Stunden zaehlen nicht).
+            self._count = 0
             self._first_at = now
+        self._last_at = now
         self._count += 1
         if self._count >= 2 and now - self._first_at >= self._window_s:
             self._count = 0
@@ -82,6 +107,12 @@ class SchedulerStepdown:
         self._stepdown_until = 0.0
 
     def _note_publish_ok(self) -> None:
+        self._publish_stepdown.success()
+
+    def _reset_publish_stepdown(self) -> None:
+        """Neue Amtszeit: Fehler einer frueheren zaehlen nicht (Review MR 15,
+        P2-1). Jeder Weg zurueck zum Leader beginnt eine neue Amtszeit, damit
+        gilt das auch fuer Fehler vor einem Uebergang nach Standby."""
         self._publish_stepdown.success()
 
     async def _note_publish_failure(self, exc: BaseException) -> None:
