@@ -70,6 +70,9 @@ class ProcessManager(RestartBudget):
     # Rolling-window restart limit (roadmap: 5 per hour).
     MAX_RESTARTS = 5
     RESTART_WINDOW = 3600.0
+    # BZ-27 (Plan 0.12.0, MR 17): ein gesperrter Slot laeuft nach dieser
+    # Abkuehlzeit wieder an, statt dauerhaft zu fehlen.
+    SLOT_COOLDOWN_S = 3600.0
 
     # Parent-loop tick.
     MONITOR_INTERVAL = 0.5
@@ -171,6 +174,9 @@ class ProcessManager(RestartBudget):
         else:
             slot_count = num_workers
         self._slots = SlotTable(slot_count)
+        # BZ-27 (Plan 0.12.0, MR 17): Zahl gesperrter Slots fuer die Worker-Gauge;
+        # lazy beim ersten Start ueber ``self._ctx`` angelegt.
+        self._locked_slots_shared: Any = None
         self._shutting_down = False
         # KTD8: vom Handler hinterlegt und nie geloescht -- ``reexec`` prueft
         # es direkt vor ``execvpe``; geloggt wird es genau einmal.
@@ -335,7 +341,9 @@ class ProcessManager(RestartBudget):
 
     def _start_worker(self, slot: int) -> WorkerInfo:
         """Spawn one worker subprocess for ``slot`` and register it."""
-        channel = SupervisorChannel.create(self._ctx)
+        if self._locked_slots_shared is None:  # BZ-27: ein Wert fuer alle Kanaele
+            self._locked_slots_shared = self._ctx.Value("i", self._slots.locked())
+        channel = SupervisorChannel.create(self._ctx, locked_slots=self._locked_slots_shared)
         p = self._ctx.Process(
             target=run_worker_entry,
             args=(self._worker_entry, slot, self.shutdown_event, *self._worker_args, channel),
@@ -435,6 +443,7 @@ class ProcessManager(RestartBudget):
             self._check_heartbeats()
             self._escalate_terminating()
             self._check_dead_workers()
+            self._unlock_expired_slots()
             if self._config_error:
                 # R20: derselbe Code wie das Kind. Mit 1 sah eine
                 # Orchestrierung nur "irgendein Fehler" und startete neu.

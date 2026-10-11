@@ -147,6 +147,7 @@ Jeder Worker mit eingeschalteten Metriken (`--metrics-port`/`SWARMQ_METRICS_PORT
 | `swarmq_dlq_messages` | Gauge | `queue` | Nachrichten in `{queue}.XQ`, abgetastet. |
 | `swarmq_lock_waits` | Gauge | `worker_id` | Nachrichten, die dieser Worker wegen eines belegten Task-Locks zurückgestellt und in den letzten 3 Minuten wieder gesehen hat. Eine Nachricht, die länger in der Haupt-Queue wartet (ein Rückstand von mehr als etwa 2 Minuten zusätzlich zur Rückstellung von höchstens 60 s), fällt heraus; bei Rückstand zählt die Gauge also zu wenig. |
 | `swarmq_lock_wait_oldest_seconds` | Gauge | `worker_id` | Sekunden, die die älteste dieser Nachrichten seit ihrem ersten Lock-Konflikt wartet. |
+| `swarmq_supervisor_locked_slots` | Gauge | `worker_id` | Worker-Slots, die der Supervisor nach 5 Abstürzen oder zu vielen Hängern binnen einer Stunde gesperrt hat; jede Sperre dauert eine Abkühlzeit von 1 h (seit 0.12). Nur unter dem Supervisor (`swarmq worker`); alle Worker eines Supervisors melden denselben Wert. |
 | `swarmq_delay_tiers_unavailable` | Gauge | `queue` | Delay-Stufen der Queue, deren Deklaration der Broker abgelehnt hat; ihre Wartezeiten nutzen `{queue}.DQ` ([Delay-Stufen](../explanation/delivery-semantics.md#delay-stufen)). |
 | `swarmq_worker_uptime_seconds` | Gauge | `worker_id` | Sekunden seit Worker-Start, abgetastet. |
 | `swarmq_scheduler_leader` | Gauge | `worker_id` | `1`, solange dieser Worker den Scheduler-Leader-Lock hält, sonst `0`. |

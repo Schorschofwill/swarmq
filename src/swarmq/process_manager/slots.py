@@ -10,6 +10,7 @@ kennt vier Zustände: frei, aktiv (ein Prozess hält den Slot), Übergang
 from __future__ import annotations
 
 import enum
+import math
 import multiprocessing
 import time
 from dataclasses import dataclass, field
@@ -31,6 +32,7 @@ class SlotTable:
 
     def __init__(self, size: int) -> None:
         self._states: list[SlotState] = [SlotState.FREE] * size
+        self._locked_until: dict[int, float] = {}
 
     def __len__(self) -> int:
         return len(self._states)
@@ -38,17 +40,35 @@ class SlotTable:
     def state(self, slot: int) -> SlotState:
         return self._states[slot]
 
-    def lock(self, slot: int) -> None:
-        """Slot dauerhaft sperren (Budget erschöpft); kein refresh hebt das auf.
+    def lock(self, slot: int, until: float = math.inf) -> None:
+        """Slot sperren (Budget erschöpft), bis ``until`` (monotone Zeit).
 
-        Each locked slot permanently reduces the static backfill target —
-        without this, the backfill loop respawned a fresh WorkerInfo (empty
-        restart history) right after ``_maybe_restart`` declined, bypassing
-        the 5-per-hour limit in an unbounded spawn storm. When ALL slots are
-        locked the supervisor exits non-zero so systemd/k8s take over with
-        their own backoff policy.
+        Each locked slot reduces the static backfill target while the lock
+        lasts — without this, the backfill loop respawned a fresh WorkerInfo
+        (empty restart history) right after ``_maybe_restart`` declined,
+        bypassing the 5-per-hour limit in an unbounded spawn storm. When ALL
+        slots are locked the supervisor exits non-zero so systemd/k8s take
+        over with their own backoff policy. Der Default sperrt dauerhaft; der
+        Supervisor sperrt mit Abkühlzeit (BZ-27, Plan 0.12.0, MR 17), kein
+        ``refresh`` hebt die Sperre vorher auf.
         """
         self._states[slot] = SlotState.LOCKED
+        if math.isinf(until):
+            self._locked_until.pop(slot, None)  # dauerhaft: keine Uhr hebt das auf
+        else:
+            self._locked_until[slot] = until
+
+    def unlock_expired(self, now: float) -> list[int]:
+        """Sperren mit abgelaufener Abkühlzeit aufheben; liefert die Slots.
+
+        Ein entsperrter Slot ist frei; hält ihn noch ein Prozess, leitet der
+        nächste ``refresh`` den Zustand neu ab.
+        """
+        expired = [slot for slot, until in self._locked_until.items() if until <= now]
+        for slot in expired:
+            del self._locked_until[slot]
+            self._states[slot] = SlotState.FREE
+        return expired
 
     def locked(self) -> int:
         return sum(1 for s in self._states if s is SlotState.LOCKED)

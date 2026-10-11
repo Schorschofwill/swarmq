@@ -26,11 +26,6 @@ from swarmq.process_manager.slots import SlotState
 from tests.unit.process_manager._helpers import FakeClock, _entry_stub, _fake_process, _register
 
 
-@pytest.mark.befund("BZ-27")
-@pytest.mark.xfail(
-    strict=True,
-    reason="BZ-27: Slot-Sperre nach MAX_RESTARTS Abstuerzen wird nach Ablauf von RESTART_WINDOW nie aufgehoben",
-)
 def test_locked_slot_is_refilled_after_the_restart_window(monkeypatch: pytest.MonkeyPatch) -> None:
     clock = FakeClock()
     pm = ProcessManager(num_workers=2, worker_entry=_entry_stub)

@@ -29,7 +29,7 @@ from swarmq.scheduler import SchedulerLoop, ScheduleStore
 from swarmq.scheduler.reports import static_definitions
 from swarmq.serialization import decode_result
 from swarmq.signals import Signal
-from swarmq.supervision import ForkSourceRejected, RecycleAckTimeout
+from swarmq.supervision import ForkSourceRejected, RecycleAckTimeout, current_channel
 from swarmq.worker.eviction_gate import enforce_eviction_policy
 from swarmq.workflow_orchestration import (
     WorkflowAdvancer,
@@ -560,6 +560,11 @@ class WorkerLifecycle:
         waiting, oldest_s = self._lock_gate.waits.snapshot(now_ms=int(time.time() * 1000))
         self._metrics.lock_waits.labels(worker_id=worker_id).set(waiting)
         self._metrics.lock_wait_oldest_seconds.labels(worker_id=worker_id).set(oldest_s)
+        # Plan 0.12.0, MR 17 (BZ-27): gesperrte Slots des Supervisors.
+        channel = current_channel()
+        locked = None if channel is None else channel.locked_slots_value()
+        if locked is not None:
+            self._metrics.supervisor_locked_slots.labels(worker_id=worker_id).set(locked)
         # Revive WORKER_HEARTBEAT (declared but never dispatched): a
         # per-worker liveness tick complementing the shallow /health probe.
         await self._signal_dispatcher.dispatch(

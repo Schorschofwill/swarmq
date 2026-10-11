@@ -40,3 +40,17 @@ def test_current_channel_roundtrip():
     finally:
         sv.set_current_channel(None)
     assert sv.current_channel() is None
+
+
+def test_locked_slots_are_shared_by_all_channels_of_a_supervisor():
+    """BZ-27 (Plan 0.12.0, MR 17): ein Wert je Supervisor, Schreiber ist nur er."""
+    ctx = multiprocessing.get_context("spawn")
+    shared = ctx.Value("i", 0)
+    first = sv.SupervisorChannel.create(ctx, locked_slots=shared)
+    second = sv.SupervisorChannel.create(ctx, locked_slots=shared)
+    shared.value = 2
+    assert first.locked_slots_value() == 2 and second.locked_slots_value() == 2
+
+
+def test_channel_without_shared_locked_slots_reports_none():
+    assert _channel().locked_slots_value() is None

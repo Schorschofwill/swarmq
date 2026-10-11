@@ -24,6 +24,7 @@ class RestartBudget:
     if TYPE_CHECKING:
         MAX_RESTARTS: int
         RESTART_WINDOW: float
+        SLOT_COOLDOWN_S: float
         SHUTDOWN_TERM_S: float
         workers: dict[int, WorkerInfo]
         initial_workers: int
@@ -34,6 +35,7 @@ class RestartBudget:
         _terminating: list[tuple[WorkerInfo, float]]
         _hang_timestamps: list[float]
         _slots: SlotTable
+        _locked_slots_shared: Any
 
         @property
         def _log(self) -> Any: ...
@@ -44,6 +46,8 @@ class RestartBudget:
         def _monotonic(self) -> float: ...
 
         def _start_worker(self, slot: int) -> WorkerInfo: ...
+
+        def _refresh_slot(self, slot: int) -> None: ...
 
     # ---- Lebenszeichen (Plan 2026-09-03-001, R21/R30, KTD10)
 
@@ -112,11 +116,13 @@ class RestartBudget:
             deadline_s=self._heartbeat_deadline(info),
         )
         if len(self._hang_timestamps) >= self.hang_replacement_limit:
-            self._slots.lock(info.worker_id)  # auch mit lebendem Vorgaenger (R4)
+            self._slots.lock(info.worker_id, until=now + self.SLOT_COOLDOWN_S)  # auch mit lebendem Vorgaenger (R4)
             self._log.error(
                 "hang_replacement_budget_exhausted",
+                worker_id=info.worker_id,
                 limit=self.hang_replacement_limit,
                 window_s=self.RESTART_WINDOW,
+                cooldown_s=self.SLOT_COOLDOWN_S,
                 hint="a poison message keeps hanging workers; check the DLQ and the delivery limit",
             )
         else:
@@ -157,15 +163,16 @@ class RestartBudget:
         timestamps = [t for t in old.restart_timestamps if t >= cutoff]
 
         if len(timestamps) >= self.MAX_RESTARTS:
-            # Lock the slot permanently so _current_target shrinks and the
-            # backfill loop cannot respawn it with a fresh (empty) restart
-            # history.
-            self._slots.lock(old.worker_id)
+            # Lock the slot for the cooldown so _current_target shrinks and
+            # the backfill loop cannot respawn it with a fresh (empty)
+            # restart history (BZ-27: Abkuehlzeit statt Dauersperre).
+            self._slots.lock(old.worker_id, until=now + self.SLOT_COOLDOWN_S)
             self._log.error(
                 "worker_restart_limit_exceeded",
                 worker_id=old.worker_id,
                 limit=self.MAX_RESTARTS,
                 window_s=self.RESTART_WINDOW,
+                cooldown_s=self.SLOT_COOLDOWN_S,
                 recent_restarts=len(timestamps),
                 exhausted_slots=self._exhausted_slots,
                 initial_workers=self.initial_workers,
@@ -181,3 +188,21 @@ class RestartBudget:
         )
         new = self._start_worker(old.worker_id)
         new.restart_timestamps = timestamps
+
+    def _unlock_expired_slots(self) -> None:
+        """BZ-27 (Plan 0.12.0, MR 17): Slots nach der Abkuehlzeit wieder freigeben
+        und die Zahl gesperrter Slots an die Worker-Kanaele melden (Gauge).
+
+        Der Slot startet mit leerer Neustart-Historie neu; stuerzt er erneut
+        fuenfmal binnen des Fensters ab, sperrt ihn das Budget wieder.
+        """
+        for slot in self._slots.unlock_expired(self._monotonic()):
+            self._refresh_slot(slot)
+            self._log.info(
+                "worker_slot_unlocked",
+                worker_id=slot,
+                cooldown_s=self.SLOT_COOLDOWN_S,
+                locked_slots=self._exhausted_slots,
+            )
+        if self._locked_slots_shared is not None:
+            self._locked_slots_shared.value = self._exhausted_slots

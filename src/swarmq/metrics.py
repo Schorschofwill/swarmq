@@ -303,6 +303,14 @@ class Metrics:
                 labelnames=("worker_id",),
                 registry=self.registry,
             )
+            # Plan 0.12.0, MR 17 (BZ-27): gesperrte Slots des Supervisors,
+            # gelesen ueber den Supervisor-Kanal des Workers.
+            self.supervisor_locked_slots: Gauge | _NoopMetric = Gauge(
+                f"{namespace}_supervisor_locked_slots",
+                "Worker slots the supervisor has locked after too many crashes or hangs (cooldown 1 h)",
+                labelnames=("worker_id",),
+                registry=self.registry,
+            )
             self.registry.register(_LogRecordsDroppedCollector(namespace))
         else:
             noop = _NoopMetric()
@@ -328,6 +336,7 @@ class Metrics:
             self.lock_waits = noop
             self.lock_wait_oldest_seconds = noop
             self.valkey_memory_used_ratio = noop
+            self.supervisor_locked_slots = noop
 
     @property
     def enabled(self) -> bool:

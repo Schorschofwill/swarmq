@@ -28,10 +28,13 @@ class SupervisorChannel:
     heartbeat: Any  # Value('d'): monotone Zeit des letzten Lebenszeichens, 0 = noch keins
     intent: Any  # Value('i'): INTENT_*
     ack: Any  # Value('i'): ACK_*
+    # BZ-27 (Plan 0.12.0, MR 17): gesperrte Slots, ein Wert je Supervisor fuer
+    # alle Kanaele; Schreiber ist nur der Supervisor, der Worker zeigt ihn als Gauge.
+    locked_slots: Any = None
 
     @classmethod
-    def create(cls, ctx: Any) -> SupervisorChannel:
-        return cls(ctx.Value("d", 0.0), ctx.Value("i", INTENT_NONE), ctx.Value("i", ACK_NONE))
+    def create(cls, ctx: Any, *, locked_slots: Any = None) -> SupervisorChannel:
+        return cls(ctx.Value("d", 0.0), ctx.Value("i", INTENT_NONE), ctx.Value("i", ACK_NONE), locked_slots)
 
     # --- Worker-Seite
     def beat(self) -> None:
@@ -46,6 +49,12 @@ class SupervisorChannel:
 
     def replacement_acknowledged(self) -> bool:
         return int(self.ack.value) == ACK_REPLACEMENT_STARTED
+
+    def locked_slots_value(self) -> int | None:
+        """Gesperrte Slots des Supervisors; ``None`` ohne geteilten Wert."""
+        if self.locked_slots is None:
+            return None
+        return int(self.locked_slots.value)
 
     # --- Supervisor-Seite
     def last_beat(self) -> float:

@@ -688,8 +688,9 @@ selection, not every event SwarmQ emits.
 | `signal_handler_timeout` | `swarmq.signals` | WARNING | A lifecycle signal handler exceeded its time budget. Fields `signal`, `handler`, `timeout_s`. |
 | `worker_hung` | `swarmq.process_manager.supervisor` | WARNING | No heartbeat; the worker is replaced. Fields `worker_id`, `pid`, `stale_s`, `deadline_s`. |
 | `worker_hung_killed` | `swarmq.process_manager.supervisor` | ERROR | A replaced worker survived SIGTERM and was killed. Fields `worker_id`, `pid`. |
-| `hang_replacement_budget_exhausted` | `swarmq.process_manager.supervisor` | ERROR | Too many hung workers in the window; the slot is locked. Fields `limit`, `window_s`, `hint`. |
-| `worker_restart_limit_exceeded` | `swarmq.process_manager.supervisor` | ERROR | A slot crashed 5 times within an hour and is locked. |
+| `hang_replacement_budget_exhausted` | `swarmq.process_manager.supervisor` | ERROR | Too many hung workers in the window; the slot is locked for the cooldown (1 h, since 0.12; before, for good). Fields `worker_id`, `limit`, `window_s`, `cooldown_s`, `hint`. |
+| `worker_restart_limit_exceeded` | `swarmq.process_manager.supervisor` | ERROR | A slot crashed 5 times within an hour and is locked for the cooldown (1 h, since 0.12; before, for good). Fields `worker_id`, `limit`, `window_s`, `cooldown_s`, `recent_restarts`, `exhausted_slots`, `initial_workers`. |
+| `worker_slot_unlocked` | `swarmq.process_manager.supervisor` | INFO | The cooldown of a locked slot has passed; the supervisor fills the slot again with an empty restart history (since 0.12). Fields `worker_id`, `cooldown_s`, `locked_slots`. |
 | `all_worker_slots_exhausted` | `swarmq.process_manager.supervisor` | ERROR | Every slot hit the restart limit; the supervisor exits. |
 | `process_manager_reload_execvp` | `swarmq.process_manager.reload` | INFO | The supervisor re-executes itself for a reload, after its workers stopped. |
 | `reload_aborted_alive_children` | `swarmq.process_manager.reload` | WARNING | A worker child survived the stop for a reload (even `SIGKILL`, for example in an uninterruptible kernel wait); the supervisor does not re-execute itself, so the child is not orphaned, and exits `0`. Fields `alive_count`, `alive_pids`, `hint`. |

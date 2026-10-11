@@ -785,6 +785,22 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   es in einer späteren aiormq-Version, warnt swarmq einmal
   (`publish_blocked_state_unreadable`) und publiziert ungeprüft wie bisher.
 
+### Behoben (Worker-Slots, BZ-27)
+
+- **Ein gesperrter Worker-Slot läuft nach einer Abkühlzeit wieder an.**
+  Der Supervisor sperrt einen Slot, dessen Worker binnen einer Stunde
+  5-mal abgestürzt ist (oder nach zu vielen hängenden Workern). Bisher
+  galt die Sperre bis zum Neustart des Supervisors, der Slot blieb
+  dauerhaft leer. Jetzt dauert sie 1 h (`ProcessManager.SLOT_COOLDOWN_S`);
+  danach loggt der Supervisor `worker_slot_unlocked` und belegt den Slot
+  wieder, mit leerer Neustart-Historie. Die Gauge
+  `swarmq_supervisor_locked_slots` zeigt die gesperrten Slots;
+  `worker_restart_limit_exceeded` und `hang_replacement_budget_exhausted`
+  tragen `cooldown_s`. Sind alle Slots gesperrt und lebt kein Worker mehr,
+  endet der Supervisor weiter mit `1`, damit die Orchestrierung ihr
+  eigenes Backoff anwendet. `SlotTable.lock(slot)` ohne `until` sperrt
+  weiter dauerhaft.
+
 ## [0.11.1] — 2026-10-10
 
 Rollback-Ziel vor 0.12. **Erst alle Apps als eigenes Deployment auf
