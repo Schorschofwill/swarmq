@@ -13,7 +13,7 @@ Test-Liste:
 - [x] lebend gemeldete Queue ohne Consumer oder Queue mit Consumer: kein Befund
 - [x] gemeldete Queue ohne ``.XQ`` -> ``warning`` ``dead_letter_queue_missing``
 - [x] fehlende Haupt-Queue: kein ``.XQ``-Befund
-- [x] Broker oder Meldungen nicht lesbar -> ``warning`` ``queues_unchecked``
+- [x] Meldungen nicht lesbar -> ``warning`` ``queues_unchecked`` (Broker nicht erreichbar: Exit 1, Integrationstest)
 """
 
 from __future__ import annotations

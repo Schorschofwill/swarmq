@@ -18,7 +18,8 @@ Abschnitte:
 
 Exit-Codes: 0 ohne Fehler (Warnungen erlaubt), 78, wenn ein Worker mit dieser
 Umgebung den Start verweigern wuerde (verdraengende Policy unter ``strict``),
-1 bei Laufzeitfehlern (Backend nicht erreichbar, ``SWARMQ_BACKEND_URL`` fehlt).
+1 bei Laufzeitfehlern (Backend oder, mit ``SWARMQ_BROKER_URL``, Broker nicht
+erreichbar, ``SWARMQ_BACKEND_URL`` fehlt).
 """
 
 from __future__ import annotations
@@ -98,30 +99,34 @@ def _seen_interval_s() -> float:
 
 async def _read_queue_state(url: str, broker_url: str) -> QueueState:
     """BZ-14: gemeldete Queues aus Valkey (Namensraum aus ``SWARMQ_NAMESPACE``)
-    und ihr Zustand samt ``.XQ`` per passivem Declare; nur lesend. Ist etwas
-    nicht lesbar, steht der Fehler im Ergebnis (Warnung, kein Abbruch)."""
+    und ihr Zustand samt ``.XQ`` per passivem Declare; nur lesend. Sind die
+    Meldungen nicht lesbar (etwa ACL), steht der Fehler im Ergebnis (Warnung).
+    Ein nicht erreichbarer Broker wirft: Exit 1 wie bei Valkey (Entscheidung
+    Georg 2026-10-11)."""
     from swarmq.backend.valkey import ValkeyBackend
     from swarmq.broker.rabbitmq import RabbitMQBroker
     from swarmq.logging import sanitize_url
     from swarmq.queue_names import queue_family
     from swarmq.scheduler.reports import live_window_ms
 
+    backend = ValkeyBackend(url, eviction_check="off")
+    await backend.connect()
     try:
-        backend = ValkeyBackend(url, eviction_check="off")
-        await backend.connect()
-        try:
-            reports = await backend.schedules.queue_reports()
-        finally:
-            await backend.close()
-        broker = RabbitMQBroker(broker_url)
-        await broker.connect()
-        try:
-            names = [name for queue in sorted(reports.last_seen_ms) for name in (queue, queue_family(queue)[2])]
-            statuses = await broker.queue_statuses(names)
-        finally:
-            await broker.close()
+        reports = await backend.schedules.queue_reports()
     except Exception as exc:
-        return QueueState(error=f"{type(exc).__name__}: {exc} (broker {sanitize_url(broker_url)})")
+        return QueueState(error=f"{type(exc).__name__}: {exc}")
+    finally:
+        await backend.close()
+    broker = RabbitMQBroker(broker_url)
+    try:
+        await broker.connect()
+    except Exception as exc:
+        raise RuntimeError(f"broker {sanitize_url(broker_url)} is not reachable: {exc}") from exc
+    try:
+        names = [name for queue in sorted(reports.last_seen_ms) for name in (queue, queue_family(queue)[2])]
+        statuses = await broker.queue_statuses(names)
+    finally:
+        await broker.close()
     return QueueState(
         now_ms=reports.now_ms,
         last_seen_ms=reports.last_seen_ms,

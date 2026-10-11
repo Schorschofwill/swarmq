@@ -809,8 +809,10 @@ All notable changes to SwarmQ. This project follows
   ([moving a task to another queue](../guides/defining-tasks.md#moving-a-task-to-another-queue)).
 - **`swarmq check`, section `queues`** (with `SWARMQ_BROKER_URL`): orphaned
   queues and reported queues whose `.XQ` is missing; findings
-  `orphaned_queue`, `dead_letter_queue_missing`, `queues_unchecked`, all
-  warnings ([CLI](cli.md#swarmq-check)).
+  `orphaned_queue`, `dead_letter_queue_missing`, `queues_unchecked`
+  (reports not readable from Valkey), all warnings. An unreachable broker
+  ends the check with exit `1`, like an unreachable Valkey
+  ([CLI](cli.md#swarmq-check)).
 - **Contracts:** `ScheduleStore.report_queues`, `queue_reports` and
   `forget_queue_reports` with `swarmq.contracts.QueueReports`; the optional
   broker method `queue_statuses(names)` with

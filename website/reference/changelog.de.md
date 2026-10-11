@@ -865,8 +865,10 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   ([Task in eine andere Queue verschieben](../guides/defining-tasks.de.md#task-in-eine-andere-queue-verschieben)).
 - **`swarmq check`, Abschnitt `queues`** (mit `SWARMQ_BROKER_URL`):
   verwaiste Queues und gemeldete Queues ohne `.XQ`; Befunde
-  `orphaned_queue`, `dead_letter_queue_missing`, `queues_unchecked`, alle
-  als Warnung ([CLI](cli.de.md#swarmq-check)).
+  `orphaned_queue`, `dead_letter_queue_missing`, `queues_unchecked`
+  (Meldungen aus Valkey nicht lesbar), alle als Warnung. Ein nicht
+  erreichbarer Broker beendet die Prüfung mit Exit `1`, wie ein nicht
+  erreichbares Valkey ([CLI](cli.de.md#swarmq-check)).
 - **Verträge:** `ScheduleStore.report_queues`, `queue_reports` und
   `forget_queue_reports` mit `swarmq.contracts.QueueReports`; die
   optionale Broker-Methode `queue_statuses(names)` mit

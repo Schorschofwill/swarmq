@@ -7,6 +7,7 @@ Chaos-Test mit eigenem Wegwerf-Container (``tests/chaos/test_valkey_eviction_pol
 
 Test-Liste:
 - [x] Test-Valkey: Exit 0, Policy ``noeviction``, Version >= 8, Werte gelesen
+- [x] Broker nicht erreichbar -> Exit 1 (Entscheidung Georg 2026-10-11)
 - [x] mit ``SWARMQ_BROKER_URL``: Abschnitt ``queues`` nennt die verwaiste
       gemeldete Queue und die fehlende ``.XQ`` (Plan 0.12.0, MR 18, BZ-14)
 """
@@ -93,3 +94,18 @@ def test_check_reports_orphaned_queues_and_missing_dead_letter_queues(
     assert queues["missing_dead_letter_queues"] == [without_xq]
     codes = sorted(f["code"] for f in report["findings"] if f["section"] == "queues")
     assert codes == ["dead_letter_queue_missing", "orphaned_queue"]
+
+
+def test_unreachable_broker_exits_1(
+    valkey_url: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Entscheidung Georg 2026-10-11: wie Valkey -> Exit 1. Port 1 lehnt ab.
+    monkeypatch.setenv("SWARMQ_BACKEND_URL", valkey_url)
+    monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://guest:guest@127.0.0.1:1/")
+
+    code = main(["check", "--format", "json"])
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.out == ""
+    assert "swarmq check:" in captured.err and "127.0.0.1:1" in captured.err

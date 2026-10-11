@@ -533,8 +533,8 @@ selben Valkey oder Daten von vor dem Setzen, die der Namensraum nicht
 migriert; [Namensraum](configuration.md#namensraum-mehrere-apps-auf-einem-valkey)),
 `unprefixed_keys_unknown` (`SCAN` gescheitert, verboten oder vor dem
 ersten Fund am Zeitlimit), `orphaned_queue`, `dead_letter_queue_missing`
-und `queues_unchecked` (Valkey oder der Broker waren für den Abschnitt
-`queues` nicht lesbar). Eine unvollständige Zählung lautet `at least
+und `queues_unchecked` (die gemeldeten Queues waren aus Valkey nicht
+lesbar, etwa per ACL verboten). Eine unvollständige Zählung lautet `at least
 <n> keys … (count incomplete …)`; im Cluster-Modus nennt die Meldung
 zusätzlich, dass nur ein Knoten gezählt wurde.
 
@@ -542,7 +542,8 @@ Exit-Codes: `0`, wenn nichts blockiert (Warnungen erlaubt), `78`, wenn
 ein Worker in dieser Umgebung den Start verweigern würde (verdrängende
 Policy unter `SWARMQ_VALKEY_EVICTION_CHECK=strict`, ungültiger
 `SWARMQ_NAMESPACE`), `1`, wenn Valkey
-nicht erreichbar ist oder `SWARMQ_BACKEND_URL` fehlt.
+nicht erreichbar ist, `SWARMQ_BACKEND_URL` fehlt oder `SWARMQ_BROKER_URL`
+gesetzt und der Broker nicht erreichbar ist.
 
 ```bash
 $ SWARMQ_BACKEND_URL=valkey://valkey:6379/0 swarmq check --format table

@@ -514,15 +514,16 @@ same Valkey, or data from before the namespace was set, which the
 namespace does not migrate; [namespace](configuration.md#namespace-several-apps-on-one-valkey)),
 `unprefixed_keys_unknown` (`SCAN` failed, is forbidden, or hit its time
 limit before finding a key), `orphaned_queue`, `dead_letter_queue_missing`
-and `queues_unchecked` (Valkey or the broker could not be read for the
-`queues` section). An incomplete count reads `at least <n>
+and `queues_unchecked` (the reported queues could not be read from
+Valkey, for example forbidden by ACL). An incomplete count reads `at least <n>
 keys … (count incomplete …)`; in cluster mode the message adds that only
 one node was counted.
 
 Exit codes: `0` when nothing blocks (warnings allowed), `78` when a
 worker would refuse to start in this environment (evicting policy under
-`SWARMQ_VALKEY_EVICTION_CHECK=strict`, invalid `SWARMQ_NAMESPACE`), `1` when Valkey is unreachable
-or `SWARMQ_BACKEND_URL` is missing.
+`SWARMQ_VALKEY_EVICTION_CHECK=strict`, invalid `SWARMQ_NAMESPACE`), `1` when Valkey is unreachable,
+`SWARMQ_BACKEND_URL` is missing, or `SWARMQ_BROKER_URL` is set and the
+broker is unreachable.
 
 ```bash
 $ SWARMQ_BACKEND_URL=valkey://valkey:6379/0 swarmq check --format table
