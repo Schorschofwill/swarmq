@@ -27,6 +27,7 @@ import pytest
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from tests.support.queues import delete_queue_family
+from tests.support.wait import wait_until
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(20)]
 
@@ -79,8 +80,17 @@ async def test_aborted_dlq_listing_loses_no_message(rabbitmq_url: str, dlq, monk
         monkeypatch.undo()
         await reader.close()
 
-    remaining = await observer.dead_letter_depth(queue)
-    assert remaining == _MESSAGES, (
+    # Unbestaetigte Nachrichten gibt der Broker erst asynchron nach dem
+    # Verbindungsende zurueck; unter Last dauert das messbar. Ein echter
+    # Verlust bleibt rot, weil die Tiefe dann nie wieder _MESSAGES erreicht.
+    remaining = 0
+
+    async def all_back() -> bool:
+        nonlocal remaining
+        remaining = await observer.dead_letter_depth(queue)
+        return remaining == _MESSAGES
+
+    assert await wait_until(all_back, timeout=5.0), (
         f"{_MESSAGES - remaining} of {_MESSAGES} DLQ messages lost after the reader "
         f"died having read {_ABORT_AFTER} of them"
     )
