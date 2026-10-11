@@ -116,6 +116,7 @@ lint-and-types:
   stage: test
   before_script: []
   script:
+    - $UV_RUN ruff format --check .
     - $UV_RUN ruff check src/ tests/
     - $UV_RUN mypy src/swarmq tests/support tests/contracts
 
