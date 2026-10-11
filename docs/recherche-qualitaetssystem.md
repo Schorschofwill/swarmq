@@ -158,3 +158,14 @@ markiert ist, was nur auf Vorwissen beruht.
 
 Entscheidung vom 2026-10-11: Begonnen wird mit ruff und mypy
 (Plan `docs/plans/2026-10-11-1200-chore-ruff-mypy-ausbau-plan.md`).
+
+## Umsetzungsstand
+
+**Lint und Typen — erledigt** (Branch `chore/ruff-mypy-ausbau`, Plan
+2026-10-11-1200): ruff 0.17 mit `select = ["ALL"]` und begründetem
+Ausnahmekatalog, `ruff format` über den Bestand (`.git-blame-ignore-revs`),
+mypy 2.4 strict mit Zusatzcodes über `src/` und ganz `tests/`, basedpyright
+strict über `src/`, prek-Hooks (Commit: Format/Lint, Push: Typen),
+Dependency-Groups `lint`/`typing`. Offen bleiben die übrigen Lücken dieses
+Dokuments (Coverage, pytest-Strenge und Reihenfolge, CI-Sicherheit, Matrix,
+Supply Chain, Docstrings).

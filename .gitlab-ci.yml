@@ -105,12 +105,12 @@ variables:
       print("all services ready")
       PY
 
-# Lint + Typen (Plan U2): erstes blockierendes Gate für ruff und mypy — bis
-# dahin existierten beide nur in den toten GitHub-Workflows. mypy-Umfang
-# wächst in U4 um tests/support und tests/contracts (KTD1-Konformitätsanker).
-# Kein Build-Toolchain nötig (ruff/mypy brauchen die C-Extension nicht);
-# $UV_RUN, damit mypy das `reload`-Extra (watchfiles) auflösen kann. ruff und
-# mypy kommen seit Plan 2026-10-11-1200 (KTD9) aus den Gruppen `lint`/`typing`.
+# Lint + Typen: Format, ruff mit allen Regeln (Ausnahmen begründet in
+# pyproject.toml), mypy strict über src und tests, basedpyright strict über
+# src (Plan 2026-10-11-1200). Dieselben Befehle laufen lokal als prek-Hooks.
+# Kein Build-Toolchain nötig (die Prüfer brauchen die C-Extension nicht);
+# $UV_RUN, damit mypy das `reload`-Extra (watchfiles) auflösen kann. Die
+# Werkzeuge kommen aus den Gruppen `lint`/`typing` (KTD9).
 lint-and-types:
   extends: .uv
   stage: test
@@ -119,6 +119,7 @@ lint-and-types:
     - $UV_RUN ruff format --check .
     - $UV_RUN ruff check src/ tests/
     - $UV_RUN mypy src/swarmq tests
+    - $UV_RUN basedpyright
 
 # Tier 1 — unit + property. No external services; the fast regression gate.
 # Guards against uv.lock drifting from pyproject.toml — including optional

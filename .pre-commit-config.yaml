@@ -5,6 +5,7 @@
 # Alle Hooks laufen über ``uv run --frozen``: jede Werkzeugversion kommt aus
 # uv.lock, es gibt keine zweiten rev-Pins, die driften können. Die Befehle
 # sind dieselben wie im CI-Job ``lint-and-types`` (KTD11).
+default_stages: [pre-commit, manual]
 repos:
   - repo: local
     hooks:
@@ -26,13 +27,11 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
-        # Wird scharf (pre-push), sobald mypy auf tests/ grün ist (Plan U11).
-        stages: [manual]
+        stages: [pre-push, manual]
       - id: basedpyright
         name: basedpyright (src)
         entry: uv run --frozen --extra test --extra reload basedpyright
         language: system
         pass_filenames: false
         always_run: true
-        # Wird scharf (pre-push), sobald basedpyright auf src/ grün ist (Plan U11).
-        stages: [manual]
+        stages: [pre-push, manual]

@@ -37,7 +37,7 @@ niemand für eine Zusicherung hält.
 
 | Job | Was |
 |---|---|
-| `lint-and-types` | `ruff check src/ tests/`, `mypy src/swarmq tests/support tests/contracts` |
+| `lint-and-types` | `ruff format --check .`, `ruff check src/ tests/`, `mypy src/swarmq tests`, `basedpyright` (siehe „Lint, Format und Typen“) |
 | `lock-check` | `uv.lock` ist zum `pyproject.toml` synchron |
 | `unit-tests` | `tests/unit`, dazu `tests/property` und `tests/fuzz/test_parser_fuzz.py` |
 | `integration-tests` | `tests/integration` gegen RabbitMQ und Valkey |
