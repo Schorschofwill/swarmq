@@ -45,6 +45,9 @@ variables:
   UV_FROZEN: "1"
   # Canonical uv invocation: test deps + the reload extra the hot-reload
   # tests need. Keep every test job using this so the resolved env matches.
+  # `uv run` also installs the default dependency groups `lint` and `typing`
+  # ([tool.uv] default-groups): ruff, mypy, basedpyright, prek. The unit job
+  # needs `typing` too -- tests/unit/typing/test_contract_shapes.py runs mypy.
   UV_RUN: "uv run --extra test --extra reload"
 
 # Shared uv setup: pinned-Python image, build toolchain for the libvalkey C
@@ -106,7 +109,8 @@ variables:
 # dahin existierten beide nur in den toten GitHub-Workflows. mypy-Umfang
 # wächst in U4 um tests/support und tests/contracts (KTD1-Konformitätsanker).
 # Kein Build-Toolchain nötig (ruff/mypy brauchen die C-Extension nicht);
-# $UV_RUN, damit mypy das `reload`-Extra (watchfiles) auflösen kann.
+# $UV_RUN, damit mypy das `reload`-Extra (watchfiles) auflösen kann. ruff und
+# mypy kommen seit Plan 2026-10-11-1200 (KTD9) aus den Gruppen `lint`/`typing`.
 lint-and-types:
   extends: .uv
   stage: test

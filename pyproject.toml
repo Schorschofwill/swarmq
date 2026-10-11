@@ -59,8 +59,6 @@ test = [
     "pytest-asyncio",
     "pytest-timeout",
     "pytest-cov",
-    "mypy",
-    "ruff",
     # E2E-Hardening Phase 2+ — toxiproxy REST + property-based + fuzz
     "httpx",
     "hypothesis",
@@ -68,8 +66,6 @@ test = [
     "freezegun",
     # U2.1 chaos: RSS-polling for the OOM-simulation test.
     "psutil",
-    # mypy (CI prueft tests/support): Typen fuer psutil.
-    "types-psutil",
     # E2E-Hardening Phase 3 U3.10 — mutation testing.
     "mutmut",
     # R5.1: tests/unit/test_metrics.py asserts the real registry shape,
@@ -85,6 +81,25 @@ docs = [
     "mkdocs-static-i18n>=1.2",
     "pymdown-extensions>=10.11",
 ]
+
+# Entwicklungswerkzeuge als PEP-735-Gruppen (Plan 2026-10-11-1200, KTD9):
+# werden nicht veröffentlicht. ``uv run``/``uv sync`` ziehen sie über
+# ``default-groups`` mit — auch die Unit-Suite braucht ``typing``, weil
+# tests/unit/typing/test_contract_shapes.py mypy als Subprozess startet.
+[dependency-groups]
+lint = [
+    "ruff>=0.17",
+    "prek>=0.5",
+]
+typing = [
+    "mypy>=2.4",
+    "basedpyright>=1.40",
+    # Typen für psutil (tests/support, Chaos-Tests).
+    "types-psutil",
+]
+
+[tool.uv]
+default-groups = ["lint", "typing"]
 
 [project.scripts]
 swarmq = "swarmq.cli:console_main"

@@ -245,6 +245,7 @@ def _iter_exception_classes() -> list[type]:
     seen: dict[str, type] = {SwarmQError.__name__: SwarmQError}
 
     def walk(cls: type) -> None:
+        sub: type
         for sub in cls.__subclasses__():
             seen.setdefault(sub.__name__, sub)
             walk(sub)
