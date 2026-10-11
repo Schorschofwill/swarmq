@@ -126,7 +126,13 @@ def test_loop_process_sigkill_kills_the_child_and_the_replacement_finishes_the_t
         return pids
 
     try:
-        _wait_until(pid_file.exists, 60.0, "the compute child to write its pid")
+        # Die Datei existiert, bevor das Kind die PID geschrieben hat; erst eine
+        # vollstaendige Zeile zaehlt (sonst int("") bei Last).
+        _wait_until(
+            lambda: pid_file.exists() and pid_file.read_text(encoding="ascii").strip().isdigit(),
+            60.0,
+            "the compute child to write its pid",
+        )
         child_pid = int(pid_file.read_text(encoding="ascii"))
         loop_pids = _spawned_pids()
         assert loop_pids, "".join(lines)[-4000:]
