@@ -6,477 +6,585 @@ All notable changes to SwarmQ. This project follows
 
 ## [Unreleased]
 
-### Added
+0.12.0, not yet released. It fixes the findings of the review
+"operation over time" (BZ-01 to BZ-29): lost and doubled tasks, waits
+that grow without bound, and state that builds up over weeks of
+operation. BZ-20 stays a limit and is now reported. **Roll out 0.11.1
+to every app first, as a deployment of its own**, then follow
+[deploying and upgrading](../guides/deployment.md).
 
-- **`swarmq check`**: read-only check of the environment before an
-  upgrade (Valkey eviction policy, `maxmemory`, memory, AOF, version,
-  cluster mode; shutdown grace period). Exit `78` when a worker would
-  refuse to start, `0` otherwise, `1` on errors. With
-  `SWARMQ_BROKER_URL` the section `queues` lists orphaned queues and
-  reported queues without `.XQ` (warnings) ([CLI](cli.md#swarmq-check)).
-- **`SWARMQ_VALKEY_EVICTION_CHECK`** (`strict` default, `warn`, `off`),
-  the log events `valkey_eviction_policy_unsafe`,
-  `valkey_eviction_policy_unknown` and `valkey_data_loss_detected`, the
-  signal `SCHEDULER_VALKEY_CHECKED` with the gauge
-  `swarmq_valkey_memory_used_ratio{worker_id}`, the epoch key
-  `sq:{sched}:epoch` (no TTL, one key; golden file `keys.json`,
-  additive), `ScheduleStore.ensure_epoch` and
-  `ValkeyBackend.eviction_check`/`recheck_eviction`
-  ([Valkey requirements](configuration.md#valkey-requirements)).
+### Upgrade notes
 
-- **`swarmq.MessageHeadersTooLarge`** (subclass of
-  `BrokerConnectionError`): a publish whose headers do not fit into half
-  of the negotiated `frame_max`, even with long texts truncated, raises
-  it without sending anything
-  ([error catalog](errors.md#messageheaderstoolarge)).
-- **`swarmq.RedeliveryLimitError`**: never raised; the `error_type` of
-  a DLQ copy whose deliveries the worker handed back until
-  `x-acquired-count` reached the delivery limit
-  ([error catalog](errors.md#redeliverylimiterror)).
-- **`swarmq.LockWaitExceeded`**: never raised; the `error_type` of a
-  DLQ copy whose wait for a task lock ended
-  ([error catalog](errors.md#lockwaitexceeded)).
-- **`SWARMQ_LOCK_WAIT_MAX_S`** (default `21600`): upper limit for how
-  long a message waits for a held task lock, from its first conflict;
-  must be `> 0` and finite ([configuration](configuration.md)).
-- **Headers `x-swarmq-lock-conflicts`, `x-swarmq-lock-wait-since`,
-  `x-swarmq-lock-holder`, `x-swarmq-lock-holder-since`,
-  `x-swarmq-lock-holder-ttl-ms` and `x-swarmq-lock-wait-gen`**, the gauges
-  `swarmq_lock_waits{worker_id}` and
-  `swarmq_lock_wait_oldest_seconds{worker_id}`, the log events
-  `lock_wait_exceeded`, `lock_observe_unsupported` and
-  `lock_observe_failed`, and `LockStore.observe` (golden file
-  `headers.txt`, additive)
-  ([lock acquisition](../guides/locking-and-dedup.md#lock-acquisition-behaviour),
-  [headers](agent/message-formats.md#amqp-headers)).
-- **`swarmq.UnroutableMessage`** (subclass of `BrokerConnectionError`):
-  the broker returned a publish because no queue with that name exists;
-  nothing was delivered ([error catalog](errors.md#unroutablemessage)).
-- **Signal `SCHEDULER_FIRE_UNROUTABLE`** (`worker_id`, `schedule_name`,
-  `queue`, `kind`) and the counter
-  `swarmq_scheduler_fires_unroutable_total{queue, kind}`, with `kind`
-  `cron_lost` or `oneshot_dropped`
-  ([signals](../guides/signals.md)).
-- **`SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S`** (default `86400`):
-  how long the leader keeps retrying a deferred task whose queue does
-  not exist ([configuration](configuration.md)).
-- **`swarmq.QueueArgumentsMismatch`** (subclass of
-  `ConfigurationError`): an existing queue has an argument that differs
-  from the configuration and that swarmq does not adopt, for example a
-  changed `SWARMQ_QUEUE_TYPE`; `swarmq worker` exits with 78
-  ([error catalog](errors.md#queueargumentsmismatch)).
-- **`SWARMQ_QUEUE_DEAD_LETTER_STRATEGY`** (`auto`, `at-least-once`,
-  `legacy`; default `auto`): dead-lettering of new quorum queues
-  ([configuration](configuration.md),
-  [dead-lettering guarantee](../explanation/delivery-semantics.md#dead-lettering-guarantee)).
-- **Gauge `swarmq_delay_tiers_unavailable{queue}`** and the WARNING
-  `delay_tier_unavailable`: delay tiers the broker refused to declare
-  ([delay tiers](../explanation/delivery-semantics.md#delay-tiers)).
-- **`swarmq_queue_depth{kind="delayed"}`**: messages in the delay queues
-  only. `kind="pending"` keeps its meaning (`{queue}` plus all delay
-  queues, now including the tiers).
-- **`swarmq_queue_depth` and `swarmq_dlq_messages` per consumed queue**:
-  with `SWARMQ_PRIORITIES` the worker now also samples the `{queue}.high`
-  and `{queue}.low` bands, the same labels as
-  `swarmq_delay_tiers_unavailable`.
-- **`RabbitMQBroker.ready_depth(queue)`**: messages ready in `{queue}`
-  itself, without delay queues and DLQ.
-- **`SWARMQ_UNKNOWN_TASK_GRACE_S`** (default `900`): how long a worker
-  defers a message whose task it does not register before it
-  dead-letters it; `0` dead-letters at first contact
-  ([configuration](configuration.md),
-  [unregistered tasks](../guides/dead-letter-queues.md#unregistered-tasks-and-rolling-deploys)).
-- **Signal `SCHEDULER_CRON_UNOWNED`** (`worker_id`, `schedule_name`,
-  `task_name`, `held`, `held_count`), the gauge
-  `swarmq_scheduler_crons_held{worker_id}`, the Valkey set
-  `sq:{sched}:report:known` (names a worker from 0.12 has ever
-  reported; removed together with the definition) and the log events
-  `scheduler_cron_held_unowned`, `scheduler_cron_unowned_released`,
-  `scheduler_unowned_check_skipped`
-  ([held crons](../guides/scheduling-and-retries.md#crons-nobody-reports-are-held)).
-- **Signal `TASK_UNKNOWN_DEFERRED`** (`task_id`, `task_name`, `queue`,
-  `delay`, `unknown_since`), the counter
-  `swarmq_tasks_unknown_deferred_total{queue}` and the header
-  `x-swarmq-unknown-since` (first contact, Unix milliseconds), plus the
-  log events `task_unknown_deferred`, `unknown_task_defer_failed` and
-  `unknown_task_dlq_failed` ([signals](../guides/signals.md),
-  [logging](logging.md)).
+#### Order
 
-- **Headers `x-swarmq-xdeath-base` and `x-swarmq-dlq-gen`** and
-  **`SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S`** (default `604800`): the
-  execution identity now counts broker dead-letterings, and the done
-  marker of a replay lives at least the DLQ retention
-  ([execution guard](../explanation/delivery-semantics.md#execution-guard),
-  [headers](agent/message-formats.md#amqp-headers),
-  [configuration](configuration.md)).
+1. **Run `swarmq check` first** with 0.12 in a separate virtualenv
+   against production (`pip install swarmq==0.12.*`; it only reads:
+   `CONFIG GET`, `INFO`, `SCAN`, passive declares). In Kubernetes it
+   can run as an init container. Exit `78` means the new workers would
+   refuse to start; do not find that out by rolling out: a worker that
+   refuses to start exits `78` on every restart, Kubernetes shows
+   `CrashLoopBackOff`, Docker with a `restart:` policy loops. Set
+   `maxmemory-policy noeviction`, or set
+   `SWARMQ_VALKEY_EVICTION_CHECK=warn` deliberately (for example on a
+   managed service with a fixed policy, accepting the risk)
+   ([CLI](cli.md#swarmq-check)).
+2. **Every app on 0.11.1 first**, as a deployment of its own. A
+   rollback via Kubernetes or Docker returns to the image deployed
+   before; 0.11.0 fails on queues that 0.12 created and ignores a
+   namespace silently ([0.11.1](#0111-2026-10-10)).
+3. **Workers before producers.** For every new queue this now holds
+   permanently: a publish to a queue no worker has declared raises
+   `UnroutableMessage` (BZ-03). During the rollout from 0.11 it also
+   holds for new task names, because only 0.12 workers defer an unknown
+   task (BZ-06).
+4. **Grace period:** Kubernetes `terminationGracePeriodSeconds` and
+   Docker `stop_grace_period` at least `SWARMQ_SHUTDOWN_TIMEOUT + 15 s`
+   (`swarmq check` shows `min_grace_period_s`). With the default of
+   30 s an embedded worker now drains 25 s, a worker under the
+   supervisor 23 s (before 30 s); to give long tasks the old drain,
+   raise `SWARMQ_SHUTDOWN_TIMEOUT` by 7 s together with the grace
+   period (BZ-18).
+5. **Namespace last.** First every component (workers, producers,
+   CLI, control service) on 0.12, then set `SWARMQ_NAMESPACE`
+   everywhere in the same step; mixed values split the app. Only for a
+   new app or after moving the app: the namespace migrates no data
+   under `sq:` (schedules, CLI crons, delayed tasks, results, locks).
+   To move an app, stop it completely (Kubernetes `strategy: Recreate`
+   or scale to 0, no rolling update), remove its crons and one-shots
+   without namespace (`swarmq schedule list`, `swarmq schedule remove
+   --permanent`), create its CLI crons and one-shots again with it,
+   change Valkey ACL patterns from `~sq:*` to `~<namespace>:sq:*`
+   (channels `&sq:*` to `&<namespace>:sq:*`) and point tools that read
+   the keys directly (dashboards such as swarmv) at the namespace. Move
+   every app on the Valkey to 0.12 before: a leader older than 0.12
+   keeps firing the old definitions for up to 24 hours. Separate
+   RabbitMQ vhosts on one Valkey need a namespace per app. While apps
+   older than 0.12 share the Valkey without namespace, set
+   `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S=0`, otherwise the leadership
+   can move to a 0.11 app (BZ-10;
+   [procedure](configuration.md#moving-an-app-into-a-namespace)).
+6. **Connections:** workers open two connections to RabbitMQ
+   (producers one). Check `connection_max`, per-vhost
+   `max-connections`, user limits and connection-count alerts before
+   the rollout, or set `SWARMQ_BROKER_PUBLISH_CONNECTION=shared`
+   (BZ-16).
+7. **Queues, permissions, policies:** a queue family now has up to
+   seven more queues, the delay tiers `{queue}.DQ.1s` to
+   `{queue}.DQ.1h` (21 with `SWARMQ_PRIORITIES`); permissions and
+   delay-queue policies need the pattern `\.DQ(\.\w+)?$` (BZ-01). Only
+   one policy applies to a queue: put every key (at-least-once
+   dead-lettering, `max-length`) into one. Do not set a
+   `delivery-limit` policy on swarmq queues (BZ-15, BZ-19).
 
-### Changed
+#### Behaviour changes
 
-- **A worker refuses to start when Valkey may evict swarmq keys.** On
-  connect the backend reads `maxmemory-policy` and `maxmemory` (`CONFIG
-  GET`, else `INFO memory`, at most 2 s, never fails). Under an evicting
-  policy (anything but `noeviction` with a `maxmemory` limit or an
-  unknown limit) every connect logs `valkey_eviction_policy_unsafe`,
-  and a worker with `SWARMQ_VALKEY_EVICTION_CHECK=strict` (default)
-  stops with `ConfigurationError`, exit `78`. A policy that cannot be
-  read never blocks. The scheduler leader checks again at most once per
-  hour. See the upgrade notes below.
-
-- **A lock conflict waits by time instead of 10 attempts.** A message
-  whose task lock is held is deferred (100 ms, doubling, at most 60 s)
-  as long as the lock changes hands or its holder is alive. It is
-  dead-lettered as `LockWaitExceeded`, with an error result, `TASK_DLQ`
-  and the workflow marked failed, only when the same holder keeps the
-  lock longer than the key's TTL + 60 s or `SWARMQ_LOCK_WAIT_MAX_S`
-  passed since the first conflict; `max_age` stays the hard limit.
-  Before, the 10th conflict (about 51 s) dead-lettered the message as
-  `LockConflictLimitError`. **Changed behaviour:** `LockConflictLimitError`
-  no longer appears; `x-swarmq-lock-conflict-count` is neither raised
-  nor read by 0.12 (the new `x-swarmq-lock-conflicts` feeds
-  `lock_conflict_count`, whose meaning is unchanged); `task_lock_conflict`
-  is logged on the first conflict and then about once a minute;
-  `lock_conflict_dlq_failed` names the field `lock_conflicts` instead
-  of `lock_conflict_count`; the DLQ copy no longer carries a conflict
-  counter header (the count is in the `x-swarmq-traceback` text,
-  "(N conflicts)"), and `swarmq dlq retry` also removes the 0.11
-  counter `x-swarmq-lock-conflict-count`. The wait uses the workers' wall clocks (a
-  skew of up to about 60 s is tolerated). A new wait begins when the
-  broker redelivers the message (a worker died after acquiring the
-  lock, or returned it at shutdown) and on the copy of a later
-  execution (`x-swarmq-lock-wait-gen`: retry count and replay ID);
-  classic queues carry no delivery counter, there a redelivery
-  continues the old wait. A lock store whose `observe` returns no
-  `LockObservation` counts as unable to report holders. Limits in
-  mixed operation: a 0.11 worker that defers a message itself still
-  raises the old counter and dead-letters at 10; it never sees a 0.12
-  copy at its cap ([lock acquisition](../guides/locking-and-dedup.md#lock-acquisition-behaviour)).
-
-- **`swarmq dlq retry` keeps the `x-swarmq-replay-id` a 0.12 worker
-  stamped** instead of setting a new one, and restarts
-  `x-swarmq-enqueued-at`. A second retry of the same `.XQ` message is
-  skipped by the execution guard as a duplicate of the first. Messages
-  without a matching `x-swarmq-dlq-gen` (0.11 worker, broker
-  dead-lettering, old stock) get an id derived from their identity, so
-  a repeated retry of them runs once as well; only a message without a
-  task id gets a random id
-  ([retrying messages](../guides/dead-letter-queues.md#retrying-messages)).
-- **The leader version check now warns about every leader before 0.12**
-  (minimum leader version, was 0.10). Scheduler fixes such as the stable
-  task ID of deferred tasks only take effect while the leader has them.
-  `scheduler_leader_outdated` still comes once per leader change, and
-  the gauge `swarmq_scheduler_leader_outdated` stays; its `hint`, the
-  gauge description and the signal documentation no longer mention time
-  zones. **Changed behaviour:** during a rolling upgrade from 0.11 the
-  0.12 workers warn until the leadership moves to a 0.12 worker; the
-  gauge stays at `1` as long as a 0.11 app on the same Valkey holds the
-  leadership
-  ([leader version](../guides/scheduling-and-retries.md#leader-version)).
-- **Queue declarations run on a separate channel, after a passive
-  check.** A queue that exists is declared with the arguments of 0.11,
-  so queues created by 0.11 never see a refusal; a new queue is created
-  with the target arguments. Declarations never run on the publish
-  channel any more, and the result is cached per process (dropped on
-  `UnroutableMessage` or a missing queue). A queue without
-  `x-delivery-limit` is now adopted as well (WARNING; RabbitMQ applies
-  20). Only the first adoption of `x-dead-letter-strategy`/`x-overflow`
-  per process is logged as INFO, later ones as DEBUG. An `x-overflow`
-  adopted first is kept when the strategy follows. A refusal swarmq
-  does not recognise (queue limit, permission) is reported with the
-  broker message and no longer advises deleting the queue; a connection
-  loss during the declaration is a `BrokerConnectionError`.
+- **Valkey eviction (BZ-04):** a worker refuses to start
+  (`ConfigurationError`, exit `78`) when Valkey may evict swarmq keys
+  (any policy but `noeviction` with a `maxmemory` limit or an unknown
+  limit). A policy that cannot be read never blocks.
+- **Unroutable publishes (BZ-03):** `send()`/`schedule()` to a queue
+  that does not exist raise `UnroutableMessage` at once instead of
+  succeeding while the broker drops the message. A task with
+  `TaskInfo(priority="high"|"low")` whose workers run without
+  `--priorities` now raises it too.
+- **Shutdown (BZ-18):** `SWARMQ_SHUTDOWN_TIMEOUT` is the total budget
+  from `SIGTERM`, no longer the drain alone;
+  `ProcessManager(shutdown_grace_s=...)` means the total budget too.
+- **Lock conflicts (BZ-05):** a message whose task lock is held waits
+  by time instead of 10 attempts; `LockConflictLimitError` no longer
+  appears (`LockWaitExceeded` instead). `x-swarmq-lock-conflict-count`
+  is neither raised nor read by 0.12; the new
+  `x-swarmq-lock-conflicts` feeds the signal kwarg
+  `lock_conflict_count`, whose meaning is unchanged.
+  `task_lock_conflict` is logged on the first conflict and then about
+  once a minute; `lock_conflict_dlq_failed` names the field
+  `lock_conflicts` instead of `lock_conflict_count`; the DLQ copy no
+  longer carries a conflict counter header (the count is in the
+  `x-swarmq-traceback` text, "(N conflicts)").
+- **Unknown tasks (BZ-06):** a 0.12 worker defers a task it does not
+  register for 15 minutes before it dead-letters it.
+  `unregistered_task` now follows `TASK_DLQ`, the DLQ copy carries
+  SwarmQ headers, and `task_not_found` comes only after the grace
+  period.
+- **Delivery limit (BZ-15):** the worker dead-letters at the smaller of
+  `SWARMQ_DELIVERY_LIMIT` and the queue's `x-delivery-limit`: a queue
+  with limit 20 under `SWARMQ_DELIVERY_LIMIT=50` is dead-lettered by the
+  worker at 19 deliveries, with an error result, instead of silently by
+  the broker. A changed queue type ends with `QueueArgumentsMismatch`,
+  exit `78`, instead of a restart loop.
   `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=at-least-once` together with
-  `SWARMQ_QUEUE_TYPE=classic` is a `ConfigurationError`
-  ([existing queue arguments](../explanation/delivery-semantics.md#existing-queue-arguments)).
-- **The worker dead-letters at the smaller delivery limit.** The
-  delivery-count gate uses the smaller of `SWARMQ_DELIVERY_LIMIT` and
-  the `x-delivery-limit` of the queue the delivery came from (missing:
-  20, `-1`: unlimited, `0`: no redelivery). **Changed behaviour:** a
-  queue with limit 20 under `SWARMQ_DELIVERY_LIMIT=50` is dead-lettered
-  by the worker at 19 deliveries, with an error result, instead of
-  silently by the broker
-  ([effective delivery limit](../explanation/delivery-semantics.md#effective-delivery-limit)).
-- **Autoscaling counts only the messages ready in the queue itself.**
-  `swarmq worker --autoscale` used the depth of `{queue}` plus
-  `{queue}.DQ`; long deferrals (lock, guard, backend) waiting in the
-  delay queues scaled the workers up for hours. It now uses
-  `ready_depth`; a broker without it (a fake, another broker) keeps the
-  old depth. **Changed behaviour:** a backlog of deferred messages no
-  longer scales up; short retries are counted once they are back in
-  the queue ([delay tiers](../explanation/delivery-semantics.md#delay-tiers)).
-- Golden file `queue_args.json`: new key `quorum_at_least_once`; the
-  existing entries are unchanged.
-- Golden file `queue_args.json`: new key `delay_tiers` (the seven tiers
-  per queue type and mode) and a new description under `delay`; the
-  other existing entries are unchanged.
+  `SWARMQ_QUEUE_TYPE=classic` is a `ConfigurationError`.
+- **At-least-once dead-lettering (BZ-19):** on new quorum queues with a
+  `max-length` policy (also an operator policy), a publish to a full
+  queue gets a nack instead of drop-head and fails with
+  `PublishRejected` after five attempts. Duplicates from at-least-once
+  dead-lettering run twice for tasks without execution guard
+  (`FIRE_AND_FORGET`, `execution_guard=False`). Each worker process
+  logs `queue_dead_letter_at_most_once` for existing queues, and each
+  start costs up to two `PRECONDITION_FAILED` channel errors in the
+  broker log per queue that 0.12 created.
+- **Negative publisher confirms** raise `PublishRejected` (a subclass of
+  `BrokerConnectionError`) instead of a plain `BrokerConnectionError`;
+  a publish on a blocked connection raises `BrokerPublishBlocked` after
+  `SWARMQ_PUBLISH_TIMEOUT_S` instead of `PublishIndeterminate`
+  (BZ-16). Existing `except BrokerConnectionError` handlers still catch
+  both.
+- **Cancellation (BZ-23):** after the cancelled delivery the flag is
+  shortened to at most 1 h instead of deleted: the same `task_id`
+  enqueued again within that hour is cancelled, and `cancel()` returns
+  `False`. `cancel()` also reads the one-shot entry of the task ID and
+  raises `BackendConnectionError` when that read fails.
+- **Crons with `unique_for` (BZ-09)** get a new fingerprint. While 0.11
+  and 0.12 workers of one app both report such a cron for more than
+  10 minutes, the leader logs `scheduler_cron_conflict` (the 0.12
+  definition wins); a 0.12 leader rewrites the definition once
+  (`scheduler_static_cron_updated`).
+- **Leader version (KTD11):** workers warn about every leader before
+  0.12 (was 0.10); during the rollout `scheduler_leader_outdated` is
+  expected until a 0.12 worker leads.
+- **Autoscaling (BZ-01):** `swarmq worker --autoscale` counts only the
+  messages ready in `{queue}` itself (`ready_depth`); a backlog of
+  deferred messages no longer scales up.
+- **`swarmq dlq retry` (BZ-08)** keeps the `x-swarmq-replay-id` a 0.12
+  worker stamped and restarts `x-swarmq-enqueued-at`; a second retry of
+  the same `.XQ` message is skipped as a duplicate.
+- **Queue declarations** run on a separate channel after a passive
+  check; a queue without `x-delivery-limit` is adopted (WARNING;
+  RabbitMQ applies 20). A refusal swarmq does not recognise (queue
+  limit, permission) is reported with the broker message and no longer
+  advises deleting the queue.
+- **Retry backoff (BZ-26):** above `retry_max_delay` an `exponential`
+  or `linear` retry waits 0.6 to 0.8 × `retry_max_delay` instead of
+  exactly the cap.
+
+#### New defaults
+
+| Setting | Default | Effect |
+|---|---|---|
+| `SWARMQ_VALKEY_EVICTION_CHECK` | `strict` | refuse to start under an evicting policy |
+| `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY` | `auto` | new quorum queues at-least-once with `reject-publish` |
+| `SWARMQ_UNKNOWN_TASK_GRACE_S` | `900` | defer unknown tasks 15 min |
+| `SWARMQ_LOCK_WAIT_MAX_S` | `21600` | longest wait for a task lock |
+| `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S` | `604800` | execution state behind a backlog lives 7 days |
+| `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S` | `86400` | retry a deferred task to a missing queue for a day |
+| `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S` | `SWARMQ_SCHEDULER_LOCK_TTL` | leader steps down after repeated publish failures |
+| `SWARMQ_BROKER_PUBLISH_CONNECTION` | `separate` | workers use two broker connections |
+| `SWARMQ_SHUTDOWN_TIMEOUT` | `30` (unchanged) | now the total shutdown budget |
+| cancel flag | `max(24 h, result_ttl)` | was `result_ttl` |
+| locked worker slot | 1 h cooldown | was locked until the supervisor restarted |
 
 ### Fixed
 
-- **A DLQ replay without a new `x-swarmq-replay-id` is no longer
-  skipped.** "Move messages" in the RabbitMQ UI, a shovel, swarmv and a
-  CLI before 0.11 replay a dead-lettered message with its headers; the
-  execution guard saw the done marker of the first run and acknowledged
-  the replay without running it. The worker now stamps the replay id of
-  the next generation on every DLQ copy it publishes, and a message the
-  broker dead-lettered itself (delivery limit, `route_via_dlx`) gets a
-  new identity from `x-death`; every copy SwarmQ publishes carries that
-  count on as `x-swarmq-xdeath-base`, because the broker rebuilds
-  `x-death` on the next dead-lettering. A replayed scheduler fire runs
-  as well. **Known limits:** a replay after a broker dead-lettering that
-  reaches a 0.11 worker is still skipped, and so is a replayed cron
-  fire; a replay in flight during the version switch can run twice;
-  after a
-  UI move the first execution counts the raw `x-death`; repeated UI
-  moves after another broker dead-lettering are skipped (use `swarmq
-  dlq retry`, which treats a stamped message the broker dead-lettered
-  again, or one with a replay id the worker does not read, as a new
-  generation); such a message keeps its first
-  `x-swarmq-dead-lettered-at`, so `dlq list` can drop it as expired; a
-  UI replay with `max_age` can expire at once
-  ([execution guard](../explanation/delivery-semantics.md#execution-guard)).
-- **Done and completed markers no longer expire behind a long backlog.**
-  The execution guard's done marker and the completed marker of a
-  schedule fire lived a fixed 3900 s, measured from the run, not from
-  the time a deferred copy or a duplicate fire waits in the queue; after
-  more than 65 minutes of backlog the copy ran a second time. The claim
-  that defers a redelivery now extends the execution's state to
-  `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S` (default 7 days) or `max_age +
-  300` -- also when the running delivery only releases its marker (for
-  example to wait for a lock) or runs longer than the done TTL --, the
-  markers written afterwards never shorten it, and a failed
+- **BZ-01: a short retry or deferral no longer waits behind a long
+  one.** All delays of a queue shared `{queue}.DQ`, and RabbitMQ only
+  expires the message at its head: a retry waiting an hour held back
+  every lock, rate-limit, backend or guard deferral behind it. The
+  worker now uses seven delay tiers `{queue}.DQ.1s` to `{queue}.DQ.1h`
+  and puts a delay into the smallest tier that reaches it; delays over
+  one hour stay in `{queue}.DQ`. The tiers are created at worker start
+  with the arguments of `{queue}.DQ`; a refusal is not fatal (the
+  delays of that tier use `{queue}.DQ`, `delay_tier_unavailable`)
+  ([delay tiers](../explanation/delivery-semantics.md#delay-tiers)).
+- **BZ-02: a deferred task runs under the ID that `schedule()`
+  returned.** `schedule(delay=|eta=)` returned one ID, and the leader
+  fired the task under a new one: `get_result()` timed out, `cancel()`
+  had no effect, and the dedup flag of `unique_for` was never released.
+  The one-shot entry now stores the ID in the new field
+  `ScheduleDefinition.task_id`; entries without it fire under the ID in
+  their name `oneshot:<task_id>`. Crons still get a new ID per fire
+  ([deferred execution](../guides/scheduling-and-retries.md#immediate-vs-deferred-execution)).
+- **BZ-03: a publish to a queue that does not exist no longer
+  disappears silently.** The broker returned such a message
+  (`basic.return`), but the publisher confirm still arrived, so
+  `send()`/`schedule()` reported success and the message was gone.
+  Publish channels now treat a return as an error: the publish raises
+  `UnroutableMessage` at once, without retries.
+  - The scheduler leader counts a cron fire to a missing queue as lost:
+    it commits the fire, emits `SCHEDULER_FIRE_UNROUTABLE`
+    (`kind="cron_lost"`) and logs `scheduler_fire_unroutable` at most
+    once per cron and 10 minutes, plus
+    `scheduler_fire_unroutable_foreign` when another app's worker
+    reports the cron.
+  - A deferred task whose queue is missing is retried every 60 s. After
+    `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S`, counted from the first
+    unroutable attempt (`ScheduleDefinition.unroutable_since`), it is
+    dropped: `scheduler_oneshot_unroutable_dropped`,
+    `kind="oneshot_dropped"`, an error result under its task ID, and its
+    `unique_for` flag is released.
+  - A worker whose own `{queue}.DQ`/`.XQ` (or delay tier) was deleted
+    while it ran declares the queue family once again, through the same
+    chain as at startup, and publishes the retry or DLQ copy again
+    (`own_queue_unroutable_redeclaring`).
+  - A workflow step whose next step goes to a missing queue marks the
+    workflow `failed` at once (`workflow_advance_unroutable`) instead
+    of being redelivered up to the delivery limit
+  ([missing queues](../guides/scheduling-and-retries.md#missing-queues)).
+- **BZ-04: evicted locks and markers, and Valkey data loss, no longer
+  go unnoticed.** Under `volatile-*` or `allkeys-*` Valkey silently
+  evicted locks, the leader lock, the execution guard and the unique
+  and fired markers, and tasks ran twice. On connect the backend now
+  reads `maxmemory-policy` and `maxmemory` (`CONFIG GET`, else `INFO
+  memory`, at most 2 s, never fails); under an evicting policy every
+  connect logs `valkey_eviction_policy_unsafe`, a worker with
+  `strict` stops with exit `78` (producers and CLI commands only warn),
+  and the scheduler leader checks again at most once per hour. A cron disabled with `swarmq schedule remove` came back
+  active after Valkey lost its data; each worker now remembers the
+  epoch key `[<namespace>:]sq:{sched}:epoch` and logs
+  `valkey_data_loss_detected` when it is gone. The internal
+  recommendation of `volatile-lru` is corrected to `noeviction` plus
+  AOF ([Valkey requirements](configuration.md#valkey-requirements)).
+  At runtime, a lock that is gone or held by another owner at
+  extension or release is reported as `task_lock_lost` (see BZ-25).
+- **BZ-05: a lock conflict waits by time instead of 10 attempts.** The
+  10th conflict (about 51 s) dead-lettered the message without
+  `TASK_DLQ`, result or workflow mark. A message whose task lock is
+  held is now deferred (100 ms, doubling, at most 60 s) as long as the
+  lock changes hands or its holder is alive. It is dead-lettered as
+  `LockWaitExceeded`, with an error result, `TASK_DLQ` and the workflow
+  marked failed, only when the same holder keeps the lock longer than
+  the key's TTL + 60 s or `SWARMQ_LOCK_WAIT_MAX_S` passed since the
+  first conflict; `max_age` stays the hard limit. The wait uses the
+  workers' wall clocks (a skew of up to about 60 s is tolerated). A new
+  wait begins when the broker redelivers the message (a worker died
+  after acquiring the lock, or returned it at shutdown) and on the copy
+  of a later execution (`x-swarmq-lock-wait-gen`: retry count and
+  replay ID); classic queues carry no delivery counter, there a
+  redelivery continues the old wait. A lock store whose `observe`
+  returns no `LockObservation` counts as unable to report holders.
+  `swarmq dlq retry` also removes the 0.11 counter
+  `x-swarmq-lock-conflict-count`
+  ([lock acquisition](../guides/locking-and-dedup.md#lock-acquisition-behaviour)).
+- **BZ-06: an unregistered task no longer ends in the `.XQ` at first
+  contact.** During a rolling deploy with producers ahead of the
+  workers, every new task name was rejected to the broker DLX without
+  retention or error result, and every workflow with such a step
+  failed. The worker now defers the message with backoff (1 s, then as
+  long as it has waited so far, at most 60 s per round) for
+  `SWARMQ_UNKNOWN_TASK_GRACE_S`, measured from the first contact in
+  `x-swarmq-unknown-since`; a scheduler fire keeps its in-flight claim
+  and its unique flag meanwhile. After the grace period the worker
+  dead-letters the message itself: error result, workflow step marked
+  failed, unique flag released, `TASK_DLQ`, retention and
+  `x-swarmq-traceback` on the DLQ copy, then `TASK_REJECTED` with
+  `unregistered_task` and `task_not_found` (ERROR)
+  ([unregistered tasks](../guides/dead-letter-queues.md#unregistered-tasks-and-rolling-deploys)).
+- **BZ-07: a new scheduler leader no longer scans the whole Valkey
+  database.** On takeover it looked for the handover marker of its
+  predecessor with `SCAN`, before its first lock renewal; with millions
+  of keys that could outlast the lock TTL, and the leader role
+  flapped. The marker now has a fixed key,
+  `[<namespace>:]sq:{sched}:handover`, read with `GETDEL`, and the
+  leader renews its lock right after the takeover. Leaders before 0.12
+  still find the marker, and their marker is still recognised
+  ([leader takeover](../guides/scheduling-and-retries.md#leader-takeover)).
+- **BZ-08: a DLQ replay without a new `x-swarmq-replay-id` is no
+  longer skipped.** "Move messages" in the RabbitMQ UI, a shovel,
+  swarmv and a CLI before 0.11 replay a dead-lettered message with its
+  headers; the execution guard saw the done marker of the first run and
+  acknowledged the replay without running it. The worker now stamps
+  the replay ID of the next generation on every DLQ copy it publishes
+  (`x-swarmq-dlq-gen`), and a message the broker dead-lettered itself
+  (delivery limit, `route_via_dlx`) gets a new identity from `x-death`;
+  every copy SwarmQ publishes carries that count on as
+  `x-swarmq-xdeath-base`, because the broker rebuilds `x-death` on the
+  next dead-lettering. A replayed scheduler fire runs as well.
+  `swarmq dlq retry` derives the replay ID of a message without a
+  matching `x-swarmq-dlq-gen` (0.11 worker, broker dead-lettering, old
+  stock) from its identity, so a repeated retry runs once; only a
+  message without a task ID gets a random ID. It treats a stamped
+  message the broker dead-lettered again, or one with a replay ID the
+  worker does not read, as a new generation
+  ([execution guard](../explanation/delivery-semantics.md#execution-guard),
+  [retrying messages](../guides/dead-letter-queues.md#retrying-messages)).
+- **BZ-09: `unique_for` of a cron no longer depends on which worker is
+  the leader.** The leader read `unique_for` from its own task
+  registry, so a leader from another app, another `--module` or the
+  other half of separate CPU and IO workers fired the cron without
+  dedup, and long runs overlapped. Workers now report `unique_for` and
+  `unique_until` with their crons, and the leader takes both from the
+  definition (new field `ScheduleDefinition.unique_for`); a definition
+  without them (written before 0.12, or a CLI schedule) still uses the
+  leader's `TaskInfo`. The cron fingerprint includes both values only
+  when `unique_for` is set. If the publish of a fire fails after the
+  leader claimed the flag, the leader now releases it (not after
+  `PublishIndeterminate`, and not when `schedule(delay=|eta=)` claimed
+  it); before, the fire was counted as a duplicate on the next tick and
+  lost ([unique crons](../guides/locking-and-dedup.md#unique-crons)).
+- **BZ-10: several apps on one Valkey can be separated.** Without a
+  namespace all apps shared rate-limit and lock keys, unique hashes and
+  one scheduler leader, and a leader with a broken broker stopped the
+  crons of every app. `SWARMQ_NAMESPACE` moves every Valkey key,
+  Pub/Sub channel, the scheduler leader and the control channel from
+  `sq:…` to `<namespace>:sq:…`; queue names stay unprefixed (one
+  RabbitMQ vhost per app). Without a namespace everything stays
+  byte-identical. A leader whose broker keeps failing now steps down:
+  after at least 2 failed publishes over at least
+  `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S` without a success in between,
+  it releases the leader lock without a handover marker (the successor
+  emits `SCHEDULER_LEADER_FAILOVER`), emits `SCHEDULER_STANDBY` and
+  does not apply again for 2 × lock TTL
+  (`scheduler_publish_failures_stepdown`). Only real connection errors
+  count: `UnroutableMessage`, `MessageHeadersTooLarge`,
+  `BrokerPublishBlocked`, `PublishRejected` and `PublishIndeterminate`
+  hit every candidate or one queue and do not. A gap longer than the
+  period between two failures, and every new term, start a new series.
+  The backend and the configuration agree on one namespace: an explicit
+  `ValkeyBackend(namespace=…)` (or `keys=`) wins and fills
+  `app.config.namespace`; without it the backend takes
+  `SwarmQConfig.namespace` (code or `SWARMQ_NAMESPACE`) when it is
+  handed to `SwarmQ(...)`. Both set and different (also `namespace=""`
+  next to a set `SWARMQ_NAMESPACE`) is a `ConfigurationError`
+  (`namespace mismatch`, exit `78`). The namespace is lowercase only
+  (`[a-z0-9][a-z0-9_.-]{0,63}`, not `sq`); an invalid value stops
+  workers, `SwarmQ(...)` and the CLI commands before any connection
+  (exit `78`; `swarmq worker --check`: exit 1).
+  `scheduler_fire_unroutable_foreign` names `SWARMQ_NAMESPACE` in its
+  hint, and lock recovery hints (`valkey-cli DEL …`) name the key with
+  the backend's namespace
+  ([namespace](configuration.md#namespace-several-apps-on-one-valkey),
+  [where the namespace comes from](configuration.md#where-the-namespace-comes-from)).
+- **BZ-11: a cron whose task was removed from the code no longer fires
+  until the prune period runs out.** Every fire of such a cron ended as
+  an unregistered task in the `.XQ`, for up to 24 h. The scheduler
+  leader now holds a static cron that a worker from 0.12 has reported
+  at some point, that no live worker reports any more and that the
+  leader does not register itself: the fire moves to `now +
+  SWARMQ_SCHEDULER_SEEN_INTERVAL_S` without publishing until a worker
+  reports it again or the leader prunes it (`SCHEDULER_CRON_UNOWNED`,
+  `scheduler_cron_held_unowned`). A CLI schedule of the same name is
+  never held. Right after a takeover the leader waits up to 5 s for the
+  cron reports; without them it fires as before (fail-open,
+  `scheduler_unowned_check_skipped`)
+  ([held crons](../guides/scheduling-and-retries.md#crons-nobody-reports-are-held)).
+- **BZ-12: done and completed markers no longer expire behind a long
+  backlog.** The execution guard's done marker and the completed
+  marker of a schedule fire lived a fixed 3900 s, measured from the
+  run, not from the time a deferred copy or a duplicate fire waits in
+  the queue; after more than 65 minutes of backlog the copy ran a
+  second time. The claim that defers a redelivery now extends the
+  execution's state to `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S` or
+  `max_age + 300`, also when the running delivery only releases its
+  marker (for example to wait for a lock) or runs longer than the done
+  TTL; the markers written afterwards never shorten it, and a failed
   ack or a copy whose ack failed marks the execution for the same
   backlog. The completed marker of a schedule fire lives `2 × wait +
   300` seconds, where `wait` is how long the fire waited in the queue
   (capped at `max_age + 300` and the backlog TTL, never below
   `SWARMQ_SCHEDULER_DEDUP_TTL`). For a task with `max_age`, the done
-  and superseded markers and the completed marker of a schedule fire
-  live at least `max_age + 300` seconds, even when the run itself
-  started at once, because a duplicate can wait up to `max_age` in the
-  queue (the completed marker stays capped at the backlog TTL). **Cost:**
-  one small hash per execution in Valkey for `max_age + 300` seconds,
-  about 100 MB at one million tasks a day with `max_age` of 24 h; the
-  operator controls it through `max_age`. Set `max_age` on cron tasks
-  and on tasks that must not run twice. **Known limits:** a backlog
-  that builds up only after the run is not covered for tasks without
-  `max_age`. The fix works fully only once every worker runs 0.12: a
-  0.11 worker shortens the state unconditionally when it writes its
-  done marker
-  ([marker retention](../explanation/delivery-semantics.md#execution-guard)).
-- **A cron whose task was removed from the code no longer fires until
-  the prune period runs out.** Every fire of such a cron ended as an
-  unregistered task in the `.XQ`, for up to 24 h. The scheduler leader
-  now holds a static cron that a worker from 0.12 has reported at some
-  point, that no live worker reports any more and that the leader does
-  not register itself: the fire moves to `now +
-  SWARMQ_SCHEDULER_SEEN_INTERVAL_S` without publishing until a worker
-  reports it again or the leader prunes it. A CLI schedule of the same
-  name is never held. Right after a takeover the leader waits up to 5 s
-  for the cron reports; without them it fires as before (fail-open,
-  `scheduler_unowned_check_skipped`). **Known limits:** only a leader
-  from 0.12 holds; a 0.11 leader fires removed crons as before. Crons
-  reported only by workers before 0.12 are not held. A held cron does
-  not catch up its missed occurrences
-  ([held crons](../guides/scheduling-and-retries.md#crons-nobody-reports-are-held)).
-- **An unregistered task no longer ends in the `.XQ` at first contact.**
-  During a rolling deploy with producers ahead of the workers, every
-  new task name was rejected to the broker DLX without retention or
-  error result, and every workflow with such a step failed. The worker
-  now defers the message with backoff (1 s, then as long as it has
-  waited so far, at most 60 s per round) for `SWARMQ_UNKNOWN_TASK_GRACE_S`
-  (default 15 min), measured from the first contact in
-  `x-swarmq-unknown-since`; a scheduler fire keeps its in-flight claim
-  open and its unique flag held meanwhile. After the grace period the
-  worker dead-letters the message itself: error result, workflow step
-  marked failed, unique flag released, `TASK_DLQ`, retention and
-  `x-swarmq-traceback` on the DLQ copy, then `TASK_REJECTED` with
-  `unregistered_task` and `task_not_found` (ERROR). **Changed
-  behaviour:** `unregistered_task` now follows `TASK_DLQ` and the DLQ
-  copy carries SwarmQ headers; `task_not_found` comes only after the
-  grace period. **Known limits:** only workers from 0.12 defer — a 0.11
-  worker on the same queue rejects an unknown task (also a deferral
-  copy) at first contact as before; until every worker runs 0.12,
-  start workers before producers. A producer that stays ahead longer
-  than the grace period fills the `.XQ` as before
-  ([unregistered tasks](../guides/dead-letter-queues.md#unregistered-tasks-and-rolling-deploys)).
-- **A short retry or deferral no longer waits behind a long one.**
-  All delays of a queue shared `{queue}.DQ`, and RabbitMQ only expires
-  the message at its head: a retry waiting an hour held back every
-  lock, rate-limit, backend or guard deferral behind it. The worker now
-  uses seven delay tiers `{queue}.DQ.1s` to `{queue}.DQ.1h` and puts a
-  delay into the smallest tier that reaches it; delays over one hour
-  stay in `{queue}.DQ`. The tiers are created at worker start with the
-  arguments of `{queue}.DQ`; a refusal is not fatal (the delays of that
-  tier use `{queue}.DQ`). **Known limits:** inside a tier a delay can
-  take up to four times as long, at least up to one second; over one
-  hour the head-of-line blocking remains; at-least-once dead-lettering
-  can deliver a duplicate, which runs twice for tasks without the
-  execution guard. A queue has up to seven more queues (21 with
-  `SWARMQ_PRIORITIES`); permissions and delay-queue policies need the
-  pattern `\.DQ(\.\w+)?$`. 0.11 workers keep using `{queue}.DQ`, and
-  messages in a tier return to `{queue}` after a rollback as well
-  ([delay tiers](../explanation/delivery-semantics.md#delay-tiers)).
-- **New quorum queues dead-letter at-least-once.** Retries and the
-  delivery limit move messages by broker dead-lettering, which RabbitMQ
-  does at-most-once by default for quorum queues: a leader change could
-  lose them, although the documentation promised at-least-once. New
-  queues now get `x-dead-letter-strategy=at-least-once` and
-  `x-overflow=reject-publish` on `{queue}` and `{queue}.DQ`. Existing
-  queues keep their arguments; one WARNING
+  and superseded markers and the completed marker live at least
+  `max_age + 300` seconds, even when the run started at once (the
+  completed marker stays capped at the backlog TTL). **Cost:** one
+  small hash per execution for `max_age + 300` seconds, about 100 MB at
+  one million tasks a day with `max_age` of 24 h; the operator controls
+  it through `max_age`. Set `max_age` on cron tasks and on tasks that
+  must not run twice
+  ([execution guard](../explanation/delivery-semantics.md#execution-guard)).
+- **BZ-13: workflows no longer hang until their TTL when a step ends
+  outside the retry path.** A step that expires (`max_age`), fails its
+  lock template, ends its lock wait (`LockWaitExceeded`) or is not
+  registered in the worker now marks its workflow `failed`, so `get()`
+  raises `TaskError` instead of timing out. Lock template errors and
+  the end of a lock wait also store an error result and fire
+  `TASK_DLQ`. A late duplicate of a step that already succeeded does
+  not mark the workflow failed, and a workflow whose state expired logs
+  `workflow_state_missing` instead of ending silently. At the delivery
+  limit, a workflow mark that fails because Valkey is unreachable no
+  longer hands the delivery back; it is dead-lettered anyway
+  ([failure modes](../guides/workflows.md#failure-modes)).
+- **BZ-14: orphaned queues are reported.** When a task moved to
+  another queue or `--queues` changed, the backlog of the old queue
+  stayed without a consumer, with no log line and no metric. Every
+  worker now reports the queues it consumes to Valkey on every report
+  tick (hash `[<namespace>:]sq:{sched}:report:queues`, timestamps from
+  Valkey's `TIME`). On every adoption tick (not right after a takeover)
+  the leader checks the queues no live worker has reported for three
+  ticks with a passive declare, without the management API: messages
+  and no consumer make a queue orphaned. It logs
+  `scheduler_queue_orphaned` (WARNING) and
+  `scheduler_queue_orphan_resolved` (INFO) once per transition, emits
+  `SCHEDULER_QUEUE_ORPHANED` and sets
+  `swarmq_scheduler_queues_orphaned`. Entries of queues that are gone
+  or empty and unreported for 7 days are removed; each check has a
+  30 s time limit (`scheduler_queue_check_failed`)
+  ([moving a task to another queue](../guides/defining-tasks.md#moving-a-task-to-another-queue)).
+- **BZ-15: changed queue arguments end with exit 78 instead of a
+  restart loop.** A changed `SWARMQ_DELIVERY_LIMIT` keeps the existing
+  queues declarable (their limit applies, with a WARNING
+  `queue_argument_adopted`; a queue without `x-delivery-limit` is
+  adopted as well). Any other recognised conflict, such as a changed
+  `SWARMQ_QUEUE_TYPE`, raises `QueueArgumentsMismatch` with the
+  declared and the existing value; it used to end as
+  `BrokerConnectionError`, exit 1 and endless restarts. Declarations
+  run on a separate short-lived channel after a passive check (a queue
+  that exists is declared with the arguments of 0.11, so queues created
+  by 0.11 never see a refusal), never on the publish channel, and the
+  result is cached per process (dropped on `UnroutableMessage` or a
+  missing queue). Only the first adoption of
+  `x-dead-letter-strategy`/`x-overflow` per process is logged as INFO,
+  later ones as DEBUG; an `x-overflow` adopted first is kept when the
+  strategy follows. A connection loss during the declaration is a
+  `BrokerConnectionError`. The worker uses the effective delivery limit
+  (the smaller of `SWARMQ_DELIVERY_LIMIT` and the queue's
+  `x-delivery-limit`; missing: 20, `-1`: unlimited, `0`: no
+  redelivery)
+  ([existing queue arguments](../explanation/delivery-semantics.md#existing-queue-arguments),
+  [changing queue arguments](../explanation/delivery-semantics.md#changing-queue-arguments)).
+- **BZ-16: acks no longer hang behind a blocked publish.** Publishes
+  and consumption shared one connection, and during a broker resource
+  alarm RabbitMQ blocks connections that publish. A worker now
+  consumes over a second connection, opened by its first `consume()`:
+  the consume channel, acks and nacks move there, publishes stay on the
+  first connection. Producers that never consume, and brokers built on
+  an injected connection or pool, keep one connection. Queue-depth and DLQ-depth reads use the consume
+  connection when it is open. A publish on a blocked connection sends
+  nothing and waits for the unblock within `SWARMQ_PUBLISH_TIMEOUT_S`;
+  then it raises `BrokerPublishBlocked`, keeps the publish channel and
+  releases a `unique_for` claim (`publish_connection_blocked`). The
+  check reads the state synchronously, without a round trip. A worker
+  start or `connect()` cancelled while a connection is being opened
+  closes the half-open connection instead of leaving aio-pika
+  reconnecting in the background every 5 s
+  ([error catalog](errors.md#brokerpublishblocked)).
+- **BZ-17: a task that fails with a huge error text no longer sends its
+  neighbours back to the queue.** `x-swarmq-traceback` and
+  `x-swarmq-lock-render-error` are bounded to 8 KiB (first 6 KiB and
+  last 2 KiB); before, an error text beyond `frame_max` (128 KiB) made
+  the broker close the worker connection, and every message the worker
+  held was redelivered. Every publish now also checks its headers
+  against half of `frame_max` and raises `MessageHeadersTooLarge`
+  without sending
+  ([inspecting a message](../guides/dead-letter-queues.md#inspecting-one-message)).
+- **BZ-18: shutdown fits into the orchestrator's grace period.** The
+  drain alone used the whole `SWARMQ_SHUTDOWN_TIMEOUT`, and lock
+  release, the scheduler handover, execution-guard markers and
+  connection close came after it; under the supervisor its own
+  `SIGTERM` (after the full value) and `SIGKILL` (5 s later) came after
+  that, so the default shutdown took 35 s and more, past Kubernetes'
+  default `SIGKILL` at 30 s. Now the drain ends 5 s before the end (at
+  most half the budget), and the supervisor sends `SIGTERM` at
+  `T - 7 s`, `SIGKILL` at `T - 2 s` and has collected its workers by
+  `T`; its worker drains until `T - 7 s`. The publish deadline in the
+  shutdown is the end of the drain. Every cleanup step has a time limit
+  (the rest of the budget, at least 1 s): compute pool, detached lock
+  releases, execution-guard markers, each lock release, scheduler stop,
+  DI container, broker close (both connections) and backend close; a
+  step that exceeds it logs `shutdown_step_timeout` and the shutdown
+  goes on. Tasks that ignore cancellation are awaited at most 1 s. The
+  recycling drain is unchanged (largest `hard_timeout`)
+  ([shutdown budget](../explanation/delivery-semantics.md#shutdown-budget)).
+- **BZ-19: new quorum queues dead-letter at-least-once.** Retries and
+  the delivery limit move messages by broker dead-lettering, which
+  RabbitMQ does at-most-once by default for quorum queues: a leader
+  change could lose them, although the documentation promised
+  at-least-once. New queues now get
+  `x-dead-letter-strategy=at-least-once` and `x-overflow=reject-publish`
+  on `{queue}`, `{queue}.DQ` and the delay tiers (not `{queue}.XQ`).
+  Existing queues keep their arguments; one WARNING
   `queue_dead_letter_at_most_once` per process lists them (also those
-  with `at-least-once` but another `x-overflow` than `reject-publish`).
-  A policy with `dead-letter-strategy=at-least-once` and
-  `overflow=reject-publish` fixes the dead-lettering but does not end
-  the warning, since swarmq cannot see policies; only
-  `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=legacy` does. Every worker process,
-  each supervisor child included, logs the warning on its own, and each
-  start costs up to two refusals (`PRECONDITION_FAILED` channel errors in
-  the broker log) per queue that 0.12 created.
-  **Changed behaviour:**
-  - With a `max-length` policy, a publish to a full queue gets a nack
-    instead of drop-head and fails with `BrokerConnectionError` after
-    five attempts.
-  - Duplicates from at-least-once dead-lettering run twice for tasks
-    without execution guard (`FIRE_AND_FORGET`, `execution_guard=False`).
-  - **Rollback only to 0.11.1 or later:** 0.11.0 cannot declare queues
-    that 0.12 created (`PRECONDITION_FAILED`). Roll out 0.11.1 first
+  with `at-least-once` but another `x-overflow`). A policy with
+  `dead-letter-strategy=at-least-once` and `overflow=reject-publish`
+  fixes their dead-lettering but does not end the warning, since
+  swarmq cannot see policies; only
+  `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=legacy` does
   ([dead-lettering guarantee](../explanation/delivery-semantics.md#dead-lettering-guarantee)).
-- **Changed queue arguments end with exit 78 instead of a restart
-  loop.** A changed `SWARMQ_DELIVERY_LIMIT` keeps the existing queues
-  declarable (their limit applies, with a WARNING). Any other recognised
-  conflict, such as a changed `SWARMQ_QUEUE_TYPE`, raises
-  `QueueArgumentsMismatch` with the declared and the existing value; it
-  used to end as `BrokerConnectionError`, exit 1 and endless restarts
-  ([changing queue arguments](../explanation/delivery-semantics.md#changing-queue-arguments)).
-
-- **A publish to a queue that does not exist no longer disappears
-  silently.** The broker returned such a message (`basic.return`), but
-  the publisher confirm still arrived, so `send()`/`schedule()` reported
-  success and the message was gone. Publish channels now treat a return
-  as an error: the publish raises `UnroutableMessage` at once, without
-  retries. **Changed behaviour:**
-  - *Workers before producers* now applies permanently to **every new
-    queue**: a producer that publishes before the first worker of a
-    queue has declared it gets `UnroutableMessage` where the message
-    used to be lost silently.
-  - A task with `TaskInfo(priority="high"|"low")` published to a queue
-    whose workers run without `--priorities` now raises
-    `UnroutableMessage` (no `{queue}.high`/`.low` exists).
-  - The scheduler leader counts a cron fire to a missing queue as lost:
-    it commits the fire, emits `SCHEDULER_FIRE_UNROUTABLE`
-    (`kind="cron_lost"`) and logs `scheduler_fire_unroutable` at most
-    once per cron and 10 minutes, plus
-    `scheduler_fire_unroutable_foreign` when the cron is reported by
-    another app's worker.
-  - A deferred task (`schedule(delay=|eta=)`) whose queue is missing is
-    retried every 60 s. After
-    `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S`, counted from the first
-    unroutable attempt, it is dropped: `scheduler_oneshot_unroutable_dropped`,
-    `SCHEDULER_FIRE_UNROUTABLE` (`kind="oneshot_dropped"`), an error
-    result under its task ID, and the dedup flag of `unique_for` is
-    released. The schedule definition gets the field `unroutable_since`
-    (`null` unless such a retry is pending).
-  - A worker whose own `{queue}.DQ`/`.XQ` was deleted while it ran
-    declares the queue family once again, through the same chain with
-    adoption as at startup, on separate channels, and publishes the retry
-    or DLQ copy again (`own_queue_unroutable_redeclaring`). The effective
-    delivery limit of the queue stays meanwhile.
-  - A workflow step whose next step goes to a missing queue marks the
-    workflow `failed` at once (`workflow_advance_unroutable`) instead of
-    being redelivered up to the delivery limit
-  ([deploy order](../guides/scheduling-and-retries.md#missing-queues)).
-
-- **A cancelled task no longer runs after waiting longer than
+- **BZ-20 (limit, now reported): prefetch per consumer.**
+  `--concurrency` is the prefetch of each consumer: a worker consuming
+  K queues (each priority band counts) holds up to K × concurrency
+  unacknowledged messages, and the last waits up to K × `hard_timeout`
+  for its ack. Global QoS does not work with quorum queues (RabbitMQ
+  4.2 closes the connection, 4.3 ignores it), so this stays a limit.
+  New: the start warning `prefetch_exceeds_consumer_timeout` (once per
+  start, when K ≥ 2 and `hard_timeout` × K exceeds
+  `SWARMQ_CONSUMER_TIMEOUT_S`) and the gauge
+  `swarmq_worker_prefetch_limit{worker_id}` (K × concurrency)
+  ([prefetch per consumer](../explanation/delivery-semantics.md#prefetch-per-consumer)).
+- **BZ-21: `dlq list`, `dlq inspect` and `dlq retry` no longer lose
+  messages when the reader dies.** They took each message with
+  `no_ack=True` and put it back only at the end; a kill, OOM or network
+  loss in between dropped what had been read. They now read with
+  acknowledgement on an own channel (on the consume connection when it
+  is open), copy each message to the end of `{queue}.XQ` (with its
+  remaining retention) or, for `retry`, to `{queue}`, and acknowledge
+  the original only after the broker confirmed the copy. Copies carry
+  no broker delivery counters (`x-delivery-count`,
+  `x-acquired-count`), so repeated listings do not use up the XQ's
+  delivery limit. A failed acknowledgement logs `dlq_read_ack_failed`
+  (WARNING) and leaves the message twice
+  ([listing DLQ contents](../guides/dead-letter-queues.md#listing-dlq-contents)).
+- **BZ-22: a unique task that expires through `max_age` releases its
+  dedup flag.** Before, the flag stayed until `unique_for` ran out, and
+  every new `schedule()` with the same arguments silently returned the
+  ID of the expired task. The flag is released once the expired message
+  is in the DLQ, checked against its task ID
+  ([when to release the flag](../guides/locking-and-dedup.md#when-to-release-the-flag)).
+- **BZ-23: a cancelled task no longer runs after waiting longer than
   `result_ttl`.** `app.cancel()` gave the flag a TTL of `result_ttl`,
-  and the worker deleted it after the cancelled delivery. A task that
-  waited longer in the queue (backlog, stopped workers, long `delay`),
-  or a duplicate of a cancelled message, ran anyway. The flag now lives
+  and the worker deleted it after the cancelled delivery; a task that
+  waited longer (backlog, stopped workers, long `delay`), or a
+  duplicate of a cancelled message, ran anyway. The flag now lives
   `max(24 h, result_ttl)`, plus the wait until a deferred task fires
   and its `max_age` + 300 s when the client's registry knows the task.
-  A task published right away stays cancellable for 24 h. Once the
-  worker has handled the cancelled delivery, it shortens the flag to at
-  most 1 h (`PEXPIRE … LT`) instead of deleting it; a shorter flag is
-  never extended. **Changed behaviour:** if the same `task_id` is
-  enqueued again within that hour, it is cancelled, and `cancel()`
-  returns `False`. `cancel()` now also reads the one-shot entry of the
-  task ID and raises `BackendConnectionError` when that read fails
-  ([`cancel()`](api.md#cancel)).
-- **A deferred task runs under the ID that `schedule()` returned.**
-  `schedule(delay=|eta=)` returned one ID, and the leader fired the task
-  under a new one. `get_result()` on the returned ID timed out,
-  `cancel()` had no effect, and the dedup flag of `unique_for` was never
-  released, so every new call with the same arguments returned the old
-  ID until `unique_for` ran out. The one-shot entry now stores the ID in
-  the new field `ScheduleDefinition.task_id`; entries without it fire
-  under the ID in their name `oneshot:<task_id>`. Crons still get a new
-  ID per fire. This needs a leader on 0.12 or later: while a leader
-  before 0.12 holds the role, deferred tasks still fire under a new ID
-  ([deferred execution](../guides/scheduling-and-retries.md#immediate-vs-deferred-execution)).
-  The schedule definition gets the field `task_id` (`null` for crons).
-- **`unique_for` of a cron no longer depends on which worker is the
-  leader.** The leader read `unique_for` from its own task registry, so
-  a leader from another app, another `--module` or the other half of
-  separate CPU and IO workers fired the cron without dedup, and long
-  runs overlapped. Workers now report `unique_for` and `unique_until`
-  with their crons, and the leader takes both from the definition; a
-  definition without them (written before 0.12, or a CLI schedule)
-  still uses the leader's `TaskInfo`. The cron fingerprint includes
-  both values only when `unique_for` is set, so the fingerprint of every
-  other cron is unchanged. If the publish of a fire fails after the
-  leader claimed the flag, the leader now releases it; before, the
-  retry on the next tick found the flag, counted the fire as a
-  duplicate and it was lost. The flag stays after `PublishIndeterminate`
-  and when `schedule(delay=|eta=)` claimed it. New log event
-  `scheduler_unique_release_failed`. **Changed behaviour:**
-  - This needs a leader on 0.12 or later; while a leader before 0.12
-    holds the role, a long cron run can overlap the next fire again.
-  - A cron with `unique_for` gets a new fingerprint. While 0.11 and
-    0.12 workers of one app both report it for more than 10 minutes,
-    the leader logs `scheduler_cron_conflict`; the 0.12 definition
-    wins.
-  - A 0.12 leader rewrites the stored definition of such a cron once
-    (`scheduler_static_cron_updated`), including after a 0.11 leader
-    held the role.
-  ([unique crons](../guides/locking-and-dedup.md#unique-crons)).
-  The schedule definition gets the field `unique_for` (`null` unless
-  the cron task sets it).
-- **A new scheduler leader no longer scans the whole Valkey database.**
-  On takeover it looked for the handover marker of its predecessor with
-  `SCAN`, before its first lock renewal; with millions of keys that
-  could outlast the lock TTL, and the leader role flapped. The marker
-  now has a fixed key, `sq:{sched}:handover`, read with `GETDEL`, and
-  the leader renews its lock right after the takeover. Leaders before
-  0.12 still find the marker, and their marker is still recognised
-  ([leader takeover](../guides/scheduling-and-retries.md#leader-takeover)).
-  New Valkey key `sq:{sched}:handover` (string, a few seconds TTL).
-- **Dead entries in the fire index no longer stop every cron.** The
-  leader reads at most 100 due entries per tick. Index entries without
-  a definition and disabled definitions that still had a fire time
-  (written before 0.10) filled that limit, so 100 of them blocked all
-  crons. The poll now takes them out of the fire index before the limit
-  applies, at most 1000 per tick; the definitions stay. A definition the
-  leader cannot decode no longer fails the whole tick either: it is
-  logged as `schedule_def_malformed_parked` and taken out of the fire
-  index ([fire index](../guides/scheduling-and-retries.md#fire-index)).
-  `sched_poll.lua` keeps its keys and arguments but now writes (`ZREM`).
-- **A unique task that expires through `max_age` releases its dedup
-  flag.** Before, the flag stayed until `unique_for` ran out, and every
-  new `schedule()` with the same arguments silently returned the ID of
-  the expired task. The flag is released once the expired message is in
-  the DLQ, checked against its task ID
-  ([when to release the flag](../guides/locking-and-dedup.md#when-to-release-the-flag)).
-- **Workflows no longer hang until their TTL when a step ends outside
-  the retry path.** A step that expires (`max_age`), fails its lock
-  template, hits the lock conflict cap or is not registered in the
-  worker now marks its workflow `failed`, so `get()` raises `TaskError`
-  instead of timing out. The lock conflict cap and lock template errors
-  now also store an error result and fire `TASK_DLQ`
-  (`error_type=LockConflictLimitError` at the cap). A late duplicate of a
-  step that already succeeded does not mark the workflow failed, and a
-  workflow whose state expired logs `workflow_state_missing` instead of
-  ending silently. At the delivery limit, a workflow mark that fails
-  because Valkey is unreachable no longer hands the delivery back; it is
-  dead-lettered anyway ([failure modes](../guides/workflows.md#failure-modes)).
-- **A delivery the worker keeps handing back no longer loops forever
-  on RabbitMQ 4.3, and no longer burns its delivery budget in a
+  Once the worker has handled the cancelled delivery, also when the
+  task is cancelled while it runs, it shortens the flag to at most 1 h
+  (`PEXPIRE … LT`) instead of deleting it; a shorter flag is never
+  extended ([`cancel()`](api.md#cancel)).
+- **BZ-24: a producer without a registry no longer loses dedup and
+  priority silently.** A client without a registry cannot apply
+  `unique_for`, `priority` or the delivery mode from the task's
+  `TaskInfo`; it now logs a WARNING `client_task_defaults_unresolved`
+  once per task name and client instance (at most 1000 names)
+  ([client-only mode](api.md#schedule)).
+- **BZ-25: task locks survive a handler that runs longer than its lock
+  TTL.** The worker now extends a held mutex or semaphore slot while
+  the handler runs, starting one window before the lock would expire (a
+  window is three ticks of `min(max(TTL / 3, 50 ms), 20 s)`); before,
+  the lock expired silently and a second worker acquired it. From a
+  `hard_timeout` of 30 s on, a task that finishes within
+  `hard_timeout - 30 s` costs no extra round trip; with a shorter
+  `hard_timeout` the window covers the whole TTL. A holder killed hard
+  still leaves the lock behind until `hard_timeout + 30 s`, at most one
+  window longer. A lock that is gone or held by another owner at
+  extension or release (evicted, Valkey data loss) is reported as
+  `task_lock_lost` (WARNING, `stage` `running` or `release`); when no
+  extension succeeded before the lock's deadline (Valkey down), it is
+  reported with `stage="expired"`. A failing keeper tick logs
+  `lock_keeper_tick_failed` and the keeper keeps running; at most 32
+  extensions run at once. A lock store whose `extend` returns neither
+  `True` nor `False` counts as not supporting it
+  (`lock_extend_unsupported`). `lock_acquire.lua` now only extends the
+  key's TTL and never shortens it, so a semaphore acquirer with a short
+  TTL no longer expires the key under a holder with a longer one
+  ([locks while the task runs](../guides/locking-and-dedup.md#locks-while-the-task-runs)).
+- **BZ-26: retries at the delay cap no longer come back all at once.**
+  Above `retry_max_delay` an `exponential` or `linear` retry now waits
+  between 0.6 and 0.8 × `retry_max_delay` instead of exactly the cap,
+  and a very high attempt number (from about 1024 on) no longer raises
+  `OverflowError`. `fixed` stays without jitter
+  ([backoff formulas](../guides/scheduling-and-retries.md#backoff-formulas)).
+- **BZ-27: a locked worker slot runs again after a cooldown.** The
+  supervisor locks a slot whose worker crashed 5 times within an hour
+  (or after too many hung workers); the lock lasted until the
+  supervisor restarted. Now it lasts 1 h
+  (`ProcessManager.SLOT_COOLDOWN_S`); then the supervisor logs
+  `worker_slot_unlocked` and fills the slot again with an empty restart
+  history. `worker_restart_limit_exceeded` and
+  `hang_replacement_budget_exhausted` carry `cooldown_s`. If every slot
+  is locked and no worker is left, the supervisor still exits `1` so
+  the orchestrator applies its own backoff. `SlotTable.lock(slot)`
+  without `until` still locks for good.
+- **BZ-28: dead entries in the fire index no longer stop every cron.**
+  The leader reads at most 100 due entries per tick. Index entries
+  without a definition and disabled definitions that still had a fire
+  time (written before 0.10) filled that limit, so 100 of them blocked
+  all crons. The poll now takes them out of the fire index before the
+  limit applies, at most 1000 per tick; the definitions stay. A
+  definition the leader cannot decode no longer fails the whole tick
+  either: it is logged as `schedule_def_malformed_parked` and taken out
+  of the fire index. `sched_poll.lua` keeps its keys and arguments but
+  now writes (`ZREM`)
+  ([fire index](../guides/scheduling-and-retries.md#fire-index)).
+- **BZ-29: a delivery the worker keeps handing back no longer loops
+  forever on RabbitMQ 4.3, and no longer burns its delivery budget in a
   moment.** RabbitMQ 4.3 does not count `nack(requeue=True)` in
   `x-delivery-count`, only in `x-acquired-count`. The delivery-count
   check now counts both and dead-letters such a delivery as
@@ -484,359 +592,293 @@ All notable changes to SwarmQ. This project follows
   before, a delivery that a check handed back each time (Valkey error
   reply, failed dead-letter publish, no compute slot) cycled without
   end on 4.3 and used up its roughly 20 deliveries on 4.2 within a
-  moment, so a short outage was enough to dead-letter it. Each hand-back now first waits
-  `min(0.1 s × 2^k, 5 s)` (k = earlier deliveries) while holding the
-  slot; a shutdown ends the wait
-  ([delivery semantics](../explanation/delivery-semantics.md)).
+  moment. Each hand-back now first waits `min(0.1 s × 2^k, 5 s)`
+  (k = earlier deliveries) while holding the slot; a shutdown ends the
+  wait ([delivery semantics](../explanation/delivery-semantics.md)).
+- **KTD11: the leader version check warns about every leader before
+  0.12** (minimum leader version, was 0.10), because the scheduler
+  fixes above only take effect while the leader has them. The `hint`,
+  the gauge description and the signal documentation no longer mention
+  time zones
+  ([leader version](../guides/scheduling-and-retries.md#leader-version)).
 
-- **A producer without a registry no longer loses dedup and priority
-  silently.** A client without a registry cannot apply `unique_for`,
-  `priority` or the delivery mode from the task's `TaskInfo`; it now
-  logs a WARNING `client_task_defaults_unresolved` once per task name
-  and client instance (at most 1000 names)
-  ([client-only mode](api.md#schedule)).
-- **A task that fails with a huge error text no longer sends its
-  neighbours back to the queue.** `x-swarmq-traceback` and
-  `x-swarmq-lock-render-error` are bounded to 8 KiB (first 6 KiB and
-  last 2 KiB); before, an error text beyond `frame_max` (128 KiB) made
-  the broker close the worker connection, and every message the worker
-  held was redelivered. Every publish now also checks its headers
-  against half of `frame_max`
-  ([inspecting a message](../guides/dead-letter-queues.md#inspecting-one-message)).
+### Added
 
-- **Retries at the delay cap no longer come back all at once.** Above
-  `retry_max_delay` an `exponential` or `linear` retry now waits
-  between 0.6 and 0.8 × `retry_max_delay` instead of exactly the cap,
-  and a very high attempt number (from about 1024 on) no longer raises
-  `OverflowError`. `fixed` stays without jitter
-  ([backoff formulas](../guides/scheduling-and-retries.md#backoff-formulas)).
+#### Configuration
 
-- **Task locks survive a handler that runs longer than its lock TTL.**
-  The worker now extends a held mutex or semaphore slot while the
-  handler runs, starting one window before the lock would expire (a
-  window is three ticks of `min(max(TTL / 3, 50 ms), 20 s)`); before,
-  the lock expired silently and a second worker acquired it. From a
-  `hard_timeout` of 30 s on, a task that finishes within
-  `hard_timeout - 30 s` costs no extra round trip; with a shorter
-  `hard_timeout` the window covers the whole TTL, and a handler that
-  runs longer than about a third of it is extended from the first
-  tick. A blocked event loop blocks the extension as well: the lock can
-  expire and is reported as `task_lock_lost`. A holder
-  killed hard still leaves the lock behind until `hard_timeout + 30 s`,
-  at most one window longer. A lock store whose `extend` returns
-  neither `True` nor `False` counts as not supporting it. New WARNINGs
-  `task_lock_held_past_hard_timeout`, `lock_extend_failed` and
-  `lock_extend_unsupported`; new Lua script `lock_extend`, new
-  `LockStore.extend` (golden file `lua_contract.txt`, additive)
-  ([locks while the task runs](../guides/locking-and-dedup.md#locks-while-the-task-runs)).
-- **A lost lock is reported.** When a lock is gone or held by another
-  owner at extension or at release (evicted by `maxmemory-policy`,
-  Valkey data loss), the worker logs `task_lock_lost` (WARNING,
-  `stage` `running` or `release`, with `task_id` and `task_name`)
-  instead of ignoring it. When no extension succeeded before the
-  lock's deadline (Valkey down), it logs `stage="expired"` without a
-  round trip. A failing keeper tick logs `lock_keeper_tick_failed` and
-  the keeper keeps running; a mutex extension is one round trip, and at
-  most 32 extensions run at once ([logging](logging.md)).
-- **A semaphore acquirer with a short TTL no longer expires the key
-  under a holder with a longer one.** `lock_acquire.lua` only extends
-  the key's TTL, never shortens it. Known limits: an acquirer still
-  sweeps slots older than its own TTL (mixed `hard_timeout` under one
-  semaphore name is not supported), and a 0.11 worker still shortens
-  the key.
+| Variable | Default | Purpose |
+|---|---|---|
+| `SWARMQ_VALKEY_EVICTION_CHECK` | `strict` | `strict`, `warn` or `off`: what a worker does under an evicting Valkey policy (BZ-04) |
+| `SWARMQ_NAMESPACE` | unset | app namespace for every Valkey key and channel; `SwarmQConfig.namespace` (BZ-10) |
+| `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S` | `SWARMQ_SCHEDULER_LOCK_TTL` | leader steps down after failed publishes over this period; `0` disables (BZ-10) |
+| `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY` | `auto` | `auto`, `at-least-once` or `legacy`: dead-lettering of new quorum queues (BZ-19) |
+| `SWARMQ_UNKNOWN_TASK_GRACE_S` | `900` | how long a worker defers an unknown task; `0` dead-letters at first contact (BZ-06) |
+| `SWARMQ_LOCK_WAIT_MAX_S` | `21600` | upper limit for waiting on a held task lock, from the first conflict; `> 0` and finite (BZ-05) |
+| `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S` | `604800` | how long the execution state lives behind a backlog (BZ-12) |
+| `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S` | `86400` | how long the leader retries a deferred task whose queue is missing (BZ-03) |
+| `SWARMQ_BROKER_PUBLISH_CONNECTION` | `separate` | `separate` or `shared`: second broker connection for consuming; `SwarmQConfig.broker_publish_connection` (BZ-16) |
 
-### Fixed (Valkey environment, BZ-04)
+See [configuration](configuration.md).
 
-- **Evicted locks and markers went unnoticed.** Under `volatile-*` or
-  `allkeys-*` Valkey silently evicted locks, the leader lock, the
-  execution guard and the unique and fired markers, and tasks ran
-  twice. The policy is now checked (see Changed). The internal
-  recommendation of `volatile-lru` is corrected to `noeviction` plus
-  AOF.
-- **A cron disabled with `swarmq schedule remove` came back active
-  after Valkey lost its data, without a word.** Each worker now
-  remembers the epoch key `sq:{sched}:epoch` and logs
-  `valkey_data_loss_detected` when it is gone. Limits: a loss while all
-  processes restart at once goes unnoticed, so does a loss since an RDB
-  snapshot that restores the epoch; the policy is checked only hourly.
+#### CLI
 
-### Upgrading to 0.12 (Valkey environment)
+- **`swarmq check [--format (table|json)]`**: read-only check of the
+  environment before an upgrade. Section `valkey`: eviction policy,
+  `maxmemory`, memory, AOF, version, cluster mode, `namespace` and
+  `unprefixed_keys` (keys without namespace next to a namespace,
+  counted by `SCAN` for at most 5 seconds; `unprefixed_keys_complete`
+  tells a full count from a lower bound, and in cluster mode only the
+  connected node is counted). Section `shutdown`:
+  `min_grace_period_s`. Section `queues` (with `SWARMQ_BROKER_URL`):
+  orphaned queues and reported queues without `.XQ`. Findings
+  `eviction_policy`, `eviction_policy_unknown`, `aof_disabled`,
+  `cluster`, `version`, `unprefixed_keys`, `unprefixed_keys_unknown`,
+  `orphaned_queue`, `dead_letter_queue_missing`, `queues_unchecked`.
+  Exit `78` when a worker would refuse to start, `0` otherwise
+  (warnings allowed), `1` when Valkey, or a configured broker, is
+  unreachable ([CLI](cli.md#swarmq-check)).
+- Help texts (`--max-processes`, `schedule list`) write keys as
+  `[<namespace>:]sq:…`.
 
-- **Run `swarmq check` first.** Install the new version in a separate
-  virtualenv (`pip install swarmq==0.12.*`) and run `swarmq check`
-  against production; it only reads (`CONFIG GET`, `INFO`). In
-  Kubernetes it can run as an init container. Exit `78` means the new
-  workers would refuse to start.
-- **Exit 78 under Kubernetes and Docker.** A worker that refuses to
-  start exits `78` again on every restart: Kubernetes shows
-  `CrashLoopBackOff`, Docker with a `restart:` policy loops. Set
-  `maxmemory-policy noeviction` before the rollout, or set
-  `SWARMQ_VALKEY_EVICTION_CHECK=warn` deliberately (for example on a
-  managed service with a fixed policy, accepting the risk).
+#### Exceptions
 
-### Added (several apps on one Valkey, BZ-10)
+All new broker exceptions are subclasses of `BrokerConnectionError`,
+so existing handlers still catch them
+([error catalog](errors.md)):
 
-- **`SWARMQ_NAMESPACE`** (`SwarmQConfig.namespace`, default unset) and
-  `ValkeyBackend(..., namespace=...)`: every Valkey key, Pub/Sub
-  channel, the scheduler leader and the control channel move from
-  `sq:…` to `<namespace>:sq:…`; the hash tags stay the same, queue names
-  are not prefixed. Without a namespace everything stays byte-identical
-  (golden file `keys.json` unchanged; the namespaced keys are in the new
-  golden file `keys.namespace.json`). `ValkeyBackend.namespace` and
-  `swarmq.keyspace.validate_namespace` are new; the namespace is
-  lowercase only (`a-z 0-9 _ . -`, uppercase is a `ConfigurationError`
-  that names the lowercase spelling)
-  ([namespace](configuration.md#namespace-several-apps-on-one-valkey)).
-- **`SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S`** (default
-  `SWARMQ_SCHEDULER_LOCK_TTL`, `0` disables) and the log event
-  `scheduler_publish_failures_stepdown`.
-- **`swarmq.exceptions.PublishRejected`** (subclass of
-  `BrokerConnectionError`): a publish that the broker answered with a
-  negative confirm in every attempt (for example `reject-publish` on a
-  full queue). Before it was a plain `BrokerConnectionError` with the
-  same text ([error catalog](errors.md#publishrejected)).
-- **`swarmq check`** fills `namespace` and `unprefixed_keys` (keys
-  without namespace next to a namespace) and reports the findings
-  `unprefixed_keys` and `unprefixed_keys_unknown`
-  ([CLI](cli.md#swarmq-check)). `unprefixed_keys_complete` tells a full
-  count from one that `SCAN` cut off at its 5-second limit (then the
-  number is a lower bound, "at least n"); in cluster mode the message
-  says that only one node was counted.
-- **Golden file `channels.namespace.txt`** (additive): the Pub/Sub
-  channels with namespace; `channels.txt` is unchanged. Help texts
-  (`--max-processes`, `schedule list`) and the documentation write keys
-  as `[<namespace>:]sq:…`.
+- `swarmq.UnroutableMessage`: the broker returned a publish because no
+  queue with that name exists (BZ-03).
+- `swarmq.MessageHeadersTooLarge`: the headers do not fit into half of
+  the negotiated `frame_max`, even with long texts truncated; nothing
+  was sent (BZ-17).
+- `swarmq.exceptions.BrokerPublishBlocked`: the connection stayed
+  blocked by a resource alarm until the publish deadline; nothing was
+  sent (BZ-16).
+- `swarmq.exceptions.PublishRejected`: the broker answered every
+  attempt with a negative confirm (`reject-publish` on a full queue, a
+  quorum queue without quorum).
+- `swarmq.QueueArgumentsMismatch` (subclass of `ConfigurationError`):
+  an existing queue has an argument that differs from the
+  configuration and that swarmq does not adopt; `swarmq worker` exits
+  with `78` (BZ-15).
+- `swarmq.RedeliveryLimitError` and `swarmq.LockWaitExceeded`: never
+  raised; the `error_type` of a DLQ copy whose deliveries were handed
+  back until the delivery limit (BZ-29), or whose wait for a task lock
+  ended (BZ-05).
 
-### Changed (several apps on one Valkey, BZ-10)
+#### Signals
 
-- **A scheduler leader whose broker keeps failing steps down.** After at
-  least 2 failed publishes (`BrokerConnectionError`, not counting
-  `UnroutableMessage`, `MessageHeadersTooLarge`, `BrokerPublishBlocked`,
-  `PublishRejected` and `PublishIndeterminate`: what hits every candidate
-  or one queue; real connection errors count) over at
-  least `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S` without a success in
-  between, it
-  releases the leader lock without a handover marker (the successor
-  emits `SCHEDULER_LEADER_FAILOVER`), emits `SCHEDULER_STANDBY` and does
-  not apply again for 2 × lock TTL. Before, it stayed leader and stopped
-  the crons of every app on the Valkey. A gap longer than
-  `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S` between two failures, and every
-  new term as leader, start a new series; a single broken cron queue does
-  not cost the leadership.
-- **`SWARMQ_NAMESPACE` is supported.** 0.11.1 refused it; 0.12 accepts a
-  valid value and stops only on an invalid one (`ConfigurationError`,
-  exit `78`; `swarmq worker --check`: exit 1), in workers, `SwarmQ(...)`
-  and the CLI commands, before any connection.
-- **`scheduler_fire_unroutable_foreign`** now also names
-  `SWARMQ_NAMESPACE` in its hint; separate vhosts need one namespace per
-  app. Lock recovery hints (`valkey-cli DEL …`) name the key with the
-  namespace of the backend.
-- **Backend and configuration agree on one namespace.** An explicit
-  `ValkeyBackend(namespace=…)` (or `keys=`) wins; without it the backend
-  takes `SwarmQConfig.namespace` (code or `SWARMQ_NAMESPACE`) when it is
-  handed to `SwarmQ(...)`, so `SwarmQ(broker, backend, namespace="app1")`
-  now prefixes the keys. An explicit backend namespace fills
-  `app.config.namespace`. Both set and different (also `namespace=""`
-  next to a set `SWARMQ_NAMESPACE`) is a `ConfigurationError`
-  (`namespace mismatch`, exit `78`). `ValkeyBackend.reconcile_namespace`
-  is new ([where the namespace comes from](configuration.md#where-the-namespace-comes-from)).
+([signals](../guides/signals.md))
 
-### Upgrading to 0.12 (namespace)
+- `TASK_UNKNOWN_DEFERRED` (`task_id`, `task_name`, `queue`, `delay`,
+  `unknown_since`) (BZ-06).
+- `SCHEDULER_FIRE_UNROUTABLE` (`worker_id`, `schedule_name`, `queue`,
+  `kind`: `cron_lost` or `oneshot_dropped`) (BZ-03).
+- `SCHEDULER_CRON_UNOWNED` (`worker_id`, `schedule_name`, `task_name`,
+  `held`, `held_count`) (BZ-11).
+- `SCHEDULER_VALKEY_CHECKED` (BZ-04).
+- `SCHEDULER_QUEUE_ORPHANED` (BZ-14).
 
-- **Order:** first run every component (workers, producers, CLI,
-  control service) on 0.12, then set `SWARMQ_NAMESPACE` everywhere in
-  the same step. Mixed values split the app.
-- **Only for a new app or after moving the app.** The namespace does
-  not migrate data under `sq:` (schedules, CLI crons, delayed tasks,
-  results, locks). `swarmq check` counts keys without namespace. To move
-  an existing app ([procedure](configuration.md#moving-an-app-into-a-namespace)):
-  stop it completely (Kubernetes `strategy: Recreate` or scale to 0, no
-  rolling update); without `SWARMQ_NAMESPACE` remove its crons and
-  one-shots with `swarmq schedule list` and
-  `swarmq schedule remove --permanent`; with the namespace create its CLI
-  crons and one-shots again; change Valkey ACL patterns from `~sq:*` to
-  `~<namespace>:sq:*` (channels `&sq:*` to `&<namespace>:sq:*`); point
-  tools that read the keys directly (dashboards such as swarmv) at the
-  namespace.
-- **Move every app on the Valkey to 0.12 before.** A leader older than
-  0.12 on the same Valkey keeps firing the old definitions for up to
-  24 hours (until it prunes them): crons run twice.
-- **Rollback limit:** once the namespace is set, roll back only to 0.12
-  or later. 0.11.1 refuses to start with `SWARMQ_NAMESPACE` set (exit
-  `78`); 0.11.0 would ignore it silently.
-- **Separate RabbitMQ vhosts on one Valkey need a namespace per app.**
-- **While apps older than 0.12 share the Valkey without namespace,** set
-  `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S=0`. Otherwise the leadership can
-  move to a 0.11 app, and BZ-02/09/11 (stable one-shot IDs, cron dedup,
-  held crons) are off while it leads.
+#### Metrics
 
-### Added (broker connections, BZ-16)
+([metric catalog](configuration.md#metric-catalog))
 
-- **`SWARMQ_BROKER_PUBLISH_CONNECTION`** (`separate` default, `shared`;
-  `SwarmQConfig.broker_publish_connection`, `RabbitMQBroker.publish_connection`)
-  ([configuration](configuration.md)).
-- **`swarmq.exceptions.BrokerPublishBlocked`** (subclass of
-  `BrokerConnectionError`) and the log events `publish_connection_blocked`
-  and `publish_blocked_state_unreadable`
-  ([error catalog](errors.md#brokerpublishblocked)).
+- `swarmq_valkey_memory_used_ratio{worker_id}` (BZ-04).
+- `swarmq_lock_waits{worker_id}` and
+  `swarmq_lock_wait_oldest_seconds{worker_id}` (BZ-05).
+- `swarmq_tasks_unknown_deferred_total{queue}` (BZ-06).
+- `swarmq_scheduler_fires_unroutable_total{queue, kind}` (BZ-03).
+- `swarmq_scheduler_crons_held{worker_id}` (BZ-11).
+- `swarmq_scheduler_queues_orphaned{worker_id}` (BZ-14).
+- `swarmq_delay_tiers_unavailable{queue}` (BZ-01).
+- `swarmq_supervisor_locked_slots` (BZ-27).
+- `swarmq_worker_prefetch_limit{worker_id}` (BZ-20).
+- `swarmq_queue_depth{kind="delayed"}`: messages in the delay queues
+  only; `kind="pending"` keeps its meaning (`{queue}` plus all delay
+  queues, now including the tiers) (BZ-01).
+- `swarmq_queue_depth` and `swarmq_dlq_messages` per consumed queue:
+  with `SWARMQ_PRIORITIES` the worker now also samples the
+  `{queue}.high` and `{queue}.low` bands.
 
-### Changed (broker connections, BZ-16)
+#### Log events
 
-- **A worker consumes over a second connection.** Its first `consume()`
-  opens it; the consume channel, acks and nacks move there, publishes stay
-  on the first connection. During a broker resource alarm RabbitMQ blocks
-  only connections that publish: acks keep reaching the broker instead of
-  hanging behind a blocked retry or dead-letter publish. Producers that
-  never consume, and brokers built on an injected connection or pool, keep
-  one connection.
-- **Queue-depth and DLQ-depth reads use the consume connection** when it
-  is open (they hang on a blocked publish connection), otherwise the
-  publish connection as before.
-- **Publishes wait while the connection is blocked.** A publish on a
-  connection RabbitMQ has blocked sends nothing and waits for the unblock
-  within `SWARMQ_PUBLISH_TIMEOUT_S`; when the deadline passes it raises
-  `BrokerPublishBlocked` instead of `PublishIndeterminate`, keeps the
-  publish channel and releases a `unique_for` claim. Before, the frames
-  went onto the blocked socket and the publish ended as
-  `PublishIndeterminate`. The check reads the state synchronously (no
-  round trip). A scheduler leader does not count `BrokerPublishBlocked`
-  towards stepping down.
-- **A worker start cancelled while the consume connection is being opened
-  leaves no connection behind.** aio-pika kept building the half-open
-  connection in the background and reconnected every 5 s; the connection
-  is now closed. The same holds for the publish connection when
-  `connect()` is cancelled.
+([logging](logging.md))
 
-### Fixed (reading the DLQ, BZ-21)
+- Valkey environment (BZ-04): `valkey_eviction_policy_unsafe`,
+  `valkey_eviction_policy_unknown`, `valkey_data_loss_detected`.
+- Locks (BZ-05, BZ-25): `lock_wait_exceeded`,
+  `lock_observe_unsupported`, `lock_observe_failed`, `task_lock_lost`,
+  `task_lock_held_past_hard_timeout`, `lock_extend_failed`,
+  `lock_extend_unsupported`, `lock_keeper_tick_failed`.
+- Unknown tasks (BZ-06): `task_unknown_deferred`,
+  `unknown_task_defer_failed`, `unknown_task_dlq_failed`.
+- Missing queues (BZ-03): `scheduler_fire_unroutable`,
+  `scheduler_fire_unroutable_foreign`, `scheduler_oneshot_unroutable`,
+  `scheduler_oneshot_unroutable_dropped`,
+  `own_queue_unroutable_redeclaring`, `workflow_advance_unroutable`.
+- Scheduler (BZ-09, BZ-10, BZ-11, BZ-14, BZ-28):
+  `scheduler_unique_release_failed`,
+  `scheduler_publish_failures_stepdown`, `scheduler_cron_held_unowned`,
+  `scheduler_cron_unowned_released`, `scheduler_unowned_check_skipped`,
+  `scheduler_queue_orphaned`, `scheduler_queue_orphan_resolved`,
+  `scheduler_queue_check_failed`, `schedule_def_malformed_parked`.
+- Queues (BZ-01, BZ-19): `delay_tier_unavailable`,
+  `queue_dead_letter_at_most_once`.
+- Broker connections and DLQ (BZ-16, BZ-21):
+  `publish_connection_blocked`, `publish_blocked_state_unreadable`,
+  `dlq_read_ack_failed`.
+- Others: `workflow_state_missing` (BZ-13),
+  `client_task_defaults_unresolved` (BZ-24), `shutdown_step_timeout`
+  (BZ-18), `worker_slot_unlocked` (BZ-27),
+  `prefetch_exceeds_consumer_timeout` (BZ-20).
 
-- **`dlq list`, `dlq inspect` and `dlq retry` no longer lose messages
-  when the reader dies.** They took each message with `no_ack=True` and
-  put it back only at the end; a kill, OOM or network loss in between
-  dropped what had been read. They now read with acknowledgement on an
-  own channel (on the consume connection when it is open), copy each
-  message to the end of `{queue}.XQ` (with its remaining retention) or,
-  for `retry`, to `{queue}`, and acknowledge the original only after the
-  broker confirmed the copy. Returning the message instead would count
-  the XQ's delivery count up, and after 20 listings it would be gone.
-  Copies carry no broker delivery counters (`x-delivery-count`,
-  `x-acquired-count`). A failed acknowledgement logs
-  `dlq_read_ack_failed` (WARNING) and leaves the message twice.
-- **Limits.** A reader that dies between a copy and its acknowledgement
-  leaves the message twice in the DLQ; a repeated `dlq retry` runs it
-  once (execution identity). Parallel `dlq list` runs each see only part
-  of the DLQ. A `dlq` command of 0.11 still reads destructively.
+#### Headers, Valkey keys and golden files
 
-### Upgrading to 0.12 (broker connections)
+All additive; existing golden entries are byte-identical unless named
+([headers](agent/message-formats.md#amqp-headers)).
 
-- **Workers open two connections** to RabbitMQ (producers one). Check
-  connection limits (`connection_max`, per-vhost `max-connections`, user
-  limits) and connection-count alerts before the rollout. Set
-  `SWARMQ_BROKER_PUBLISH_CONNECTION=shared` to keep one.
-- **Limits.** RabbitMQ announces a block only to a connection that
-  publishes during the alarm, so the first publish after the alarm starts
-  still hangs on the socket and ends as `PublishIndeterminate`. Workers
-  older than 0.12 keep one connection: during an alarm their acks hang as
-  before, in mixed operation too. The blocked state is read from a private
-  aiormq attribute; if a later aiormq drops it, swarmq warns once
-  (`publish_blocked_state_unreadable`) and publishes unchecked as before.
+- **Headers:** `x-swarmq-unknown-since` (BZ-06);
+  `x-swarmq-xdeath-base`, `x-swarmq-dlq-gen` (BZ-08);
+  `x-swarmq-lock-conflicts`, `x-swarmq-lock-wait-since`,
+  `x-swarmq-lock-holder`, `x-swarmq-lock-holder-since`,
+  `x-swarmq-lock-holder-ttl-ms`, `x-swarmq-lock-wait-gen` (BZ-05).
+- **Valkey keys** (each under `[<namespace>:]`): `sq:{sched}:epoch`
+  (no TTL, one key; BZ-04), `sq:{sched}:handover` (a few seconds TTL;
+  BZ-07), `sq:{sched}:report:known` (names a 0.12 worker has reported;
+  removed with the definition; BZ-11), `sq:{sched}:report:queues`
+  (expires 7 days after the last report; BZ-14).
+- **Schedule definition:** new fields `task_id` (BZ-02),
+  `unroutable_since` (BZ-03) and `unique_for` (BZ-09), each `null` by
+  default.
+- **Golden files:** `keys.json` (epoch, handover, report keys);
+  `keys.namespace.json` and `channels.namespace.txt` (new, keys and
+  channels with namespace; `channels.txt` unchanged); `headers.txt`
+  (the headers above); `lua_contract.txt` (new `lock_extend`;
+  `guard_claim` takes a sixth argument; `lock_acquire` only extends the
+  TTL; `sched_poll.lua` now writes); `queue_args.json` (new keys
+  `quorum_at_least_once` and `delay_tiers`, new description under
+  `delay`); `values/schedule_definition.json` (new `null` fields).
 
-### Changed (shutdown budget, BZ-18)
+#### API and contracts
 
-- **`SWARMQ_SHUTDOWN_TIMEOUT` is the total budget from `SIGTERM`.**
-  Before, the drain alone used the whole value, and lock release, the
-  scheduler handover, execution-guard markers and connection close came
-  after it; under the supervisor its own `SIGTERM` (after the full value)
-  and `SIGKILL` (5 s later) came after that, so the default shutdown took
-  35 s and more, past Kubernetes' default `SIGKILL` at 30 s. Now the
-  drain ends 5 s before the end (at most half the budget), and the
-  supervisor sends `SIGTERM` at `T - 7 s`, `SIGKILL` at `T - 2 s` and has
-  collected its workers by `T`; its worker drains until `T - 7 s`
-  ([shutdown budget](../explanation/delivery-semantics.md#shutdown-budget)).
-  `ProcessManager(shutdown_grace_s=...)` means the total budget too.
-  The publish deadline in the shutdown is the end of the drain, as
-  before for an embedded worker (under the supervisor 2 s earlier).
-- **Every cleanup step has a time limit** (the rest of the budget, at
-  least 1 s): compute pool, detached lock releases (before: at least
-  5 s), execution-guard markers, each lock release, scheduler stop (then
-  aborted), DI container, broker close (both connections) and backend
-  close. A step that exceeds it logs `shutdown_step_timeout` (new) and
-  the shutdown goes on. Tasks that ignore cancellation are awaited at
-  most 1 s, within the budget.
-- **The recycling drain is unchanged** (largest `hard_timeout`).
+- `RabbitMQBroker.ready_depth(queue)` (messages ready in `{queue}`
+  itself), `RabbitMQBroker.publish_connection`, optional broker method
+  `queue_statuses(names)` with `swarmq.contracts.broker.QueueStatus`.
+- `ValkeyBackend(..., namespace=...)`, `ValkeyBackend.namespace`,
+  `ValkeyBackend.reconcile_namespace`,
+  `ValkeyBackend.eviction_check`/`recheck_eviction`,
+  `swarmq.keyspace.validate_namespace`.
+- `LockStore.observe` and `LockStore.extend`;
+  `ScheduleStore.ensure_epoch`, `report_queues`, `queue_reports`,
+  `forget_queue_reports` with `swarmq.contracts.QueueReports`. Stores
+  and brokers without the optional methods skip the feature.
+- `ProcessManager.SLOT_COOLDOWN_S`, `SlotTable.lock(slot, until=...)`.
 
-### Upgrading to 0.12 (shutdown budget)
+### Takes effect only when …
 
-- **Tasks get less drain time.** With the default 30 s an embedded worker
-  drains 25 s, a worker under the supervisor 23 s (before 30 s). Set
-  Kubernetes `terminationGracePeriodSeconds` and Docker
-  `stop_grace_period` to at least `SWARMQ_SHUTDOWN_TIMEOUT + 15 s`
-  (`swarmq check` shows `min_grace_period_s`); to give long tasks the
-  old drain, raise `SWARMQ_SHUTDOWN_TIMEOUT` by 7 s together with the
-  grace period.
+- **… the scheduler leader runs 0.12:** stable one-shot IDs (BZ-02),
+  cron dedup from the definition (BZ-09), held crons (BZ-11), the
+  orphaned-queue check (BZ-14) and the fixed handover key (BZ-07).
+  While a leader before 0.12 holds the role, deferred tasks fire under
+  a new ID, a long cron run can overlap the next fire, and removed
+  crons fire into the `.XQ` again. The gauge
+  `swarmq_scheduler_leader_outdated` shows it.
+- **… every worker of a queue runs 0.12:**
+  - the grace period for unknown tasks (BZ-06): a 0.11 worker rejects
+    an unknown task, also a deferral copy, at first contact;
+  - replays after a broker dead-lettering (BZ-08): a replay that
+    reaches a 0.11 worker is skipped, a replayed cron fire as well;
+  - marker retention behind a backlog (BZ-12): a 0.11 worker shortens
+    the state unconditionally when it writes its done marker;
+  - the lock wait (BZ-05): a 0.11 worker that defers a message itself
+    still raises the old counter and dead-letters at the 10th conflict;
+  - lock extension (BZ-25): 0.11 semaphore acquirers still shorten the
+    key;
+  - two connections (BZ-16): during an alarm the acks of 0.11 workers
+    hang as before.
+- **… the `swarmq dlq` command runs 0.12** (BZ-21): a `dlq` command of
+  0.11 still reads destructively.
+- **… the queue is new** (BZ-19): only new quorum queues get
+  at-least-once dead-lettering; existing queues need a policy or a
+  migration. The delay tiers (BZ-01) are created by the worker that
+  consumes the queue; producers and the scheduler never publish to a
+  delay queue, and a process that has not declared the family uses
+  `{queue}.DQ`.
+- **… a worker from 0.12 has reported the cron or the queue:** crons
+  reported only by workers before 0.12 are not held (BZ-11), queues
+  only they consume are not checked (BZ-14).
+- **… the client's registry knows the task:** only then does the cancel
+  flag cover the wait until a deferred task fires and its `max_age`
+  (BZ-23).
+- **… every app on the Valkey runs 0.12** before a namespace is set
+  (BZ-10).
 
-### Fixed (worker slots, BZ-27)
+### Known limits
 
-- **A locked worker slot runs again after a cooldown.** The supervisor
-  locks a slot whose worker crashed 5 times within an hour (or after too
-  many hung workers). Before, the lock lasted until the supervisor
-  restarted, and the slot stayed empty for good. Now it lasts 1 h
-  (`ProcessManager.SLOT_COOLDOWN_S`); then the supervisor logs
-  `worker_slot_unlocked` and fills the slot again with an empty restart
-  history. The gauge `swarmq_supervisor_locked_slots` shows the locked
-  slots; `worker_restart_limit_exceeded` and
-  `hang_replacement_budget_exhausted` carry `cooldown_s`. If every slot is
-  locked and no worker is left, the supervisor still exits `1` so the
-  orchestrator applies its own backoff. `SlotTable.lock(slot)` without
-  `until` still locks for good.
-
-### Added (orphaned queues, BZ-14)
-
-- **The scheduler leader reports orphaned queues.** When a task moved to
-  another queue or `--queues` changed, the backlog of the old queue stayed
-  without a consumer, with no log line and no metric. Now every worker
-  reports the queues it consumes to Valkey on every report tick (new hash
-  `sq:{sched}:report:queues`, queue to last report in ms from Valkey's
-  `TIME`; the key expires 7 days after the last report, golden files
-  `keys.json` and `keys.namespace.json`, additive). On every adoption tick
-  the leader checks the queues no live worker has reported for three
-  ticks (not on the tick right after a takeover, while its own worker is
-  still starting) with a passive declare (no management API): messages and no
-  consumer make a queue orphaned. It logs `scheduler_queue_orphaned`
-  (WARNING) and `scheduler_queue_orphan_resolved` (INFO) once per
-  transition, emits the new signal `SCHEDULER_QUEUE_ORPHANED` and sets the
-  gauge `swarmq_scheduler_queues_orphaned{worker_id}`. Entries of queues
-  that are gone or empty and unreported for 7 days are removed. Each check
-  has a 30 s time limit (`scheduler_queue_check_failed`)
-  ([moving a task to another queue](../guides/defining-tasks.md#moving-a-task-to-another-queue)).
-- **`swarmq check`, section `queues`** (with `SWARMQ_BROKER_URL`): orphaned
-  queues and reported queues whose `.XQ` is missing; findings
-  `orphaned_queue`, `dead_letter_queue_missing`, `queues_unchecked`
-  (reports not readable from Valkey), all warnings. An unreachable broker
-  ends the check with exit `1`, like an unreachable Valkey
-  ([CLI](cli.md#swarmq-check)).
-- **Contracts:** `ScheduleStore.report_queues`, `queue_reports` and
-  `forget_queue_reports` with `swarmq.contracts.QueueReports`; the optional
-  broker method `queue_statuses(names)` with
-  `swarmq.contracts.broker.QueueStatus`. Stores and brokers without them
-  skip the check.
-- **Limits.** Only queues a worker of 0.12 or later reported are checked;
-  a queue with any consumer (a worker before 0.12, too) never counts as
-  orphaned. A queue without a report in the last three ticks but a worker
-  that is only restarting slowly can count as orphaned until it consumes
-  again.
-
-### Added (prefetch per consumer, BZ-20)
-
-- **Known limit, now reported.** `--concurrency` is the prefetch of each
-  consumer: a worker consuming K queues (each priority band counts) holds
-  up to K × concurrency unacknowledged messages, and the last waits up to
-  K × `hard_timeout` for its ack. Global QoS does not work with quorum
-  queues (RabbitMQ 4.2 closes the connection, 4.3 ignores it), so this
-  stays a limit. New: the start warning `prefetch_exceeds_consumer_timeout`
-  (once per start, when K ≥ 2 and `hard_timeout` × K exceeds
-  `SWARMQ_CONSUMER_TIMEOUT_S`) and the gauge
-  `swarmq_worker_prefetch_limit{worker_id}` (K × concurrency)
-  ([prefetch per consumer](../explanation/delivery-semantics.md#prefetch-per-consumer)).
+- **BZ-01:** over one hour the head-of-line blocking of `{queue}.DQ`
+  remains; inside a tier a delay can take up to four times as long, at
+  least up to one second.
+- **BZ-04:** a data loss while all processes restart at once goes
+  unnoticed, so does a loss since an RDB snapshot that restores the
+  epoch; the policy is checked only hourly.
+- **BZ-05/BZ-25:** mixed `hard_timeout` under one semaphore name is not
+  supported: an acquirer sweeps slots older than its own TTL. A blocked
+  event loop blocks the lock extension as well; the lock can expire and
+  is reported as `task_lock_lost`.
+- **BZ-08:**
+  - A broker-DLX replay or a cron replay that reaches a 0.11 worker is
+    skipped (lost); a replay in flight during the version switch can
+    run twice.
+  - After a UI move the first execution counts the raw `x-death`;
+    repeated UI moves after another broker dead-lettering are skipped
+    (use `swarmq dlq retry`).
+  - `route_via_dlx` after a UI move keeps the old
+    `x-swarmq-dead-lettered-at` (a `nack` cannot set headers), so
+    `dlq list` can drop such a message as expired.
+  - A UI replay with `max_age` can expire at once.
+  - With `dead_letter_ttl_s=None` replay identities are protected for
+    7 days, not forever.
+- **BZ-10:**
+  - With separate vhosts on one Valkey the namespace is required.
+  - Once the namespace is set, no rollback below 0.12.
+  - Moving an existing app into a namespace needs a full stop; results,
+    delayed tasks and locks under `sq:` are not taken over.
+  - A leader older than 0.12 on the same Valkey fires the old
+    definitions for up to 24 h; crons run twice.
+  - Valkey ACL patterns and tools that read the keys directly (swarmv)
+    must follow the namespace.
+  - `swarmq check` counts keys without prefix for at most 5 s (then
+    "at least n") and in cluster mode only on the connected node.
+  - Stepping down: `ACCESS_REFUSED` on publish (write permission of the
+    user on `amq.default`) still counts. A dead TCP connection without
+    RST first ends as `PublishIndeterminate` and counts only once the
+    heartbeat detects the loss.
+- **BZ-11:** a held cron does not catch up its missed occurrences.
+- **BZ-12:** a backlog that builds up only after the run is not covered
+  for tasks without `max_age`. The completed marker stays capped at
+  7 days; the done and superseded markers have no cap and live longer
+  with a `max_age` over 7 days.
+- **BZ-14:** a queue with any consumer never counts as orphaned; a
+  queue whose worker restarts slowly can count as orphaned until it
+  consumes again.
+- **BZ-16:** RabbitMQ announces a block only to a connection that
+  publishes during the alarm, so the first publish after the alarm
+  starts still ends as `PublishIndeterminate`. The blocked state is
+  read from a private aiormq attribute; if a later aiormq drops it,
+  swarmq warns once (`publish_blocked_state_unreadable`) and publishes
+  unchecked.
+- **BZ-19:** duplicates run twice for tasks without execution guard;
+  rollback only to 0.11.1 or later; `reject-publish` together with a
+  `max-length` policy makes publishes to a full queue fail.
+- **BZ-20:** prefetch applies per consumer.
+- **BZ-21:** a reader that dies between a copy and its acknowledgement
+  leaves the message twice in the DLQ (a repeated `dlq retry` runs it
+  once); parallel `dlq list` runs each see only part of the DLQ.
+- **BZ-23:** a task published right away is cancellable for 24 h.
+- **KTD11:** the gauge `swarmq_scheduler_leader_outdated` stays at `1`
+  as long as a 0.11 app on the same Valkey holds the leadership.
+- **Delivery limit by policy:** a `delivery-limit` policy is not
+  visible to swarmq and not supported on swarmq queues.
 
 ## [0.11.1] — 2026-10-10
 
