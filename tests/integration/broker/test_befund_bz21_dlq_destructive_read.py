@@ -52,14 +52,6 @@ async def dlq(rabbitmq_url: str):
     await setup.close()
 
 
-@pytest.mark.befund("BZ-21")
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "BZ-21: list_dead_letters entnimmt mit get(no_ack=True); bricht der Lesende "
-        "nach k Nachrichten ab, sind diese k Nachrichten verloren"
-    ),
-)
 async def test_aborted_dlq_listing_loses_no_message(rabbitmq_url: str, dlq, monkeypatch) -> None:
     observer, queue = dlq
     assert await observer.dead_letter_depth(queue) == _MESSAGES

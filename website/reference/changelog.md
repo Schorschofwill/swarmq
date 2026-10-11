@@ -660,6 +660,25 @@ All notable changes to SwarmQ. This project follows
   round trip). A scheduler leader does not count `BrokerPublishBlocked`
   towards stepping down.
 
+### Fixed (reading the DLQ, BZ-21)
+
+- **`dlq list`, `dlq inspect` and `dlq retry` no longer lose messages
+  when the reader dies.** They took each message with `no_ack=True` and
+  put it back only at the end; a kill, OOM or network loss in between
+  dropped what had been read. They now read with acknowledgement on an
+  own channel (on the consume connection when it is open), copy each
+  message to the end of `{queue}.XQ` (with its remaining retention) or,
+  for `retry`, to `{queue}`, and acknowledge the original only after the
+  broker confirmed the copy. Returning the message instead would count
+  the XQ's delivery count up, and after 20 listings it would be gone.
+  Copies carry no broker delivery counters (`x-delivery-count`,
+  `x-acquired-count`). A failed acknowledgement logs
+  `dlq_read_ack_failed` (WARNING) and leaves the message twice.
+- **Limits.** A reader that dies between a copy and its acknowledgement
+  leaves the message twice in the DLQ; a repeated `dlq retry` runs it
+  once (execution identity). Parallel `dlq list` runs each see only part
+  of the DLQ. A `dlq` command of 0.11 still reads destructively.
+
 ### Upgrading to 0.12 (broker connections)
 
 - **Workers open two connections** to RabbitMQ (producers one). Check

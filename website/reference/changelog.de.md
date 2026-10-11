@@ -707,6 +707,27 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   Roundtrip). Ein Scheduler-Leader zählt `BrokerPublishBlocked` nicht für
   den Rücktritt.
 
+### Behoben (DLQ lesen, BZ-21)
+
+- **`dlq list`, `dlq inspect` und `dlq retry` verlieren keine Nachrichten
+  mehr, wenn der Lesende stirbt.** Sie entnahmen jede Nachricht mit
+  `no_ack=True` und legten sie erst am Ende zurück; ein Kill, OOM oder
+  Netzverlust dazwischen kostete das bereits Gelesene. Jetzt lesen sie
+  bestätigungspflichtig über einen eigenen Channel (auf der
+  Consume-Verbindung, falls offen), kopieren jede Nachricht ans Ende von
+  `{queue}.XQ` (mit ihrer Restfrist) bzw. bei `retry` nach `{queue}` und
+  bestätigen das Original erst, wenn der Broker die Kopie bestätigt hat.
+  Ein Zurückgeben zählte den Delivery-Count der XQ hoch, nach 20 Listings
+  wäre die Nachricht weg. Kopien tragen keine Zustellzähler des Brokers
+  (`x-delivery-count`, `x-acquired-count`). Ein gescheitertes Bestätigen
+  loggt `dlq_read_ack_failed` (WARNING) und lässt die Nachricht doppelt
+  zurück.
+- **Grenzen.** Stirbt der Lesende zwischen Kopie und Bestätigung, liegt
+  die Nachricht zweimal in der DLQ; ein wiederholtes `dlq retry` führt sie
+  einmal aus (Ausführungsidentität). Parallele `dlq list` sehen jeweils
+  nur einen Teil der DLQ. Ein `dlq`-Befehl von 0.11 liest weiter
+  zerstörend.
+
 ### Upgrade auf 0.12 (Broker-Verbindungen)
 
 - **Worker öffnen zwei Verbindungen** zu RabbitMQ (Producer eine).

@@ -132,7 +132,16 @@ Useful flags:
 - `--queue QUEUE` — the main queue name; the DLQ is `{queue}.XQ`.
 
 The operation is non-destructive: messages stay in the DLQ even
-after listing.
+after listing. `dlq list`, `dlq inspect` and `dlq retry` read with
+acknowledgement on their own channel: each read message is copied to
+the end of the DLQ (or, for `retry`, to the main queue) and acknowledged
+only after the broker confirmed the copy. A reader that dies or loses
+its connection mid-way loses nothing; the broker returns what it had not
+acknowledged yet. Dying between a copy and its acknowledgement leaves
+the message twice in the DLQ; retrying both runs the task once (the
+second has the same execution identity). Listing reorders the DLQ: read
+messages move to its end. Two listings at the same time each see only
+part of the DLQ.
 
 ## Inspecting one message
 

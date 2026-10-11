@@ -140,7 +140,17 @@ Nützliche Flags:
 - `--queue QUEUE` — der Haupt-Queue-Name; die DLQ ist `{queue}.XQ`.
 
 Die Operation ist non-destruktiv: Nachrichten bleiben auch nach
-dem Auflisten in der DLQ.
+dem Auflisten in der DLQ. `dlq list`, `dlq inspect` und `dlq retry`
+lesen bestätigungspflichtig über einen eigenen Channel: Jede gelesene
+Nachricht wird ans Ende der DLQ kopiert (bei `retry` in die Haupt-Queue)
+und erst bestätigt, wenn der Broker die Kopie bestätigt hat. Stirbt der
+Lesende oder verliert er die Verbindung, geht nichts verloren; der
+Broker gibt zurück, was noch nicht bestätigt war. Stirbt er zwischen
+Kopie und Bestätigung, liegt die Nachricht zweimal in der DLQ; ein Retry
+beider führt den Task einmal aus (die zweite hat dieselbe
+Ausführungsidentität). Lesen ordnet die DLQ um: Gelesene Nachrichten
+wandern ans Ende. Zwei gleichzeitige Listings sehen jeweils nur einen
+Teil der DLQ.
 
 ## Eine Nachricht inspizieren
 

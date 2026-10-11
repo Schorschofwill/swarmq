@@ -101,6 +101,20 @@ async def test_list_returns_each_message_exactly_once(broker_and_queue):
     assert await _dlq_depth(broker, qname) == 3
 
 
+async def test_message_survives_25_listings(broker_and_queue):
+    """BZ-21 (Plan 0.12.0, MR 16): jede Rueckgabe zaehlt den Delivery-Count der
+    XQ hoch (Spike S4), nach 20 waere die Nachricht weg. Lesen per Kopie ans
+    Ende + Ack laesst sie beliebig oft listen."""
+    broker, qname = broker_and_queue
+    await broker._publish_to_dead_letter_queue(qname, _make_body("t-0"))
+
+    for listing in range(25):
+        entries, _scanned = await broker.list_dead_letters(qname)
+        assert [e["task_id"] for e in entries] == ["t-0"], f"listing {listing + 1}"
+
+    assert await _dlq_depth(broker, qname) == 1
+
+
 async def test_list_respects_limit(broker_and_queue):
     broker, qname = broker_and_queue
     for i in range(5):
