@@ -117,7 +117,16 @@ class ToxiproxyClient:
             "enabled": config.enabled,
         }
         resp = await self._http.post("/proxies", json=payload)
-        resp.raise_for_status()
+        if resp.is_error:
+            # Toxiproxy answers 500 when the listen port is taken; name the
+            # proxy and its config instead of a bare status line.
+            msg = (
+                f"Toxiproxy could not create proxy {config.name!r} "
+                f"(listen {config.listen}, upstream {config.upstream}): "
+                f"{resp.status_code} {resp.text.strip()}. Set the "
+                "SWARMQ_TEST_TOXIPROXY_* variables, see docs/testing/test-strategy.md."
+            )
+            raise RuntimeError(msg)
         created: dict[str, Any] = resp.json()
         return created
 

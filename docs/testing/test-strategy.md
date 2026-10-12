@@ -92,17 +92,17 @@ Backend-/Broker-Ausfälle über Toxiproxy) sowie Stress- und Property-Tests.
 Die Kombinationen brauchen einen Toxiproxy neben dem Teststack: Ohne ihn
 überspringen sie die zwölf Toxiproxy-Tests, und das Gate ist nicht
 vollständig. `docker-compose.chaos.yml` startet den Haupt-Stack auf
-5672/6379 mit; ist das belegt, einen eigenen Toxiproxy im Host-Netz starten
-und Proxy-Ports sowie Upstreams per Env setzen:
+5672/6379 mit; ist das belegt, einen eigenen Toxiproxy im Host-Netz starten.
+Für ihn leiten die Fixtures Proxy-Ports und Upstreams aus den Testports ab:
+Jeder Proxy lauscht einen Port unter seinem Dienst (5698, 6398) und leitet
+an `SWARMQ_TEST_*_HOST:PORT` weiter. Die Compose-Werte (5673/6380,
+Upstreams `rabbitmq`/`valkey`) gelten nur, wenn die Testports 5672/6379
+sind. Jeder Wert lässt sich per `SWARMQ_TEST_TOXIPROXY_*` überschreiben:
 
 ```bash
 docker run -d --name swarmq-test-toxiproxy --network host \
   ghcr.io/shopify/toxiproxy:2.9.0 -host 127.0.0.1 -port 8474
 SWARMQ_TEST_RABBITMQ_PORT=5699 SWARMQ_TEST_VALKEY_PORT=6399 \
-SWARMQ_TEST_TOXIPROXY_HOST=127.0.0.1 SWARMQ_TEST_TOXIPROXY_PORT=8474 \
-SWARMQ_TEST_TOXIPROXY_RMQ_PORT=5698 SWARMQ_TEST_TOXIPROXY_VALKEY_PORT=6398 \
-SWARMQ_TEST_TOXIPROXY_RMQ_UPSTREAM=127.0.0.1:5699 \
-SWARMQ_TEST_TOXIPROXY_VALKEY_UPSTREAM=127.0.0.1:6399 \
   uv run --extra test --extra reload pytest tests -q \
   -m "chaos or stress or property or fuzz"
 ```
@@ -119,7 +119,7 @@ Einzeln, etwa zum Nachfahren eines roten Teils:
 ```bash
 uv run --extra test --extra reload pytest -m chaos tests/chaos -q        # 41 Tests, 37 passed + 4 skipped
 uv run --extra test --extra reload pytest -m fuzz tests/fuzz/test_external_publish_fuzz.py -q  # 2 passed
-# Chaos-Kombinationen, mit den Toxiproxy-Variablen von oben: 28 passed
+# Chaos-Kombinationen gegen den Toxiproxy von oben: 28 passed
 SWARMQ_TEST_RABBITMQ_PORT=5699 SWARMQ_TEST_VALKEY_PORT=6399 \
   uv run --extra test pytest -m chaos tests/e2e/combinations -q
 ```
