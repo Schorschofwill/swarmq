@@ -16,6 +16,7 @@ from typing import Any
 import aio_pika
 from aio_pika.exceptions import (
     AMQPChannelError,
+    AMQPConnectionError,
     ChannelClosed,
     ChannelInvalidStateError,
     ConnectionClosed,
@@ -45,11 +46,16 @@ _PING_TIMEOUT_S = 2.0
 # surfaces as CancelledError when the transport is closed mid-publish
 # (2026-04-17 spike evidence). We guard against swallowing task-level
 # cancellation via asyncio.current_task().cancelling() below.
+# ``AMQPConnectionError`` (B24): aiormq meldet einen abgerissenen Socket mit
+# der Basisklasse von ``ConnectionClosed`` ("Server connection unexpectedly
+# closed"). Ob ein Publish damit wiederholt werden darf, entscheidet
+# ``_publish_attempts`` nach der Phase, nicht nach dem Typ.
 _CHANNEL_TRANSIENT_ERRORS: tuple[type[BaseException], ...] = (
     ChannelInvalidStateError,
     ChannelClosed,
     AMQPChannelError,
     ConnectionClosed,
+    AMQPConnectionError,
     asyncio.CancelledError,
 )
 _PUBLISH_MAX_ATTEMPTS = 5

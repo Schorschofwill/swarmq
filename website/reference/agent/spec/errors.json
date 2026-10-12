@@ -162,7 +162,7 @@
     },
     {
       "dlq_on_uncaught": "n/a",
-      "doc": "Ein Publish hat seine Frist gerissen; ob er ankam, ist unbekannt.\n\nDie Frist laeuft waehrend des Wartens auf das Publisher-Confirm ab — der\nBroker kann die Nachricht also bereits haben. Das unterscheidet diesen\nFall von jedem anderen Publish-Fehler, bei dem nichts gesendet wurde.\n\nAbsichtlich eine Unterklasse von :class:`BrokerConnectionError`: Alle\nbestehenden ``except BrokerConnectionError``-Stellen — insbesondere die\neng gefassten Handler im Ablauf-Gate — fangen sie unveraendert weiter.\nWer die Unterscheidung braucht, fragt gezielt danach; der Client tut das,\num die Dedup-Sperre eines ``unique_for``-Tasks NICHT freizugeben\n(Plan 2026-08-28-001, R11).",
+      "doc": "Ein Publish ist gesendet, aber unbestaetigt gescheitert; ob er ankam, ist unbekannt.\n\nZwei Wege: Die Frist laeuft waehrend des Wartens auf das Publisher-Confirm\nab, oder die Verbindung reisst in dieser Phase (B24). Der Broker kann die\nNachricht also bereits haben. Das unterscheidet diesen Fall von jedem\nanderen Publish-Fehler, bei dem nichts gesendet wurde.\n\nAbsichtlich eine Unterklasse von :class:`BrokerConnectionError`: Alle\nbestehenden ``except BrokerConnectionError``-Stellen — insbesondere die\neng gefassten Handler im Ablauf-Gate — fangen sie unveraendert weiter.\nWer die Unterscheidung braucht, fragt gezielt danach; der Client tut das,\num die Dedup-Sperre eines ``unique_for``-Tasks NICHT freizugeben\n(Plan 2026-08-28-001, R11).",
       "exception_class": "swarmq.exceptions.PublishIndeterminate",
       "exit_code_on_cli": 1,
       "init_params": [],
