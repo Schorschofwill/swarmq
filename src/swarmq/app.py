@@ -265,6 +265,12 @@ class SwarmQ:
                 "Construct the worker's broker/backend from a URL instead."
             )
 
+        # T7 (Plan 2026-10-12-1105): die DI-Pruefung des CLI-Starts gilt auch
+        # eingebettet, vor jeder Verbindung.
+        from swarmq.dishka import validate_registered_tasks
+
+        validate_registered_tasks(list(self.registry.get_all().values()))
+
         # Resolve Worker through the module-level __getattr__ so test
         # patches like ``mock.patch("swarmq.app.Worker")`` continue to
         # intercept the construction. A direct lazy-local import would

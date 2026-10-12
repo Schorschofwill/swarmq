@@ -997,7 +997,39 @@ setup_dishka(container: dishka.AsyncContainer) -> None
   ersetzt den ersten und loggt `dishka_container_replaced`.
 - Mit `FromDishka[...]` (aus `dishka`) annotierte Parameter von `run`,
   `pre_execution` und `post_execution` werden aus einem REQUEST-Scope
-  injiziert, den der Worker je Task öffnet.
+  injiziert, den der Worker je Task öffnet. Das gilt ebenso für
+  `Annotated[X, FromComponent("c")]` (eine benannte Komponente) und für
+  Aliase wie `Depends = FromDishka`, mit und ohne
+  `from __future__ import annotations`.
+- Jede Annotation einer solchen Methode muss bei der Klassendefinition
+  auflösbar sein, auch die der nicht injizierten Parameter: Typen vor der
+  Klasse definieren oder importieren, nicht nur unter `TYPE_CHECKING` und
+  nicht als Vorwärtsverweis auf eine spätere Klasse. Sonst wird die
+  Methode nicht injiziert, und SwarmQ meldet das:
+    - Mit `from __future__ import annotations` (PEP 563) scheitert der
+      Worker-Start mit `ConfigurationError` (Exit 78). Die Meldung nennt
+      den Task, den injizierten Parameter und, falls einer weiter
+      unauflösbar ist, diesen Parameter.
+    - Ohne (PEP 649, Python 3.14) wirft die Klassendefinition `NameError`
+      mit Hinweis.
+    - Eine Annotation, die `FromDishka` im Text nennt, aber nicht
+      auflösbar ist, wirft in beiden Fällen bei der Klassendefinition
+      `NameError` mit Hinweis.
+    - Eine unauflösbare Annotation ohne erkennbaren Marker (etwa ein Typ,
+      der nur unter `TYPE_CHECKING` importiert wird, oder unter PEP 649
+      `Depends[Later] | None` mit einer späteren Klasse) wird nicht
+      injiziert und nicht gemeldet. Die Klassendefinition eines Tasks ohne
+      DI scheitert nie an einer unauflösbaren Annotation. Der Bau der App
+      (`SwarmQ(...)`, auch beim Start von `swarmq worker`) wertet die
+      Annotationen von `run()` weiterhin aus und wirft bei einer
+      unauflösbaren `NameError`, wie bisher.
+- `FromDishka[X] | None` und `Depends[X] | None` ergeben keinen
+  Dependency-Key; der Worker-Start lehnt sie mit `ConfigurationError` ab.
+- Die DI-Prüfung läuft beim Start von `swarmq worker`, im eingebetteten
+  Worker (`SwarmQ.start_worker()`, vor jeder Verbindung) und bei
+  `swarmq worker --check`. `--check` importiert dafür `--module` (dessen
+  Ausgaben gehen nach stderr) und prüft die Tasks, die der Import
+  registriert.
 - `TaskContext` ist eine eingefrorene Dataclass mit `task_id`,
   `task_name`, `queue` und `retry_count` des laufenden Tasks.
 - `SwarmQProvider` ist ein Dishka-Provider, der `TaskContext` im

@@ -76,7 +76,11 @@ async def test_scheduler_on_builds_a_candidate_without_warning(broker, backend, 
 
 async def test_embedded_app_with_scheduler_off_builds_an_observer(broker, backend, scheduler_cls):
     from swarmq.app import SwarmQ
+    from swarmq.task import Task
 
+    # T7 (Plan 2026-10-12-1105): start_worker() prüft DI-Tasks der Registry;
+    # andere Testmodule registrieren DI-Tasks ohne Container global.
+    Task._clear_registered_tasks()
     broker._url = "amqp://localhost"
     backend._url = "valkey://localhost"
     app = SwarmQ(broker, backend, queues=["default"], scheduler="off")

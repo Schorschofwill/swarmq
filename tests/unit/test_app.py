@@ -6,6 +6,7 @@ from typing import override
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from dishka import FromDishka
 
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
@@ -35,6 +36,15 @@ def backend():
     b.set_cancel_flag = AsyncMock(return_value=True)
     b.clear_cancel_flag = AsyncMock()
     return b
+
+
+@pytest.fixture
+def empty_task_registry():
+    """T7 (Plan 2026-10-12-1105, Abschnitt 6): ``start_worker()`` prüft die
+    App-Registry auf DI-Tasks. Andere Testmodule registrieren DI-Tasks ohne
+    Container auf Modulebene; die App wird deshalb aus einer leeren Registry
+    gebaut. Die Wurzel-Fixture stellt die Registry danach wieder her."""
+    Task._clear_registered_tasks()
 
 
 class TestSwarmQInstantiation:
@@ -148,6 +158,7 @@ class TestSwarmQStartWorkerInjectionGuard:
             await app.start_worker()
 
     @pytest.mark.anyio
+    @pytest.mark.usefixtures("empty_task_registry")
     async def test_start_worker_proceeds_for_url_constructed_backends(self):
         broker = RabbitMQBroker("amqp://guest:guest@localhost/")
         backend = ValkeyBackend("valkey://localhost:6379/0")
@@ -380,6 +391,7 @@ class TestSwarmQLogging:
 
 class TestSwarmQStartWorker:
     @pytest.mark.anyio
+    @pytest.mark.usefixtures("empty_task_registry")
     async def test_start_worker_creates_and_starts_worker(self, broker, backend):
         app = SwarmQ(broker, backend)
 
@@ -401,6 +413,63 @@ class TestSwarmQStartWorker:
             assert isinstance(factory(), MiddlewareChain)
             assert call_kwargs["signal_dispatcher"] is app._signal_dispatcher
             mock_instance.start.assert_awaited_once()
+
+
+class _InjectedSvc:
+    pass
+
+
+def _define_di_task() -> type[Task]:
+    """DI-Task in einer frisch geleerten Registry (T7, Plan 2026-10-12-1105)."""
+
+    class EmbeddedDiTask(Task):
+        task_info = TaskInfo(name="embedded_di", queues=["q"])
+
+        @override
+        async def run(self, svc: FromDishka[_InjectedSvc]) -> None:
+            pass
+
+    return EmbeddedDiTask
+
+
+class TestSwarmQStartWorkerDiValidation:
+    """T7: ``start_worker()`` prüft die DI-Tasks der App-Registry, bevor eine
+    Verbindung entsteht."""
+
+    @pytest.mark.anyio
+    @pytest.mark.usefixtures("empty_task_registry")
+    async def test_di_task_without_container_fails_before_worker_and_connect(self, broker, backend):
+        from swarmq import dishka as di
+
+        _define_di_task()
+        di._reset_container()
+        app = SwarmQ(broker, backend)
+
+        with patch("swarmq.app.Worker") as MockWorker, pytest.raises(ConfigurationError, match="embedded_di"):
+            await app.start_worker()
+
+        MockWorker.assert_not_called()
+        broker.connect.assert_not_awaited()
+        backend.connect.assert_not_awaited()
+
+    @pytest.mark.anyio
+    @pytest.mark.usefixtures("empty_task_registry")
+    async def test_di_task_with_resolving_container_starts_worker(self, broker, backend):
+        from dishka import Provider, Scope, make_async_container
+
+        from swarmq import dishka as di
+
+        _define_di_task()
+        provider = Provider(scope=Scope.REQUEST)
+        provider.provide(_InjectedSvc)
+        di.setup_dishka(make_async_container(provider))
+        app = SwarmQ(broker, backend)
+
+        with patch("swarmq.app.Worker") as MockWorker:
+            MockWorker.return_value.start = AsyncMock()
+            await app.start_worker()
+
+        MockWorker.return_value.start.assert_awaited_once()
 
 
 class TestSwarmQMiddlewareAndSignals:

@@ -19,7 +19,7 @@ swarmq worker --module myapp.tasks --pool cpu --queues images
 | `hard_timeout` | asyncio cancel; cannot interrupt a blocked loop | kills the child's process group (SIGTERM, 1 s grace, SIGKILL); the task follows the usual retry/DLQ path |
 | Cancel | asyncio cancel | kills the child; the task ends as cancelled, no retry |
 | Gates, middleware, signals, ack | loop process | loop process — unchanged |
-| `FromDishka[...]` | resolved in the loop | resolved in the child; the container object is built at import time, never resolved in the forkserver |
+| `FromDishka[...]`, `Annotated[X, FromComponent(...)]`, aliases | resolved in the loop | resolved in the child; the container object is built at import time, never resolved in the forkserver. The child imports the task module again, so the annotations must be resolvable at class definition there too (see [dependency injection](../reference/api.md#dependency-injection-dishka)) |
 
 Tasks **without** dependency injection get a fresh child per task — nothing
 survives a task, so no leak ever survives either. Tasks **with**
@@ -61,6 +61,8 @@ emits the `WORKER_RECYCLING` signal.
   (`Retry`, `NoRetry`, `retry_exceptions`) when importable.
 - `FromDishka[X] | None = None` never injected anything; since 0.5.0 the worker
   refuses to start with such an annotation (`ConfigurationError`) in every mode.
+  The same applies to an alias (`Depends[X] | None`), also under
+  `from __future__ import annotations`.
 
 ### Fire-and-forget and an unavailable compute slot
 

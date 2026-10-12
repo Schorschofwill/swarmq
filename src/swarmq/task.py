@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import annotationlib
 import asyncio
 import enum
 import inspect
@@ -473,7 +474,7 @@ def _check_run_signature_reserved_params(cls: type) -> None:
         # Subclass inherits Task.run — no new signature to inspect.
         return
     try:
-        params = inspect.signature(run).parameters
+        params = inspect.signature(run, annotation_format=annotationlib.Format.FORWARDREF).parameters
     except TypeError, ValueError:
         # Builtin / C-implemented run — skip.
         return

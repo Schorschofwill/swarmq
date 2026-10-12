@@ -360,7 +360,9 @@ def _add_worker_parser(subparsers: Any) -> None:
         "--check",
         action="store_true",
         help=(
-            "Dry-run validation mode. Verify --module is importable, "
+            "Dry-run validation mode. Verify --module is importable "
+            "(--check imports --module and validates the dependency "
+            "injection of its tasks like the worker start), "
             "(with --reload) that 'watchfiles' is installed + watch-dirs "
             "resolve, that the --metrics-port/--health-port ranges across "
             "all worker processes stay <= 65535 and do not overlap, the "

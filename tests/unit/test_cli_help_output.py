@@ -110,3 +110,11 @@ def test_worker_help_describes_current_supervisor_reload_and_check_semantics() -
     assert "os.execvp()" not in text
     assert "execvp)" not in text
     assert "os.execvpe()" in text
+
+
+def test_worker_help_check_names_the_task_import_and_di_validation() -> None:
+    """Plan 2026-10-12-1105, T18: ``--check`` importiert das Modul und prüft
+    die Dependency Injection der Tasks wie der Start."""
+    text = " ".join(_capture_help(("worker",)).split())
+
+    assert "imports --module and validates the dependency injection of its tasks" in text

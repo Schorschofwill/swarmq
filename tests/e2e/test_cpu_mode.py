@@ -44,7 +44,7 @@ def _register_fixture_tasks():
     ):
         if cls not in Task._registered_tasks:
             Task._registered_tasks.append(cls)
-    for name in ("CpuDi", "CpuDiLock"):
+    for name in ("CpuDi", "CpuDiLock", "CpuDiComponent"):
         di = getattr(fixture, name, None)
         if di is not None and di not in Task._registered_tasks:
             Task._registered_tasks.append(di)
@@ -243,3 +243,19 @@ async def test_di_child_keeps_one_event_loop_for_loop_bound_app_resources(rabbit
         await _run_burst(app)
     pids = await _results(rabbitmq_url, valkey_url, tids)
     assert len(set(pids)) == 1, pids  # ein Kind, vier Jobs, ein Loop
+
+
+@pytest.mark.usefixtures("_register_fixture_tasks")
+async def test_from_component_under_future_annotations_is_injected_in_the_child(rabbitmq_url, valkey_url):
+    """Plan 2026-10-12-1105, MR 7 Test 13: das Rechenkind importiert das
+    Task-Modul neu; ``Annotated[X, FromComponent()]`` unter PEP 563 wird dort
+    ebenso gewrappt und injiziert."""
+    if not hasattr(fixture, "CpuDiComponent"):
+        pytest.skip("dishka nicht installiert")
+    app = _app(rabbitmq_url, valkey_url, concurrency=1)
+    async with app:
+        await app.broker.declare_queue(_QUEUE)
+        tid = await app.schedule("cpu_di_component")
+        await _run_burst(app)
+    [result] = await _results(rabbitmq_url, valkey_url, [tid])
+    assert result["app_pid"] == result["pid"]

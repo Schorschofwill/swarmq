@@ -973,7 +973,39 @@ setup_dishka(container: dishka.AsyncContainer) -> None
   logs `dishka_container_replaced`.
 - Parameters of `run`, `pre_execution` and `post_execution` annotated
   with `FromDishka[...]` (from `dishka`) are injected from a REQUEST
-  scope the worker opens per task.
+  scope the worker opens per task. The same holds for
+  `Annotated[X, FromComponent("c")]` (a named component) and for aliases
+  such as `Depends = FromDishka`, with or without
+  `from __future__ import annotations`.
+- Every annotation of such a method must be resolvable when the task
+  class is defined, including the parameters that are not injected:
+  define or import the types before the class, not only under
+  `TYPE_CHECKING` and not as a forward reference to a later class.
+  Otherwise the method is not injected, and SwarmQ reports it:
+    - With `from __future__ import annotations` (PEP 563) the worker
+      start fails with `ConfigurationError` (exit 78). The message names
+      the task, the injected parameter and, if one is still unresolvable,
+      that parameter.
+    - Without it (PEP 649, Python 3.14) the class definition raises
+      `NameError` with a hint.
+    - An annotation that names `FromDishka` in its text but does not
+      resolve raises `NameError` with a hint at class definition in both
+      modes.
+    - An annotation that is unresolvable and shows no recognisable marker
+      (for example a type imported only under `TYPE_CHECKING`, or under
+      PEP 649 `Depends[Later] | None` with a later class) is not injected
+      and not reported. The class definition of a task without DI never
+      fails on an unresolvable annotation. Building the app
+      (`SwarmQ(...)`, also at `swarmq worker` start) still evaluates the
+      annotations of `run()` and raises `NameError` for an unresolvable
+      one, as before.
+- `FromDishka[X] | None` and `Depends[X] | None` derive no dependency
+  key; the worker start rejects them with `ConfigurationError`.
+- The DI check runs at `swarmq worker` start, in an embedded worker
+  (`SwarmQ.start_worker()`, before any connection) and in
+  `swarmq worker --check`. `--check` imports `--module` for this (its
+  output goes to stderr) and checks the tasks that the import
+  registers.
 - `TaskContext` is a frozen dataclass with `task_id`, `task_name`,
   `queue` and `retry_count` for the running task.
 - `SwarmQProvider` is a Dishka provider that makes `TaskContext`

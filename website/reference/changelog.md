@@ -50,6 +50,16 @@ All notable changes to SwarmQ. This project follows
 
 ### Changed
 
+- **Under `from __future__ import annotations`, a DI method that uses an
+  alias of `FromDishka` or `FromComponent` but cannot be resolved at
+  class definition now fails the worker start with
+  `ConfigurationError` (exit `78`); it used to run silently without
+  injection.** This covers a forward reference to a later class and an
+  unresolvable non-DI parameter next to it; the message names the task,
+  the parameter and the unresolvable one. `Depends[X] | None` (an alias,
+  optional) is now rejected like `FromDishka[X] | None`
+  ([dependency injection](api.md#dependency-injection-dishka)).
+
 - **`raise Retry(...)` now retries even when the task sets
   `retry_exceptions` without listing `Retry`; it used to go straight to
   the DLQ.** `Retry` still counts against `max_retries`; with
@@ -73,6 +83,18 @@ All notable changes to SwarmQ. This project follows
   exchange ([dead-letter queues](../guides/dead-letter-queues.md)).
 
 ### Fixed
+
+- **`Annotated[X, FromComponent(...)]` and aliases of `FromDishka` are
+  injected under `from __future__ import annotations`; they were
+  silently skipped.** The DI check also runs in embedded workers
+  (`SwarmQ.start_worker()`, before any connection) and in
+  `swarmq worker --check`, which now imports `--module` for it and checks
+  the tasks that import registers
+  ([dependency injection](api.md#dependency-injection-dishka)).
+- **On Python 3.14 a task without DI no longer fails at class definition
+  because of an unresolvable annotation** (without
+  `from __future__ import annotations`); a lock template with
+  placeholders renders for such a task too.
 
 - **`task_sent_to_dlq` is no longer logged when the dead-letter publish
   failed and the message was redelivered; `dlq_publish_failed` reports
@@ -126,6 +148,24 @@ All notable changes to SwarmQ. This project follows
   generates itself (hard timeout, drain, lost compute child, child
   without error detail). In CPU mode it names the class reported by the
   child, even if the parent could not load it.
+
+- **DI annotations that resolve neither at class definition nor at
+  worker start, without a recognisable marker** (for example a type
+  imported only under `TYPE_CHECKING`, or under PEP 649
+  `Depends[Later] | None`) are not injected and not reported; that is
+  the price of never failing the class definition of a task without DI.
+  `FromDishka` in the annotation text still raises `NameError` with a
+  hint.
+- **PEP 563 and PEP 649 report an unresolvable DI method differently:**
+  `ConfigurationError` at worker start with the future import,
+  `NameError` at class definition without it. Both keep the behaviour of
+  0.12.
+- **`swarmq worker --check` checks only the tasks that importing
+  `--module` registers.**
+- **Building the app still evaluates the annotations of `run()`.** A
+  task whose `run()` annotations do not resolve when `SwarmQ(...)` is
+  built fails there with `NameError`, with or without the future import,
+  as before.
 
 ## [0.12.0rc1] — 2026-10-11
 

@@ -504,6 +504,35 @@ def test_task_subclass_with_non_reserved_params_still_registers():
     assert OkTask in Task._registered_tasks
 
 
+def test_task_subclass_with_unresolvable_annotation_registers_on_pep649():
+    """E9 (Plan 2026-10-12-1105, N1): ohne Future-Import (PEP 649) scheitert
+    ein Task ohne DI nicht an einem unauflösbaren Namen in run()."""
+    Task._clear_registered_tasks()
+
+    class LazyTask(Task):
+        task_info = TaskInfo(name="lazy", queues=["q"])
+
+        @override
+        async def run(self, x: Undefined) -> None:  # type: ignore[name-defined]  # noqa: F821 - absichtlich unauflösbar
+            pass
+
+    assert LazyTask in Task._registered_tasks
+
+
+def test_task_subclass_reserved_param_detected_next_to_unresolvable_annotation():
+    """E9: der Check auf reservierte Namen greift weiter, auch wenn eine
+    andere Annotation unauflösbar ist."""
+    Task._clear_registered_tasks()
+    with pytest.raises(ValueError, match="delay"):
+
+        class BadTask(Task):
+            task_info = TaskInfo(name="bad", queues=["q"])
+
+            @override
+            async def run(self, x: Undefined, delay: int) -> None:  # type: ignore[name-defined]  # noqa: F821 - absichtlich unauflösbar
+                pass
+
+
 def test_task_subclass_without_run_method_allowed():
     """A subclass without its own run() inherits the base — no signature
     to inspect, no conflict possible."""

@@ -138,16 +138,18 @@ options:
                         flag, the parent directory of --module's resolved
                         source file is used. Ignored without --reload (a
                         WARNING is logged).
-  --check               Dry-run validation mode. Verify --module is
-                        importable, (with --reload) that 'watchfiles' is
-                        installed + watch-dirs resolve, that the --metrics-
-                        port/--health-port ranges across all worker processes
-                        stay <= 65535 and do not overlap, the logging settings
-                        and --log-config (dictConfig probe), pool constraints
-                        (--pool cpu with --autoscale) and the --max-processes
-                        headroom. Prints a JSON summary to stdout, exits 0 on
-                        success or 1 on any validation error. Does NOT connect
-                        to broker or backend.
+  --check               Dry-run validation mode. Verify --module is importable
+                        (--check imports --module and validates the dependency
+                        injection of its tasks like the worker start), (with
+                        --reload) that 'watchfiles' is installed + watch-dirs
+                        resolve, that the --metrics-port/--health-port ranges
+                        across all worker processes stay <= 65535 and do not
+                        overlap, the logging settings and --log-config
+                        (dictConfig probe), pool constraints (--pool cpu with
+                        --autoscale) and the --max-processes headroom. Prints
+                        a JSON summary to stdout, exits 0 on success or 1 on
+                        any validation error. Does NOT connect to broker or
+                        backend.
   --burst-idle-timeout SECONDS
                         Seconds of queue silence required before --burst exits
                         (default: 5.0). The idle clock starts at worker-ready

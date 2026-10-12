@@ -249,6 +249,25 @@ class TestConfigErrorExitCode:
         entry = next(e for e in events if e["event"] == "worker_config_error")
         assert "pandas" in entry["error"]
 
+    def test_unwrapped_di_method_in_the_child_exits_with_config_code(self, monkeypatch):
+        """Plan 2026-10-12-1105, MR 7 Test 14: die Startprüfung T6 (DI-Key, der
+        bei der Klassendefinition nicht auflösbar war) endet im Kind mit Exit 78."""
+        import pathlib
+
+        from swarmq import dishka as di
+        from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
+        modules = pathlib.Path(__file__).parents[1] / "fixtures" / "dishka_modules"
+        monkeypatch.syspath_prepend(str(modules))
+        di._reset_container()
+        events = _capture_entry_logs(monkeypatch)
+        shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
+        with pytest.raises(SystemExit) as exc_info:
+            worker_subprocess_entry(0, shutdown_event, _make_test_cfg(module="dimod_pep563_forward_ref"))
+        assert exc_info.value.code == CONFIG_ERROR_EXIT_CODE
+        entry = next(e for e in events if e["event"] == "worker_config_error")
+        assert "not resolvable at class definition" in entry["error"]
+
     def test_config_error_carries_error_type_like_the_supervisor(self, monkeypatch, swarmq_logs):
         """R17: Fehler erscheinen als ``error_type`` + ``error`` -- die
         Kind-Variante von ``worker_config_error`` muss dieselben Felder

@@ -37,6 +37,7 @@ Zweigen folgenlos). Siehe Plan-Fortschrittsprotokoll U19.
 
 from __future__ import annotations
 
+import annotationlib
 import asyncio
 import hashlib
 import inspect
@@ -152,7 +153,9 @@ def render_lock_name(lock_template: str, task_class: type[Any], args: list[Any],
     if "{" not in lock_template:
         return lock_template
     try:
-        bound = inspect.signature(task_class.run).bind(None, *args, **kwargs).arguments
+        # E9: FORWARDREF, sonst wirft ein unaufloesbarer Name unter PEP 649.
+        sig = inspect.signature(task_class.run, annotation_format=annotationlib.Format.FORWARDREF)
+        bound = sig.bind(None, *args, **kwargs).arguments
         # Drop the first parameter ('self') so {self} placeholders
         # don't accidentally pull in the bound None.
         bound.pop("self", None)

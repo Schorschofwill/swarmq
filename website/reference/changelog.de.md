@@ -53,6 +53,17 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ### Geändert
 
+- **Unter `from __future__ import annotations` lässt eine DI-Methode,
+  die einen Alias von `FromDishka` oder `FromComponent` nutzt, aber bei
+  der Klassendefinition nicht auflösbar ist, den Worker-Start jetzt mit
+  `ConfigurationError` (Exit `78`) scheitern; bisher lief sie still
+  ohne Injektion.** Das betrifft einen Vorwärtsverweis auf eine spätere
+  Klasse und einen unauflösbaren Nicht-DI-Parameter daneben; die Meldung
+  nennt Task, Parameter und den unauflösbaren Parameter.
+  `Depends[X] | None` (Alias, optional) wird jetzt wie
+  `FromDishka[X] | None` abgelehnt
+  ([Dependency Injection](api.md#dependency-injection-dishka)).
+
 - **`raise Retry(...)` wiederholt jetzt auch, wenn der Task
   `retry_exceptions` setzt, ohne `Retry` zu nennen; bisher ging die
   Nachricht direkt in die DLQ.** `Retry` zählt weiter gegen
@@ -78,6 +89,18 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   Brokers ([Dead-Letter-Queues](../guides/dead-letter-queues.md)).
 
 ### Behoben
+
+- **`Annotated[X, FromComponent(...)]` und Aliase von `FromDishka`
+  werden unter `from __future__ import annotations` injiziert; bisher
+  wurden sie still übergangen.** Die DI-Prüfung läuft auch im
+  eingebetteten Worker (`SwarmQ.start_worker()`, vor jeder Verbindung)
+  und bei `swarmq worker --check`, das dafür jetzt `--module` importiert
+  und die Tasks prüft, die der Import registriert
+  ([Dependency Injection](api.md#dependency-injection-dishka)).
+- **Unter Python 3.14 scheitert ein Task ohne DI nicht mehr bei der
+  Klassendefinition an einer unauflösbaren Annotation** (ohne
+  `from __future__ import annotations`); ein Lock-Template mit
+  Platzhaltern wird für einen solchen Task ebenfalls gerendert.
 
 - **`task_sent_to_dlq` erscheint nicht mehr, wenn der Dead-Letter-Publish
   scheiterte und die Nachricht neu zugestellt wurde; diesen Fall meldet
@@ -136,6 +159,24 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   Rechenkind, Kind ohne Fehlerdetail). Im CPU-Modus steht dort die
   Klasse, die das Kind meldet, auch wenn der Elternprozess sie nicht
   laden konnte.
+
+- **DI-Annotationen, die weder bei der Klassendefinition noch beim
+  Worker-Start auflösbar sind und keinen erkennbaren Marker zeigen**
+  (etwa ein Typ, der nur unter `TYPE_CHECKING` importiert wird, oder
+  unter PEP 649 `Depends[Later] | None`), werden nicht injiziert und
+  nicht gemeldet; das ist der Preis dafür, dass die Klassendefinition
+  eines Tasks ohne DI nie scheitert. `FromDishka` im Annotationstext
+  wirft weiter `NameError` mit Hinweis.
+- **PEP 563 und PEP 649 melden eine unauflösbare DI-Methode
+  verschieden:** mit Future-Import `ConfigurationError` beim
+  Worker-Start, ohne `NameError` bei der Klassendefinition. Beides
+  erhält das Verhalten von 0.12.
+- **`swarmq worker --check` prüft nur die Tasks, die der Import von
+  `--module` registriert.**
+- **Der Bau der App wertet die Annotationen von `run()` weiter aus.**
+  Ein Task, dessen `run()`-Annotationen beim Bau von `SwarmQ(...)` nicht
+  auflösbar sind, scheitert dort mit `NameError`, mit und ohne
+  Future-Import, wie bisher.
 
 ## [0.12.0rc1] — 2026-10-11
 
