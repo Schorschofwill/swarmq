@@ -15,7 +15,7 @@ import msgspec
 
 from swarmq.cancellation import build_error_result_dict
 from swarmq.config import resolve_result_ttl
-from swarmq.exceptions import BackendConnectionError
+from swarmq.exceptions import BackendConnectionError, UnroutableMessage
 from swarmq.logging import _error_fields
 from swarmq.serialization import encode_result
 from swarmq.signals import Signal
@@ -213,6 +213,8 @@ class SchedulerUnroutable:
                     f"dropped by the scheduler: queue {definition.queue!r} stayed unroutable "
                     f"for {self._config.scheduler_unroutable_oneshot_max_s:g}s (no queue with this name)"
                 ),
+                # P9 (E7 A): die oeffentliche swarmq-Klasse dieses Pfads.
+                error_class=f"{UnroutableMessage.__module__}.{UnroutableMessage.__qualname__}",
             )
         )
         try:

@@ -25,6 +25,7 @@ from swarmq.logging_settings import LoggingSettings
 from swarmq.task import DeliveryMode
 from swarmq.worker.compute.envelope import ComputeJob, ResultEnvelope
 from swarmq.worker.compute.pool import ChildDied, SlotPool, SlotUnavailable
+from swarmq.worker.error_info import mark_worker_error
 from swarmq.worker.execution import ExecutionResult, TaskExecutor
 from swarmq.worker.gates import GateContext, GateDeps
 
@@ -211,17 +212,18 @@ class ComputeExecutor(TaskExecutor):
                     if cancel_reason[0] == CANCEL_REASON_TIMEOUT
                     else "compute child cancelled during worker drain"
                 )
-                fail(RuntimeError(msg), msg)
+                # Vom Worker erzeugt: keine ``error_class`` (T12).
+                fail(mark_worker_error(RuntimeError(msg)), msg)
             return
         except SlotUnavailable as exc:
             result.slot_unavailable = True
-            fail(exc, str(exc))
+            fail(mark_worker_error(exc), str(exc))
             return
         except ChildDied as exc:
-            fail(exc, str(exc))
+            fail(mark_worker_error(exc), str(exc))
             return
         except Exception as exc:  # noqa: BLE001 - Pool-Fehler duerfen die Pipeline nicht verlassen
-            fail(exc, f"compute pool failure: {exc}")
+            fail(mark_worker_error(exc), f"compute pool failure: {exc}")
             return
         self._apply_envelope(envelope, result, fail)
 

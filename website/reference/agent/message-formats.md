@@ -82,9 +82,21 @@ the resolved `result_ttl`.
   "task": {"id": "01HV...", "name": "send_email", "queue": "emails"},
   "is_error": false,
   "is_cancelled": false,
-  "result": "sent to alice@example.com",
-  "error_message": null,
-  "error_class": null
+  "error_message": "",
+  "result": "sent to alice@example.com"
+}
+```
+
+An error result additionally carries `error_class`:
+
+```jsonc
+{
+  "task": {"id": "01HV...", "name": "send_email", "queue": "emails"},
+  "is_error": true,
+  "is_cancelled": false,
+  "error_message": "",
+  "result": null,
+  "error_class": "builtins.ValueError"
 }
 ```
 
@@ -96,15 +108,16 @@ the resolved `result_ttl`.
 | `is_error` | `bool` | `true` when the task raised an uncaught exception on its final attempt. |
 | `is_cancelled` | `bool` | `true` when the task was cancelled via `Client.cancel`. |
 | `result` | `any` | Present when `is_error=false` and `is_cancelled=false`. msgpack-native types. |
-| `error_message` | `string \| null` | `str(exc)` from the failing attempt; present when `is_error=true`. |
-| `error_class` | `string \| null` | Fully-qualified class name of the exception. Advisory — not guaranteed to survive wire encoding on future versions. |
+| `error_message` | `string` | Always present. `str(exc)` from the failing attempt when `is_error=true`, otherwise `""`. An exception without text gives `""` as well; `error_class` then still names the class. |
+| `error_class` | `string` (optional) | Only on error results, and only when a class is known: the fully-qualified class of the exception as `module.qualname` (built-ins as `builtins.ValueError`). In CPU mode it is the class reported by the compute child, even if the parent could not load it. Paths that end in the worker without a task exception name the public swarmq class where one exists (`swarmq.exceptions.TaskNotFoundError`, `LockWaitExceeded`, `RedeliveryLimitError`, `UnroutableMessage`, `ResultSerializationError`). Otherwise the key is **missing** (never `null`): results of older workers, expiry by `max_age`, `WorkerHungError`, and failures the worker generates itself (hard timeout, drain, lost compute child, child without error detail). Advisory: use it to tell failures apart, not as a stable API. |
 
 ### Decoding priority
 
 When consuming a result, evaluate in this order:
 
 1. `is_cancelled` → raise `TaskCancelledError`.
-2. `is_error` → raise `TaskError(error_message)`.
+2. `is_error` → raise `TaskError(error_message)`; `TaskError.error_class`
+   carries `error_class` (`None` when the key is missing).
 3. Otherwise → return `result`.
 
 ## Progress update (Valkey)

@@ -251,7 +251,22 @@ use) its retry budget.
 
 **Cause.** Any exception your `run()` method let escape. The original
 exception class is lost across the wire; the error message contains
-the string the worker stored.
+the string the worker stored (`""` for an exception without text).
+`error_class` names the class (advisory): `module.qualname`, e.g.
+`builtins.ValueError`; in CPU mode the class reported by the compute
+child. It is `None` for results of older workers and for failures the
+worker generates itself (hard timeout, drain, lost compute child,
+expiry).
+
+```python
+from swarmq import TaskError
+
+try:
+    result = await app.get_result(task_id, timeout=60)
+except TaskError as exc:
+    if exc.error_class == "builtins.ValueError":
+        ...  # bad input, do not resubmit unchanged
+```
 
 **Recovery.** Read the worker logs — they carry the full traceback.
 Then fix your task body, or widen your `retry_exceptions` so the

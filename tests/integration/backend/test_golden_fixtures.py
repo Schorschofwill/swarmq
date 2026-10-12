@@ -52,6 +52,14 @@ def test_result_envelope_is_byte_identical_and_decodes_to_fixed_input() -> None:
     assert decode_result(fixture) == g.golden_result_dict()
 
 
+def test_error_result_envelope_is_byte_identical_and_decodes_to_fixed_input() -> None:
+    """P9 (Plan 2026-10-12-1105, MR 3, additiv): Form des Fehlerergebnisses
+    samt ``error_class``; ``result.msgpack`` bleibt unveraendert."""
+    fixture = (g.GOLDEN_DIR / "values" / "error_result.msgpack").read_bytes()
+    assert g.value_fixtures()["error_result.msgpack"] == fixture
+    assert decode_result(fixture) == g.golden_error_result_dict()
+
+
 def test_workflow_state_is_field_equal() -> None:
     fixture = (g.GOLDEN_DIR / "values" / "workflow_state.json").read_bytes()
     assert g.value_fixtures()["workflow_state.json"] == fixture

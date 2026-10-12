@@ -242,7 +242,7 @@ _ERROR_SEMANTICS: dict[str, dict[str, Any]] = {
         "retriable": "n/a",
         "dlq_on_uncaught": "n/a",
         "exit_code_on_cli": None,
-        "transport_field": "error_message, is_error=true",
+        "transport_field": "error_message, error_class, is_error=true",
     },
     "TaskCancelledError": {
         "origin": "library",
@@ -597,6 +597,7 @@ class _TaskResult(msgspec.Struct, forbid_unknown_fields=True):
     is_cancelled: bool
     error_message: str
     result: Any
+    error_class: str | None = None  # P9: nur auf Fehlerergebnissen, sonst fehlend
 
 
 _MESSAGE_SCHEMAS: dict[str, Callable[[], dict[str, Any]]] = {

@@ -11,6 +11,8 @@ Test-Liste:
 - [x] gespeichertes Fehlerergebnis -> Markierung
 - [x] kein Ergebnis -> Markierung
 - [x] Lesen des Ergebnisses scheitert -> Markierung (wie bisher)
+- [x] P9 (Plan 2026-10-12-1105, MR 3, T13): ``error_class`` geht nur mit Wert
+      als Keyword an ``fail``; ohne Wert bleibt der Aufruf wie bisher
 """
 
 from __future__ import annotations
@@ -93,3 +95,23 @@ async def test_step_without_a_success_result_fails_its_workflow(stored: object) 
     assert await _fail(_deps(stored), advancer) is True
 
     advancer.fail.assert_awaited_once_with(_WF_ID, "TaskError", "task expired")
+
+
+async def test_error_class_reaches_fail_as_keyword_only_with_a_value() -> None:
+    from swarmq.logging import get_logger
+
+    advancer = MagicMock(fail=AsyncMock())
+    ctx = GateContext(task_id="step-1", task_name="t", queue="default")
+
+    await fail_workflow_step(
+        _deps(None),
+        advancer,
+        MagicMock(headers={}),
+        ctx,
+        "",
+        redeliver=True,
+        log=get_logger("swarmq.worker.retry"),
+        error_class="builtins.ValueError",
+    )
+
+    advancer.fail.assert_awaited_once_with(_WF_ID, "TaskError", "", error_class="builtins.ValueError")

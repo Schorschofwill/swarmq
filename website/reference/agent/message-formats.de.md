@@ -82,9 +82,21 @@ gleich dem aufgelösten `result_ttl`.
   "task": {"id": "01HV...", "name": "send_email", "queue": "emails"},
   "is_error": false,
   "is_cancelled": false,
-  "result": "sent to alice@example.com",
-  "error_message": null,
-  "error_class": null
+  "error_message": "",
+  "result": "sent to alice@example.com"
+}
+```
+
+Ein Fehlerergebnis trägt zusätzlich `error_class`:
+
+```jsonc
+{
+  "task": {"id": "01HV...", "name": "send_email", "queue": "emails"},
+  "is_error": true,
+  "is_cancelled": false,
+  "error_message": "",
+  "result": null,
+  "error_class": "builtins.ValueError"
 }
 ```
 
@@ -96,15 +108,16 @@ gleich dem aufgelösten `result_ttl`.
 | `is_error` | `bool` | `true`, wenn der Task beim letzten Versuch eine uncaught Exception raiste. |
 | `is_cancelled` | `bool` | `true`, wenn der Task via `Client.cancel` abgebrochen wurde. |
 | `result` | `any` | Vorhanden, wenn `is_error=false` und `is_cancelled=false`. msgpack-native Typen. |
-| `error_message` | `string \| null` | `str(exc)` vom scheiternden Versuch; vorhanden, wenn `is_error=true`. |
-| `error_class` | `string \| null` | Voll qualifizierter Klassenname der Exception. Beratend — nicht garantiert Wire-Encoding zukünftiger Versionen zu überleben. |
+| `error_message` | `string` | Immer vorhanden. Bei `is_error=true` `str(exc)` vom scheiternden Versuch, sonst `""`. Eine Exception ohne Text ergibt ebenfalls `""`; `error_class` nennt dann trotzdem die Klasse. |
+| `error_class` | `string` (optional) | Nur auf Fehlerergebnissen und nur, wenn eine Klasse bekannt ist: die voll qualifizierte Klasse der Exception als `modul.qualname` (eingebaute als `builtins.ValueError`). Im CPU-Modus die Klasse, die das Rechenkind meldet, auch wenn der Elternprozess sie nicht laden konnte. Pfade, die im Worker ohne Task-Exception enden, nennen die öffentliche swarmq-Klasse, wo es eine gibt (`swarmq.exceptions.TaskNotFoundError`, `LockWaitExceeded`, `RedeliveryLimitError`, `UnroutableMessage`, `ResultSerializationError`). Sonst **fehlt** der Schlüssel (nie `null`): Ergebnisse älterer Worker, Ablauf durch `max_age`, `WorkerHungError` und Fehler, die der Worker selbst erzeugt (harter Timeout, Drain, verlorenes Rechenkind, Kind ohne Fehlerdetail). Beratend: zum Unterscheiden von Fehlern, nicht als stabile API. |
 
 ### Dekodierungs-Priorität
 
 Beim Konsum eines Ergebnisses in dieser Reihenfolge auswerten:
 
 1. `is_cancelled` → `TaskCancelledError` raisen.
-2. `is_error` → `TaskError(error_message)` raisen.
+2. `is_error` → `TaskError(error_message)` raisen; `TaskError.error_class`
+   trägt `error_class` (`None`, wenn der Schlüssel fehlt).
 3. Sonst → `result` zurückgeben.
 
 ## Progress-Update (Valkey)

@@ -37,7 +37,7 @@ Jede Zeile hat die folgenden Spalten:
 | `swarmq.exceptions.TaskNotFoundError` | `SwarmQError` | library | schedule | no | n/a | n/a | raised to caller |
 | `swarmq.exceptions.LockWaitExceeded` | `SwarmQError` | library | run | no | yes | n/a | `error_message`, `is_error=true` |
 | `swarmq.exceptions.RedeliveryLimitError` | `SwarmQError` | library | run | no | yes | n/a | `error_message`, `is_error=true` |
-| `swarmq.exceptions.TaskError` | `SwarmQError` | library | result | n/a (post-mortem) | n/a | n/a | `error_message`, `is_error=true` |
+| `swarmq.exceptions.TaskError` | `SwarmQError` | library | result | n/a (post-mortem) | n/a | n/a | `error_message`, `error_class`, `is_error=true` |
 | `swarmq.exceptions.TaskCancelledError` | `TaskError` | library | run, result | no | no (Cancel umgeht DLQ) | n/a | `is_cancelled=true` |
 | `swarmq.exceptions.ResultNotReadyError` | `SwarmQError` | library | result | no | n/a | n/a | raised to caller |
 | `swarmq.exceptions.ResultExpiredError` | `SwarmQError` | library | result | no | n/a | n/a | raised to caller |
@@ -86,9 +86,12 @@ Beim Bau eines Konsumenten für SwarmQ-Events:
    Control-Flow-Signale aus Task-Code — der Worker verlässt sich
    darauf, dass sie entkommen.
 4. **`TaskError` verliert die Original-Klasse.** Wenn sie
-   `get_result()` erreicht, ist die raisende Klasse nur als
-   String in `error_message` verfügbar (plus beratend
-   `error_class`).
+   `get_result()` erreicht, ist die raisende Klasse nur als Name
+   verfügbar: beratend in `TaskError.error_class` (aus
+   `error_class` des Ergebnisses, z. B. `builtins.ValueError`),
+   neben dem Text in `error_message`. Bei Ergebnissen älterer
+   Worker und bei Fehlern, die der Worker selbst erzeugt (harter
+   Timeout, Drain, verlorenes Rechenkind, Ablauf), ist es `None`.
 5. **`ResultSerializationError` ist ein Programmiererfehler.** Er
    bedeutet, der Task-Body gab etwas zurück, das msgpack nicht
    kodieren kann. Fixe den Task, retry ihn nicht.
@@ -108,7 +111,7 @@ Für Agenten, die eine schnelle Aktionstabelle brauchen:
 | `BackendResponseError` | Valkey hat mit einem Fehler geantwortet (`WRONGTYPE`, Skriptfehler); Warten hilft nicht. Schlüssel oder Skript prüfen, dann erneut versuchen. |
 | `ConfigurationError` | Nicht retry'n. Config fixen und neustarten. |
 | `TaskNotFoundError` bei `schedule()` | Bug melden; der Task ist nicht registriert. |
-| `TaskError` bei `get_result()` | Nach `error_message` klassifizieren. Retry hilft je nach Upstream-Ursache. |
+| `TaskError` bei `get_result()` | Nach `TaskError.error_class` (beratend) klassifizieren, sonst nach `error_message`. Retry hilft je nach Upstream-Ursache. |
 | `TaskCancelledError` bei `get_result()` | User/Operator hat abgebrochen. Nicht retry'n, außer du weißt, dass der Cancel versehentlich war. |
 | `ResultNotReadyError` bei `get_result()` | Timeout erhöhen oder der Task hängt wirklich. Worker-Logs / DLQ prüfen. |
 | CLI-Exit `3` | Task nicht in DLQ. Nachricht wurde bereits retry't, gepurged oder ist nie gescheitert. |

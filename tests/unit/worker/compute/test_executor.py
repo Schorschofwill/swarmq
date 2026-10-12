@@ -1,4 +1,12 @@
-"""Tests fuer swarmq.worker.compute.executor gegen einen gefaelschten Pool (U6)."""
+"""Tests fuer swarmq.worker.compute.executor gegen einen gefaelschten Pool (U6).
+
+Test-Liste P9 (Plan 2026-10-12-1105, MR 3, T12) -- ``error_class``:
+
+- Vom Worker erzeugte Fehler haben keine Klasse: harter Timeout und
+  Drain-Abbruch; ``ChildDied``, ``SlotUnavailable`` und sonstiger Pool-Fehler.
+- Envelope mit ``remote_exception`` (nicht rekonstruierbar) -> ``remote_type``;
+  rekonstruierbare Exception -> deren Klasse; ohne Detail -> keine Klasse.
+"""
 
 from __future__ import annotations
 
@@ -12,9 +20,10 @@ from swarmq.config import SwarmQConfig
 from swarmq.exceptions import NoRetry, SoftTimeoutError
 from swarmq.middleware import MiddlewareChain
 from swarmq.task import DeliveryMode, Task, TaskInfo
-from swarmq.worker.compute.envelope import error_envelope, success_envelope
+from swarmq.worker.compute.envelope import RemoteExceptionInfo, ResultEnvelope, error_envelope, success_envelope
 from swarmq.worker.compute.executor import ComputeExecutor
 from swarmq.worker.compute.pool import ChildDied, SlotUnavailable
+from swarmq.worker.error_info import error_class_of
 from swarmq.worker.gates import GateContext, GateDeps
 from tests.unit.worker._helpers import partial_message
 
@@ -444,3 +453,86 @@ async def test_compute_pool_failed_carries_error_fields_and_the_pid_of_the_child
     [failed] = [e for e in _lifecycle(swarmq_logs) if e["event"] == "task_failed"]
     assert (failed["log_level"], failed["error_type"], failed["error"]) == ("info", "ValueError", "boom")
     assert failed["compute_child"] == 4242
+
+
+class _SignallingPool(FakePool):
+    """Haengt wie ``"hang"`` und meldet den Start des Laufs per Event."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.behaviour = "hang"
+        self.running = asyncio.Event()
+
+    @override
+    async def run(self, job, *, use_di):
+        self.running.set()
+        return await super().run(job, use_di=use_di)
+
+
+@pytest.mark.timeout(5)
+async def test_hard_timeout_and_drain_errors_have_no_error_class():
+    pool = _SignallingPool()
+    ex = ComputeExecutor(_deps(), pool, worker_id="w1")  # type: ignore[arg-type]  # Fake-Pool
+    timed_out = await ex.execute(_ctx(hard_timeout=0.05), partial_message(retry_count=0), MiddlewareChain([]))
+    pool.running.clear()
+    handler = asyncio.create_task(ex.execute(_ctx(), partial_message(retry_count=0), MiddlewareChain([])))
+    await pool.running.wait()
+    handler.cancel()
+    drained = await handler
+    assert "drain" in drained.error_message
+    assert timed_out.task_exception is not None
+    assert drained.task_exception is not None
+    assert error_class_of(timed_out.task_exception) is None
+    assert error_class_of(drained.task_exception) is None
+
+
+@pytest.mark.timeout(5)
+@pytest.mark.parametrize(
+    "failure",
+    [ChildDied("pid 7 exited without result"), SlotUnavailable("no ready"), OSError("pipe broken")],
+    ids=["child_died", "slot_unavailable", "pool_failure"],
+)
+async def test_pool_failures_have_no_error_class(setup, failure):
+    _, pool, ex = setup
+    pool.behaviour = failure
+    res = await ex.execute(_ctx(), partial_message(retry_count=0), MiddlewareChain([]))
+    assert res.is_error
+    assert res.task_exception is not None
+    assert error_class_of(res.task_exception) is None
+
+
+@pytest.mark.timeout(5)
+@pytest.mark.parametrize(
+    ("envelope", "expected"),
+    [
+        (
+            ResultEnvelope(
+                task_id="t1",
+                ok=False,
+                remote_exception=RemoteExceptionInfo(
+                    module="child_only_mod", qualname="Boom", message="boom", traceback_text=""
+                ),
+            ),
+            "child_only_mod.Boom",
+        ),
+        (
+            ResultEnvelope(
+                task_id="t1",
+                ok=False,
+                remote_exception=RemoteExceptionInfo(
+                    module="builtins", qualname="KeyError", message="k", traceback_text=""
+                ),
+            ),
+            "builtins.KeyError",
+        ),
+        (ResultEnvelope(task_id="t1", ok=False), None),
+    ],
+    ids=["not_reconstructible", "reconstructible", "no_detail"],
+)
+async def test_error_class_of_compute_envelopes(setup, envelope, expected):
+    _, pool, ex = setup
+    pool.behaviour = envelope
+    res = await ex.execute(_ctx(), partial_message(retry_count=0), MiddlewareChain([]))
+    assert res.is_error
+    assert res.task_exception is not None
+    assert error_class_of(res.task_exception) == expected

@@ -97,10 +97,11 @@ class WorkflowFailure:
         await self._persist(wf_id, state)
         await self._backend.notify_workflow(wf_id)
 
-    async def fail(self, wf_id: str, error_type: str, error_message: str) -> None:
+    async def fail(self, wf_id: str, error_type: str, error_message: str, *, error_class: str | None = None) -> None:
         """Mark the workflow failed and wake any ``get()`` waiter (R16
         fail-fast + liveness). Idempotent: a no-op once terminal. Used by the
-        FAF runtime guard (U5) and the worker terminal-failure seam (U6)."""
+        FAF runtime guard (U5) and the worker terminal-failure seam (U6).
+        ``error_class`` (P9, T13) is stored as ``error.class`` only when given."""
         raw = await self._backend.get_workflow_state(wf_id)
         if raw is None:
             # BZ-13: abgelaufen oder aufgeraeumt -- nicht still enden.
@@ -110,7 +111,10 @@ class WorkflowFailure:
         if state["status"] != STATUS_RUNNING:
             return
         state["status"] = STATUS_FAILED
-        state["error"] = {"type": error_type, "message": error_message}
+        error: dict[str, str] = {"type": error_type, "message": error_message}
+        if error_class is not None:
+            error["class"] = error_class
+        state["error"] = error
         try:
             await self._persist(wf_id, state)
         except _StaleWorkflowState:

@@ -29,6 +29,7 @@ async def fail_workflow_step(
     *,
     redeliver: bool,
     log: Any,
+    error_class: str | None = None,
 ) -> bool:
     """Markiert den Workflow der Zustellung als fehlgeschlagen.
 
@@ -37,7 +38,9 @@ async def fail_workflow_step(
     ``False``: die Markierung scheiterte voruebergehend (Backend weg,
     verlorene CAS-Runden) und *redeliver* war gesetzt -- die Zustellung ist
     per ``redeliver`` zurueckgegeben, der Aufrufer endet nicht-terminal. Das
-    Zustelllimit begrenzt die Schleife."""
+    Zustelllimit begrenzt die Schleife.
+
+    *error_class* (P9, T13) geht nur mit Wert als Keyword an ``fail``."""
     wf_id = deps.extract_valid_workflow_id(delivery)
     if wf_id is None:
         headers: dict[str, Any] = delivery.headers or {}
@@ -52,7 +55,10 @@ async def fail_workflow_step(
         log.info("workflow_fail_skipped_step_done", workflow_id=wf_id, task_id=ctx.task_id)
         return True
     try:
-        await advancer.fail(wf_id, "TaskError", error_message)
+        if error_class is None:
+            await advancer.fail(wf_id, "TaskError", error_message)
+        else:
+            await advancer.fail(wf_id, "TaskError", error_message, error_class=error_class)
     except (BackendConnectionError, WorkflowStateConflict) as wf_exc:
         # R25/KTD12 (U10): ohne terminalen Workflow-Zustand bliebe der
         # Workflow bis zum TTL ``RUNNING``. Die Redelivery wiederholt

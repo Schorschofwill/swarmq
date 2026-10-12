@@ -37,6 +37,7 @@ def build_result_dict(
     is_cancelled: bool,
     error_message: str = "",
     result: Any = None,
+    error_class: str | None = None,
 ) -> dict[str, Any]:
     """Build the canonical worker-result payload.
 
@@ -50,14 +51,21 @@ def build_result_dict(
     present. ``is_cancelled`` is priority-read before ``is_error``, so
     a cancelled-with-error task surfaces as :class:`TaskCancelledError`,
     not :class:`TaskError` (R3.6 contract).
+
+    ``error_class`` (P9, T11) is written only on an error result with a
+    value, so a success or cancel result -- and every result of an older
+    worker -- keeps exactly the five keys above.
     """
-    return {
+    data: dict[str, Any] = {
         "task": {"id": task_id, "queue": queue, "name": task_name},
         "is_error": is_error,
         "is_cancelled": is_cancelled,
         "error_message": error_message,
         "result": result,
     }
+    if is_error and error_class is not None:
+        data["error_class"] = error_class
+    return data
 
 
 def build_cancel_result_dict(
@@ -83,6 +91,7 @@ def build_error_result_dict(
     queue: str,
     task_name: str,
     error_message: str,
+    error_class: str | None = None,
 ) -> dict[str, Any]:
     """Shorthand for the error-only result shape (is_error=True,
     is_cancelled=False, result=None)."""
@@ -93,4 +102,5 @@ def build_error_result_dict(
         is_error=True,
         is_cancelled=False,
         error_message=error_message,
+        error_class=error_class,
     )

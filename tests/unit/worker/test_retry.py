@@ -438,7 +438,11 @@ async def test_disabled_dead_lettering_propagates_workflow_failure(broker, backe
     msg = make_message(_default_payload(name="no-dlq-task"), headers={HEADER_WORKFLOW_ID: _WF_ID})
     await handler.evaluate(msg, _ctx(_NoDlqTask), RuntimeError("boom"), "boom", {"retry_count": 0}, MiddlewareChain([]))
 
-    worker._workflow_advancer.fail.assert_awaited_once_with(_WF_ID, "TaskError", "boom")
+    # P9 (Plan 2026-10-12-1105, MR 3, T13, Abschnitt 6): die Klasse der
+    # echten Task-Exception wird durchgereicht.
+    worker._workflow_advancer.fail.assert_awaited_once_with(
+        _WF_ID, "TaskError", "boom", error_class="builtins.RuntimeError"
+    )
     broker.dead_letter.assert_not_awaited()
 
 

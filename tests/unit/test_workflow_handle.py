@@ -164,6 +164,22 @@ async def test_get_raises_on_failed():
         await h.get(timeout=1.0)
 
 
+@pytest.mark.parametrize(
+    ("error", "expected_class"),
+    [({"type": "TaskError", "message": "", "class": "a.B"}, "a.B"), ({"type": "TaskError", "message": "x"}, None)],
+)
+async def test_get_raises_task_error_with_class_from_state(error, expected_class):
+    """P9 (Plan 2026-10-12-1105, MR 3, T13): ``error.class`` des Zustands wird
+    ``TaskError.error_class``; ein Zustand ohne ``class`` ergibt ``None``."""
+    state = build_initial_workflow_state("wf-1", {})
+    state["status"] = STATUS_FAILED
+    state["error"] = error
+    h = _handle(_backend_with_state(state))
+    with pytest.raises(TaskError) as raised:
+        await h.get(timeout=1.0)
+    assert (str(raised.value), raised.value.error_class) == (error["message"], expected_class)
+
+
 async def test_get_raises_on_cancelled():
     state = build_initial_workflow_state("wf-1", {})
     state["status"] = STATUS_CANCELLED

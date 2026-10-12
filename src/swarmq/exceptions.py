@@ -179,7 +179,19 @@ class LockWaitExceeded(SwarmQError):
 
 
 class TaskError(SwarmQError):
-    pass
+    """Ein Task endete mit einem Fehlerergebnis (bzw. ein Workflow scheiterte).
+
+    ``error_class`` (P9, beratend) nennt die voll qualifizierte Klasse der
+    ausloesenden Exception (``modul.qualname``, z. B.
+    ``builtins.ValueError``), im CPU-Modus den Namen aus dem Rechenkind.
+    ``None``, wenn das Ergebnis keine Klasse traegt: Ergebnisse aelterer
+    Worker und vom Worker selbst erzeugte Fehler (harter Timeout, Drain,
+    verlorenes Rechenkind, Ablauf).
+    """
+
+    def __init__(self, *args: object, error_class: str | None = None) -> None:
+        super().__init__(*args)
+        self.error_class = error_class
 
 
 class TaskCancelledError(TaskError):

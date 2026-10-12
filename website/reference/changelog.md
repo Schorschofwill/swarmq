@@ -6,6 +6,23 @@ All notable changes to SwarmQ. This project follows
 
 ## [Unreleased]
 
+### Added
+
+- **Error results carry `error_class` (fully-qualified exception class)
+  and `TaskError.error_class` exposes it; in CPU mode it is the class
+  reported by the child.** The form is `module.qualname`, built-ins as
+  `builtins.ValueError`. Paths without a task exception name the public
+  swarmq class where one exists (`TaskNotFoundError`, `LockWaitExceeded`,
+  `RedeliveryLimitError`, `UnroutableMessage`,
+  `ResultSerializationError`). A failed workflow stores it as
+  `error.class`, and `handle.get()` raises `TaskError` with it. Failures
+  the worker generates itself (hard timeout, drain, lost compute child,
+  expiry) carry no class; the key is then missing, as in results of
+  older workers. `error_message` is unchanged: an exception without text
+  still gives `""`. Older clients ignore the new field
+  ([message formats](agent/message-formats.md#task-result-valkey),
+  [`TaskError`](errors.md#taskerror)).
+
 ### Changed
 
 - **`raise Retry(...)` now retries even when the task sets
@@ -59,6 +76,15 @@ All notable changes to SwarmQ. This project follows
   caller cancelled the publish (`asyncio.wait_for`), nobody awaited it,
   and asyncio logged its connection error on garbage collection. swarmq
   now retrieves the exception of exactly that future.
+
+### Known limits
+
+- **`error_class` is advisory.** Results of older workers do not have
+  it, nor do paths without an exception class (expiry by `max_age`,
+  `WorkerHungError`, a lock template error) and failures the worker
+  generates itself (hard timeout, drain, lost compute child, child
+  without error detail). In CPU mode it names the class reported by the
+  child, even if the parent could not load it.
 
 ## [0.12.0rc1] — 2026-10-11
 

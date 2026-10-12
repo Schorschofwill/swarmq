@@ -268,7 +268,22 @@ erschöpft (oder nie genutzt) hat.
 **Ursache.** Jede Exception, die deine `run()`-Methode hat
 entweichen lassen. Die Original-Exception-Klasse geht über den
 Draht verloren; die Fehlermeldung trägt den String, den der
-Worker gespeichert hat.
+Worker gespeichert hat (`""` bei einer Exception ohne Text).
+`error_class` nennt die Klasse (beratend): `modul.qualname`, z. B.
+`builtins.ValueError`; im CPU-Modus die Klasse, die das Rechenkind
+meldet. Bei Ergebnissen älterer Worker und bei Fehlern, die der
+Worker selbst erzeugt (harter Timeout, Drain, verlorenes
+Rechenkind, Ablauf), ist es `None`.
+
+```python
+from swarmq import TaskError
+
+try:
+    result = await app.get_result(task_id, timeout=60)
+except TaskError as exc:
+    if exc.error_class == "builtins.ValueError":
+        ...  # ungültige Eingabe, nicht unverändert erneut einreihen
+```
 
 **Recovery.** Lies die Worker-Logs — sie tragen den vollständigen
 Traceback. Dann fixe den Task-Body oder erweitere deine

@@ -121,6 +121,9 @@ def test_error_catalog_known_semantics() -> None:
     # The workflow exceptions (missing from the original markdown table) are
     # present here — the sync test that surfaced that gap.
     assert by_name["WorkflowValidationError"]["origin"] == "library"
+    # P9 (Plan 2026-10-12-1105, MR 3, Review P2-28): das Fehlerergebnis
+    # traegt zusaetzlich die Klasse.
+    assert by_name["TaskError"]["transport_field"] == "error_message, error_class, is_error=true"
 
 
 # === U2: config spec ===
@@ -360,6 +363,14 @@ def test_result_schema_validates_real_builder_output() -> None:
             queue="q",
             task_name="n",
             error_message="boom",
+        ),
+        # P9 (Plan 2026-10-12-1105, MR 3, Abschnitt 6): optionales Feld.
+        build_error_result_dict(
+            task_id="t",
+            queue="q",
+            task_name="n",
+            error_message="",
+            error_class="builtins.ValueError",
         ),
         build_cancel_result_dict(task_id="t", queue="q", task_name="n"),
     ):

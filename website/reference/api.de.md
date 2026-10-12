@@ -237,7 +237,12 @@ Push-basiertes Warten, mit 5ms-Polling als Fallback. Bei
 
 - `ResultNotReadyError` — kein Ergebnis innerhalb `timeout`.
 - `TaskError` — Task schlug fehl; `str(exc)` trägt die Worker-
-  Fehlermeldung.
+  Fehlermeldung (`""` bei einer Exception ohne Text). `exc.error_class`
+  nennt die Exception-Klasse als `modul.qualname` (z. B.
+  `builtins.ValueError`, im CPU-Modus die Klasse, die das Kind meldet);
+  beratend und `None` bei Ergebnissen älterer Worker und bei Fehlern, die
+  der Worker selbst erzeugt (harter Timeout, Drain, verlorenes Rechenkind,
+  Ablauf).
 - `TaskCancelledError` — Cancel-Flag während Ausführung ausgelöst.
 
 ### `get_results()`
@@ -741,8 +746,9 @@ class WorkflowHandle:
 
 **Raises.** `WorkflowNotFound`, wenn der Zustand weg ist (`status()`,
 `children()`, `get()`), `ResultNotReadyError`, wenn `get()` in den Timeout läuft,
-`TaskError` für einen gescheiterten Workflow, `TaskCancelledError` für
-einen abgebrochenen, `WorkflowResultExpired`, wenn der Workflow fertig
+`TaskError` für einen gescheiterten Workflow (mit `error_class` des
+gescheiterten Schritts, wenn bekannt, siehe [`get_result()`](#get_result)),
+`TaskCancelledError` für einen abgebrochenen, `WorkflowResultExpired`, wenn der Workflow fertig
 ist, sein Endergebnis aber vor dem Abholen abgelaufen ist.
 
 ## `class ProgressInfo`

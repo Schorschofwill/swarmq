@@ -231,7 +231,12 @@ push-based wait, with 5ms-interval polling as a fallback. When
 **Raises.**
 
 - `ResultNotReadyError` — no result within `timeout` seconds.
-- `TaskError` — task failed; `str(exc)` carries the worker's error message.
+- `TaskError` — task failed; `str(exc)` carries the worker's error message
+  (`""` for an exception without text). `exc.error_class` names the
+  exception class as `module.qualname` (e.g. `builtins.ValueError`, in CPU
+  mode the class reported by the child); it is advisory and `None` for
+  results of older workers and for failures the worker generates itself
+  (hard timeout, drain, lost compute child, expiry).
 - `TaskCancelledError` — cancel flag tripped during execution.
 
 ### `get_results()`
@@ -719,7 +724,8 @@ class WorkflowHandle:
 **Raises.** `WorkflowNotFound` when the state is gone (`status()`,
 `children()`, `get()`),
 `ResultNotReadyError` when `get()` times out, `TaskError` for a failed
-workflow, `TaskCancelledError` for a cancelled one,
+workflow (with `error_class` of the failing step when known, see
+[`get_result()`](#get_result)), `TaskCancelledError` for a cancelled one,
 `WorkflowResultExpired` when the workflow completed but its final
 result expired before retrieval.
 

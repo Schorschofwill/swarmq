@@ -1206,3 +1206,19 @@ async def test_fail_with_missing_workflow_state_logs_a_warning(swarmq_logs) -> N
     [entry] = [e for e in swarmq_logs if e["event"] == "workflow_state_missing"]
     assert entry["log_level"] == "warning"
     assert entry["workflow_id"] == "wf-gone"
+
+
+# P9 (Plan 2026-10-12-1105, MR 3, T13): ``fail`` speichert ``error.class`` nur
+# mit Wert; ohne Keyword bleibt der Zustand exakt wie bisher (Tests oben).
+
+
+async def test_fail_stores_error_class_only_when_given():
+    with_class = MultiDriver(chain(Echo.s("a"), Echo.s()))
+    await with_class.seed()
+    await with_class.advancer().fail(with_class.wf_id, "TaskError", "", error_class="a.B")
+    without = MultiDriver(chain(Echo.s("a"), Echo.s()))
+    await without.seed()
+    await without.advancer().fail(without.wf_id, "TaskError", "boom")
+
+    assert (await with_class.state())["error"] == {"type": "TaskError", "message": "", "class": "a.B"}
+    assert (await without.state())["error"] == {"type": "TaskError", "message": "boom"}

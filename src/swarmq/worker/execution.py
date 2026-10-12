@@ -21,6 +21,7 @@ from swarmq.exceptions import SoftTimeoutError
 from swarmq.logging import _error_fields, get_logger
 from swarmq.signals import Signal
 from swarmq.task import DeliveryMode
+from swarmq.worker.error_info import mark_worker_error
 from swarmq.worker.gates import GateContext, GateDeps
 
 if TYPE_CHECKING:
@@ -195,7 +196,8 @@ class TaskExecutor:
             else:
                 # "timeout" or None (bare CancelledError): hard-timeout path.
                 hard_err_msg = f"hard timeout after {task_info.hard_timeout}s"
-                fail(RuntimeError(hard_err_msg), hard_err_msg)
+                # Vom Worker erzeugt: keine ``error_class`` (T12).
+                fail(mark_worker_error(RuntimeError(hard_err_msg)), hard_err_msg)
         except Exception as exc:  # noqa: BLE001 - Task-Fehler darf die Pipeline nicht verlassen
             fail(exc, str(exc))
         else:
