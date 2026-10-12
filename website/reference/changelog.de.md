@@ -28,6 +28,27 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   Ack, das mit `AMQPConnectionError` scheitert, ist jetzt ein
   `BrokerConnectionError`
   ([`PublishIndeterminate`](errors.md#publishindeterminate)).
+- **`schedule_many()` behält die `unique_for`-Sperre eines unbestimmten
+  Elements**, wie `schedule()`; bisher gab es die Sperren aller
+  gescheiterten Elemente frei, sodass ein Wiederholversuch einen Task
+  ausführen konnte, dessen Nachricht angekommen war. Ist ein Element
+  unbestimmt, wirft der Batch jetzt dessen `PublishIndeterminate` statt
+  des ersten Fehlers nach Index
+  ([`schedule_many()`](api.md#schedule_many)).
+- **Ein kaputter Frame vom Broker schlägt nicht mehr als roher
+  pamqp-Fehler durch.** Endet aiormqs Reader an einem unlesbaren Frame
+  (`pamqp.exceptions.AMQPFrameError` und Verwandte), bevor die Nachricht
+  geschrieben war, wiederholt swarmq auf einem neuen Kanal wie nach jedem
+  anderen Verbindungsabbruch und meldet, wenn das nicht hilft,
+  `BrokerConnectionError`; nach dem Schreiben ist es
+  `PublishIndeterminate`. Ein Ack, das mit einem solchen Fehler
+  scheitert, ist ebenfalls ein `BrokerConnectionError`.
+- **Kein „Future exception was never retrieved“ mehr nach einem Publish,
+  der vor dem Schreiben endete.** aiormq legt das Future für das
+  Publisher-Confirm vor dem Schreiben an; scheiterte das Schreiben oder
+  brach der Aufrufer den Publish ab (`asyncio.wait_for`), wartete niemand
+  darauf, und asyncio meldete dessen Verbindungsfehler beim Einsammeln.
+  swarmq holt jetzt die Ausnahme genau dieses Futures ab.
 
 ## [0.12.0rc1] — 2026-10-11
 

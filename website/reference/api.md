@@ -177,7 +177,12 @@ On dedup hits, the existing owner's task_id is placed at that index
 **Raises.** Same shape as `schedule()`. On partial publish failure,
 successfully published task_ids are still written to the result
 list, the rest are rolled back, and the first exception is
-re-raised.
+re-raised. As with `schedule()`, an element whose publish is
+indeterminate keeps its `unique_for` claim, since its message may have
+arrived; only claims of elements where nothing was sent are released.
+If any element is indeterminate, the batch raises its
+`PublishIndeterminate`, even when a definite failure sits at a smaller
+index.
 
 ### `run()`
 

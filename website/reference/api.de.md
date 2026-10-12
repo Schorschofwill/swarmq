@@ -181,7 +181,12 @@ Index platziert (Listenlänge ist immer gleich Input-Länge).
 **Raises.** Dieselbe Form wie `schedule()`. Bei partiellem
 Publish-Fehlschlag werden erfolgreich publishte task_ids trotzdem
 in die Result-Liste geschrieben, der Rest wird rollbacked, und
-die erste Exception wird erneut geraist.
+die erste Exception wird erneut geraist. Wie bei `schedule()` behält
+ein Element, dessen Publish unbestimmt ist, seine `unique_for`-Sperre,
+denn seine Nachricht kann angekommen sein; freigegeben werden nur die
+Sperren der Elemente, bei denen nichts gesendet wurde. Ist ein Element
+unbestimmt, wirft der Batch dessen `PublishIndeterminate`, auch wenn ein
+bestimmter Fehler an kleinerem Index steht.
 
 ### `run()`
 
