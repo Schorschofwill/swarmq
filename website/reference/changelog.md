@@ -4,7 +4,12 @@ All notable changes to SwarmQ. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.12.0rc2] — 2026-10-12
+
+Second release candidate for 0.12.0 (install with `pip install --pre`).
+It adds the fix for a connection loss during publish (B24) and the
+improvements from the Phoenix migration analysis below. The upgrade
+notes of [0.12.0rc1](#0120rc1-2026-10-11) apply unchanged.
 
 ### Added
 
