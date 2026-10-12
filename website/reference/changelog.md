@@ -4,6 +4,16 @@ All notable changes to SwarmQ. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **B25: `swarmq inspect` names `--app-dir` and the directory searched
+  first when `--module` cannot be found**, as `swarmq worker` and
+  `swarmq worker --check` already did. A missing dependency of a module
+  that was found keeps the plain message
+  ([finding the task module](cli.md#finding-the-task-module)).
+
 ## [0.12.0rc2] — 2026-10-12
 
 Second release candidate for 0.12.0 (install with `pip install --pre`).

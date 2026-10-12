@@ -15,6 +15,7 @@ from typing import Any
 
 from swarmq.cli._shared import _render_table
 from swarmq.exceptions import ConfigurationError
+from swarmq.process_manager.check import app_dir_hint
 from swarmq.task import Task
 
 
@@ -56,7 +57,15 @@ async def _run_inspect_async(args: argparse.Namespace) -> None:
     Read-only; no broker / backend connection. Exposes the declarative dedup configuration so agents and operators
     can discover which tasks have unique_for set without reading source.
     """
-    importlib.import_module(args.module)
+    try:
+        importlib.import_module(args.module)
+    except ModuleNotFoundError as exc:
+        # B25: derselbe Hinweis wie bei ``swarmq worker`` (cli/worker_cmd.py),
+        # nur wenn ``--module`` selbst fehlt, nicht eine seiner Abhaengigkeiten.
+        missing = exc.name or ""
+        if args.module != missing and not args.module.startswith(missing + "."):
+            raise
+        raise ModuleNotFoundError(f"{exc}; {app_dir_hint()}", name=exc.name, path=exc.path) from exc
     if not Task._registered_tasks:
         raise ConfigurationError(
             f"no tasks registered after importing {args.module!r}; "
