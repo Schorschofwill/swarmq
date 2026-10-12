@@ -6,6 +6,14 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ## [Unreleased]
 
+### Geändert
+
+- **`raise Retry(...)` wiederholt jetzt auch, wenn der Task
+  `retry_exceptions` setzt, ohne `Retry` zu nennen; bisher ging die
+  Nachricht direkt in die DLQ.** `Retry` zählt weiter gegen
+  `max_retries`; bei `max_retries=0` endet er terminal
+  ([`Retry`](errors.md#retry)).
+
 ### Behoben
 
 - **`task_sent_to_dlq` erscheint nicht mehr, wenn der Dead-Letter-Publish

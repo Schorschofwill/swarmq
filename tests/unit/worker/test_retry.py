@@ -69,6 +69,19 @@ Kopie liegt oder der DLX-Rueckfall lief:
 28. Erfolg -> ``task_sent_to_dlq`` einmal mit ``error_type`` (Liste 8/9).
 29. Kopie liegt, ``maybe_release_unique`` wirft (ohne ``on_publish_failure``)
     -> ``task_sent_to_dlq`` einmal (exakte Bedingung aus T9).
+
+P8 (Plan 2026-10-12-1105, MR 2, T10, E4 A) -- ``Retry`` gilt unabhaengig von
+``retry_exceptions``, verbraucht aber das Budget:
+
+30. ``retry_exceptions=[KeyError]``, ``max_retries=3``, ``raise Retry()`` ->
+    ``retry_later`` mit Backoff-Verzoegerung, kein ``dead_letter``.
+31. Wie 30 mit ``Retry(delay=7)`` -> ``delay_ms == 7000``.
+32. Wie 30, Budget erschoepft (``x-swarmq-retry-count == 3``) -> terminal.
+33. ``max_retries=0``, ``raise Retry(delay=5)`` -> terminal.
+34. ``ValueError`` nicht im Filter -> weiter terminal (Liste 9,
+    ``test_task_sent_to_dlq_carries_error_type_of_triggering_exception``).
+35. CPU-Modus: aus dem Envelope rekonstruierte ``Retry(delay=5)`` mit
+    Filter -> ``retry_later`` mit 5000 ms.
 """
 
 from __future__ import annotations
@@ -677,3 +690,103 @@ async def test_transient_workflow_fail_mark_error_does_not_log_task_sent_to_dlq(
     assert placed is False
     broker.dead_letter.assert_not_awaited()
     assert _events(swarmq_logs, "task_sent_to_dlq") == []
+
+
+class _FilteredFixedTask(Task):
+    task_info = TaskInfo(
+        name="filtered-fixed-task",
+        queues=["default"],
+        max_retries=3,
+        retry_exceptions=[KeyError],
+        retry_backoff="fixed",
+        retry_base_delay=2.0,
+    )
+
+
+@pytest.mark.timeout(5)
+async def test_retry_retries_although_retry_exceptions_does_not_list_it(broker, backend, config):
+    """Liste 30 (P8, T10): ``raise Retry()`` ist eine ausdrueckliche
+    Anweisung des Tasks; der Filter ``retry_exceptions`` gilt fuer
+    unerwartete Ausnahmen, nicht fuer ``Retry``."""
+    from swarmq.exceptions import Retry
+    from swarmq.middleware import MiddlewareChain
+
+    handler, _ = _handler(broker, backend, config, _FilteredFixedTask)
+    msg = make_message(_default_payload(name="filtered-fixed-task"))
+
+    await handler.evaluate(msg, _ctx(_FilteredFixedTask), Retry(), "", {"retry_count": 0}, MiddlewareChain([]))
+
+    broker.dead_letter.assert_not_awaited()
+    broker.retry_later.assert_awaited_once()
+    assert broker.retry_later.await_args.kwargs["delay_ms"] == 2000
+
+
+@pytest.mark.timeout(5)
+async def test_retry_delay_wins_although_retry_exceptions_does_not_list_it(broker, backend, config):
+    """Liste 31 (P8): die Verzoegerung aus ``Retry(delay=...)`` gilt auch mit
+    Filter."""
+    from swarmq.exceptions import Retry
+    from swarmq.middleware import MiddlewareChain
+
+    handler, _ = _handler(broker, backend, config, _FilteredFixedTask)
+    msg = make_message(_default_payload(name="filtered-fixed-task"))
+
+    await handler.evaluate(msg, _ctx(_FilteredFixedTask), Retry(delay=7), "", {"retry_count": 0}, MiddlewareChain([]))
+
+    broker.dead_letter.assert_not_awaited()
+    assert broker.retry_later.await_args.kwargs["delay_ms"] == 7000
+
+
+@pytest.mark.timeout(5)
+async def test_retry_with_filter_still_consumes_the_budget(broker, backend, config, swarmq_logs):
+    """Liste 32 (P8, E4 A): ``Retry`` umgeht den Filter, nicht das Budget --
+    nach drei von drei Versuchen endet es terminal."""
+    from swarmq.exceptions import Retry
+    from swarmq.middleware import MiddlewareChain
+
+    handler, _ = _handler(broker, backend, config, _FilteredFixedTask)
+    msg = make_message(_default_payload(name="filtered-fixed-task"), headers={"x-swarmq-retry-count": 3})
+
+    await handler.evaluate(msg, _ctx(_FilteredFixedTask), Retry(delay=7), "", {"retry_count": 0}, MiddlewareChain([]))
+
+    broker.retry_later.assert_not_awaited()
+    broker.dead_letter.assert_awaited_once()
+    [entry] = _events(swarmq_logs, "task_sent_to_dlq")
+    assert entry["error_type"] == "Retry"
+
+
+@pytest.mark.timeout(5)
+async def test_retry_with_zero_max_retries_ends_terminally(broker, backend, config):
+    """Liste 33 (P8, E4 A): bei ``max_retries=0`` endet ``Retry`` terminal."""
+    from swarmq.exceptions import Retry
+    from swarmq.middleware import MiddlewareChain
+
+    handler, _ = _handler(broker, backend, config, _ZeroRetryTask)
+    msg = make_message(_default_payload(name="zero-retry-task"))
+
+    await handler.evaluate(msg, _ctx(_ZeroRetryTask), Retry(delay=5), "", {"retry_count": 0}, MiddlewareChain([]))
+
+    broker.retry_later.assert_not_awaited()
+    broker.dead_letter.assert_awaited_once()
+
+
+@pytest.mark.timeout(5)
+async def test_retry_rebuilt_from_compute_envelope_retries_despite_filter(broker, backend, config):
+    """Liste 35 (P8, T10): Im CPU-Modus kommt ``Retry`` ueber das Envelope
+    aus dem Rechenkind; die rekonstruierte Instanz geht durch denselben
+    ``RetryHandler`` und behaelt ``delay``."""
+    import pickle
+
+    from swarmq.exceptions import Retry
+    from swarmq.middleware import MiddlewareChain
+    from swarmq.worker.compute.envelope import error_envelope
+
+    rebuilt = pickle.loads(pickle.dumps(error_envelope("abc-123", Retry(delay=5)))).error()
+    assert rebuilt is not None
+    handler, _ = _handler(broker, backend, config, _FilteredFixedTask)
+    msg = make_message(_default_payload(name="filtered-fixed-task"))
+
+    await handler.evaluate(msg, _ctx(_FilteredFixedTask), rebuilt, "", {"retry_count": 0}, MiddlewareChain([]))
+
+    broker.dead_letter.assert_not_awaited()
+    assert broker.retry_later.await_args.kwargs["delay_ms"] == 5000

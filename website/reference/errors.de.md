@@ -382,6 +382,11 @@ class SendEmail(Task):
 Ist `delay` `None`, wendet der Worker die konfigurierte Backoff-
 Strategie an (`retry_backoff`, `retry_base_delay`).
 
+`Retry` wiederholt auch, wenn der Task `retry_exceptions` setzt, ohne
+ihn zu nennen. Er zählt gegen `max_retries`: Ist das Budget verbraucht,
+und immer bei `max_retries=0`, endet der Task terminal (DLQ bzw.
+Fehlerergebnis, wenn das Dead-Lettering abgeschaltet ist).
+
 ## `NoRetry`
 
 **Wann geraist.** Aus deinem eigenen Task-Code, um das Retry-Budget

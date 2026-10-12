@@ -361,6 +361,11 @@ class SendEmail(Task):
 If `delay` is `None`, the worker applies the configured backoff
 strategy (`retry_backoff`, `retry_base_delay`).
 
+`Retry` retries even when the task sets `retry_exceptions` without
+listing it. It counts against `max_retries`: when the budget is used
+up, and always with `max_retries=0`, the task ends terminally (DLQ, or
+the error result when dead-lettering is disabled).
+
 ## `NoRetry`
 
 **When raised.** By your own task code, to skip the retry budget and

@@ -15,7 +15,7 @@ Jede Zeile hat die folgenden Spalten:
 | `parent` | `string` | Direkte Parent-Klasse in der SwarmQ-Hierarchie. |
 | `origin` | `"library" \| "task_code"` | Wird die Exception von SwarmQ selbst oder von User-Task-Code (Control Flow) geraist? |
 | `when` | `"startup" \| "schedule" \| "run" \| "result" \| "cli"` | Lifecycle-Stage, der diese Exception auslösen kann. |
-| `retriable` | `"yes" \| "no" \| "controlled"` | `controlled` bedeutet „retriable nur, wenn `retry_exceptions` ihn listet". |
+| `retriable` | `"yes" \| "no" \| "controlled"` | `controlled` bedeutet „retriable nur, wenn `retry_exceptions` ihn listet". `Retry` ist `yes`: Er wiederholt unabhängig von `retry_exceptions`, innerhalb von `max_retries`. |
 | `dlq_on_uncaught` | `"yes" \| "no"` | Routet der Worker in die DLQ, wenn das ungecheckt aus `run()` entkommt? |
 | `exit_code_on_cli` | `int` | CLI-Exit-Code, wenn die Exception aus `swarmq` propagiert (falls anwendbar). |
 | `transport_field` | `string \| null` | Wo die Exception im Task-Result-Envelope oder CLI-JSON-Output erscheint. |

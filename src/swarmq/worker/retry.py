@@ -92,8 +92,14 @@ class RetryHandler:
         if isinstance(exc, NoRetry):
             return await self._terminal_failure(delivery, ctx, exc, error_message)
 
-        # 2. Check retry_exceptions filter
-        if task_info.retry_exceptions is not None and not isinstance(exc, task_info.retry_exceptions):
+        # 2. Check retry_exceptions filter. ``Retry`` ist eine ausdrueckliche
+        # Anweisung des Tasks und gilt unabhaengig vom Filter (P8); das Budget
+        # (Schritt 4) gilt weiter.
+        if (
+            task_info.retry_exceptions is not None
+            and not isinstance(exc, Retry)
+            and not isinstance(exc, task_info.retry_exceptions)
+        ):
             return await self._terminal_failure(delivery, ctx, exc, error_message)
 
         # 3. Read retry count from message headers

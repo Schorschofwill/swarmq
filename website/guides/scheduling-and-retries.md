@@ -573,6 +573,8 @@ task_info = TaskInfo(
 
 Any other exception — `ValueError`, `KeyError`, the card-declined
 error — bypasses the retry budget and goes straight to the DLQ.
+`Retry` (below) is not filtered: it retries whether or not
+`retry_exceptions` lists it.
 
 ### Task-body control with `Retry` and `NoRetry`
 
@@ -596,6 +598,10 @@ class SendEmail(Task):
 
 - `Retry(delay=...)` — retry with a specific delay, ignoring the
   configured backoff. `Retry()` (no delay) uses the backoff formula.
+  `Retry` applies independently of `retry_exceptions` but counts
+  against `max_retries`: once the budget is used up, and always with
+  `max_retries=0`, it ends terminally (DLQ, or the error result when
+  dead-lettering is disabled).
 - `NoRetry(reason)` — bypass the retry budget, route to DLQ
   immediately.
 

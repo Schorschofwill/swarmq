@@ -598,7 +598,8 @@ task_info = TaskInfo(
 
 Jede andere Exception — `ValueError`, `KeyError`, der
 Card-Declined-Fehler — umgeht das Retry-Budget und geht direkt in
-die DLQ.
+die DLQ. `Retry` (unten) filtert das nicht: Er wiederholt, egal ob
+`retry_exceptions` ihn nennt.
 
 ### Task-Body-Kontrolle mit `Retry` und `NoRetry`
 
@@ -624,6 +625,10 @@ class SendEmail(Task):
   konfigurierten Backoff. Nutze, wenn du die korrekte Wartezeit
   kennst (z. B. HTTP `Retry-After: 60`).
 - `Retry()` ohne Delay — nutzt die Backoff-Formel.
+- `Retry` gilt unabhängig von `retry_exceptions`, zählt aber gegen
+  `max_retries`: Ist das Budget verbraucht, und immer bei
+  `max_retries=0`, endet er terminal (DLQ bzw. Fehlerergebnis, wenn
+  das Dead-Lettering abgeschaltet ist).
 - `NoRetry(reason)` — überspringt das Retry-Budget, routet sofort
   in die DLQ.
 
