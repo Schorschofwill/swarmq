@@ -37,7 +37,7 @@ except SwarmQError as exc:
 | `TaskError` | `SwarmQError` | The task body raised; propagated to `get_result()` |
 | `TaskCancelledError` | `TaskError` | `app.cancel(task_id)` tripped during execution |
 | `ResultNotReadyError` | `SwarmQError` | `get_result()` timed out before a result landed |
-| `ResultExpiredError` | `SwarmQError` | Result existed but Valkey TTL expired it |
+| `ResultExpiredError` | `SwarmQError` | Currently never raised (reserved); an expired result raises `ResultNotReadyError` |
 | `ResultSerializationError` | `SwarmQError` | Result cannot be msgpack-serialised |
 | `Retry` | `SwarmQError` | Control flow — raised by task code to request a retry |
 | `NoRetry` | `SwarmQError` | Control flow — raised by task code to bypass retries |
@@ -301,7 +301,8 @@ except TaskCancelledError:
 with no result in Valkey.
 
 **Cause.** The task is still running, the worker died, the task was
-DLQ'd without storing a result, or the task_id is wrong.
+DLQ'd without storing a result, the result expired after its
+`result_ttl`, or the task_id is wrong.
 
 **Recovery.** Raise the timeout, check the worker logs, or inspect
 the DLQ if the task is stuck in retry loops.
@@ -318,14 +319,14 @@ except ResultNotReadyError:
 
 ## `ResultExpiredError`
 
-**When raised.** `get_result()` finds the result key gone while a
-metadata marker still indicates the task completed. In v0.x this is
-rare — the backend usually raises `ResultNotReadyError` for the
-"gone" case — and the class is kept as a stable hook for a future
-release that splits the two.
+**When raised.** Currently never. After the result TTL has expired,
+`get_result()` raises `ResultNotReadyError`, the same as for a result
+that is not there yet. The class is kept as a stable hook for a later
+release that tells the two cases apart; catching it today has no
+effect.
 
-**Recovery.** Raise `result_ttl` (`SWARMQ_RESULT_TTL`) or fetch the
-result sooner.
+**Recovery.** To keep results readable longer, raise `result_ttl`
+(`SWARMQ_RESULT_TTL`) or fetch the result sooner.
 
 ## `ResultSerializationError`
 

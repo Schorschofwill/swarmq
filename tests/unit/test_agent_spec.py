@@ -124,6 +124,10 @@ def test_error_catalog_known_semantics() -> None:
     # P9 (Plan 2026-10-12-1105, MR 3, Review P2-28): das Fehlerergebnis
     # traegt zusaetzlich die Klasse.
     assert by_name["TaskError"]["transport_field"] == "error_message, error_class, is_error=true"
+    # P12d (Plan 2026-10-12-1105, MR 4, T15): ResultExpiredError wird derzeit
+    # nie geworfen; der Katalog sagt das.
+    assert by_name["ResultExpiredError"]["transport_field"] == "not raised (reserved)"
+    assert "never raised" in by_name["ResultExpiredError"]["doc"]
 
 
 # === U2: config spec ===

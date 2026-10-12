@@ -31,6 +31,22 @@ All notable changes to SwarmQ. This project follows
   `max_retries=0` it ends terminally
   ([`Retry`](errors.md#retry)).
 
+- **Docs: argument serialization, middleware argument changes,
+  `ResultExpiredError` (never raised) and the DLQ retention note now
+  describe the actual behaviour.** No behaviour change. Arguments travel as
+  JSON: `datetime`, `Decimal`, `UUID` and `bytes` arrive as `str`,
+  `tuple`/`set` as `list`; an object JSON cannot encode raises
+  `ResultSerializationError` (with `delay`/`eta` a plain `TypeError`)
+  ([defining tasks](../guides/defining-tasks.md#arguments-and-return-values)).
+  A change to the existing `message["kwargs"]` dict or `message["args"]`
+  list in `pre_execute` reaches `run()`, also in CPU mode; this is now a
+  documented contract ([middleware](../guides/middleware.md)).
+  `ResultExpiredError` is never raised; an expired result raises
+  `ResultNotReadyError` ([errors](errors.md#resultexpirederror)); the
+  machine-readable error catalog says `not raised (reserved)`.
+  Unknown tasks no longer reach the `.XQ` via the broker's dead-letter
+  exchange ([dead-letter queues](../guides/dead-letter-queues.md)).
+
 ### Fixed
 
 - **`task_sent_to_dlq` is no longer logged when the dead-letter publish

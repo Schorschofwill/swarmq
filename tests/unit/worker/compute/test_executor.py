@@ -6,6 +6,12 @@ Test-Liste P9 (Plan 2026-10-12-1105, MR 3, T12) -- ``error_class``:
   Drain-Abbruch; ``ChildDied``, ``SlotUnavailable`` und sonstiger Pool-Fehler.
 - Envelope mit ``remote_exception`` (nicht rekonstruierbar) -> ``remote_type``;
   rekonstruierbare Exception -> deren Klasse; ohne Detail -> keine Klasse.
+
+Test-Liste P12b (Plan 2026-10-12-1105, MR 4, E3 A) -- Argumente aus
+``pre_execute``:
+
+- Eine Änderung am bestehenden ``kwargs``-Dict und an der ``args``-Liste
+  erreicht den Job im Kind; eine Neuzuweisung nicht.
 """
 
 from __future__ import annotations
@@ -18,7 +24,7 @@ import pytest
 
 from swarmq.config import SwarmQConfig
 from swarmq.exceptions import NoRetry, SoftTimeoutError
-from swarmq.middleware import MiddlewareChain
+from swarmq.middleware import MessageContext, Middleware, MiddlewareChain
 from swarmq.task import DeliveryMode, Task, TaskInfo
 from swarmq.worker.compute.envelope import RemoteExceptionInfo, ResultEnvelope, error_envelope, success_envelope
 from swarmq.worker.compute.executor import ComputeExecutor
@@ -536,3 +542,41 @@ async def test_error_class_of_compute_envelopes(setup, envelope, expected):
     assert res.is_error
     assert res.task_exception is not None
     assert error_class_of(res.task_exception) == expected
+
+
+class _MutateArgs(Middleware):
+    @override
+    async def pre_execute(self, message: MessageContext) -> None:
+        message["kwargs"]["tenant"] = "t"
+        message["args"].append(3)
+
+
+class _ReassignArgs(Middleware):
+    @override
+    async def pre_execute(self, message: MessageContext) -> None:
+        message["kwargs"] = {"tenant": "t"}
+        message["args"] = [9]
+
+
+def _message_for(ctx: GateContext) -> MessageContext:
+    """Wie die Pipeline (``_build_message_dict``): dieselben Objekte wie im
+    Kontext."""
+    return partial_message(retry_count=0, args=ctx.args, kwargs=ctx.kwargs)
+
+
+@pytest.mark.timeout(5)
+async def test_pre_execute_in_place_argument_changes_reach_the_child_job(setup):
+    _, pool, ex = setup
+    ctx = _ctx()
+    await ex.execute(ctx, _message_for(ctx), MiddlewareChain([_MutateArgs()]))
+    assert pool.job.args == (1, 2, 3)
+    assert pool.job.kwargs == {"k": "v", "tenant": "t"}
+
+
+@pytest.mark.timeout(5)
+async def test_pre_execute_argument_reassignment_does_not_reach_the_child_job(setup):
+    _, pool, ex = setup
+    ctx = _ctx()
+    await ex.execute(ctx, _message_for(ctx), MiddlewareChain([_ReassignArgs()]))
+    assert pool.job.args == (1, 2)
+    assert pool.job.kwargs == {"k": "v"}

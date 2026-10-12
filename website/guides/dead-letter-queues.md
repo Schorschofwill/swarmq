@@ -279,11 +279,22 @@ start without `PRECONDITION_FAILED`.
   variable only for old stock without the retention header.
 
 RabbitMQ only drops expired messages at the head of a queue. A message
-without `expiration` in front — old stock, or a message the broker's
-dead-letter exchange routed (`x-delivery-limit`, undecodable or
-unregistered messages) — holds up the expiry of everything behind it
-until a `dlq list` gives it a retention. Only a broker policy bounds
-those paths completely.
+without `expiration` in front holds up the expiry of everything behind
+it until a `dlq list` gives it a retention. Such messages are old stock
+and messages the broker's dead-letter exchange routed:
+
+- messages over the queue's `x-delivery-limit`,
+- messages the worker rejects before decoding a task: undecodable
+  bodies (`undecodable`), bodies over `SWARMQ_MAX_MESSAGE_BODY_BYTES`
+  (`body_too_large`) and a failing middleware factory
+  (`middleware_chain_factory`),
+- the fallback when the worker's own dead-letter copy could not be
+  published (`dlq_publish_failed` on the lock and unknown-task paths).
+
+Unknown tasks are no longer among them: since 0.12 the worker puts
+them into `.XQ` itself, with a retention, once
+`SWARMQ_UNKNOWN_TASK_GRACE_S` has passed. Only a broker policy bounds
+the paths above completely.
 
 ## Bounding the `.XQ` with a broker policy
 

@@ -170,11 +170,31 @@ Avoid stashing mutable state on the `MessageContext` dict — it is
 typed as a specific shape and adding ad-hoc keys will silently drift
 from the contract.
 
+## Changing task arguments in `pre_execute`
+
+`message["kwargs"]` and `message["args"]` in `pre_execute` are the
+same dict and list the worker passes to `run()`. A change to them in
+place reaches the task, also in CPU mode (`--pool cpu` copies the
+arguments for the compute child only after `pre_execute`):
+
+```python
+class TenantMiddleware(Middleware):
+    async def pre_execute(self, message):
+        message["kwargs"]["tenant"] = current_tenant()  # run() sees tenant=
+```
+
+Assigning a new object (`message["kwargs"] = {...}` or
+`message["args"] = [...]`) has no effect: the worker keeps its own
+reference. The change lives only in the current attempt. A retry
+delivers the original message body again and `pre_execute` runs again,
+so the hook must make the same change on every attempt.
+
 ## What middleware should **not** do
 
-- **Modify `message["args"]` or `message["kwargs"]` in
-  `pre_execute`.** The worker already unpacked them for `run()`;
-  your changes are invisible.
+- **Reassign `message["args"]` or `message["kwargs"]` in
+  `pre_execute`.** The worker keeps its own reference; a new object is
+  invisible to `run()`. Change the existing dict or list instead (see
+  above).
 - **Emit new messages via `broker.publish`.** Use `app.schedule()`
   instead so the middleware stack and signals fire correctly.
 - **Sleep or block on slow I/O inside `pre_execute`.** Every

@@ -293,11 +293,23 @@ unverändert, bestehende Deployments starten also ohne
   nur für Altbestand ohne Frist-Header.
 
 RabbitMQ verwirft abgelaufene Nachrichten nur am Kopf einer Queue. Eine
-Nachricht ohne `expiration` davor — Altbestand oder eine Nachricht, die
-der Dead-Letter-Exchange des Brokers geroutet hat (`x-delivery-limit`,
-nicht dekodierbare oder unregistrierte Nachrichten) — hält den Verfall
-aller dahinter auf, bis ein `dlq list` ihr eine Frist gibt. Vollständig
-begrenzt diese Wege nur eine Broker-Policy.
+Nachricht ohne `expiration` davor hält den Verfall aller dahinter auf,
+bis ein `dlq list` ihr eine Frist gibt. Solche Nachrichten sind
+Altbestand und Nachrichten, die der Dead-Letter-Exchange des Brokers
+geroutet hat:
+
+- Nachrichten über dem `x-delivery-limit` der Queue,
+- Nachrichten, die der Worker ablehnt, bevor er einen Task dekodiert:
+  nicht dekodierbare Bodies (`undecodable`), Bodies über
+  `SWARMQ_MAX_MESSAGE_BODY_BYTES` (`body_too_large`) und eine
+  scheiternde Middleware-Factory (`middleware_chain_factory`),
+- der Rückfall, wenn die eigene Dead-Letter-Kopie des Workers nicht
+  veröffentlicht werden konnte (`dlq_publish_failed` auf den Lock- und
+  Unknown-Task-Pfaden).
+
+Unbekannte Tasks gehören nicht mehr dazu: Seit 0.12 legt der Worker sie
+nach Ablauf von `SWARMQ_UNKNOWN_TASK_GRACE_S` selbst mit Frist in die
+`.XQ`. Vollständig begrenzt die obigen Wege nur eine Broker-Policy.
 
 ## Die `.XQ` per Broker-Policy begrenzen
 

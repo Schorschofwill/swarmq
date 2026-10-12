@@ -40,7 +40,7 @@ Jede Zeile hat die folgenden Spalten:
 | `swarmq.exceptions.TaskError` | `SwarmQError` | library | result | n/a (post-mortem) | n/a | n/a | `error_message`, `error_class`, `is_error=true` |
 | `swarmq.exceptions.TaskCancelledError` | `TaskError` | library | run, result | no | no (Cancel umgeht DLQ) | n/a | `is_cancelled=true` |
 | `swarmq.exceptions.ResultNotReadyError` | `SwarmQError` | library | result | no | n/a | n/a | raised to caller |
-| `swarmq.exceptions.ResultExpiredError` | `SwarmQError` | library | result | no | n/a | n/a | raised to caller |
+| `swarmq.exceptions.ResultExpiredError` | `SwarmQError` | library | result | no | n/a | n/a | not raised (reserved) |
 | `swarmq.exceptions.ResultSerializationError` | `SwarmQError` | library | run | no | yes | n/a | `error_message`, `is_error=true` |
 | `swarmq.exceptions.Retry` | `SwarmQError` | task_code | run | yes (verbraucht Budget) | no | n/a | Control Flow |
 | `swarmq.exceptions.NoRetry` | `SwarmQError` | task_code | run | no | yes (sofort) | n/a | Control Flow |
@@ -49,6 +49,9 @@ Jede Zeile hat die folgenden Spalten:
 | `swarmq.exceptions.WorkflowNotFound` | `SwarmQError` | library | result | no | n/a | n/a | raised to caller |
 | `swarmq.exceptions.WorkflowResultExpired` | `SwarmQError` | library | result | no | n/a | n/a | raised to caller |
 | `swarmq.exceptions.WorkflowStateConflict` | `SwarmQError` | library | run | yes | no | n/a | Neuzustellung der Schritt-Nachricht |
+
+`ResultExpiredError` wird derzeit nie geworfen; nach Ablauf der
+Ergebnis-TTL wirft `get_result` `ResultNotReadyError`.
 
 ## CLI-Exit-Codes
 

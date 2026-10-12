@@ -43,6 +43,11 @@ insert-if-absent vs. update-static branches that live in Python.
 # 13. Scheitert das Parken an Valkey, kommen die übrigen Zeilen trotzdem;
 #     ``scheduler_park_failed`` wird geloggt (wie beim Parken nicht
 #     planbarer Definitionen, R18).
+#
+# Test list (Plan 2026-10-12-1105, MR 4, P12a -- Charakterisierung):
+# 14. ``delay``/``eta``: ein eigenes Objekt in ``args`` ergibt beim
+#     Kodieren der Definition einen rohen ``TypeError`` (kein
+#     ``ResultSerializationError``).
 
 from __future__ import annotations
 
@@ -52,7 +57,7 @@ from unittest.mock import AsyncMock, MagicMock
 import msgspec
 import pytest
 
-from swarmq.exceptions import BackendConnectionError
+from swarmq.exceptions import BackendConnectionError, ResultSerializationError
 from swarmq.locking import SCHEDULER_LOCK_KEY, SCHEDULER_LOCK_NAME, lock_key
 from swarmq.scheduler import (
     ScheduleDefinition,
@@ -256,6 +261,16 @@ def _def(**overrides) -> ScheduleDefinition:
     }
     base.update(overrides)
     return ScheduleDefinition(**base)
+
+
+class TestDelayedArgumentsEncoding:
+    def test_custom_object_in_args_raises_raw_type_error(self):
+        class Custom:
+            pass
+
+        with pytest.raises(TypeError) as exc_info:
+            msgspec.json.encode(_def(args=(Custom(),)))
+        assert not isinstance(exc_info.value, ResultSerializationError)
 
 
 class TestScheduleStoreRequiresConnectedBackend:

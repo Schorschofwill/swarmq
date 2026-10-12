@@ -38,7 +38,7 @@ except SwarmQError as exc:
 | `TaskError` | `SwarmQError` | Der Task-Body raiste; bis `get_result()` propagiert |
 | `TaskCancelledError` | `TaskError` | `app.cancel(task_id)` griff während der Ausführung |
 | `ResultNotReadyError` | `SwarmQError` | `get_result()` lief in Timeout, bevor ein Ergebnis ankam |
-| `ResultExpiredError` | `SwarmQError` | Ergebnis existierte, Valkey-TTL hat es verfallen lassen |
+| `ResultExpiredError` | `SwarmQError` | Derzeit nie geworfen (reserviert); ein abgelaufenes Ergebnis wirft `ResultNotReadyError` |
 | `ResultSerializationError` | `SwarmQError` | Ergebnis ist nicht msgpack-serialisierbar |
 | `Retry` | `SwarmQError` | Control Flow — aus Task-Code geraist, um Retry anzufordern |
 | `NoRetry` | `SwarmQError` | Control Flow — aus Task-Code geraist, um Retries zu umgehen |
@@ -320,7 +320,8 @@ except TaskCancelledError:
 ohne Ergebnis in Valkey.
 
 **Ursache.** Der Task läuft noch, der Worker starb, der Task landete
-in der DLQ ohne Ergebnis zu speichern, oder die `task_id` ist falsch.
+in der DLQ ohne Ergebnis zu speichern, das Ergebnis ist nach seiner
+`result_ttl` abgelaufen, oder die `task_id` ist falsch.
 
 **Recovery.** Timeout erhöhen, Worker-Logs prüfen oder — falls der
 Task in Retry-Loops hängt — die DLQ inspizieren.
@@ -337,14 +338,14 @@ except ResultNotReadyError:
 
 ## `ResultExpiredError`
 
-**Wann geraist.** `get_result()` findet den Result-Key weg, obwohl
-ein Metadaten-Marker noch anzeigt, dass der Task beendet war. In
-v0.x ist das selten — das Backend raist den „weg"-Fall meist als
-`ResultNotReadyError` — und die Klasse bleibt als stabiler Haken
-für ein künftiges Release, das beides trennt.
+**Wann geraist.** Derzeit nie. Nach Ablauf der Ergebnis-TTL wirft
+`get_result()` `ResultNotReadyError`, genau wie bei einem Ergebnis, das
+noch nicht da ist. Die Klasse bleibt als stabiler Haken für ein
+späteres Release, das beide Fälle trennt; sie heute zu fangen bewirkt
+nichts.
 
-**Recovery.** `result_ttl` (`SWARMQ_RESULT_TTL`) erhöhen oder das
-Ergebnis früher abholen.
+**Recovery.** Damit Ergebnisse länger lesbar bleiben, `result_ttl`
+(`SWARMQ_RESULT_TTL`) erhöhen oder das Ergebnis früher abholen.
 
 ## `ResultSerializationError`
 

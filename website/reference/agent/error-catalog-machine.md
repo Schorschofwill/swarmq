@@ -39,7 +39,7 @@ Every row has the following columns:
 | `swarmq.exceptions.TaskError` | `SwarmQError` | library | result | n/a (post-mortem) | n/a | n/a | `error_message`, `error_class`, `is_error=true` |
 | `swarmq.exceptions.TaskCancelledError` | `TaskError` | library | run, result | no | no (cancel bypasses DLQ) | n/a | `is_cancelled=true` |
 | `swarmq.exceptions.ResultNotReadyError` | `SwarmQError` | library | result | no | n/a | n/a | raised to caller |
-| `swarmq.exceptions.ResultExpiredError` | `SwarmQError` | library | result | no | n/a | n/a | raised to caller |
+| `swarmq.exceptions.ResultExpiredError` | `SwarmQError` | library | result | no | n/a | n/a | not raised (reserved) |
 | `swarmq.exceptions.ResultSerializationError` | `SwarmQError` | library | run | no | yes | n/a | `error_message`, `is_error=true` |
 | `swarmq.exceptions.Retry` | `SwarmQError` | task_code | run | yes (consumes budget) | no | n/a | control flow |
 | `swarmq.exceptions.NoRetry` | `SwarmQError` | task_code | run | no | yes (immediate) | n/a | control flow |
@@ -48,6 +48,9 @@ Every row has the following columns:
 | `swarmq.exceptions.WorkflowNotFound` | `SwarmQError` | library | result | no | n/a | n/a | raised to caller |
 | `swarmq.exceptions.WorkflowResultExpired` | `SwarmQError` | library | result | no | n/a | n/a | raised to caller |
 | `swarmq.exceptions.WorkflowStateConflict` | `SwarmQError` | library | run | yes | no | n/a | redelivery of the step message |
+
+`ResultExpiredError` is currently never raised; after the result TTL
+expires, `get_result` raises `ResultNotReadyError`.
 
 ## CLI exit codes
 

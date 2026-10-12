@@ -266,7 +266,7 @@ _ERROR_SEMANTICS: dict[str, dict[str, Any]] = {
         "retriable": "no",
         "dlq_on_uncaught": "n/a",
         "exit_code_on_cli": None,
-        "transport_field": "raised to caller",
+        "transport_field": "not raised (reserved)",
     },
     "ResultSerializationError": {
         "origin": "library",

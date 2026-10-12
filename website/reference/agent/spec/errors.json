@@ -234,7 +234,7 @@
     },
     {
       "dlq_on_uncaught": "n/a",
-      "doc": null,
+      "doc": "Currently never raised; a stable hook for later telling an expired\nresult apart from one that is not ready yet. After the result TTL,\n``get_result`` raises ``ResultNotReadyError``.",
       "exception_class": "swarmq.exceptions.ResultExpiredError",
       "exit_code_on_cli": null,
       "init_params": [],
@@ -243,7 +243,7 @@
       "origin": "library",
       "parent": "SwarmQError",
       "retriable": "no",
-      "transport_field": "raised to caller",
+      "transport_field": "not raised (reserved)",
       "when": [
         "result"
       ]

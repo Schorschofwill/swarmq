@@ -239,7 +239,9 @@ class WorkflowResultExpired(SwarmQError):
 
 
 class ResultExpiredError(SwarmQError):
-    pass
+    """Currently never raised; a stable hook for later telling an expired
+    result apart from one that is not ready yet. After the result TTL,
+    ``get_result`` raises ``ResultNotReadyError``."""
 
 
 class ResultSerializationError(SwarmQError):
