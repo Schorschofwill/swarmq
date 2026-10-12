@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -30,7 +31,7 @@ from swarmq.task import DeliveryMode, Task, TaskInfo
 from swarmq.worker import Worker
 from swarmq.workflow_orchestration import WorkflowStep, WorkflowStepEnqueuer
 from tests.support.messages import make_message
-from tests.unit.worker._helpers import _default_payload, lock_wait_exceeded_headers
+from tests.unit.worker._helpers import _default_payload, as_mock, lock_wait_exceeded_headers
 
 _HASH = "a" * 64
 _SCHEDFIRE = "golden-sched:1700000000000"
@@ -65,6 +66,7 @@ class GatedTask(Task):
         hard_timeout=60,
     )
 
+    @override
     async def run(self) -> str:
         return "ok"
 
@@ -72,6 +74,7 @@ class GatedTask(Task):
 class PlainTask(Task):
     task_info = TaskInfo(name="pipe-plain", queues=["default"], max_retries=0)
 
+    @override
     async def run(self) -> str:
         return "ok"
 
@@ -79,6 +82,7 @@ class PlainTask(Task):
 class LockedTask(Task):
     task_info = TaskInfo(name="pipe-locked", queues=["default"], lock="resource", hard_timeout=60)
 
+    @override
     async def run(self) -> str:
         return "ok"
 
@@ -86,6 +90,7 @@ class LockedTask(Task):
 class ExpiringTask(Task):
     task_info = TaskInfo(name="pipe-expiring", queues=["default"], max_age=1)
 
+    @override
     async def run(self) -> str:
         return "ok"
 
@@ -93,11 +98,12 @@ class ExpiringTask(Task):
 class FafTask(Task):
     task_info = TaskInfo(name="pipe-faf", queues=["default"], delivery=DeliveryMode.FIRE_AND_FORGET)
 
+    @override
     async def run(self) -> str:
         return "ok"
 
 
-def _payload(name: str, task_id: str = "t-1") -> dict:
+def _payload(name: str, task_id: str = "t-1") -> dict[str, Any]:
     return {"task": {"id": task_id, "queue": "default", "name": name}, "args": [], "kwargs": {}}
 
 
@@ -132,7 +138,7 @@ def backend(rec: Recorder) -> MagicMock:
     return be
 
 
-def _worker(broker: MagicMock, backend: MagicMock, rec: Recorder, *tasks: type[Task], **kwargs: object) -> Worker:
+def _worker(broker: MagicMock, backend: MagicMock, rec: Recorder, *tasks: type[Task], **kwargs: Any) -> Worker:
     registry = TaskRegistry()
     for task in tasks:
         registry.register(task)
@@ -204,9 +210,7 @@ async def test_faf_acks_exactly_once_and_no_verb_after_failure(broker, backend, 
 async def test_redelivered_outcome_keeps_dedup_flag_and_clears_inflight_claim(broker, backend, rec) -> None:
     backend.store_result = rec.spy("backend.store_result", exc=BackendConnectionError("down"))
     worker = _worker(broker, backend, rec, PlainTask)
-    msg = make_message(
-        _payload("pipe-plain"), headers={"x-swarmq-schedfire": _SCHEDFIRE, HEADER_UNIQUE_HASH: _HASH}
-    )
+    msg = make_message(_payload("pipe-plain"), headers={"x-swarmq-schedfire": _SCHEDFIRE, HEADER_UNIQUE_HASH: _HASH})
 
     await worker._handle_message(msg)
 
@@ -218,13 +222,9 @@ async def test_redelivered_outcome_keeps_dedup_flag_and_clears_inflight_claim(br
     assert "backend.schedules.mark_fire_completed" not in rec.calls
 
 
-async def test_terminal_release_in_finally_releases_after_ack_and_writes_completed_marker(
-    broker, backend, rec
-) -> None:
+async def test_terminal_release_in_finally_releases_after_ack_and_writes_completed_marker(broker, backend, rec) -> None:
     worker = _worker(broker, backend, rec, PlainTask)
-    msg = make_message(
-        _payload("pipe-plain"), headers={"x-swarmq-schedfire": _SCHEDFIRE, HEADER_UNIQUE_HASH: _HASH}
-    )
+    msg = make_message(_payload("pipe-plain"), headers={"x-swarmq-schedfire": _SCHEDFIRE, HEADER_UNIQUE_HASH: _HASH})
 
     await worker._handle_message(msg)
 
@@ -237,7 +237,7 @@ async def test_terminal_release_in_finally_releases_after_ack_and_writes_complet
 async def test_terminal_already_released_does_not_release_twice(broker, backend, rec) -> None:
     """Ende der Lock-Wartezeit (MR 13): Dead-Letter + Freigabe inline — der finally gibt nicht erneut frei."""
     worker = _worker(broker, backend, rec, LockedTask)
-    worker._lock_manager.acquire = rec.spy("lock_manager.acquire", None)
+    as_mock(worker._lock_manager).acquire = rec.spy("lock_manager.acquire", None)
     msg = make_message(
         _payload("pipe-locked"),
         headers={HEADER_UNIQUE_HASH: _HASH, **lock_wait_exceeded_headers(worker._config)},
@@ -274,9 +274,7 @@ async def test_unhandled_pipeline_exception_is_terminal_with_release_and_marker(
     chain = MagicMock()
     chain.run_pre_execute = AsyncMock(side_effect=RuntimeError("hook exploded"))
     worker = _worker(broker, backend, rec, PlainTask, middleware_chain=lambda: chain)
-    msg = make_message(
-        _payload("pipe-plain"), headers={"x-swarmq-schedfire": _SCHEDFIRE, HEADER_UNIQUE_HASH: _HASH}
-    )
+    msg = make_message(_payload("pipe-plain"), headers={"x-swarmq-schedfire": _SCHEDFIRE, HEADER_UNIQUE_HASH: _HASH})
 
     await worker._handle_message(msg)
 
@@ -305,12 +303,12 @@ class TestRejectReasons:
             registry.register(task)
         config = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x", **cfg)
         worker = Worker(broker=broker, backend=backend, registry=registry, config=config)
-        events: list[dict] = []
+        events: list[dict[str, Any]] = []
 
         async def _dispatch(signal, **kwargs):
             events.append({"signal": signal, **kwargs})
 
-        worker._signal_dispatcher.dispatch = AsyncMock(side_effect=_dispatch)
+        worker._signal_dispatcher.dispatch = AsyncMock(side_effect=_dispatch)  # type: ignore[method-assign]  # Dispatch-Spy
         return worker, broker, events
 
     @staticmethod
@@ -331,7 +329,8 @@ class TestRejectReasons:
         (rejected,) = self._rejections(events)
         assert rejected["reason"] == "body_too_large"
         assert rejected["queue"] == "tasks.high"
-        assert rejected["task_id"] is None and rejected["task_name"] is None
+        assert rejected["task_id"] is None
+        assert rejected["task_name"] is None
 
     async def test_undecodable_body(self, broker, backend):
         worker, _broker, events = self._worker_with_spy(broker, backend)
@@ -379,6 +378,7 @@ class TestRejectReasons:
         class Ok(Task):
             task_info = TaskInfo(name="reject-ok", queues=["default"])
 
+            @override
             async def run(self) -> str:
                 return "ok"
 
@@ -400,9 +400,11 @@ class TestRejectReasons:
     async def test_broken_middleware_chain_factory_carries_the_identity(self, broker, backend):
         """B14, zweiter Weg mit dekodiertem Body: Auch hier stehen Kennung und
         Name fest, bevor die Kette gebaut wird."""
+
         class Ok(Task):
             task_info = TaskInfo(name="reject-ok-id", queues=["default"])
 
+            @override
             async def run(self) -> str:
                 return "ok"
 
@@ -424,9 +426,11 @@ class TestRejectReasons:
 
     async def test_broken_middleware_chain_factory_logs_error_fields(self, broker, backend, swarmq_logs):
         """Plan 2026-10-06-0831, U9 (R17)."""
+
         class Ok(Task):
             task_info = TaskInfo(name="reject-ok-log", queues=["default"])
 
+            @override
             async def run(self) -> str:
                 return "ok"
 
@@ -444,11 +448,14 @@ class TestRejectReasons:
         [entry] = [e for e in swarmq_logs if e["event"] == "middleware_chain_factory_failed"]
         assert entry["logger"] == "swarmq.worker.pipeline"
         assert entry["log_level"] == "error"
-        assert entry["error_type"] == "RuntimeError" and entry["error"] == "factory exploded"
+        assert entry["error_type"] == "RuntimeError"
+        assert entry["error"] == "factory exploded"
+
 
 class _LockedForLog(Task):
     task_info = TaskInfo(name="locked_for_log", queues=["default"], lock="resource", hard_timeout=60)
 
+    @override
     async def run(self) -> None:
         return None
 
@@ -461,7 +468,7 @@ async def test_lock_release_failure_is_a_warning_with_error_fields(broker, backe
     config = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x")
     worker = Worker(broker=broker, backend=backend, registry=registry, config=config)
     worker._lock_manager = MagicMock()
-    worker._lock_manager.acquire = AsyncMock(
+    as_mock(worker._lock_manager).acquire = AsyncMock(
         side_effect=lambda name, *, owner, ttl_ms, max_concurrency: LockToken(
             name=name, owner=owner, max_concurrency=max_concurrency
         )
@@ -474,12 +481,14 @@ async def test_lock_release_failure_is_a_warning_with_error_fields(broker, backe
     assert entry["logger"] == "swarmq.worker.pipeline"
     assert entry["log_level"] == "warning"
     assert entry["lock_name"] == "resource"
-    assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+    assert entry["error_type"] == "BackendConnectionError"
+    assert entry["error"] == "valkey down"
 
 
 class _ScheduledForLog(Task):
     task_info = TaskInfo(name="scheduled_for_log", queues=["default"])
 
+    @override
     async def run(self) -> str:
         return "ok"
 
@@ -501,8 +510,10 @@ async def test_schedfire_finalize_failure_is_a_warning_with_error_fields(broker,
     [entry] = [e for e in swarmq_logs if e["event"] == "schedfire_finalize_failed"]
     assert entry["logger"] == "swarmq.worker.pipeline"
     assert entry["log_level"] == "warning"
-    assert entry["schedfire_key"] == "cron_a:1700000000000" and entry["terminal"] is True
-    assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+    assert entry["schedfire_key"] == "cron_a:1700000000000"
+    assert entry["terminal"] is True
+    assert entry["error_type"] == "BackendConnectionError"
+    assert entry["error"] == "valkey down"
 
 
 @pytest.mark.timeout(5)
@@ -534,9 +545,11 @@ class _EnqueueRecorder(Middleware):
     def __init__(self, calls: list[str]) -> None:
         self.calls = calls
 
+    @override
     async def pre_enqueue(self, message) -> None:
         self.calls.append(f"pre_enqueue:{message['step_path']}:{message['delivery_mode']}")
 
+    @override
     async def post_enqueue(self, message) -> None:
         self.calls.append(f"post_enqueue:{message['step_path']}")
 
@@ -557,18 +570,27 @@ async def test_workflow_step_publisher_runs_middleware_then_signals():
     registry = TaskRegistry()
     config = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x")
     worker = Worker(
-        broker=broker, backend=backend, registry=registry, config=config,
+        broker=broker,
+        backend=backend,
+        registry=registry,
+        config=config,
         middleware_chain=MiddlewareChain([_EnqueueRecorder(calls)]),
     )
 
     async def _dispatch(signal, **kwargs):
         calls.append(f"signal:{signal.value}:{kwargs.get('step_path', '-')}")
 
-    worker._signal_dispatcher.dispatch = AsyncMock(side_effect=_dispatch)
+    worker._signal_dispatcher.dispatch = AsyncMock(side_effect=_dispatch)  # type: ignore[method-assign]  # Dispatch-Spy
 
     step = WorkflowStep(
-        workflow_id="wf-1", step_path="/1", task_id="t1", task_name="echo",
-        queue="default", args=[1], kwargs={}, headers={"x-swarmq-workflow-step": "/1"},
+        workflow_id="wf-1",
+        step_path="/1",
+        task_id="t1",
+        task_name="echo",
+        queue="default",
+        args=[1],
+        kwargs={},
+        headers={"x-swarmq-workflow-step": "/1"},
     )
     publisher = WorkflowStepEnqueuer(
         publish=worker._publish_workflow_step,

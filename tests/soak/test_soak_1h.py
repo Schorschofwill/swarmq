@@ -21,6 +21,7 @@ import contextlib
 import os
 import time
 import uuid
+from typing import Literal, TypedDict, override
 
 import httpx
 import psutil
@@ -50,10 +51,22 @@ _WARMUP_S = float(os.environ.get("SWARMQ_SOAK_WARMUP_S", "30"))
 # units of drift before percentage drift is enforced.
 _MIN_ABS_DELTA = {
     "rss": 50 * 1024 * 1024,  # 50 MiB absolute slack
-    "fds": 20,                # 20 FDs absolute slack
-    "valkey_clients": 10,     # 10 client connections slack
-    "rabbit_channels": 10,    # 10 channels slack
+    "fds": 20,  # 20 FDs absolute slack
+    "valkey_clients": 10,  # 10 client connections slack
+    "rabbit_channels": 10,  # 10 channels slack
 }
+
+
+_Metric = Literal["rss", "fds", "valkey_clients", "rabbit_channels"]
+
+
+class _Sample(TypedDict):
+    t: float
+    label: str
+    rss: float
+    fds: float
+    valkey_clients: float
+    rabbit_channels: float
 
 
 def _unique_queue() -> str:
@@ -77,12 +90,13 @@ async def _valkey_client_count(monitor: valkey.asyncio.Valkey) -> int:
 async def _rabbit_channel_count(mgmt_url: str) -> int:
     """Count open RabbitMQ channels via Management API."""
     async with httpx.AsyncClient(
-        auth=("guest", "guest"), timeout=5.0,
+        auth=("guest", "guest"),
+        timeout=5.0,
     ) as http:
         try:
             resp = await http.get(f"{mgmt_url}/api/channels")
             resp.raise_for_status()
-        except (httpx.HTTPError, httpx.HTTPStatusError):
+        except httpx.HTTPError, httpx.HTTPStatusError:
             return -1  # sentinel: mgmt API unavailable
         return len(resp.json())
 
@@ -107,7 +121,9 @@ def _process_metrics() -> tuple[int, int]:
 @pytest.mark.soak
 @pytest.mark.timeout(int(_DURATION_S) + 600)
 async def test_1h_continuous_load_no_leaks(
-    rabbitmq_url: str, valkey_url: str, rabbitmq_mgmt_url: str,
+    rabbitmq_url: str,
+    valkey_url: str,
+    rabbitmq_mgmt_url: str,
 ) -> None:
     """Sustain ~100 tasks/s for the configured duration; assert no leaks."""
     queue = _unique_queue()
@@ -116,6 +132,7 @@ async def test_1h_continuous_load_no_leaks(
     class SoakTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self) -> int:
             return 1
 
@@ -127,7 +144,7 @@ async def test_1h_continuous_load_no_leaks(
     worker_backend = ValkeyBackend(valkey_url)
     worker_app = SwarmQ(worker_broker, worker_backend, queues=[queue])
 
-    samples: list[dict[str, float]] = []
+    samples: list[_Sample] = []
 
     # Persistent monitor client so CLIENT LIST doesn't open a fresh
     # connection each sample (which would self-pollute the metric).
@@ -146,11 +163,11 @@ async def test_1h_continuous_load_no_leaks(
         # Let the worker settle before baseline to avoid counting churn.
         await asyncio.sleep(2.0)
 
-        async def _sample(label: str) -> dict[str, float]:
+        async def _sample(label: str) -> _Sample:
             rss, fds = _process_metrics()
             valkey_clients = await _valkey_client_count(monitor)
             rabbit_channels = await _rabbit_channel_count(rabbitmq_mgmt_url)
-            snap = {
+            snap: _Sample = {
                 "t": time.monotonic(),
                 "label": label,
                 "rss": float(rss),
@@ -217,22 +234,15 @@ async def test_1h_continuous_load_no_leaks(
     # baseline. For the 60s default duration this is the t+30s sample;
     # for the 1h run it's also t+30s. Falls back to pre-load if none.
     t0 = samples[0]["t"]
-    post_warmup = [
-        s for s in samples
-        if s["label"].startswith("t+")
-        and (s["t"] - t0) >= _WARMUP_S
-    ]
+    post_warmup = [s for s in samples if s["label"].startswith("t+") and (s["t"] - t0) >= _WARMUP_S]
     baseline_sample = post_warmup[0] if post_warmup else samples[0]
-    compare = (
-        [baseline_sample, *samples[samples.index(baseline_sample) + 1:]]
-    )
+    compare = [baseline_sample, *samples[samples.index(baseline_sample) + 1 :]]
     print(
-        f"[soak] drift baseline = {baseline_sample['label']}"
-        f" (t+{int(baseline_sample['t'] - t0)}s)",
+        f"[soak] drift baseline = {baseline_sample['label']} (t+{int(baseline_sample['t'] - t0)}s)",
         flush=True,
     )
 
-    def _drift(metric: str) -> tuple[float, float]:
+    def _drift(metric: _Metric) -> tuple[float, float]:
         """Return (relative_drift, absolute_peak_delta) for metric."""
         values = [s[metric] for s in compare if s[metric] >= 0]
         if len(values) < 2 or values[0] <= 0:
@@ -241,15 +251,13 @@ async def test_1h_continuous_load_no_leaks(
         peak = max(values)
         return abs(peak - base) / base, abs(peak - base)
 
-    def _check(metric: str, label: str) -> None:
+    def _check(metric: _Metric, label: str) -> None:
         rel, abs_ = _drift(metric)
         slack = _MIN_ABS_DELTA[metric]
         # If absolute change is within slack, accept regardless of %.
         ok = abs_ <= slack or rel < _DRIFT_THRESHOLD
         print(
-            f"[soak] drift {label:>16s} "
-            f"rel={rel:.1%} abs={abs_:.0f} slack={slack:.0f} "
-            f"ok={ok}",
+            f"[soak] drift {label:>16s} rel={rel:.1%} abs={abs_:.0f} slack={slack:.0f} ok={ok}",
             flush=True,
         )
         assert ok, (

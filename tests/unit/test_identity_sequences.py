@@ -204,7 +204,8 @@ async def test_a1_broker_dlx_ui_move_worker_dlq_and_cli_are_three_generations() 
     replay = w.ui_move(parked)
     assert await w.deliver(replay) is True
     dlq = await w.worker_dlq(replay)  # der Lauf scheiterte terminal
-    assert dlq["x-swarmq-replay-id"] == generation_id(f"{TASK}#1") and "x-death" not in dlq
+    assert dlq["x-swarmq-replay-id"] == generation_id(f"{TASK}#1")
+    assert "x-death" not in dlq
     forwarded = await w.cli_retry(dlq)
     assert await w.run_ok(forwarded) is True
     assert w.runs == [f"{TASK}#1", f"{TASK}|{generation_id(f'{TASK}#1')}#1"]
@@ -240,7 +241,8 @@ async def test_a2_second_round_ui_move_is_skipped_dlq_retry_runs() -> None:
     # ``dlq retry`` laeuft: x-death zeigt, dass die Generation verbraucht ist.
     assert await w.run_ok(await w.cli_retry(parked_again)) is True
     gen = generation_id(TASK)
-    assert w.runs[:3] == [TASK, f"{TASK}|{gen}", f"{TASK}|{gen}#1"] and len(set(w.runs)) == 4
+    assert w.runs[:3] == [TASK, f"{TASK}|{gen}", f"{TASK}|{gen}#1"]
+    assert len(set(w.runs)) == 4
 
 
 async def test_a3_legacy_dlq_without_generation_replays_once_per_generation() -> None:
@@ -250,7 +252,8 @@ async def test_a3_legacy_dlq_without_generation_replays_once_per_generation() ->
     again_dead = _legacy_dlq(first["x-swarmq-replay-id"])  # 0.11-Worker stempelt ohne Generation
     second = await w.cli_retry(again_dead)
     assert await w.run_ok(second) is True
-    assert len(set(w.runs)) == 2 and all(len(r.split("|")[1]) == 32 for r in w.runs)
+    assert len(set(w.runs)) == 2
+    assert all(len(r.split("|")[1]) == 32 for r in w.runs)
     # Review MR 12 (P2-2): derselbe Bestand ein zweites Mal per CLI wird verworfen.
     assert await w.run_ok(await w.cli_retry(_legacy_dlq())) is False
 
@@ -284,7 +287,8 @@ async def test_at_least_once_duplicate_is_skipped_also_for_a_replay() -> None:
     dlq = await w.worker_dlq({})
     assert await w.run_ok({}) is False
     forwarded = await w.cli_retry(dlq)
-    assert await w.run_ok(forwarded) is True and await w.run_ok(forwarded) is False
+    assert await w.run_ok(forwarded) is True
+    assert await w.run_ok(forwarded) is False
     assert len(w.runs) == 2
 
 
@@ -294,7 +298,8 @@ async def test_retry_copy_through_any_delay_queue_keeps_n(delay_queue: str) -> N
     replay = w.ui_move(w.broker_dlx({}))
     assert await w.deliver(replay) is True
     copy = await w.worker_retry_copy(replay)
-    assert copy["x-swarmq-xdeath-base"] == 1 and "x-death" not in copy
+    assert copy["x-swarmq-xdeath-base"] == 1
+    assert "x-death" not in copy
     arrived = w.broker_dlx(copy, queue=delay_queue, reason="expired")
     assert await w.deliver(arrived) is True
     assert w.runs == [f"{TASK}#1", f"{TASK}#1"]

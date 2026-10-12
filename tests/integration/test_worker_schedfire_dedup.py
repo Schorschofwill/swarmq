@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from typing import override
 
 import pytest
 
@@ -32,8 +33,11 @@ def _cleanup_tasks():
 
 
 class TestSchedfireDedupIntegration:
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_duplicate_schedfire_executes_only_once(
-        self, rabbitmq_url, valkey_url, _cleanup_tasks,
+        self,
+        rabbitmq_url,
+        valkey_url,
     ):
         queue = _unique_queue()
         call_count = 0
@@ -42,6 +46,7 @@ class TestSchedfireDedupIntegration:
         class PingTask(Task):
             task_info = TaskInfo(name="sf_ping", queues=[queue])
 
+            @override
             async def run(self) -> str:
                 nonlocal call_count
                 call_count += 1
@@ -62,11 +67,13 @@ class TestSchedfireDedupIntegration:
             # Publish two messages with identical x-swarmq-schedfire header.
             schedfire_key = f"{queue}-sched:1700000000000"
             task_id = uuid.uuid4().hex
-            payload = encode_json({
-                "task": {"id": task_id, "queue": queue, "name": "sf_ping"},
-                "args": [],
-                "kwargs": {},
-            })
+            payload = encode_json(
+                {
+                    "task": {"id": task_id, "queue": queue, "name": "sf_ping"},
+                    "args": [],
+                    "kwargs": {},
+                }
+            )
 
             for _ in range(2):
                 await app.broker.publish(
@@ -92,13 +99,14 @@ class TestSchedfireDedupIntegration:
                 except asyncio.CancelledError:
                     pass
 
-            assert call_count == 1, (
-                f"expected exactly one execution, got {call_count}"
-            )
+            assert call_count == 1, f"expected exactly one execution, got {call_count}"
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     @pytest.mark.timeout(20)
     async def test_scheduled_task_retry_is_not_dropped(
-        self, rabbitmq_url, valkey_url, _cleanup_tasks,
+        self,
+        rabbitmq_url,
+        valkey_url,
     ):
         """A scheduled-fire task that fails on its first attempt must be
         retried, not silently dropped (P0-B, 2026-06-02 audit).
@@ -122,6 +130,7 @@ class TestSchedfireDedupIntegration:
                 retry_base_delay=0.5,
             )
 
+            @override
             async def run(self) -> str:
                 nonlocal call_count
                 call_count += 1
@@ -134,17 +143,22 @@ class TestSchedfireDedupIntegration:
         backend = ValkeyBackend(valkey_url)
 
         async with SwarmQ(
-            broker, backend, queues=[queue], concurrency=1,
+            broker,
+            backend,
+            queues=[queue],
+            concurrency=1,
         ) as app:
             await app.broker.declare_queue(queue)
 
             schedfire_key = f"{queue}-sched:1700000000000"
             task_id = uuid.uuid4().hex
-            payload = encode_json({
-                "task": {"id": task_id, "queue": queue, "name": "sf_flaky"},
-                "args": [],
-                "kwargs": {},
-            })
+            payload = encode_json(
+                {
+                    "task": {"id": task_id, "queue": queue, "name": "sf_flaky"},
+                    "args": [],
+                    "kwargs": {},
+                }
+            )
             await app.broker.publish(
                 queue,
                 payload,
@@ -164,6 +178,4 @@ class TestSchedfireDedupIntegration:
                 except asyncio.CancelledError:
                     pass
 
-            assert call_count == 2, (
-                f"expected the retry to run (2 executions), got {call_count}"
-            )
+            assert call_count == 2, f"expected the retry to run (2 executions), got {call_count}"

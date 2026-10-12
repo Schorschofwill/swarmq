@@ -58,7 +58,10 @@ def _new_queue(prefix: str) -> str:
 
 
 async def _enqueue(
-    rabbitmq_url: str, valkey_url: str, queue: str, calls: list[tuple[str, tuple[Any, ...]]],
+    rabbitmq_url: str,
+    valkey_url: str,
+    queue: str,
+    calls: list[tuple[str, tuple[Any, ...]]],
 ) -> list[str]:
     # Das Fixture-Modul liest die Queue beim Import; die Registry wird nach
     # jedem Test geleert, ``ensure_fixture_registered`` laedt dann neu.
@@ -88,18 +91,24 @@ def _base_env(rabbitmq_url: str, valkey_url: str, queue: str) -> dict[str, str]:
     """Env ohne geerbte Logging-Einstellungen -- sonst entscheidet die Shell
     des Entwicklers ueber das Ergebnis."""
     env = {k: v for k, v in os.environ.items() if not k.startswith(("SWARMQ_LOG", "SWARMQ_CONFIGURE_LOGGING"))}
-    env.update({
-        "SWARMQ_BROKER_URL": rabbitmq_url,
-        "SWARMQ_BACKEND_URL": valkey_url,
-        "LOG_E2E_QUEUE": queue,
-        "PYTHONUNBUFFERED": "1",
-        "PYTHONPATH": os.pathsep.join(filter(None, [str(_REPO_ROOT), os.environ.get("PYTHONPATH")])),
-    })
+    env.update(
+        {
+            "SWARMQ_BROKER_URL": rabbitmq_url,
+            "SWARMQ_BACKEND_URL": valkey_url,
+            "LOG_E2E_QUEUE": queue,
+            "PYTHONUNBUFFERED": "1",
+            "PYTHONPATH": os.pathsep.join(filter(None, [str(_REPO_ROOT), os.environ.get("PYTHONPATH")])),
+        }
+    )
     return env
 
 
 def _run_burst_worker(
-    queue: str, module: str, *extra: str, env: dict[str, str], cwd: Path = _REPO_ROOT,
+    queue: str,
+    module: str,
+    *extra: str,
+    env: dict[str, str],
+    cwd: Path = _REPO_ROOT,
 ) -> tuple[int, str, int]:
     """``swarmq worker --burst`` bis zum Ende; liefert (rc, stderr, supervisor_pid).
 
@@ -108,12 +117,25 @@ def _run_burst_worker(
     """
     proc = subprocess.Popen(
         [
-            sys.executable, "-m", "swarmq.cli", "worker",
-            "--module", module, "--queues", queue,
-            "--burst", "--burst-idle-timeout", "3", *extra,
+            sys.executable,
+            "-m",
+            "swarmq.cli",
+            "worker",
+            "--module",
+            module,
+            "--queues",
+            queue,
+            "--burst",
+            "--burst-idle-timeout",
+            "3",
+            *extra,
         ],
-        cwd=str(cwd), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, start_new_session=True,
+        cwd=str(cwd),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
     )
     try:
         stdout, stderr = proc.communicate(timeout=_RUN_TIMEOUT_S)
@@ -135,42 +157,63 @@ def _lines(output: str) -> list[str]:
 
 def _write_log_config(path: Path) -> None:
     """Das Beispiel aus website/reference/logging.md plus Markierungsfilter."""
-    path.write_text(json.dumps({
-        "version": 1,
-        "filters": {"mark": {"()": f"{_TASKS_MODULE}.MarkFilter"}},
-        "formatters": {
-            "json": {"()": "swarmq.logging.build_formatter", "json": True, "colors": False},
-        },
-        "handlers": {
-            "stderr": {
-                "class": "logging.StreamHandler",
-                "stream": "ext://sys.stderr",
-                "formatter": "json",
-                "filters": ["mark"],
-            },
-            "queue": {"class": "logging.handlers.QueueHandler", "handlers": ["stderr"]},
-        },
-        "root": {"level": "INFO", "handlers": ["queue"]},
-        "loggers": {"aio_pika": {"level": "WARNING"}, "aiormq": {"level": "WARNING"}},
-    }))
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "filters": {"mark": {"()": f"{_TASKS_MODULE}.MarkFilter"}},
+                "formatters": {
+                    "json": {"()": "swarmq.logging.build_formatter", "json": True, "colors": False},
+                },
+                "handlers": {
+                    "stderr": {
+                        "class": "logging.StreamHandler",
+                        "stream": "ext://sys.stderr",
+                        "formatter": "json",
+                        "filters": ["mark"],
+                    },
+                    "queue": {"class": "logging.handlers.QueueHandler", "handlers": ["stderr"]},
+                },
+                "root": {"level": "INFO", "handlers": ["queue"]},
+                "loggers": {"aio_pika": {"level": "WARNING"}, "aiormq": {"level": "WARNING"}},
+            }
+        )
+    )
 
 
 def test_relative_log_config_applies_in_supervisor_workers_and_compute_children(
-    rabbitmq_url: str, valkey_url: str, tmp_path: Path,
+    rabbitmq_url: str,
+    valkey_url: str,
+    tmp_path: Path,
 ) -> None:
     queue = _new_queue("cfg")
-    tids = asyncio.run(_enqueue(rabbitmq_url, valkey_url, queue, [
-        ("log_async_echo", ("a1",)),
-        ("log_cpu_sum", (200_000,)),
-    ]))
+    tids = asyncio.run(
+        _enqueue(
+            rabbitmq_url,
+            valkey_url,
+            queue,
+            [
+                ("log_async_echo", ("a1",)),
+                ("log_cpu_sum", (200_000,)),
+            ],
+        )
+    )
     (tmp_path / "conf").mkdir()
     _write_log_config(tmp_path / "conf" / "logging.json")
 
     rc, output, supervisor_pid = _run_burst_worker(
-        queue, _TASKS_MODULE,
-        "--processes", "2", "--pool", "cpu", "--concurrency", "1",
-        "--log-config", "conf/logging.json",
-        env=_base_env(rabbitmq_url, valkey_url, queue), cwd=tmp_path,
+        queue,
+        _TASKS_MODULE,
+        "--processes",
+        "2",
+        "--pool",
+        "cpu",
+        "--concurrency",
+        "1",
+        "--log-config",
+        "conf/logging.json",
+        env=_base_env(rabbitmq_url, valkey_url, queue),
+        cwd=tmp_path,
     )
     assert rc == 0, output[-4000:]
 
@@ -194,7 +237,8 @@ def test_relative_log_config_applies_in_supervisor_workers_and_compute_children(
     started = [e for e in entries if e["event"] == "worker_started"]
     assert len(started) == 2, output[-4000:]
     worker_pids = {e["e2e_pid"] for e in started}
-    assert len(worker_pids) == 2 and supervisor_pid not in worker_pids
+    assert len(worker_pids) == 2
+    assert supervisor_pid not in worker_pids
 
     # Rechenkind: App-Zeilen aus dem Task, im Kind erzeugt, mit Kind-Kontext
     app_lines = [e for e in entries if e["event"] == "app_task_line"]
@@ -218,13 +262,18 @@ def test_relative_log_config_applies_in_supervisor_workers_and_compute_children(
 
 
 def test_no_configure_logging_leaves_the_app_format_in_every_worker(
-    rabbitmq_url: str, valkey_url: str,
+    rabbitmq_url: str,
+    valkey_url: str,
 ) -> None:
     queue = _new_queue("nocfg")
     [tid] = asyncio.run(_enqueue(rabbitmq_url, valkey_url, queue, [("log_async_echo", ("n1",))]))
 
     rc, output, _ = _run_burst_worker(
-        queue, _APP_MODULE, "--processes", "2", "--no-configure-logging",
+        queue,
+        _APP_MODULE,
+        "--processes",
+        "2",
+        "--no-configure-logging",
         env=_base_env(rabbitmq_url, valkey_url, queue),
     )
     assert rc == 0, output[-4000:]
@@ -249,7 +298,8 @@ def test_no_configure_logging_leaves_the_app_format_in_every_worker(
 
 
 def test_cli_format_and_level_beat_env_in_supervisor_and_workers(
-    rabbitmq_url: str, valkey_url: str,
+    rabbitmq_url: str,
+    valkey_url: str,
 ) -> None:
     queue = _new_queue("prio-cli")
     [tid] = asyncio.run(_enqueue(rabbitmq_url, valkey_url, queue, [("log_async_echo", ("c1",))]))
@@ -257,7 +307,14 @@ def test_cli_format_and_level_beat_env_in_supervisor_and_workers(
     env.update({"SWARMQ_LOG_FORMAT": "json", "SWARMQ_LOG_LEVEL": "DEBUG"})
 
     rc, output, _ = _run_burst_worker(
-        queue, _TASKS_MODULE, "--processes", "2", "--log-format", "human", "--log-level", "INFO",
+        queue,
+        _TASKS_MODULE,
+        "--processes",
+        "2",
+        "--log-format",
+        "human",
+        "--log-level",
+        "INFO",
         env=env,
     )
     assert rc == 0, output[-4000:]
@@ -267,7 +324,8 @@ def test_cli_format_and_level_beat_env_in_supervisor_and_workers(
     assert sum("worker_started" in line for line in lines) == 2, output[-4000:]
     assert any("worker_spawned" in line or "supervisor" in line for line in lines), output[-4000:]
     assert any("task_succeeded" in line and tid in line for line in lines), output[-4000:]
-    assert "task_received" not in output and "task_started" not in output
+    assert "task_received" not in output
+    assert "task_started" not in output
     assert "[debug" not in output
     assert "\x1b[" not in output
     [result] = asyncio.run(_results(rabbitmq_url, valkey_url, queue, [tid]))
@@ -275,7 +333,8 @@ def test_cli_format_and_level_beat_env_in_supervisor_and_workers(
 
 
 def test_env_format_and_level_apply_in_all_processes_without_cli_flags(
-    rabbitmq_url: str, valkey_url: str,
+    rabbitmq_url: str,
+    valkey_url: str,
 ) -> None:
     queue = _new_queue("prio-env")
     [tid] = asyncio.run(_enqueue(rabbitmq_url, valkey_url, queue, [("log_async_echo", ("e1",))]))
@@ -291,18 +350,20 @@ def test_env_format_and_level_apply_in_all_processes_without_cli_flags(
     assert len(started) == 2, output[-4000:]
     assert any(e["logger"].startswith("swarmq.process_manager") for e in entries)
     lifecycle = [
-        (e["event"], e["level"]) for e in entries
-        if e.get("logger") == "swarmq.task" and e.get("task_id") == tid
+        (e["event"], e["level"]) for e in entries if e.get("logger") == "swarmq.task" and e.get("task_id") == tid
     ]
     assert lifecycle == [
-        ("task_received", "debug"), ("task_started", "debug"), ("task_succeeded", "info"),
+        ("task_received", "debug"),
+        ("task_started", "debug"),
+        ("task_succeeded", "info"),
     ], output[-4000:]
     [result] = asyncio.run(_results(rabbitmq_url, valkey_url, queue, [tid]))
     assert result["tag"] == "e1"
 
 
 def test_invalid_env_format_overridden_by_cli_does_not_abort_workers(
-    rabbitmq_url: str, valkey_url: str,
+    rabbitmq_url: str,
+    valkey_url: str,
 ) -> None:
     queue = _new_queue("prio-bad")
     [tid] = asyncio.run(_enqueue(rabbitmq_url, valkey_url, queue, [("log_async_echo", ("b1",))]))
@@ -310,7 +371,13 @@ def test_invalid_env_format_overridden_by_cli_does_not_abort_workers(
     env["SWARMQ_LOG_FORMAT"] = "jsonl"
 
     rc, output, _ = _run_burst_worker(
-        queue, _TASKS_MODULE, "--processes", "2", "--log-format", "json", env=env,
+        queue,
+        _TASKS_MODULE,
+        "--processes",
+        "2",
+        "--log-format",
+        "json",
+        env=env,
     )
     assert rc == 0, output[-4000:]
 

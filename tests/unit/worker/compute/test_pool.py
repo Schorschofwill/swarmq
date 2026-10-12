@@ -8,19 +8,21 @@ Sentinel als Pipe-Leseende, Signale per gepatchtem ``os.kill``/``os.killpg``.
 from __future__ import annotations
 
 import asyncio
+import gc
 import itertools
 import os
 import pickle
 import queue as _queue
 import signal
 import threading
+import weakref
 from typing import Any, ClassVar
 
 import pytest
 
-from swarmq.worker.compute import pool as poolmod
+from swarmq.worker.compute.child import child_loop, child_once
 from swarmq.worker.compute.envelope import ComputeJob, ResultEnvelope
-from swarmq.worker.compute.pool import ChildDied, SlotPool, SlotUnavailable
+from swarmq.worker.compute.pool import ChildDied, SlotPool, SlotUnavailable, _Child
 
 _PIDS = itertools.count(40000)
 _EOF = object()
@@ -29,7 +31,7 @@ _EOF = object()
 class _FakePipeEnd:
     """Beide Enden einer Pipe-Attrappe teilen sich eine Thread-Queue."""
 
-    def __init__(self, q: _queue.Queue, *, readable: bool) -> None:
+    def __init__(self, q: _queue.Queue[Any], *, readable: bool) -> None:
         self._q = q
         self._readable = readable
         self.closed = False
@@ -50,7 +52,8 @@ class _FakePipeEnd:
             item = self._q.get()
             if item is _EOF or self.closed:
                 raise EOFError
-            return item
+            raw: bytes = item
+            return raw
 
     def recv(self, timeout: float | None = None) -> Any:
         item = self._q.get(timeout=timeout)
@@ -93,12 +96,12 @@ class FakeProcess:
     @property
     def channel(self) -> _FakePipeEnd:
         """Kindseite des Rueckkanals (child_once: args[1], child_loop: args[2])."""
-        end: _FakePipeEnd = self.args[1] if self.target is poolmod.child_once else self.args[2]
+        end: _FakePipeEnd = self.args[1] if self.target is child_once else self.args[2]
         return end
 
     @property
     def job_conn(self) -> _FakePipeEnd:
-        assert self.target is poolmod.child_loop
+        assert self.target is child_loop
         end: _FakePipeEnd = self.args[1]
         return end
 
@@ -130,7 +133,7 @@ class FakeCtx:
     fail_next_start: ClassVar[bool] = False
 
     def Pipe(self, duplex: bool = True) -> tuple[_FakePipeEnd, _FakePipeEnd]:
-        q: _queue.Queue = _queue.Queue()
+        q: _queue.Queue[Any] = _queue.Queue()
         return _FakePipeEnd(q, readable=True), _FakePipeEnd(q, readable=False)
 
     def Process(self, target: Any, args: tuple[Any, ...], name: str = "") -> FakeProcess:
@@ -159,9 +162,26 @@ def signals(monkeypatch) -> list[tuple[str, int, int]]:
         if proc.behaviour == "cooperative" or (proc.behaviour == "stubborn" and sig == signal.SIGKILL):
             proc.die()
 
-    monkeypatch.setattr(poolmod.os, "killpg", lambda pid, sig: _deliver("killpg", pid, sig))
-    monkeypatch.setattr(poolmod.os, "kill", lambda pid, sig: _deliver("kill", pid, sig))
+    monkeypatch.setattr(os, "killpg", lambda pid, sig: _deliver("killpg", pid, sig))
+    monkeypatch.setattr(os, "kill", lambda pid, sig: _deliver("kill", pid, sig))
     return sent
+
+
+def _free(p: SlotPool) -> asyncio.Queue[int]:
+    assert p._free is not None
+    return p._free
+
+
+def _active(p: SlotPool, slot: int = 0) -> _Child:
+    child = p._slots[slot].active
+    assert child is not None
+    return child
+
+
+def _healthy(p: SlotPool) -> bool:
+    # Frisch gelesen: ein ``assert p.healthy`` verengte mypy die Property
+    # sonst fuer den Rest des Tests auf einen festen Wert.
+    return p.healthy
 
 
 def _job(tid: str = "t1") -> ComputeJob:
@@ -221,14 +241,14 @@ async def test_fresh_child_runs_one_job_and_frees_the_slot(ctx, signals):
     p = await _make_pool(ctx)
     task = asyncio.create_task(p.run(_job(), use_di=False))
     proc = await _started(1)
-    assert proc.target is poolmod.child_once
+    assert proc.target is child_once
     assert proc.args[0].task_id == "t1"
     slot = proc.args[2]
     await _ready(p, proc, slot)
     proc.channel.send(("result", _result("t1", slot)))
     env = await task
     assert env.value == "ok"
-    assert p._free.qsize() == 2
+    assert _free(p).qsize() == 2
     proc.die()
     await p.aclose()
 
@@ -238,7 +258,7 @@ async def test_reuse_child_serves_consecutive_di_jobs(ctx, signals):
     p = await _make_pool(ctx, slots=1)
     t1 = asyncio.create_task(p.run(_job("a"), use_di=True))
     proc = await _started(1)
-    assert proc.target is poolmod.child_loop
+    assert proc.target is child_loop
     await _ready(p, proc, 0)
     assert (await _next_job(proc)).task_id == "a"
     proc.channel.send(("result", _result("a", 0)))
@@ -387,7 +407,8 @@ async def test_undecodable_result_logs_error_type_and_error(ctx, signals, swarmq
     [entry] = [e for e in swarmq_logs if e["event"] == "compute_result_undecodable"]
     assert entry["log_level"] == "error"
     assert entry["error_type"] == "UnpicklingError"
-    assert entry["error"] and "UnpicklingError" not in entry["error"]
+    assert entry["error"]
+    assert "UnpicklingError" not in entry["error"]
 
 
 @pytest.mark.timeout(5)
@@ -434,9 +455,10 @@ async def test_cancel_during_handshake_kills_the_started_child(ctx, signals):
     t1.cancel()
     with pytest.raises(asyncio.CancelledError):
         await t1
-    assert signals and signals[0][0] == "kill"  # vor Ready: per PID
+    assert signals
+    assert signals[0][0] == "kill"
     assert not proc.is_alive()
-    assert p._free.qsize() == 1
+    assert _free(p).qsize() == 1
     await p.aclose()
 
 
@@ -445,8 +467,10 @@ async def test_handshake_timeout_is_slot_unavailable_not_child_death(ctx, signal
     p = await _make_pool(ctx, slots=1, handshake_timeout_s=0.05)
     with pytest.raises(SlotUnavailable):
         await p.run(_job("a"), use_di=False)
-    assert p.stats.unavailable == 1 and p.stats.died == 0
-    assert signals and signals[0][0] == "kill"  # vor Ready: Kill per PID, nicht killpg
+    assert p.stats.unavailable == 1
+    assert p.stats.died == 0
+    assert signals
+    assert signals[0][0] == "kill"
     await p.aclose()
 
 
@@ -457,7 +481,7 @@ async def test_kill_slot_is_two_stage_and_waits_for_death(ctx, signals):
     proc = await _started(1)
     proc.behaviour = "stubborn"
     await _ready(p, proc, 0)
-    await p._kill_child(p._slots[0].active, reason="hard_timeout")
+    await p._kill_child(_active(p), reason="hard_timeout")
     assert [s[2] for s in signals] == [signal.SIGTERM, signal.SIGKILL]
     assert all(s[0] == "killpg" for s in signals)
     assert not proc.is_alive()
@@ -472,7 +496,7 @@ async def test_cooperative_child_needs_only_sigterm(ctx, signals):
     t1 = asyncio.create_task(p.run(_job("a"), use_di=False))
     proc = await _started(1)
     await _ready(p, proc, 0)
-    await p._kill_child(p._slots[0].active, reason="cancel")
+    await p._kill_child(_active(p), reason="cancel")
     assert [s[2] for s in signals] == [signal.SIGTERM]
     with pytest.raises(ChildDied):
         await t1
@@ -486,12 +510,13 @@ async def test_immortal_child_blocks_the_slot(ctx, signals):
     proc = await _started(1)
     proc.behaviour = "immortal"
     await _ready(p, proc, 0)
-    await p._kill_child(p._slots[0].active, reason="hard_timeout")
+    await p._kill_child(_active(p), reason="hard_timeout")
     assert p.stats.blocked_slots == {0}
     t1.cancel()
     with pytest.raises(asyncio.CancelledError):
         await t1
-    assert not p.healthy and all(i < 0 for i in p._free._queue)  # blockierter Slot kommt nicht zurueck, nur Poison
+    assert not p.healthy
+    assert all(i < 0 for i in _free(p)._queue)  # type: ignore[attr-defined]  # privater Deque der asyncio.Queue
     proc.die()
     await p.aclose()
 
@@ -516,6 +541,98 @@ async def test_progress_messages_reach_the_sink(ctx, signals):
 
 
 @pytest.mark.timeout(5)
+async def test_progress_forward_survives_gc_while_the_sink_waits(ctx, signals):
+    """Ein Weiterleitungs-Task, dessen Sink auf ein sonst unreferenziertes Future
+    wartet, haengt nur an der schwachen Taskliste der Loop -- ohne starke
+    Referenz raeumt ``gc`` ihn ab, und der Fortschritt kommt nie an."""
+    waiting: list[weakref.ref[asyncio.Future[None]]] = []
+    delivered: list[tuple[Any, ...]] = []
+
+    async def sink(msg: tuple[Any, ...]) -> None:
+        fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        waiting.append(weakref.ref(fut))
+        await fut
+        delivered.append(msg)
+
+    p = await _make_pool(ctx, slots=1, progress_sink=sink)
+    t1 = asyncio.create_task(p.run(_job("a"), use_di=False))
+    proc = await _started(1)
+    await _ready(p, proc, 0)
+    proc.channel.send(("progress", "a", {"current": "1"}, 1000))
+    await _settle(lambda: bool(waiting))
+    gc.collect()
+    fut = waiting[0]()
+    assert fut is not None, "der wartende Weiterleitungs-Task wurde eingesammelt"
+    fut.set_result(None)
+    await _settle(lambda: bool(delivered))
+    assert delivered == [("progress", "a", {"current": "1"}, 1000)]
+    proc.channel.send(("result", _result("a", 0)))
+    await t1
+    await p.aclose()
+
+
+@pytest.mark.timeout(5)
+async def test_a_finished_progress_forward_is_released(ctx, signals):
+    """Ein zugestellter Fortschritt haelt seinen Weiterleitungs-Task nicht fest:
+    sonst waechst die Taskmenge mit jeder Fortschrittsmeldung."""
+    forwards: list[weakref.ref[asyncio.Task[Any]]] = []
+
+    async def sink(msg: tuple[Any, ...]) -> None:
+        task = asyncio.current_task()
+        assert task is not None
+        forwards.append(weakref.ref(task))
+
+    p = await _make_pool(ctx, slots=1, progress_sink=sink)
+    t1 = asyncio.create_task(p.run(_job("a"), use_di=False))
+    proc = await _started(1)
+    await _ready(p, proc, 0)
+    proc.channel.send(("progress", "a", {"current": "1"}, 1000))
+
+    def _finished() -> bool:
+        task = forwards[0]() if forwards else None
+        return bool(forwards) and (task is None or task.done())
+
+    def _released() -> bool:
+        gc.collect()
+        return forwards[0]() is None
+
+    await _settle(_finished)
+    # Pollend statt einmalig: der Done-Callback laeuft erst eine Loop-Runde nach dem Task-Ende.
+    await _settle(_released, timeout=0.5)
+    proc.channel.send(("result", _result("a", 0)))
+    await t1
+    await p.aclose()
+
+
+@pytest.mark.timeout(5)
+async def test_aclose_cancels_a_hanging_progress_forward_after_the_grace(ctx, signals):
+    """Ein haengender Fortschritts-Sink darf aclose nur end_grace_s kosten und
+    wird danach abgebrochen, statt als verwaister Task weiterzulaufen."""
+    entered = asyncio.Event()
+    never = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def sink(msg: tuple[Any, ...]) -> None:
+        entered.set()
+        try:
+            await never.wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    p = await _make_pool(ctx, slots=1, progress_sink=sink, end_grace_s=0.1)
+    t1 = asyncio.create_task(p.run(_job("a"), use_di=False))
+    proc = await _started(1)
+    await _ready(p, proc, 0)
+    proc.channel.send(("progress", "a", {"current": "1"}, 1000))
+    await asyncio.wait_for(entered.wait(), timeout=2.0)
+    proc.channel.send(("result", _result("a", 0)))
+    await t1
+    await asyncio.wait_for(p.aclose(), timeout=2.0)
+    assert cancelled.is_set(), "der haengende Weiterleitungs-Task laeuft nach aclose weiter"
+
+
+@pytest.mark.timeout(5)
 async def test_cancelled_run_kills_the_child_before_the_slot_is_freed(ctx, signals):
     """KTD3/KTD4: Watchdog/Cancel brechen ``run`` ab — das Kind (samt Prozessgruppe)
     stirbt synchron, ehe der Slot wieder frei wird; der Enkel ueberlebt nicht."""
@@ -524,14 +641,14 @@ async def test_cancelled_run_kills_the_child_before_the_slot_is_freed(ctx, signa
     proc = await _started(1)
     proc.behaviour = "stubborn"
     await _ready(p, proc, 0)
-    assert p._free.qsize() == 0
+    assert _free(p).qsize() == 0
     t1.cancel()
     with pytest.raises(asyncio.CancelledError):
         await t1
     assert [s[2] for s in signals] == [signal.SIGTERM, signal.SIGKILL]
     assert all(s[0] == "killpg" for s in signals)
     assert not proc.is_alive()
-    assert p._free.qsize() == 1
+    assert _free(p).qsize() == 1
     await p.aclose()
 
 
@@ -556,15 +673,17 @@ async def test_repeated_handshake_failures_mark_the_pool_unhealthy_until_a_ready
     """Review #17: dauerhafte SlotUnavailable-Fehler duerfen nicht still jede Nachricht bis
     zum Delivery-Limit requeuen — der Pool meldet sich ueber /ready als ungesund."""
     p = await _make_pool(ctx, slots=1, handshake_timeout_s=0.05)
-    assert p.healthy and p.unhealthy_after == 3
+    assert _healthy(p)
+    assert p.unhealthy_after == 3
     for _ in range(3):
         with pytest.raises(SlotUnavailable):
             await p.run(_job("a"), use_di=False)
-    assert not p.healthy and p.consecutive_unavailable == 3
+    assert not _healthy(p)
+    assert p.consecutive_unavailable == 3
     t = asyncio.create_task(p.run(_job("b"), use_di=False))
     proc = await _started(4)
     await _ready(p, proc, 0)
-    assert p.healthy  # ein erfolgreicher Handshake setzt zurueck
+    assert _healthy(p)  # ein erfolgreicher Handshake setzt zurueck
     proc.channel.send(("result", _result("b", 0)))
     await t
     await p.aclose()
@@ -638,9 +757,10 @@ async def test_process_start_failure_is_slot_unavailable_and_counts_against_heal
     FakeCtx.fail_next_start = True
     with pytest.raises(SlotUnavailable, match="could not start"):
         await p.run(_job("a"), use_di=False)
-    assert p.stats.unavailable == 1 and p.consecutive_unavailable == 1
+    assert p.stats.unavailable == 1
+    assert p.consecutive_unavailable == 1
     assert FakeCtx.started == []
-    assert p._free.qsize() == 1
+    assert _free(p).qsize() == 1
     await p.aclose()
 
 
@@ -657,7 +777,8 @@ async def test_all_slots_blocked_fails_fast_and_marks_the_pool_unhealthy(ctx, si
     t1.cancel()
     with pytest.raises(asyncio.CancelledError):
         await t1
-    assert p.stats.blocked_slots == {0} and not p.healthy
+    assert p.stats.blocked_slots == {0}
+    assert not p.healthy
     with pytest.raises(SlotUnavailable):
         await waiter
     with pytest.raises(SlotUnavailable):
@@ -682,7 +803,8 @@ async def test_aclose_is_not_held_hostage_by_a_hanging_recycle_hook(ctx, signals
     new = await _started(2)
     await _ready(p, new, 0)
     await asyncio.wait_for(p.aclose(), timeout=2.0)
-    assert not old.is_alive() and not new.is_alive()
+    assert not old.is_alive()
+    assert not new.is_alive()
 
 
 @pytest.mark.timeout(5)
@@ -723,7 +845,8 @@ async def test_app_logging_takeover_is_reported_once_per_pool(ctx, signals, swar
         proc.die()
     await p.aclose()
     reports = [
-        e for e in swarmq_logs
+        e
+        for e in swarmq_logs
         if e["event"] == "logging_reconfigured_by_app" and e["logger"] == "swarmq.worker.compute.pool"
     ]
     assert len(reports) == 1
@@ -847,8 +970,10 @@ async def test_a_failed_recycle_replacement_logs_error_fields(ctx, signals, swar
     await _settle(lambda: p.stats.recycled == 1)
 
     [entry] = [e for e in swarmq_logs if e["event"] == "compute_recycle_replacement_failed"]
-    assert entry["log_level"] == "warning" and entry["slot"] == 0
-    assert entry["error_type"] == "SlotUnavailable" and "2 threads" in entry["error"]
+    assert entry["log_level"] == "warning"
+    assert entry["slot"] == 0
+    assert entry["error_type"] == "SlotUnavailable"
+    assert "2 threads" in entry["error"]
     old.die()
     await p.aclose()
 

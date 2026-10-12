@@ -68,7 +68,7 @@ class SchedulerOrphanedQueues:
             return
         try:
             await self._backend.schedules.report_queues(self._consumed_queues, ttl_ms=REPORT_MAX_AGE_MS)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Worker arbeitet weiter, nächster Takt meldet erneut
             # Der Worker arbeitet weiter; der naechste Takt meldet erneut.
             self._log.warning("scheduler_queue_report_failed", error_type=type(exc).__name__, error=str(exc))
 
@@ -76,7 +76,7 @@ class SchedulerOrphanedQueues:
         """Leader-Takt: verwaiste Queues melden (nur beim Uebergang); wirft nie."""
         try:
             await asyncio.wait_for(self._check_orphaned_queues(), timeout=QUEUE_CHECK_TIMEOUT_S)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Leader-Takt wirft nie, Fehler wird geloggt
             self._log_check_failed(exc)
 
     async def _check_orphaned_queues(self) -> None:
@@ -84,7 +84,7 @@ class SchedulerOrphanedQueues:
         # Kandidaten: Queues, die kein lebender Worker mehr meldet (Valkey-Zeit).
         live_since = snapshot.now_ms - live_window_ms(self._config.scheduler_seen_interval_s)
         candidates = sorted(queue for queue, last in snapshot.last_seen_ms.items() if last < live_since)
-        statuses = await self._broker.queue_statuses(candidates) if candidates else {}
+        statuses: dict[str, QueueStatus | None] = await self._broker.queue_statuses(candidates) if candidates else {}
         # Neue Amtszeit: die Uebergaenge der alten gelten nicht mehr (die
         # Gauge faellt beim Standby auf 0).
         previous = (self._orphaned_queues or {}) if self._orphaned_term == self._term else {}

@@ -39,6 +39,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import Any, override
 
 import msgspec
 import pytest
@@ -65,115 +66,150 @@ pytestmark = [pytest.mark.timeout(5)]
 async def _sync(loop, default_timezone: str | None = None) -> None:
     """Statische Crons der registrierten Tasks wie gewählte Meldungen
     übernehmen (Uhr: ``swarmq.scheduler.sync.time``, in Tests fixiert)."""
-    now_ms = int(sync_module.time.time() * 1000)
+    now_ms = int(vars(sync_module)["time"].time() * 1000)
     for desired in static_definitions(Task._registered_tasks, default_timezone):
         await loop.apply_static_definition(desired, now_ms)
 
 
-
-
 class TestApplyStaticDefinition:
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_sync_inserts_new_static_crons(
-        self, backend, broker, config, lock_manager, store, signal_dispatcher,
-        _cleanup_tasks,
+        self,
+        backend,
+        broker,
+        config,
+        lock_manager,
+        store,
+        signal_dispatcher,
     ):
         class Cron5m(Task):
-            task_info = TaskInfo(name="cron_5m", queues=["default"],
-                                 cron="*/5 * * * *")
+            task_info = TaskInfo(name="cron_5m", queues=["default"], cron="*/5 * * * *")
+
+            @override
             async def run(self):
                 return None
 
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         backend.schedules.get.return_value = None  # fresh
 
         await _sync(loop)
 
         store.add_schedule.assert_awaited()
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_sync_noop_for_same_static_cron(
-        self, backend, broker, config, lock_manager, store, signal_dispatcher,
-        _cleanup_tasks,
+        self,
+        backend,
+        broker,
+        config,
+        lock_manager,
+        store,
+        signal_dispatcher,
     ):
         class SameCron(Task):
-            task_info = TaskInfo(name="same", queues=["default"],
-                                 cron="*/5 * * * *")
+            task_info = TaskInfo(name="same", queues=["default"], cron="*/5 * * * *")
+
+            @override
             async def run(self):
                 return None
 
         existing = ScheduleDefinition(
-            schedule_name="same", task_name="same", args=(), kwargs={},
-            queue="default", cron="*/5 * * * *",
-            fire_ts_ms=1_700_000_000_000, source="static",
+            schedule_name="same",
+            task_name="same",
+            args=(),
+            kwargs={},
+            queue="default",
+            cron="*/5 * * * *",
+            fire_ts_ms=1_700_000_000_000,
+            source="static",
         )
         import msgspec
+
         backend.schedules.get.return_value = msgspec.json.encode(existing)
         # Geplant (Score im Fire-Index); ohne Score heilte der Sync (U12).
         backend.schedules.fire_ts.return_value = 1_700_000_000_000
 
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         await _sync(loop)
 
         store.add_schedule.assert_not_awaited()
         store.update_static_schedule.assert_not_awaited()
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_sync_updates_on_static_cron_change(
-        self, backend, broker, config, lock_manager, store, signal_dispatcher,
-        _cleanup_tasks,
+        self,
+        backend,
+        broker,
+        config,
+        lock_manager,
+        store,
+        signal_dispatcher,
     ):
         class ChangedCron(Task):
-            task_info = TaskInfo(name="changed", queues=["default"],
-                                 cron="*/10 * * * *")
+            task_info = TaskInfo(name="changed", queues=["default"], cron="*/10 * * * *")
+
+            @override
             async def run(self):
                 return None
 
         existing = ScheduleDefinition(
-            schedule_name="changed", task_name="changed", args=(), kwargs={},
-            queue="default", cron="*/5 * * * *",  # OLD
-            fire_ts_ms=1_700_000_000_000, source="static",
+            schedule_name="changed",
+            task_name="changed",
+            args=(),
+            kwargs={},
+            queue="default",
+            cron="*/5 * * * *",  # OLD
+            fire_ts_ms=1_700_000_000_000,
+            source="static",
         )
         import msgspec
+
         backend.schedules.get.return_value = msgspec.json.encode(existing)
 
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         await _sync(loop)
 
         store.update_static_schedule.assert_awaited_once()
         store.add_schedule.assert_not_awaited()
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_sync_preserves_disabled_flag_on_static_cron_change(
-        self, backend, broker, config, lock_manager, store, signal_dispatcher,
-        _cleanup_tasks,
+        self,
+        backend,
+        broker,
+        config,
+        lock_manager,
+        store,
+        signal_dispatcher,
     ):
         """Review-finding correctness C-01: an operator-disabled static
         schedule must remain disabled after the cron string is modified
         in code. Without this preservation, the next redeploy silently
         reverses the operator's `schedule remove` intent."""
+
         class ChangedDisabledCron(Task):
-            task_info = TaskInfo(name="disabled_static", queues=["default"],
-                                 cron="*/10 * * * *")
+            task_info = TaskInfo(name="disabled_static", queues=["default"], cron="*/10 * * * *")
+
+            @override
             async def run(self):
                 return None
 
         existing = ScheduleDefinition(
-            schedule_name="disabled_static", task_name="disabled_static",
-            args=(), kwargs={}, queue="default",
-            cron="*/5 * * * *",          # OLD cron — differs from code
+            schedule_name="disabled_static",
+            task_name="disabled_static",
+            args=(),
+            kwargs={},
+            queue="default",
+            cron="*/5 * * * *",  # OLD cron — differs from code
             fire_ts_ms=1_700_000_000_000,
             source="static",
-            disabled=True,                # operator disabled this entry
+            disabled=True,  # operator disabled this entry
         )
         import msgspec
+
         backend.schedules.get.return_value = msgspec.json.encode(existing)
 
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         await _sync(loop)
 
         store.update_static_schedule.assert_awaited_once()
@@ -181,92 +217,126 @@ class TestApplyStaticDefinition:
         assert propagated.disabled is True
         assert propagated.cron == "*/10 * * * *"  # new cron applied
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_sync_disabled_false_stays_false_on_cron_change(
-        self, backend, broker, config, lock_manager, store, signal_dispatcher,
-        _cleanup_tasks,
+        self,
+        backend,
+        broker,
+        config,
+        lock_manager,
+        store,
+        signal_dispatcher,
     ):
         """Inverse regression: the preservation path must not flip a
         disabled=False entry to True."""
+
         class ActiveCron(Task):
-            task_info = TaskInfo(name="active_static", queues=["default"],
-                                 cron="0 */4 * * *")
+            task_info = TaskInfo(name="active_static", queues=["default"], cron="0 */4 * * *")
+
+            @override
             async def run(self):
                 return None
 
         existing = ScheduleDefinition(
-            schedule_name="active_static", task_name="active_static",
-            args=(), kwargs={}, queue="default",
+            schedule_name="active_static",
+            task_name="active_static",
+            args=(),
+            kwargs={},
+            queue="default",
             cron="0 3 * * *",
             fire_ts_ms=1_700_000_000_000,
             source="static",
             disabled=False,
         )
         import msgspec
+
         backend.schedules.get.return_value = msgspec.json.encode(existing)
 
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         await _sync(loop)
 
         propagated = store.update_static_schedule.await_args.args[0]
         assert propagated.disabled is False
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_sync_preserves_cli_source_even_on_cron_diff(
-        self, backend, broker, config, lock_manager, store, signal_dispatcher,
-        _cleanup_tasks,
+        self,
+        backend,
+        broker,
+        config,
+        lock_manager,
+        store,
+        signal_dispatcher,
     ):
         """CD11: CLI ownership beats code — even when code has a
         different cron, we must not overwrite a CLI entry."""
+
         class CronTask(Task):
-            task_info = TaskInfo(name="conflict", queues=["default"],
-                                 cron="*/10 * * * *")
+            task_info = TaskInfo(name="conflict", queues=["default"], cron="*/10 * * * *")
+
+            @override
             async def run(self):
                 return None
 
         existing = ScheduleDefinition(
-            schedule_name="conflict", task_name="conflict", args=(),
-            kwargs={}, queue="default", cron="*/5 * * * *",
-            fire_ts_ms=1_700_000_000_000, source="cli",  # CLI entry
+            schedule_name="conflict",
+            task_name="conflict",
+            args=(),
+            kwargs={},
+            queue="default",
+            cron="*/5 * * * *",
+            fire_ts_ms=1_700_000_000_000,
+            source="cli",  # CLI entry
         )
         import msgspec
+
         backend.schedules.get.return_value = msgspec.json.encode(existing)
 
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         await _sync(loop)
 
         store.update_static_schedule.assert_not_awaited()
         store.add_schedule.assert_not_awaited()
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_sync_decode_error_does_not_overwrite(
-        self, backend, broker, config, lock_manager, store, signal_dispatcher,
-        _cleanup_tasks,
+        self,
+        backend,
+        broker,
+        config,
+        lock_manager,
+        store,
+        signal_dispatcher,
     ):
         """Unit 5 / M-3: a malformed existing entry must NOT be silently
         overwritten — the source (cli vs static) cannot be determined
         from a malformed payload, so overwriting risks clobbering a
         CD11-protected CLI entry. Log loudly and leave it alone."""
+
         class SomeCron(Task):
-            task_info = TaskInfo(name="mystery", queues=["default"],
-                                 cron="*/5 * * * *")
+            task_info = TaskInfo(name="mystery", queues=["default"], cron="*/5 * * * *")
+
+            @override
             async def run(self):
                 return None
 
         backend.schedules.get.return_value = b"{not valid json"
 
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         await _sync(loop)
 
         store.add_schedule.assert_not_awaited()
         store.update_static_schedule.assert_not_awaited()
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_sync_partial_failure_continues_iteration(
-        self, backend, broker, config, lock_manager, store, signal_dispatcher,
-        _cleanup_tasks,
+        self,
+        backend,
+        broker,
+        config,
+        lock_manager,
+        store,
+        signal_dispatcher,
     ):
         """Unit 5 / M-4: a BackendConnectionError on one schedule must
         not abort the sync for the rest. Two tasks defined; first add
@@ -274,22 +344,24 @@ class TestApplyStaticDefinition:
         from swarmq.exceptions import BackendConnectionError as BCE
 
         class CronA(Task):
-            task_info = TaskInfo(name="sync_a", queues=["default"],
-                                 cron="*/5 * * * *")
-            async def run(self): return None
+            task_info = TaskInfo(name="sync_a", queues=["default"], cron="*/5 * * * *")
+
+            @override
+            async def run(self):
+                return None
 
         class CronB(Task):
-            task_info = TaskInfo(name="sync_b", queues=["default"],
-                                 cron="0 3 * * *")
-            async def run(self): return None
+            task_info = TaskInfo(name="sync_b", queues=["default"], cron="0 3 * * *")
+
+            @override
+            async def run(self):
+                return None
 
         backend.schedules.get.return_value = None  # fresh for all
         # First add_schedule call raises, second succeeds
         store.add_schedule.side_effect = [BCE("valkey flap"), None]
 
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
         # Must not raise — per-schedule error is logged and swallowed
         await _sync(loop)
 
@@ -303,6 +375,7 @@ class TestApplyStaticDefinitionLogging:
         class LoggedCron(Task):
             task_info = TaskInfo(name="logged", queues=["default"], cron="*/5 * * * *")
 
+            @override
             async def run(self):
                 return None
 
@@ -311,7 +384,8 @@ class TestApplyStaticDefinitionLogging:
     @staticmethod
     def _entry(logs, event):
         [entry] = [e for e in logs if e["event"] == event]
-        assert entry["logger"] == "swarmq.scheduler.sync" and entry["schedule_name"] == "logged"
+        assert entry["logger"] == "swarmq.scheduler.sync"
+        assert entry["schedule_name"] == "logged"
         return entry
 
     async def test_hget_failure_logs_error_fields(self, loop, backend, swarmq_logs):
@@ -319,7 +393,8 @@ class TestApplyStaticDefinitionLogging:
         await _sync(loop)
         entry = self._entry(swarmq_logs, "scheduler_sync_hget_failed")
         assert entry["log_level"] == "warning"
-        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+        assert entry["error_type"] == "BackendConnectionError"
+        assert entry["error"] == "valkey down"
 
     async def test_add_failure_logs_error_fields(self, loop, backend, store, swarmq_logs):
         backend.schedules.get.return_value = None
@@ -327,31 +402,40 @@ class TestApplyStaticDefinitionLogging:
         await _sync(loop)
         entry = self._entry(swarmq_logs, "scheduler_sync_add_failed")
         assert entry["log_level"] == "warning"
-        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey flap"
+        assert entry["error_type"] == "BackendConnectionError"
+        assert entry["error"] == "valkey flap"
 
     async def test_decode_error_logs_error_fields(self, loop, backend, swarmq_logs):
         backend.schedules.get.return_value = b"{not valid json"
         await _sync(loop)
         entry = self._entry(swarmq_logs, "scheduler_sync_decode_error_skipped")
-        assert entry["log_level"] == "error" and "hint" in entry
-        assert entry["error_type"] == "DecodeError" and entry["error"]
+        assert entry["log_level"] == "error"
+        assert "hint" in entry
+        assert entry["error_type"] == "DecodeError"
+        assert entry["error"]
 
     async def test_update_failure_logs_error_fields(self, loop, backend, store, swarmq_logs):
         existing = ScheduleDefinition(
-            schedule_name="logged", task_name="logged", args=(), kwargs={},
-            queue="default", cron="*/10 * * * *", fire_ts_ms=1_700_000_000_000, source="static",
+            schedule_name="logged",
+            task_name="logged",
+            args=(),
+            kwargs={},
+            queue="default",
+            cron="*/10 * * * *",
+            fire_ts_ms=1_700_000_000_000,
+            source="static",
         )
         backend.schedules.get.return_value = msgspec.json.encode(existing)
         store.update_static_schedule.side_effect = BackendConnectionError("valkey flap")
         await _sync(loop)
         entry = self._entry(swarmq_logs, "scheduler_sync_update_failed")
         assert entry["log_level"] == "warning"
-        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey flap"
+        assert entry["error_type"] == "BackendConnectionError"
+        assert entry["error"] == "valkey flap"
 
 
-
-def _utc_ms(*args: int) -> int:
-    return int(datetime(*args, tzinfo=UTC).timestamp() * 1000)
+def _utc_ms(year: int, month: int, day: int, hour: int, minute: int) -> int:
+    return int(datetime(year, month, day, hour, minute, tzinfo=UTC).timestamp() * 1000)
 
 
 class TestSyncTimezone:
@@ -367,48 +451,65 @@ class TestSyncTimezone:
     @staticmethod
     def _added(store) -> ScheduleDefinition:
         [call] = store.add_schedule.await_args_list
-        return call.args[0]
+        added: ScheduleDefinition = call.args[0]
+        return added
 
     async def test_first_score_uses_taskinfo_timezone(
-        self, backend, broker, config, lock_manager, store, signal_dispatcher,
+        self,
+        backend,
+        broker,
+        config,
+        lock_manager,
+        store,
+        signal_dispatcher,
     ):
         class TokyoCron(Task):
-            task_info = TaskInfo(name="tokyo", queues=["default"],
-                                 cron="0 9 * * *", timezone="Asia/Tokyo")
+            task_info = TaskInfo(name="tokyo", queues=["default"], cron="0 9 * * *", timezone="Asia/Tokyo")
+
+            @override
             async def run(self):
                 return None
 
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
 
         await _sync(loop)
 
         assert self._added(store).fire_ts_ms == _utc_ms(2026, 10, 7, 0, 0)
 
     async def test_new_definition_carries_timezone(
-        self, backend, broker, config, lock_manager, store, signal_dispatcher,
+        self,
+        backend,
+        broker,
+        config,
+        lock_manager,
+        store,
+        signal_dispatcher,
     ):
         class TokyoCron(Task):
-            task_info = TaskInfo(name="tokyo", queues=["default"],
-                                 cron="0 9 * * *", timezone="Asia/Tokyo")
+            task_info = TaskInfo(name="tokyo", queues=["default"], cron="0 9 * * *", timezone="Asia/Tokyo")
+
+            @override
             async def run(self):
                 return None
 
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
 
         await _sync(loop)
 
         assert self._added(store).timezone == "Asia/Tokyo"
 
     async def test_config_scheduler_timezone_is_the_default(
-        self, backend, broker, lock_manager, store, signal_dispatcher,
+        self,
+        backend,
+        broker,
+        lock_manager,
+        store,
+        signal_dispatcher,
     ):
         class PlainCron(Task):
-            task_info = TaskInfo(name="plain", queues=["default"],
-                                 cron="0 9 * * *")
+            task_info = TaskInfo(name="plain", queues=["default"], cron="0 9 * * *")
+
+            @override
             async def run(self):
                 return None
 
@@ -417,9 +518,7 @@ class TestSyncTimezone:
             backend_url="valkey://localhost",
             scheduler_timezone="Asia/Tokyo",
         )
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
 
         await _sync(loop, config.scheduler_timezone)
 
@@ -428,11 +527,17 @@ class TestSyncTimezone:
         assert added.timezone == "Asia/Tokyo"
 
     async def test_explicit_utc_beats_config_default(
-        self, backend, broker, lock_manager, store, signal_dispatcher,
+        self,
+        backend,
+        broker,
+        lock_manager,
+        store,
+        signal_dispatcher,
     ):
         class UtcCron(Task):
-            task_info = TaskInfo(name="utc", queues=["default"],
-                                 cron="0 9 * * *", timezone="UTC")
+            task_info = TaskInfo(name="utc", queues=["default"], cron="0 9 * * *", timezone="UTC")
+
+            @override
             async def run(self):
                 return None
 
@@ -441,9 +546,7 @@ class TestSyncTimezone:
             backend_url="valkey://localhost",
             scheduler_timezone="Asia/Tokyo",
         )
-        loop = _make_loop(
-            backend, broker, config, lock_manager, store, signal_dispatcher
-        )
+        loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
 
         await _sync(loop, config.scheduler_timezone)
 
@@ -475,15 +578,24 @@ class TestSyncInsertOrUpdate:
     @pytest.fixture
     def sync_loop(self, memory, broker, config, lock_manager, signal_dispatcher):
         return _make_loop(
-            memory, broker, config, lock_manager, ScheduleStore(memory),
+            memory,
+            broker,
+            config,
+            lock_manager,
+            ScheduleStore(memory),
             signal_dispatcher,
         )
 
     @staticmethod
     async def _seed(memory, score_ms, **fields):
         base = {
-            "schedule_name": "tz", "task_name": "tz", "args": (), "kwargs": {},
-            "queue": "default", "cron": "0 9 * * *", "fire_ts_ms": score_ms,
+            "schedule_name": "tz",
+            "task_name": "tz",
+            "args": (),
+            "kwargs": {},
+            "queue": "default",
+            "cron": "0 9 * * *",
+            "fire_ts_ms": score_ms,
             "source": "static",
         }
         base.update(fields)
@@ -499,12 +611,13 @@ class TestSyncInsertOrUpdate:
 
     @staticmethod
     def _task(**fields):
-        info = {"name": "tz", "queues": ["default"], "cron": "0 9 * * *"}
+        info: dict[str, Any] = {"name": "tz", "queues": ["default"], "cron": "0 9 * * *"}
         info.update(fields)
 
         class TzCron(Task):
             task_info = TaskInfo(**info)
 
+            @override
             async def run(self):
                 return None
 
@@ -565,7 +678,8 @@ class TestSyncInsertOrUpdate:
         await _sync(sync_loop)
 
         stored, score = await self._stored(memory)
-        assert stored.timezone == "Asia/Tokyo" and stored.disabled is True
+        assert stored.timezone == "Asia/Tokyo"
+        assert stored.disabled is True
         assert score is None
 
     async def test_changed_timezone_keeps_due_score(self, memory, sync_loop):
@@ -581,7 +695,10 @@ class TestSyncInsertOrUpdate:
         assert msgspec.json.decode(payload, type=ScheduleDefinition).timezone == "Asia/Tokyo"
 
     async def test_cli_definition_with_other_timezone_is_left_alone(
-        self, memory, sync_loop, swarmq_logs,
+        self,
+        memory,
+        sync_loop,
+        swarmq_logs,
     ):
         """Regression (CD11): Code ändert keine CLI-Definition, auch nicht
         deren Zone; der Schatten wird als Warnung sichtbar."""

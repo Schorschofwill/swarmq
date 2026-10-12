@@ -40,7 +40,8 @@ async def fail_workflow_step(
     Zustelllimit begrenzt die Schleife."""
     wf_id = deps.extract_valid_workflow_id(delivery)
     if wf_id is None:
-        if (delivery.headers or {}).get(HEADER_WORKFLOW_ID) is not None:
+        headers: dict[str, Any] = delivery.headers or {}
+        if headers.get(HEADER_WORKFLOW_ID) is not None:
             log.warning("workflow_id_header_invalid", task_id=ctx.task_id, task_name=ctx.task_name)
         return True
     if advancer is None:
@@ -60,10 +61,10 @@ async def fail_workflow_step(
         if redeliver:
             try:
                 await redeliver_in_place(deps, delivery, ctx)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - Redeliver best effort, Fehler schon geloggt
                 pass
             return False
-    except Exception as wf_exc:
+    except Exception as wf_exc:  # noqa: BLE001 - Fehler wird geloggt, kein Redeliver
         # Deterministisch: eine Redelivery drehte bis zum Zustelllimit, ohne
         # dass die Markierung je gelingt.
         log.error("workflow_fail_mark_failed", workflow_id=wf_id, **_error_fields(wf_exc), redelivered=False)
@@ -80,7 +81,7 @@ async def _step_succeeded(deps: GateDeps, task_id: str) -> bool:
             return False
         result = decode_result(raw)
         return not result.get("is_error", True) and not result.get("is_cancelled", False)
-    except Exception:
+    except Exception:  # noqa: BLE001 - im Zweifel kein Erfolg
         return False
 
 

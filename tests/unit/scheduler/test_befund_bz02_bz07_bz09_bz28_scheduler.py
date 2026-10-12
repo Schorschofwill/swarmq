@@ -18,6 +18,7 @@ Test-Liste:
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import override
 from unittest.mock import AsyncMock
 
 import msgspec
@@ -129,6 +130,7 @@ async def test_bz09_cron_unique_for_holds_on_leader_without_task_in_registry(
             unique_for=3600,
         )
 
+        @override
         async def run(self) -> None:
             return None
 
@@ -156,7 +158,9 @@ async def test_bz09_cron_unique_for_holds_on_leader_without_task_in_registry(
 
     await loop._poll_tick()  # 1. Fire; der Lauf dauert laenger als das Intervall
     # Der naechste Cron-Termin wird faellig, waehrend der erste Lauf noch laeuft.
-    await memory.schedules.put(name, await memory.schedules.get(name), 2_000)
+    raw = await memory.schedules.get(name)
+    assert raw is not None
+    await memory.schedules.put(name, raw, 2_000)
     await loop._poll_tick()
 
     assert broker.publish.await_count == 1

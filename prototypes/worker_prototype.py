@@ -51,6 +51,7 @@ log = logging.getLogger("swarmq")
 # Exit-Codes
 # ---------------------------------------------------------------------------
 
+
 class ExitCode(IntEnum):
     SUCCESS = 0
     ERROR = 1
@@ -90,6 +91,7 @@ def unblock_signals() -> None:
 # Simulierte Task-Arbeit (steht fuer echte Tasks)
 # ---------------------------------------------------------------------------
 
+
 async def simulate_task(task_id: int, duration_ms: float, shutdown: asyncio.Event) -> str:
     """Simuliert einen async I/O-Task. Reagiert cooperative auf Shutdown."""
     log.info(f"Task {task_id} gestartet (Dauer: {duration_ms}ms)")
@@ -105,6 +107,7 @@ async def simulate_task(task_id: int, duration_ms: float, shutdown: asyncio.Even
 # ---------------------------------------------------------------------------
 # Async Worker (laeuft in eigenem Prozess)
 # ---------------------------------------------------------------------------
+
 
 class AsyncWorker:
     """Ein einzelner async Worker mit eigenem Event-Loop.
@@ -155,10 +158,7 @@ class AsyncWorker:
             with contextlib.suppress(asyncio.CancelledError):
                 await monitor
             await self._drain_active_tasks()
-            log.info(
-                f"Worker {self.worker_id} beendet. "
-                f"Tasks abgeschlossen: {self._tasks_completed}"
-            )
+            log.info(f"Worker {self.worker_id} beendet. Tasks abgeschlossen: {self._tasks_completed}")
 
     def _on_sigterm(self) -> None:
         """SIGTERM-Handler: Setzt lokalen Shutdown."""
@@ -171,7 +171,9 @@ class AsyncWorker:
         loop = asyncio.get_running_loop()
         while not self._local_shutdown.is_set():
             is_set = await loop.run_in_executor(
-                None, self.mp_shutdown.wait, 0.5,
+                None,
+                self.mp_shutdown.wait,
+                0.5,
             )
             if is_set:
                 log.info(f"Worker {self.worker_id}: Shutdown-Event vom Parent empfangen")
@@ -221,10 +223,7 @@ class AsyncWorker:
         if not self._active_tasks:
             return
 
-        log.info(
-            f"Worker {self.worker_id}: {len(self._active_tasks)} Tasks laufen noch. "
-            f"Soft-Timeout: 5s..."
-        )
+        log.info(f"Worker {self.worker_id}: {len(self._active_tasks)} Tasks laufen noch. Soft-Timeout: 5s...")
 
         # Stufe 1: Soft — warte auf laufende Tasks
         done, pending = await asyncio.wait(
@@ -239,10 +238,7 @@ class AsyncWorker:
             return
 
         # Stufe 2: Hard — cancel verbleibende Tasks
-        log.warning(
-            f"Worker {self.worker_id}: {len(pending)} Tasks nach Soft-Timeout. "
-            f"Hard-Cancel..."
-        )
+        log.warning(f"Worker {self.worker_id}: {len(pending)} Tasks nach Soft-Timeout. Hard-Cancel...")
         for task in pending:
             task.cancel()
 
@@ -253,10 +249,7 @@ class AsyncWorker:
                 log.error(f"Task-Exception beim Shutdown: {task.exception()}")
 
         if still_pending:
-            log.error(
-                f"Worker {self.worker_id}: {len(still_pending)} Tasks "
-                f"reagieren nicht auf Cancel!"
-            )
+            log.error(f"Worker {self.worker_id}: {len(still_pending)} Tasks reagieren nicht auf Cancel!")
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +271,7 @@ def worker_entry(
     # Optional: uvloop aktivieren
     try:
         import uvloop
+
         uvloop.install()
         log.info(f"Worker {worker_id}: uvloop aktiviert")
     except ImportError:
@@ -303,6 +297,7 @@ def worker_entry(
 # ---------------------------------------------------------------------------
 # Process Manager (Hauptprozess, KEIN Event-Loop)
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class WorkerInfo:
@@ -421,8 +416,7 @@ class ProcessManager:
             self._check_dead_workers()
 
             # Fehlende Worker nachstarten
-            while (len(self.workers) < self.num_workers
-                   and not self._shutting_down):
+            while len(self.workers) < self.num_workers and not self._shutting_down:
                 self._start_worker()
 
             time.sleep(self.MONITOR_INTERVAL)
@@ -442,10 +436,7 @@ class ProcessManager:
             info.process.join(timeout=1)
             del self.workers[pid]
 
-            log.warning(
-                f"Worker-{info.worker_id} (PID={pid}) gestorben "
-                f"(Exit-Code={exitcode})"
-            )
+            log.warning(f"Worker-{info.worker_id} (PID={pid}) gestorben (Exit-Code={exitcode})")
 
             if self._shutting_down:
                 continue
@@ -465,15 +456,10 @@ class ProcessManager:
             restart_count = old_info.restart_count + 1
 
         if restart_count >= self.MAX_RESTARTS:
-            log.error(
-                f"Worker-{old_info.worker_id}: {self.MAX_RESTARTS} Restarts "
-                f"in {self.RESTART_WINDOW}s — gebe auf"
-            )
+            log.error(f"Worker-{old_info.worker_id}: {self.MAX_RESTARTS} Restarts in {self.RESTART_WINDOW}s — gebe auf")
             return
 
-        log.info(
-            f"Worker-{old_info.worker_id}: Restart #{restart_count + 1}/{self.MAX_RESTARTS}"
-        )
+        log.info(f"Worker-{old_info.worker_id}: Restart #{restart_count + 1}/{self.MAX_RESTARTS}")
         new_info = self._start_worker()
         new_info.restart_count = restart_count
         new_info.last_restart = now
@@ -533,11 +519,13 @@ class ProcessManager:
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main() -> int:
     parser = ArgumentParser(description="SwarmQ Worker-Prototyp")
     parser.add_argument("--workers", "-w", type=int, default=3)
-    parser.add_argument("--task-duration", "-d", type=float, default=2000,
-                        help="Simulierte Task-Dauer in ms (Default: 2000)")
+    parser.add_argument(
+        "--task-duration", "-d", type=float, default=2000, help="Simulierte Task-Dauer in ms (Default: 2000)"
+    )
     args = parser.parse_args()
 
     manager = ProcessManager(

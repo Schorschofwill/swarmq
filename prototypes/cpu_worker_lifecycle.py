@@ -151,7 +151,7 @@ def nachkommen() -> list[tuple[int, float, str]]:
                 fields = fh.read().rsplit(") ", 1)[1].split()
             zustand, ppid = fields[0], int(fields[1])
             rss_seiten = int(fields[21])
-        except (OSError, IndexError, ValueError):
+        except OSError, IndexError, ValueError:
             continue
         try:
             with open(f"/proc/{pid}/cmdline", "rb") as fh:
@@ -210,7 +210,7 @@ def own_zombies() -> list[int]:
                 fields = fh.read().rsplit(") ", 1)[1].split()
             if fields[0] == "Z" and int(fields[1]) == me:
                 out.append(int(entry))
-        except (OSError, IndexError, ValueError):
+        except OSError, IndexError, ValueError:
             continue
     return out
 
@@ -267,11 +267,7 @@ async def _fuehre_aus(
     scope = token = None
     if scope_container is not None:
         scope = scope_container(
-            context={
-                kontext_typ: kontext_typ(
-                    task_id=tid, task_name=name, queue=QUEUE, retry_count=0
-                )
-            }
+            context={kontext_typ: kontext_typ(task_id=tid, task_name=name, queue=QUEUE, retry_count=0)}
         )
         token = request_container.set(await scope.__aenter__())
     try:
@@ -327,9 +323,7 @@ def child_loop(job_q: Any, progress_q: Any, result_q: Any, slot: int) -> None:
                 break
             if job is None:
                 break
-            status, tid, payload = await _fuehre_aus(
-                task_basis, scope_container, ctx_tools, job, progress_q
-            )
+            status, tid, payload = await _fuehre_aus(task_basis, scope_container, ctx_tools, job, progress_q)
             erledigt += 1
             # RSS wird NACH dem Taskende gemessen, nie waehrenddessen:
             # waehrend der Rechnung ist hoher Speicherbedarf legitim.
@@ -349,8 +343,7 @@ class Ergebnis:
     __slots__ = ("nr", "payload", "pid", "rss", "slot", "status", "task_id")
 
     def __init__(self, roh: tuple[Any, ...]) -> None:
-        (self.status, self.task_id, self.payload, self.slot,
-         self.pid, self.rss, self.nr) = roh
+        (self.status, self.task_id, self.payload, self.slot, self.pid, self.rss, self.nr) = roh
 
 
 class SlotPool:
@@ -471,9 +464,7 @@ class SlotPool:
         self._start_ts[job[2]] = time.perf_counter()
         if self.mode == "fresh":
             t0 = time.perf_counter()
-            p = self._fs.Process(
-                target=child_once, args=(job[0], job[1], job[2], self.pq, self.rq, slot)
-            )
+            p = self._fs.Process(target=child_once, args=(job[0], job[1], job[2], self.pq, self.rq, slot))
             p.start()
             self._merke_spawn((time.perf_counter() - t0) * 1000)
             self.laufend[job[2]] = (slot, p)
@@ -537,9 +528,7 @@ class SlotPool:
             eintrag = self.laufend.pop(erg.task_id, None)
             if eintrag is None:
                 continue
-            self.busy_s += time.perf_counter() - self._start_ts.pop(
-                erg.task_id, time.perf_counter()
-            )
+            self.busy_s += time.perf_counter() - self._start_ts.pop(erg.task_id, time.perf_counter())
             self.completed += 1
             slot = eintrag[0]
             if self.mode == "reuse":
@@ -715,8 +704,10 @@ async def series_g(fs: Any, minutes: float) -> None:
 
     avail0, swap0 = meminfo_mb()
     mb_je_kind = int(os.environ.get("PROTO_MB", "400"))
-    note(f"MemAvailable vorher {avail0:.0f}MB, SwapFree {swap0:.0f}MB; "
-         f"{SLOTS} Kinder x {mb_je_kind}MB = {SLOTS * mb_je_kind}MB Dauerdruck")
+    note(
+        f"MemAvailable vorher {avail0:.0f}MB, SwapFree {swap0:.0f}MB; "
+        f"{SLOTS} Kinder x {mb_je_kind}MB = {SLOTS * mb_je_kind}MB Dauerdruck"
+    )
 
     def jobs() -> Iterator[tuple[str, tuple[Any, ...], str]]:
         i = 0
@@ -732,9 +723,7 @@ async def series_g(fs: Any, minutes: float) -> None:
         t0 = time.perf_counter()
         while not stop.is_set():
             avail, swap = meminfo_mb()
-            proben.append(
-                (time.perf_counter() - t0, rss_mb(), fd_count(), pool.completed, avail, swap)
-            )
+            proben.append((time.perf_counter() - t0, rss_mb(), fd_count(), pool.completed, avail, swap))
             for _ in range(25):
                 if stop.is_set():
                     break
@@ -760,8 +749,10 @@ async def series_g(fs: Any, minutes: float) -> None:
     print("\n      Verlauf (s / Loop-RSS / FDs / fertig / MemAvail / SwapFree):", flush=True)
     schritt = max(1, len(proben) // 10)
     for probe in proben[::schritt]:
-        print(f"        {probe[0]:6.0f}  {probe[1]:7.1f}  {probe[2]:4d}  {probe[3]:6d}  "
-              f"{probe[4]:9.0f}  {probe[5]:9.0f}", flush=True)
+        print(
+            f"        {probe[0]:6.0f}  {probe[1]:7.1f}  {probe[2]:4d}  {probe[3]:6d}  {probe[4]:9.0f}  {probe[5]:9.0f}",
+            flush=True,
+        )
 
 
 async def _bewerte_g_speicher(proben: list[Probe], avail0: float, swap0: float) -> None:
@@ -772,7 +763,7 @@ async def _bewerte_g_speicher(proben: list[Probe], avail0: float, swap0: float) 
     fremden Containern zu verrauscht fuer eine Schranke — es wird
     berichtet, nicht bewertet.
     """
-    await asyncio.sleep(2.0)   # dem Kernel Zeit geben, die Seiten zurueckzunehmen
+    await asyncio.sleep(2.0)  # dem Kernel Zeit geben, die Seiten zurueckzunehmen
     avail, swap = meminfo_mb()
     avail_min = min(p[4] for p in proben)
     swap_min = min(p[5] for p in proben)
@@ -788,14 +779,16 @@ async def _bewerte_g_speicher(proben: list[Probe], avail0: float, swap0: float) 
     # resource_tracker. Ein ueberlebendes Rechenkind haette drei- bis
     # vierhundert MB und faellt sofort auf.
     rechenkinder = [r for r in rest if r[2] == "rechenkind"]
-    check("G5", not zombies and not rechenkinder and rest_rss < 150
-          and (swap0 - swap_min) < 100,
-          f"nach dem Lauf {len(rest)} Nachkomme(n) mit zusammen {rest_rss:.0f}MB "
-          f"({', '.join(f'{r[2]} {r[1]:.0f}MB' for r in rest) or 'keine'}), "
-          f"davon {len(rechenkinder)} Rechenkinder, {len(zombies)} Zombies, SwapFree "
-          f"{swap0:.0f} -> {swap:.0f}MB (Tiefpunkt {swap_min:.0f}MB); "
-          f"MemAvailable brach um {einbruch:.0f}MB ein und ist zu {erholt:.0f}% "
-          f"zurueck ({avail0:.0f} -> {avail:.0f}MB)")
+    check(
+        "G5",
+        not zombies and not rechenkinder and rest_rss < 150 and (swap0 - swap_min) < 100,
+        f"nach dem Lauf {len(rest)} Nachkomme(n) mit zusammen {rest_rss:.0f}MB "
+        f"({', '.join(f'{r[2]} {r[1]:.0f}MB' for r in rest) or 'keine'}), "
+        f"davon {len(rechenkinder)} Rechenkinder, {len(zombies)} Zombies, SwapFree "
+        f"{swap0:.0f} -> {swap:.0f}MB (Tiefpunkt {swap_min:.0f}MB); "
+        f"MemAvailable brach um {einbruch:.0f}MB ein und ist zu {erholt:.0f}% "
+        f"zurueck ({avail0:.0f} -> {avail:.0f}MB)",
+    )
 
 
 def _bewerte_g(
@@ -807,10 +800,12 @@ def _bewerte_g(
 ) -> None:
     """G1 bis G4 — Korrektheit, Fork-Latenz, Durchsatz, Loop-Drift."""
     # --- G1: Korrektheit unter Dauerdruck ---------------------------------
-    check("G1", pool.ok_count > 0 and pool.wrong_count == 0 and pool.err_count == 0,
-          f"{pool.ok_count} Tasks mit je {mb_je_kind}MB in {wall:.0f}s, "
-          f"{pool.wrong_count} falsch, {pool.err_count} Fehler"
-          + (f" {pool.errors}" if pool.errors else ""))
+    check(
+        "G1",
+        pool.ok_count > 0 and pool.wrong_count == 0 and pool.err_count == 0,
+        f"{pool.ok_count} Tasks mit je {mb_je_kind}MB in {wall:.0f}s, "
+        f"{pool.wrong_count} falsch, {pool.err_count} Fehler" + (f" {pool.errors}" if pool.errors else ""),
+    )
 
     # --- G2: Fork-Latenz unter Druck --------------------------------------
     # Die 6 ms sind die Grundlage des ganzen Entwurfs. Wenn sie unter
@@ -820,11 +815,14 @@ def _bewerte_g(
     sp_spaet = statistics.median(spaet) if spaet else 0.0
     p95 = sorted(spaet)[int(len(spaet) * 0.95)] if spaet else 0.0
     mittel = pool.spawn_summe / pool.spawn_n if pool.spawn_n else 0.0
-    check("G2", sp_spaet < 30 and sp_spaet < sp_frueh * 3,
-          f"Fork-Latenz: erste {len(pool.spawn_anfang)} Kinder median {sp_frueh:.1f}ms, "
-          f"letzte {len(spaet)} median {sp_spaet:.1f}ms (Mittel ueber alle "
-          f"{pool.spawn_n} Kinder {mittel:.1f}ms, p95 der letzten {p95:.1f}ms, "
-          f"max {pool.spawn_max:.1f}ms)")
+    check(
+        "G2",
+        sp_spaet < 30 and sp_spaet < sp_frueh * 3,
+        f"Fork-Latenz: erste {len(pool.spawn_anfang)} Kinder median {sp_frueh:.1f}ms, "
+        f"letzte {len(spaet)} median {sp_spaet:.1f}ms (Mittel ueber alle "
+        f"{pool.spawn_n} Kinder {mittel:.1f}ms, p95 der letzten {p95:.1f}ms, "
+        f"max {pool.spawn_max:.1f}ms)",
+    )
 
     # --- G3: Durchsatz ----------------------------------------------------
     def rate(seg: list[Probe]) -> float:
@@ -832,11 +830,11 @@ def _bewerte_g(
         return (seg[-1][3] - seg[0][3]) / dt if dt > 0 else 0.0
 
     f5 = max(1, len(proben) // 5)
-    r_frueh, r_spaet = rate(proben[: f5 + 1]), rate(proben[-(f5 + 1):])
+    r_frueh, r_spaet = rate(proben[: f5 + 1]), rate(proben[-(f5 + 1) :])
     quote = r_spaet / r_frueh if r_frueh > 0 else 0.0
-    check("G3", quote >= 0.85,
-          f"Durchsatz erstes Fuenftel {r_frueh:.1f}/s, letztes {r_spaet:.1f}/s "
-          f"({quote * 100:.0f}%)")
+    check(
+        "G3", quote >= 0.85, f"Durchsatz erstes Fuenftel {r_frueh:.1f}/s, letztes {r_spaet:.1f}/s ({quote * 100:.0f}%)"
+    )
 
     # --- G4: Loop-Prozess unter Druck -------------------------------------
     rss_a, rss_e = proben[0][1], proben[-1][1]
@@ -844,15 +842,16 @@ def _bewerte_g(
     fd_a, fd_e = proben[0][2], proben[-1][2]
     # Die Buchfuehrung des Tests wird mit ausgewiesen: nur so ist ein
     # Restanstieg kuenftig belegt statt erklaert (Lehre aus F2).
-    check("G4", steigung < 0.2 and (fd_e - fd_a) <= 8 and jitter.max < 100,
-          f"Loop-RSS {rss_a:.1f} -> {rss_e:.1f}MB (Regression {steigung:+.3f} MB/min "
-          f"= {steigung * 1440:+.0f} MB/Tag), FDs {fd_a} -> {fd_e}, Jitter max "
-          f"{jitter.max:.1f}ms / median {jitter.median:.2f}ms ueber {len(jitter)} Proben "
-          f"[Buchfuehrung: {len(pool._start_ts)} offen, {len(pool.results)} Ergebnisse, "
-          f"{len(pool.spawn_anfang) + len(pool.spawn_ende)} Spawn-Zeiten, "
-          f"{len(proben)} Messproben]")
-
-
+    check(
+        "G4",
+        steigung < 0.2 and (fd_e - fd_a) <= 8 and jitter.max < 100,
+        f"Loop-RSS {rss_a:.1f} -> {rss_e:.1f}MB (Regression {steigung:+.3f} MB/min "
+        f"= {steigung * 1440:+.0f} MB/Tag), FDs {fd_a} -> {fd_e}, Jitter max "
+        f"{jitter.max:.1f}ms / median {jitter.median:.2f}ms ueber {len(jitter)} Proben "
+        f"[Buchfuehrung: {len(pool._start_ts)} offen, {len(pool.results)} Ergebnisse, "
+        f"{len(pool.spawn_anfang) + len(pool.spawn_ende)} Spawn-Zeiten, "
+        f"{len(proben)} Messproben]",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -870,9 +869,7 @@ async def _zaehle_kindverbindungen() -> int:
 
     from prototypes.cpu_lifecycle_tasks import CLIENT_NAME
 
-    admin = valkey.asyncio.Valkey.from_url(
-        BACKEND_URL, client_name="swarmq-proto-admin", decode_responses=True
-    )
+    admin = valkey.asyncio.Valkey.from_url(BACKEND_URL, client_name="swarmq-proto-admin", decode_responses=True)
     try:
         raw = await admin.client_list()
         return sum(1 for c in raw if c.get("name") == CLIENT_NAME)
@@ -911,10 +908,12 @@ async def _h1_scope_trennung(fs: Any) -> None:
     pids = {v["pid"] for v in v1}
     app_ids = {v["app_ident"] for v in v1}
     req_ids = {v["req_ident"] for v in v1}
-    check("H1", len(v1) == m and all(v["correct"] for v in v1)
-          and len(pids) == 1 and len(app_ids) == 1 and len(req_ids) == m,
-          f"{len(v1)}/{m} Tasks in {len(pids)} Prozess: {len(app_ids)} APP-Identitaet "
-          f"(wiederverwendet), {len(req_ids)}/{m} REQUEST-Identitaeten (je Task frisch)")
+    check(
+        "H1",
+        len(v1) == m and all(v["correct"] for v in v1) and len(pids) == 1 and len(app_ids) == 1 and len(req_ids) == m,
+        f"{len(v1)}/{m} Tasks in {len(pids)} Prozess: {len(app_ids)} APP-Identitaet "
+        f"(wiederverwendet), {len(req_ids)}/{m} REQUEST-Identitaeten (je Task frisch)",
+    )
 
 
 async def _h2_amortisation(fs: Any) -> None:
@@ -939,29 +938,33 @@ async def _h2_amortisation(fs: Any) -> None:
     faktor = wall_fresh / wall_reuse if wall_reuse > 0 else 0.0
     aufbau_fresh = statistics.median([v["app_build_ms"] for v in vf])
     aufbauten = [v["app_build_ms"] for v in vr]
-    check("H2", len(vf) == n_amort and len(vr) == n_amort and faktor > 1.0,
-          f"{n_amort} DI-Tasks: frisches Kind {wall_fresh:.2f}s, wiederverwendet "
-          f"{wall_reuse:.2f}s -> Faktor {faktor:.1f}x; DI-Aufbau {aufbau_fresh:.0f}ms "
-          f"faellt {len(vf)}x statt {len(set(v['app_ident'] for v in vr))}x an "
-          f"(median {statistics.median(aufbauten):.0f}ms)")
+    check(
+        "H2",
+        len(vf) == n_amort and len(vr) == n_amort and faktor > 1.0,
+        f"{n_amort} DI-Tasks: frisches Kind {wall_fresh:.2f}s, wiederverwendet "
+        f"{wall_reuse:.2f}s -> Faktor {faktor:.1f}x; DI-Aufbau {aufbau_fresh:.0f}ms "
+        f"faellt {len(vf)}x statt {len(set(v['app_ident'] for v in vr))}x an "
+        f"(median {statistics.median(aufbauten):.0f}ms)",
+    )
 
 
 async def _h4_verbindungen(fs: Any, vorher: int) -> None:
     # --- H4: Verbindungen bei N gleichzeitigen Kindern ---------------------
     pk = SlotPool(fs, SLOTS, mode="reuse")
-    lauf = asyncio.create_task(
-        pk.run_all([("proto.di_pool", (600,), f"h4-{i}") for i in range(SLOTS * 3)])
-    )
+    lauf = asyncio.create_task(pk.run_all([("proto.di_pool", (600,), f"h4-{i}") for i in range(SLOTS * 3)]))
     await asyncio.sleep(0.9)
     waehrend = await _zaehle_kindverbindungen()
     await lauf
     pk.close()
     await asyncio.sleep(0.5)
     nachher = await _zaehle_kindverbindungen()
-    check("H4", waehrend >= SLOTS and nachher <= vorher + 1,
-          f"{waehrend} Kindverbindungen bei {SLOTS} Slots waehrend des Laufs "
-          f"(vorher {vorher}); nach dem Ende {nachher} — "
-          f"{'keine Leiche' if nachher <= vorher + 1 else 'Verbindung ueberlebt das Kind'}")
+    check(
+        "H4",
+        waehrend >= SLOTS and nachher <= vorher + 1,
+        f"{waehrend} Kindverbindungen bei {SLOTS} Slots waehrend des Laufs "
+        f"(vorher {vorher}); nach dem Ende {nachher} — "
+        f"{'keine Leiche' if nachher <= vorher + 1 else 'Verbindung ueberlebt das Kind'}",
+    )
 
 
 async def _h3_recycling_nach_rss(fs: Any) -> None:
@@ -976,13 +979,14 @@ async def _h3_recycling_nach_rss(fs: Any) -> None:
     pids_l = [e.pid for e in vl]
     recyclings = [r for r in pl.recyclings if r[1] == "rss"]
     pl.close()
-    faellt_zurueck = any(
-        rss_verlauf[i + 1] < rss_verlauf[i] - 50 for i in range(len(rss_verlauf) - 1)
+    faellt_zurueck = any(rss_verlauf[i + 1] < rss_verlauf[i] - 50 for i in range(len(rss_verlauf) - 1))
+    check(
+        "H3",
+        len(recyclings) >= 1 and len(set(pids_l)) >= 2 and faellt_zurueck,
+        f"RSS nach Taskende {[f'{r:.0f}' for r in rss_verlauf]}MB bei Grenze "
+        f"{grenze:.0f}MB -> {len(recyclings)} Recycling(s), "
+        f"{len(set(pids_l))} verschiedene Kinder",
     )
-    check("H3", len(recyclings) >= 1 and len(set(pids_l)) >= 2 and faellt_zurueck,
-          f"RSS nach Taskende {[f'{r:.0f}' for r in rss_verlauf]}MB bei Grenze "
-          f"{grenze:.0f}MB -> {len(recyclings)} Recycling(s), "
-          f"{len(set(pids_l))} verschiedene Kinder")
 
 
 async def _h5_rollierend(fs: Any) -> None:
@@ -1010,12 +1014,14 @@ async def _h5_rollierend(fs: Any) -> None:
     # liegen, nicht einer Kindlebensdauer. Genau darin unterscheidet sich
     # rollierendes Recycling von Celerys max_tasks_per_child.
     je_recycling_ms = (wall_rec - wall_ohne) / n_rec * 1000 if n_rec else 0.0
-    check("H5", ok_rec == 60 and n_rec >= 8 and luecken and max(luecken) < 60
-          and je_recycling_ms < 30,
-          f"60 Tasks mit Recycling alle 5 Tasks: {n_rec} Recyclings kosten "
-          f"{je_recycling_ms:.1f}ms je Stueck ({wall_rec:.2f}s gegen {wall_ohne:.2f}s "
-          f"ohne); Slot-Luecke median {statistics.median(luecken):.1f}ms / "
-          f"max {max(luecken):.1f}ms — der Slot liegt nie eine Kindlebensdauer brach")
+    check(
+        "H5",
+        ok_rec == 60 and n_rec >= 8 and luecken and max(luecken) < 60 and je_recycling_ms < 30,
+        f"60 Tasks mit Recycling alle 5 Tasks: {n_rec} Recyclings kosten "
+        f"{je_recycling_ms:.1f}ms je Stueck ({wall_rec:.2f}s gegen {wall_ohne:.2f}s "
+        f"ohne); Slot-Luecke median {statistics.median(luecken):.1f}ms / "
+        f"max {max(luecken):.1f}ms — der Slot liegt nie eine Kindlebensdauer brach",
+    )
 
 
 async def _h6_slot_queue(fs: Any) -> None:
@@ -1024,17 +1030,18 @@ async def _h6_slot_queue(fs: Any) -> None:
     # Task, muss der Slot wieder brauchbar werden — sonst ist ein
     # Kindtod im reuse-Modus ein dauerhaft verlorener Slot.
     pk2 = SlotPool(fs, 2, mode="reuse")
-    lauf = asyncio.create_task(
-        pk2.run_all([("proto.lc_long", (2.0,), f"h6-{i}") for i in range(6)])
-    )
+    lauf = asyncio.create_task(pk2.run_all([("proto.lc_long", (2.0,), f"h6-{i}") for i in range(6)]))
     await asyncio.sleep(0.6)
     getoetet = [t for t in list(pk2.laufend) if pk2.kill(t)]
     await lauf
     ok6 = len(pk2.ok_values())
     pk2.close()
-    check("H6", getoetet and ok6 == 6 - len(getoetet),
-          f"{len(getoetet)} Kind(er) mitten im Task getoetet; danach "
-          f"{ok6}/{6 - len(getoetet)} verbleibende Tasks auf denselben Slots korrekt")
+    check(
+        "H6",
+        getoetet and ok6 == 6 - len(getoetet),
+        f"{len(getoetet)} Kind(er) mitten im Task getoetet; danach "
+        f"{ok6}/{6 - len(getoetet)} verbleibende Tasks auf denselben Slots korrekt",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1055,7 +1062,9 @@ def _rabbit_eval(ausdruck: str) -> str:
     """Setzt eine Broker-Einstellung zur Laufzeit (nur fuer den Test)."""
     proc = subprocess.run(
         ["docker", "exec", RABBIT_CONTAINER, "rabbitmqctl", "eval", ausdruck],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
     return (proc.stdout + proc.stderr).strip()
 
@@ -1091,8 +1100,7 @@ async def _i1_graceful(fs: Any, broker: Any) -> None:
         # alle laengst fertig und der Drain maesse nichts.
         anzahl = SLOTS * 2
         for i in range(anzahl):
-            await b.publish(q, json.dumps({"task": "proto.lc_long", "args": [2.5],
-                                           "id": f"i1-{i}"}).encode())
+            await b.publish(q, json.dumps({"task": "proto.lc_long", "args": [2.5], "id": f"i1-{i}"}).encode())
 
         pool = SlotPool(fs, SLOTS, mode="fresh")
         shutdown = asyncio.Event()
@@ -1142,12 +1150,14 @@ async def _i1_graceful(fs: Any, broker: Any) -> None:
 
         # Der Drain muss wirklich gedauert haben — sonst waren die Tasks
         # beim Signal schon fertig und der Punkt belegt nichts.
-        check("I1", laufend_bei_signal == SLOTS and fertig == len(gestartet)
-              and korrekt and drain_s > 0.5,
-              f"Signal bei {laufend_bei_signal} rechnenden Kindern (von {SLOTS} Slots): "
-              f"{fertig}/{len(gestartet)} angenommene Tasks in {drain_s:.2f}s Drain zu "
-              f"Ende gerechnet, {anzahl - len(gestartet)} nicht angenommene zurueck an "
-              f"den Broker")
+        check(
+            "I1",
+            laufend_bei_signal == SLOTS and fertig == len(gestartet) and korrekt and drain_s > 0.5,
+            f"Signal bei {laufend_bei_signal} rechnenden Kindern (von {SLOTS} Slots): "
+            f"{fertig}/{len(gestartet)} angenommene Tasks in {drain_s:.2f}s Drain zu "
+            f"Ende gerechnet, {anzahl - len(gestartet)} nicht angenommene zurueck an "
+            f"den Broker",
+        )
     finally:
         await b.close()
 
@@ -1162,8 +1172,7 @@ async def _i2_redelivery(fs: Any) -> None:
     q = f"{QUEUE}-i2"
     b = await _frischer_broker(q)
     try:
-        await b.publish(q, json.dumps({"task": "proto.lc_long", "args": [3.0],
-                                       "id": "i2-1"}).encode())
+        await b.publish(q, json.dumps({"task": "proto.lc_long", "args": [3.0], "id": "i2-1"}).encode())
         pool = SlotPool(fs, 1, mode="fresh")
         zustellungen: list[Any] = []
         versuche = 0
@@ -1181,7 +1190,7 @@ async def _i2_redelivery(fs: Any) -> None:
 
             if versuche == 1:
                 await asyncio.sleep(0.4)
-                pool.kill(tid)         # Kindtod mitten in der Rechnung
+                pool.kill(tid)  # Kindtod mitten in der Rechnung
                 await b.redeliver(delivery)  # kein Ack — die Nachricht kommt wieder
                 return
 
@@ -1201,14 +1210,16 @@ async def _i2_redelivery(fs: Any) -> None:
         while not erfolg and time.perf_counter() - t0 < 60:
             await asyncio.sleep(0.01)
         await b.cancel_consume()
-        redelivered = bool(getattr(zustellungen[-1].handle, "redelivered", False)) \
-            if zustellungen else False
+        redelivered = bool(getattr(zustellungen[-1].handle, "redelivered", False)) if zustellungen else False
         pool.close()
 
-        check("I2", versuche == 2 and erfolg,
-              f"Kind vor dem Ack getoetet -> {versuche} Zustellungen "
-              f"(redelivered-Flag: {redelivered}), zweiter Versuch korrekt "
-              f"— kein Verlust")
+        check(
+            "I2",
+            versuche == 2 and erfolg,
+            f"Kind vor dem Ack getoetet -> {versuche} Zustellungen "
+            f"(redelivered-Flag: {redelivered}), zweiter Versuch korrekt "
+            f"— kein Verlust",
+        )
     finally:
         await b.close()
 
@@ -1239,8 +1250,7 @@ async def _i3_consumer_timeout(fs: Any) -> None:
     zustellungen = 0
     sekunden = float(os.environ.get("PROTO_I3_SEKUNDEN", "20"))
     try:
-        await b.publish(q, json.dumps({"task": "proto.lc_long", "args": [sekunden],
-                                       "id": "i3-1"}).encode())
+        await b.publish(q, json.dumps({"task": "proto.lc_long", "args": [sekunden], "id": "i3-1"}).encode())
         pool = SlotPool(fs, 1, mode="fresh")
         fertig = asyncio.Event()
         jitter: list[float] = []
@@ -1279,18 +1289,23 @@ async def _i3_consumer_timeout(fs: Any) -> None:
         await b.cancel_consume()
         pool.close()
 
-        check("I3", bool(gerechnet) and not ack_fehler and zustellungen == 1,
-              f"{cpu_s:.0f}s reine Rechenzeit bei consumer_timeout={vorgabe}: "
-              f"{zustellungen} Zustellung, Ack "
-              + (f"abgelehnt — {ack_fehler}" if ack_fehler else "angenommen")
-              + "; Loop-Jitter waehrenddessen max "
-              + (f"{max(jitter):.1f}ms" if jitter else "n/a"))
-        note("Der Vorgabewert 1800000 ms = 30 Minuten ist damit die "
-             "Obergrenze fuer eine einzelne Taskausfuehrung im CPU-Modus. Ein "
-             "Versuch, sie durch Absenken auf 8s zu provozieren, griff an "
-             "RabbitMQ 4.3.5 nicht (set_env, conf.d, Classic und Quorum je "
-             "geprueft) — die Grenze ist damit dokumentiert, aber nicht "
-             "nachgemessen. Restrisiko fuer die Lasttest-Suite.")
+        check(
+            "I3",
+            bool(gerechnet) and not ack_fehler and zustellungen == 1,
+            f"{cpu_s:.0f}s reine Rechenzeit bei consumer_timeout={vorgabe}: "
+            f"{zustellungen} Zustellung, Ack "
+            + (f"abgelehnt — {ack_fehler}" if ack_fehler else "angenommen")
+            + "; Loop-Jitter waehrenddessen max "
+            + (f"{max(jitter):.1f}ms" if jitter else "n/a"),
+        )
+        note(
+            "Der Vorgabewert 1800000 ms = 30 Minuten ist damit die "
+            "Obergrenze fuer eine einzelne Taskausfuehrung im CPU-Modus. Ein "
+            "Versuch, sie durch Absenken auf 8s zu provozieren, griff an "
+            "RabbitMQ 4.3.5 nicht (set_env, conf.d, Classic und Quorum je "
+            "geprueft) — die Grenze ist damit dokumentiert, aber nicht "
+            "nachgemessen. Restrisiko fuer die Lasttest-Suite."
+        )
     finally:
         await b.close()
 
@@ -1304,8 +1319,7 @@ async def _i4_prefetch(fs: Any) -> None:
     try:
         gesamt = SLOTS * 5
         for i in range(gesamt):
-            await b.publish(q, json.dumps({"task": "proto.lc_blas", "args": [400, 3],
-                                           "id": f"i4-{i}"}).encode())
+            await b.publish(q, json.dumps({"task": "proto.lc_blas", "args": [400, 3], "id": f"i4-{i}"}).encode())
 
         pool = SlotPool(fs, SLOTS, mode="fresh")
         offen = 0
@@ -1338,9 +1352,12 @@ async def _i4_prefetch(fs: Any) -> None:
         korrekt = sum(1 for v in pool.ok_values() if v["correct"])
         pool.close()
 
-        check("I4", fertig == gesamt and korrekt == gesamt and max_offen <= SLOTS,
-              f"{fertig}/{gesamt} Tasks, hoechstens {max_offen} Nachrichten "
-              f"gleichzeitig unbestaetigt bei {SLOTS} Slots (prefetch={SLOTS})")
+        check(
+            "I4",
+            fertig == gesamt and korrekt == gesamt and max_offen <= SLOTS,
+            f"{fertig}/{gesamt} Tasks, hoechstens {max_offen} Nachrichten "
+            f"gleichzeitig unbestaetigt bei {SLOTS} Slots (prefetch={SLOTS})",
+        )
     finally:
         await b.close()
 
@@ -1368,8 +1385,7 @@ async def _i5_dlq(fs: Any) -> None:
         except Exception:
             vorher_dlq = -1
 
-        await b.publish(q, json.dumps({"task": "proto.lc_fail", "args": ["im Kind"],
-                                       "id": "i5-1"}).encode())
+        await b.publish(q, json.dumps({"task": "proto.lc_fail", "args": ["im Kind"], "id": "i5-1"}).encode())
         pool = SlotPool(fs, 1, mode="fresh")
         max_retries = 2
         versuche = 0
@@ -1391,8 +1407,7 @@ async def _i5_dlq(fs: Any) -> None:
             if erg is not None and erg.status == "error":
                 fehlertext = str(erg.payload)
             if versuche <= max_retries:
-                await b.retry_later(delivery, delay_ms=200,
-                                    headers={"x-swarmq-retry-count": versuche})
+                await b.retry_later(delivery, delay_ms=200, headers={"x-swarmq-retry-count": versuche})
             else:
                 await b.dead_letter(delivery, headers={"x-swarmq-error": fehlertext[:200]})
                 fertig.set()
@@ -1412,11 +1427,13 @@ async def _i5_dlq(fs: Any) -> None:
         pool.close()
 
         typ_erhalten = fehlertext.startswith("ValueError:")
-        check("I5", versuche == max_retries + 1 and typ_erhalten
-              and (nachher_dlq < 0 or nachher_dlq > vorher_dlq),
-              f"Exception im Kind: {versuche} Versuche (max_retries={max_retries}), "
-              f"typerhaltend uebertragen ({fehlertext[:60]!r}), "
-              f"DLQ-Tiefe {vorher_dlq} -> {nachher_dlq}")
+        check(
+            "I5",
+            versuche == max_retries + 1 and typ_erhalten and (nachher_dlq < 0 or nachher_dlq > vorher_dlq),
+            f"Exception im Kind: {versuche} Versuche (max_retries={max_retries}), "
+            f"typerhaltend uebertragen ({fehlertext[:60]!r}), "
+            f"DLQ-Tiefe {vorher_dlq} -> {nachher_dlq}",
+        )
     finally:
         await b.close()
 
@@ -1425,9 +1442,12 @@ async def _i5_dlq(fs: Any) -> None:
 
 
 async def main() -> int:
-    print(f"Python {sys.version.split()[0]}  |  Kerne {os.cpu_count()}  |  "
-          f"Slots {SLOTS}  |  OMP_NUM_THREADS={os.environ.get('OMP_NUM_THREADS')}  |  "
-          f"Serien {SERIES}\n", flush=True)
+    print(
+        f"Python {sys.version.split()[0]}  |  Kerne {os.cpu_count()}  |  "
+        f"Slots {SLOTS}  |  OMP_NUM_THREADS={os.environ.get('OMP_NUM_THREADS')}  |  "
+        f"Serien {SERIES}\n",
+        flush=True,
+    )
 
     fs = mp.get_context("forkserver")
     fs.set_forkserver_preload(PRELOAD)
@@ -1441,8 +1461,11 @@ async def main() -> int:
 
     failed = [e for e, ok, _ in _RESULTS if not ok]
     print("\n" + "=" * 72, flush=True)
-    print(f"{len(_RESULTS) - len(failed)}/{len(_RESULTS)} Punkte bestaetigt"
-          + (f" — offen: {', '.join(failed)}" if failed else ""), flush=True)
+    print(
+        f"{len(_RESULTS) - len(failed)}/{len(_RESULTS)} Punkte bestaetigt"
+        + (f" — offen: {', '.join(failed)}" if failed else ""),
+        flush=True,
+    )
     return 1 if failed else 0
 
 

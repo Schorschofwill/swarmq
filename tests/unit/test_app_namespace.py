@@ -65,7 +65,8 @@ def test_different_backend_and_config_namespace_is_a_configuration_error(
     with pytest.raises(ConfigurationError, match="namespace") as caught:
         _app(ValkeyBackend("valkey://x", namespace="app1"), **({"namespace": "app2"} if source == "code" else {}))
 
-    assert "'app1'" in str(caught.value) and "'app2'" in str(caught.value)
+    assert "'app1'" in str(caught.value)
+    assert "'app2'" in str(caught.value)
 
 
 def test_explicit_empty_backend_namespace_against_a_configured_one_is_a_configuration_error() -> None:

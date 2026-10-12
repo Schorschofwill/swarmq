@@ -1,0 +1,7 @@
+# Reine Formatierungs-Commits, die git blame ueberspringen soll.
+# Lokal einmalig: git config blame.ignoreRevsFile .git-blame-ignore-revs
+# Nach dem Umschreiben der Historie (GitHub-Umzug) ueber die commit-map
+# von git filter-repo auf die neuen Hashes umschreiben.
+
+# style(U2): Bestand einmalig mit ruff format formatiert
+c338e65eeb5c49506c53ffe0700fcfea2cde6d90

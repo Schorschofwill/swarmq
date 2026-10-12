@@ -15,6 +15,7 @@ Three invariants:
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import pytest
 from hypothesis import assume, given
@@ -34,7 +35,7 @@ from swarmq.serialization import (
 
 # Avoid surrogates: msgspec's JSON encoder treats them as invalid UTF-8.
 _SAFE_TEXT = st.text(
-    alphabet=st.characters(blacklist_categories=("Cs",)),
+    alphabet=st.characters(blacklist_categories=["Cs"]),
     max_size=100,
 )
 
@@ -72,15 +73,13 @@ def _result_dict() -> st.SearchStrategy:
             "task_name": _SAFE_TEXT,
             "value": _json_value(max_leaves=10),
             "error": st.one_of(st.none(), _SAFE_TEXT),
-            "duration_ms": st.floats(
-                min_value=0.0, max_value=1e9, allow_nan=False, allow_infinity=False
-            ),
+            "duration_ms": st.floats(min_value=0.0, max_value=1e9, allow_nan=False, allow_infinity=False),
             "attempt": st.integers(min_value=0, max_value=100),
         }
     )
 
 
-def _equal_modulo_float(a, b, *, tol: float = 1e-9) -> bool:
+def _equal_modulo_float(a: Any, b: Any, *, tol: float = 1e-9) -> bool:
     """Deep comparison that is tolerant of float drift across encodings."""
     if isinstance(a, float) and isinstance(b, float):
         if math.isnan(a) and math.isnan(b):
@@ -94,7 +93,7 @@ def _equal_modulo_float(a, b, *, tol: float = 1e-9) -> bool:
         if len(a) != len(b):
             return False
         return all(_equal_modulo_float(x, y, tol=tol) for x, y in zip(a, b))
-    return a == b
+    return bool(a == b)
 
 
 # ---------------------------------------------------------------------------
@@ -112,15 +111,15 @@ def test_encode_decode_json_roundtrip(value) -> None:
 
 
 @given(result=_result_dict())
-def test_encode_result_roundtrip(result: dict) -> None:
+def test_encode_result_roundtrip(result: dict[str, Any]) -> None:
     """msgpack encode/decode preserves a standard worker result shape."""
     encoded = encode_result(result)
     assert isinstance(encoded, bytes)
     decoded = decode_result(encoded)
     assert isinstance(decoded, dict)
     assert decoded.keys() == result.keys()
-    for key in result:
-        assert _equal_modulo_float(decoded[key], result[key])
+    for key, value in result.items():
+        assert _equal_modulo_float(decoded[key], value)
 
 
 @given(
@@ -131,7 +130,7 @@ def test_encode_result_roundtrip(result: dict) -> None:
         unique_by=lambda pair: pair[0],
     )
 )
-def test_canonical_encode_stable_under_dict_key_order(entries: list) -> None:
+def test_canonical_encode_stable_under_dict_key_order(entries: list[tuple[str, Any]]) -> None:
     """Two dicts built via different key orders encode to identical bytes.
 
     Also check kwargs ordering at the top level, which is the actual

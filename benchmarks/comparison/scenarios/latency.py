@@ -53,7 +53,7 @@ async def run_latency(
                         await system.get_result(task_id, timeout=0.0, poll_interval=0)
                         latencies.append(time.perf_counter() - t_start)
                         collected += 1
-                    except (TimeoutError, Exception):
+                    except TimeoutError, Exception:
                         still_pending.append((task_id, t_start))
                 pending.clear()
                 pending.extend(still_pending)

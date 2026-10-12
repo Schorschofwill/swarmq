@@ -29,6 +29,7 @@ import asyncio
 import contextlib
 import time
 from collections.abc import AsyncIterator
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -37,12 +38,13 @@ from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.config import SwarmQConfig
 from swarmq.contracts import GuardClaim
-from swarmq.contracts.coordination import LockToken, RateLimitDecision
+from swarmq.contracts.coordination import ExecutionGuardStore, LockToken, RateLimitDecision
 from swarmq.registry import TaskRegistry
 from swarmq.task import Task, TaskInfo
 from swarmq.worker import Worker
 from tests.support.inmemory import FakeClock, InMemoryBackend
 from tests.support.messages import make_message
+from tests.unit.worker._helpers import as_mock
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -52,12 +54,13 @@ RUNS: list[str] = []
 class CountedTask(Task):
     task_info = TaskInfo(name="guard-counted", queues=["default"], rate_limit="10/m", lock="res", hard_timeout=60)
 
+    @override
     async def run(self) -> str:
         RUNS.append("run")
         return "ok"
 
 
-def _payload(name: str, task_id: str = "t-1") -> dict:
+def _payload(name: str, task_id: str = "t-1") -> dict[str, Any]:
     return {"task": {"id": task_id, "queue": "default", "name": name}, "args": [], "kwargs": {}}
 
 
@@ -114,7 +117,9 @@ async def guard_backend() -> AsyncIterator[InMemoryBackend]:
     await impl.close()
 
 
-def _worker(broker: MagicMock, backend: MagicMock, rec: Recorder, store: object, *tasks: type[Task]) -> Worker:
+def _worker(
+    broker: MagicMock, backend: MagicMock, rec: Recorder, store: ExecutionGuardStore, *tasks: type[Task]
+) -> Worker:
     registry = TaskRegistry()
     for task in tasks:
         registry.register(task)
@@ -139,17 +144,37 @@ async def test_claim_follows_the_pre_pipeline_gates_and_precedes_rate_limit_and_
 
     await worker._handle_message(make_message(_payload("guard-counted")))
 
-    order = [c for c in rec.calls if c in ("backend.is_cancelled", "guard.claim", "rate_limiter.check",
-                                           "lock_manager.acquire", "broker.ack", "guard.mark_done")]
+    order = [
+        c
+        for c in rec.calls
+        if c
+        in (
+            "backend.is_cancelled",
+            "guard.claim",
+            "rate_limiter.check",
+            "lock_manager.acquire",
+            "broker.ack",
+            "guard.mark_done",
+        )
+    ]
     assert order == [
-        "backend.is_cancelled", "guard.claim", "rate_limiter.check", "lock_manager.acquire",
-        "broker.ack", "guard.mark_done",
+        "backend.is_cancelled",
+        "guard.claim",
+        "rate_limiter.check",
+        "lock_manager.acquire",
+        "broker.ack",
+        "guard.mark_done",
     ]
 
 
 async def _status(guard_backend: InMemoryBackend, identity: str = "t-1", retry_count: int = 0) -> str:
     claim = await guard_backend.execution_guard.claim(
-        identity, owner="probe", retry_count=retry_count, ttl_ms=60_000, state_ttl_ms=600_000, max_orphans=99,
+        identity,
+        owner="probe",
+        retry_count=retry_count,
+        ttl_ms=60_000,
+        state_ttl_ms=600_000,
+        max_orphans=99,
     )
     return claim.status
 
@@ -165,7 +190,6 @@ async def test_unhandled_exception_frees_running_without_done(broker, backend, r
     assert await _status(guard_backend) == "claimed"
 
 
-
 async def test_cancelled_delivery_frees_running_without_done(broker, backend, rec, guard_backend) -> None:
     """Ein Abbruch im Hauptteil (Shutdown, hier während des Rate-Limit-Gates)
     setzt keinen Done-Marker; die Neuzustellung läuft sofort."""
@@ -177,7 +201,7 @@ async def test_cancelled_delivery_frees_running_without_done(broker, backend, re
         await asyncio.Event().wait()
         raise AssertionError("unreachable")
 
-    worker._rate_limiter.check = _blocking_check
+    as_mock(worker._rate_limiter).check = _blocking_check
     handler = asyncio.create_task(worker._handle_message(make_message(_payload("guard-counted"))))
     await asyncio.wait_for(entered.wait(), 1)
 
@@ -228,18 +252,27 @@ async def test_redelivery_after_completion_is_acked_and_skipped(broker, backend,
 class ExpiringTask(Task):
     task_info = TaskInfo(name="guard-expiring", queues=["default"], max_age=1)
 
+    @override
     async def run(self) -> str:
         RUNS.append("run")
         return "ok"
 
 
 async def test_expired_copy_of_a_running_original_is_deferred_not_dead_lettered(
-    broker, backend, rec, guard_backend,
+    broker,
+    backend,
+    rec,
+    guard_backend,
 ) -> None:
     """Sonst läge eine Kopie in der DLQ, während das Original noch läuft und
     gleich erfolgreich abschließt."""
     await guard_backend.execution_guard.claim(
-        "t-1", owner="original", retry_count=0, ttl_ms=60_000, state_ttl_ms=600_000, max_orphans=3,
+        "t-1",
+        owner="original",
+        retry_count=0,
+        ttl_ms=60_000,
+        state_ttl_ms=600_000,
+        max_orphans=3,
     )
     worker = _worker(broker, backend, rec, guard_backend.execution_guard, ExpiringTask)
 
@@ -255,6 +288,7 @@ async def test_expired_copy_of_a_running_original_is_deferred_not_dead_lettered(
 class FlakyTask(Task):
     task_info = TaskInfo(name="guard-flaky", queues=["default"], max_retries=1)
 
+    @override
     async def run(self) -> str:
         RUNS.append("run")
         if len(RUNS) == 1:
@@ -282,6 +316,7 @@ async def test_dead_lettered_execution_skips_a_leftover_copy(broker, backend, re
     class FailingTask(Task):
         task_info = TaskInfo(name="guard-failing", queues=["default"], max_retries=0)
 
+        @override
         async def run(self) -> str:
             RUNS.append("run")
             raise RuntimeError("boom")
@@ -299,6 +334,7 @@ async def test_failure_without_dead_lettering_marks_done_via_the_ack(broker, bac
     class NoDlqTask(Task):
         task_info = TaskInfo(name="guard-no-dlq", queues=["default"], max_retries=0, dead_letter=False)
 
+        @override
         async def run(self) -> str:
             RUNS.append("run")
             raise RuntimeError("boom")
@@ -325,8 +361,9 @@ async def test_shutdown_nack_comes_before_any_claim(broker, backend, rec, guard_
 
 async def test_rate_limit_requeue_frees_running_before_the_copy(broker, backend, rec, guard_backend) -> None:
     worker = _worker(broker, backend, rec, guard_backend.execution_guard, CountedTask)
-    worker._rate_limiter.check = rec.spy(
-        "rate_limiter.check", RateLimitDecision(allowed=False, remaining=0, retry_after_ms=500),
+    as_mock(worker._rate_limiter).check = rec.spy(
+        "rate_limiter.check",
+        RateLimitDecision(allowed=False, remaining=0, retry_after_ms=500),
     )
     seen: list[str] = []
 
@@ -352,4 +389,5 @@ async def test_guard_events_reach_the_worker_metrics(broker, backend, rec, guard
     await worker._handle_message(make_message(_payload("guard-counted")))
 
     sample = "swarmq_execution_guard_events_total"
+    assert metrics.registry is not None
     assert metrics.registry.get_sample_value(sample, {"event": "duplicate_skipped"}) == 1.0

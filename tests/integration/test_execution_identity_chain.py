@@ -22,7 +22,7 @@ import contextlib
 import time
 import uuid
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, override
 
 import pytest
 
@@ -52,6 +52,7 @@ def _tasks(queue: str, attempts: list[int]) -> Any:
     class RetriesOnce(Task):
         task_info = TaskInfo(name="idchain_retries_once", queues=[queue], max_retries=1, retry_base_delay=1.0)
 
+        @override
         async def run(self) -> str:
             attempts.append(len(attempts) + 1)
             if len(attempts) == 1:
@@ -88,7 +89,8 @@ async def _claim_status(app: SwarmQ, identity: str) -> str:
     return claim.status
 
 
-async def test_retry_copy_through_a_delay_tier_keeps_the_identity(rabbitmq_url, valkey_url, queue, attempts, _tasks):
+@pytest.mark.usefixtures("_tasks")
+async def test_retry_copy_through_a_delay_tier_keeps_the_identity(rabbitmq_url, valkey_url, queue, attempts):
     task_id = f"idchain-{uuid.uuid4().hex[:8]}"
     task = {"id": task_id, "queue": queue, "name": "idchain_retries_once"}
     body = encode_json({"task": task, "args": [], "kwargs": {}})

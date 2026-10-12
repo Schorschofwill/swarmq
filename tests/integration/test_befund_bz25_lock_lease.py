@@ -23,7 +23,7 @@ import asyncio
 import contextlib
 import uuid
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, override
 
 import pytest
 
@@ -56,6 +56,7 @@ def holder(queue: str, lock_name: str) -> Any:
     class LongHolder(Task):
         task_info = TaskInfo(name="bz25_long_holder", queues=[queue], lock=lock_name, hard_timeout=20)
 
+        @override
         async def run(self) -> str:
             started.set()
             await proceed.wait()  # laeuft laenger als die (kleine) Lock-TTL

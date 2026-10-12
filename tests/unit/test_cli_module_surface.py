@@ -53,114 +53,114 @@ import swarmq.cli
 _CLI_PUBLIC_SURFACE: frozenset[str] = frozenset(
     {
         # --- public CLI entry points -----------------------------------------
-        "main",                         # public — CLI-Logik; Tests rufen es direkt
-        "console_main",                 # public — swarmq = "swarmq.cli:console_main" (Plan 2026-10-06-1811, U4)
-        "run_worker_async",             # public — process_manager.py:754
+        "main",  # public — CLI-Logik; Tests rufen es direkt
+        "console_main",  # public — swarmq = "swarmq.cli:console_main" (Plan 2026-10-06-1811, U4)
+        "run_worker_async",  # public — process_manager.py:754
         # --- internal helpers (patch targets / direct imports in tests) ------
-        "_DLQNotFound",                 # internal
-        "_DLQ_NOT_FOUND_EXIT_CODE",     # internal
-        "_DOTTED_IDENTIFIER_RE",        # internal
-        "_FORBIDDEN_WATCH_PREFIXES",    # internal
-        "_LAZY_SURFACE",                # internal — PEP-562 lazy-surface registry (R-1a, plan 2026-04-23-001)
-        "_VALID_LOG_FORMATS",           # internal
-        "_VALID_LOG_LEVELS",            # internal
-        "_WORKER_CHECK_PAYLOAD_KEYS",   # internal
+        "_DLQNotFound",  # internal
+        "_DLQ_NOT_FOUND_EXIT_CODE",  # internal
+        "_DOTTED_IDENTIFIER_RE",  # internal
+        "_FORBIDDEN_WATCH_PREFIXES",  # internal
+        "_LAZY_SURFACE",  # internal — PEP-562 lazy-surface registry (R-1a, plan 2026-04-23-001)
+        "_VALID_LOG_FORMATS",  # internal
+        "_VALID_LOG_LEVELS",  # internal
+        "_WORKER_CHECK_PAYLOAD_KEYS",  # internal
         # U4 (Plan 2026-09-08-001, R19/KTD8): Exit-Code-Vertrag im
         # Worker-Zweig. Die Konstante kommt aus ``swarmq.supervision`` und
         # wird hier gelesen, damit ``cli`` sie ohne Import von
         # ``process_manager`` kennt.
-        "CONFIG_ERROR_EXIT_CODE",       # ambient — aus swarmq.supervision
-        "_log_worker_config_error",     # internal — worker_config_error (R19)
-        "_setup_worker_logging",        # internal — Settings aufloesen + configure_logging (KTD8, U7)
-        "_setup_fallback_logging",      # internal — Fallback-Renderer fuer worker_config_error (U7, R14)
-        "_flush_worker_logging",        # internal — flush-on-exit (KTD8)
+        "CONFIG_ERROR_EXIT_CODE",  # ambient — aus swarmq.supervision
+        "_log_worker_config_error",  # internal — worker_config_error (R19)
+        "_setup_worker_logging",  # internal — Settings aufloesen + configure_logging (KTD8, U7)
+        "_setup_fallback_logging",  # internal — Fallback-Renderer fuer worker_config_error (U7, R14)
+        "_flush_worker_logging",  # internal — flush-on-exit (KTD8)
         # Plan 2026-10-06-0831, U9 (KTD1): Modul-Logger statt Inline-
         # ``get_logger("swarmq.cli")`` — Patch-Ziel fuer Tests.
-        "logger",                       # internal — Modul-Logger ``swarmq.cli``
-        "get_logger",                   # ambient — aus swarmq.logging
-        "_autoscale_range",             # internal — test_cli_multiprocess.py
-        "prepare_pool_args",            # internal — Pool-Modus + --concurrency Aufloesung (Plan 2026-09-03-001)
-        "_backend_from_env",            # internal
-        "_parse_args_for_mode",         # internal — main()-Zerlegung (Follow-Up 0.2.x)
-        "_run_command",                 # internal — dito
-        "_run_worker_command",          # internal — dito
-        "_startup_error_classes",       # internal — dito
-        "_broker_from_env",             # internal
-        "_build_parser",                # internal — test_cli_multiprocess.py
-        "_dotted_module_name",          # internal
-        "_emit_argparse_check_error",   # internal
-        "_format_dlq_list_table",       # internal
-        "_format_inspect_table",        # internal
-        "_format_schedule_table",       # internal
-        "_is_check_invocation",         # internal
+        "logger",  # internal — Modul-Logger ``swarmq.cli``
+        "get_logger",  # ambient — aus swarmq.logging
+        "_autoscale_range",  # internal — test_cli_multiprocess.py
+        "prepare_pool_args",  # internal — Pool-Modus + --concurrency Aufloesung (Plan 2026-09-03-001)
+        "_backend_from_env",  # internal
+        "_parse_args_for_mode",  # internal — main()-Zerlegung (Follow-Up 0.2.x)
+        "_run_command",  # internal — dito
+        "_run_worker_command",  # internal — dito
+        "_startup_error_classes",  # internal — dito
+        "_broker_from_env",  # internal
+        "_build_parser",  # internal — test_cli_multiprocess.py
+        "_dotted_module_name",  # internal
+        "_emit_argparse_check_error",  # internal
+        "_format_dlq_list_table",  # internal
+        "_format_inspect_table",  # internal
+        "_format_schedule_table",  # internal
+        "_is_check_invocation",  # internal
         "_normalise_headers_for_json",  # internal
-        "_positive_float",              # internal
-        "_positive_int",                # internal
-        "_queue_list",                  # internal
-        "_render_table",                # internal
-        "_run_dlq_async",               # internal
-        "_run_dlq_inspect",             # internal
-        "_run_dlq_list",                # internal
-        "_run_dlq_purge",               # internal
-        "_run_dlq_retry",               # internal
-        "_run_inspect_async",           # internal
-        "_run_schedule_add",            # internal
-        "_run_schedule_async",          # internal
-        "_run_schedule_list",           # internal
-        "_run_schedule_remove",         # internal
-        "_run_schedule_status",         # internal
-        "_run_worker_check",            # internal
-        "_seed_check_payload",          # internal
-        "_swarmq_version",              # internal
-        "_watch_dir_path",              # internal — test_cli_multiprocess.py
-        "resolve_format",               # internal — TTY+env --format resolver (R-5, CLI-04)
+        "_positive_float",  # internal
+        "_positive_int",  # internal
+        "_queue_list",  # internal
+        "_render_table",  # internal
+        "_run_dlq_async",  # internal
+        "_run_dlq_inspect",  # internal
+        "_run_dlq_list",  # internal
+        "_run_dlq_purge",  # internal
+        "_run_dlq_retry",  # internal
+        "_run_inspect_async",  # internal
+        "_run_schedule_add",  # internal
+        "_run_schedule_async",  # internal
+        "_run_schedule_list",  # internal
+        "_run_schedule_remove",  # internal
+        "_run_schedule_status",  # internal
+        "_run_worker_check",  # internal
+        "_seed_check_payload",  # internal
+        "_swarmq_version",  # internal
+        "_watch_dir_path",  # internal — test_cli_multiprocess.py
+        "resolve_format",  # internal — TTY+env --format resolver (R-5, CLI-04)
         # --- ambient imports (R-1 compat: frozen to avoid silent breakage) --
-        "Any",                          # ambient
-        "TYPE_CHECKING",                # ambient — U12: Typ-Import für die Sampler-Factory
-        "BackendConnectionError",       # ambient
-        "BrokerConnectionError",        # ambient
-        "ConfigurationError",           # ambient
-        "Path",                         # ambient
-        "RabbitMQBroker",               # ambient
-        "SCHEDULER_LOCK_KEY",           # ambient
-        "ScheduleDefinition",           # ambient
-        "ScheduleStore",                # ambient
-        "Sequence",                     # ambient
-        "SwarmQ",                       # ambient
-        "Task",                         # ambient
-        "UTC",                          # ambient
-        "ValkeyBackend",                # ambient
-        "annotations",                  # ambient — __future__
-        "argparse",                     # ambient
-        "asyncio",                      # ambient — patch("swarmq.cli.asyncio.run")
-        "compute_dedup_hash",           # ambient
-        "datetime",                     # ambient
-        "importlib",                    # ambient
-        "json",                         # ambient
-        "msgspec",                      # ambient
-        "os",                           # ambient
-        "re",                           # ambient
-        "sys",                          # ambient
-        "time",                         # ambient
-        "traceback",                    # ambient
+        "Any",  # ambient
+        "TYPE_CHECKING",  # ambient — U12: Typ-Import für die Sampler-Factory
+        "BackendConnectionError",  # ambient
+        "BrokerConnectionError",  # ambient
+        "ConfigurationError",  # ambient
+        "Path",  # ambient
+        "RabbitMQBroker",  # ambient
+        "SCHEDULER_LOCK_KEY",  # ambient
+        "ScheduleDefinition",  # ambient
+        "ScheduleStore",  # ambient
+        "Sequence",  # ambient
+        "SwarmQ",  # ambient
+        "Task",  # ambient
+        "UTC",  # ambient
+        "ValkeyBackend",  # ambient
+        "annotations",  # ambient — __future__
+        "argparse",  # ambient
+        "asyncio",  # ambient — patch("swarmq.cli.asyncio.run")
+        "compute_dedup_hash",  # ambient
+        "datetime",  # ambient
+        "importlib",  # ambient
+        "json",  # ambient
+        "msgspec",  # ambient
+        "os",  # ambient
+        "re",  # ambient
+        "sys",  # ambient
+        "time",  # ambient
+        "traceback",  # ambient
         # --- submodules exposed by the cli/ package (new, post-split) -----
         # Package-attribute bindings created automatically when a submodule
         # is imported from __init__.py. Kept in the whitelist so
         # `from swarmq.cli import dlq_cmd` remains valid (useful for
         # advanced testing / introspection) and so that accidental
         # removal of a submodule is caught early.
-        "_shared",                      # package — shared helpers
-        "check_cmd",                    # package — --check handler
-        "dlq_cmd",                      # package — dlq subcommand
-        "env_check_cmd",                # package — swarmq check (Plan 0.12.0, MR 14)
-        "inspect_cmd",                  # package — inspect subcommand
-        "parser",                       # package — argparse tree
-        "parser_ops",                   # package — argparse schedule/dlq/inspect (Plan 0.12.0, MR 0)
-        "pool",                         # package — --pool / --concurrency Aufloesung (Plan 2026-09-03-001)
-        "schedule_cmd",                 # package — schedule subcommand
-        "worker_cmd",                   # package — worker command
-        "worker_options",               # package — CLI > Env > Default der Worker-Optionen
-        "resolve_worker_options",       # internal — Aufloesung im Worker-Zweig von main()
+        "_shared",  # package — shared helpers
+        "check_cmd",  # package — --check handler
+        "dlq_cmd",  # package — dlq subcommand
+        "env_check_cmd",  # package — swarmq check (Plan 0.12.0, MR 14)
+        "inspect_cmd",  # package — inspect subcommand
+        "parser",  # package — argparse tree
+        "parser_ops",  # package — argparse schedule/dlq/inspect (Plan 0.12.0, MR 0)
+        "pool",  # package — --pool / --concurrency Aufloesung (Plan 2026-09-03-001)
+        "schedule_cmd",  # package — schedule subcommand
+        "worker_cmd",  # package — worker command
+        "worker_options",  # package — CLI > Env > Default der Worker-Optionen
+        "resolve_worker_options",  # internal — Aufloesung im Worker-Zweig von main()
     }
 )
 
@@ -252,9 +252,7 @@ class TestLivePatchThrough:
         async def _noop(_args):
             return None
 
-        with patch(
-            "swarmq.cli._run_schedule_async", side_effect=_noop
-        ) as mock:
+        with patch("swarmq.cli._run_schedule_async", side_effect=_noop) as mock:
             rc = swarmq.cli.main(["schedule", "list"])
         assert mock.call_count == 1, (
             "patch('swarmq.cli._run_schedule_async') did not intercept the "
@@ -281,9 +279,7 @@ class TestLivePatchThrough:
         async def _noop(_args):
             return None
 
-        with patch(
-            "swarmq.cli._run_inspect_async", side_effect=_noop
-        ) as mock:
+        with patch("swarmq.cli._run_inspect_async", side_effect=_noop) as mock:
             rc = swarmq.cli.main(["inspect", "--module", "swarmq"])
         assert mock.call_count == 1, (
             "patch('swarmq.cli._run_inspect_async') did not intercept the "
@@ -374,6 +370,7 @@ class TestSubprocessImport:
         # where a globally-installed release shadows the editable
         # checkout — keeping env= explicit makes the contract visible.
         import os
+
         result = subprocess.run(
             [sys.executable, "-c", script],
             capture_output=True,
@@ -383,8 +380,7 @@ class TestSubprocessImport:
             env=os.environ.copy(),
         )
         assert result.returncode == 0, (
-            f"Fresh-interpreter import failed.\n"
-            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+            f"Fresh-interpreter import failed.\nstdout: {result.stdout}\nstderr: {result.stderr}"
         )
 
     @pytest.mark.timeout(45)
@@ -395,6 +391,7 @@ class TestSubprocessImport:
         broken __main__.py would only surface in integration/e2e.
         """
         import os
+
         result = subprocess.run(
             [sys.executable, "-m", "swarmq.cli", "--version"],
             capture_output=True,

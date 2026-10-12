@@ -3,7 +3,7 @@ und Fork-Hook (Plan 2026-10-06-1811, U1).
 
 Aus ``swarmq.logging`` ausgelagert; dort bleiben die oeffentlichen Namen
 importierbar. Haelt den Prozesszustand, den Einrichtung und Shutdown
-teilen (``_CONFIGURED``, ``_APP_TAKEOVER_REPORTED``).
+teilen (``_STATE.configured``, ``_STATE.app_takeover_reported``).
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import asyncio
 import atexit
 import contextlib
 import contextvars
+import dataclasses
 import logging
 import logging.handlers
 import os
@@ -19,7 +20,7 @@ import queue
 import sys
 import threading
 import weakref
-from typing import Any
+from typing import Any, override
 
 from swarmq.logging_drain import (
     Deadline,
@@ -50,9 +51,46 @@ _LogQueue = queue.Queue[logging.LogRecord]
 _ListenerQueue = queue.Queue[Any]
 """Records plus der ``None``-Sentinel des Listeners."""
 
-_LISTENER_LOCK = threading.Lock()
-"""Schuetzt den Listener-Start: Der erste Eintrag kann mit einem expliziten
-Start aus einem anderen Thread konkurrieren (KTD5)."""
+
+@dataclasses.dataclass
+class _State:
+    """Veraenderlicher Prozesszustand des Queue-Kerns, als eine Modulinstanz
+    (``_STATE``) gebuendelt: Geaendert wird per Attribut, nicht per
+    ``global``.
+
+    - ``listener_lock`` schuetzt den Listener-Start: Der erste Eintrag kann
+      mit einem expliziten Start aus einem anderen Thread konkurrieren
+      (KTD5). Im Fork-Kind ersetzt.
+    - ``dropped_total``: verworfene Eintraege aller Queue-Handler dieses
+      Prozesses; monoton bis zum Fork (KTD5).
+    - ``optin_handler``: der installierte Opt-in-Handler am Logger
+      ``swarmq``, sonst ``None``.
+    - ``optin_saved``: ``propagate`` und Level von ``swarmq`` vor dem Opt-in.
+    - ``optin_holders``: Referenzzaehler -- mehrere ``SwarmQ``-Instanzen
+      teilen einen Handler.
+    - ``optin_takeover``: Haelt die Regel "App gewinnt" (KTD4) den Opt-in in
+      diesem Prozess?
+    - ``configured``: Hat ``configure_logging`` in diesem Prozess
+      eingerichtet? Je Prozess gibt es genau einen Eigentuemer (KTD4);
+      ``shutdown_logging`` gibt ihn frei.
+    - ``app_takeover_reported``: ``logging_reconfigured_by_app`` erscheint
+      einmal je Prozess (KTD4).
+    - ``drain_timeout``: Frist fuer ``shutdown_logging`` ohne ``timeout``
+      (KTD11); ``set_drain_timeout`` setzt sie.
+    """
+
+    listener_lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
+    dropped_total: int = 0
+    optin_handler: _OptinQueueHandler | None = None
+    optin_saved: tuple[bool, int] = (True, logging.NOTSET)
+    optin_holders: int = 0
+    optin_takeover: bool = False
+    configured: bool = False
+    app_takeover_reported: bool = False
+    drain_timeout: float = 5.0
+
+
+_STATE = _State()
 
 _LISTENERS: weakref.WeakSet[_SwarmqQueueListener] = weakref.WeakSet()
 """Alle Listener des Prozesses. Ein laufender bleibt ueber seinen Thread am
@@ -64,7 +102,7 @@ class _SwarmqQueueListener(logging.handlers.QueueListener):
 
     # typeshed kennt nur die oeffentliche Schnittstelle; ``_thread``,
     # ``_monitor`` und ``_sentinel`` sind seit 3.2 unveraendert.
-    queue: _ListenerQueue
+    queue: _ListenerQueue  # type: ignore[mutable-override]  # stdlib-Attribut, nur im Konstruktor gesetzt  # pyright: ignore[reportIncompatibleVariableOverride]  # engerer Queue-Typ als in typeshed, nur intern gesetzt
     _thread: threading.Thread | None
     _sentinel: None
     _monitor: Any
@@ -99,14 +137,13 @@ class _SwarmqQueueListener(logging.handlers.QueueListener):
         thread = self._thread
         return thread is not None and thread.is_alive()
 
+    @override
     def start(self) -> None:
         """Idempotent: unter 3.14 wirft der Basis-``start`` beim zweiten Mal."""
-        with _LISTENER_LOCK:
+        with _STATE.listener_lock:
             if self.running:
                 return
-            self._thread = thread = threading.Thread(
-                target=self._serve, name=LISTENER_THREAD_NAME, daemon=True
-            )
+            self._thread = thread = threading.Thread(target=self._serve, name=LISTENER_THREAD_NAME, daemon=True)
             thread.start()
 
     def _serve(self) -> None:
@@ -115,6 +152,7 @@ class _SwarmqQueueListener(logging.handlers.QueueListener):
         2026-10-06-1811, KTD2)."""
         self._reports.serve(self._monitor)
 
+    @override
     def stop(self) -> None:
         """Wie der Basis-``stop``, aber auf dem eigenen Thread: Zwischen dem
         Ende des Threads und dem Vergessen kann ein Eintrag (``running`` ist
@@ -126,10 +164,11 @@ class _SwarmqQueueListener(logging.handlers.QueueListener):
             return
         self.enqueue_sentinel()
         thread.join()
-        with _LISTENER_LOCK:
+        with _STATE.listener_lock:
             if self._thread is thread:
                 self._thread = None
 
+    @override
     def handle(self, record: logging.LogRecord) -> None:
         """Faengt jede ``Exception`` pro Record (Plan 2026-10-06-1811, KTD1):
         Der stdlib-``_monitor`` faengt nichts, ein werfender Handler, Filter
@@ -140,6 +179,7 @@ class _SwarmqQueueListener(logging.handlers.QueueListener):
     def _dispatch(self, record: logging.LogRecord) -> None:
         super().handle(record)
 
+    @override
     def dequeue(self, block: bool) -> Any:
         """Eine per ``Queue.shutdown`` geschlossene, leere Queue beendet den
         Thread wie ``queue.Empty`` statt mit einer Ausnahme."""
@@ -148,6 +188,7 @@ class _SwarmqQueueListener(logging.handlers.QueueListener):
         except queue.ShutDown:
             raise queue.Empty from None
 
+    @override
     def enqueue_sentinel(self) -> None:
         """Blockierend: Bei voller Queue wuerde ``put_nowait`` werfen; der
         laufende Listener schafft Platz. Eine geschlossene Queue braucht
@@ -156,25 +197,19 @@ class _SwarmqQueueListener(logging.handlers.QueueListener):
             self.queue.put(self._sentinel)
 
 
-_DROPPED_TOTAL = 0
-"""Verworfene Eintraege aller Queue-Handler dieses Prozesses; monoton bis
-zum Fork (KTD5)."""
-
-
 def dropped_log_records() -> int:
     """Anzahl der in diesem Prozess verworfenen Logeintraege (R7).
 
     Je Prozess: ``swarmq.metrics`` exportiert den Wert des Worker-Prozesses;
     Verluste in Compute-Kindern zeigt deren ``log_records_dropped``-Zeile.
     """
-    return _DROPPED_TOTAL
+    return _STATE.dropped_total
 
 
 def count_dropped(count: int = 1) -> None:
     """Zaehlt verworfene Eintraege, auch aus den Datei-Modus-Queues
     (Plan 2026-10-06-1811, KTD1) und beim Aufgeben eines Leerens (KTD3)."""
-    global _DROPPED_TOTAL
-    _DROPPED_TOTAL += count
+    _STATE.dropped_total += count
 
 
 _HANDLERS: weakref.WeakSet[_StructlogQueueHandler] = weakref.WeakSet()
@@ -200,8 +235,8 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
     Der Listener startet lazy beim ersten Eintrag.
     """
 
-    queue: _LogQueue
-    listener: _SwarmqQueueListener | None
+    queue: _LogQueue  # type: ignore[mutable-override]  # stdlib-Attribut, nur im Konstruktor gesetzt
+    listener: _SwarmqQueueListener | None  # type: ignore[mutable-override]  # nur intern gesetzt
 
     def __init__(
         self,
@@ -218,10 +253,12 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
         self._abandoned: threading.Thread | None = None
         _HANDLERS.add(self)
 
+    @override
     def prepare(self, record: logging.LogRecord) -> logging.LogRecord:
         """Pass the record through without formatting."""
         return record
 
+    @override
     def enqueue(self, record: logging.LogRecord) -> None:
         abandoned = self._abandoned
         if abandoned is not None:
@@ -252,7 +289,7 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
             return
         try:
             self.queue.put_nowait(record)
-        except (queue.Full, queue.ShutDown):
+        except queue.Full, queue.ShutDown:
             self._drop()
 
     def _in_reserve(self) -> bool:
@@ -302,13 +339,13 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
         """Frische Queue und frischer, noch nicht gestarteter Listener: im
         Kind nach dem Fork (KTD5) und beim Leeren (Plan 2026-10-06-1811,
         KTD3)."""
-        self.queue = fresh = _LogQueue(self.queue.maxsize)
+        self.queue = fresh = _LogQueue(self.queue.maxsize)  # pyright: ignore[reportIncompatibleVariableOverride]  # engerer Queue-Typ als in typeshed, nur intern gesetzt
         self._reserve_at = self._reserve_threshold()
         if self.listener is not None:
             # Der alte Listener verweist auf einen Thread, den es im Kind
             # nicht gibt oder der die alte Queue leert.
             # Dieselbe Klasse: der Opt-in-Listener gibt an Root weiter (KTD10).
-            self.listener = type(self.listener)(fresh, *self.listener.handlers)
+            self.listener = type(self.listener)(fresh, *self.listener.handlers)  # pyright: ignore[reportIncompatibleVariableOverride]  # engerer Listener-Typ als in typeshed, nur intern gesetzt
 
 
 _CONTEXT_ATTR = "_swarmq_context"
@@ -323,10 +360,12 @@ class _OptinQueueListener(_SwarmqQueueListener):
     also die Elternkette von ``swarmq`` -- ohne Schnappschuss.
     """
 
+    @override
     def fork_targets(self) -> list[logging.Handler]:
         """Die Root-Handler: an sie gibt der Thread weiter."""
         return list(logging.getLogger().handlers)
 
+    @override
     def _dispatch(self, record: logging.LogRecord) -> None:
         context = record.__dict__.pop(_CONTEXT_ATTR, None)
         if context is None:
@@ -349,7 +388,7 @@ def _dispatch_to_root(record: logging.LogRecord, listener: _SwarmqQueueListener)
             listener.current = handler
             try:
                 handler.handle(record)
-            except Exception:
+            except Exception:  # noqa: BLE001 - werfender App-Handler darf uebrige nicht blockieren (KTD1)
                 listener.errors.failed()
             listener.current = None
 
@@ -365,6 +404,7 @@ class _OptinQueueHandler(_StructlogQueueHandler):
         super().__init__(queue_, json=json)
         self.listener = _OptinQueueListener(queue_)
 
+    @override
     def prepare(self, record: logging.LogRecord) -> logging.LogRecord:
         """Haengt den Kontext des Aufrufers an (O(1)): Filter der App, die
         Kontextvariablen lesen, arbeiten im Listener wie im Aufrufer."""
@@ -372,21 +412,11 @@ class _OptinQueueHandler(_StructlogQueueHandler):
         return record
 
 
-_OPTIN_HANDLER: _OptinQueueHandler | None = None
-"""Der installierte Opt-in-Handler am Logger ``swarmq``, sonst ``None``."""
-
-_OPTIN_SAVED: tuple[bool, int] = (True, logging.NOTSET)
-"""``propagate`` und Level von ``swarmq`` vor dem Opt-in."""
-
-_OPTIN_HOLDERS = 0
-"""Referenzzaehler: Mehrere ``SwarmQ``-Instanzen teilen einen Handler."""
-
-_OPTIN_TAKEOVER = False
-"""Haelt die Regel "App gewinnt" (KTD4) den Opt-in in diesem Prozess?"""
-
-
 def _enable_log_queue(
-    level: str | int, *, json: bool = False, queue_size: int = 10_000,
+    level: str | int,
+    *,
+    json: bool = False,
+    queue_size: int = 10_000,
     drain_timeout: float | None = None,
 ) -> bool:
     """Leitet ``swarmq.*`` ueber eine eigene Hintergrund-Queue (R5, KTD10).
@@ -402,10 +432,9 @@ def _enable_log_queue(
     dann auch fuer ``shutdown_logging`` beim Prozessende (Plan
     2026-10-06-1811, KTD3/KTD4).
     """
-    global _OPTIN_HOLDERS
-    if _CONFIGURED:
+    if _STATE.configured:
         return False
-    _OPTIN_HOLDERS += 1
+    _STATE.optin_holders += 1
     if drain_timeout is not None:
         set_drain_timeout(drain_timeout)
     _install_log_queue(level, json=json, queue_size=queue_size)
@@ -417,9 +446,8 @@ def _disable_log_queue() -> _Draining | None:
     und Level von ``swarmq`` wieder her (KTD10) und schliesst die Queue, in
     O(1) und ohne zu warten (Plan 2026-10-06-1811, KTD4). Das Leeren
     erwartet danach ``_await_log_queue_drained``."""
-    global _OPTIN_HOLDERS
-    _OPTIN_HOLDERS = max(_OPTIN_HOLDERS - 1, 0)
-    if _OPTIN_HOLDERS == 0 and not _OPTIN_TAKEOVER:
+    _STATE.optin_holders = max(_STATE.optin_holders - 1, 0)
+    if _STATE.optin_holders == 0 and not _STATE.optin_takeover:
         return _detach_log_queue()
     return None
 
@@ -480,31 +508,31 @@ def _finish_draining(draining: _Draining, deadline: Deadline, timeout: float) ->
 def _finish_in_background(draining: _Draining, deadline: Deadline, timeout: float) -> None:
     """:func:`_finish_draining` in einem eigenen Thread."""
     threading.Thread(
-        target=_finish_draining, args=(draining, deadline, timeout),
-        name="swarmq-log-drain", daemon=True,
+        target=_finish_draining,
+        args=(draining, deadline, timeout),
+        name="swarmq-log-drain",
+        daemon=True,
     ).start()
 
 
 def _reset_log_queue() -> None:
     """Hebt den Opt-in unabhaengig von der Zahl der Anforderungen auf."""
-    global _OPTIN_HOLDERS, _OPTIN_TAKEOVER
-    _OPTIN_HOLDERS = 0
-    _OPTIN_TAKEOVER = False
+    _STATE.optin_holders = 0
+    _STATE.optin_takeover = False
     draining = _detach_log_queue()
-    if draining is not None and not draining.wait(Deadline(_DRAIN_TIMEOUT)):
-        draining.notify(_DRAIN_TIMEOUT)
+    if draining is not None and not draining.wait(Deadline(_STATE.drain_timeout)):
+        draining.notify(_STATE.drain_timeout)
 
 
 def _install_log_queue(level: str | int | None, *, json: bool, queue_size: int) -> None:
     """Installiert den Opt-in-Handler am Logger ``swarmq``, falls noch keiner
     da ist; ``level=None`` laesst das ``swarmq``-Level unangetastet."""
-    global _OPTIN_HANDLER, _OPTIN_SAVED
-    if _OPTIN_HANDLER is not None:
+    if _STATE.optin_handler is not None:
         return
     logger = logging.getLogger("swarmq")
-    _OPTIN_SAVED = (logger.propagate, logger.level)
-    _OPTIN_HANDLER = _OptinQueueHandler(_LogQueue(queue_size), json=json)
-    logger.addHandler(_OPTIN_HANDLER)
+    _STATE.optin_saved = (logger.propagate, logger.level)
+    _STATE.optin_handler = handler = _OptinQueueHandler(_LogQueue(queue_size), json=json)
+    logger.addHandler(handler)
     logger.propagate = False
     if level is not None:
         logger.setLevel(level)
@@ -514,31 +542,20 @@ def _detach_log_queue() -> _Draining | None:
     """Synchroner Teil des Abbaus (KTD4): Handler entfernen, ``swarmq``
     wiederherstellen, Queue schliessen. Ein neuer Opt-in bekommt danach
     einen frischen Handler mit frischer Queue."""
-    global _OPTIN_HANDLER
-    handler, _OPTIN_HANDLER = _OPTIN_HANDLER, None
+    handler, _STATE.optin_handler = _STATE.optin_handler, None
     if handler is None:
         return None
     logger = logging.getLogger("swarmq")
     logger.removeHandler(handler)
-    logger.propagate, level = _OPTIN_SAVED
+    logger.propagate, level = _STATE.optin_saved
     logger.setLevel(level)
     assert handler.listener is not None
     return _close(handler.listener, handler, swap=False)
 
 
-_CONFIGURED = False
-"""Hat ``configure_logging`` in diesem Prozess eingerichtet? Je Prozess gibt
-es genau einen Eigentuemer (KTD4); ``shutdown_logging`` gibt ihn frei."""
-
-
-_DRAIN_TIMEOUT = 5.0
-"""Frist fuer ``shutdown_logging`` ohne ``timeout`` (KTD11)."""
-
-
 def set_drain_timeout(seconds: float) -> None:
     """Setzt die Frist fuer ``shutdown_logging`` ohne ``timeout`` (KTD11)."""
-    global _DRAIN_TIMEOUT
-    _DRAIN_TIMEOUT = seconds
+    _STATE.drain_timeout = seconds
 
 
 def shutdown_logging(timeout: float | None = None) -> None:
@@ -549,8 +566,7 @@ def shutdown_logging(timeout: float | None = None) -> None:
     Listener wieder. Ein folgendes ``configure_logging`` baut neu auf (KTD4).
     Was bis zur Frist nicht geschrieben ist, gilt als verworfen.
     """
-    global _CONFIGURED, _APP_TAKEOVER_REPORTED
-    _CONFIGURED = _APP_TAKEOVER_REPORTED = False
+    _STATE.configured = _STATE.app_takeover_reported = False
     _stop_listeners(timeout)
 
 
@@ -563,7 +579,7 @@ def _stop_listeners(timeout: float | None = None) -> None:
     alte Thread lebt -- die Schleife endet auch bei ununterbrochenem
     Loggen. Records in einer Queue ohne laufenden Listener werden vorher
     geschrieben oder, nach der Frist, als verworfen gezaehlt und gemeldet."""
-    seconds = _DRAIN_TIMEOUT if timeout is None else timeout
+    seconds = _STATE.drain_timeout if timeout is None else timeout
     deadline = Deadline(seconds)
     with draining_until(deadline):
         _drain(deadline, seconds)
@@ -594,7 +610,9 @@ def _drain(deadline: Deadline, seconds: float) -> None:
     if given_up or file_given_up or lost:
         handlers = [*(d.handler for d in given_up), *(h for h, _ in discarded)]
         write_drain_notice(
-            lost, seconds, json=any(h is not None and h.json for h in handlers),
+            lost,
+            seconds,
+            json=any(h is not None and h.json for h in handlers),
         )
 
 
@@ -627,7 +645,9 @@ class _Draining:
     """Ein geschlossener Listener, dessen Thread seine alte Queue leert."""
 
     def __init__(
-        self, listener: _SwarmqQueueListener, thread: threading.Thread,
+        self,
+        listener: _SwarmqQueueListener,
+        thread: threading.Thread,
         handler: _StructlogQueueHandler | None,
     ) -> None:
         self.listener = listener
@@ -670,8 +690,10 @@ class _Draining:
 
 
 def _close(
-    listener: _SwarmqQueueListener, handler: _StructlogQueueHandler | None,
-    *, swap: bool = True,
+    listener: _SwarmqQueueListener,
+    handler: _StructlogQueueHandler | None,
+    *,
+    swap: bool = True,
 ) -> _Draining | None:
     """Schliesst die Queue eines laufenden Listeners, ohne zu blockieren
     (``Queue.shutdown``). Zuvor bekommt sein Handler eine frische Queue und
@@ -686,18 +708,13 @@ def _close(
     return _Draining(listener, thread, handler)
 
 
-_APP_TAKEOVER_REPORTED = False
-"""``logging_reconfigured_by_app`` erscheint einmal je Prozess (KTD4)."""
-
-
 def _activate_swarmq_queue_after_app_takeover(*, json: bool, queue_size: int) -> None:
     """Nach dem Ersatz durch die App laufen die swarmq-Logs ueber die
     Opt-in-Queue am Logger ``swarmq`` an die Handler der App (KTD4, KTD10):
     Ein blockierender App-Handler haelt den Event-Loop nicht auf (R6). Das
     ``swarmq``-Level bleibt, wie es ist -- die App hat entschieden.
     """
-    global _OPTIN_TAKEOVER
-    _OPTIN_TAKEOVER = True
+    _STATE.optin_takeover = True
     _install_log_queue(None, json=json, queue_size=queue_size)
 
 
@@ -716,9 +733,8 @@ def _after_fork_in_child() -> None:
     2026-10-06-1811, KTD10); die vom ``before``-Hook gehaltenen Handler-Locks
     setzt die stdlib im Kind schon selbst zurueck.
     """
-    global _LISTENER_LOCK, _DROPPED_TOTAL
-    _LISTENER_LOCK = threading.Lock()
-    _DROPPED_TOTAL = 0
+    _STATE.listener_lock = threading.Lock()
+    _STATE.dropped_total = 0
     _LISTENERS.clear()
     forget_handler_locks()
     reset_queue_listeners_after_fork()

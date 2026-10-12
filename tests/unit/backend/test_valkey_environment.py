@@ -19,7 +19,7 @@ Test-Liste:
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, override
 
 import pytest
 import valkey.asyncio
@@ -83,7 +83,8 @@ async def test_unanswered_policy_query_warns_and_connect_succeeds(
 async def test_result_of_the_check_lies_on_the_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     _install(monkeypatch, _FakeValkey(config={b"maxmemory-policy": b"allkeys-lru", b"maxmemory": b"1048576"}))
     backend = ValkeyBackend("valkey://fake:6399/0")
-    assert backend.eviction_check is None
+    before_connect = backend.eviction_check
+    assert before_connect is None
 
     await backend.connect()
 
@@ -114,10 +115,12 @@ class _HangingValkey(_FakeValkey):
         super().__init__()
         self.never = asyncio.Event()
 
+    @override
     async def config_get(self, pattern: str = "*", *args: Any, **kwargs: Any) -> dict[bytes, bytes]:
         await self.never.wait()
         return {}
 
+    @override
     async def info(self, section: str | None = None, *args: Any, **kwargs: Any) -> dict[str, Any]:
         await self.never.wait()
         return {}

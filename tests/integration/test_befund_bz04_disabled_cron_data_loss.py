@@ -101,6 +101,7 @@ async def test_operator_disabled_cron_stays_off_after_valkey_data_loss(valkey_ur
             await loop.apply_static_definition(desired, now_ms + 60_000)
 
         after = await _get(store, desired.schedule_name)
+        assert after.fire_ts_ms is not None
         due = [name for name, _ts, _d in await store.poll_due(after.fire_ts_ms + 1)]
         assert after.disabled or _loss_warnings(entries), (
             "der vom Operator abgeschaltete Cron ist nach dem Datenverlust wieder "

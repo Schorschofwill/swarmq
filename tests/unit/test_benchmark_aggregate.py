@@ -31,7 +31,8 @@ def bench_mod():
     precondition as running the benchmark itself.
     """
     spec = importlib.util.spec_from_file_location("bench_for_tests", BENCH_PATH)
-    assert spec is not None and spec.loader is not None
+    assert spec is not None
+    assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)

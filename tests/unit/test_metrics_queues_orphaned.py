@@ -27,6 +27,7 @@ async def test_gauge_follows_the_signal_and_drops_to_zero_on_standby() -> None:
     await disp.dispatch(
         Signal.SCHEDULER_QUEUE_ORPHANED, worker_id="w", queue="old", orphaned=True, message_count=3, orphaned_count=2
     )
+    assert m.registry is not None
     assert m.registry.get_sample_value(_SAMPLE, {"worker_id": "w"}) == 2.0
     await disp.dispatch(Signal.SCHEDULER_STANDBY, worker_id="w")
     assert m.registry.get_sample_value(_SAMPLE, {"worker_id": "w"}) == 0.0

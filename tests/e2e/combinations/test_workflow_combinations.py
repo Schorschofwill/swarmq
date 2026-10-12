@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
+from typing import override
 
 import pytest
 
@@ -52,11 +53,14 @@ async def test_workflow_x_retry_then_success(rabbitmq_url, valkey_url):
 
     class Flaky(Task):
         task_info = TaskInfo(
-            name=f"flaky_{queue}", queues=[queue], max_retries=1,
+            name=f"flaky_{queue}",
+            queues=[queue],
+            max_retries=1,
             retry_base_delay=0.1,
         )
         _attempts = 0
 
+        @override
         async def run(self, seed: str) -> str:
             type(self)._attempts += 1
             if type(self)._attempts == 1:
@@ -66,6 +70,7 @@ async def test_workflow_x_retry_then_success(rabbitmq_url, valkey_url):
     class Tail(Task):
         task_info = TaskInfo(name=f"tail_{queue}", queues=[queue])
 
+        @override
         async def run(self, prev: str) -> str:
             return f"{prev}-tail"
 
@@ -88,16 +93,19 @@ async def test_workflow_x_faf_runtime_guard(rabbitmq_url, valkey_url):
 
     class FafStep(Task):
         task_info = TaskInfo(
-            name=f"faf_{queue}", queues=[queue],
+            name=f"faf_{queue}",
+            queues=[queue],
             delivery=DeliveryMode.FIRE_AND_FORGET,
         )
 
+        @override
         async def run(self) -> str:
             return "ignored"
 
     class After(Task):
         task_info = TaskInfo(name=f"after_{queue}", queues=[queue])
 
+        @override
         async def run(self, prev: str) -> str:
             return "after"
 
@@ -109,8 +117,6 @@ async def test_workflow_x_faf_runtime_guard(rabbitmq_url, valkey_url):
         async with _worker(rabbitmq_url, valkey_url, queue):
             # sig() by name skips the construction-time FAF rejection (U1);
             # the worker's result_ttl==0 guard (U5) must fail the workflow.
-            handle = await app.apply(
-                chain(sig(f"faf_{queue}"), sig(f"after_{queue}"))
-            )
+            handle = await app.apply(chain(sig(f"faf_{queue}"), sig(f"after_{queue}")))
             with pytest.raises(TaskError):
                 await handle.get(timeout=25)

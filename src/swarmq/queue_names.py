@@ -66,7 +66,7 @@ def main_queue_of(name: str) -> str:
     return name
 
 
-def delay_queue_for(queue: str, delay_ms: int) -> str:
+def delay_queue_for(queue: str, delay_ms: int) -> str:  # noqa: ARG001 - oeffentliche Signatur, Wartezeit heute ohne Einfluss
     """Die Delay-Queue fuer eine Wartezeit von ``delay_ms``. Heute gibt es eine
     Delay-Queue je Familie, unabhaengig von der Wartezeit."""
     return f"{queue}{_DELAY_SUFFIX}"

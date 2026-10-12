@@ -19,7 +19,7 @@ import asyncio
 import contextlib
 import uuid
 from collections.abc import AsyncIterator, Callable
-from typing import Any
+from typing import Any, override
 
 import pytest
 
@@ -29,6 +29,7 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import TaskError
 from swarmq.serialization import encode_json
 from swarmq.task import Task, TaskInfo
+from tests.support.wait import wait_until
 from tests.unit._log_capture import capture_swarmq_logs
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(20)]
@@ -57,6 +58,7 @@ def _tasks(queue: str, runs: list[str]) -> Any:
     class Counted(Task):
         task_info = TaskInfo(name="guard_counted", queues=[queue])
 
+        @override
         async def run(self) -> str:
             runs.append("run")
             return "ok"
@@ -64,6 +66,7 @@ def _tasks(queue: str, runs: list[str]) -> Any:
     class Failing(Task):
         task_info = TaskInfo(name="guard_failing", queues=[queue], max_retries=0)
 
+        @override
         async def run(self) -> str:
             runs.append("run")
             if len(runs) == 1:
@@ -95,20 +98,28 @@ def _body(task_id: str, queue: str, name: str = "guard_counted") -> bytes:
 async def _crash(backend: ValkeyBackend, identity: str) -> None:
     """Claim ohne Freigabe, der Marker läuft nach 100 ms ab."""
     claim = await backend.execution_guard.claim(
-        identity, owner=uuid.uuid4().hex, retry_count=0, ttl_ms=100, state_ttl_ms=600_000, max_orphans=99,
+        identity,
+        owner=uuid.uuid4().hex,
+        retry_count=0,
+        ttl_ms=100,
+        state_ttl_ms=600_000,
+        max_orphans=99,
     )
     assert claim.status == "claimed"
     await asyncio.sleep(0.2)
 
 
 async def _wait_for(predicate: Callable[[], bool], timeout: float = 10.0) -> None:
-    async with asyncio.timeout(timeout):
-        while not predicate():
-            await asyncio.sleep(0.05)
+    assert await wait_until(predicate, timeout), f"condition not met within {timeout}s"
 
 
+@pytest.mark.usefixtures("_tasks")
 async def test_redelivery_after_a_crashed_worker_runs_once_the_marker_expired(
-    rabbitmq_url, valkey_url, queue, guard_backend, runs, _tasks,
+    rabbitmq_url,
+    valkey_url,
+    queue,
+    guard_backend,
+    runs,
 ) -> None:
     task_id = uuid.uuid4().hex
     await _crash(guard_backend, task_id)
@@ -120,8 +131,13 @@ async def test_redelivery_after_a_crashed_worker_runs_once_the_marker_expired(
     assert runs == ["run"]
 
 
+@pytest.mark.usefixtures("_tasks")
 async def test_three_crashes_dead_letter_the_execution_as_worker_hung_error(
-    rabbitmq_url, valkey_url, queue, guard_backend, runs, _tasks,
+    rabbitmq_url,
+    valkey_url,
+    queue,
+    guard_backend,
+    runs,
 ) -> None:
     task_id = uuid.uuid4().hex
     for _ in range(3):
@@ -138,17 +154,19 @@ async def test_three_crashes_dead_letter_the_execution_as_worker_hung_error(
             letters[:] = [e for e in (await app.broker.list_dead_letters(queue))[0] if e["task_id"] == task_id]
             return bool(letters)
 
-        async with asyncio.timeout(10):
-            while not await _dead_lettered():
-                await asyncio.sleep(0.05)
+        assert await wait_until(_dead_lettered, 10), "execution was not dead-lettered within 10s"
 
     assert runs == []
     [letter] = letters
     assert "WorkerHungError" in letter["headers"]["x-swarmq-traceback"]
 
 
+@pytest.mark.usefixtures("_tasks")
 async def test_dlq_retry_runs_again_and_its_redelivery_is_skipped(
-    rabbitmq_url, valkey_url, queue, runs, _tasks,
+    rabbitmq_url,
+    valkey_url,
+    queue,
+    runs,
 ) -> None:
     with capture_swarmq_logs() as logs:
         async with _worker(rabbitmq_url, valkey_url, queue) as app:
@@ -164,6 +182,7 @@ async def test_dlq_retry_runs_again_and_its_redelivery_is_skipped(
         await broker.connect()
         try:
             assert (await broker.retry_dead_letter(queue, task_id))[0] is True
+            assert broker._connection is not None
             channel = await broker._connection.channel()
             message = await (await channel.get_queue(queue)).get(no_ack=True)
             await channel.close()

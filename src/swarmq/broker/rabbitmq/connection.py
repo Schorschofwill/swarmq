@@ -83,9 +83,8 @@ async def close_channel_quietly(channel: aio_pika.abc.AbstractChannel | None) ->
         return
     try:
         await channel.close()
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 - Schliessen best effort
         pass
-
 
 
 async def _connect_robust_closing_on_cancel(url: str) -> aio_pika.abc.AbstractRobustConnection:
@@ -108,6 +107,7 @@ async def _connect_robust_closing_on_cancel(url: str) -> aio_pika.abc.AbstractRo
             with contextlib.suppress(Exception):
                 await connection.close()
         raise
+
 
 class RabbitMQConnection:
     def __init__(
@@ -331,7 +331,7 @@ class RabbitMQConnection:
             if self._pool_ctx is not None:
                 try:
                     await self._pool_ctx.__aexit__(type(exc), exc, exc.__traceback__)
-                except Exception:
+                except Exception:  # noqa: BLE001, S110 - Pool-Rueckgabe best effort, Originalfehler folgt
                     pass
                 self._pool_ctx = None
                 self._connection = None
@@ -362,7 +362,7 @@ class RabbitMQConnection:
             # no-op when no item was assigned).
             try:
                 await self._pool_ctx.__aexit__(None, None, None)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - Best-effort release
                 pass
             self._pool_ctx = None
             self._connection = None
@@ -477,9 +477,7 @@ class RabbitMQConnection:
                     # dann braucht er kein Nachziehen mehr.
                     continue
 
-    async def _discard_publish_channel(
-        self, expected: aio_pika.abc.AbstractChannel | None
-    ) -> None:
+    async def _discard_publish_channel(self, expected: aio_pika.abc.AbstractChannel | None) -> None:
         """Verwirft den Publish-Kanal nach einem Deadline-Bruch (R10, KTD3).
 
         Zwei Feinheiten, ohne die der Verwurf mehr schadet als nuetzt:
@@ -496,9 +494,7 @@ class RabbitMQConnection:
           gibt die offene Confirmation-Future erst dabei frei.
         """
         try:
-            await asyncio.wait_for(
-                self._channel_lock.acquire(), timeout=_CHANNEL_CLOSE_TIMEOUT_S
-            )
+            await asyncio.wait_for(self._channel_lock.acquire(), timeout=_CHANNEL_CLOSE_TIMEOUT_S)
         except TimeoutError:
             # Die Sperre ist belegt. Der Aufrufer steht hier bereits AUSSERHALB
             # seiner Frist — ihn weiter warten zu lassen, waere genau der
@@ -524,9 +520,7 @@ class RabbitMQConnection:
         self._pending_channel_closes.add(task)
         task.add_done_callback(self._pending_channel_closes.discard)
 
-    async def _close_channel_detached(
-        self, channel: aio_pika.abc.AbstractChannel
-    ) -> None:
+    async def _close_channel_detached(self, channel: aio_pika.abc.AbstractChannel) -> None:
         """Best-effort-Schliessen mit eigener Frist, entkoppelt vom Aufrufer."""
         try:
             async with asyncio.timeout(_CHANNEL_CLOSE_TIMEOUT_S):
@@ -641,7 +635,6 @@ class RabbitMQConnection:
             result = getattr(q, "declaration_result", None)
             if result is not None:
                 return int(getattr(result, "message_count", 0))
-            return 0
         except aio_pika.exceptions.ChannelNotFoundEntity:
             # Der Broker hat den Channel geschlossen (``is_closed`` ist schon
             # True): trotzdem ``close()``, sonst oeffnet ein RobustChannel
@@ -651,6 +644,8 @@ class RabbitMQConnection:
             return 0
         except Exception as exc:
             raise BrokerConnectionError(str(exc)) from exc
+        else:
+            return 0
         finally:
             if channel is not None and not channel.is_closed:
                 await close_channel_quietly(channel)

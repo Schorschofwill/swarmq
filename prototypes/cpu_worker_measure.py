@@ -89,8 +89,14 @@ class Recorder:
 
 def _app(concurrency: int, idle: float = 2.0, **cfg: Any) -> SwarmQ:
     return SwarmQ(
-        RabbitMQBroker(BROKER), ValkeyBackend(BACKEND), queues=[QUEUE], pool="cpu",
-        concurrency=concurrency, burst_mode=True, burst_idle_timeout=idle, **cfg,
+        RabbitMQBroker(BROKER),
+        ValkeyBackend(BACKEND),
+        queues=[QUEUE],
+        pool="cpu",
+        concurrency=concurrency,
+        burst_mode=True,
+        burst_idle_timeout=idle,
+        **cfg,
     )
 
 
@@ -232,8 +238,12 @@ async def main() -> None:
 
     only = set(sys.argv[1:])
     steps = {
-        "m0": m0_start_latency, "i1": i1_shutdown_with_computing_children, "i2": i2_kill_before_ack,
-        "i3": i3_long_compute_loop_jitter, "i4": i4_prefetch_equals_slots, "i5": i5_typed_exception_retries_to_dlq,
+        "m0": m0_start_latency,
+        "i1": i1_shutdown_with_computing_children,
+        "i2": i2_kill_before_ack,
+        "i3": i3_long_compute_loop_jitter,
+        "i4": i4_prefetch_equals_slots,
+        "i5": i5_typed_exception_retries_to_dlq,
     }
     rows = [await fn() for name, fn in steps.items() if not only or name in only]
     print(f"\nMessnachweis I-Serie gegen swarmq {_version()} — Queue {QUEUE}\n")

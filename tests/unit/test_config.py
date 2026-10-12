@@ -5,7 +5,7 @@ import re
 
 import pytest
 
-from swarmq.config import SwarmQConfig
+from swarmq.config import DEFAULT_RESULT_TTL_S, SwarmQConfig, resolve_result_ttl
 from swarmq.exceptions import ConfigurationError
 
 
@@ -191,6 +191,7 @@ def test_config_queue_type_env_var_overrides_default(monkeypatch):
 
 
 # --- cancel_poll_interval -------------------------------------------------
+
 
 def test_config_cancel_poll_interval_default():
     cfg = SwarmQConfig(broker_url="redis://localhost", backend_url="redis://localhost")
@@ -735,8 +736,11 @@ class TestPortsPerSlot:
 
     def test_slot_is_added_to_the_base_port(self):
         cfg = SwarmQConfig(
-            broker_url="amqp://x", backend_url="valkey://x",
-            metrics_port=9000, health_port=9100, worker_slot=3,
+            broker_url="amqp://x",
+            backend_url="valkey://x",
+            metrics_port=9000,
+            health_port=9100,
+            worker_slot=3,
         )
         assert cfg.metrics_port == 9003
         assert cfg.health_port == 9103
@@ -748,13 +752,18 @@ class TestPortsPerSlot:
 
     def test_without_a_slot_the_base_port_is_bound(self):
         cfg = SwarmQConfig(
-            broker_url="amqp://x", backend_url="valkey://x", metrics_port=9000,
+            broker_url="amqp://x",
+            backend_url="valkey://x",
+            metrics_port=9000,
         )
         assert cfg.metrics_port == 9000
 
     def test_slot_zero_keeps_the_base_port(self):
         cfg = SwarmQConfig(
-            broker_url="amqp://x", backend_url="valkey://x", metrics_port=9000, worker_slot=0,
+            broker_url="amqp://x",
+            backend_url="valkey://x",
+            metrics_port=9000,
+            worker_slot=0,
         )
         assert cfg.metrics_port == 9000
 
@@ -857,9 +866,7 @@ class TestLoggingFields:
             self._cfg(**kwargs)
 
     def test_logger_level_pairs_are_validated_and_normalised(self):
-        assert self._cfg(logger_levels=(("aiormq", "error"),)).logger_levels == (
-            ("aiormq", "ERROR"),
-        )
+        assert self._cfg(logger_levels=(("aiormq", "error"),)).logger_levels == (("aiormq", "ERROR"),)
         with pytest.raises(ConfigurationError, match=r"logger_levels.*'LOUD'"):
             self._cfg(logger_levels=(("aio_pika", "LOUD"),))
 
@@ -890,8 +897,12 @@ class TestLoggingFields:
         monkeypatch.setenv("SWARMQ_LOG_QUEUE_SIZE", "5")
         monkeypatch.setenv("SWARMQ_LOG_DRAIN_TIMEOUT", "9")
         settings = LoggingSettings(
-            format="human", configure=False, queue_size=7, lifecycle_level="INFO",
-            logger_levels=(("aio_pika", "ERROR"),), drain_timeout=0.25,
+            format="human",
+            configure=False,
+            queue_size=7,
+            lifecycle_level="INFO",
+            logger_levels=(("aio_pika", "ERROR"),),
+            drain_timeout=0.25,
         )
 
         cfg = self._cfg(logging_settings=settings)
@@ -909,7 +920,10 @@ class TestLoggingFields:
         ],
     )
     def test_invalid_logging_env_is_ignored_with_resolved_settings(
-        self, monkeypatch, env_name, raw,
+        self,
+        monkeypatch,
+        env_name,
+        raw,
     ):
         """Review #5: ``--log-format json`` ueberstimmt im Supervisor ein
         ``SWARMQ_LOG_FORMAT=jsonl``. Parste der Worker das Env trotzdem,
@@ -939,8 +953,10 @@ class TestLoggingFields:
 def test_resolved_field_is_not_overridden_by_env(monkeypatch):
     monkeypatch.setenv("SWARMQ_CONCURRENCY", "5")
     cfg = SwarmQConfig(
-        broker_url="amqp://x", backend_url="valkey://x",
-        concurrency=20, resolved_fields=("concurrency",),
+        broker_url="amqp://x",
+        backend_url="valkey://x",
+        concurrency=20,
+        resolved_fields=("concurrency",),
     )
     assert cfg.concurrency == 20
 
@@ -1065,7 +1081,12 @@ def test_consumer_watch_fields_must_be_positive(field):
 def test_consumed_queues_expand_priorities():
     assert _cfg(queues=["a", "b"]).consumed_queues == ["a", "b"]
     assert _cfg(queues=["a", "b"], priorities=True).consumed_queues == [
-        "a.high", "a", "a.low", "b.high", "b", "b.low",
+        "a.high",
+        "a",
+        "a.low",
+        "b.high",
+        "b",
+        "b.low",
     ]
 
 
@@ -1094,7 +1115,6 @@ def test_dead_letter_ttl_must_be_positive_or_none(value):
         _cfg(dead_letter_ttl_s=value)
 
 
-
 def test_dead_letter_ttl_zero_from_env_is_a_configuration_error(monkeypatch):
     monkeypatch.setenv("SWARMQ_DEAD_LETTER_TTL_S", "0")
     with pytest.raises(ConfigurationError, match="dead_letter_ttl_s must be > 0"):
@@ -1105,3 +1125,21 @@ def test_dead_letter_terminal_failures_defaults_on_and_env_switches_off(monkeypa
     assert _cfg().dead_letter_terminal_failures is True
     monkeypatch.setenv("SWARMQ_DEAD_LETTER_TERMINAL_FAILURES", "false")
     assert _cfg().dead_letter_terminal_failures is False
+
+
+@pytest.mark.parametrize(
+    ("task_ttl", "config_ttl", "fire_and_forget", "expected"),
+    [
+        (60, 3600, False, 60),  # Task-Wert vor Konfiguration
+        (60, 3600, True, 60),  # expliziter Task-Wert auch bei FIRE_AND_FORGET
+        (0, 3600, False, 0),  # 0 bleibt 0 (Aufrufer deutet)
+        (None, 3600, False, 3600),  # Konfiguration
+        (None, 3600, True, 0),  # FIRE_AND_FORGET ohne Task-Wert speichert nicht
+        (None, 0, False, 0),
+        (None, None, False, DEFAULT_RESULT_TTL_S),  # untypisiertes None → Fallback
+    ],
+)
+def test_resolve_result_ttl_cascade(
+    task_ttl: int | None, config_ttl: int | None, fire_and_forget: bool, expected: int
+) -> None:
+    assert resolve_result_ttl(task_ttl, config_ttl, fire_and_forget=fire_and_forget) == expected

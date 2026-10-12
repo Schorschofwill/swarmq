@@ -64,18 +64,14 @@ class TestMutex:
         assert await lock_manager.acquire(lock_name, token, 60_000, 1) is True
         assert await lock_manager.release(lock_name, token, 1) is True
 
-    async def test_double_acquire_with_different_tokens_blocks_second(
-        self, lock_manager, lock_name
-    ):
+    async def test_double_acquire_with_different_tokens_blocks_second(self, lock_manager, lock_name):
         token1 = uuid.uuid4().hex
         token2 = uuid.uuid4().hex
         assert await lock_manager.acquire(lock_name, token1, 60_000, 1) is True
         assert await lock_manager.acquire(lock_name, token2, 60_000, 1) is False
         await lock_manager.release(lock_name, token1, 1)
 
-    async def test_release_with_foreign_token_returns_false_and_lock_held(
-        self, lock_manager, lock_name
-    ):
+    async def test_release_with_foreign_token_returns_false_and_lock_held(self, lock_manager, lock_name):
         token = uuid.uuid4().hex
         await lock_manager.acquire(lock_name, token, 60_000, 1)
         foreign = uuid.uuid4().hex
@@ -85,9 +81,7 @@ class TestMutex:
 
 
 class TestSemaphore:
-    async def test_max_concurrency_three_admits_exactly_three(
-        self, lock_manager, lock_name
-    ):
+    async def test_max_concurrency_three_admits_exactly_three(self, lock_manager, lock_name):
         tokens = [uuid.uuid4().hex for _ in range(4)]
         for tok in tokens[:3]:
             assert await lock_manager.acquire(lock_name, tok, 60_000, 3) is True
@@ -103,14 +97,10 @@ class TestSemaphore:
         await lock_manager.acquire(lock_name, token1, 60_000, max_concurrency)
         await lock_manager.acquire(lock_name, token2, 60_000, max_concurrency)
         # Full
-        assert (
-            await lock_manager.acquire(lock_name, token3, 60_000, max_concurrency)
-        ) is False
+        assert (await lock_manager.acquire(lock_name, token3, 60_000, max_concurrency)) is False
         # Free a slot
         await lock_manager.release(lock_name, token1, max_concurrency)
-        assert (
-            await lock_manager.acquire(lock_name, token3, 60_000, max_concurrency)
-        ) is True
+        assert (await lock_manager.acquire(lock_name, token3, 60_000, max_concurrency)) is True
         await lock_manager.release(lock_name, token2, max_concurrency)
         await lock_manager.release(lock_name, token3, max_concurrency)
 
@@ -122,15 +112,11 @@ class TestForceRelease:
         # Anyone can __force__
         assert await lock_manager.release(lock_name, "__force__", 1) is True
         # Lock is gone — re-acquire works
-        assert (
-            await lock_manager.acquire(lock_name, uuid.uuid4().hex, 60_000, 1)
-        ) is True
+        assert (await lock_manager.acquire(lock_name, uuid.uuid4().hex, 60_000, 1)) is True
 
 
 class TestContention:
-    async def test_parallel_acquires_atomically_observe_max_concurrency(
-        self, lock_manager, lock_name
-    ):
+    async def test_parallel_acquires_atomically_observe_max_concurrency(self, lock_manager, lock_name):
         """20 parallel acquires against max_concurrency=4 → exactly 4 win."""
         max_concurrency = 4
 
@@ -153,9 +139,7 @@ class TestRenew:
     leader-lock alive (Unit 4 / Review-Finding P2-8).
     """
 
-    async def test_renew_extends_ttl_for_owner(
-        self, lock_manager, lock_name, valkey_client
-    ):
+    async def test_renew_extends_ttl_for_owner(self, lock_manager, lock_name, valkey_client):
         token = uuid.uuid4().hex
         # Acquire with a short TTL, then renew to a much longer one.
         assert await lock_manager.acquire(lock_name, token, 2_000, 1) is True
@@ -172,9 +156,7 @@ class TestRenew:
 
         await lock_manager.release(lock_name, token, 1)
 
-    async def test_renew_foreign_owner_returns_false_and_lock_unchanged(
-        self, lock_manager, lock_name, valkey_client
-    ):
+    async def test_renew_foreign_owner_returns_false_and_lock_unchanged(self, lock_manager, lock_name, valkey_client):
         owner = uuid.uuid4().hex
         intruder = uuid.uuid4().hex
         assert await lock_manager.acquire(lock_name, owner, 60_000, 1) is True
@@ -194,9 +176,7 @@ class TestRenew:
         # No acquire — GET returns nil, script returns 0
         assert await lock_manager.renew(lock_name, "any-tok", 60_000) is False
 
-    async def test_renew_after_expiry_returns_false(
-        self, lock_manager, lock_name
-    ):
+    async def test_renew_after_expiry_returns_false(self, lock_manager, lock_name):
         token = uuid.uuid4().hex
         # Short TTL, wait for it to die naturally, then attempt renew.
         assert await lock_manager.acquire(lock_name, token, 300, 1) is True

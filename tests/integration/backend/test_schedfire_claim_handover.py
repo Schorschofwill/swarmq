@@ -40,7 +40,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -65,6 +65,7 @@ HOLD: dict[str, asyncio.Event] = {}
 class FireTask(Task):
     task_info = TaskInfo(name="fire-task", queues=["default"])
 
+    @override
     async def run(self) -> str:
         RUNS.append("run")
         if HOLD:
@@ -106,7 +107,9 @@ def _message(fire_key: str, extra: dict[str, Any] | None = None) -> MagicMock:
     return make_message(payload, headers={"x-swarmq-schedfire": fire_key, **(extra or {})})
 
 
-async def _defer_with_failed_release(worker: Worker, broker: MagicMock, backend: ValkeyBackend, msg: Any) -> dict:
+async def _defer_with_failed_release(
+    worker: Worker, broker: MagicMock, backend: ValkeyBackend, msg: Any
+) -> dict[str, Any]:
     """Cancel-Check und Claim-Freigabe scheitern wie bei einem Valkey-Ausfall."""
     store = backend.schedules
     real_is_cancelled, real_release = backend.is_cancelled, store.release_fire_claim
@@ -118,14 +121,19 @@ async def _defer_with_failed_release(worker: Worker, broker: MagicMock, backend:
         backend.is_cancelled = real_is_cancelled  # type: ignore[method-assign]
         store.release_fire_claim = real_release  # type: ignore[method-assign]
     broker.retry_later.assert_awaited_once()
-    headers: dict = broker.retry_later.await_args.kwargs["headers"]
+    headers: dict[str, Any] = broker.retry_later.await_args.kwargs["headers"]
     broker.retry_later.reset_mock()
     return headers
 
 
 async def _defer_with_lost_claim_reply(
-    worker: Worker, broker: MagicMock, backend: ValkeyBackend, msg: Any, *, written: bool,
-) -> dict:
+    worker: Worker,
+    broker: MagicMock,
+    backend: ValkeyBackend,
+    msg: Any,
+    *,
+    written: bool,
+) -> dict[str, Any]:
     """Der Claim-Aufruf endet mit einem Transportfehler -- nachdem Valkey den
     Claim geschrieben hat (``written``) oder bevor er ankam; die Freigabe
     scheitert ebenfalls."""
@@ -145,17 +153,19 @@ async def _defer_with_lost_claim_reply(
         store.claim_fire = real_claim  # type: ignore[method-assign]
         store.release_fire_claim = real_release  # type: ignore[method-assign]
     broker.retry_later.assert_awaited_once()
-    headers: dict = broker.retry_later.await_args.kwargs["headers"]
+    headers: dict[str, Any] = broker.retry_later.await_args.kwargs["headers"]
     broker.retry_later.reset_mock()
     return headers
 
 
-def _copy_of(original: Any, headers: dict) -> MagicMock:
+def _copy_of(original: Any, headers: dict[str, Any]) -> MagicMock:
     return make_message(body=original.body, headers=headers)
 
 
 async def test_deferred_copy_takes_over_its_own_claim(
-    worker: Worker, broker: MagicMock, backend: ValkeyBackend,
+    worker: Worker,
+    broker: MagicMock,
+    backend: ValkeyBackend,
 ) -> None:
     fire_key = f"cron-{uuid.uuid4().hex[:8]}:1700000000000"
     original = _message(fire_key)
@@ -170,7 +180,9 @@ async def test_deferred_copy_takes_over_its_own_claim(
 
 
 async def test_delivery_without_token_stays_a_duplicate(
-    worker: Worker, broker: MagicMock, backend: ValkeyBackend,
+    worker: Worker,
+    broker: MagicMock,
+    backend: ValkeyBackend,
 ) -> None:
     fire_key = f"cron-{uuid.uuid4().hex[:8]}:1700000000000"
     original = _message(fire_key)
@@ -186,7 +198,9 @@ async def test_delivery_without_token_stays_a_duplicate(
 
 
 async def test_redelivery_of_the_copy_after_takeover_stays_a_duplicate(
-    worker: Worker, broker: MagicMock, backend: ValkeyBackend,
+    worker: Worker,
+    broker: MagicMock,
+    backend: ValkeyBackend,
 ) -> None:
     fire_key = f"cron-{uuid.uuid4().hex[:8]}:1700000000000"
     original = _message(fire_key)
@@ -208,7 +222,9 @@ async def test_redelivery_of_the_copy_after_takeover_stays_a_duplicate(
 
 
 async def test_copy_takes_over_a_claim_whose_reply_was_lost(
-    worker: Worker, broker: MagicMock, backend: ValkeyBackend,
+    worker: Worker,
+    broker: MagicMock,
+    backend: ValkeyBackend,
 ) -> None:
     fire_key = f"cron-{uuid.uuid4().hex[:8]}:1700000000000"
     original = _message(fire_key)
@@ -222,13 +238,19 @@ async def test_copy_takes_over_a_claim_whose_reply_was_lost(
 
 
 async def test_copy_of_a_copy_takes_over_when_the_lost_claim_never_arrived(
-    worker: Worker, broker: MagicMock, backend: ValkeyBackend,
+    worker: Worker,
+    broker: MagicMock,
+    backend: ValkeyBackend,
 ) -> None:
     fire_key = f"cron-{uuid.uuid4().hex[:8]}:1700000000000"
     original = _message(fire_key)
     first_headers = await _defer_with_failed_release(worker, broker, backend, original)
     second_headers = await _defer_with_lost_claim_reply(
-        worker, broker, backend, _copy_of(original, first_headers), written=False,
+        worker,
+        broker,
+        backend,
+        _copy_of(original, first_headers),
+        written=False,
     )
     assert not RUNS
 
@@ -239,7 +261,9 @@ async def test_copy_of_a_copy_takes_over_when_the_lost_claim_never_arrived(
 
 
 async def test_failed_release_before_requeue_in_place_sends_a_copy_that_runs_once(
-    worker: Worker, broker: MagicMock, backend: ValkeyBackend,
+    worker: Worker,
+    broker: MagicMock,
+    backend: ValkeyBackend,
 ) -> None:
     """Vorher: das Original ging per ``nack`` ohne Token zurueck, der Claim
     blieb stehen -- nach der Erholung bestaetigte sich die Redelivery als
@@ -257,7 +281,7 @@ async def test_failed_release_before_requeue_in_place_sends_a_copy_that_runs_onc
         store.release_fire_claim = real_release  # type: ignore[method-assign]
     broker.redeliver.assert_not_awaited()
     broker.retry_later.assert_awaited_once()
-    headers: dict = broker.retry_later.await_args.kwargs["headers"]
+    headers: dict[str, Any] = broker.retry_later.await_args.kwargs["headers"]
     assert not RUNS
 
     await worker._handle_message(_copy_of(original, headers))

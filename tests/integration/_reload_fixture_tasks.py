@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from typing import override
 
 from swarmq.task import Task, TaskInfo
 
@@ -18,6 +19,7 @@ _QUEUE = os.environ.get("CLI_TEST_QUEUE", "reload_test_default")
 class ReloadSleepTask(Task):
     task_info = TaskInfo(name="reload_sleep", queues=[_QUEUE])
 
+    @override
     async def run(self, seconds: float) -> str:
         await asyncio.sleep(seconds)
         return "slept"

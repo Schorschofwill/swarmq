@@ -28,8 +28,8 @@ if TYPE_CHECKING:
     from swarmq.registry import TaskRegistry
     from swarmq.task import Task
 
-# (delivery, ctx, error_message, error_type, extra_headers, on_publish_failure)
-# -- der terminale Dead-Letter des Workers (``RetryHandler.dead_letter``), wie
+# Argumente delivery, ctx, error_message, error_type, extra_headers und
+# on_publish_failure -- der terminale Dead-Letter des Workers (``RetryHandler.dead_letter``), wie
 # ihn auch das Lock-Gate nutzt.
 PublishFailure = Callable[[Exception], Awaitable[None]]
 TerminalDeadLetter = Callable[[Any, GateContext, str, str, dict[str, Any], PublishFailure], Awaitable[bool]]
@@ -136,13 +136,13 @@ async def _defer(
     delay_ms = unknown_defer_delay_ms(elapsed_ms=elapsed_ms, remaining_ms=remaining_ms)
     try:
         await deps.broker.retry_later(delivery, delay_ms=delay_ms, headers=headers)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - Broker gestoert, Original bleibt in der Queue
         # Wie Retry und Rate-Limit: das Original bleibt in der Queue, die
         # naechste Zustellung misst weiter ab ``since_ms`` (Header bleibt).
         log.error("unknown_task_defer_failed", **_error_fields(exc))
         try:
             await redeliver_in_place(deps, delivery, ctx)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 - Redeliver best effort, Fehler schon geloggt
             pass
         return Redelivered
     await deps.signals.dispatch(

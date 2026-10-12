@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+from typing import Any, override
 
 import pytest
 
@@ -34,6 +34,7 @@ class _SlowScan(_FakeValkey):
         super().__init__(keys)
         self.calls = 0
 
+    @override
     async def scan(
         self, cursor: int = 0, match: str | None = None, count: int | None = None
     ) -> tuple[int, list[bytes]]:
@@ -52,7 +53,7 @@ def _run_json(capsys: pytest.CaptureFixture[str]) -> tuple[int, dict[str, Any]]:
 def slow(monkeypatch: pytest.MonkeyPatch) -> _SlowScan:
     import valkey.asyncio
 
-    import swarmq.backend.valkey.environment as environment
+    from swarmq.backend.valkey import environment
 
     _install(monkeypatch, [])
     client = _SlowScan(["sq:result:a", "sq:lock:b", "sq:result:c"])
@@ -92,7 +93,8 @@ def test_a_full_scan_is_complete(monkeypatch: pytest.MonkeyPatch, capsys: pytest
 
     assert (report["valkey"]["unprefixed_keys"], report["valkey"]["unprefixed_keys_complete"]) == (2, True)
     [finding] = report["findings"]
-    assert finding["message"].startswith("2 keys") and "incomplete" not in finding["message"]
+    assert finding["message"].startswith("2 keys")
+    assert "incomplete" not in finding["message"]
 
 
 def test_cluster_mode_says_only_one_node_was_counted(

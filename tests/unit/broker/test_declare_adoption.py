@@ -31,7 +31,7 @@ Test-Liste:
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -106,8 +106,8 @@ def _published(broker: RabbitMQBroker) -> dict[str, dict[str, Any]]:
     swarmq nur noch auf den Wegwerf-Channels; ohne eigene Verbindung wie
     0.11.0 auf dem Publish-Channel."""
     if broker._connection is not None:
-        return dict(broker._connection.probes.succeeded)  # type: ignore[attr-defined]
-    calls = broker._publish_channel.declare_queue.call_args_list  # type: ignore[union-attr]
+        return dict(cast("AsyncMock", broker._connection).probes.succeeded)
+    calls = cast("AsyncMock", broker._publish_channel).declare_queue.call_args_list
     return {call.args[0]: call.kwargs["arguments"] for call in calls}
 
 
@@ -156,7 +156,7 @@ async def test_other_conflict_fails_as_before_without_touching_publish_channel()
     with pytest.raises(QueueArgumentsMismatch, match="x-queue-type"):
         await broker.declare_queue("tasks")
 
-    broker._publish_channel.declare_queue.assert_not_called()  # type: ignore[union-attr]
+    cast("AsyncMock", broker._publish_channel).declare_queue.assert_not_called()
 
 
 async def test_same_argument_conflicting_again_fails() -> None:
@@ -227,13 +227,13 @@ async def test_hanging_channel_open_fails_with_broker_connection_error() -> None
         await never.wait()
         raise AssertionError("unreachable")
 
-    broker._connection.channel = AsyncMock(side_effect=hang)  # type: ignore[union-attr]
+    cast("AsyncMock", broker._connection).channel = AsyncMock(side_effect=hang)
     broker.declare_probe_timeout_s = 0.05
 
     with pytest.raises(BrokerConnectionError, match="timed out"):
         await broker.declare_queue("tasks")
 
-    broker._publish_channel.declare_queue.assert_not_called()  # type: ignore[union-attr]
+    cast("AsyncMock", broker._publish_channel).declare_queue.assert_not_called()
 
 
 async def test_slow_declare_is_not_cut_off_by_the_open_timeout() -> None:
@@ -255,7 +255,7 @@ async def test_slow_declare_is_not_cut_off_by_the_open_timeout() -> None:
         channel.declare_queue = AsyncMock(side_effect=declare_queue)
         return channel
 
-    broker._connection.channel = AsyncMock(side_effect=open_slow)  # type: ignore[union-attr]
+    cast("AsyncMock", broker._connection).channel = AsyncMock(side_effect=open_slow)
     broker.declare_probe_timeout_s = 0.01
     asyncio.get_running_loop().call_later(0.05, released.set)
 
@@ -273,12 +273,12 @@ async def test_connection_lost_while_opening_probe_is_broker_connection_error(er
     Verbindung synchron ``RuntimeError``; der Aufrufer erwartet
     ``BrokerConnectionError`` wie bei jedem anderen Verbindungsfehler."""
     broker = _broker(Probes({}))
-    broker._connection.channel = Mock(side_effect=error)  # type: ignore[union-attr]
+    cast("AsyncMock", broker._connection).channel = Mock(side_effect=error)
 
     with pytest.raises(BrokerConnectionError, match="probe channel"):
         await broker.declare_queue("tasks")
 
-    broker._connection.ready.assert_awaited()  # type: ignore[union-attr]
+    cast("AsyncMock", broker._connection).ready.assert_awaited()
 
 
 class _HalfOpenChannel:
@@ -299,7 +299,7 @@ async def test_half_open_probe_channel_is_closed_after_open_timeout() -> None:
     geöffnete Channel geschlossen statt liegen gelassen."""
     broker = _broker(Probes({}))
     half_open = _HalfOpenChannel()
-    broker._connection.channel = Mock(return_value=half_open)  # type: ignore[union-attr]
+    cast("AsyncMock", broker._connection).channel = Mock(return_value=half_open)
     broker.declare_probe_timeout_s = 0.05
 
     with pytest.raises(BrokerConnectionError, match="timed out"):

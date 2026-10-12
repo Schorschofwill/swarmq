@@ -52,14 +52,14 @@ class TestReloadRoutingThroughCLI:
 
         pm_mock = MagicMock()
         pm_mock.run.return_value = 0
-        with patch.dict(os.environ, self._env(), clear=False), \
-             patch(
-                 "swarmq.process_manager.run.ProcessManager",
-                 return_value=pm_mock,
-             ) as PM, \
-             patch(
-                 "swarmq.process_manager.check._validate_module_importable"
-             ):
+        with (
+            patch.dict(os.environ, self._env(), clear=False),
+            patch(
+                "swarmq.process_manager.run.ProcessManager",
+                return_value=pm_mock,
+            ) as PM,
+            patch("swarmq.process_manager.check._validate_module_importable"),
+        ):
             rc = run_multi_process_worker(self._args())
         assert rc == 0
         kwargs = PM.call_args.kwargs
@@ -77,18 +77,18 @@ class TestReloadRoutingThroughCLI:
         json_spec = importlib.util.find_spec("json")
         pm_mock = MagicMock()
         pm_mock.run.return_value = 0
-        with patch.dict(os.environ, self._env(), clear=False), \
-             patch(
-                 "swarmq.process_manager.run.ProcessManager",
-                 return_value=pm_mock,
-             ) as PM, \
-             patch(
-                 "swarmq.process_manager.check._validate_module_importable",
-                 return_value=json_spec,
-             ), \
-             patch(
-                 "swarmq.hot_reload.importlib.util.find_spec"
-             ) as hot_reload_find_spec:
+        with (
+            patch.dict(os.environ, self._env(), clear=False),
+            patch(
+                "swarmq.process_manager.run.ProcessManager",
+                return_value=pm_mock,
+            ) as PM,
+            patch(
+                "swarmq.process_manager.check._validate_module_importable",
+                return_value=json_spec,
+            ),
+            patch("swarmq.hot_reload.importlib.util.find_spec") as hot_reload_find_spec,
+        ):
             rc = run_multi_process_worker(self._args(reload=True))
         assert rc == 0
         kwargs = PM.call_args.kwargs
@@ -124,20 +124,21 @@ class TestReloadRoutingThroughCLI:
 
         pm_mock = MagicMock()
         pm_mock.run.return_value = 0
-        with patch.dict(os.environ, self._env(), clear=False), \
-             patch(
-                 "swarmq.process_manager.run.ProcessManager",
-                 return_value=pm_mock,
-             ), \
-             patch(
-                 "swarmq.process_manager.check._validate_module_importable"
-             ):
+        with (
+            patch.dict(os.environ, self._env(), clear=False),
+            patch(
+                "swarmq.process_manager.run.ProcessManager",
+                return_value=pm_mock,
+            ),
+            patch("swarmq.process_manager.check._validate_module_importable"),
+        ):
             run_multi_process_worker(
                 self._args(watch_dir=["/tmp"]),
             )
         # At least one warning carries the ignore event name.
         [entry] = [e for e in swarmq_logs if e["event"] == "watch_dir_ignored_without_reload"]
-        assert entry["log_level"] == "warning" and entry["watch_dirs"] == ["/tmp"]
+        assert entry["log_level"] == "warning"
+        assert entry["watch_dirs"] == ["/tmp"]
 
 
 class TestRunMultiProcessWorker:
@@ -146,14 +147,20 @@ class TestRunMultiProcessWorker:
         from swarmq.process_manager import run_multi_process_worker
 
         ns = argparse.Namespace(
-            processes=2, autoscale=None, module="swarmq.cli",
-            queues=["default"], concurrency=10,
-            log_level="INFO", log_format="human",
-            burst=False, burst_idle_timeout=5.0, priorities=False,
-            metrics_port=None, health_port=None,
+            processes=2,
+            autoscale=None,
+            module="swarmq.cli",
+            queues=["default"],
+            concurrency=10,
+            log_level="INFO",
+            log_format="human",
+            burst=False,
+            burst_idle_timeout=5.0,
+            priorities=False,
+            metrics_port=None,
+            health_port=None,
         )
-        with patch.dict(os.environ, {}, clear=True), \
-             pytest.raises(ConfigurationError):
+        with patch.dict(os.environ, {}, clear=True), pytest.raises(ConfigurationError):
             run_multi_process_worker(ns)
 
     def test_rejects_unresolvable_module(self):
@@ -164,12 +171,18 @@ class TestRunMultiProcessWorker:
         from swarmq.process_manager import run_multi_process_worker
 
         ns = argparse.Namespace(
-            processes=2, autoscale=None,
+            processes=2,
+            autoscale=None,
             module="swarmq_definitely_not_a_real_module_xyz",
-            queues=["default"], concurrency=10,
-            log_level="INFO", log_format="human",
-            burst=False, burst_idle_timeout=5.0, priorities=False,
-            metrics_port=None, health_port=None,
+            queues=["default"],
+            concurrency=10,
+            log_level="INFO",
+            log_format="human",
+            burst=False,
+            burst_idle_timeout=5.0,
+            priorities=False,
+            metrics_port=None,
+            health_port=None,
         )
         env = {
             "SWARMQ_BROKER_URL": "amqp://x",
@@ -177,8 +190,10 @@ class TestRunMultiProcessWorker:
         }
         # setup_logging gemockt: das echte würde structlog global
         # rekonfigurieren und nachfolgende capture_logs-Tests verschmutzen.
-        with patch.dict(os.environ, env, clear=False), \
-             pytest.raises(ConfigurationError, match="cannot be imported|no loadable"):
+        with (
+            patch.dict(os.environ, env, clear=False),
+            pytest.raises(ConfigurationError, match="cannot be imported|no loadable"),
+        ):
             run_multi_process_worker(ns)
 
     def test_worker_command_configures_structured_logging(self):
@@ -194,17 +209,29 @@ class TestRunMultiProcessWorker:
         from swarmq import cli
 
         ns = argparse.Namespace(
-            processes=2, autoscale=None, module="swarmq.cli",
-            queues=["default"], concurrency=10,
-            log_level="WARNING", log_format="json",
-            burst=False, burst_idle_timeout=5.0, priorities=False,
-            metrics_port=None, health_port=None, check=False, pool="io",
-            reload=False, watch_dir=None,
+            processes=2,
+            autoscale=None,
+            module="swarmq.cli",
+            queues=["default"],
+            concurrency=10,
+            log_level="WARNING",
+            log_format="json",
+            burst=False,
+            burst_idle_timeout=5.0,
+            priorities=False,
+            metrics_port=None,
+            health_port=None,
+            check=False,
+            pool="io",
+            reload=False,
+            watch_dir=None,
         )
         env = {"SWARMQ_BROKER_URL": "amqp://x", "SWARMQ_BACKEND_URL": "valkey://x"}
-        with patch.dict(os.environ, env, clear=False), \
-             patch("swarmq.logging.configure_logging") as configure, \
-             patch("swarmq.process_manager.run.run_multi_process_worker", return_value=0):
+        with (
+            patch.dict(os.environ, env, clear=False),
+            patch("swarmq.logging.configure_logging") as configure,
+            patch("swarmq.process_manager.run.run_multi_process_worker", return_value=0),
+        ):
             rc = cli._run_worker_command(ns)
         assert rc == 0
         # Bewusst geaendert (U7): ``configure_logging`` mit den aufgeloesten
@@ -216,17 +243,29 @@ class TestRunMultiProcessWorker:
         from swarmq import cli
 
         ns = argparse.Namespace(
-            processes=2, autoscale=None, module="swarmq.cli",
-            queues=["default"], concurrency=10,
-            log_level="INFO", log_format="human",
-            burst=False, burst_idle_timeout=5.0, priorities=False,
-            metrics_port=None, health_port=None, check=False, pool="io",
-            reload=False, watch_dir=None,
+            processes=2,
+            autoscale=None,
+            module="swarmq.cli",
+            queues=["default"],
+            concurrency=10,
+            log_level="INFO",
+            log_format="human",
+            burst=False,
+            burst_idle_timeout=5.0,
+            priorities=False,
+            metrics_port=None,
+            health_port=None,
+            check=False,
+            pool="io",
+            reload=False,
+            watch_dir=None,
         )
         env = {"SWARMQ_BROKER_URL": "amqp://x", "SWARMQ_BACKEND_URL": "valkey://x"}
-        with patch.dict(os.environ, env, clear=False), \
-             patch("swarmq.logging.configure_logging") as configure, \
-             patch("swarmq.process_manager.run.run_multi_process_worker", return_value=0):
+        with (
+            patch.dict(os.environ, env, clear=False),
+            patch("swarmq.logging.configure_logging") as configure,
+            patch("swarmq.process_manager.run.run_multi_process_worker", return_value=0),
+        ):
             cli._run_worker_command(ns)
         (settings,), _ = configure.call_args
         assert (settings.level, settings.format) == ("INFO", "human")
@@ -235,21 +274,33 @@ class TestRunMultiProcessWorker:
         from swarmq import cli
 
         ns = argparse.Namespace(
-            processes=2, autoscale=None, module="swarmq.cli",
-            queues=["default"], concurrency=10,
-            log_level="INFO", log_format="json",
-            burst=False, burst_idle_timeout=5.0, priorities=False,
-            metrics_port=None, health_port=None, check=False, pool="io",
-            reload=False, watch_dir=None,
+            processes=2,
+            autoscale=None,
+            module="swarmq.cli",
+            queues=["default"],
+            concurrency=10,
+            log_level="INFO",
+            log_format="json",
+            burst=False,
+            burst_idle_timeout=5.0,
+            priorities=False,
+            metrics_port=None,
+            health_port=None,
+            check=False,
+            pool="io",
+            reload=False,
+            watch_dir=None,
         )
         env = {"SWARMQ_BROKER_URL": "amqp://x", "SWARMQ_BACKEND_URL": "valkey://x"}
-        with patch.dict(os.environ, env, clear=False), \
-             patch("swarmq.logging.shutdown_logging") as flush, \
-             patch(
-                 "swarmq.process_manager.run.run_multi_process_worker",
-                 side_effect=RuntimeError("boom"),
-             ), \
-             pytest.raises(RuntimeError):
+        with (
+            patch.dict(os.environ, env, clear=False),
+            patch("swarmq.logging.shutdown_logging") as flush,
+            patch(
+                "swarmq.process_manager.run.run_multi_process_worker",
+                side_effect=RuntimeError("boom"),
+            ),
+            pytest.raises(RuntimeError),
+        ):
             cli._run_worker_command(ns)
         flush.assert_called()
 
@@ -260,18 +311,24 @@ class TestRunMultiProcessWorker:
         # always-present internal module so the unit test focuses on
         # ProcessManager construction, not module validation.
         ns = argparse.Namespace(
-            processes=3, autoscale=None, module="swarmq.cli",
-            queues=["default"], concurrency=10,
-            log_level="INFO", log_format="human",
-            burst=False, burst_idle_timeout=5.0, priorities=False,
-            metrics_port=None, health_port=None,
+            processes=3,
+            autoscale=None,
+            module="swarmq.cli",
+            queues=["default"],
+            concurrency=10,
+            log_level="INFO",
+            log_format="human",
+            burst=False,
+            burst_idle_timeout=5.0,
+            priorities=False,
+            metrics_port=None,
+            health_port=None,
         )
         env = {
             "SWARMQ_BROKER_URL": "amqp://x",
             "SWARMQ_BACKEND_URL": "valkey://x",
         }
-        with patch.dict(os.environ, env, clear=False), \
-             patch("swarmq.process_manager.run.ProcessManager") as PM:
+        with patch.dict(os.environ, env, clear=False), patch("swarmq.process_manager.run.ProcessManager") as PM:
             instance = PM.return_value
             instance.run.return_value = 0
             rc = run_multi_process_worker(ns)
@@ -283,6 +340,7 @@ class TestRunMultiProcessWorker:
             # ce-review F-4: assert WorkerConfig shape to prevent silent
             # drift when worker_args becomes a tuple of unrelated values.
             from swarmq.process_manager import WorkerConfig
+
             worker_args = kwargs["worker_args"]
             assert len(worker_args) == 1
             assert isinstance(worker_args[0], WorkerConfig)
@@ -306,12 +364,22 @@ class TestRunMultiProcessWorker:
 
 def _worker_ns(**over):
     ns = argparse.Namespace(
-        processes=2, autoscale=None, module="swarmq.cli",
-        queues=["default"], concurrency=10,
-        log_level=None, log_format=None,
-        burst=False, burst_idle_timeout=5.0, priorities=False,
-        metrics_port=None, health_port=None, check=False, pool="io",
-        reload=False, watch_dir=None,
+        processes=2,
+        autoscale=None,
+        module="swarmq.cli",
+        queues=["default"],
+        concurrency=10,
+        log_level=None,
+        log_format=None,
+        burst=False,
+        burst_idle_timeout=5.0,
+        priorities=False,
+        metrics_port=None,
+        health_port=None,
+        check=False,
+        pool="io",
+        reload=False,
+        watch_dir=None,
     )
     for key, value in over.items():
         setattr(ns, key, value)
@@ -330,29 +398,34 @@ class TestSupervisorLoggingSettings:
 
         monkeypatch.setenv("SWARMQ_LOG_FORMAT", "json")
         monkeypatch.setenv("SWARMQ_LOG_LEVEL", "WARNING")
-        with patch.dict(os.environ, _URLS, clear=False), \
-             patch("swarmq.logging.configure_logging") as configure, \
-             patch("swarmq.process_manager.run.run_multi_process_worker", return_value=0):
+        with (
+            patch.dict(os.environ, _URLS, clear=False),
+            patch("swarmq.logging.configure_logging") as configure,
+            patch("swarmq.process_manager.run.run_multi_process_worker", return_value=0),
+        ):
             rc = cli._run_worker_command(_worker_ns(log_format="human"))
 
         assert rc == 0
         (settings,), _ = configure.call_args
         assert (settings.format, settings.level) == ("human", "WARNING")
 
-
     def test_cli_hands_the_resolved_settings_to_the_supervisor(self):
         from swarmq import cli
 
-        with patch.dict(os.environ, _URLS, clear=False), \
-             patch("swarmq.logging.configure_logging") as configure, \
-             patch("swarmq.process_manager.run.run_multi_process_worker", return_value=0) as run:
+        with (
+            patch.dict(os.environ, _URLS, clear=False),
+            patch("swarmq.logging.configure_logging") as configure,
+            patch("swarmq.process_manager.run.run_multi_process_worker", return_value=0) as run,
+        ):
             cli._run_worker_command(_worker_ns(log_level="ERROR"))
 
         (settings,), _ = configure.call_args
         assert run.call_args.kwargs["logging_settings"] is settings
 
     def test_invalid_setting_is_one_structured_line_in_the_chosen_format(
-        self, monkeypatch, capsys,
+        self,
+        monkeypatch,
+        capsys,
     ):
         """R14: Der Fallback-Renderer schreibt die Zeile im gewaehlten Format;
         der Supervisor startet nicht."""
@@ -362,8 +435,10 @@ class TestSupervisorLoggingSettings:
         from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
 
         monkeypatch.setenv("SWARMQ_LOG_LEVEL", "LOUD")
-        with patch.dict(os.environ, _URLS, clear=False), \
-             patch("swarmq.process_manager.run.run_multi_process_worker") as run:
+        with (
+            patch.dict(os.environ, _URLS, clear=False),
+            patch("swarmq.process_manager.run.run_multi_process_worker") as run,
+        ):
             rc = cli._run_worker_command(_worker_ns(log_format="json"))
 
         assert rc == CONFIG_ERROR_EXIT_CODE
@@ -375,7 +450,9 @@ class TestSupervisorLoggingSettings:
         assert "SWARMQ_LOG_LEVEL" in data["error"]
 
     def test_relative_log_config_is_resolved_and_validated_once(
-        self, monkeypatch, tmp_path,
+        self,
+        monkeypatch,
+        tmp_path,
     ):
         """KTD9: absolut aufgeloest und geparst im Supervisor; die Kinder
         bekommen die gepruefte Konfiguration und lesen die Datei nie."""
@@ -385,19 +462,25 @@ class TestSupervisorLoggingSettings:
 
         (tmp_path / "log.json").write_text(json.dumps({"version": 1}))
         monkeypatch.chdir(tmp_path)
-        with patch.dict(os.environ, _URLS, clear=False), \
-             patch("swarmq.logging.configure_logging") as configure, \
-             patch("swarmq.process_manager.run.run_multi_process_worker", return_value=0):
+        with (
+            patch.dict(os.environ, _URLS, clear=False),
+            patch("swarmq.logging.configure_logging") as configure,
+            patch("swarmq.process_manager.run.run_multi_process_worker", return_value=0),
+        ):
             cli._run_worker_command(_worker_ns(log_config="log.json"))
 
         (settings,), _ = configure.call_args
         assert settings.log_config == str(tmp_path / "log.json")
         assert json.loads(settings.log_config_json) == {
-            "version": 1, "disable_existing_loggers": False,
+            "version": 1,
+            "disable_existing_loggers": False,
         }
 
     def test_invalid_log_config_is_one_line_with_path_and_error_type(
-        self, monkeypatch, tmp_path, capsys,
+        self,
+        monkeypatch,
+        tmp_path,
+        capsys,
     ):
         """AE4: Tippfehler in einem Handler-Schluessel -- Exit 78, eine Zeile
         mit ``path``, ``error_type`` und der Ursache."""
@@ -407,13 +490,19 @@ class TestSupervisorLoggingSettings:
         from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
 
         bad = tmp_path / "bad.json"
-        bad.write_text(json.dumps({
-            "version": 1,
-            "handlers": {"err": {"class": "logging.StreamHandlr"}},
-            "root": {"handlers": ["err"]},
-        }))
-        with patch.dict(os.environ, _URLS, clear=False), \
-             patch("swarmq.process_manager.run.run_multi_process_worker") as run:
+        bad.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "handlers": {"err": {"class": "logging.StreamHandlr"}},
+                    "root": {"handlers": ["err"]},
+                }
+            )
+        )
+        with (
+            patch.dict(os.environ, _URLS, clear=False),
+            patch("swarmq.process_manager.run.run_multi_process_worker") as run,
+        ):
             rc = cli._run_worker_command(_worker_ns(log_config=str(bad)))
 
         assert rc == CONFIG_ERROR_EXIT_CODE
@@ -432,9 +521,11 @@ class TestSupervisorLoggingSettings:
         settings = LoggingSettings(level="WARNING", level_explicit=True, format="json")
         pm_mock = MagicMock()
         pm_mock.run.return_value = 0
-        with patch.dict(os.environ, _URLS, clear=False), \
-             patch("swarmq.process_manager.run.ProcessManager", return_value=pm_mock) as PM, \
-             patch("swarmq.process_manager.check._validate_module_importable"):
+        with (
+            patch.dict(os.environ, _URLS, clear=False),
+            patch("swarmq.process_manager.run.ProcessManager", return_value=pm_mock) as PM,
+            patch("swarmq.process_manager.check._validate_module_importable"),
+        ):
             run_multi_process_worker(
                 TestReloadRoutingThroughCLI()._args(log_level=None, log_format=None),
                 logging_settings=settings,
@@ -455,11 +546,14 @@ class TestSupervisorLoggingSettings:
         monkeypatch.setenv("SWARMQ_SHUTDOWN_TIMEOUT", "7")
         pm_mock = MagicMock()
         pm_mock.run.return_value = 0
-        with patch.dict(os.environ, _URLS, clear=False), \
-             patch("swarmq.process_manager.run.ProcessManager", return_value=pm_mock) as PM, \
-             patch("swarmq.process_manager.check._validate_module_importable"):
+        with (
+            patch.dict(os.environ, _URLS, clear=False),
+            patch("swarmq.process_manager.run.ProcessManager", return_value=pm_mock) as PM,
+            patch("swarmq.process_manager.check._validate_module_importable"),
+        ):
             rc = run_multi_process_worker(
-                TestReloadRoutingThroughCLI()._args(), logging_settings=LoggingSettings(format="json"),
+                TestReloadRoutingThroughCLI()._args(),
+                logging_settings=LoggingSettings(format="json"),
             )
 
         assert rc == 0
@@ -473,11 +567,13 @@ class TestSupervisorLoggingSettings:
         from swarmq import cli
         from swarmq.exceptions import BrokerConnectionError
 
-        with patch.dict(os.environ, _URLS, clear=False), \
-             patch(
-                 "swarmq.process_manager.run.run_multi_process_worker",
-                 side_effect=BrokerConnectionError("amqp unreachable"),
-             ):
+        with (
+            patch.dict(os.environ, _URLS, clear=False),
+            patch(
+                "swarmq.process_manager.run.run_multi_process_worker",
+                side_effect=BrokerConnectionError("amqp unreachable"),
+            ),
+        ):
             rc = cli._run_worker_command(_worker_ns(log_format="json"))
 
         assert rc == 1
@@ -492,11 +588,14 @@ class TestSupervisorLoggingSettings:
 
         pm_mock = MagicMock()
         pm_mock.run.return_value = 0
-        with patch.dict(os.environ, _URLS, clear=False), \
-             patch("swarmq.process_manager.run.ProcessManager", return_value=pm_mock), \
-             patch("swarmq.process_manager.check._validate_module_importable"):
+        with (
+            patch.dict(os.environ, _URLS, clear=False),
+            patch("swarmq.process_manager.run.ProcessManager", return_value=pm_mock),
+            patch("swarmq.process_manager.check._validate_module_importable"),
+        ):
             run_multi_process_worker(
-                TestReloadRoutingThroughCLI()._args(), logging_settings=settings,
+                TestReloadRoutingThroughCLI()._args(),
+                logging_settings=settings,
             )
         return pm_mock
 
@@ -520,6 +619,7 @@ class TestSupervisorLoggingSettings:
         pm = self._supervisor_with(LoggingSettings())
         assert pm.reloader.log_config is None
 
+
 class TestHeartbeatIntervalPassThrough:
     """Review #8: SWARMQ_HEARTBEAT_INTERVAL_S wurde geparst, kam aber nie in der WorkerConfig an —
     der Worker schlug immer alle 5 s, ein Timeout unter 5 s ersetzte jeden gesunden Worker."""
@@ -535,9 +635,11 @@ class TestHeartbeatIntervalPassThrough:
         }
         pm_mock = MagicMock()
         pm_mock.run.return_value = 0
-        with patch.dict(os.environ, env, clear=False), \
-             patch("swarmq.process_manager.run.ProcessManager", return_value=pm_mock) as PM, \
-             patch("swarmq.process_manager.check._validate_module_importable"):
+        with (
+            patch.dict(os.environ, env, clear=False),
+            patch("swarmq.process_manager.run.ProcessManager", return_value=pm_mock) as PM,
+            patch("swarmq.process_manager.check._validate_module_importable"),
+        ):
             assert run_multi_process_worker(args) == 0
         cfg = PM.call_args.kwargs["worker_args"][0]
         assert cfg.heartbeat_interval_s == 2.0
@@ -551,9 +653,11 @@ class TestControlChannelWiring:
         args = TestReloadRoutingThroughCLI()._args(**over)
         pm_mock = MagicMock()
         pm_mock.run.return_value = 0
-        with patch.dict(os.environ, TestReloadRoutingThroughCLI()._env(), clear=False), \
-             patch("swarmq.process_manager.run.ProcessManager", return_value=pm_mock) as PM, \
-             patch("swarmq.process_manager.check._validate_module_importable"):
+        with (
+            patch.dict(os.environ, TestReloadRoutingThroughCLI()._env(), clear=False),
+            patch("swarmq.process_manager.run.ProcessManager", return_value=pm_mock) as PM,
+            patch("swarmq.process_manager.check._validate_module_importable"),
+        ):
             from swarmq.process_manager import run_multi_process_worker
 
             assert run_multi_process_worker(args, setpoint_store_factory=setpoint_store_factory) == 0

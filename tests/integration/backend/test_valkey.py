@@ -56,6 +56,7 @@ class TestTTL:
         await backend.store_result(tid, b"ttl-check", ttl_ms=ttl_ms)
 
         key = backend._key(tid)
+        assert backend._client is not None
         pttl = await backend._client.pttl(key)
         # PTTL should be positive and not exceed what we set.
         assert 0 < pttl <= ttl_ms

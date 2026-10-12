@@ -88,7 +88,7 @@ import queue
 import sys
 import threading
 import types
-from typing import Any
+from typing import Any, override
 
 import pytest
 
@@ -117,6 +117,7 @@ class _RecordingHandler(logging.Handler):
         self.threads: list[str] = []
         self.written = threading.Event()
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         self.records.append(record)
         self.threads.append(threading.current_thread().name)
@@ -137,9 +138,7 @@ def test_prepare_passes_record_through_and_listener_thread_formats():
     try:
         raise ValueError("boom")
     except ValueError:
-        record = logging.LogRecord(
-            "test", logging.ERROR, __file__, 1, "msg", None, sys.exc_info()
-        )
+        record = logging.LogRecord("test", logging.ERROR, __file__, 1, "msg", None, sys.exc_info())
 
     prepared = handler.prepare(record)
     assert prepared is record
@@ -216,7 +215,8 @@ class _BlockingHandler(_RecordingHandler):
         self.entered = threading.Event()
         self.unblock = threading.Event()
 
-    def handle(self, record: logging.LogRecord) -> logging.LogRecord | bool:
+    @override
+    def handle(self, record: logging.LogRecord) -> bool:
         # Vor ``super().handle``: dort haelt der Handler sein Lock, und ein
         # zweiter Listener (simulierter Fork) kaeme nicht mehr durch.
         if not self.entered.is_set():
@@ -235,6 +235,7 @@ class _ReleasingQueue(queue.Queue[logging.LogRecord]):
         super().__init__(maxsize)
         self._unblock = unblock
 
+    @override
     def shutdown(self, immediate: bool = False) -> None:
         super().shutdown(immediate)
         self._unblock.set()
@@ -351,9 +352,7 @@ def test_concurrent_first_record_and_start_run_exactly_one_listener(
         threading.Thread(target=handler.handle, args=(_record(),)),
         threading.Thread(target=handler.listener.start),
     ]
-    monkeypatch.setattr(
-        "swarmq.logging_queue.threading", types.SimpleNamespace(Thread=_GatedThread)
-    )
+    monkeypatch.setattr("swarmq.logging_queue.threading", types.SimpleNamespace(Thread=_GatedThread))
     for writer in writers:
         writer.start()
     for writer in writers:
@@ -509,6 +508,7 @@ class _RaisingOnPoison(_RecordingHandler):
     """Ziel-Handler, dessen ``emit`` beim Record ``poison`` wirft, ohne
     ``handleError`` -- wie ein Log-Shipper ohne Verbindung."""
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         if record.getMessage() == "poison":
             raise ConnectionError("log shipper down")
@@ -614,6 +614,7 @@ class _BlockingStream(io.StringIO):
         self.entered = threading.Event()
         self.release = threading.Event()
 
+    @override
     def write(self, s: str) -> int:
         self.entered.set()
         self.release.wait()
@@ -627,9 +628,7 @@ class _Blocked(types.SimpleNamespace):
     recorder: _RecordingHandler
 
 
-def _blocked_listener_with_full_queue(
-    monkeypatch: pytest.MonkeyPatch, *, json_mode: bool = False
-) -> _Blocked:
+def _blocked_listener_with_full_queue(monkeypatch: pytest.MonkeyPatch, *, json_mode: bool = False) -> _Blocked:
     """Listener haengt im ``write`` auf ``sys.stderr``, die Queue ist voll.
     Hinter dem Stream sammelt ein zweiter Ziel-Handler die Records."""
     stream = _BlockingStream()
@@ -637,10 +636,8 @@ def _blocked_listener_with_full_queue(
     target = logging.StreamHandler(stream)
     target.setFormatter(build_formatter(json_mode, colors=False))
     recorder = _RecordingHandler()
-    handler = _StructlogQueueHandler(
-        queue.Queue(maxsize=1), target, recorder, json=json_mode
-    )
-    log = logging.Logger("swarmq.tests.u3")
+    handler = _StructlogQueueHandler(queue.Queue(maxsize=1), target, recorder, json=json_mode)
+    log = logging.Logger("swarmq.tests.u3")  # noqa: LOG001 - bewusst isolierter Logger ausserhalb der globalen Hierarchie
     log.addHandler(handler)
     log.warning("first")
     assert stream.entered.wait(timeout=1)
@@ -717,9 +714,12 @@ def test_a_drop_with_closed_stderr_neither_raises_nor_goes_uncounted(
     blocker = _BlockingHandler()
     recorder = _RecordingHandler()
     handler = _StructlogQueueHandler(
-        queue.Queue(maxsize=1), blocker, recorder, logging.StreamHandler(sys.stderr),
+        queue.Queue(maxsize=1),
+        blocker,
+        recorder,
+        logging.StreamHandler(sys.stderr),
     )
-    log = logging.Logger("swarmq.tests.u3")
+    log = logging.Logger("swarmq.tests.u3")  # noqa: LOG001 - bewusst isolierter Logger ausserhalb der globalen Hierarchie
     log.addHandler(handler)
     log.warning("held")
     assert blocker.entered.wait(timeout=1)
@@ -739,6 +739,7 @@ class _AliveThread(_DeadThread):
     """Ein laufender Listener-Thread, ohne dass ein Thread die Queue leert:
     Der Test ruft ``listener.handle`` selbst auf."""
 
+    @override
     def is_alive(self) -> bool:
         return True
 
@@ -774,38 +775,33 @@ def test_drop_reports_come_at_most_once_per_second_with_the_full_count(
 
 class _GateHandler(_RecordingHandler):
     """Haelt den Listener bei jedem Record ``hold-*`` fest, bis dessen
-    Freigabe gesetzt ist; meldet jeden geschriebenen Record."""
+    Freigabe (``unblock``) gesetzt ist; meldet jeden geschriebenen Record."""
 
     def __init__(self) -> None:
         super().__init__()
-        self.entered: collections.defaultdict[str, threading.Event] = (
-            collections.defaultdict(threading.Event)
-        )
-        self.release: collections.defaultdict[str, threading.Event] = (
-            collections.defaultdict(threading.Event)
-        )
+        self.entered: collections.defaultdict[str, threading.Event] = collections.defaultdict(threading.Event)
+        self.unblock: collections.defaultdict[str, threading.Event] = collections.defaultdict(threading.Event)
         self.seen = threading.Condition()
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         msg = record.getMessage()
         if msg.startswith("hold-"):
             self.entered[msg].set()
-            self.release[msg].wait()
+            self.unblock[msg].wait()
         with self.seen:
             super().emit(record)
             self.seen.notify_all()
 
     def wait_for(self, msg: str) -> bool:
         with self.seen:
-            return self.seen.wait_for(
-                lambda: msg in [r.getMessage() for r in self.records], timeout=1
-            )
+            return self.seen.wait_for(lambda: msg in [r.getMessage() for r in self.records], timeout=1)
 
 
 def test_stopping_reports_drops_the_rate_limit_held_back(clock: _Clock) -> None:
     target = _GateHandler()
     handler = _StructlogQueueHandler(queue.Queue(maxsize=1), target)
-    log = logging.Logger("swarmq.tests.u3")
+    log = logging.Logger("swarmq.tests.u3")  # noqa: LOG001 - bewusst isolierter Logger ausserhalb der globalen Hierarchie
     log.addHandler(handler)
     try:
         for round_ in ("1", "2"):
@@ -813,13 +809,13 @@ def test_stopping_reports_drops_the_rate_limit_held_back(clock: _Clock) -> None:
             assert target.entered[f"hold-{round_}"].wait(timeout=1)
             log.warning("fill-%s", round_)
             log.warning("dropped")
-            target.release[f"hold-{round_}"].set()
+            target.unblock[f"hold-{round_}"].set()
             assert target.wait_for(f"fill-{round_}")
         assert [r.count for r in _drop_reports(target)] == [1]  # type: ignore[attr-defined]
 
         shutdown_logging()
     finally:
-        for event in target.release.values():
+        for event in target.unblock.values():
             event.set()
 
     assert [r.count for r in _drop_reports(target)] == [1, 2]  # type: ignore[attr-defined]

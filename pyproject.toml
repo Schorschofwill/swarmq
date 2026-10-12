@@ -59,8 +59,6 @@ test = [
     "pytest-asyncio",
     "pytest-timeout",
     "pytest-cov",
-    "mypy",
-    "ruff",
     # E2E-Hardening Phase 2+ — toxiproxy REST + property-based + fuzz
     "httpx",
     "hypothesis",
@@ -68,8 +66,6 @@ test = [
     "freezegun",
     # U2.1 chaos: RSS-polling for the OOM-simulation test.
     "psutil",
-    # mypy (CI prueft tests/support): Typen fuer psutil.
-    "types-psutil",
     # E2E-Hardening Phase 3 U3.10 — mutation testing.
     "mutmut",
     # R5.1: tests/unit/test_metrics.py asserts the real registry shape,
@@ -85,6 +81,25 @@ docs = [
     "mkdocs-static-i18n>=1.2",
     "pymdown-extensions>=10.11",
 ]
+
+# Entwicklungswerkzeuge als PEP-735-Gruppen (Plan 2026-10-11-1200, KTD9):
+# werden nicht veröffentlicht. ``uv run``/``uv sync`` ziehen sie über
+# ``default-groups`` mit — auch die Unit-Suite braucht ``typing``, weil
+# tests/unit/typing/test_contract_shapes.py mypy als Subprozess startet.
+[dependency-groups]
+lint = [
+    "ruff>=0.17",
+    "prek>=0.5",
+]
+typing = [
+    "mypy>=2.4",
+    "basedpyright>=1.40",
+    # Typen für psutil (tests/support, Chaos-Tests).
+    "types-psutil",
+]
+
+[tool.uv]
+default-groups = ["lint", "typing"]
 
 [project.scripts]
 swarmq = "swarmq.cli:console_main"
@@ -123,12 +138,57 @@ markers = [
 # (warn_unused_ignores meldet tote Suppressions).
 strict = true
 warn_unused_ignores = true
+# Plan 2026-10-11-1200 (KTD6): Zusatzcodes jenseits von --strict, das Set
+# von Litestar plus die für async-Code wichtigen (unused-awaitable).
+warn_unreachable = true
+enable_error_code = [
+    "ignore-without-code",
+    "truthy-bool",
+    "truthy-iterable",
+    "redundant-expr",
+    "redundant-self",
+    "possibly-undefined",
+    "unused-awaitable",
+    "deprecated",
+    "exhaustive-match",
+    "mutable-override",
+    "explicit-override",
+]
 packages = ["swarmq"]
-mypy_path = "src"
+# typings/: schmale Stubs für msgpack und croniter, gelesen von mypy und
+# basedpyright (stubPath) gleichermaßen (Plan 2026-10-11-1200, KTD8).
+mypy_path = "src:typings"
 
 [[tool.mypy.overrides]]
-module = ["croniter.*", "msgpack.*"]  # liefern keine Typ-Stubs
-ignore_missing_imports = true
+# Plan 2026-10-11-1200 (KTD7): Tests ohne Annotationspflicht, aber mit
+# geprüften Rümpfen (check_untyped_defs bleibt aus --strict an).
+module = ["tests.*"]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_calls = false
+
+
+# Zweiter Typprüfer (Plan 2026-10-11-1200, KTD8): basedpyright strict, nur
+# src/, ohne Baseline. Jeder Prüfer beachtet nur seine eigenen Kommentare:
+# mypy ``# type: ignore[code]``, basedpyright ``# pyright: ignore[rule]``.
+[tool.basedpyright]
+include = ["src/swarmq"]
+pythonVersion = "3.14"
+typeCheckingMode = "strict"
+enableTypeIgnoreComments = false
+reportIgnoreCommentWithoutRule = "error"
+reportUnnecessaryTypeIgnoreComment = "error"
+# Paketinterner Zugriff über Fassaden ist Architektur (wie ruff SLF001).
+reportPrivateUsage = false
+# Private ``_``-Funktionen werden über Fassaden und Nachbarmodule importiert
+# (auch für mock.patch); dieselbe Begründung wie reportPrivateUsage.
+reportUnusedFunction = false
+# valkey-py liefert unvollständige Typen (``**kwargs``, ``dict`` ohne
+# Typargumente); die Aufrufe der Client-Methoden stehen gebündelt im Backend.
+executionEnvironments = [
+    { root = "src/swarmq/backend/valkey", reportUnknownMemberType = false },
+    { root = "src" },
+]
 
 [tool.ruff]
 target-version = "py314"
@@ -136,30 +196,42 @@ src = ["src"]
 # Plan U2: erstes blockierendes Lint-Gate (``lint-and-types``). 120 statt 88
 # entspricht der gelebten Zeilenbreite des Bestands (längste Zeile 120).
 line-length = 120
+# Nur Python (Plan 2026-10-11-1200, U2): ruff 0.17 formatiert sonst auch
+# Codeblöcke in Markdown — darunter abgeschlossene Pläne, die unverändert
+# bleiben sollen.
+include = ["*.py", "*.pyi"]
 
 [tool.ruff.lint]
-select = [
-    "E",   # pycodestyle errors
-    "W",   # pycodestyle warnings
-    "F",   # pyflakes
-    "I",   # isort
-    "N",   # pep8-naming
-    "UP",  # pyupgrade
-    "B",   # flake8-bugbear
-    "SIM", # flake8-simplify
-    "RUF", # ruff-specific rules
-    # 0.2.0-Restrukturierung (Plan U2, KTD7): Funktionsgrößen-Rauchmelder.
-    # Bestandsverstöße tragen ``# noqa`` mit Unit-Verweis (die Unit zerlegt
-    # das Modul) oder ``Follow-Up 0.2.x`` (kein Unit-Scope).
-    "PLR0915", # too many statements
-    "C901",    # too complex
-]
+# Plan 2026-10-11-1200 (KTD1): alle Regeln, Ausnahmen nur mit Begründung.
+# Neue Regeln eines ruff-Upgrades greifen automatisch. Ausnahmen an einer
+# einzelnen Stelle tragen ``# noqa: <CODE>`` mit kurzem Grund (KTD2).
+select = ["ALL"]
 
 ignore = [
-    "N818",   # Exception-Namen ohne -Error sind Public API (KTD16); Umbenennung nur über U14-Inventar
-    "SIM105", # ``try/except: pass`` bleibt explizit — best-effort-Pfade der Pipeline sind kommentiert
-    "RUF002", # deutsche Typografie („ “ – ’) in Docstrings ist gewollt
-    "RUF003", # dito in Kommentaren
+    # --- Werkzeug-Konflikt ---------------------------------------------
+    "COM812",  # kollidiert mit ruff format
+    "ISC001",  # kollidiert mit ruff format
+    "E501",    # Zeilenlänge regelt der Formatter; Rest sind lange Strings
+    "CPY",     # keine Lizenzköpfe je Datei (LICENSE im Repo)
+    "ANN",     # Annotationen erzwingt mypy strict
+    "D",       # Docstring-Policy ist ein eigenes Thema (Plan: Scope Boundaries)
+    # --- Projektentscheidung oder API-Vertrag ----------------------------
+    "ASYNC109",          # öffentliche ``timeout``-Parameter (KTD16, Plan 0.2.0)
+    "FBT001", "FBT002",  # boolesche Positionsparameter sind öffentliche Signaturen
+    "PLR0913", "PLR0917",  # Parameterzahl öffentlicher Signaturen
+    "PLR0911", "PLR0912",  # Größenmelder sind PLR0915 und C901 (KTD7, Plan 0.2.0)
+    "PLC0415",  # lazy Importe, erzwungen von tests/unit/test_cli_import_laziness.py
+    "PLC0414",  # ``import x as x`` ist der explizite Re-Export für no_implicit_reexport
+    "SLF001",   # paketinterner Zugriff über Fassaden ist Architektur (test_architecture_guards)
+    "TC001", "TC002", "TC003",  # msgspec und dishka werten Annotationen zur Laufzeit aus
+    "N818",     # Exception-Namen ohne -Error sind Public API (KTD16)
+    "SIM105",   # ``try/except: pass`` bleibt explizit — Best-Effort-Pfade sind kommentiert
+    "RUF002",   # deutsche Typografie („ “ – ’) in Docstrings ist gewollt
+    "RUF003",   # dito in Kommentaren
+    # --- Stil ohne Nutzen für dieses Projekt ------------------------------
+    "TRY003", "EM101", "EM102",  # Fehlermeldungen direkt am raise sind gewollt
+    "TRY400",  # Log-Ausgabe ist durch die Logging-Pläne festgelegt; exception() änderte sie
+    "S101",    # alle ``assert`` in src/ sind Typ-Narrowing ohne Seiteneffekt (Analyse 2026-10-11)
 ]
 
 [tool.ruff.lint.pylint]
@@ -169,14 +241,20 @@ max-statements = 60
 max-complexity = 12
 
 [tool.ruff.lint.per-file-ignores]
-# Testfunktionen erzählen Szenarien; die Größen-Limits gelten für src/.
 "tests/**" = [
+    # Größen-Limits gelten für src/; Testfunktionen erzählen Szenarien.
     "PLR0915", "C901",
     "N806", "N802", "N817",  # Test-Namen und Fixture-Aliase folgen Szenario, nicht PEP 8
     "RUF043",                # pytest.raises(match=…) mit literalem Text ist hier gewollt
     "B905", "B017",          # zip()-Längen und generische raises sind in Tests bewusst
+    "S",        # Asserts, Subprozesse, Temp-Pfade und Test-Passwörter sind Testmittel
+    "PLR2004",  # erwartete Werte stehen im Test als Literal
+    "ARG",      # Fixture-Parameter und Fake-Signaturen
+    "FBT",      # boolesche Argumente an Fakes und Fixtures
+    "TRY", "EM",  # Fake-Exceptions mit Text
+    "BLE",      # Fakes fangen bewusst breit
+    "T201",     # Ausgaben in Hilfsprozessen der Tests
 ]
-# worker/pipeline.py: Import-Block nach dem _LockEntry-Dataclass; U19 räumt auf.
 
 # E2E-Hardening Phase 3 U3.10 — mutation testing.
 # Runner scores mutants against the fast unit-test suite.

@@ -18,7 +18,7 @@ Test-Liste:
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, override
 
 import pytest
 
@@ -33,6 +33,7 @@ pytestmark = [pytest.mark.timeout(5)]
 class SlowTask(Task):
     task_info = TaskInfo(name="bz20-slow", queues=["a"], hard_timeout=1000)
 
+    @override
     async def run(self) -> None:
         return None
 
@@ -101,4 +102,5 @@ async def test_sampler_reports_the_prefetch_limit(broker: Any, backend: Any) -> 
     await worker._sample_metrics_once()
 
     labels = {"worker_id": config.worker_identity}
+    assert metrics.registry is not None
     assert metrics.registry.get_sample_value("swarmq_worker_prefetch_limit", labels) == 12.0

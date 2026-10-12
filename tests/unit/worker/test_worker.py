@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -31,11 +32,6 @@ from tests.unit.worker.gates.test_lock import LockedTask
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -88,13 +84,16 @@ async def test_pre_and_post_execution_called(broker, backend, config):
     class LifecycleTask(Task):
         task_info = TaskInfo(name="lifecycle", queues=["default"])
 
+        @override
         async def pre_execution(self) -> None:
             call_order.append("pre")
 
+        @override
         async def run(self) -> str:
             call_order.append("run")
             return "ok"
 
+        @override
         async def post_execution(self) -> None:
             call_order.append("post")
 
@@ -129,12 +128,12 @@ async def test_semaphore_limits_concurrency(broker, backend, config):
     class SlowTask(Task):
         task_info = TaskInfo(name="slow", queues=["default"])
 
+        @override
         async def run(self) -> None:
             nonlocal max_concurrent, current
             async with lock:
                 current += 1
-                if current > max_concurrent:
-                    max_concurrent = current
+                max_concurrent = max(max_concurrent, current)
             await asyncio.sleep(0.05)
             async with lock:
                 current -= 1
@@ -143,10 +142,7 @@ async def test_semaphore_limits_concurrency(broker, backend, config):
     reg.register(SlowTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config_limited)
 
-    messages = [
-        make_message(_default_payload(task_id=f"t-{i}", name="slow", args=[], kwargs={}))
-        for i in range(6)
-    ]
+    messages = [make_message(_default_payload(task_id=f"t-{i}", name="slow", args=[], kwargs={})) for i in range(6)]
     await asyncio.gather(*(w._handle_message(m) for m in messages))
 
     assert max_concurrent <= concurrency
@@ -162,6 +158,7 @@ async def test_result_ttl_zero_skips_store(broker, backend, config):
     class NoStoreTask(Task):
         task_info = TaskInfo(name="nostore", queues=["default"], result_ttl=0)
 
+        @override
         async def run(self) -> str:
             return "ignored"
 
@@ -186,6 +183,7 @@ async def test_task_exception_stores_error_result(broker, backend, config):
     class FailTask(Task):
         task_info = TaskInfo(name="fail", queues=["default"])
 
+        @override
         async def run(self) -> None:
             raise ValueError("boom")
 
@@ -217,12 +215,15 @@ async def test_pre_execution_raises_skips_post(broker, backend, config):
     class PreFailTask(Task):
         task_info = TaskInfo(name="prefail", queues=["default"])
 
+        @override
         async def pre_execution(self) -> None:
             raise RuntimeError("pre failed")
 
+        @override
         async def run(self) -> str:
             return "never"
 
+        @override
         async def post_execution(self) -> None:
             nonlocal post_called
             post_called = True
@@ -253,9 +254,11 @@ async def test_post_execution_raises_overwrites_success(broker, backend, config)
     class PostFailTask(Task):
         task_info = TaskInfo(name="postfail", queues=["default"])
 
+        @override
         async def run(self) -> str:
             return "ok"
 
+        @override
         async def post_execution(self) -> None:
             raise RuntimeError("post failed")
 
@@ -284,6 +287,7 @@ async def test_result_serialization_error_stores_error(broker, backend, config):
     class BadResultTask(Task):
         task_info = TaskInfo(name="badresult", queues=["default"])
 
+        @override
         async def run(self) -> object:
             return object()  # not serializable by msgpack
 
@@ -336,9 +340,7 @@ async def test_unknown_task_dead_lettered_without_requeue(broker, backend, confi
 
 @pytest.mark.asyncio
 async def test_backend_error_nacks_with_requeue(worker, broker, backend):
-    backend.store_result = AsyncMock(
-        side_effect=BackendConnectionError("conn lost")
-    )
+    backend.store_result = AsyncMock(side_effect=BackendConnectionError("conn lost"))
     msg = make_message(_default_payload())
 
     await worker._handle_message(msg)
@@ -390,6 +392,7 @@ async def test_none_return_stored(broker, backend, config):
     class NoneTask(Task):
         task_info = TaskInfo(name="nonetask", queues=["default"])
 
+        @override
         async def run(self) -> None:
             return None
 
@@ -417,6 +420,7 @@ async def test_semaphore_released_on_error(broker, backend, config):
     class ExplodeTask(Task):
         task_info = TaskInfo(name="explode", queues=["default"])
 
+        @override
         async def run(self) -> None:
             raise RuntimeError("kaboom")
 
@@ -519,6 +523,7 @@ async def test_start_declares_all_config_queues(broker, backend):
     class MultiTask(Task):
         task_info = TaskInfo(name="multi", queues=["q1", "q2", "q3"])
 
+        @override
         async def run(self) -> None:
             pass
 
@@ -544,6 +549,7 @@ async def test_result_ttl_from_task_info(broker, backend, config):
     class TtlTask(Task):
         task_info = TaskInfo(name="ttltask", queues=["default"], result_ttl=300)
 
+        @override
         async def run(self) -> str:
             return "ttl"
 
@@ -582,6 +588,7 @@ async def test_handle_message_binds_contextvars(broker, backend, config):
     class CapTask(Task):
         task_info = TaskInfo(name="captask", queues=["default"])
 
+        @override
         async def run(self) -> str:
             captured_ctx.update(structlog.contextvars.get_contextvars())
             return "ok"
@@ -592,9 +599,7 @@ async def test_handle_message_binds_contextvars(broker, backend, config):
 
     structlog.contextvars.clear_contextvars()
 
-    msg = make_message(
-        _default_payload(task_id="ctx-123", name="captask", queue="myqueue", args=[], kwargs={})
-    )
+    msg = make_message(_default_payload(task_id="ctx-123", name="captask", queue="myqueue", args=[], kwargs={}))
     await w._handle_message(msg)
 
     assert captured_ctx["task_id"] == "ctx-123"
@@ -641,10 +646,9 @@ async def test_fire_and_forget_acks_before_execution(broker, backend, config):
     ack_happened_before_run = False
 
     class FnfTask(Task):
-        task_info = TaskInfo(
-            name="fnf", queues=["default"], delivery=DeliveryMode.FIRE_AND_FORGET
-        )
+        task_info = TaskInfo(name="fnf", queues=["default"], delivery=DeliveryMode.FIRE_AND_FORGET)
 
+        @override
         async def run(self) -> str:
             nonlocal ack_happened_before_run
             # At the time run() executes, ack should already have been called
@@ -669,10 +673,9 @@ async def test_at_least_once_acks_after_execution(broker, backend, config):
     ack_count_during_run = -1
 
     class AloTask(Task):
-        task_info = TaskInfo(
-            name="alo", queues=["default"], delivery=DeliveryMode.AT_LEAST_ONCE
-        )
+        task_info = TaskInfo(name="alo", queues=["default"], delivery=DeliveryMode.AT_LEAST_ONCE)
 
+        @override
         async def run(self) -> str:
             nonlocal ack_count_during_run
             ack_count_during_run = broker.ack.await_count
@@ -704,6 +707,7 @@ async def test_fire_and_forget_with_explicit_result_ttl_stores_result(broker, ba
             result_ttl=3600,
         )
 
+        @override
         async def run(self) -> str:
             return "stored"
 
@@ -735,6 +739,7 @@ async def test_fire_and_forget_without_result_ttl_skips_storage(broker, backend,
             # result_ttl defaults to None
         )
 
+        @override
         async def run(self) -> str:
             return "not stored"
 
@@ -762,6 +767,7 @@ async def test_fire_and_forget_exception_logged_no_nack(broker, backend, config)
             delivery=DeliveryMode.FIRE_AND_FORGET,
         )
 
+        @override
         async def run(self) -> None:
             raise RuntimeError("fnf boom")
 
@@ -790,6 +796,7 @@ async def test_delivery_mode_default_is_at_least_once(broker, backend, config):
     class DefaultDeliveryTask(Task):
         task_info = TaskInfo(name="default_delivery", queues=["default"])
 
+        @override
         async def run(self) -> str:
             return "ok"
 
@@ -802,6 +809,7 @@ async def test_delivery_mode_default_is_at_least_once(broker, backend, config):
     class DefaultDeliveryTask2(Task):
         task_info = TaskInfo(name="default_delivery2", queues=["default"])
 
+        @override
         async def run(self) -> str:
             nonlocal ack_count_during_run
             ack_count_during_run = broker.ack.await_count
@@ -828,10 +836,9 @@ async def test_retry_first_failure_publishes_to_delay_queue(broker, backend, con
     """Task with max_retries=3, first failure -> message published to .DQ with correct TTL."""
 
     class RetryTask(Task):
-        task_info = TaskInfo(
-            name="retry_task", queues=["default"], max_retries=3, retry_base_delay=1.0
-        )
+        task_info = TaskInfo(name="retry_task", queues=["default"], max_retries=3, retry_base_delay=1.0)
 
+        @override
         async def run(self) -> None:
             raise RuntimeError("transient")
 
@@ -866,10 +873,9 @@ async def test_retry_count_incremented_in_headers(broker, backend, config):
     """x-swarmq-retry-count header is incremented from 0 to 1 on first retry."""
 
     class RetryTask(Task):
-        task_info = TaskInfo(
-            name="retry_inc", queues=["default"], max_retries=3, retry_base_delay=1.0
-        )
+        task_info = TaskInfo(name="retry_inc", queues=["default"], max_retries=3, retry_base_delay=1.0)
 
+        @override
         async def run(self) -> None:
             raise RuntimeError("fail")
 
@@ -907,10 +913,9 @@ async def test_retries_exhausted_sends_to_dlq(broker, backend, config):
     """After max_retries exhausted -> published to .XQ, original acked."""
 
     class RetryTask(Task):
-        task_info = TaskInfo(
-            name="retry_exhaust", queues=["default"], max_retries=2
-        )
+        task_info = TaskInfo(name="retry_exhaust", queues=["default"], max_retries=2)
 
+        @override
         async def run(self) -> None:
             raise RuntimeError("still broken")
 
@@ -941,10 +946,9 @@ async def test_retry_exception_overrides_backoff_delay(broker, backend, config):
     """raise Retry(delay=60) -> retry with 60s delay, overriding backoff calculation."""
 
     class RetryDelayTask(Task):
-        task_info = TaskInfo(
-            name="retry_delay", queues=["default"], max_retries=3, retry_base_delay=1.0
-        )
+        task_info = TaskInfo(name="retry_delay", queues=["default"], max_retries=3, retry_base_delay=1.0)
 
+        @override
         async def run(self) -> None:
             raise Retry(delay=60)
 
@@ -972,10 +976,9 @@ async def test_noretry_exception_sends_to_dlq_directly(broker, backend, config):
     """raise NoRetry('bad input') -> direct DLQ, no retry regardless of max_retries."""
 
     class NoRetryTask(Task):
-        task_info = TaskInfo(
-            name="noretry_task", queues=["default"], max_retries=10
-        )
+        task_info = TaskInfo(name="noretry_task", queues=["default"], max_retries=10)
 
+        @override
         async def run(self) -> None:
             raise NoRetry("bad input")
 
@@ -1009,6 +1012,7 @@ async def test_retry_exceptions_mismatch_sends_to_dlq(broker, backend, config):
             retry_exceptions=[ConnectionError],
         )
 
+        @override
         async def run(self) -> None:
             raise ValueError("not retryable")
 
@@ -1041,6 +1045,7 @@ async def test_retry_exceptions_match_retries(broker, backend, config):
             retry_exceptions=[ConnectionError],
         )
 
+        @override
         async def run(self) -> None:
             raise ConnectionError("connection lost")
 
@@ -1079,6 +1084,7 @@ async def test_max_retries_zero_error_routes_to_dlq(broker, backend, config):
         task_info = TaskInfo(name="no_retry_default", queues=["default"])
         # max_retries defaults to 0
 
+        @override
         async def run(self) -> None:
             raise RuntimeError("error without retry")
 
@@ -1086,7 +1092,7 @@ async def test_max_retries_zero_error_routes_to_dlq(broker, backend, config):
     reg.register(NoRetryDefaultTask)
     w = Worker(broker=broker, backend=backend, registry=reg, config=config)
 
-    dlq_signals: list[dict] = []
+    dlq_signals: list[dict[str, Any]] = []
 
     @w._signal_dispatcher.on_signal(_Signal.TASK_DLQ)
     async def _on_dlq(**kw):
@@ -1123,6 +1129,7 @@ async def test_fire_and_forget_not_retried(broker, backend, config):
             max_retries=5,
         )
 
+        @override
         async def run(self) -> None:
             raise RuntimeError("fnf failure")
 
@@ -1166,6 +1173,7 @@ async def test_notify_result_after_error(broker, backend, config):
     class ErrorTask(Task):
         task_info = TaskInfo(name="error_notify", queues=["default"])
 
+        @override
         async def run(self) -> None:
             raise ValueError("task failed")
 
@@ -1184,10 +1192,9 @@ async def test_notify_result_after_dlq(broker, backend, config):
     """After DLQ routing -> notify_result(task_id) called."""
 
     class DlqTask(Task):
-        task_info = TaskInfo(
-            name="dlq_notify", queues=["default"], max_retries=1
-        )
+        task_info = TaskInfo(name="dlq_notify", queues=["default"], max_retries=1)
 
+        @override
         async def run(self) -> None:
             raise RuntimeError("permanent failure")
 
@@ -1213,6 +1220,7 @@ async def test_notify_result_skipped_when_result_ttl_zero(broker, backend, confi
     class NoTtlTask(Task):
         task_info = TaskInfo(name="no_ttl_notify", queues=["default"], result_ttl=0)
 
+        @override
         async def run(self) -> str:
             return "ignored"
 
@@ -1235,6 +1243,7 @@ async def test_notify_result_failure_does_not_block_ack(broker, backend, config)
     class NotifyFailTask(Task):
         task_info = TaskInfo(name="notify_fail", queues=["default"])
 
+        @override
         async def run(self) -> str:
             return "ok"
 
@@ -1290,13 +1299,12 @@ class TestWorkerMiddlewareAndSignals:
         call_order: list[str] = []
 
         mw_chain = _make_middleware_chain_mock()
-        mw_chain.run_pre_execute.side_effect = (
-            lambda *a, **kw: call_order.append("pre_execute") or None
-        )
+        mw_chain.run_pre_execute.side_effect = lambda *a, **kw: call_order.append("pre_execute")
 
         class OrderTask(Task):
             task_info = TaskInfo(name="order_pre", queues=["default"])
 
+            @override
             async def run(self) -> str:
                 call_order.append("run")
                 return "ok"
@@ -1318,14 +1326,13 @@ class TestWorkerMiddlewareAndSignals:
         mw_chain.run_pre_execute.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_post_execute_called_after_successful_run(
-        self, broker, backend, config
-    ):
+    async def test_post_execute_called_after_successful_run(self, broker, backend, config):
         """post_execute runs after a successful task.run() completes (including post_execution)."""
 
         class GoodTask(Task):
             task_info = TaskInfo(name="good_post", queues=["default"])
 
+            @override
             async def run(self) -> int:
                 return 42
 
@@ -1351,17 +1358,17 @@ class TestWorkerMiddlewareAndSignals:
         mw_chain.run_on_error.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_post_execute_not_called_when_post_execution_fails(
-        self, broker, backend, config
-    ):
+    async def test_post_execute_not_called_when_post_execution_fails(self, broker, backend, config):
         """post_execute hook is NOT called when the task's post_execution() raises."""
 
         class PostFailTask(Task):
             task_info = TaskInfo(name="post_fail_hook", queues=["default"])
 
+            @override
             async def run(self) -> str:
                 return "ok"
 
+            @override
             async def post_execution(self) -> None:
                 raise RuntimeError("post failed")
 
@@ -1392,6 +1399,7 @@ class TestWorkerMiddlewareAndSignals:
         class BoomTask(Task):
             task_info = TaskInfo(name="boom_hook", queues=["default"])
 
+            @override
             async def run(self) -> None:
                 raise ValueError("boom")
 
@@ -1427,6 +1435,7 @@ class TestWorkerMiddlewareAndSignals:
                 retry_base_delay=1.0,
             )
 
+            @override
             async def run(self) -> None:
                 raise RuntimeError("transient")
 
@@ -1457,9 +1466,7 @@ class TestWorkerMiddlewareAndSignals:
         broker.retry_later.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_on_error_and_on_retry_both_fire_on_retried_failure(
-        self, broker, backend, config
-    ):
+    async def test_on_error_and_on_retry_both_fire_on_retried_failure(self, broker, backend, config):
         """Retried failure: on_error fires first, then on_retry."""
 
         class RetryBothTask(Task):
@@ -1470,17 +1477,14 @@ class TestWorkerMiddlewareAndSignals:
                 retry_base_delay=1.0,
             )
 
+            @override
             async def run(self) -> None:
                 raise RuntimeError("boom")
 
         mw_chain = _make_middleware_chain_mock()
         call_order: list[str] = []
-        mw_chain.run_on_error.side_effect = (
-            lambda *a, **kw: call_order.append("on_error") or None
-        )
-        mw_chain.run_on_retry.side_effect = (
-            lambda *a, **kw: call_order.append("on_retry") or None
-        )
+        mw_chain.run_on_error.side_effect = lambda *a, **kw: call_order.append("on_error")
+        mw_chain.run_on_retry.side_effect = lambda *a, **kw: call_order.append("on_retry")
 
         reg = TaskRegistry()
         reg.register(RetryBothTask)
@@ -1501,9 +1505,7 @@ class TestWorkerMiddlewareAndSignals:
         assert call_order == ["on_error", "on_retry"]
 
     @pytest.mark.asyncio
-    async def test_on_retry_not_called_when_sent_to_dlq(
-        self, broker, backend, config
-    ):
+    async def test_on_retry_not_called_when_sent_to_dlq(self, broker, backend, config):
         """When retries exhausted and task goes to DLQ, on_error fires but on_retry does NOT."""
 
         class ExhaustedTask(Task):
@@ -1513,6 +1515,7 @@ class TestWorkerMiddlewareAndSignals:
                 max_retries=2,
             )
 
+            @override
             async def run(self) -> None:
                 raise RuntimeError("still broken")
 
@@ -1540,9 +1543,7 @@ class TestWorkerMiddlewareAndSignals:
         broker.dead_letter.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_on_retry_message_dict_retry_count_matches_parameter(
-        self, broker, backend, config
-    ):
+    async def test_on_retry_message_dict_retry_count_matches_parameter(self, broker, backend, config):
         """message['retry_count'] in on_retry call equals the explicit retry_count parameter."""
 
         class RetryingTask(Task):
@@ -1553,6 +1554,7 @@ class TestWorkerMiddlewareAndSignals:
                 retry_base_delay=1.0,
             )
 
+            @override
             async def run(self) -> None:
                 raise RuntimeError("transient")
 
@@ -1603,18 +1605,13 @@ class TestWorkerMiddlewareAndSignals:
         msg = make_message(_default_payload())
         await w._handle_message(msg)
 
-        started_calls = [
-            c for c in dispatcher.dispatch.call_args_list
-            if c.args and c.args[0] is Signal.TASK_STARTED
-        ]
+        started_calls = [c for c in dispatcher.dispatch.call_args_list if c.args and c.args[0] is Signal.TASK_STARTED]
         assert len(started_calls) == 1
         assert started_calls[0].kwargs["task_id"] == "abc-123"
         assert started_calls[0].kwargs["task_name"] == "add"
 
     @pytest.mark.asyncio
-    async def test_task_completed_signal_dispatched_with_duration(
-        self, broker, backend, config
-    ):
+    async def test_task_completed_signal_dispatched_with_duration(self, broker, backend, config):
         """TASK_COMPLETED dispatched with duration_ms after success."""
 
         dispatcher = _make_signal_dispatcher_mock()
@@ -1633,8 +1630,7 @@ class TestWorkerMiddlewareAndSignals:
         await w._handle_message(msg)
 
         completed_calls = [
-            c for c in dispatcher.dispatch.call_args_list
-            if c.args and c.args[0] is Signal.TASK_COMPLETED
+            c for c in dispatcher.dispatch.call_args_list if c.args and c.args[0] is Signal.TASK_COMPLETED
         ]
         assert len(completed_calls) == 1
         kw = completed_calls[0].kwargs
@@ -1645,14 +1641,13 @@ class TestWorkerMiddlewareAndSignals:
         assert kw["duration_ms"] >= 0
 
     @pytest.mark.asyncio
-    async def test_task_failed_signal_dispatched_on_error(
-        self, broker, backend, config
-    ):
+    async def test_task_failed_signal_dispatched_on_error(self, broker, backend, config):
         """TASK_FAILED dispatched with exception string on task error."""
 
         class FailSig(Task):
             task_info = TaskInfo(name="fail_sig", queues=["default"])
 
+            @override
             async def run(self) -> None:
                 raise ValueError("bad thing")
 
@@ -1671,10 +1666,7 @@ class TestWorkerMiddlewareAndSignals:
         msg = make_message(_default_payload(name="fail_sig", args=[], kwargs={}))
         await w._handle_message(msg)
 
-        failed_calls = [
-            c for c in dispatcher.dispatch.call_args_list
-            if c.args and c.args[0] is Signal.TASK_FAILED
-        ]
+        failed_calls = [c for c in dispatcher.dispatch.call_args_list if c.args and c.args[0] is Signal.TASK_FAILED]
         assert len(failed_calls) == 1
         kw = failed_calls[0].kwargs
         assert kw["task_id"] == "abc-123"
@@ -1682,9 +1674,7 @@ class TestWorkerMiddlewareAndSignals:
         assert "bad thing" in kw["exception"]
 
     @pytest.mark.asyncio
-    async def test_task_retrying_signal_dispatched_on_retry(
-        self, broker, backend, config
-    ):
+    async def test_task_retrying_signal_dispatched_on_retry(self, broker, backend, config):
         """TASK_RETRYING dispatched on retry path with retry_count and delay."""
 
         class RetrySig(Task):
@@ -1695,6 +1685,7 @@ class TestWorkerMiddlewareAndSignals:
                 retry_base_delay=1.0,
             )
 
+            @override
             async def run(self) -> None:
                 raise RuntimeError("transient")
 
@@ -1716,10 +1707,7 @@ class TestWorkerMiddlewareAndSignals:
         )
         await w._handle_message(msg)
 
-        retrying_calls = [
-            c for c in dispatcher.dispatch.call_args_list
-            if c.args and c.args[0] is Signal.TASK_RETRYING
-        ]
+        retrying_calls = [c for c in dispatcher.dispatch.call_args_list if c.args and c.args[0] is Signal.TASK_RETRYING]
         assert len(retrying_calls) == 1
         kw = retrying_calls[0].kwargs
         assert kw["task_id"] == "abc-123"
@@ -1727,9 +1715,7 @@ class TestWorkerMiddlewareAndSignals:
         assert kw["delay"] > 0
 
     @pytest.mark.asyncio
-    async def test_worker_online_and_shutdown_signals_dispatched(
-        self, broker, backend, config
-    ):
+    async def test_worker_online_and_shutdown_signals_dispatched(self, broker, backend, config):
         """WORKER_ONLINE dispatched after connect; WORKER_SHUTDOWN dispatched on shutdown."""
 
         dispatcher = _make_signal_dispatcher_mock()
@@ -1748,33 +1734,28 @@ class TestWorkerMiddlewareAndSignals:
         w._shutdown_event.set()
         await w.start()
 
-        signals_seen = [
-            c.args[0] for c in dispatcher.dispatch.call_args_list if c.args
-        ]
+        signals_seen = [c.args[0] for c in dispatcher.dispatch.call_args_list if c.args]
         assert Signal.WORKER_ONLINE in signals_seen
         assert Signal.WORKER_SHUTDOWN in signals_seen
 
         # Check worker_id kwarg present for both
         online_call = next(
-            c for c in dispatcher.dispatch.call_args_list
-            if c.args and c.args[0] is Signal.WORKER_ONLINE
+            c for c in dispatcher.dispatch.call_args_list if c.args and c.args[0] is Signal.WORKER_ONLINE
         )
         assert "worker_id" in online_call.kwargs
         shutdown_call = next(
-            c for c in dispatcher.dispatch.call_args_list
-            if c.args and c.args[0] is Signal.WORKER_SHUTDOWN
+            c for c in dispatcher.dispatch.call_args_list if c.args and c.args[0] is Signal.WORKER_SHUTDOWN
         )
         assert "worker_id" in shutdown_call.kwargs
 
     @pytest.mark.asyncio
-    async def test_message_dict_contains_canonical_fields(
-        self, broker, backend, config
-    ):
+    async def test_message_dict_contains_canonical_fields(self, broker, backend, config):
         """message_dict passed to middleware hooks contains all canonical fields."""
 
         class KwTask(Task):
             task_info = TaskInfo(name="kw_task", queues=["default"])
 
+            @override
             async def run(self, *args, **kwargs) -> str:
                 return "ok"
 
@@ -1814,9 +1795,7 @@ class TestWorkerMiddlewareAndSignals:
         assert message_dict["retry_count"] == 2
 
     @pytest.mark.asyncio
-    async def test_backward_compatible_without_middleware_or_signals(
-        self, broker, backend, config
-    ):
+    async def test_backward_compatible_without_middleware_or_signals(self, broker, backend, config):
         """Without middleware_chain/signal_dispatcher, Worker works exactly as before."""
         reg = TaskRegistry()
         reg.register(AddTask)
@@ -1834,9 +1813,7 @@ class TestWorkerMiddlewareAndSignals:
         assert stored["result"] == 3
 
     @pytest.mark.asyncio
-    async def test_factory_is_invoked_per_message(
-        self, broker, backend, config
-    ):
+    async def test_factory_is_invoked_per_message(self, broker, backend, config):
         """Worker built with a factory callable must invoke it on every message.
 
         Regression guard for F1+F2: the worker used to accept a static
@@ -1886,9 +1863,7 @@ class TestWorkerMiddlewareAndSignals:
             )
 
     @pytest.mark.asyncio
-    async def test_same_chain_across_hooks_within_one_message(
-        self, broker, backend, config
-    ):
+    async def test_same_chain_across_hooks_within_one_message(self, broker, backend, config):
         """Factory is called exactly once per message; chain identity is stable
         across pre_execute, on_error, and on_retry.
 
@@ -1906,6 +1881,7 @@ class TestWorkerMiddlewareAndSignals:
                 max_retries=2,
             )
 
+            @override
             async def run(self) -> None:
                 raise ValueError("boom")
 
@@ -1926,9 +1902,7 @@ class TestWorkerMiddlewareAndSignals:
             middleware_chain=factory,
         )
 
-        msg = make_message(
-            _default_payload(name="mw_retry_chain_identity", args=[], kwargs={})
-        )
+        msg = make_message(_default_payload(name="mw_retry_chain_identity", args=[], kwargs={}))
         await w._handle_message(msg)
 
         assert factory.call_count == 1
@@ -1940,21 +1914,19 @@ class TestWorkerMiddlewareAndSignals:
         chain_b.run_on_retry.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_accepts_static_middleware_chain_instance(
-        self, broker, backend, config
-    ):
+    async def test_accepts_static_middleware_chain_instance(self, broker, backend, config):
         """Worker with a real MiddlewareChain instance runs its hooks."""
-        from swarmq.middleware import Middleware, MiddlewareChain
+        from swarmq.middleware import MessageContext, Middleware, MiddlewareChain
 
-        captured: list[tuple[str, dict]] = []
+        captured: list[tuple[str, dict[str, Any]]] = []
 
         class Spy(Middleware):
-            async def pre_execute(self, message: dict) -> None:
+            @override
+            async def pre_execute(self, message: MessageContext) -> None:
                 captured.append(("pre", dict(message)))
 
-            async def post_execute(
-                self, message: dict, result: object = None
-            ) -> None:
+            @override
+            async def post_execute(self, message: MessageContext, result: object = None) -> None:
                 captured.append(("post", dict(message)))
 
         chain = MiddlewareChain([Spy()])
@@ -1974,14 +1946,14 @@ class TestWorkerMiddlewareAndSignals:
         assert [name for name, _ in captured] == ["pre", "post"]
 
     @pytest.mark.asyncio
-    async def test_factory_exception_nacks_without_requeue(
-        self, broker, backend, config
-    ):
+    async def test_factory_exception_nacks_without_requeue(self, broker, backend, config):
         """A broken factory (raises on call) must nack(requeue=False), not crash."""
+        from swarmq.middleware import MiddlewareChain
+
         reg = TaskRegistry()
         reg.register(AddTask)
 
-        def bad_factory() -> object:
+        def bad_factory() -> MiddlewareChain:
             raise RuntimeError("factory broken")
 
         w = Worker(
@@ -2013,7 +1985,9 @@ class TestCancelMonitorEdgeCases:
     """
 
     async def test_monitor_swallows_is_cancelled_exceptions(
-        self, worker, backend,
+        self,
+        worker,
+        backend,
     ):
         """Transient BackendConnectionError → log + continue loop."""
         # First call raises, second returns False, third True.
@@ -2032,7 +2006,8 @@ class TestCancelMonitorEdgeCases:
 
         try:
             await worker._executor._cancel_monitor(
-                "task-abc", run_task,
+                "task-abc",
+                run_task,
                 lambda r: reasons.__setitem__(0, r) if reasons[0] is None else None,
             )
         finally:
@@ -2045,7 +2020,9 @@ class TestCancelMonitorEdgeCases:
         assert reasons[0] == "cancel"
 
     async def test_monitor_exits_when_run_task_completes_during_sleep(
-        self, worker, backend,
+        self,
+        worker,
+        backend,
     ):
         """asyncio.wait(timeout) lets the monitor detect run_task.done() quickly."""
         backend.is_cancelled = AsyncMock(return_value=False)
@@ -2062,7 +2039,8 @@ class TestCancelMonitorEdgeCases:
         # for the full 1.0 s poll interval it will time out here.
         await asyncio.wait_for(
             worker._executor._cancel_monitor(
-                "task-abc", run_task,
+                "task-abc",
+                run_task,
                 lambda r: reasons.__setitem__(0, r),
             ),
             timeout=0.5,
@@ -2120,10 +2098,13 @@ class TestSetReasonIfUnset:
 # Phase 3b.3 / Unit 7 — Monitor in the full _handle_message pipeline
 # ===========================================================================
 
+
 class _SlowTask(Task):
     """Task whose run() takes long enough that the monitor can intervene."""
+
     task_info = TaskInfo(name="slow_run", queues=["default"])
 
+    @override
     async def run(self) -> str:
         await asyncio.sleep(5)
         return "completed"
@@ -2132,7 +2113,7 @@ class _SlowTask(Task):
 class TestRunningCancelInHandleMessage:
     """Unit-level integration: cancel during _handle_message execution."""
 
-    @pytest.fixture()
+    @pytest.fixture
     def slow_worker(self, broker, backend, config):
         registry = TaskRegistry()
         registry.register(_SlowTask)
@@ -2146,7 +2127,10 @@ class TestRunningCancelInHandleMessage:
         return Worker(broker=broker, backend=backend, registry=registry, config=cfg)
 
     async def test_cancel_during_run_raises_task_cancelled_error(
-        self, slow_worker, broker, backend,
+        self,
+        slow_worker,
+        broker,
+        backend,
     ):
         """Flag flips to True during run() → CancelledError → is_cancelled=True."""
         call_count = [0]
@@ -2175,7 +2159,9 @@ class TestRunningCancelInHandleMessage:
         broker.redeliver.assert_not_awaited()
 
     async def test_cancel_during_run_dispatches_task_cancelled_signal(
-        self, slow_worker, backend,
+        self,
+        slow_worker,
+        backend,
     ):
         """is_cancelled=True path dispatches TASK_CANCELLED, NOT TASK_COMPLETED/FAILED."""
         call_count = [0]
@@ -2186,11 +2172,14 @@ class TestRunningCancelInHandleMessage:
 
         backend.is_cancelled = AsyncMock(side_effect=is_cancelled_impl)
 
-        captured: list[tuple] = []
+        captured: list[tuple[str, dict[str, Any]]] = []
+
         async def cancelled_handler(**kwargs):
             captured.append(("cancelled", kwargs))
+
         async def completed_handler(**kwargs):
             captured.append(("completed", kwargs))
+
         async def failed_handler(**kwargs):
             captured.append(("failed", kwargs))
 
@@ -2207,14 +2196,21 @@ class TestRunningCancelInHandleMessage:
         assert "failed" not in kinds
 
     async def test_cancel_during_run_bypasses_retry(
-        self, broker, backend,
+        self,
+        broker,
+        backend,
     ):
         """Task with max_retries>0, cancel during run → NO retry, is_cancelled result."""
+
         class RetryableSlowTask(Task):
             task_info = TaskInfo(
-                name="retry_slow", queues=["default"],
-                max_retries=3, retry_base_delay=1.0,
+                name="retry_slow",
+                queues=["default"],
+                max_retries=3,
+                retry_base_delay=1.0,
             )
+
+            @override
             async def run(self) -> str:
                 await asyncio.sleep(5)
                 return "x"
@@ -2231,9 +2227,11 @@ class TestRunningCancelInHandleMessage:
         w = Worker(broker=broker, backend=backend, registry=registry, config=cfg)
 
         call_count = [0]
+
         async def is_cancelled_impl(task_id, **_kw):
             call_count[0] += 1
             return call_count[0] >= 2
+
         backend.is_cancelled = AsyncMock(side_effect=is_cancelled_impl)
 
         msg = make_message(_default_payload(name="retry_slow", args=[], kwargs={}))
@@ -2249,13 +2247,18 @@ class TestRunningCancelInHandleMessage:
         assert decoded["is_cancelled"] is True
 
     async def test_cancel_during_run_clears_flag_before_ack(
-        self, slow_worker, broker, backend,
+        self,
+        slow_worker,
+        broker,
+        backend,
     ):
         """clear_cancel_flag is called BEFORE broker.ack (Flag-lifecycle rule)."""
         call_count = [0]
+
         async def is_cancelled_impl(task_id, **_kw):
             call_count[0] += 1
             return call_count[0] >= 2
+
         backend.is_cancelled = AsyncMock(side_effect=is_cancelled_impl)
 
         call_order: list[str] = []
@@ -2272,14 +2275,21 @@ class TestRunningCancelInHandleMessage:
         assert call_order == ["clear", "ack"]
 
     async def test_cancel_during_run_faf_emits_signal_no_result(
-        self, broker, backend, config,
+        self,
+        broker,
+        backend,
+        config,
     ):
         """FAF + cancel during run: Signal fires, no store_result."""
+
         class FafSlow(Task):
             task_info = TaskInfo(
-                name="faf_slow", queues=["default"],
+                name="faf_slow",
+                queues=["default"],
                 delivery=DeliveryMode.FIRE_AND_FORGET,
             )
+
+            @override
             async def run(self) -> None:
                 await asyncio.sleep(5)
 
@@ -2295,14 +2305,18 @@ class TestRunningCancelInHandleMessage:
         w = Worker(broker=broker, backend=backend, registry=registry, config=cfg)
 
         call_count = [0]
+
         async def is_cancelled_impl(task_id, **_kw):
             call_count[0] += 1
             return call_count[0] >= 2
+
         backend.is_cancelled = AsyncMock(side_effect=is_cancelled_impl)
 
         captured = []
+
         async def h(**kwargs):
             captured.append(kwargs)
+
         w._signal_dispatcher.connect(Signal.TASK_CANCELLED, h)
 
         msg = make_message(_default_payload(name="faf_slow", args=[], kwargs={}))
@@ -2321,13 +2335,20 @@ class TestHardTimeoutVsCancelRace:
     """
 
     async def test_cancel_wins_race_user_sees_task_cancelled(
-        self, broker, backend,
+        self,
+        broker,
+        backend,
     ):
         """Cancel-flag fires BEFORE hard_timeout → user sees TaskCancelledError."""
+
         class TaskWithTimeout(Task):
             task_info = TaskInfo(
-                name="race_task", queues=["default"], hard_timeout=2,
+                name="race_task",
+                queues=["default"],
+                hard_timeout=2,
             )
+
+            @override
             async def run(self) -> str:
                 await asyncio.sleep(10)
                 return "x"
@@ -2345,9 +2366,11 @@ class TestHardTimeoutVsCancelRace:
 
         # Cancel fires after 100ms (well before hard_timeout=2s).
         call_count = [0]
+
         async def is_cancelled_impl(task_id, **_kw):
             call_count[0] += 1
             return call_count[0] >= 2
+
         backend.is_cancelled = AsyncMock(side_effect=is_cancelled_impl)
 
         msg = make_message(_default_payload(name="race_task", args=[], kwargs={}))
@@ -2361,13 +2384,20 @@ class TestHardTimeoutVsCancelRace:
         assert "hard timeout" not in decoded.get("error_message", "")
 
     async def test_hard_timeout_wins_when_cancel_never_fires(
-        self, broker, backend,
+        self,
+        broker,
+        backend,
     ):
         """Hard-timeout with no cancel flag → existing hard-timeout path."""
+
         class TimeoutTask(Task):
             task_info = TaskInfo(
-                name="timeout_only", queues=["default"], hard_timeout=1,
+                name="timeout_only",
+                queues=["default"],
+                hard_timeout=1,
             )
+
+            @override
             async def run(self) -> str:
                 await asyncio.sleep(10)
                 return "x"
@@ -2438,7 +2468,10 @@ class TestWorkerUniqueRelease:
         )
 
     async def test_no_header_skips_release_entirely(
-        self, worker, broker, release_backend,
+        self,
+        worker,
+        broker,
+        release_backend,
     ):
         """Baseline: messages without the header never call release_unique."""
         msg = make_message(_default_payload())
@@ -2446,7 +2479,10 @@ class TestWorkerUniqueRelease:
         release_backend.release_unique.assert_not_awaited()
 
     async def test_start_mode_releases_at_pickup(
-        self, worker, broker, release_backend,
+        self,
+        worker,
+        broker,
+        release_backend,
     ):
         """unique_until=start → release BEFORE execution."""
         call_order: list[str] = []
@@ -2471,7 +2507,10 @@ class TestWorkerUniqueRelease:
         assert call_order.count("release") == 1
 
     async def test_completion_mode_releases_at_success(
-        self, worker, broker, release_backend,
+        self,
+        worker,
+        broker,
+        release_backend,
     ):
         """unique_until=completion → release during terminal success path."""
         msg = self._unique_message(unique_until="completion")
@@ -2483,19 +2522,24 @@ class TestWorkerUniqueRelease:
         broker.ack.assert_awaited_once_with(msg)
 
     async def test_completion_mode_releases_on_task_exception(
-        self, broker, backend, config,
+        self,
+        broker,
+        backend,
+        config,
     ):
         """Task raises → release still fires in finally."""
+
         class FailTask(Task):
             task_info = TaskInfo(name="fail", queues=["default"])
+
+            @override
             async def run(self):
                 raise RuntimeError("boom")
 
         registry = TaskRegistry()
         registry.register(FailTask)
         backend.release_unique = AsyncMock(return_value=True)
-        w = Worker(broker=broker, backend=backend, registry=registry,
-                   config=config)
+        w = Worker(broker=broker, backend=backend, registry=registry, config=config)
         msg = make_message(
             _default_payload(name="fail", args=[], kwargs={}),
             headers={
@@ -2507,24 +2551,30 @@ class TestWorkerUniqueRelease:
         backend.release_unique.assert_awaited_once()
 
     async def test_retry_path_preserves_unique_header_and_skips_release(
-        self, broker, backend, config,
+        self,
+        broker,
+        backend,
+        config,
     ):
         """Retry → retry_later must carry x-swarmq-unique-hash
         forward AND the finally must NOT release (redelivery still owns
         the flag)."""
+
         class RetryTask(Task):
             task_info = TaskInfo(
-                name="retry_task", queues=["default"],
+                name="retry_task",
+                queues=["default"],
                 max_retries=2,
             )
+
+            @override
             async def run(self):
                 raise RuntimeError("try again")
 
         registry = TaskRegistry()
         registry.register(RetryTask)
         backend.release_unique = AsyncMock(return_value=True)
-        w = Worker(broker=broker, backend=backend, registry=registry,
-                   config=config)
+        w = Worker(broker=broker, backend=backend, registry=registry, config=config)
         msg = make_message(
             _default_payload(name="retry_task", args=[], kwargs={}),
             headers={
@@ -2535,9 +2585,7 @@ class TestWorkerUniqueRelease:
         await w._handle_message(msg)
 
         broker.retry_later.assert_awaited_once()
-        forwarded_headers = broker.retry_later.await_args.kwargs[
-            "headers"
-        ]
+        forwarded_headers = broker.retry_later.await_args.kwargs["headers"]
         # Header merge preserves the original dedup identity.
         assert forwarded_headers["x-swarmq-unique-hash"] == self.HASH_RETRY
         assert forwarded_headers["x-swarmq-unique-until"] == "completion"
@@ -2546,22 +2594,28 @@ class TestWorkerUniqueRelease:
         backend.release_unique.assert_not_awaited()
 
     async def test_dlq_noretry_releases_unique(
-        self, broker, backend, config,
+        self,
+        broker,
+        backend,
+        config,
     ):
         """NoRetry exception → direct DLQ path releases inline."""
+
         class NoRetryTask(Task):
             task_info = TaskInfo(
-                name="noretry_task", queues=["default"],
+                name="noretry_task",
+                queues=["default"],
                 max_retries=3,
             )
+
+            @override
             async def run(self):
                 raise NoRetry("do not retry")
 
         registry = TaskRegistry()
         registry.register(NoRetryTask)
         backend.release_unique = AsyncMock(return_value=True)
-        w = Worker(broker=broker, backend=backend, registry=registry,
-                   config=config)
+        w = Worker(broker=broker, backend=backend, registry=registry, config=config)
         msg = make_message(
             _default_payload(name="noretry_task", args=[], kwargs={}),
             headers={
@@ -2573,20 +2627,25 @@ class TestWorkerUniqueRelease:
 
         broker.dead_letter.assert_awaited_once()
         backend.release_unique.assert_awaited()
-        dlq_headers = broker.dead_letter.await_args.kwargs[
-            "headers"
-        ]
+        dlq_headers = broker.dead_letter.await_args.kwargs["headers"]
         assert dlq_headers["x-swarmq-unique-hash"] == self.HASH_DLQ
 
     async def test_rate_limit_requeue_preserves_header_skips_release(
-        self, broker, backend, config,
+        self,
+        broker,
+        backend,
+        config,
     ):
         """Rate-limited tasks requeue with header intact; no release."""
+
         class RateTask(Task):
             task_info = TaskInfo(
-                name="rl_task", queues=["default"],
+                name="rl_task",
+                queues=["default"],
                 rate_limit="1/s",
             )
+
+            @override
             async def run(self):
                 return None
 
@@ -2594,8 +2653,8 @@ class TestWorkerUniqueRelease:
         registry.register(RateTask)
 
         from swarmq.backend.valkey.rate_limit import RateLimiter
-        w = Worker(broker=broker, backend=backend, registry=registry,
-                   config=config)
+
+        w = Worker(broker=broker, backend=backend, registry=registry, config=config)
         rl = MagicMock(spec=RateLimiter)
         rl.check = AsyncMock(return_value=RateLimitDecision(allowed=False, remaining=0, retry_after_ms=500))
         w._rate_limiter = rl
@@ -2616,7 +2675,10 @@ class TestWorkerUniqueRelease:
         backend.release_unique.assert_not_awaited()
 
     async def test_shutdown_nack_requeue_skips_release(
-        self, worker, broker, release_backend,
+        self,
+        worker,
+        broker,
+        release_backend,
     ):
         """Shutdown-in-progress nack(requeue=True) leaves the flag."""
         msg = self._unique_message(unique_until="completion")
@@ -2626,7 +2688,10 @@ class TestWorkerUniqueRelease:
         release_backend.release_unique.assert_not_awaited()
 
     async def test_pre_start_cancel_releases_unique(
-        self, worker, broker, release_backend,
+        self,
+        worker,
+        broker,
+        release_backend,
     ):
         """Pre-start cancel → release flag, ack message."""
         release_backend.is_cancelled = AsyncMock(return_value=True)
@@ -2636,23 +2701,30 @@ class TestWorkerUniqueRelease:
         broker.ack.assert_awaited_once_with(msg)
 
     async def test_header_unique_until_wins_over_taskinfo_default(
-        self, broker, backend, config,
+        self,
+        broker,
+        backend,
+        config,
     ):
         """Per-call override via header → worker honours start even when
         TaskInfo defaults to completion."""
+
         class AddTaskCompletion(Task):
             task_info = TaskInfo(
-                name="add_c", queues=["default"],
-                unique_for=60, unique_until="completion",
+                name="add_c",
+                queues=["default"],
+                unique_for=60,
+                unique_until="completion",
             )
+
+            @override
             async def run(self, a: int, b: int):
                 return a + b
 
         registry = TaskRegistry()
         registry.register(AddTaskCompletion)
         backend.release_unique = AsyncMock(return_value=True)
-        w = Worker(broker=broker, backend=backend, registry=registry,
-                   config=config)
+        w = Worker(broker=broker, backend=backend, registry=registry, config=config)
 
         msg = make_message(
             _default_payload(name="add_c"),
@@ -2670,12 +2742,18 @@ class TestWorkerUniqueRelease:
     # --- R3.5 review follow-up: missing terminal-path coverage (TEST-001, TEST-002) ---
 
     async def test_task_not_found_with_unique_header_releases_flag(
-        self, broker, release_backend, config,
+        self,
+        broker,
+        release_backend,
+        config,
     ):
         """Unregistered task + unique header → Dead-Letter des Workers (MR 11),
         release fires inline after the DLQ publish."""
         worker = Worker(
-            broker=broker, backend=release_backend, registry=TaskRegistry(), config=_without_grace(config),
+            broker=broker,
+            backend=release_backend,
+            registry=TaskRegistry(),
+            config=_without_grace(config),
         )
         msg = make_message(
             _default_payload(name="unknown_task"),
@@ -2692,7 +2770,10 @@ class TestWorkerUniqueRelease:
         assert call_args[0] == self.HASH_TNF
 
     async def test_middleware_factory_failure_with_unique_header_releases_flag(
-        self, broker, backend, config,
+        self,
+        broker,
+        backend,
+        config,
     ):
         """Bad middleware chain factory → nack(requeue=False), release fires."""
         registry = TaskRegistry()
@@ -2703,8 +2784,11 @@ class TestWorkerUniqueRelease:
             raise RuntimeError("middleware factory is broken")
 
         w = Worker(
-            broker=broker, backend=backend, registry=registry,
-            config=config, middleware_chain=broken_factory,
+            broker=broker,
+            backend=backend,
+            registry=registry,
+            config=config,
+            middleware_chain=broken_factory,
         )
         msg = make_message(
             _default_payload(),
@@ -2719,7 +2803,10 @@ class TestWorkerUniqueRelease:
         backend.release_unique.assert_awaited_once()
 
     async def test_malformed_unique_hash_header_is_ignored(
-        self, worker, broker, release_backend,
+        self,
+        worker,
+        broker,
+        release_backend,
     ):
         """Adversarial producer: 100KB header value. Worker must reject
         (format validation) and never forward to Valkey."""
@@ -2734,7 +2821,10 @@ class TestWorkerUniqueRelease:
         release_backend.release_unique.assert_not_awaited()
 
     async def test_lock_wait_limit_dlq_releases_unique(
-        self, broker, backend, config,
+        self,
+        broker,
+        backend,
+        config,
     ):
         """Lock wait limit (MR 13) terminal → release_unique fires AFTER
         ack (P1 #3 ordering)."""
@@ -2761,7 +2851,10 @@ class TestWorkerUniqueRelease:
         backend.release_unique.assert_awaited()
 
     async def test_lock_conflict_requeue_preserves_header_skips_release(
-        self, broker, backend, config,
+        self,
+        broker,
+        backend,
+        config,
     ):
         """Lock-conflict below cap → requeue with unique-hash header; no release."""
         reg = TaskRegistry()
@@ -2786,17 +2879,23 @@ class TestWorkerUniqueRelease:
         backend.release_unique.assert_not_awaited()
 
     async def test_cancel_observed_post_execution_releases_unique(
-        self, broker, backend, config,
+        self,
+        broker,
+        backend,
+        config,
     ):
         """Late cancel path (flag set while run() was executing) falls
         through to the is_cancelled branch — release fires normally in
         the finally block via _unique_release_pending=True default."""
+
         class CancellableTask(Task):
             task_info = TaskInfo(
-                name="cancellable", queues=["default"],
+                name="cancellable",
+                queues=["default"],
                 max_retries=1,
             )
 
+            @override
             async def run(self):
                 raise RuntimeError("will retry unless late cancel fires")
 
@@ -2826,17 +2925,25 @@ class TestWorkerUniqueRelease:
         backend.release_unique.assert_awaited_once()
 
     async def test_start_mode_rate_limited_keeps_flag_for_redelivery(
-        self, broker, backend, config,
+        self,
+        broker,
+        backend,
+        config,
     ):
         """P1 #4 / ADV-002 fix: start-mode release must NOT fire when the
         message is rate-limited and requeued. Otherwise a concurrent
         schedule() during the requeue window would bypass dedup."""
+
         class RateStartTask(Task):
             task_info = TaskInfo(
-                name="rl_start_task", queues=["default"],
+                name="rl_start_task",
+                queues=["default"],
                 rate_limit="1/s",
-                unique_for=60, unique_until="start",
+                unique_for=60,
+                unique_until="start",
             )
+
+            @override
             async def run(self):
                 return None
 
@@ -2844,8 +2951,8 @@ class TestWorkerUniqueRelease:
         registry.register(RateStartTask)
 
         from swarmq.backend.valkey.rate_limit import RateLimiter
-        w = Worker(broker=broker, backend=backend, registry=registry,
-                   config=config)
+
+        w = Worker(broker=broker, backend=backend, registry=registry, config=config)
         rl = MagicMock(spec=RateLimiter)
         rl.check = AsyncMock(return_value=RateLimitDecision(allowed=False, remaining=0, retry_after_ms=500))
         w._rate_limiter = rl
@@ -2881,7 +2988,10 @@ class TestBodySizeCap:
     (nack requeue=False), kein Decode-Versuch."""
 
     async def test_oversized_body_nacked_without_decode(
-        self, worker, broker, backend,
+        self,
+        worker,
+        broker,
+        backend,
     ):
         cap = worker._config.max_message_body_bytes
         msg = MagicMock()

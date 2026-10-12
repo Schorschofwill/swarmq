@@ -55,7 +55,6 @@ class TestIsOutdated:
         assert is_outdated("0.12") is False
 
 
-
 class TestLeaderVersionWatch:
     def test_outdated_leader_is_reported_on_second_observation(self) -> None:
         watch = LeaderVersionWatch()
@@ -105,7 +104,6 @@ class TestLeaderVersionWatch:
 class TestSwarmqVersion:
     def test_version_comes_from_package_metadata(self) -> None:
         assert swarmq_version() == importlib.metadata.version("swarmq")
-
 
     def test_missing_metadata_yields_unknown(self, monkeypatch) -> None:
         def _missing(_name: str) -> str:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import override
+
 import pytest
 
 from swarmq.exceptions import ConfigurationError, TaskNotFoundError
@@ -15,6 +17,7 @@ def test_register_and_get_by_name():
     class AddTask(Task):
         task_info = TaskInfo(name="add", queues=["default"])
 
+        @override
         async def run(self, a: int, b: int) -> int:
             return a + b
 
@@ -28,12 +31,14 @@ def test_register_multiple_tasks():
     class TaskA(Task):
         task_info = TaskInfo(name="task_a", queues=["q1"])
 
+        @override
         async def run(self) -> str:
             return "a"
 
     class TaskB(Task):
         task_info = TaskInfo(name="task_b", queues=["q2"])
 
+        @override
         async def run(self) -> str:
             return "b"
 
@@ -49,12 +54,14 @@ def test_get_all_returns_all_registered():
     class TaskX(Task):
         task_info = TaskInfo(name="x", queues=["q"])
 
+        @override
         async def run(self) -> None:
             pass
 
     class TaskY(Task):
         task_info = TaskInfo(name="y", queues=["q"])
 
+        @override
         async def run(self) -> None:
             pass
 
@@ -70,6 +77,7 @@ def test_has_returns_true_and_false():
     class PingTask(Task):
         task_info = TaskInfo(name="ping", queues=["default"])
 
+        @override
         async def run(self) -> str:
             return "pong"
 
@@ -84,6 +92,7 @@ def test_return_type_annotation_is_cached():
     class MathTask(Task):
         task_info = TaskInfo(name="math", queues=["default"])
 
+        @override
         async def run(self, x: int) -> float:
             return float(x)
 
@@ -106,12 +115,14 @@ def test_duplicate_task_name_raises_configuration_error():
     class FirstTask(Task):
         task_info = TaskInfo(name="dup", queues=["q"])
 
+        @override
         async def run(self) -> None:
             pass
 
     class SecondTask(Task):
         task_info = TaskInfo(name="dup", queues=["q"])
 
+        @override
         async def run(self) -> None:
             pass
 

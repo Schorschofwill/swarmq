@@ -25,6 +25,7 @@ import argparse
 import io
 import json
 from contextlib import redirect_stdout
+from typing import Literal
 from unittest.mock import AsyncMock
 
 import msgspec
@@ -40,10 +41,19 @@ pytestmark = [pytest.mark.timeout(5)]
 _NOW_MS = 1_800_000_000_000
 
 
-def _def(name: str, *, source: str = "static", disabled: bool = False) -> ScheduleDefinition:
+def _def(
+    name: str, *, source: Literal["static", "cli", "cli_unique"] = "static", disabled: bool = False
+) -> ScheduleDefinition:
     return ScheduleDefinition(
-        schedule_name=name, task_name=name, args=(), kwargs={}, queue="default",
-        cron="0 1 * * *", fire_ts_ms=_NOW_MS + 60_000, source=source, disabled=disabled,
+        schedule_name=name,
+        task_name=name,
+        args=(),
+        kwargs={},
+        queue="default",
+        cron="0 1 * * *",
+        fire_ts_ms=_NOW_MS + 60_000,
+        source=source,
+        disabled=disabled,
     )
 
 
@@ -57,7 +67,7 @@ async def memory() -> InMemoryBackend:
 
 
 @pytest.fixture
-def use_backend(monkeypatch, memory):
+def use_backend(monkeypatch: pytest.MonkeyPatch, memory: InMemoryBackend) -> None:
     async def _factory() -> InMemoryBackend:
         return memory
 
@@ -69,16 +79,17 @@ async def _seed(memory: InMemoryBackend, definition: ScheduleDefinition, *, repo
     await memory.schedules.add(definition.schedule_name, msgspec.json.encode(definition), fire)
     if reported:
         await memory.schedules.report_cron(
-            definition.schedule_name, "fp", msgspec.json.encode(definition), live_window_ms=180_000,
+            definition.schedule_name,
+            "fp",
+            msgspec.json.encode(definition),
+            live_window_ms=180_000,
         )
 
 
 async def _prune(fmt: str = "table") -> str:
     buf = io.StringIO()
     with redirect_stdout(buf):
-        await schedule_cmd._run_schedule_async(
-            argparse.Namespace(schedule_command="prune", orphans=True, format=fmt)
-        )
+        await schedule_cmd._run_schedule_async(argparse.Namespace(schedule_command="prune", orphans=True, format=fmt))
     return buf.getvalue()
 
 
@@ -117,9 +128,14 @@ class TestPruneOrphans:
         assert await memory.schedules.pruned_disabled("off") is True
 
         with redirect_stdout(io.StringIO()):
-            await schedule_cmd._run_schedule_async(argparse.Namespace(
-                schedule_command="remove", name="off", permanent=True, format="table",
-            ))
+            await schedule_cmd._run_schedule_async(
+                argparse.Namespace(
+                    schedule_command="remove",
+                    name="off",
+                    permanent=True,
+                    format="table",
+                )
+            )
 
         assert await memory.schedules.pruned_disabled("off") is False
 

@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
-from typing import Any
+from typing import Any, override
 
 import pytest
 
@@ -49,13 +49,18 @@ def _cleanup_tasks():
 
 @contextlib.asynccontextmanager
 async def _running_worker(
-    rabbitmq_url: str, valkey_url: str, queue: str,
+    rabbitmq_url: str,
+    valkey_url: str,
+    queue: str,
     middlewares: list[Middleware] | None = None,
 ):
     worker_broker = RabbitMQBroker(rabbitmq_url)
     worker_backend = ValkeyBackend(valkey_url)
     worker_app = SwarmQ(
-        worker_broker, worker_backend, queues=[queue], concurrency=1,
+        worker_broker,
+        worker_backend,
+        queues=[queue],
+        concurrency=1,
     )
     for mw in middlewares or []:
         worker_app.add_middleware(mw)
@@ -86,22 +91,31 @@ class _OrderTrackingMiddleware(Middleware):
         self._name = name
         self._recorder = recorder
 
+    @override
     async def pre_execute(self, message: MessageContext) -> None:
         self._recorder.append(f"pre:{self._name}")
 
+    @override
     async def post_execute(
-        self, message: MessageContext, result: Any = None,
+        self,
+        message: MessageContext,
+        result: Any = None,
     ) -> None:
         self._recorder.append(f"post:{self._name}")
 
+    @override
     async def on_error(
-        self, message: MessageContext, exception: BaseException,
+        self,
+        message: MessageContext,
+        exception: BaseException,
     ) -> None:
         self._recorder.append(f"err:{self._name}")
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_three_middlewares_pre_forward_post_reverse(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
 ):
     """A=B=C-Kette: pre_execute fires A→B→C; post_execute fires C→B→A."""
     queue = _unique_queue()
@@ -111,14 +125,12 @@ async def test_three_middlewares_pre_forward_post_reverse(
     class OkTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue], max_retries=0)
 
+        @override
         async def run(self) -> str:
             recorder.append("task:run")
             return "ok"
 
-    middlewares = [
-        _OrderTrackingMiddleware(name, recorder)
-        for name in ("A", "B", "C")
-    ]
+    middlewares: list[Middleware] = [_OrderTrackingMiddleware(name, recorder) for name in ("A", "B", "C")]
 
     client_app = SwarmQ(
         RabbitMQBroker(rabbitmq_url),
@@ -128,20 +140,29 @@ async def test_three_middlewares_pre_forward_post_reverse(
     async with client_app:
         await client_app.broker.declare_queue(queue)
         async with _running_worker(
-            rabbitmq_url, valkey_url, queue, middlewares=middlewares,
+            rabbitmq_url,
+            valkey_url,
+            queue,
+            middlewares=middlewares,
         ):
             tid = await client_app.schedule(task_name)
             assert await client_app.get_result(tid, timeout=8) == "ok"
 
     assert recorder == [
-        "pre:A", "pre:B", "pre:C",
+        "pre:A",
+        "pre:B",
+        "pre:C",
         "task:run",
-        "post:C", "post:B", "post:A",
+        "post:C",
+        "post:B",
+        "post:A",
     ], f"unexpected hook order: {recorder!r}"
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_middleware_in_middle_raises_subsequent_still_run(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
 ):
     """B raises in pre_execute. The chain is "swallow" by design
     (middleware.py:_swallow) — A AND C still see pre_execute, the
@@ -153,16 +174,18 @@ async def test_middleware_in_middle_raises_subsequent_still_run(
     class OkTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue], max_retries=0)
 
+        @override
         async def run(self) -> str:
             recorder.append("task:run")
             return "ok"
 
     class RaisingMiddleware(_OrderTrackingMiddleware):
+        @override
         async def pre_execute(self, message: MessageContext) -> None:
             recorder.append(f"pre:{self._name}")
             raise RuntimeError(f"boom-from-{self._name}")
 
-    middlewares = [
+    middlewares: list[Middleware] = [
         _OrderTrackingMiddleware("A", recorder),
         RaisingMiddleware("B", recorder),
         _OrderTrackingMiddleware("C", recorder),
@@ -176,7 +199,10 @@ async def test_middleware_in_middle_raises_subsequent_still_run(
     async with client_app:
         await client_app.broker.declare_queue(queue)
         async with _running_worker(
-            rabbitmq_url, valkey_url, queue, middlewares=middlewares,
+            rabbitmq_url,
+            valkey_url,
+            queue,
+            middlewares=middlewares,
         ):
             tid = await client_app.schedule(task_name)
             assert await client_app.get_result(tid, timeout=8) == "ok"
@@ -184,14 +210,20 @@ async def test_middleware_in_middle_raises_subsequent_still_run(
     # B raised, but A and C still saw pre; task ran; all three saw
     # post_execute in reverse.
     assert recorder == [
-        "pre:A", "pre:B", "pre:C",
+        "pre:A",
+        "pre:B",
+        "pre:C",
         "task:run",
-        "post:C", "post:B", "post:A",
+        "post:C",
+        "post:B",
+        "post:A",
     ], f"unexpected hook order: {recorder!r}"
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_middleware_chain_sees_message_dict_mutations(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
 ):
     """Middleware A writes a key into message_dict during pre_execute;
     Middleware B reads it. Cross-middleware communication via the
@@ -200,19 +232,22 @@ async def test_middleware_chain_sees_message_dict_mutations(
     metrics)."""
     queue = _unique_queue()
     task_name = _task_name("mutate")
-    recorder: list[str] = []
+    recorder: list[object] = []
 
     class OkTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue], max_retries=0)
 
+        @override
         async def run(self, x: int) -> int:
             return x
 
     class WriterMiddleware(Middleware):
+        @override
         async def pre_execute(self, message: MessageContext) -> None:
-            message["correlation_marker"] = "set-by-A"
+            message["correlation_marker"] = "set-by-A"  # type: ignore[typeddict-unknown-key]  # Test belegt bewusst einen eigenen Schluessel
 
     class ReaderMiddleware(Middleware):
+        @override
         async def pre_execute(self, message: MessageContext) -> None:
             recorder.append(message.get("correlation_marker", "MISSING"))
 
@@ -226,19 +261,21 @@ async def test_middleware_chain_sees_message_dict_mutations(
     async with client_app:
         await client_app.broker.declare_queue(queue)
         async with _running_worker(
-            rabbitmq_url, valkey_url, queue, middlewares=middlewares,
+            rabbitmq_url,
+            valkey_url,
+            queue,
+            middlewares=middlewares,
         ):
             tid = await client_app.schedule(task_name, 42)
             assert await client_app.get_result(tid, timeout=8) == 42
 
-    assert recorder == ["set-by-A"], (
-        f"reader middleware did not observe writer's mutation: "
-        f"{recorder!r}"
-    )
+    assert recorder == ["set-by-A"], f"reader middleware did not observe writer's mutation: {recorder!r}"
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_middleware_and_signal_handlers_interleave_correctly(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
 ):
     """Pin the canonical hook+signal sequence per task lifecycle:
     pre_execute → TASK_STARTED → run → post_execute → TASK_COMPLETED.
@@ -255,16 +292,21 @@ async def test_middleware_and_signal_handlers_interleave_correctly(
     class OkTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue], max_retries=0)
 
+        @override
         async def run(self) -> str:
             recorder.append("run")
             return "ok"
 
     class SeqMiddleware(Middleware):
+        @override
         async def pre_execute(self, message: MessageContext) -> None:
             recorder.append("pre_execute")
 
+        @override
         async def post_execute(
-            self, message: MessageContext, result: Any = None,
+            self,
+            message: MessageContext,
+            result: Any = None,
         ) -> None:
             recorder.append("post_execute")
 
@@ -277,7 +319,10 @@ async def test_middleware_and_signal_handlers_interleave_correctly(
     worker_broker = RabbitMQBroker(rabbitmq_url)
     worker_backend = ValkeyBackend(valkey_url)
     worker_app = SwarmQ(
-        worker_broker, worker_backend, queues=[queue], concurrency=1,
+        worker_broker,
+        worker_backend,
+        queues=[queue],
+        concurrency=1,
     )
     worker_app.add_middleware(SeqMiddleware())
 

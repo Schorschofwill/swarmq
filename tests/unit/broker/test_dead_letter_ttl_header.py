@@ -126,7 +126,8 @@ async def test_retry_forwards_without_the_ttl_header() -> None:
     broker = _dlq_broker(stamped)
     found, _ = await broker.retry_dead_letter("tasks", "t-1")
     [(routing_key, msg)] = broker.published
-    assert found is True and routing_key == "tasks"
+    assert found is True
+    assert routing_key == "tasks"
     assert _TTL not in msg.headers
 
 
@@ -151,7 +152,8 @@ async def test_message_past_its_own_ttl_is_dropped_even_for_a_reader_without_ttl
     expired = _incoming("t-old", {_AT: _ago_ms(61), _TTL: 60_000})
     broker = _dlq_broker(expired, ttl=None)
     entries, _ = await broker.list_dead_letters("tasks")
-    assert entries == [] and broker.published == []
+    assert entries == []
+    assert broker.published == []
 
 
 async def test_unreadable_ttl_header_counts_as_missing() -> None:

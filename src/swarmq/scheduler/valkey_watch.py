@@ -42,7 +42,7 @@ class SchedulerValkeyWatch:
         self._valkey_checked_at = now
         try:
             check = await self._backend.recheck_eviction()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Recheck best effort, nur Debug-Log
             logger.debug("valkey_recheck_unavailable", error_type=type(exc).__name__, error=str(exc))
             return
         if not isinstance(check, EvictionCheck):

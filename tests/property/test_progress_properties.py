@@ -11,6 +11,7 @@ hypothesis-registered ``quick``/``thorough`` profiles from
 from __future__ import annotations
 
 import math
+from typing import Literal, overload
 
 import pytest
 from hypothesis import assume, given
@@ -26,7 +27,7 @@ from swarmq.progress import ProgressInfo
 # verbatim but the Valkey hash is text (UTF-8). Surrogates cannot be
 # UTF-8-encoded, so they're out-of-contract for the writer.
 _TEXT = st.text(
-    alphabet=st.characters(blacklist_categories=("Cs",)),
+    alphabet=st.characters(blacklist_categories=["Cs"]),
     max_size=200,
 )
 
@@ -34,9 +35,7 @@ _TEXT = st.text(
 def _percent_strategy() -> st.SearchStrategy[float]:
     # The writer stores percent with 2-decimal rounding and 0–100 range.
     # Use finite floats; avoid NaN/Inf (they'd break str/float roundtrip).
-    return st.floats(
-        min_value=0.0, max_value=100.0, allow_nan=False, allow_infinity=False
-    ).map(lambda x: round(x, 2))
+    return st.floats(min_value=0.0, max_value=100.0, allow_nan=False, allow_infinity=False).map(lambda x: round(x, 2))
 
 
 # Non-empty text — ``from_hash`` collapses empty-string ``started_at``
@@ -45,7 +44,7 @@ def _percent_strategy() -> st.SearchStrategy[float]:
 # empty-string input is out-of-contract. Pinning the collapse with a
 # separate regression test below.
 _NONEMPTY_TEXT = st.text(
-    alphabet=st.characters(blacklist_categories=("Cs",)),
+    alphabet=st.characters(blacklist_categories=["Cs"]),
     min_size=1,
     max_size=200,
 )
@@ -59,9 +58,7 @@ def progress_infos(draw) -> ProgressInfo:
     message = draw(_TEXT)
     updated_at = draw(_TEXT)
     started_at = draw(st.one_of(st.none(), _NONEMPTY_TEXT))
-    eta_seconds = draw(
-        st.one_of(st.none(), st.integers(min_value=0, max_value=10**7))
-    )
+    eta_seconds = draw(st.one_of(st.none(), st.integers(min_value=0, max_value=10**7)))
     return ProgressInfo(
         current=current,
         total=total,
@@ -73,7 +70,11 @@ def progress_infos(draw) -> ProgressInfo:
     )
 
 
-def _to_hash(info: ProgressInfo, as_bytes: bool = False) -> dict:
+@overload
+def _to_hash(info: ProgressInfo, as_bytes: Literal[False] = False) -> dict[str, str]: ...
+@overload
+def _to_hash(info: ProgressInfo, as_bytes: Literal[True]) -> dict[bytes, bytes]: ...
+def _to_hash(info: ProgressInfo, as_bytes: bool = False) -> dict[str, str] | dict[bytes, bytes]:
     """Mimic the worker-side HSET: every field stringified."""
     raw: dict[str, str] = {
         "current": str(info.current),
@@ -87,9 +88,7 @@ def _to_hash(info: ProgressInfo, as_bytes: bool = False) -> dict:
     if info.eta_seconds is not None:
         raw["eta_seconds"] = str(info.eta_seconds)
     if as_bytes:
-        return {
-            k.encode("utf-8"): v.encode("utf-8") for k, v in raw.items()
-        }
+        return {k.encode("utf-8"): v.encode("utf-8") for k, v in raw.items()}
     return raw
 
 
@@ -132,9 +131,7 @@ def test_progress_info_from_hash_handles_bytes_keys(info: ProgressInfo) -> None:
 
 @pytest.mark.parametrize("missing_field", ["current", "total", "percent"])
 @given(info=progress_infos())
-def test_progress_info_missing_required_field_raises(
-    missing_field: str, info: ProgressInfo
-) -> None:
+def test_progress_info_missing_required_field_raises(missing_field: str, info: ProgressInfo) -> None:
     """Stripping any required field surfaces ValueError (contract pin)."""
     raw = _to_hash(info, as_bytes=False)
     del raw[missing_field]

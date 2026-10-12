@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import contextlib
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Self
 
 import httpx
 
@@ -32,8 +32,8 @@ class ProxyConfig:
     """Declarative description of a Toxiproxy proxy."""
 
     name: str
-    listen: str            # host:port the proxy listens on (e.g. "0.0.0.0:5673")
-    upstream: str          # service:port toxiproxy forwards to (e.g. "rabbitmq:5672")
+    listen: str  # host:port the proxy listens on (e.g. "0.0.0.0:5673")
+    upstream: str  # service:port toxiproxy forwards to (e.g. "rabbitmq:5672")
     enabled: bool = True
 
 
@@ -63,9 +63,10 @@ class ToxiproxyClient:
         self._timeout = timeout
         self._client: httpx.AsyncClient | None = None
 
-    async def __aenter__(self) -> ToxiproxyClient:
+    async def __aenter__(self) -> Self:
         self._client = httpx.AsyncClient(
-            base_url=self._base_url, timeout=self._timeout,
+            base_url=self._base_url,
+            timeout=self._timeout,
         )
         return self
 
@@ -92,14 +93,15 @@ class ToxiproxyClient:
         """Return ``{proxy_name: proxy_dict}`` for all registered proxies."""
         resp = await self._http.get("/proxies")
         resp.raise_for_status()
-        return resp.json()
+        proxies: dict[str, Any] = resp.json()
+        return proxies
 
     async def create_proxy(self, config: ProxyConfig) -> dict[str, Any]:
         """Idempotent-ish: if the proxy already exists with matching listen+upstream,
         return its dict. Otherwise create it. If it exists with different config,
         delete and re-create (tests routinely reuse names across runs)."""
         existing = await self.list_proxies()
-        current = existing.get(config.name)
+        current: dict[str, Any] | None = existing.get(config.name)
         if current is not None:
             same = (
                 current.get("listen", "").endswith(config.listen.split(":")[-1])
@@ -115,8 +117,18 @@ class ToxiproxyClient:
             "enabled": config.enabled,
         }
         resp = await self._http.post("/proxies", json=payload)
-        resp.raise_for_status()
-        return resp.json()
+        if resp.is_error:
+            # Toxiproxy answers 500 when the listen port is taken; name the
+            # proxy and its config instead of a bare status line.
+            msg = (
+                f"Toxiproxy could not create proxy {config.name!r} "
+                f"(listen {config.listen}, upstream {config.upstream}): "
+                f"{resp.status_code} {resp.text.strip()}. Set the "
+                "SWARMQ_TEST_TOXIPROXY_* variables, see docs/testing/test-strategy.md."
+            )
+            raise RuntimeError(msg)
+        created: dict[str, Any] = resp.json()
+        return created
 
     async def delete_proxy(self, name: str) -> None:
         resp = await self._http.delete(f"/proxies/{name}")
@@ -128,7 +140,8 @@ class ToxiproxyClient:
         """Disabling a proxy drops all current connections and refuses new ones.
         Re-enabling restores it. Useful for hard network-partition simulation."""
         resp = await self._http.post(
-            f"/proxies/{name}", json={"enabled": enabled},
+            f"/proxies/{name}",
+            json={"enabled": enabled},
         )
         resp.raise_for_status()
 
@@ -163,10 +176,12 @@ class ToxiproxyClient:
         if name is not None:
             payload["name"] = name
         resp = await self._http.post(
-            f"/proxies/{proxy_name}/toxics", json=payload,
+            f"/proxies/{proxy_name}/toxics",
+            json=payload,
         )
         resp.raise_for_status()
-        return resp.json()["name"]
+        toxic_name: str = resp.json()["name"]
+        return toxic_name
 
     async def remove_toxic(self, proxy_name: str, toxic_name: str) -> None:
         resp = await self._http.delete(
@@ -178,7 +193,8 @@ class ToxiproxyClient:
     async def list_toxics(self, proxy_name: str) -> list[dict[str, Any]]:
         resp = await self._http.get(f"/proxies/{proxy_name}/toxics")
         resp.raise_for_status()
-        return resp.json()
+        toxics: list[dict[str, Any]] = resp.json()
+        return toxics
 
     # ---- Bulk operations ----
 

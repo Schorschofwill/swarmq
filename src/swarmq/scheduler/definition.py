@@ -18,7 +18,6 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-
 class ScheduleDefinition(msgspec.Struct, kw_only=True, frozen=True):
     """Persisted schedule metadata.
 
@@ -109,9 +108,7 @@ def parse_schedfire_key(value: str) -> tuple[str, int]:
     try:
         return name, int(ts)
     except ValueError as exc:
-        raise ValueError(
-            f"schedfire key has non-integer timestamp: {value!r}"
-        ) from exc
+        raise ValueError(f"schedfire key has non-integer timestamp: {value!r}") from exc
 
 
 class ScheduleStore:
@@ -159,7 +156,10 @@ class ScheduleStore:
         return await self._store.add(definition.schedule_name, msgspec.json.encode(definition), fire_ts_ms)
 
     async def update_static_schedule(
-        self, definition: ScheduleDefinition, *, keep_fire_index: bool = False,
+        self,
+        definition: ScheduleDefinition,
+        *,
+        keep_fire_index: bool = False,
     ) -> None:
         """Unconditionally write a static-sourced definition (Fork 1). A
         disabled definition gets no fire-index entry (KTD12): it is written
@@ -185,7 +185,7 @@ class ScheduleStore:
         # statischer Cron erst nach erneuter Meldung gefeuert).
         try:
             await self._store.forget_known_cron(schedule_name)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - best effort, Fehler wird geloggt
             logger.warning(
                 "schedule_known_forget_failed",
                 schedule_name=schedule_name,
@@ -292,7 +292,3 @@ class ScheduleStore:
             fired_ts_ms=fired_ts_ms,
             fired_payload=fired_payload,
         )
-
-
-def _decode_bytes(value: bytes | str) -> str:
-    return value.decode() if isinstance(value, bytes) else value

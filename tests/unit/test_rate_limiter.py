@@ -89,7 +89,8 @@ class TestClusterHashTags:
 
         rl = RateLimiter(client)
         await rl.check(
-            "add", RateLimitConfig(max_requests=5, window_size_ms=60_000),
+            "add",
+            RateLimitConfig(max_requests=5, window_size_ms=60_000),
         )
 
         keys = script.call_args.kwargs["keys"]

@@ -17,6 +17,11 @@ from swarmq.exceptions import BrokerConnectionError
 from tests.support.rabbitmq_faults import hanging_publish
 
 
+def _deadline_at(broker: RabbitMQBroker) -> float | None:
+    """Frisch gelesen, ohne die Typverengung der vorherigen Zuweisung."""
+    return broker._publish_deadline_at
+
+
 def _broker(timeout: float = 5.0) -> RabbitMQBroker:
     broker = RabbitMQBroker("amqp://guest:guest@localhost/")
     broker._connection = AsyncMock()
@@ -84,7 +89,7 @@ class TestReconnectClearsAStaleDeadline:
         with patch("aio_pika.connect_robust", AsyncMock(return_value=connection)):
             await broker.connect()
 
-        assert broker._publish_deadline_at is None
+        assert _deadline_at(broker) is None
         assert broker._effective_publish_timeout() == 9.0
 
 

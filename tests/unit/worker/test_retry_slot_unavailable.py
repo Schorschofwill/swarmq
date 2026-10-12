@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -12,18 +13,25 @@ from swarmq.worker.compute.pool import SlotUnavailable
 from swarmq.worker.gates import GateContext, GateDeps
 from swarmq.worker.outcome import Redelivered
 from swarmq.worker.retry import RetryHandler
+from tests.unit.worker._helpers import partial_message
 
 
-def _handler() -> tuple[RetryHandler, GateDeps]:
+def _handler() -> tuple[RetryHandler, Any]:
+    # ``Any``: die Tests pruefen die Mock-Attribute der ``GateDeps``.
     broker = MagicMock()
     broker.redeliver = AsyncMock()
     broker.publish = AsyncMock()
     deps = GateDeps(
-        broker=broker, backend=MagicMock(),
+        broker=broker,
+        backend=MagicMock(),
         config=SwarmQConfig(broker_url="amqp://x", backend_url="redis://x"),
-        signals=MagicMock(dispatch=AsyncMock()), registry=MagicMock(),
-        rate_limiter=lambda: None, lock_manager=lambda: None, finalize_schedfire=AsyncMock(),
-        maybe_release_unique=AsyncMock(), extract_valid_workflow_id=lambda _m: None,
+        signals=MagicMock(dispatch=AsyncMock()),
+        registry=MagicMock(),
+        rate_limiter=lambda: None,
+        lock_manager=lambda: None,
+        finalize_schedfire=AsyncMock(),
+        maybe_release_unique=AsyncMock(),
+        extract_valid_workflow_id=lambda _m: None,
         register_lock=lambda _h, _e: None,
     )
     return RetryHandler(deps, workflow_advancer=lambda: None, finish=AsyncMock()), deps
@@ -38,7 +46,7 @@ async def test_slot_unavailable_redelivers_without_counting_a_retry():
     handler, deps = _handler()
     delivery = MagicMock()
     outcome = await handler.evaluate(
-        delivery, _ctx(), SlotUnavailable("no ready"), "no ready", {"retry_count": 0}, MagicMock()
+        delivery, _ctx(), SlotUnavailable("no ready"), "no ready", partial_message(retry_count=0), MagicMock()
     )
     assert outcome is Redelivered
     deps.broker.redeliver.assert_awaited_once_with(delivery)
@@ -51,8 +59,10 @@ async def test_slot_unavailable_logs_warning_with_error_fields(swarmq_logs):
     """Plan 2026-10-06-0831, U9 (R17)."""
     handler, _ = _handler()
     await handler.evaluate(
-        MagicMock(), _ctx(), SlotUnavailable("no ready"), "no ready", {"retry_count": 0}, MagicMock()
+        MagicMock(), _ctx(), SlotUnavailable("no ready"), "no ready", partial_message(retry_count=0), MagicMock()
     )
     [entry] = [e for e in swarmq_logs if e["event"] == "compute_slot_unavailable_redeliver"]
-    assert entry["log_level"] == "warning" and entry["task_id"] == "t1"
-    assert entry["error_type"] == "SlotUnavailable" and entry["error"] == "no ready"
+    assert entry["log_level"] == "warning"
+    assert entry["task_id"] == "t1"
+    assert entry["error_type"] == "SlotUnavailable"
+    assert entry["error"] == "no ready"

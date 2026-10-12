@@ -48,7 +48,7 @@ async def run_quorum_classic(
                 total_duration=t_end - t_start,
             )
             results.append(result)
-            print(f"    {label}: {result.throughput:.0f} tasks/s, P50={result.p50*1000:.1f}ms")
+            print(f"    {label}: {result.throughput:.0f} tasks/s, P50={result.p50 * 1000:.1f}ms")
         finally:
             await system.stop_worker()
             await system.teardown()

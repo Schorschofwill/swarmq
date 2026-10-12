@@ -30,7 +30,7 @@ async def run_polling_interval(
 
     for poll_interval in intervals:
         system = SwarmQSystem()
-        system.name = f"swarmq-poll{int(poll_interval*1000)}ms"
+        system.name = f"swarmq-poll{int(poll_interval * 1000)}ms"
 
         await system.setup()
         await system.start_worker()
@@ -40,20 +40,20 @@ async def run_polling_interval(
 
             payloads = [{"sleep_ms": sleep_ms}] * n
             t_start = time.perf_counter()
-            latencies = await run_timed_batch(
-                system, "io_task", payloads, poll_interval=poll_interval
-            )
+            latencies = await run_timed_batch(system, "io_task", payloads, poll_interval=poll_interval)
             t_end = time.perf_counter()
 
             result = make_result(
-                system_name=f"swarmq-poll{int(poll_interval*1000)}ms",
+                system_name=f"swarmq-poll{int(poll_interval * 1000)}ms",
                 scenario_name="polling_interval",
                 params={"n": n, "sleep_ms": sleep_ms, "poll_interval_ms": poll_interval * 1000},
                 latencies=latencies,
                 total_duration=t_end - t_start,
             )
-            print(f"    poll={poll_interval*1000:>5.0f}ms: {result.throughput:>8.0f} tasks/s, "
-                  f"P50={result.p50*1000:>6.1f}ms, P99={result.p99*1000:>6.1f}ms")
+            print(
+                f"    poll={poll_interval * 1000:>5.0f}ms: {result.throughput:>8.0f} tasks/s, "
+                f"P50={result.p50 * 1000:>6.1f}ms, P99={result.p99 * 1000:>6.1f}ms"
+            )
 
             if poll_interval == 0.01:
                 default_result = result

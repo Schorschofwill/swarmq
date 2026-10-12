@@ -59,6 +59,7 @@ BZ-17 (Plan 0.12.0, MR 2) -- begrenzter Fehlertext-Header:
 
 from __future__ import annotations
 
+from typing import override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -79,15 +80,15 @@ _WF_ID = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"
 class DlqTask(Task):
     task_info = TaskInfo(name="dlq-task", queues=["default"])
 
+    @override
     async def run(self) -> str:
         return "ok"
 
 
 class DlqFafTask(Task):
-    task_info = TaskInfo(
-        name="dlq-faf", queues=["default"], delivery=DeliveryMode.FIRE_AND_FORGET
-    )
+    task_info = TaskInfo(name="dlq-faf", queues=["default"], delivery=DeliveryMode.FIRE_AND_FORGET)
 
+    @override
     async def run(self) -> None:
         return None
 
@@ -100,14 +101,17 @@ def _handler(broker, backend, config, task=DlqTask):
     worker._workflow_advancer.fail = AsyncMock()
     # Der Dispatcher steckt bereits in ``GateDeps`` — die Methode am Objekt
     # ersetzen, nicht das Attribut am Worker.
-    worker._signal_dispatcher.dispatch = AsyncMock()
+    worker._signal_dispatcher.dispatch = AsyncMock()  # type: ignore[method-assign]  # Dispatch-Spy
     return worker._retry_handler, worker
 
 
 def _ctx(task=DlqTask) -> GateContext:
     return GateContext(
-        task_id="abc-123", task_name=task.task_info.name, queue="default",
-        task_info=task.task_info, task_class=task,
+        task_id="abc-123",
+        task_name=task.task_info.name,
+        queue="default",
+        task_info=task.task_info,
+        task_class=task,
     )
 
 
@@ -173,9 +177,11 @@ async def test_fail_mark_error_logs_workflow_id_and_error_fields(broker, backend
     await handler.dead_letter(msg, _ctx(), "boom", "RuntimeError")
 
     [entry] = _events(swarmq_logs, "workflow_fail_mark_failed")
-    assert entry["log_level"] == "error" and entry["workflow_id"] == _WF_ID
+    assert entry["log_level"] == "error"
+    assert entry["workflow_id"] == _WF_ID
     assert entry["redelivered"] is False
-    assert entry["error_type"] == "ValueError" and entry["error"] == "bad state doc"
+    assert entry["error_type"] == "ValueError"
+    assert entry["error"] == "bad state doc"
 
 
 async def test_result_store_failure_logs_warning_with_error_fields(broker, backend, config, swarmq_logs):
@@ -185,7 +191,8 @@ async def test_result_store_failure_logs_warning_with_error_fields(broker, backe
 
     [entry] = _events(swarmq_logs, "dlq_result_store_failed")
     assert entry["log_level"] == "warning"
-    assert entry["error_type"] == "ConnectionError" and entry["error"] == "valkey down"
+    assert entry["error_type"] == "ConnectionError"
+    assert entry["error"] == "valkey down"
 
 
 async def test_notify_failure_in_dead_letter_logs_warning_with_error_fields(broker, backend, config, swarmq_logs):
@@ -194,8 +201,10 @@ async def test_notify_failure_in_dead_letter_logs_warning_with_error_fields(brok
     await handler.dead_letter(make_message(_default_payload(name="dlq-task")), _ctx(), "boom", "RuntimeError")
 
     [entry] = _events(swarmq_logs, "publish_notification_failed")
-    assert entry["log_level"] == "warning" and entry["task_id"] == "abc-123"
-    assert entry["error_type"] == "ConnectionError" and entry["error"] == "pubsub down"
+    assert entry["log_level"] == "warning"
+    assert entry["task_id"] == "abc-123"
+    assert entry["error_type"] == "ConnectionError"
+    assert entry["error"] == "pubsub down"
 
 
 async def test_dlq_publish_failure_logs_error_with_error_fields(broker, backend, config, swarmq_logs):
@@ -205,7 +214,8 @@ async def test_dlq_publish_failure_logs_error_with_error_fields(broker, backend,
 
     [entry] = _events(swarmq_logs, "dlq_publish_failed")
     assert entry["log_level"] == "error"
-    assert entry["error_type"] == "ConnectionError" and entry["error"] == "broker gone"
+    assert entry["error_type"] == "ConnectionError"
+    assert entry["error"] == "broker gone"
 
 
 async def test_retry_publish_failure_logs_error_with_error_fields(broker, backend, config, swarmq_logs):
@@ -223,7 +233,8 @@ async def test_retry_publish_failure_logs_error_with_error_fields(broker, backen
 
     [entry] = _events(swarmq_logs, "retry_publish_failed")
     assert entry["log_level"] == "error"
-    assert entry["error_type"] == "ConnectionError" and entry["error"] == "broker gone"
+    assert entry["error_type"] == "ConnectionError"
+    assert entry["error"] == "broker gone"
 
 
 async def test_task_sent_to_dlq_is_an_error(broker, backend, config, swarmq_logs):
@@ -237,9 +248,7 @@ async def test_task_sent_to_dlq_is_an_error(broker, backend, config, swarmq_logs
 
 
 class _FilteredTask(Task):
-    task_info = TaskInfo(
-        name="filtered-task", queues=["default"], max_retries=3, retry_exceptions=(KeyError,)
-    )
+    task_info = TaskInfo(name="filtered-task", queues=["default"], max_retries=3, retry_exceptions=[KeyError])
 
 
 class _ZeroRetryTask(Task):
@@ -265,9 +274,7 @@ async def test_task_sent_to_dlq_carries_error_type_of_triggering_exception(
     from swarmq.middleware import MiddlewareChain
 
     handler, _ = _handler(broker, backend, config, task)
-    msg = make_message(
-        _default_payload(name=task.task_info.name), headers={"x-swarmq-retry-count": retry_count}
-    )
+    msg = make_message(_default_payload(name=task.task_info.name), headers={"x-swarmq-retry-count": retry_count})
     await handler.evaluate(msg, _ctx(task), exc, "Traceback: boom", {"retry_count": 0}, MiddlewareChain([]))
 
     [entry] = _events(swarmq_logs, "task_sent_to_dlq")
@@ -339,9 +346,7 @@ async def test_retry_copy_drops_backend_defer_count(broker, backend, config):
 
 
 class _NoDlqTask(Task):
-    task_info = TaskInfo(
-        name="no-dlq-task", queues=["default"], max_retries=0, result_ttl=120, dead_letter=False
-    )
+    task_info = TaskInfo(name="no-dlq-task", queues=["default"], max_retries=0, result_ttl=120, dead_letter=False)
 
 
 @pytest.mark.timeout(5)
@@ -361,7 +366,8 @@ async def test_disabled_dead_lettering_stores_error_result_and_acks(broker, back
     broker.ack.assert_awaited_once_with(msg)
     assert outcome == Terminal.release_in_finally()
     task_id, result_bytes, ttl_ms = backend.store_result.await_args.args
-    assert task_id == "abc-123" and ttl_ms == 120_000
+    assert task_id == "abc-123"
+    assert ttl_ms == 120_000
     assert b"Traceback: boom" in result_bytes
     dispatched = [c.args[0] for c in worker._signal_dispatcher.dispatch.await_args_list]
     assert Signal.TASK_DLQ not in dispatched
@@ -369,8 +375,11 @@ async def test_disabled_dead_lettering_stores_error_result_and_acks(broker, back
 
 class _NoDlqFilteredTask(Task):
     task_info = TaskInfo(
-        name="no-dlq-filtered", queues=["default"], max_retries=3,
-        retry_exceptions=[KeyError], dead_letter=False,
+        name="no-dlq-filtered",
+        queues=["default"],
+        max_retries=3,
+        retry_exceptions=[KeyError],
+        dead_letter=False,
     )
 
 
@@ -423,8 +432,10 @@ async def test_global_switch_applies_unless_the_task_field_is_set(broker, backen
     from swarmq.middleware import MiddlewareChain
 
     config = SwarmQConfig(
-        broker_url="amqp://localhost", backend_url="valkey://localhost",
-        queues=["default"], dead_letter_terminal_failures=False,
+        broker_url="amqp://localhost",
+        backend_url="valkey://localhost",
+        queues=["default"],
+        dead_letter_terminal_failures=False,
     )
     handler, _ = _handler(broker, backend, config, task)
     msg = make_message(_default_payload(name=task.task_info.name))
@@ -437,6 +448,7 @@ async def test_global_switch_applies_unless_the_task_field_is_set(broker, backen
 async def test_dead_letter_stores_error_result_with_task_result_ttl(broker, backend, config):
     """Liste 19: das Fehlerergebnis im Dead-Letter-Pfad lebt so lange wie
     jedes andere Ergebnis des Tasks (``task_info.result_ttl``)."""
+
     class ShortLivedTask(Task):
         task_info = TaskInfo(name="short-lived", queues=["default"], result_ttl=120)
 
@@ -456,8 +468,10 @@ async def test_delivery_count_gate_and_undecodable_messages_still_reach_the_dlq(
     from swarmq.config import SwarmQConfig
 
     config = SwarmQConfig(
-        broker_url="amqp://localhost", backend_url="valkey://localhost",
-        queues=["default"], dead_letter_terminal_failures=False,
+        broker_url="amqp://localhost",
+        backend_url="valkey://localhost",
+        queues=["default"],
+        dead_letter_terminal_failures=False,
     )
     _, worker = _handler(broker, backend, config, _NoDlqTask)
 
@@ -533,9 +547,18 @@ async def test_dead_letter_of_a_step_that_already_succeeded_does_not_fail_its_wo
     from swarmq.serialization import encode_result
 
     handler, worker = _handler(broker, backend, config)
-    results = {"abc-123": encode_result(build_result_dict(
-        task_id="abc-123", queue="default", task_name="dlq-task", is_error=False, is_cancelled=False, result="ok",
-    ))}
+    results = {
+        "abc-123": encode_result(
+            build_result_dict(
+                task_id="abc-123",
+                queue="default",
+                task_name="dlq-task",
+                is_error=False,
+                is_cancelled=False,
+                result="ok",
+            )
+        )
+    }
 
     async def store(task_id, raw, ttl_ms, **_kw):
         results[task_id] = raw

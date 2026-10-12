@@ -40,7 +40,7 @@ def _modules_with_prefix_after(import_stmt: str, *prefixes: str) -> set[str]:
         text=True,
         check=True,
     )
-    return set(line for line in result.stdout.strip().splitlines() if line)
+    return {line for line in result.stdout.strip().splitlines() if line}
 
 
 # ---------------------------------------------------------------------------
@@ -145,4 +145,4 @@ class TestPublicSurfaceIdentity:
         import swarmq
 
         with pytest.raises(AttributeError, match="NotARealSymbol"):
-            _ = swarmq.NotARealSymbol  # type: ignore[attr-defined]
+            _ = swarmq.NotARealSymbol

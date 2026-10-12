@@ -50,7 +50,7 @@ def _count(headers: Mapping[str, Any], name: str) -> int | None:
         return None
     try:
         return int(raw)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 
@@ -63,7 +63,7 @@ def _queue_delivery_limit(broker: Any, queue: object) -> int | None:
         return None
     try:
         value = lookup(queue)
-    except Exception:
+    except Exception:  # noqa: BLE001 - Fremd-Broker, Rueckfall auf Konfiguration
         return None
     return value if type(value) is int else None
 
@@ -82,7 +82,7 @@ class DeliveryCountGate:
         return configured if effective is None else min(configured, effective)
 
     async def apply(self, delivery: Any, ctx: GateContext) -> DeliveryOutcome:
-        headers = delivery.headers or {}
+        headers: dict[str, Any] = delivery.headers or {}
         delivered = _count(headers, DELIVERY_COUNT_HEADER)
         acquired = _count(headers, ACQUIRED_COUNT_HEADER)
         limit = self._limit(delivery)
@@ -106,8 +106,11 @@ class DeliveryCountGate:
             return Continue
         logger.error(
             "delivery_limit_reached_dead_letter",
-            task_id=ctx.task_id, task_name=ctx.task_name, queue=ctx.queue,
-            delivery_count=count, delivery_limit=limit,
+            task_id=ctx.task_id,
+            task_name=ctx.task_name,
+            queue=ctx.queue,
+            delivery_count=count,
+            delivery_limit=limit,
         )
         await self._dead_letter(delivery, ctx, message, error_type)
         return Terminal.already_released()

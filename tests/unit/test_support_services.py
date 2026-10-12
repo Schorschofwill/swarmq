@@ -95,7 +95,8 @@ class TestRequireSafeTarget:
 
 class TestRequireSafeValkeyUrl:
     @pytest.mark.parametrize(
-        "url", ["valkey://localhost:6379/0", "redis://127.0.0.1/0", "valkey://[::1]:6379/0"],
+        "url",
+        ["valkey://localhost:6379/0", "redis://127.0.0.1/0", "valkey://[::1]:6379/0"],
     )
     def test_fails_on_local_default_port_url(self, url: str, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("SWARMQ_TEST_ALLOW_DEFAULT_PORTS", raising=False)

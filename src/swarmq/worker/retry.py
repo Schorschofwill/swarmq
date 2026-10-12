@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from swarmq.backoff import calculate_backoff
 from swarmq.cancellation import build_error_result_dict
+from swarmq.config import DEFAULT_RESULT_TTL_S, resolve_result_ttl
 from swarmq.exceptions import (
     NoRetry,
     Retry,
@@ -80,7 +81,9 @@ class RetryHandler:
         # Redelivery ohne Retry-Zaehler; das Delivery-Limit begrenzt die Schleife.
         if isinstance(exc, SlotUnavailable):
             logger.warning(
-                "compute_slot_unavailable_redeliver", task_id=ctx.task_id, **_error_fields(exc),
+                "compute_slot_unavailable_redeliver",
+                task_id=ctx.task_id,
+                **_error_fields(exc),
             )
             await redeliver_in_place(deps, delivery, ctx)
             return Redelivered
@@ -137,11 +140,11 @@ class RetryHandler:
         headers["x-swarmq-traceback"] = bounded_header_text(error_message)
         try:
             await deps.broker.retry_later(delivery, delay_ms=delay_ms, headers=headers)
-        except Exception as broker_exc:
+        except Exception as broker_exc:  # noqa: BLE001 - Broker gestoert, Rueckfall auf Redeliver
             logger.error("retry_publish_failed", **_error_fields(broker_exc))
             try:
                 await redeliver_in_place(deps, delivery, ctx)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - Redeliver best effort, Fehler schon geloggt
                 pass
             return Redelivered
         logger.info("task_retrying", retry_count=retry_count + 1, max_retries=task_info.max_retries, delay_ms=delay_ms)
@@ -162,8 +165,11 @@ class RetryHandler:
             enabled = self._deps.config.dead_letter_terminal_failures
         if not enabled:
             execution = ExecutionResult(
-                result_value=None, is_error=True, is_cancelled=False,
-                error_message=error_message, task_exception=exc,
+                result_value=None,
+                is_error=True,
+                is_cancelled=False,
+                error_message=error_message,
+                task_exception=exc,
             )
             return await self._finish(delivery, ctx, execution)
         await self.dead_letter(delivery, ctx, error_message, type(exc).__name__)
@@ -181,8 +187,13 @@ class RetryHandler:
             task_info = None
         at_least_once = task_info is None or task_info.delivery is DeliveryMode.AT_LEAST_ONCE
         return await fail_workflow_step(
-            self._deps, self._workflow_advancer(), delivery, ctx, error_message,
-            redeliver=may_redeliver and at_least_once, log=logger,
+            self._deps,
+            self._workflow_advancer(),
+            delivery,
+            ctx,
+            error_message,
+            redeliver=may_redeliver and at_least_once,
+            log=logger,
         )
 
     async def dead_letter(
@@ -245,15 +256,19 @@ class RetryHandler:
             # Wie jedes Ergebnis des Tasks: ``task_info.result_ttl`` vor der
             # Konfiguration (Plan 2026-10-08-1541, U9).
             task_ttl = task_info_for_release.result_ttl if task_info_for_release is not None else None
-            result_ttl = (task_ttl if task_ttl is not None else deps.config.result_ttl) or 86400
+            # Anders als der Erfolgspfad: kein FIRE_AND_FORGET-Zweig, und 0
+            # faellt hier auf DEFAULT_RESULT_TTL_S statt "nicht speichern".
+            result_ttl = (
+                resolve_result_ttl(task_ttl, deps.config.result_ttl, fire_and_forget=False) or DEFAULT_RESULT_TTL_S
+            )
             await deps.backend.store_result(
                 task_id, result_bytes, result_ttl * 1000, op_timeout=deps.config.backend_op_timeout
             )
             try:
                 await deps.backend.notify_result(task_id)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - Benachrichtigung best effort, wird geloggt
                 logger.warning("publish_notification_failed", **_error_fields(exc), task_id=task_id)
-        except Exception as store_exc:
+        except Exception as store_exc:  # noqa: BLE001 - Ergebnis-Speicher best effort, wird geloggt
             logger.warning("dlq_result_store_failed", **_error_fields(store_exc))
 
         # R3.5 Unit 11: preserve all inbound headers so a message that
@@ -280,7 +295,7 @@ class RetryHandler:
             await deps.signals.dispatch(
                 Signal.TASK_DLQ, task_id=task_id, task_name=task_name, queue=queue, error=error_message
             )
-        except Exception as broker_exc:
+        except Exception as broker_exc:  # noqa: BLE001 - Publish-Fehler fuehrt in den Rueckfall
             if on_publish_failure is not None:
                 # Terminaler Fallback des Aufrufers (gibt selbst frei).
                 await on_publish_failure(broker_exc)
@@ -288,7 +303,7 @@ class RetryHandler:
                 logger.error("dlq_publish_failed", **_error_fields(broker_exc))
                 try:
                     await redeliver_in_place(deps, delivery, ctx)
-                except Exception:
+                except Exception:  # noqa: BLE001, S110 - Redeliver best effort, Fehler schon geloggt
                     pass
                 # Non-terminal — leave the flag so the redelivery's terminal
                 # path releases it. No release here.

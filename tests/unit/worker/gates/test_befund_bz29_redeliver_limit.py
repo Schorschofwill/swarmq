@@ -23,6 +23,7 @@ Testliste:
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -56,6 +57,7 @@ async def test_acquired_count_at_limit_goes_to_application_dead_letter() -> None
 
     assert isinstance(outcome, Terminal), "die nack-Schleife auf 4.3 erreicht das Zustelllimit nie"
     dead_letter.assert_awaited_once()
+    assert dead_letter.await_args is not None
     assert dead_letter.await_args.args[3] == "RedeliveryLimitError"
 
 
@@ -82,4 +84,5 @@ async def test_redeliver_pauses_before_the_nack(worker, broker, headers, pause_s
     await redeliver_in_place(deps, message, _ctx())
 
     broker.redeliver.assert_awaited_once_with(message)
-    assert pauses == [(pytest.approx(pause_s), 0)], "kein Backoff vor dem nack(requeue=True)"
+    expected: list[tuple[Any, int]] = [(pytest.approx(pause_s), 0)]
+    assert pauses == expected, "kein Backoff vor dem nack(requeue=True)"

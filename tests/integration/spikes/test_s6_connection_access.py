@@ -66,6 +66,7 @@ async def test_access_path_after_robust_reconnect(node: RabbitMQNode) -> None:
     name = f"swarmq-spike-s6-{uuid.uuid4().hex[:8]}"
     connection = await aio_pika.connect_robust(f"{node.amqp_url}?name={name}&reconnect_interval=0.5")
     try:
+        assert connection.transport is not None
         before = connection.transport.connection
         assert type(connection.transport).__name__ == "UnderlayConnection"
         assert isinstance(before, aiormq.Connection)
@@ -88,6 +89,7 @@ async def test_access_path_after_robust_reconnect(node: RabbitMQNode) -> None:
         assert response.status_code == 204
         await asyncio.wait_for(reconnected.wait(), timeout=20.0)
 
+        assert connection.transport is not None
         after = connection.transport.connection
         assert after is not before
         assert before.is_closed

@@ -36,12 +36,8 @@ json_value = st.recursive(
     max_leaves=10,
 )
 args_strategy = st.lists(json_value, max_size=4)
-kwargs_strategy = st.dictionaries(
-    st.text(min_size=1, max_size=8), json_value, max_size=4
-)
-task_names = st.text(
-    alphabet="abcdefghijklmnopqrstuvwxyz_", min_size=1, max_size=12
-)
+kwargs_strategy = st.dictionaries(st.text(min_size=1, max_size=8), json_value, max_size=4)
+task_names = st.text(alphabet="abcdefghijklmnopqrstuvwxyz_", min_size=1, max_size=12)
 
 
 @st.composite

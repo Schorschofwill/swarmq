@@ -18,9 +18,11 @@ import threading
 import time
 import traceback
 import weakref
-from collections.abc import Iterable, Iterator
+from collections.abc import Generator, Iterable
+from typing import Any, cast
 
 from swarmq.logging_format import iso_utc
+from swarmq.logging_stdlib import handler_refs, module_lock
 
 
 class Deadline:
@@ -42,7 +44,7 @@ _ACTIVE_DEADLINES: list[Deadline] = []
 
 
 @contextlib.contextmanager
-def draining_until(deadline: Deadline) -> Iterator[None]:
+def draining_until(deadline: Deadline) -> Generator[None]:
     """Meldet ein Leeren mit Frist ``deadline`` an, solange es laeuft."""
     _ACTIVE_DEADLINES.append(deadline)
     try:
@@ -74,14 +76,16 @@ def write_drain_notice(count: int, timeout: float, *, json: bool) -> None:
     Description, also auch fuer die Schreibvorgaenge der Listener (KTD2).
     """
     if json:
-        line = jsonlib.dumps({
-            "event": "log_drain_timeout_exceeded",
-            "count": count,
-            "timeout_s": timeout,
-            "level": "warning",
-            "logger": "swarmq.logging",
-            "timestamp": iso_utc(time.time()),
-        })
+        line = jsonlib.dumps(
+            {
+                "event": "log_drain_timeout_exceeded",
+                "count": count,
+                "timeout_s": timeout,
+                "level": "warning",
+                "logger": "swarmq.logging",
+                "timestamp": iso_utc(time.time()),
+            }
+        )
     else:
         line = (
             f"swarmq: log_drain_timeout_exceeded — {count} log record(s) not written "
@@ -108,9 +112,7 @@ _ABANDONED: list[threading.Thread] = []
 """Aufgegebene Listener-Threads (KTD3); ein haengender bleibt eingetragen,
 bis er endet."""
 
-_STUCK_HANDLERS: weakref.WeakKeyDictionary[logging.Handler, threading.Thread] = (
-    weakref.WeakKeyDictionary()
-)
+_STUCK_HANDLERS: weakref.WeakKeyDictionary[logging.Handler, threading.Thread] = weakref.WeakKeyDictionary()
 """Ziel-Handler aufgegebener Threads und der Thread, der an ihnen haengt;
 der Fork-Hook laesst sie aus (Plan 2026-10-06-1811, KTD10)."""
 
@@ -150,15 +152,15 @@ def is_stuck(handler: logging.Handler) -> bool:
 def _stream_of(handler: logging.Handler | None) -> object:
     try:
         return getattr(handler, "stream", None)
-    except Exception:  # eine Property der App darf hier nicht werfen
+    except Exception:  # noqa: BLE001 - eine Property der App darf hier nicht werfen
         return None
 
 
 def _file_of(stream: object) -> tuple[int, int] | None:
     """``(st_dev, st_ino)`` der Datei hinter ``stream``, sonst ``None``."""
     try:
-        info = os.fstat(stream.fileno())  # type: ignore[attr-defined]
-    except Exception:  # kein fd (StringIO), geschlossen, fremde Klasse
+        info = os.fstat(cast("Any", stream).fileno())  # Duck-Typing: beliebiger Stream
+    except Exception:  # noqa: BLE001 - kein fd (StringIO), geschlossen, fremde Klasse
         return None
     return info.st_dev, info.st_ino
 
@@ -168,12 +170,10 @@ def _forget(handlers: set[logging.Handler]) -> None:
     streams = {id(s) for s in stuck}
     _STUCK_STREAMS.update(streams)
     _STUCK_FILES.update(f for s in stuck if (f := _file_of(s)) is not None)
-    with logging._lock:  # type: ignore[attr-defined]
-        refs = logging._handlerList  # type: ignore[attr-defined]
+    with module_lock():
+        refs = handler_refs()
         refs[:] = [
-            ref for ref in refs
-            if (h := ref()) is None
-            or (h not in handlers and id(_stream_of(h)) not in streams)
+            ref for ref in refs if (h := ref()) is None or (h not in handlers and id(_stream_of(h)) not in streams)
         ]
 
 
@@ -207,7 +207,10 @@ def exit_if_log_thread_stuck(code: int, exc: BaseException | None = None) -> Non
         return
     with contextlib.suppress(RuntimeError):  # kein Thread mehr startbar
         writer = threading.Thread(
-            target=_flush_and_report, args=(exc,), name="swarmq-log-exit", daemon=True,
+            target=_flush_and_report,
+            args=(exc,),
+            name="swarmq-log-exit",
+            daemon=True,
         )
         writer.start()
         writer.join(FLUSH_BUDGET_S)
@@ -244,7 +247,7 @@ def _exit_report(exc: BaseException) -> bytes:
         text = "".join(traceback.format_exception(exc))
     data = text.encode("utf-8", "replace")
     if len(data) > select.PIPE_BUF:
-        data = _TRUNCATED + data[-(select.PIPE_BUF - len(_TRUNCATED)):]
+        data = _TRUNCATED + data[-(select.PIPE_BUF - len(_TRUNCATED)) :]
     return data
 
 
@@ -261,8 +264,8 @@ def _flushable(stream: object) -> bool:
     if file in _STUCK_FILES:
         return False
     try:
-        return _writable_now(stream.fileno())  # type: ignore[attr-defined]
-    except Exception:
+        return _writable_now(cast("Any", stream).fileno())  # Duck-Typing: beliebiger Stream
+    except Exception:  # noqa: BLE001 - ohne nutzbaren fd gilt Stream als nicht schreibbar
         return False
 
 

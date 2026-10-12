@@ -48,15 +48,36 @@ def test_hung_worker_is_replaced_and_poison_message_reaches_dlq():
     queue = f"cli-hang-{uuid.uuid4().hex[:8]}"
     tid = asyncio.run(_enqueue(queue))
     env = dict(
-        os.environ, SWARMQ_BROKER_URL=rabbitmq_amqp_url(), SWARMQ_BACKEND_URL=valkey_db_url(),
-        HANG_TEST_QUEUE=queue, PYTHONUNBUFFERED="1",
-        SWARMQ_HEARTBEAT_INTERVAL_S="1", SWARMQ_HEARTBEAT_TIMEOUT_S="6", SWARMQ_DELIVERY_LIMIT="2",
+        os.environ,
+        SWARMQ_BROKER_URL=rabbitmq_amqp_url(),
+        SWARMQ_BACKEND_URL=valkey_db_url(),
+        HANG_TEST_QUEUE=queue,
+        PYTHONUNBUFFERED="1",
+        SWARMQ_HEARTBEAT_INTERVAL_S="1",
+        SWARMQ_HEARTBEAT_TIMEOUT_S="6",
+        SWARMQ_DELIVERY_LIMIT="2",
         SWARMQ_SHUTDOWN_TIMEOUT="2",
     )
     proc = subprocess.Popen(
-        [sys.executable, "-m", "swarmq.cli", "worker", "--module", "tests.integration._hang_fixture_tasks",
-         "--queues", queue, "--burst", "--burst-idle-timeout", "12", "--log-format", "json"],
-        env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        [
+            sys.executable,
+            "-m",
+            "swarmq.cli",
+            "worker",
+            "--module",
+            "tests.integration._hang_fixture_tasks",
+            "--queues",
+            queue,
+            "--burst",
+            "--burst-idle-timeout",
+            "12",
+            "--log-format",
+            "json",
+        ],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
         start_new_session=True,
     )
     deadline = time.monotonic() + 150

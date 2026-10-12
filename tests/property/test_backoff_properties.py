@@ -26,9 +26,7 @@ from swarmq.backoff import calculate_backoff
 # retry delays, so cap attempt at something sensible.
 _ATTEMPT = st.integers(min_value=0, max_value=30)
 _BASE = st.floats(min_value=0.0, max_value=1e3, allow_nan=False, allow_infinity=False)
-_MAX = st.floats(
-    min_value=0.0, max_value=1e6, allow_nan=False, allow_infinity=False
-)
+_MAX = st.floats(min_value=0.0, max_value=1e6, allow_nan=False, allow_infinity=False)
 
 
 # ---------------------------------------------------------------------------
@@ -48,9 +46,7 @@ def test_exponential_monotonicity_lower_bound(attempt: int, base: float) -> None
     """
     large_cap = 1e18
     # Envelope test: sampled value is always within [base*2^n, base*2^n*2].
-    d_n = calculate_backoff(
-        attempt=attempt, strategy="exponential", base_delay=base, max_delay=large_cap
-    )
+    d_n = calculate_backoff(attempt=attempt, strategy="exponential", base_delay=base, max_delay=large_cap)
     assert d_n >= base * (2**attempt) * 1.0 - 1e-9
     assert d_n <= base * (2**attempt) * 2.0 + 1e-9
 
@@ -70,9 +66,7 @@ def test_exponential_monotonicity_lower_bound(attempt: int, base: float) -> None
 def test_linear_monotonicity_lower_bound(attempt: int, base: float) -> None:
     """Linear envelope: ``base * (n+1) * [1, 2]``."""
     large_cap = 1e18
-    d_n = calculate_backoff(
-        attempt=attempt, strategy="linear", base_delay=base, max_delay=large_cap
-    )
+    d_n = calculate_backoff(attempt=attempt, strategy="linear", base_delay=base, max_delay=large_cap)
     assert d_n >= base * (attempt + 1) * 1.0 - 1e-9
     assert d_n <= base * (attempt + 1) * 2.0 + 1e-9
 
@@ -91,14 +85,10 @@ def test_linear_monotonicity_lower_bound(attempt: int, base: float) -> None:
 
 
 @given(attempt=_ATTEMPT, base=_BASE)
-def test_exponential_jitter_within_documented_bounds(
-    attempt: int, base: float
-) -> None:
+def test_exponential_jitter_within_documented_bounds(attempt: int, base: float) -> None:
     """``delay`` always in ``[base * 2**n, base * 2**n * 2]`` before the cap."""
     large_cap = 1e18
-    d = calculate_backoff(
-        attempt=attempt, strategy="exponential", base_delay=base, max_delay=large_cap
-    )
+    d = calculate_backoff(attempt=attempt, strategy="exponential", base_delay=base, max_delay=large_cap)
     low = base * (2**attempt) * 1.0
     high = base * (2**attempt) * 2.0
     assert low - 1e-9 <= d <= high + 1e-9
@@ -108,9 +98,7 @@ def test_exponential_jitter_within_documented_bounds(
 def test_linear_jitter_within_documented_bounds(attempt: int, base: float) -> None:
     """``delay`` always in ``[base * (n+1), base * (n+1) * 2]`` before the cap."""
     large_cap = 1e18
-    d = calculate_backoff(
-        attempt=attempt, strategy="linear", base_delay=base, max_delay=large_cap
-    )
+    d = calculate_backoff(attempt=attempt, strategy="linear", base_delay=base, max_delay=large_cap)
     low = base * (attempt + 1) * 1.0
     high = base * (attempt + 1) * 2.0
     assert low - 1e-9 <= d <= high + 1e-9
@@ -122,9 +110,7 @@ def test_linear_jitter_within_documented_bounds(attempt: int, base: float) -> No
 
 
 @given(attempt=_ATTEMPT, base=_BASE, max_delay=_MAX)
-def test_max_delay_upper_bound_respected_exponential(
-    attempt: int, base: float, max_delay: float
-) -> None:
+def test_max_delay_upper_bound_respected_exponential(attempt: int, base: float, max_delay: float) -> None:
     """Exponential strategy never returns > max_delay."""
     d = calculate_backoff(
         attempt=attempt,
@@ -136,26 +122,18 @@ def test_max_delay_upper_bound_respected_exponential(
 
 
 @given(attempt=_ATTEMPT, base=_BASE, max_delay=_MAX)
-def test_max_delay_upper_bound_respected_linear(
-    attempt: int, base: float, max_delay: float
-) -> None:
+def test_max_delay_upper_bound_respected_linear(attempt: int, base: float, max_delay: float) -> None:
     """Linear strategy never returns > max_delay."""
-    d = calculate_backoff(
-        attempt=attempt, strategy="linear", base_delay=base, max_delay=max_delay
-    )
+    d = calculate_backoff(attempt=attempt, strategy="linear", base_delay=base, max_delay=max_delay)
     assert d <= max_delay + 1e-9
 
 
 @given(attempt=_ATTEMPT, base=_BASE, max_delay=_MAX)
-def test_fixed_ignores_attempt_and_cap(
-    attempt: int, base: float, max_delay: float
-) -> None:
+def test_fixed_ignores_attempt_and_cap(attempt: int, base: float, max_delay: float) -> None:
     """Fixed strategy returns base_delay verbatim, even above the cap.
 
     Pins the documented behavior from ``test_backoff.py`` — the fixed
     strategy is intentionally un-capped (short-circuits before the cap).
     """
-    d = calculate_backoff(
-        attempt=attempt, strategy="fixed", base_delay=base, max_delay=max_delay
-    )
+    d = calculate_backoff(attempt=attempt, strategy="fixed", base_delay=base, max_delay=max_delay)
     assert d == base

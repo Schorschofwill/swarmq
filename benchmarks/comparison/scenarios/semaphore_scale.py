@@ -40,9 +40,7 @@ async def run_semaphore_scale(
 
             payloads = [{"sleep_ms": sleep_ms}] * n
             t_start = time.perf_counter()
-            latencies = await run_timed_batch_concurrent(
-                system, "io_task", payloads, concurrency=concurrency
-            )
+            latencies = await run_timed_batch_concurrent(system, "io_task", payloads, concurrency=concurrency)
             t_end = time.perf_counter()
 
             result = make_result(
@@ -52,8 +50,10 @@ async def run_semaphore_scale(
                 latencies=latencies,
                 total_duration=t_end - t_start,
             )
-            print(f"    c={concurrency:>3}: {result.throughput:>8.0f} tasks/s, "
-                  f"P50={result.p50*1000:>6.1f}ms, P99={result.p99*1000:>6.1f}ms")
+            print(
+                f"    c={concurrency:>3}: {result.throughput:>8.0f} tasks/s, "
+                f"P50={result.p50 * 1000:>6.1f}ms, P99={result.p99 * 1000:>6.1f}ms"
+            )
 
             if concurrency == 10:
                 default_result = result

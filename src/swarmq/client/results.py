@@ -66,7 +66,7 @@ class ClientResults:
         self,
         task_id: str,
         timeout: float = 10,
-        polling: float = 0.2,
+        polling: float = 0.2,  # noqa: ARG002 - nur aus API-Kompatibilitaet erhalten
     ) -> Any:
         """Retrieve a task result, waiting up to *timeout* seconds.
 
@@ -108,7 +108,8 @@ class ClientResults:
             return None
 
     async def watch_progress(
-        self, task_id: str,
+        self,
+        task_id: str,
     ) -> AsyncIterator[ProgressInfo]:
         """Stream progress updates for *task_id*.
 
@@ -159,12 +160,11 @@ class ClientResults:
             await asyncio.sleep(poll_interval)
 
         missing = [
-            tid for tid, raw in zip(task_ids, raw_list)  # noqa: B905  # gleich lang per Konstruktion
+            tid
+            for tid, raw in zip(task_ids, raw_list)  # noqa: B905  # gleich lang per Konstruktion
             if raw is None
         ]
-        raise ResultNotReadyError(
-            f"Timeout waiting for task_ids: {missing}"
-        )
+        raise ResultNotReadyError(f"Timeout waiting for task_ids: {missing}")
 
     async def run(
         self,
@@ -180,7 +180,9 @@ class ClientResults:
         return await self.get_result(task_id, timeout=timeout, polling=polling)
 
     async def cancel(
-        self, task_id: str, ttl_ms: int = _DEFAULT_CANCEL_FLAG_TTL_MS,
+        self,
+        task_id: str,
+        ttl_ms: int = _DEFAULT_CANCEL_FLAG_TTL_MS,
     ) -> bool:
         """Request cancellation of *task_id*.
 

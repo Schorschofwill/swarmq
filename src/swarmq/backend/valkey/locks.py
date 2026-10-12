@@ -7,7 +7,7 @@ Vertrag ``LockStore`` (Token-Typen) über denselben Skripten.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import valkey.asyncio as valkey_asyncio
 
@@ -60,9 +60,12 @@ class LockManager:
         try:
             seconds, microseconds = await self._client.time()
             now_ms = int(seconds) * 1000 + int(microseconds) // 1000
-            result = await self._acquire_script(
-                keys=[self._keys.lock(lock_name)],
-                args=[owner_token, ttl_ms, max_concurrency, now_ms],
+            result = cast(
+                "int",
+                await self._acquire_script(
+                    keys=[self._keys.lock(lock_name)],
+                    args=[owner_token, ttl_ms, max_concurrency, now_ms],
+                ),
             )
         except BackendConnectionError:
             raise
@@ -80,7 +83,10 @@ class LockManager:
         reserved for cancellation / admin paths.
         """
         try:
-            result = await self._release_script(keys=[self._keys.lock(lock_name)], args=[owner_token, max_concurrency])
+            result = cast(
+                "int",
+                await self._release_script(keys=[self._keys.lock(lock_name)], args=[owner_token, max_concurrency]),
+            )
         except BackendConnectionError:
             raise
         except Exception as exc:
@@ -102,7 +108,9 @@ class LockManager:
                 f"LockManager.renew is mutex-only in this release; got max_concurrency={max_concurrency}"
             )
         try:
-            result = await self._renew_script(keys=[self._keys.lock(lock_name)], args=[owner_token, ttl_ms])
+            result = cast(
+                "int", await self._renew_script(keys=[self._keys.lock(lock_name)], args=[owner_token, ttl_ms])
+            )
         except BackendConnectionError:
             raise
         except Exception as exc:
@@ -186,7 +194,7 @@ class ValkeyLockStore:
         result = raw.decode(errors="replace") if isinstance(raw, bytes) else str(raw)
         # Treat empty string the same as "no owner" — defensive against an
         # upstream writer that SET an empty value.
-        return result if result else None
+        return result or None
 
     async def observe(self, name: str, *, max_concurrency: int) -> LockObservation:
         """Halter und Rest-TTL eines Locks in einem Roundtrip (MULTI/EXEC;
@@ -199,7 +207,7 @@ class ValkeyLockStore:
                 else:
                     pipe.zrange(key, 0, -1)
                 pipe.pttl(key)
-                raw, pttl = await pipe.execute()
+                raw, pttl = cast("list[Any]", await pipe.execute())
         except BackendConnectionError:
             raise
         except Exception as exc:

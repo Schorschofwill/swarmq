@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from typing import Any, override
 
 
 class _ForkSourceSentinel(logging.Handler):
@@ -32,6 +32,7 @@ class _ForkSourceSentinel(logging.Handler):
     dem Weg des Records liegt (Schluss-Review).
     """
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         last = logging.lastResort
         if last is not None and record.levelno >= last.level and not self._others_on_path(record):
@@ -45,10 +46,7 @@ class _ForkSourceSentinel(logging.Handler):
         if not isinstance(current, logging.Logger):
             current = logging.getLogger()
         while current is not None:
-            if any(
-                h is not self and not getattr(h, "forwards_to_root", False)
-                for h in current.handlers
-            ):
+            if any(h is not self and not getattr(h, "forwards_to_root", False) for h in current.handlers):
                 return True
             current = current.parent if current.propagate else None
         return False

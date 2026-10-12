@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from aio_pika.exceptions import DeliveryError
+from pamqp.commands import Basic
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import BrokerConnectionError, PublishRejected
@@ -48,7 +49,7 @@ def _broker(error: BaseException) -> RabbitMQBroker:
 
 
 async def test_negative_confirms_in_every_attempt_raise_publish_rejected() -> None:
-    broker = _broker(DeliveryError(None, None))
+    broker = _broker(DeliveryError(None, Basic.Nack()))
 
     with pytest.raises(PublishRejected, match="failed after 5 attempts"):
         await broker.publish("tasks", b"{}")

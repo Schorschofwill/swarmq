@@ -57,7 +57,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 def _free_port() -> int:
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.bind(("", 0))
-    port = s.getsockname()[1]
+    port: int = s.getsockname()[1]
     s.close()
     return port
 
@@ -76,7 +76,7 @@ def _wait_port(host: str, port: int, deadline: float) -> None:
 class ChaosStack:
     project: str
     rabbitmq_url: str  # via toxiproxy
-    valkey_url: str    # via toxiproxy
+    valkey_url: str  # via toxiproxy
     toxi_admin_url: str
 
     def stop(self) -> None:
@@ -84,7 +84,10 @@ class ChaosStack:
         env["COMPOSE_PROJECT_NAME"] = self.project
         subprocess.run(
             ["docker", "compose", "-f", str(_COMPOSE_FILE), "down", "-v"],
-            env=env, check=False, capture_output=True, timeout=30,
+            env=env,
+            check=False,
+            capture_output=True,
+            timeout=30,
         )
 
 
@@ -108,9 +111,14 @@ def _unavailable(reason: str) -> None:
 @pytest.fixture(scope="class")
 def chaos_stack() -> Iterator[ChaosStack]:
     """Spin up a dedicated chaos stack on random ports for the test class."""
-    if subprocess.run(
-        ["docker", "info"], capture_output=True,
-    ).returncode != 0:
+    if (
+        subprocess.run(
+            ["docker", "info"],
+            capture_output=True,
+            check=False,
+        ).returncode
+        != 0
+    ):
         _unavailable("docker not available — chaos tests need a daemon")
 
     project = f"swarmq-chaos-{random.randint(0, 1_000_000):06d}"
@@ -126,20 +134,29 @@ def chaos_stack() -> Iterator[ChaosStack]:
 
     up = subprocess.run(
         [
-            "docker", "compose", "-f", str(_COMPOSE_FILE),
-            "up", "-d", "--wait",
+            "docker",
+            "compose",
+            "-f",
+            str(_COMPOSE_FILE),
+            "up",
+            "-d",
+            "--wait",
         ],
-        env=env, capture_output=True, text=True, timeout=120,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
     )
     if up.returncode != 0:
         subprocess.run(
             ["docker", "compose", "-f", str(_COMPOSE_FILE), "down", "-v"],
-            env=env, check=False, capture_output=True, timeout=30,
+            env=env,
+            check=False,
+            capture_output=True,
+            timeout=30,
         )
-        _unavailable(
-            f"chaos compose stack failed to start: "
-            f"{up.stderr[-500:] if up.stderr else 'no stderr'}"
-        )
+        _unavailable(f"chaos compose stack failed to start: {up.stderr[-500:] if up.stderr else 'no stderr'}")
 
     host = _service_host()
     deadline = time.monotonic() + 30
@@ -151,13 +168,16 @@ def chaos_stack() -> Iterator[ChaosStack]:
             ("rmq", "0.0.0.0:5672", "rabbitmq:5672"),
             ("vkey", "0.0.0.0:6379", "valkey:6379"),
         ):
-            r = c.post("/proxies", json={
-                "name": name, "listen": listen,
-                "upstream": upstream, "enabled": True,
-            })
-            assert r.status_code in (200, 201, 409), (
-                f"toxiproxy proxy create failed: {r.status_code} {r.text}"
+            r = c.post(
+                "/proxies",
+                json={
+                    "name": name,
+                    "listen": listen,
+                    "upstream": upstream,
+                    "enabled": True,
+                },
             )
+            assert r.status_code in (200, 201, 409), f"toxiproxy proxy create failed: {r.status_code} {r.text}"
 
     stack = ChaosStack(
         project=project,
@@ -189,7 +209,11 @@ class ToxiproxyClient:
         await self._client.post(f"/proxies/{proxy}", json={"enabled": True})
 
     async def add_latency(
-        self, proxy: str, *, latency_ms: int, jitter_ms: int = 0,
+        self,
+        proxy: str,
+        *,
+        latency_ms: int,
+        jitter_ms: int = 0,
         upstream_only: bool = False,
     ) -> str:
         name = f"latency-{len(self._toxics_added)}"
@@ -197,7 +221,9 @@ class ToxiproxyClient:
         await self._client.post(
             f"/proxies/{proxy}/toxics",
             json={
-                "name": name, "type": "latency", "stream": stream,
+                "name": name,
+                "type": "latency",
+                "stream": stream,
                 "attributes": {"latency": latency_ms, "jitter": jitter_ms},
             },
         )
@@ -219,7 +245,9 @@ class ToxiproxyClient:
         await self._client.post(
             f"/proxies/{proxy}/toxics",
             json={
-                "name": name, "type": "timeout", "stream": "upstream",
+                "name": name,
+                "type": "timeout",
+                "stream": "upstream",
                 "attributes": {"timeout": 0},
             },
         )
@@ -227,14 +255,20 @@ class ToxiproxyClient:
         return name
 
     async def add_bandwidth(
-        self, proxy: str, *, kbps: int, upstream_only: bool = False,
+        self,
+        proxy: str,
+        *,
+        kbps: int,
+        upstream_only: bool = False,
     ) -> str:
         name = f"bandwidth-{len(self._toxics_added)}"
         stream = "upstream" if upstream_only else "downstream"
         await self._client.post(
             f"/proxies/{proxy}/toxics",
             json={
-                "name": name, "type": "bandwidth", "stream": stream,
+                "name": name,
+                "type": "bandwidth",
+                "stream": stream,
                 "attributes": {"rate": kbps},
             },
         )
@@ -242,14 +276,20 @@ class ToxiproxyClient:
         return name
 
     async def add_slicer(
-        self, proxy: str, *, average_size: int, size_variation: int = 0,
+        self,
+        proxy: str,
+        *,
+        average_size: int,
+        size_variation: int = 0,
         delay_us: int = 0,
     ) -> str:
         name = f"slicer-{len(self._toxics_added)}"
         await self._client.post(
             f"/proxies/{proxy}/toxics",
             json={
-                "name": name, "type": "slicer", "stream": "downstream",
+                "name": name,
+                "type": "slicer",
+                "stream": "downstream",
                 "attributes": {
                     "average_size": average_size,
                     "size_variation": size_variation,
@@ -267,7 +307,8 @@ class ToxiproxyClient:
         self._toxics_added.clear()
         for name in ("rmq", "vkey"):
             await self._client.post(
-                f"/proxies/{name}", json={"enabled": True},
+                f"/proxies/{name}",
+                json={"enabled": True},
             )
 
 
@@ -282,5 +323,3 @@ async def toxiproxy(chaos_stack: ChaosStack) -> AsyncIterator[ToxiproxyClient]:
             await client.reset()
         finally:
             await client.aclose()
-
-

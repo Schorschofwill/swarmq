@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Self
 
 from swarmq.client import _MISSING, Client, _MissingType
 from swarmq.client.results import _DEFAULT_CANCEL_FLAG_TTL_MS
 
 if TYPE_CHECKING:
+    from types import TracebackType
+
     from swarmq.backend.valkey import ValkeyBackend
     from swarmq.broker.rabbitmq import RabbitMQBroker
+    from swarmq.worker import Worker as Worker
     from swarmq.workflow import Chain, Chord, Group, Signature
     from swarmq.workflow_orchestration import WorkflowHandle
 from swarmq.config import SwarmQConfig
@@ -35,7 +38,6 @@ def __getattr__(name: str) -> object:
 
         return importlib.import_module("swarmq.worker").Worker
     raise AttributeError(f"module 'swarmq.app' has no attribute {name!r}")
-
 
 
 class SwarmQ:
@@ -97,9 +99,9 @@ class SwarmQ:
             effective = self.backend.reconcile_namespace(self.config.namespace)
         except ConfigurationError:
             raise
-        except Exception:
+        except Exception:  # noqa: BLE001 - Backend ohne Abgleich laesst Konfiguration unveraendert (Q15)
             return
-        if effective is None or isinstance(effective, str):
+        if effective is None or isinstance(effective, str):  # pyright: ignore[reportUnnecessaryIsInstance]  # Backends ohne Typpruefung (Q15)
             self.config.namespace = effective
 
     def add_middleware(self, middleware: Middleware) -> None:
@@ -112,9 +114,7 @@ class SwarmQ:
         """
         self._middlewares.append(middleware)
 
-    def on_signal(
-        self, signal: Signal
-    ) -> Callable[[AsyncHandler], AsyncHandler]:
+    def on_signal(self, signal: Signal) -> Callable[[AsyncHandler], AsyncHandler]:
         """Return a decorator that registers a handler for ``signal``."""
         return self._signal_dispatcher.on_signal(signal)
 
@@ -123,7 +123,7 @@ class SwarmQ:
         """Build a fresh :class:`MiddlewareChain` from currently registered middlewares."""
         return MiddlewareChain(self._middlewares)
 
-    async def __aenter__(self) -> SwarmQ:
+    async def __aenter__(self) -> Self:
         await self.broker.connect()
         try:
             await self.backend.connect()
@@ -132,7 +132,12 @@ class SwarmQ:
             raise
         return self
 
-    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         # Staged try/finally: broker.close() may raise
         # by design on the injected path (channel.close() errors are NOT
         # swallowed there); without the finally-chain that left the
@@ -151,7 +156,8 @@ class SwarmQ:
                     # Plan 2026-10-06-1811, KTD4: in O(1) abhaengen, dann
                     # leeren, ohne den Event-Loop anzuhalten.
                     await _await_log_queue_drained(
-                        _disable_log_queue(), self.config.log_drain_timeout,
+                        _disable_log_queue(),
+                        self.config.log_drain_timeout,
                     )
 
     async def schedule_many(
@@ -164,7 +170,8 @@ class SwarmQ:
     ) -> list[str]:
         """Forward to :meth:`Client.schedule_many` including R3.5 dedup kwargs."""
         return await self.client.schedule_many(
-            tasks, queue=queue,
+            tasks,
+            queue=queue,
             unique_for=unique_for,
             unique_until=unique_until,
         )
@@ -176,15 +183,15 @@ class SwarmQ:
         poll_interval: float = 0.005,
     ) -> list[Any]:
         return await self.client.get_results(
-            task_ids, timeout=timeout, poll_interval=poll_interval,
+            task_ids,
+            timeout=timeout,
+            poll_interval=poll_interval,
         )
 
     async def schedule(self, task_name: str, *args: Any, **kwargs: Any) -> str:
         return await self.client.schedule(task_name, *args, **kwargs)
 
-    async def get_result(
-        self, task_id: str, timeout: float = 10, polling: float = 0.2
-    ) -> Any:
+    async def get_result(self, task_id: str, timeout: float = 10, polling: float = 0.2) -> Any:
         return await self.client.get_result(task_id, timeout=timeout, polling=polling)
 
     async def run(
@@ -195,9 +202,7 @@ class SwarmQ:
         polling: float = 0.2,
         **kwargs: Any,
     ) -> Any:
-        return await self.client.run(
-            task_name, *args, timeout=timeout, polling=polling, **kwargs
-        )
+        return await self.client.run(task_name, *args, timeout=timeout, polling=polling, **kwargs)
 
     async def get_progress(self, task_id: str) -> ProgressInfo | None:
         """Forward to :meth:`Client.get_progress`."""
@@ -226,15 +231,11 @@ class SwarmQ:
         ttl_ms = max(_DEFAULT_CANCEL_FLAG_TTL_MS, self.config.result_ttl * 1000)
         return await self.client.cancel(task_id, ttl_ms=ttl_ms)
 
-    async def apply(
-        self, workflow: Signature | Chain | Group | Chord
-    ) -> WorkflowHandle:
+    async def apply(self, workflow: Signature | Chain | Group | Chord) -> WorkflowHandle:
         """Start a workflow (chain/group/chord) fire-and-forget; return a
         reattachable :class:`WorkflowHandle` (R10). Workflow state TTL is
         derived from ``config.result_ttl`` so it outlives the retry horizon."""
-        return await self.client.apply(
-            workflow, state_ttl_ms=self.config.result_ttl * 1000
-        )
+        return await self.client.apply(workflow, state_ttl_ms=self.config.result_ttl * 1000)
 
     async def workflow(self, workflow_id: str) -> WorkflowHandle:
         """Reattach to a workflow by id (R14); raises WorkflowNotFound when
@@ -249,7 +250,7 @@ class SwarmQ:
         # loudly here, before any subprocess is created. getattr defaults to
         # True so URL-constructed brokers/backends (and spec'd test mocks
         # without the flag) are unaffected.
-        injected = []
+        injected: list[str] = []
         if not getattr(self.broker, "_owns_connection", True):
             injected.append("broker")
         if not getattr(self.backend, "_owns_client", True):
@@ -268,9 +269,9 @@ class SwarmQ:
         # patches like ``mock.patch("swarmq.app.Worker")`` continue to
         # intercept the construction. A direct lazy-local import would
         # bind to swarmq.worker.Worker and bypass the facade patch.
-        from swarmq import app as _app_module
+        from swarmq import app as _app_module  # noqa: PLW0406 - Fassaden-Attribut bleibt per mock.patch austauschbar
 
-        worker = _app_module.Worker(  # type: ignore[operator]  # PEP-562-Fassaden-Attribut, patchbar
+        worker = _app_module.Worker(  # PEP-562-Fassaden-Attribut, patchbar
             self.broker,
             self.backend,
             self.registry,

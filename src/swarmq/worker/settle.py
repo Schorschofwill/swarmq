@@ -21,7 +21,7 @@ und geht unveraendert durch.
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Iterator
+from collections.abc import Generator
 
 from swarmq.exceptions import BrokerConnectionError
 from swarmq.logging import _error_fields, get_logger
@@ -30,13 +30,14 @@ logger = get_logger(__name__)
 
 
 @contextlib.contextmanager
-def contain_delivery_errors() -> Iterator[None]:
+def contain_delivery_errors() -> Generator[None]:
     try:
         yield
     except BrokerConnectionError as exc:
         logger.warning(
-            "delivery_settle_failed", **_error_fields(exc),
+            "delivery_settle_failed",
+            **_error_fields(exc),
             hint="delivery not settled; the broker redelivers the unacknowledged message",
         )
     except Exception as exc:
-        logger.error("delivery_handler_failed", **_error_fields(exc), exc_info=True)
+        logger.error("delivery_handler_failed", **_error_fields(exc), exc_info=True)  # noqa: G201 - exception() reicht anderen Methodennamen an stdlib

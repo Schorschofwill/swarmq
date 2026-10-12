@@ -60,8 +60,7 @@ class TestPublishDeadlineAgainstRealBroker:
         elapsed = time.monotonic() - started
 
         assert elapsed < _DEADLINE_S * 3, (
-            f"Publish brauchte {elapsed:.1f}s statt der zugesagten "
-            f"{_DEADLINE_S}s-Obergrenze"
+            f"Publish brauchte {elapsed:.1f}s statt der zugesagten {_DEADLINE_S}s-Obergrenze"
         )
 
     async def test_publish_recovers_after_the_stall_clears(self, broker, toxiproxy):
@@ -88,6 +87,5 @@ class TestPublishDeadlineAgainstRealBroker:
 
         assert receipt.queue == _QUEUE
         assert elapsed < _DEADLINE_S, (
-            f"Publish nach der Stoerung brauchte {elapsed:.1f}s — der tote "
-            "Kanal wurde offenbar nicht verworfen"
+            f"Publish nach der Stoerung brauchte {elapsed:.1f}s — der tote Kanal wurde offenbar nicht verworfen"
         )

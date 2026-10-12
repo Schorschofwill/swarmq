@@ -91,7 +91,9 @@ async def test_dead_letter_stamps_the_generation_with_its_timestamp() -> None:
     headers = _published(broker).headers
     assert headers[_REPLAY] == generation_id("t-1|r1#1")
     assert headers[_GEN] == headers[_AT] == int(_NOW * 1000)
-    assert "x-death" not in headers and headers["x-swarmq-xdeath-base"] == 1 and headers["x-keep"] == "k"
+    assert "x-death" not in headers
+    assert headers["x-swarmq-xdeath-base"] == 1
+    assert headers["x-keep"] == "k"
 
 
 async def test_without_a_task_id_the_stamp_leaves_the_replay_id_alone() -> None:
@@ -99,7 +101,9 @@ async def test_without_a_task_id_the_stamp_leaves_the_replay_id_alone() -> None:
     delivery = _delivery({_REPLAY: "r1"}, body=b"not a swarmq message")
     await broker.dead_letter(delivery, headers=dict(delivery.headers))
     headers = _published(broker).headers
-    assert headers[_REPLAY] == "r1" and _GEN not in headers and headers[_AT] == int(_NOW * 1000)
+    assert headers[_REPLAY] == "r1"
+    assert _GEN not in headers
+    assert headers[_AT] == int(_NOW * 1000)
 
 
 async def test_two_copies_of_one_execution_share_the_generation_a_new_execution_does_not() -> None:
@@ -145,9 +149,11 @@ async def test_dlq_retry_keeps_the_replay_id_of_a_fresh_generation() -> None:
     broker = _dlq_broker(_incoming({_REPLAY: gen, _AT: _AT_MS, _GEN: _AT_MS, "x-swarmq-dead-letter-ttl-ms": 7_200_000}))
     found, _ = await broker.retry_dead_letter("tasks", "t-1")
     [(routing_key, msg)] = broker.published
-    assert found is True and routing_key == "tasks"
+    assert found is True
+    assert routing_key == "tasks"
     assert msg.headers[_REPLAY] == gen
-    assert _GEN not in msg.headers and _AT not in msg.headers
+    assert _GEN not in msg.headers
+    assert _AT not in msg.headers
 
 
 async def test_dlq_retry_assigns_a_uuid_without_a_matching_generation() -> None:
@@ -158,7 +164,9 @@ async def test_dlq_retry_assigns_a_uuid_without_a_matching_generation() -> None:
     moved, _ = await broker.retry_all_dead_letters("tasks")
     replay_ids = [msg.headers[_REPLAY] for _, msg in broker.published]
     assert moved == 2
-    assert all(len(r) == 32 for r in replay_ids) and gen not in replay_ids and "old" not in replay_ids
+    assert all(len(r) == 32 for r in replay_ids)
+    assert gen not in replay_ids
+    assert "old" not in replay_ids
     assert all(_GEN not in msg.headers for _, msg in broker.published)
 
 
@@ -168,7 +176,8 @@ async def test_dlq_retry_restarts_the_age_and_keeps_the_death_count_as_base() ->
     await broker.retry_dead_letter("tasks", "t-1")
     [(_, msg)] = broker.published
     assert msg.headers["x-swarmq-enqueued-at"] == int(_NOW)
-    assert "x-death" not in msg.headers and msg.headers["x-swarmq-xdeath-base"] == 2
+    assert "x-death" not in msg.headers
+    assert msg.headers["x-swarmq-xdeath-base"] == 2
 
 
 async def test_dlq_retry_does_not_keep_an_invalid_replay_id() -> None:
@@ -215,12 +224,14 @@ async def test_the_worker_dead_letter_path_stamps_a_generation_only_with_a_task_
 
     assert await handler.dead_letter(_delivery({_REPLAY: "r1"}), ctx, "boom", "ValueError") is True
     stamped = _published(broker).headers
-    assert stamped[_REPLAY] == generation_id("t-1|r1") and stamped[_GEN] == stamped[_AT]
+    assert stamped[_REPLAY] == generation_id("t-1|r1")
+    assert stamped[_GEN] == stamped[_AT]
     assert stamped["x-swarmq-traceback"] == "boom"
 
     assert await handler.dead_letter(_delivery({_REPLAY: "r1"}, body=b"no task"), ctx, "boom", "ValueError") is True
     unstamped = _published(broker).headers
-    assert unstamped[_REPLAY] == "r1" and _GEN not in unstamped
+    assert unstamped[_REPLAY] == "r1"
+    assert _GEN not in unstamped
 
 
 async def test_dlq_retry_without_a_generation_derives_the_replay_id_from_the_identity() -> None:

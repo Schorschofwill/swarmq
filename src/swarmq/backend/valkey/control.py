@@ -68,7 +68,9 @@ class ValkeySetpointStore(ValkeyConnection):
         await self._guarded(
             "status write",
             self._require_client().set(
-                self._status_key(group, supervisor_id), json.dumps(status), px=max(1, int(ttl_s * 1000)),
+                self._status_key(group, supervisor_id),
+                json.dumps(status),
+                px=max(1, int(ttl_s * 1000)),
             ),
         )
 
@@ -81,7 +83,7 @@ def _decode_setpoint(raw: bytes | str) -> Setpoint | SetpointUnreadable:
         data = json.loads(text)
         low, high = data["min"], data["max"]
         if isinstance(low, bool) or isinstance(high, bool) or not isinstance(low, int) or not isinstance(high, int):
-            raise TypeError("min and max must be integers")
+            raise TypeError("min and max must be integers")  # noqa: TRY301 - landet bewusst im gemeinsamen Ablehnungspfad
     except (ValueError, TypeError, KeyError) as exc:
-        return SetpointUnreadable(reason=f"setpoint {text!r} is not {{\"min\": N, \"max\": M}}: {exc}")
+        return SetpointUnreadable(reason=f'setpoint {text!r} is not {{"min": N, "max": M}}: {exc}')
     return Setpoint(low=low, high=high)

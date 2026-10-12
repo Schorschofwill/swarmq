@@ -40,9 +40,7 @@ class TestValkeyBackendInjection:
         mock_pool = Mock()
         mock_client = AsyncMock()
         mock_client.register_script = Mock()
-        with patch(
-            "swarmq.backend.valkey.connection.valkey.asyncio.Valkey", return_value=mock_client
-        ) as mock_valkey:
+        with patch("swarmq.backend.valkey.connection.valkey.asyncio.Valkey", return_value=mock_client) as mock_valkey:
             backend = ValkeyBackend(pool=mock_pool)
 
         mock_valkey.assert_called_once_with(connection_pool=mock_pool)
@@ -68,9 +66,7 @@ class TestValkeyBackendInjection:
         mock_client.register_script = Mock()
         backend = ValkeyBackend(client=mock_client)
 
-        with patch(
-            "swarmq.backend.valkey.connection.valkey.asyncio.Valkey.from_url"
-        ) as mock_from_url:
+        with patch("swarmq.backend.valkey.connection.valkey.asyncio.Valkey.from_url") as mock_from_url:
             await backend.connect()
 
         mock_from_url.assert_not_called()
@@ -90,9 +86,7 @@ class TestValkeyBackendInjection:
         mock_pool = Mock()
         mock_client = AsyncMock()
         mock_client.register_script = Mock()
-        with patch(
-            "swarmq.backend.valkey.connection.valkey.asyncio.Valkey", return_value=mock_client
-        ):
+        with patch("swarmq.backend.valkey.connection.valkey.asyncio.Valkey", return_value=mock_client):
             backend = ValkeyBackend(pool=mock_pool)
 
         await backend.close()
@@ -168,9 +162,7 @@ class TestValkeyBackendConnect:
         kwargs = mock_from_url.call_args.kwargs
         assert kwargs.get("socket_timeout"), "socket_timeout must be set"
         assert kwargs["socket_timeout"] > 0
-        assert kwargs.get("socket_connect_timeout"), (
-            "socket_connect_timeout must be set"
-        )
+        assert kwargs.get("socket_connect_timeout"), "socket_connect_timeout must be set"
         assert kwargs["socket_connect_timeout"] > 0
 
 
@@ -207,9 +199,7 @@ class TestValkeyBackendStoreResult:
 
         await backend.store_result(task_id, data, ttl_ms)
 
-        mock_client.set.assert_awaited_once_with(
-            "sq:result:abc-123", data, px=ttl_ms
-        )
+        mock_client.set.assert_awaited_once_with("sq:result:abc-123", data, px=ttl_ms)
 
 
 class TestValkeyBackendGetResult:
@@ -347,9 +337,7 @@ class TestValkeyBackendGetResults:
 
         result = await backend.get_results(["a", "b", "c"])
 
-        mock_client.mget.assert_awaited_once_with(
-            "sq:result:a", "sq:result:b", "sq:result:c"
-        )
+        mock_client.mget.assert_awaited_once_with("sq:result:a", "sq:result:b", "sq:result:c")
         assert result == [b"r1", b"r2", b"r3"]
 
     async def test_get_results_empty_list_returns_empty(self):
@@ -398,22 +386,8 @@ class TestValkeyBackendGetResultsPartial:
 
         result = await backend.get_results(["a", "missing", "c"])
 
-        mock_client.mget.assert_awaited_once_with(
-            "sq:result:a", "sq:result:missing", "sq:result:c"
-        )
+        mock_client.mget.assert_awaited_once_with("sq:result:a", "sq:result:missing", "sq:result:c")
         assert result == [b"data-a", None, b"data-c"]
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -437,9 +411,7 @@ class TestValkeyBackendSetCancelFlag:
 
         result = await backend.set_cancel_flag("task-abc", 60_000)
 
-        mock_client.set.assert_awaited_once_with(
-            "sq:cancel:task-abc", "1", nx=True, px=60_000
-        )
+        mock_client.set.assert_awaited_once_with("sq:cancel:task-abc", "1", nx=True, px=60_000)
         assert result is True
 
     async def test_set_cancel_flag_returns_false_when_already_set(self):
@@ -524,7 +496,7 @@ class TestValkeyBackendClearCancelFlag:
         backend._client = mock_client
 
         # Must not raise
-        result = await backend.clear_cancel_flag("task-abc")
+        result = await backend.clear_cancel_flag("task-abc")  # type: ignore[func-returns-value]  # Laufzeit-Rueckgabe trotz -> None pruefen
         assert result is None
 
 
@@ -533,30 +505,14 @@ class TestValkeyBackendClearCancelFlag:
 # ---------------------------------------------------------------------------
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def _async_iter(items):
     """Helper: async generator from a list, for mocking scan_iter."""
+
     async def gen():
         for item in items:
             yield item
+
     return gen()
-
-
-
-
 
 
 class TestSchedulerLeader:

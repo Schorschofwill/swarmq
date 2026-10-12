@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
-from typing import Any
+from typing import Any, override
 
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
@@ -26,24 +26,21 @@ def _unique_queue() -> str:
     return f"e2e-rl-{uuid.uuid4().hex[:12]}"
 
 
-async def test_rate_limited_task_delays_but_never_drops(
-    rabbitmq_url: str, valkey_url: str
-) -> None:
+async def test_rate_limited_task_delays_but_never_drops(rabbitmq_url: str, valkey_url: str) -> None:
     queue = _unique_queue()
     task_name = f"e2e_rl_{uuid.uuid4().hex[:8]}"
     total_messages = 8
     rate_limit = "3/s"
 
-    executed_task_ids: list[str] = []
+    executed_task_ids: list[int] = []
     completed_event = asyncio.Event()
     worker_online_event = asyncio.Event()
     rate_limited_count = 0
 
     class RateLimitedEchoTask(Task):
-        task_info = TaskInfo(
-            name=task_name, queues=[queue], rate_limit=rate_limit
-        )
+        task_info = TaskInfo(name=task_name, queues=[queue], rate_limit=rate_limit)
 
+        @override
         async def run(self, idx: int) -> int:
             executed_task_ids.append(idx)
             if len(executed_task_ids) >= total_messages:
@@ -100,6 +97,5 @@ async def test_rate_limited_task_delays_but_never_drops(
     # Exact count depends on scheduler timing; the lower bound
     # (total - limit_per_window) is safe.
     assert rate_limited_count >= total_messages - 3, (
-        f"expected at least {total_messages - 3} rate-limit hits, "
-        f"saw {rate_limited_count}"
+        f"expected at least {total_messages - 3} rate-limit hits, saw {rate_limited_count}"
     )

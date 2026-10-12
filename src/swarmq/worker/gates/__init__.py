@@ -205,7 +205,7 @@ def _as_count(raw: Any) -> int:
     """Nicht-negativer Zaehler; ein kaputter Header zaehlt wie keiner."""
     try:
         count = int(raw)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 0
     return max(count, 0)
 
@@ -241,7 +241,9 @@ def deferral_copy(deps: GateDeps, delivery: Any, ctx: GateContext) -> tuple[dict
     attempt = prior_deferrals(delivery.headers or {}) + 1
     headers[HEADER_BACKEND_DEFER_COUNT] = attempt
     delay_s = backend_defer_delay(
-        attempt, deps.config.backend_defer_base_delay, deps.config.backend_defer_max_delay,
+        attempt,
+        deps.config.backend_defer_base_delay,
+        deps.config.backend_defer_max_delay,
     )
     return headers, attempt, int(delay_s * 1000)
 
@@ -269,7 +271,7 @@ async def redeliver_in_place(deps: GateDeps, delivery: Any, ctx: GateContext) ->
         return
     # Vor der Freigabe gebaut: sie nimmt den Claim vom Kontext.
     headers, attempt, delay_ms = deferral_copy(deps, delivery, ctx)
-    if await deps.finalize_schedfire(ctx, False):
+    if await deps.finalize_schedfire(ctx, False):  # noqa: FBT003 - Callable-Feld ohne Parameternamen
         await _pause_then_redeliver(deps, delivery)
         return
     fields = {"task_id": ctx.task_id, "task_name": ctx.task_name, "schedfire_key": claim.key}
@@ -277,7 +279,7 @@ async def redeliver_in_place(deps: GateDeps, delivery: Any, ctx: GateContext) ->
         # Publish-then-ack: ``retry_later`` bestaetigt das Original erst nach
         # dem Publisher-Confirm der Kopie.
         await deps.broker.retry_later(delivery, delay_ms=delay_ms, headers=headers)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - Broker gestoert, letzter Ausweg nack
         # Broker ebenfalls gestoert: letzter Ausweg ``nack``.
         logger.warning("task_copy_failed_redelivered", **fields, **_error_fields(exc))
         await _pause_then_redeliver(deps, delivery)
@@ -292,7 +294,7 @@ async def _pause_then_redeliver(deps: GateDeps, delivery: Any) -> None:
     if deps.redeliver_pause is not None:
         try:
             await deps.redeliver_pause(redeliver_pause_s(delivery.headers or {}))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - scheiternde Pause darf nack nicht verhindern
             logger.warning("redeliver_pause_failed", **_error_fields(exc))
     await deps.broker.redeliver(delivery)
 
@@ -362,8 +364,8 @@ async def _fail_workflow_best_effort(
         return
     ctx = GateContext(task_id=task_id or "", task_name=task_name or "", queue=getattr(delivery, "queue", None) or "")
     try:
-        await deps.fail_workflow(delivery, ctx, error_message, False)
-    except Exception as exc:
+        await deps.fail_workflow(delivery, ctx, error_message, False)  # noqa: FBT003 - Callable-Feld ohne Parameternamen
+    except Exception as exc:  # noqa: BLE001 - best effort, bricht den Pfad nicht ab
         logger.warning("workflow_fail_mark_failed", task_id=task_id, **_error_fields(exc), redelivered=False)
 
 

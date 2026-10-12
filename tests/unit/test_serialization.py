@@ -260,57 +260,39 @@ class TestCanonicalEncode:
     sha256-dedup hashing in R3.5 Unique Tasks."""
 
     def test_key_order_stable(self):
-        assert canonical_encode((), {"a": 1, "b": 2}) == canonical_encode(
-            (), {"b": 2, "a": 1}
-        )
+        assert canonical_encode((), {"a": 1, "b": 2}) == canonical_encode((), {"b": 2, "a": 1})
 
     def test_nested_key_order_stable(self):
-        assert canonical_encode((), {"x": {"b": 1, "a": 2}}) == canonical_encode(
-            (), {"x": {"a": 2, "b": 1}}
-        )
+        assert canonical_encode((), {"x": {"b": 1, "a": 2}}) == canonical_encode((), {"x": {"a": 2, "b": 1}})
 
     def test_positional_args_distinguish(self):
         assert canonical_encode(("foo",), {}) != canonical_encode(("bar",), {})
 
     def test_list_order_significant(self):
-        assert canonical_encode(([1, 2, 3],), {}) != canonical_encode(
-            ([3, 2, 1],), {}
-        )
+        assert canonical_encode(([1, 2, 3],), {}) != canonical_encode(([3, 2, 1],), {})
 
     def test_tuple_list_equivalence(self):
         """Invariant: tuples and lists produce equal hashes (JSON encodes
         both as arrays). Required for Scheduler hash-reconstruction after
         ScheduleStore roundtrip (tuples serialized as lists)."""
-        assert canonical_encode((1, 2, 3), {}) == canonical_encode(
-            [1, 2, 3], {}
-        )
+        assert canonical_encode((1, 2, 3), {}) == canonical_encode([1, 2, 3], {})  # type: ignore[arg-type]  # Invariante: Liste wie Tupel
 
     def test_uuid_normalized_to_str(self):
         uid = UUID("12345678-1234-5678-1234-567812345678")
-        assert canonical_encode((), {"id": uid}) == canonical_encode(
-            (), {"id": str(uid)}
-        )
+        assert canonical_encode((), {"id": uid}) == canonical_encode((), {"id": str(uid)})
 
     def test_datetime_normalized_to_isoformat(self):
-        dt = datetime(2026, 1, 1, 12, 0, 0)
-        assert canonical_encode((), {"ts": dt}) == canonical_encode(
-            (), {"ts": dt.isoformat()}
-        )
+        dt = datetime(2026, 1, 1, 12, 0, 0)  # noqa: DTZ001 - naive Zeit bewusst, die Normalisierung muss auch ohne tzinfo greifen
+        assert canonical_encode((), {"ts": dt}) == canonical_encode((), {"ts": dt.isoformat()})
 
     def test_decimal_normalized_to_str(self):
-        assert canonical_encode((), {"d": Decimal("1.10")}) == canonical_encode(
-            (), {"d": "1.10"}
-        )
+        assert canonical_encode((), {"d": Decimal("1.10")}) == canonical_encode((), {"d": "1.10"})
 
     def test_set_sorted_and_listified(self):
-        assert canonical_encode((), {"s": {3, 1, 2}}) == canonical_encode(
-            (), {"s": [1, 2, 3]}
-        )
+        assert canonical_encode((), {"s": {3, 1, 2}}) == canonical_encode((), {"s": [1, 2, 3]})
 
     def test_frozenset_same_as_set(self):
-        assert canonical_encode((), {"s": frozenset({3, 1, 2})}) == canonical_encode(
-            (), {"s": [1, 2, 3]}
-        )
+        assert canonical_encode((), {"s": frozenset({3, 1, 2})}) == canonical_encode((), {"s": [1, 2, 3]})
 
     def test_empty_inputs_deterministic(self):
         result = canonical_encode((), {})
@@ -354,9 +336,7 @@ class TestCanonicalEncode:
 
     def test_deeply_nested_structure(self):
         """Recursive canonicalization works through multiple layers."""
-        a = canonical_encode(
-            (), {"outer": {"b": [1, {"nested": UUID(int=0)}], "a": 2}}
-        )
+        a = canonical_encode((), {"outer": {"b": [1, {"nested": UUID(int=0)}], "a": 2}})
         b = canonical_encode(
             (),
             {
@@ -370,9 +350,7 @@ class TestCanonicalEncode:
 
     def test_args_and_kwargs_both_used(self):
         """Both positional and keyword args affect the hash."""
-        assert canonical_encode(("a",), {"b": 1}) != canonical_encode(
-            (), {"b": 1}
-        )
+        assert canonical_encode(("a",), {"b": 1}) != canonical_encode((), {"b": 1})
         assert canonical_encode(("a",), {}) != canonical_encode(("a",), {"b": 1})
 
     # --- ce-review P2 #14 / ADV-003: NaN / Inf must be rejected ---

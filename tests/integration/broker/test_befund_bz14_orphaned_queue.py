@@ -29,6 +29,7 @@ import contextlib
 import logging
 import time
 import uuid
+from typing import override
 
 import pytest
 
@@ -79,6 +80,7 @@ async def test_backlog_in_abandoned_queue_is_reported(
         # Nach dem Umzug: der Task lebt jetzt auf ``new``.
         task_info = TaskInfo(name=task_name, queues=[new_queue])
 
+        @override
         async def run(self) -> str:
             ran.set()
             return "ok"

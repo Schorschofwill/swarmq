@@ -98,9 +98,7 @@ if _HAVE_DISHKA:
             import valkey.asyncio
 
             t0 = time.perf_counter()
-            client = valkey.asyncio.Valkey.from_url(
-                BACKEND_URL, client_name=CLIENT_NAME, decode_responses=True
-            )
+            client = valkey.asyncio.Valkey.from_url(BACKEND_URL, client_name=CLIENT_NAME, decode_responses=True)
             # Erst der erste Befehl baut die Verbindung wirklich auf —
             # ohne ihn maesse die Amortisation nur einen Konstruktor.
             await client.ping()

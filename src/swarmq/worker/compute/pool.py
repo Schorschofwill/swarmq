@@ -136,6 +136,9 @@ class SlotPool:
         self._threads: dict[int, threading.Thread] = {}
         self._closing = False
         self._background: set[asyncio.Task[None]] = set()
+        # Weiterleitungen von Fortschritt: starke Referenz, sonst sammelt gc einen
+        # Task ein, dessen Sink auf ein sonst unreferenziertes Future wartet.
+        self._progress_forwards: set[asyncio.Task[None]] = set()
         self.stats = PoolStats()
         self.consecutive_unavailable = 0  # Handshake-Fehler in Folge; 0 nach jedem Ready
         # Diagnose (Messnachweis M0): (Dauer process.start(), Zeit bis Ready) je Spawn in ms.
@@ -149,7 +152,8 @@ class SlotPool:
         oder jeder Slot blockiert ist: ``/ready`` meldet den Pool dann als Ausfall,
         statt dass jede Nachricht bis zum Delivery-Limit requeued wird."""
         return (
-            self.consecutive_unavailable < self.unhealthy_after and self._usable_slots() > 0
+            self.consecutive_unavailable < self.unhealthy_after
+            and self._usable_slots() > 0
             and self._rejected_source is None
         )
 
@@ -161,7 +165,8 @@ class SlotPool:
         self.consecutive_unavailable += 1
         if self.consecutive_unavailable == self.unhealthy_after:
             logger.error(
-                "compute_pool_unhealthy", failures=self.consecutive_unavailable,
+                "compute_pool_unhealthy",
+                failures=self.consecutive_unavailable,
                 hint="no compute child completed the ready handshake; /ready reports the pool down",
             )
 
@@ -184,9 +189,11 @@ class SlotPool:
                 await self._kill_child(slot.active, reason="close")
             if slot.reuse_child is not None and slot.reuse_child is not slot.active:
                 await self._end_child(slot.reuse_child, reason="close")
-        if self._background:
-            # Begrenzt: ein haengender Recycling-Hook darf den Shutdown nicht aufhalten.
-            _done, pending = await asyncio.wait(set(self._background), timeout=self.end_grace_s)
+        lingering = self._background | self._progress_forwards
+        if lingering:
+            # Begrenzt: ein haengender Recycling-Hook oder Fortschritts-Sink darf den
+            # Shutdown nicht aufhalten.
+            _done, pending = await asyncio.wait(lingering, timeout=self.end_grace_s)
             for task in pending:
                 task.cancel()
             if pending:
@@ -239,11 +246,12 @@ class SlotPool:
                 # Das Ergebnis ist festgeschrieben; das Recycling laeuft im Hintergrund,
                 # damit ein spaeter Cancel es nicht mehr verwerfen kann.
                 self._schedule_recycle(slot, child)
-            return envelope
         except asyncio.CancelledError:
             if child is not None:
                 await self._kill_child_uninterruptible(child, reason="cancelled")
             raise
+        else:
+            return envelope
         finally:
             slot.active = None
             if not slot.blocked and not self._closing:
@@ -281,21 +289,29 @@ class SlotPool:
         while True:
             try:
                 await asyncio.shield(kill)
-                return
             except asyncio.CancelledError:
                 if kill.done():
                     raise
+            else:
+                return
 
     # ------------------------------------------------------------------ Kinder
 
     async def _spawn_fresh(self, slot: _Slot, job: ComputeJob, *, pending: asyncio.Future[ResultEnvelope]) -> _Child:
         recv_conn, send_conn = self._ctx.Pipe(duplex=False)
         process = self._ctx.Process(
-            target=child_once, args=(job, send_conn, slot.index), name=f"swarmq-compute-{slot.index}",
+            target=child_once,
+            args=(job, send_conn, slot.index),
+            name=f"swarmq-compute-{slot.index}",
         )
         return await self._start_child(
-            process, slot, conn=recv_conn, child_side=(send_conn,), job_conn=None,
-            pending=pending, task_id=job.task_id,
+            process,
+            slot,
+            conn=recv_conn,
+            child_side=(send_conn,),
+            job_conn=None,
+            pending=pending,
+            task_id=job.task_id,
         )
 
     async def _ensure_reuse_child(self, slot: _Slot) -> _Child:
@@ -310,7 +326,9 @@ class SlotPool:
         recv_conn, send_conn = self._ctx.Pipe(duplex=False)
         job_r, job_w = self._ctx.Pipe(duplex=False)
         process = self._ctx.Process(
-            target=child_loop, args=(slot.index, job_r, send_conn), name=f"swarmq-compute-slot-{slot.index}",
+            target=child_loop,
+            args=(slot.index, job_r, send_conn),
+            name=f"swarmq-compute-slot-{slot.index}",
         )
         child = await self._start_child(process, slot, conn=recv_conn, child_side=(send_conn, job_r), job_conn=job_w)
         slot.reuse_child = child
@@ -329,8 +347,13 @@ class SlotPool:
     ) -> _Child:
         loop = asyncio.get_running_loop()
         child = _Child(
-            process=process, slot=slot.index, conn=conn, job_conn=job_conn, ready=loop.create_future(),
-            pending=pending, current_task_id=task_id,
+            process=process,
+            slot=slot.index,
+            conn=conn,
+            job_conn=job_conn,
+            ready=loop.create_future(),
+            pending=pending,
+            current_task_id=task_id,
         )
         spawn_t0 = time.monotonic()
         try:
@@ -363,7 +386,10 @@ class SlotPool:
         self._children[process.pid] = child
         self.stats.started += 1
         reader = threading.Thread(
-            target=self._reader, args=(child,), name=f"swarmq-compute-reader-{process.pid}", daemon=True,
+            target=self._reader,
+            args=(child,),
+            name=f"swarmq-compute-reader-{process.pid}",
+            daemon=True,
         )
         self._threads[process.pid] = reader
         reader.start()
@@ -391,11 +417,11 @@ class SlotPool:
         while True:
             try:
                 raw = conn.recv_bytes()
-            except Exception:  # EOF, geschlossenes Handle, abgerissener Rahmen: das Kind ist weg
+            except Exception:  # noqa: BLE001 - EOF, geschlossenes Handle, abgerissener Rahmen: das Kind ist weg
                 break
             try:
-                msg = pickle.loads(raw)
-            except Exception as exc:  # Dekodierfehler trifft nur dieses Kind
+                msg = pickle.loads(raw)  # noqa: S301 - Daten aus dem eigenen Kindprozess
+            except Exception as exc:  # noqa: BLE001 - Dekodierfehler trifft nur dieses Kind
                 self._loop.call_soon_threadsafe(self._on_decode_error, child, exc)
                 continue
             self._loop.call_soon_threadsafe(self._on_message, child, msg)
@@ -418,8 +444,11 @@ class SlotPool:
                 return
             if envelope.task_id != child.current_task_id:
                 logger.warning(
-                    "compute_result_task_mismatch", expected=child.current_task_id,
-                    received=envelope.task_id, slot=child.slot, pid=child.pid,
+                    "compute_result_task_mismatch",
+                    expected=child.current_task_id,
+                    received=envelope.task_id,
+                    slot=child.slot,
+                    pid=child.pid,
                 )
                 return
             child.pending.set_result(envelope)
@@ -441,9 +470,7 @@ class SlotPool:
         self.stats.undecodable += 1
         logger.error("compute_result_undecodable", slot=child.slot, pid=child.pid, **_error_fields(exc))
         if child.pending is not None and not child.pending.done():
-            child.pending.set_exception(
-                ChildDied(f"compute child pid={child.pid} sent an undecodable result: {exc!r}")
-            )
+            child.pending.set_exception(ChildDied(f"compute child pid={child.pid} sent an undecodable result: {exc!r}"))
 
     def _on_eof(self, child: _Child) -> None:
         """EOF des Rueckkanals: alle Ergebnisse sind verarbeitet, das Kind ist weg."""
@@ -488,7 +515,9 @@ class SlotPool:
         async def _forward() -> None:
             await sink(msg)
 
-        self._loop.create_task(_forward())
+        task = self._loop.create_task(_forward())
+        self._progress_forwards.add(task)
+        task.add_done_callback(self._progress_forwards.discard)
 
     # ------------------------------------------------------------------ Recycling und Kill
 
@@ -566,7 +595,10 @@ class SlotPool:
         slot.blocked_reason = reason
         self.stats.blocked_slots.add(slot.index)
         logger.error(
-            "compute_child_unreaped", slot=child.slot, pid=child.pid, reason=reason,
+            "compute_child_unreaped",
+            slot=child.slot,
+            pid=child.pid,
+            reason=reason,
             hint="child survived SIGKILL (D-state?); slot stays blocked",
         )
         if self._usable_slots() == 0 and self._free is not None:

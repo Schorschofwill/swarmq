@@ -40,11 +40,14 @@ async def test_at_penultimate_delivery_goes_to_application_dead_letter(count):
     gate, dead_letter = _gate(limit=20)
     delivery = SimpleNamespace(headers={"x-delivery-count": count})
     outcome = await gate.apply(delivery, _ctx())
-    assert isinstance(outcome, Terminal) and outcome.release_unique is False
+    assert isinstance(outcome, Terminal)
+    assert outcome.release_unique is False
     dead_letter.assert_awaited_once()
     args = dead_letter.await_args.args
-    assert args[0] is delivery and args[1].task_id == "t1"
-    assert "WorkerHungError" in args[2] and f"delivered {count} times" in args[2]
+    assert args[0] is delivery
+    assert args[1].task_id == "t1"
+    assert "WorkerHungError" in args[2]
+    assert f"delivered {count} times" in args[2]
 
 
 @pytest.mark.timeout(5)
@@ -101,7 +104,8 @@ async def test_acquired_count_at_limit_reports_redelivery_limit_error():
 
     outcome = await gate.apply(SimpleNamespace(headers={"x-delivery-count": 1, "x-acquired-count": 25}), _ctx())
 
-    assert isinstance(outcome, Terminal) and outcome.release_unique is False
+    assert isinstance(outcome, Terminal)
+    assert outcome.release_unique is False
     _delivery, _ctx_arg, message, error_type = dead_letter.await_args.args
     assert error_type == "RedeliveryLimitError"
     assert message.startswith("RedeliveryLimitError: handed back 25 times")

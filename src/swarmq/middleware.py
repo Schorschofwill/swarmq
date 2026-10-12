@@ -98,14 +98,10 @@ class Middleware:
     async def pre_execute(self, message: MessageContext) -> None:
         """Called before task execution. Errors are logged, not raised."""
 
-    async def post_execute(
-        self, message: MessageContext, result: Any = None
-    ) -> None:
+    async def post_execute(self, message: MessageContext, result: Any = None) -> None:
         """Called after successful task execution. Errors are logged, not raised."""
 
-    async def on_error(
-        self, message: MessageContext, exception: BaseException
-    ) -> None:
+    async def on_error(self, message: MessageContext, exception: BaseException) -> None:
         """Called when task execution raised. Errors are logged, not raised."""
 
     async def on_retry(
@@ -132,34 +128,22 @@ class MiddlewareChain:
     async def run_post_enqueue(self, message: MessageContext) -> None:
         """Reverse order. Errors logged, not propagated."""
         for mw in reversed(self._middlewares):
-            await _swallow(
-                "post_enqueue", mw, partial(mw.post_enqueue, message)
-            )
+            await _swallow("post_enqueue", mw, partial(mw.post_enqueue, message))
 
     async def run_pre_execute(self, message: MessageContext) -> None:
         """Forward order. Errors logged, not propagated."""
         for mw in self._middlewares:
-            await _swallow(
-                "pre_execute", mw, partial(mw.pre_execute, message)
-            )
+            await _swallow("pre_execute", mw, partial(mw.pre_execute, message))
 
-    async def run_post_execute(
-        self, message: MessageContext, result: Any = None
-    ) -> None:
+    async def run_post_execute(self, message: MessageContext, result: Any = None) -> None:
         """Reverse order. Errors logged, not propagated."""
         for mw in reversed(self._middlewares):
-            await _swallow(
-                "post_execute", mw, partial(mw.post_execute, message, result)
-            )
+            await _swallow("post_execute", mw, partial(mw.post_execute, message, result))
 
-    async def run_on_error(
-        self, message: MessageContext, exception: BaseException
-    ) -> None:
+    async def run_on_error(self, message: MessageContext, exception: BaseException) -> None:
         """Reverse order. Errors logged, not propagated."""
         for mw in reversed(self._middlewares):
-            await _swallow(
-                "on_error", mw, partial(mw.on_error, message, exception)
-            )
+            await _swallow("on_error", mw, partial(mw.on_error, message, exception))
 
     async def run_on_retry(
         self,

@@ -120,15 +120,26 @@ def guard(deps: MagicMock, backend: InMemoryBackend, dead_letter: AsyncMock) -> 
 
 def _ctx(task_id: str = "t-1", **info: object) -> GateContext:
     return GateContext(
-        task_id=task_id, task_name="t", queue="q", task_info=TaskInfo(name="t", queues=["q"], **info),  # type: ignore[arg-type]
+        task_id=task_id,
+        task_name="t",
+        queue="q",
+        task_info=TaskInfo(name="t", queues=["q"], **info),  # type: ignore[arg-type]
     )
 
 
 async def _other_claim(
-    backend: InMemoryBackend, identity: str = "t-1", retry_count: int = 0, owner: str = "other",
+    backend: InMemoryBackend,
+    identity: str = "t-1",
+    retry_count: int = 0,
+    owner: str = "other",
 ) -> str:
     claim = await backend.execution_guard.claim(
-        identity, owner=owner, retry_count=retry_count, ttl_ms=60_000, state_ttl_ms=600_000, max_orphans=3,
+        identity,
+        owner=owner,
+        retry_count=retry_count,
+        ttl_ms=60_000,
+        state_ttl_ms=600_000,
+        max_orphans=3,
     )
     return claim.status
 
@@ -139,7 +150,9 @@ async def test_first_delivery_claims_and_continues(guard: ExecutionGuard, backen
 
 
 async def test_done_marker_acks_and_skips(
-    guard: ExecutionGuard, backend: InMemoryBackend, deps: MagicMock,
+    guard: ExecutionGuard,
+    backend: InMemoryBackend,
+    deps: MagicMock,
 ) -> None:
     await _other_claim(backend)
     await backend.execution_guard.mark_done("t-1", owner="other", state_ttl_ms=600_000)
@@ -151,11 +164,14 @@ async def test_done_marker_acks_and_skips(
     assert outcome == Terminal.never_release()
     deps.broker.ack.assert_awaited_once_with(delivery)
     [skipped] = [e for e in logs if e["event"] == "duplicate_delivery_skipped"]
-    assert skipped["reason"] == "done" and skipped["task_id"] == "t-1"
+    assert skipped["reason"] == "done"
+    assert skipped["task_id"] == "t-1"
 
 
 async def test_attempt_overtaken_by_a_retry_acks_and_skips(
-    guard: ExecutionGuard, backend: InMemoryBackend, deps: MagicMock,
+    guard: ExecutionGuard,
+    backend: InMemoryBackend,
+    deps: MagicMock,
 ) -> None:
     await backend.execution_guard.mark_superseded("t-1", owner="other", retry_count=2, state_ttl_ms=600_000)
     stale = make_message(headers={"x-swarmq-retry-count": 1})
@@ -170,7 +186,9 @@ async def test_attempt_overtaken_by_a_retry_acks_and_skips(
 
 
 async def test_foreign_running_marker_defers_with_backoff_without_counting_a_retry(
-    guard: ExecutionGuard, backend: InMemoryBackend, deps: MagicMock,
+    guard: ExecutionGuard,
+    backend: InMemoryBackend,
+    deps: MagicMock,
 ) -> None:
     await _other_claim(backend)
     delivery = make_message(
@@ -185,13 +203,17 @@ async def test_foreign_running_marker_defers_with_backoff_without_counting_a_ret
     call = deps.broker.retry_later.await_args
     assert call.args == (delivery,)
     assert call.kwargs["headers"] == {
-        "x-swarmq-retry-count": 0, "x-swarmq-unique-hash": "h", "x-swarmq-guard-defer-count": 1,
+        "x-swarmq-retry-count": 0,
+        "x-swarmq-unique-hash": "h",
+        "x-swarmq-guard-defer-count": 1,
     }
     assert 800 <= call.kwargs["delay_ms"] <= 1200
 
 
 async def test_successive_deferral_counts_up_and_waits_longer(
-    guard: ExecutionGuard, backend: InMemoryBackend, deps: MagicMock,
+    guard: ExecutionGuard,
+    backend: InMemoryBackend,
+    deps: MagicMock,
 ) -> None:
     await _other_claim(backend)
 
@@ -202,11 +224,14 @@ async def test_successive_deferral_counts_up_and_waits_longer(
     assert call.kwargs["headers"]["x-swarmq-guard-defer-count"] == 4
     assert 6400 <= call.kwargs["delay_ms"] <= 9600
     [deferred] = [e for e in logs if e["event"] == "execution_guard_deferred"]
-    assert deferred["defer_count"] == 4 and deferred["delay_ms"] == call.kwargs["delay_ms"]
+    assert deferred["defer_count"] == 4
+    assert deferred["delay_ms"] == call.kwargs["delay_ms"]
 
 
 async def test_failed_deferral_publish_falls_back_to_redeliver(
-    guard: ExecutionGuard, backend: InMemoryBackend, deps: MagicMock,
+    guard: ExecutionGuard,
+    backend: InMemoryBackend,
+    deps: MagicMock,
 ) -> None:
     await _other_claim(backend)
     deps.broker.retry_later.side_effect = BrokerConnectionError("publish failed")
@@ -219,13 +244,21 @@ async def test_failed_deferral_publish_falls_back_to_redeliver(
 async def _crash_three_times(backend: InMemoryBackend, clock: FakeClock, identity: str = "t-1") -> None:
     for owner in ("a", "b", "c"):
         await backend.execution_guard.claim(
-            identity, owner=owner, retry_count=0, ttl_ms=1_000, state_ttl_ms=600_000, max_orphans=3,
+            identity,
+            owner=owner,
+            retry_count=0,
+            ttl_ms=1_000,
+            state_ttl_ms=600_000,
+            max_orphans=3,
         )
         await clock.advance(2)
 
 
 async def test_orphan_limit_dead_letters_as_worker_hung_error(
-    guard: ExecutionGuard, backend: InMemoryBackend, clock: FakeClock, dead_letter: AsyncMock,
+    guard: ExecutionGuard,
+    backend: InMemoryBackend,
+    clock: FakeClock,
+    dead_letter: AsyncMock,
 ) -> None:
     await _crash_three_times(backend, clock)
     delivery = make_message(headers={})
@@ -235,11 +268,15 @@ async def test_orphan_limit_dead_letters_as_worker_hung_error(
 
     assert outcome == Terminal.already_released()
     dead_letter.assert_awaited_once()
+    assert dead_letter.await_args is not None
     args = dead_letter.await_args.args
-    assert args[0] is delivery and args[1].task_id == "t-1"
-    assert "WorkerHungError" in args[2] and args[3] == "WorkerHungError"
+    assert args[0] is delivery
+    assert args[1].task_id == "t-1"
+    assert "WorkerHungError" in args[2]
+    assert args[3] == "WorkerHungError"
     [limit] = [e for e in logs if e["event"] == "execution_guard_orphan_limit"]
-    assert limit["orphans"] == 3 and limit["log_level"] == "error"
+    assert limit["orphans"] == 3
+    assert limit["log_level"] == "error"
 
 
 async def test_unreachable_backend_defers_like_backend_defer(deps: MagicMock, dead_letter: AsyncMock) -> None:
@@ -296,7 +333,9 @@ async def test_without_store_the_guard_is_inactive(deps: MagicMock, dead_letter:
 
 
 async def test_replay_id_is_a_new_execution_identity(
-    guard: ExecutionGuard, backend: InMemoryBackend, deps: MagicMock,
+    guard: ExecutionGuard,
+    backend: InMemoryBackend,
+    deps: MagicMock,
 ) -> None:
     """``dlq retry`` (bzw. die Wiederholung eines Workflow-Schritts mit
     deterministischer Task-ID) innerhalb der Done-TTL läuft erneut; eine
@@ -310,7 +349,8 @@ async def test_replay_id_is_a_new_execution_identity(
 
 
 async def test_broker_dead_lettered_copy_is_a_new_execution_identity(
-    guard: ExecutionGuard, backend: InMemoryBackend,
+    guard: ExecutionGuard,
+    backend: InMemoryBackend,
 ) -> None:
     """MR 12 (BZ-08): ein Replay nach einem Broker-DLX (``x-death`` fuer die
     Haupt-Queue) ist die Identitaet ``task_id#n`` -- es laeuft trotz Done-
@@ -327,7 +367,9 @@ async def test_broker_dead_lettered_copy_is_a_new_execution_identity(
 
 
 async def test_replay_identity_done_marker_outlives_the_dead_letter_retention(
-    guard: ExecutionGuard, deps: MagicMock, clock: FakeClock,
+    guard: ExecutionGuard,
+    deps: MagicMock,
+    clock: FakeClock,
 ) -> None:
     """MR 12 (A4): der Done-Marker eines Replays (H gesetzt oder n > 0) lebt
     mindestens ``dead_letter_ttl_s`` -- ein erneuter ``dlq retry`` derselben
@@ -348,7 +390,9 @@ async def test_replay_identity_done_marker_outlives_the_dead_letter_retention(
 
 
 async def test_replay_done_marker_without_a_retention_lives_the_backlog_ttl(
-    guard: ExecutionGuard, deps: MagicMock, clock: FakeClock,
+    guard: ExecutionGuard,
+    deps: MagicMock,
+    clock: FakeClock,
 ) -> None:
     """``dead_letter_ttl_s=None`` (unbegrenzte DLQ): statt unbegrenzt gilt
     ``execution_guard_backlog_ttl_s`` (7 d; Abschnitt 7)."""
@@ -376,7 +420,10 @@ async def test_settle_releases_a_lease_no_verb_concluded(guard: ExecutionGuard, 
 
 
 async def test_renewal_keeps_the_own_running_marker_alive(
-    deps: MagicMock, backend: InMemoryBackend, clock: FakeClock, dead_letter: AsyncMock,
+    deps: MagicMock,
+    backend: InMemoryBackend,
+    clock: FakeClock,
+    dead_letter: AsyncMock,
 ) -> None:
     deps.config = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x", execution_guard_ttl_s=3.0)
     guard = ExecutionGuard(deps, store=lambda: backend.execution_guard, dead_letter=dead_letter)
@@ -392,7 +439,10 @@ async def test_renewal_keeps_the_own_running_marker_alive(
 
 
 async def test_lost_marker_is_logged_counted_and_not_touched(
-    deps: MagicMock, backend: InMemoryBackend, clock: FakeClock, dead_letter: AsyncMock,
+    deps: MagicMock,
+    backend: InMemoryBackend,
+    clock: FakeClock,
+    dead_letter: AsyncMock,
 ) -> None:
     """Ist der eigene Marker abgelaufen und von einer anderen Zustellung
     übernommen, wird der fremde Marker weder verlängert noch gelöscht."""
@@ -409,7 +459,8 @@ async def test_lost_marker_is_logged_counted_and_not_touched(
         await guard.settle(delivery)
 
     [lost] = [e for e in logs if e["event"] == "execution_guard_lease_lost"]
-    assert lost["log_level"] == "warning" and lost["task_id"] == "t-1"
+    assert lost["log_level"] == "warning"
+    assert lost["task_id"] == "t-1"
     assert events == ["lease_lost"]
     await clock.advance(30)
     # Der fremde Marker steht noch (ein Dritter sieht ihn als laufend).
@@ -417,7 +468,10 @@ async def test_lost_marker_is_logged_counted_and_not_touched(
 
 
 async def test_lost_marker_is_reported_once(
-    deps: MagicMock, backend: InMemoryBackend, clock: FakeClock, dead_letter: AsyncMock,
+    deps: MagicMock,
+    backend: InMemoryBackend,
+    clock: FakeClock,
+    dead_letter: AsyncMock,
 ) -> None:
     events: list[str] = []
     deps.config = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x", execution_guard_ttl_s=1.0)
@@ -434,7 +488,9 @@ async def test_lost_marker_is_reported_once(
 
 
 async def test_renewal_failure_is_logged_and_does_not_raise(
-    guard: ExecutionGuard, backend: InMemoryBackend, monkeypatch: pytest.MonkeyPatch,
+    guard: ExecutionGuard,
+    backend: InMemoryBackend,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     delivery = make_message(headers={})
     await guard.apply(delivery, _ctx())
@@ -448,7 +504,10 @@ async def test_renewal_failure_is_logged_and_does_not_raise(
 
 
 async def test_renewal_ticks_while_leases_exist_and_stops_without(
-    deps: MagicMock, backend: InMemoryBackend, dead_letter: AsyncMock, monkeypatch: pytest.MonkeyPatch,
+    deps: MagicMock,
+    backend: InMemoryBackend,
+    dead_letter: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Ein Takt für alle Leases eines Workers, alle ``ttl/3``; er beginnt mit
     der ersten Lease und endet mit der letzten (kein Dauer-Task)."""
@@ -493,7 +552,11 @@ async def test_renewal_ticks_while_leases_exist_and_stops_without(
 
 @pytest.mark.parametrize("scenario", ["duplicate_skipped", "deferred", "orphan_limit"])
 async def test_guard_outcomes_are_counted(
-    scenario: str, deps: MagicMock, backend: InMemoryBackend, clock: FakeClock, dead_letter: AsyncMock,
+    scenario: str,
+    deps: MagicMock,
+    backend: InMemoryBackend,
+    clock: FakeClock,
+    dead_letter: AsyncMock,
 ) -> None:
     events: list[str] = []
     guard = ExecutionGuard(deps, store=lambda: backend.execution_guard, dead_letter=dead_letter, on_event=events.append)
@@ -529,7 +592,10 @@ def test_other_copies_do_not_inherit_the_guard_defer_count() -> None:
 
 
 async def test_lease_concluded_during_renewal_is_not_reported_lost(
-    deps: MagicMock, backend: InMemoryBackend, dead_letter: AsyncMock, monkeypatch: pytest.MonkeyPatch,
+    deps: MagicMock,
+    backend: InMemoryBackend,
+    dead_letter: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Schließt das Verb die Lease ab, während der Takt verlängert, findet
     die Verlängerung keinen Marker mehr -- das ist kein Verlust."""
@@ -575,7 +641,9 @@ async def test_renewal_tick_renews_all_leases_concurrently(guard: ExecutionGuard
 
 
 async def test_claim_that_failed_on_the_client_is_released_in_the_background(
-    deps: MagicMock, backend: InMemoryBackend, dead_letter: AsyncMock,
+    deps: MagicMock,
+    backend: InMemoryBackend,
+    dead_letter: AsyncMock,
 ) -> None:
     """Der Claim lief im Store, nur die Antwort ging verloren: ohne Release
     liefe der Marker ab und zaehlte bei der Neuzustellung als Waise."""
@@ -591,7 +659,7 @@ async def test_claim_that_failed_on_the_client_is_released_in_the_background(
         await real_release(*args, **kwargs)  # type: ignore[arg-type]
         released.set()
 
-    store.claim = claim_then_fail  # type: ignore[method-assign]
+    store.claim = claim_then_fail  # type: ignore[method-assign, assignment]  # Fehler-Doppel um die echte Methode
     store.release = release  # type: ignore[method-assign]
     guard = ExecutionGuard(deps, store=lambda: store, dead_letter=dead_letter)
 
@@ -604,7 +672,9 @@ async def test_claim_that_failed_on_the_client_is_released_in_the_background(
 
 
 async def test_background_release_after_a_failed_claim_leaves_a_foreign_marker(
-    deps: MagicMock, backend: InMemoryBackend, dead_letter: AsyncMock,
+    deps: MagicMock,
+    backend: InMemoryBackend,
+    dead_letter: AsyncMock,
 ) -> None:
     store = backend.execution_guard
     await _other_claim(backend)  # fremder Running-Marker
@@ -618,7 +688,7 @@ async def test_background_release_after_a_failed_claim_leaves_a_foreign_marker(
         await real_release(*args, **kwargs)  # type: ignore[arg-type]
         released.set()
 
-    store.claim = fail  # type: ignore[method-assign]
+    store.claim = fail  # type: ignore[method-assign, assignment]  # Fehler-Doppel statt der echten Methode
     store.release = release  # type: ignore[method-assign]
     guard = ExecutionGuard(deps, store=lambda: store, dead_letter=dead_letter)
 
@@ -629,20 +699,27 @@ async def test_background_release_after_a_failed_claim_leaves_a_foreign_marker(
     assert await _other_claim(backend, owner="third") == "running"
 
 
-
 def _stalled_guard(
-    deps: MagicMock, backend: InMemoryBackend, dead_letter: AsyncMock, events: list[str],
+    deps: MagicMock,
+    backend: InMemoryBackend,
+    dead_letter: AsyncMock,
+    events: list[str],
 ) -> ExecutionGuard:
     # Nominell 1 s, 2 s, 4 s ...: die zweite Zurueckstellung erreicht 3 s.
     deps.config = SwarmQConfig(
-        broker_url="amqp://x", backend_url="valkey://x", consumer_timeout_s=3.0,
-        backend_defer_base_delay=1.0, backend_defer_max_delay=60.0,
+        broker_url="amqp://x",
+        backend_url="valkey://x",
+        consumer_timeout_s=3.0,
+        backend_defer_base_delay=1.0,
+        backend_defer_max_delay=60.0,
     )
     return ExecutionGuard(deps, store=lambda: backend.execution_guard, dead_letter=dead_letter, on_event=events.append)
 
 
 async def test_deferral_crossing_the_consumer_timeout_warns_but_keeps_deferring(
-    deps: MagicMock, backend: InMemoryBackend, dead_letter: AsyncMock,
+    deps: MagicMock,
+    backend: InMemoryBackend,
+    dead_letter: AsyncMock,
 ) -> None:
     events: list[str] = []
     guard = _stalled_guard(deps, backend, dead_letter, events)
@@ -655,14 +732,18 @@ async def test_deferral_crossing_the_consumer_timeout_warns_but_keeps_deferring(
     deps.broker.retry_later.assert_awaited_once()
     dead_letter.assert_not_awaited()
     [stalled] = [e for e in logs if e["event"] == "execution_guard_defer_stalled"]
-    assert stalled["log_level"] == "warning" and stalled["task_id"] == "t-1"
+    assert stalled["log_level"] == "warning"
+    assert stalled["task_id"] == "t-1"
     assert stalled["defer_count"] == 2
     assert "defer_stalled" in events
 
 
 @pytest.mark.parametrize("prior", [0, 2, 5000])
 async def test_deferral_before_or_after_the_crossing_does_not_warn(
-    prior: int, deps: MagicMock, backend: InMemoryBackend, dead_letter: AsyncMock,
+    prior: int,
+    deps: MagicMock,
+    backend: InMemoryBackend,
+    dead_letter: AsyncMock,
 ) -> None:
     """Einmal je Nachricht; auch nach tausenden Zurueckstellungen (Haenger
     ueber Tage) rechnet die Summe ohne Ueberlauf."""
@@ -701,7 +782,9 @@ def _fail_first(store: object, name: str, failures: int = 1) -> tuple[list[objec
 
 
 async def test_failed_release_is_retried_in_the_background(
-    deps: MagicMock, backend: InMemoryBackend, dead_letter: AsyncMock,
+    deps: MagicMock,
+    backend: InMemoryBackend,
+    dead_letter: AsyncMock,
 ) -> None:
     store = backend.execution_guard
     guard = ExecutionGuard(deps, store=lambda: store, dead_letter=dead_letter, sleep=_no_wait)
@@ -716,12 +799,15 @@ async def test_failed_release_is_retried_in_the_background(
     claim = await store.claim("t-1", owner="next", retry_count=0, ttl_ms=60_000, state_ttl_ms=600_000, max_orphans=3)
     assert (claim.status, claim.orphans) == ("claimed", 0)
     assert [e["event"] for e in logs if e["event"].startswith("execution_guard_finish")] == [
-        "execution_guard_finish_failed", "execution_guard_finish_recovered",
+        "execution_guard_finish_failed",
+        "execution_guard_finish_recovered",
     ]
 
 
 async def test_failed_done_marker_is_retried_as_done(
-    deps: MagicMock, backend: InMemoryBackend, dead_letter: AsyncMock,
+    deps: MagicMock,
+    backend: InMemoryBackend,
+    dead_letter: AsyncMock,
 ) -> None:
     """Das Ack lief: das Nachholen setzt den Done-Zustand, nicht nur die
     Freigabe -- die Neuzustellung wird übersprungen statt erneut ausgeführt."""
@@ -740,7 +826,9 @@ async def test_failed_done_marker_is_retried_as_done(
 
 
 async def test_failed_superseded_marker_is_retried_with_the_retry_count(
-    deps: MagicMock, backend: InMemoryBackend, dead_letter: AsyncMock,
+    deps: MagicMock,
+    backend: InMemoryBackend,
+    dead_letter: AsyncMock,
 ) -> None:
     store = backend.execution_guard
     guard = ExecutionGuard(deps, store=lambda: store, dead_letter=dead_letter, sleep=_no_wait)
@@ -758,18 +846,23 @@ async def test_failed_superseded_marker_is_retried_with_the_retry_count(
 
 
 async def _until(predicate: object) -> None:
-    while not predicate():  # type: ignore[operator]
+    while not predicate():  # type: ignore[operator]  # noqa: ASYNC110 - Praedikat ueber erfasste Logs, kein Event verfuegbar
         await asyncio.sleep(0)
 
 
 async def test_retrying_a_failed_marker_gives_up_after_about_one_ttl(
-    deps: MagicMock, backend: InMemoryBackend, dead_letter: AsyncMock,
+    deps: MagicMock,
+    backend: InMemoryBackend,
+    dead_letter: AsyncMock,
 ) -> None:
     """Nominell 1, 2, 4, 8 s: nach der vierten Wartezeit (Summe 15 s) ist
     die TTL von 10 s überschritten -- letzter Versuch, dann Aufgabe."""
     deps.config = SwarmQConfig(
-        broker_url="amqp://x", backend_url="valkey://x", execution_guard_ttl_s=10.0,
-        backend_defer_base_delay=1.0, backend_defer_max_delay=60.0,
+        broker_url="amqp://x",
+        backend_url="valkey://x",
+        execution_guard_ttl_s=10.0,
+        backend_defer_base_delay=1.0,
+        backend_defer_max_delay=60.0,
     )
     store = backend.execution_guard
     guard = ExecutionGuard(deps, store=lambda: store, dead_letter=dead_letter, sleep=_no_wait)
@@ -785,7 +878,9 @@ async def test_retrying_a_failed_marker_gives_up_after_about_one_ttl(
 
     assert len(calls) == 5  # der Versuch im Verb plus vier nachgeholte
     [gave_up] = [e for e in logs if e["event"] == "execution_guard_finish_gave_up"]
-    assert gave_up["log_level"] == "warning" and gave_up["marker"] == "release" and gave_up["attempts"] == 4
+    assert gave_up["log_level"] == "warning"
+    assert gave_up["marker"] == "release"
+    assert gave_up["attempts"] == 4
 
 
 async def _sleep_forever(_delay: float) -> None:
@@ -793,7 +888,9 @@ async def _sleep_forever(_delay: float) -> None:
 
 
 async def test_drain_makes_a_waiting_retry_try_once_more_right_away(
-    deps: MagicMock, backend: InMemoryBackend, dead_letter: AsyncMock,
+    deps: MagicMock,
+    backend: InMemoryBackend,
+    dead_letter: AsyncMock,
 ) -> None:
     """Shutdown: der Nachholversuch wartet nicht seine Backoff-Zeit ab,
     sondern versucht es sofort ein letztes Mal, bevor das Backend schließt."""
@@ -811,7 +908,9 @@ async def test_drain_makes_a_waiting_retry_try_once_more_right_away(
 
 
 async def test_drain_with_a_hanging_store_returns_after_the_bounded_last_attempt(
-    deps: MagicMock, backend: InMemoryBackend, dead_letter: AsyncMock,
+    deps: MagicMock,
+    backend: InMemoryBackend,
+    dead_letter: AsyncMock,
 ) -> None:
     deps.config = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x", backend_op_timeout=0.02)
     store = backend.execution_guard

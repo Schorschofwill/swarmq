@@ -1,10 +1,9 @@
 """Tests fuer swarmq.worker.compute.child — Kind-Laufzeit ohne echten Fork (U4)."""
 
-
 import asyncio
 import os
 import queue as _queue
-from typing import Any
+from typing import Any, cast, override
 
 import pytest
 
@@ -12,6 +11,10 @@ from swarmq.exceptions import NoRetry, SoftTimeoutError
 from swarmq.task import Task, TaskInfo
 from swarmq.worker.compute import child
 from swarmq.worker.compute.envelope import ComputeJob
+
+# Sekundenbruchteil fuer schnelle Timeout-Tests. ``TaskInfo`` annotiert die
+# Timeouts als ``int``, verarbeitet zur Laufzeit aber jede Zahl.
+_FAST_TIMEOUT_S = cast("int", 0.05)
 
 
 @pytest.fixture(autouse=True)
@@ -34,18 +37,22 @@ async def test_run_job_returns_value_and_calls_lifecycle_in_order():
     class Plain(Task):
         task_info = TaskInfo(name="plain", queues=["q"])
 
+        @override
         async def pre_execution(self) -> None:
             calls.append("pre")
 
+        @override
         async def run(self, x: int) -> int:
             calls.append("run")
             return x * 2
 
+        @override
         async def post_execution(self) -> None:
             calls.append("post")
 
     env = await child.run_job(_job("plain", 21), _queue.Queue())
-    assert env.ok and env.value == 42
+    assert env.ok
+    assert env.value == 42
     assert calls == ["pre", "run", "post"]
     assert env.duration_s >= 0
 
@@ -58,6 +65,7 @@ async def test_run_job_envelope_carries_the_pid_of_the_child():
     class Plain(Task):
         task_info = TaskInfo(name="plain", queues=["q"])
 
+        @override
         async def run(self) -> int:
             return 1
 
@@ -71,6 +79,7 @@ async def test_run_job_wraps_exception_typed():
     class Failing(Task):
         task_info = TaskInfo(name="failing", queues=["q"])
 
+        @override
         async def run(self) -> None:
             raise NoRetry("deterministic")
 
@@ -82,8 +91,9 @@ async def test_run_job_wraps_exception_typed():
 @pytest.mark.timeout(5)
 async def test_run_job_soft_timeout_becomes_soft_timeout_error():
     class Slow(Task):
-        task_info = TaskInfo(name="slow", queues=["q"], soft_timeout=0.05)
+        task_info = TaskInfo(name="slow", queues=["q"], soft_timeout=_FAST_TIMEOUT_S)
 
+        @override
         async def run(self) -> None:
             await asyncio.sleep(1)
 
@@ -112,6 +122,7 @@ async def test_progress_goes_through_the_shim_queue():
     class Reporting(Task):
         task_info = TaskInfo(name="reporting", queues=["q"])
 
+        @override
         async def run(self) -> str:
             await self.update_progress(1, 2, "half")
             await self.update_progress(2, 2, "done")
@@ -120,14 +131,15 @@ async def test_progress_goes_through_the_shim_queue():
     env = await child.run_job(_job("reporting"), progress)
     assert env.ok
     kinds = [msg[0] for msg in progress.sent]
-    assert kinds and set(kinds) <= {"progress", "publish"}
+    assert kinds
+    assert set(kinds) <= {"progress", "publish"}
 
 
 @pytest.mark.timeout(5)
 async def test_di_request_scope_commits_on_success_and_rolls_back_on_exception():
     """R26 / AE14: yield-Provider sehen Erfolg (None) bzw. die Exception."""
     pytest.importorskip("dishka")
-    from collections.abc import AsyncIterable
+    from collections.abc import AsyncGenerator
 
     from dishka import FromDishka, Provider, Scope, from_context, make_async_container, provide
 
@@ -142,7 +154,7 @@ async def test_di_request_scope_commits_on_success_and_rolls_back_on_exception()
         tc = from_context(di.TaskContext, scope=Scope.REQUEST)
 
         @provide(scope=Scope.REQUEST)
-        async def tx(self, ctx: di.TaskContext) -> AsyncIterable[Tx]:
+        async def tx(self, ctx: di.TaskContext) -> AsyncGenerator[Tx, BaseException | None]:
             # dishka *sendet* die Exception als Yield-Wert (asend), wirft sie nicht.
             exc = yield Tx()
             if exc is None:
@@ -155,18 +167,21 @@ async def test_di_request_scope_commits_on_success_and_rolls_back_on_exception()
     class Good(Task):
         task_info = TaskInfo(name="good_di", queues=["q"])
 
-        async def run(self, tx: FromDishka[Tx]) -> str:  # type: ignore[valid-type]
+        @override
+        async def run(self, tx: FromDishka[Tx]) -> str:
             return "ok"
 
     class Bad(Task):
         task_info = TaskInfo(name="bad_di", queues=["q"])
 
-        async def run(self, tx: FromDishka[Tx]) -> str:  # type: ignore[valid-type]
+        @override
+        async def run(self, tx: FromDishka[Tx]) -> str:
             raise ValueError("boom")
 
     ok = await child.run_job(_job("good_di"), _queue.Queue())
     bad = await child.run_job(_job("bad_di"), _queue.Queue())
-    assert ok.ok and not bad.ok
+    assert ok.ok
+    assert not bad.ok
     assert events == [("commit", "tid-1"), ("rollback", "ValueError", "tid-1")]
 
 
@@ -189,8 +204,8 @@ def test_release_forkserver_alive_fd_closes_the_inherited_write_end(monkeypatch)
     monkeypatch.setattr(fs._forkserver, "_forkserver_alive_fd", w, raising=False)
     try:
         childmod.release_forkserver_alive_fd()
-        assert fs._forkserver._forkserver_alive_fd is None
-        with pytest.raises(OSError):
+        assert fs._forkserver._forkserver_alive_fd is None  # type: ignore[attr-defined]  # privates stdlib-Attribut
+        with pytest.raises(OSError, match=r"\[Errno 9\]"):  # EBADF
             os.fstat(w)
         assert os.read(r, 1) == b""  # EOF: kein Schreibende mehr offen
         childmod.release_forkserver_alive_fd()  # idempotent
@@ -216,7 +231,9 @@ async def test_recv_job_delivers_jobs_then_none_on_end_signal_and_eof():
     r, w = mp.Pipe(duplex=False)
     stop = asyncio.Event()
     w.send(_job("plain", 1))
-    assert (await child._recv_job(r, stop)).task_name == "plain"
+    first = await child._recv_job(r, stop)
+    assert first is not None
+    assert first.task_name == "plain"
     w.send(None)
     assert await child._recv_job(r, stop) is None
     w.close()
@@ -240,7 +257,8 @@ async def test_recv_job_returns_none_on_stop_and_on_an_unreadable_frame():
 
 
 @pytest.mark.timeout(5)
-async def test_serve_jobs_runs_consecutive_jobs_on_one_loop_and_ends_on_none(_quiet_child_logging):
+@pytest.mark.usefixtures("_quiet_child_logging")
+async def test_serve_jobs_runs_consecutive_jobs_on_one_loop_and_ends_on_none():
     import multiprocessing as mp
 
     seen_loops: list[int] = []
@@ -248,6 +266,7 @@ async def test_serve_jobs_runs_consecutive_jobs_on_one_loop_and_ends_on_none(_qu
     class LoopWitness(Task):
         task_info = TaskInfo(name="loop_witness", queues=["q"])
 
+        @override
         async def run(self, x: int) -> int:
             seen_loops.append(id(asyncio.get_running_loop()))
             return x + 1

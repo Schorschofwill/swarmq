@@ -72,16 +72,24 @@ def test_benchmark_all_scenarios_small_load() -> None:
 
     result = subprocess.run(
         [
-            "uv", "run", "--with-requirements",
+            "uv",
+            "run",
+            "--with-requirements",
             str(BENCH_PATH.parent / "requirements.txt"),
-            "python", "-u", str(BENCH_PATH),
-            "-n", "500", "-s", "all",
+            "python",
+            "-u",
+            str(BENCH_PATH),
+            "-n",
+            "500",
+            "-s",
+            "all",
         ],
         cwd=BENCH_PATH.parent,
         env=env,
         capture_output=True,
         text=True,
         timeout=180,
+        check=False,
     )
 
     combined = result.stdout + result.stderr
@@ -92,25 +100,19 @@ def test_benchmark_all_scenarios_small_load() -> None:
     )
     assert "TimeoutError" not in combined, (
         "hang regression: a completion-wait hit the 300s timeout. "
-        "Send SIGUSR1 <pid> to a live run to see the parked tasks.\n"
-        + combined[-4000:]
+        "Send SIGUSR1 <pid> to a live run to see the parked tasks.\n" + combined[-4000:]
     )
-    assert "Traceback" not in combined, (
-        "benchmark raised an unexpected exception:\n" + combined[-4000:]
-    )
-    assert result.returncode == 0, (
-        f"benchmark exited {result.returncode}. Last output:\n"
-        + combined[-4000:]
-    )
+    assert "Traceback" not in combined, "benchmark raised an unexpected exception:\n" + combined[-4000:]
+    assert result.returncode == 0, f"benchmark exited {result.returncode}. Last output:\n" + combined[-4000:]
     # Cheap sanity: every scenario header must appear.
     for marker in (
-        "Szenario 1:", "Szenario 6:", "Szenario 8:", "Szenario 9:",
+        "Szenario 1:",
+        "Szenario 6:",
+        "Szenario 8:",
+        "Szenario 9:",
         "GEWINNER PRO SZENARIO",
     ):
-        assert marker in combined, (
-            f"benchmark output missing {marker!r}. Last output:\n"
-            + combined[-4000:]
-        )
+        assert marker in combined, f"benchmark output missing {marker!r}. Last output:\n" + combined[-4000:]
 
     # Default (--repeat omitted) must not trigger the aggregate path.
     assert "AGGREGATE [" not in combined, (
@@ -142,16 +144,26 @@ def test_benchmark_repeat_mode_emits_aggregate() -> None:
 
     result = subprocess.run(
         [
-            "uv", "run", "--with-requirements",
+            "uv",
+            "run",
+            "--with-requirements",
             str(BENCH_PATH.parent / "requirements.txt"),
-            "python", "-u", str(BENCH_PATH),
-            "-n", "300", "-s", "enqueue_throughput", "--repeat", "2",
+            "python",
+            "-u",
+            str(BENCH_PATH),
+            "-n",
+            "300",
+            "-s",
+            "enqueue_throughput",
+            "--repeat",
+            "2",
         ],
         cwd=BENCH_PATH.parent,
         env=env,
         capture_output=True,
         text=True,
         timeout=180,
+        check=False,
     )
 
     combined = result.stdout + result.stderr
@@ -159,21 +171,12 @@ def test_benchmark_repeat_mode_emits_aggregate() -> None:
     assert "Connection closed" not in combined, combined[-4000:]
     assert "TimeoutError" not in combined, combined[-4000:]
     assert "Traceback" not in combined, combined[-4000:]
-    assert result.returncode == 0, (
-        f"benchmark exited {result.returncode}. Last output:\n"
-        + combined[-4000:]
-    )
+    assert result.returncode == 0, f"benchmark exited {result.returncode}. Last output:\n" + combined[-4000:]
 
     # The enqueue_throughput scenario runs three variants: RabbitMQ +
     # Valkey (LIST) + Valkey/Stream. --repeat 2 means six per-run prints
     # and three AGGREGATE lines (one per variant).
     throughput_count = combined.count("Throughput:")
-    assert throughput_count == 6, (
-        f"expected 6 per-run Throughput lines, got {throughput_count}.\n"
-        + combined[-4000:]
-    )
+    assert throughput_count == 6, f"expected 6 per-run Throughput lines, got {throughput_count}.\n" + combined[-4000:]
     aggregate_count = combined.count("AGGREGATE [2 runs]")
-    assert aggregate_count == 3, (
-        f"expected 3 AGGREGATE lines, got {aggregate_count}.\n"
-        + combined[-4000:]
-    )
+    assert aggregate_count == 3, f"expected 3 AGGREGATE lines, got {aggregate_count}.\n" + combined[-4000:]

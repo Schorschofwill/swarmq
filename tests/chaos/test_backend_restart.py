@@ -38,7 +38,9 @@ pytestmark = [pytest.mark.timeout(120)]
 def _docker_restart(container: str) -> None:
     subprocess.run(
         ["docker", "restart", container],
-        check=True, capture_output=True, timeout=60,
+        check=True,
+        capture_output=True,
+        timeout=60,
     )
 
 
@@ -66,7 +68,8 @@ async def _wait_valkey_reachable(url: str, timeout: float = 30.0) -> None:
 
 class TestBackendRestart:
     async def test_result_storage_survives_restart(
-        self, chaos_stack: ChaosStack,
+        self,
+        chaos_stack: ChaosStack,
     ) -> None:
         """SET + restart + GET returns the original bytes (AOF on)."""
         backend = ValkeyBackend(chaos_stack.valkey_url)
@@ -74,7 +77,9 @@ class TestBackendRestart:
         try:
             task_id = f"task-{uuid.uuid4().hex[:10]}"
             await backend.store_result(
-                task_id, b"persistent-payload", ttl_ms=60_000,
+                task_id,
+                b"persistent-payload",
+                ttl_ms=60_000,
             )
             # AOF flushes on every write (default: appendfsync
             # everysec). Let at least one fsync window pass so the
@@ -91,9 +96,7 @@ class TestBackendRestart:
             await backend2.connect()
             try:
                 got = await backend2.get_result(task_id)
-                assert got == b"persistent-payload", (
-                    f"result not durable across restart: {got!r}"
-                )
+                assert got == b"persistent-payload", f"result not durable across restart: {got!r}"
             finally:
                 await backend2.close()
         finally:
@@ -101,7 +104,8 @@ class TestBackendRestart:
                 await backend.close()
 
     async def test_progress_hash_survives_restart(
-        self, chaos_stack: ChaosStack,
+        self,
+        chaos_stack: ChaosStack,
     ) -> None:
         """Progress HASH is readable after restart (AOF on)."""
         backend = ValkeyBackend(chaos_stack.valkey_url)
@@ -125,10 +129,9 @@ class TestBackendRestart:
             await backend2.connect()
             try:
                 raw = await backend2.get_progress(task_id)
-                assert raw is not None, (
-                    "progress HASH missing after restart — AOF off?"
-                )
+                assert raw is not None, "progress HASH missing after restart — AOF off?"
                 info = ProgressInfo.from_hash(raw)
+                assert info is not None
                 assert info.percent == pytest.approx(42.5)
                 assert info.message == "half-way"
             finally:
@@ -138,7 +141,8 @@ class TestBackendRestart:
                 await backend.close()
 
     async def test_pubsub_subscriber_resubscribes_after_restart(
-        self, chaos_stack: ChaosStack,
+        self,
+        chaos_stack: ChaosStack,
     ) -> None:
         """watch_progress() reconnects + delivers a post-restart publish.
 
@@ -209,8 +213,7 @@ class TestBackendRestart:
                 # + yield the initial snapshot.
                 await asyncio.sleep(0.5)
                 assert received, (
-                    "baseline failed: subscriber never saw the initial "
-                    "HASH snapshot — watch_progress wiring is broken"
+                    "baseline failed: subscriber never saw the initial HASH snapshot — watch_progress wiring is broken"
                 )
 
                 _docker_restart(f"{chaos_stack.project}-valkey-1")
@@ -238,7 +241,9 @@ class TestBackendRestart:
                     # Prime the HASH so the resubscribe path's HASH
                     # fallback has a post-restart snapshot available.
                     await pub_backend.set_progress(
-                        task_id, post_fields, ttl_ms=60_000,
+                        task_id,
+                        post_fields,
+                        ttl_ms=60_000,
                     )
                     # Spam publishes across a generous window — at
                     # least one must land after watch_progress has
@@ -250,20 +255,20 @@ class TestBackendRestart:
                         if any(info.message == "post" for info in received):
                             break
                         await pub_backend.set_progress(
-                            task_id, post_fields, ttl_ms=60_000,
+                            task_id,
+                            post_fields,
+                            ttl_ms=60_000,
                         )
                         await pub_backend.publish_progress(
-                            task_id, json.dumps(post_fields).encode(),
+                            task_id,
+                            json.dumps(post_fields).encode(),
                         )
                         await asyncio.sleep(0.5)
                 finally:
                     await pub_backend.close()
 
-                assert any(
-                    info.message == "post" for info in received
-                ), (
-                    f"subscriber never saw post-restart update; "
-                    f"received={[i.message for i in received]!r}"
+                assert any(info.message == "post" for info in received), (
+                    f"subscriber never saw post-restart update; received={[i.message for i in received]!r}"
                 )
             finally:
                 stop_collecting.set()
@@ -275,7 +280,8 @@ class TestBackendRestart:
                 await backend.close()
 
     async def test_cancel_flag_survives_restart(
-        self, chaos_stack: ChaosStack,
+        self,
+        chaos_stack: ChaosStack,
     ) -> None:
         """set_cancel_flag → restart → is_cancelled still True (AOF on)."""
         backend = ValkeyBackend(chaos_stack.valkey_url)
@@ -292,9 +298,7 @@ class TestBackendRestart:
             backend2 = ValkeyBackend(chaos_stack.valkey_url)
             await backend2.connect()
             try:
-                assert await backend2.is_cancelled(task_id) is True, (
-                    "cancel flag lost across restart"
-                )
+                assert await backend2.is_cancelled(task_id) is True, "cancel flag lost across restart"
             finally:
                 await backend2.close()
         finally:

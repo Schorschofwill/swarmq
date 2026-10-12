@@ -58,7 +58,7 @@ import signal as _signal
 import subprocess
 import time
 import uuid
-from typing import Any
+from typing import Any, override
 
 import pytest
 
@@ -173,7 +173,9 @@ async def _dlq_count(queue: str, rabbitmq_url: str) -> int:
     try:
         ch = await conn.channel()
         decl = await ch.declare_queue(f"{queue}.XQ", passive=True)
-        return decl.declaration_result.message_count
+        count = decl.declaration_result.message_count
+        assert count is not None
+        return count
     finally:
         await conn.close()
 
@@ -216,6 +218,7 @@ class TestMaxConcurrencyOneRetryCombo:
                 retry_base_delay=0.1,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 nonlocal attempts
                 attempts += 1
@@ -238,9 +241,7 @@ class TestMaxConcurrencyOneRetryCombo:
         assert result == 15
         assert_at_least_once_held(attempts, expected_min=2)
 
-    async def test_retry_from_same_worker(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_retry_from_same_worker(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Retry of a max_concurrency=1 task must re-acquire the lock on the
         same worker.  No deadlock — lock is released before retry fires."""
         queue = _uq("mc1r-sw")
@@ -261,6 +262,7 @@ class TestMaxConcurrencyOneRetryCombo:
                 retry_backoff="fixed",
             )
 
+            @override
             async def run(self, marker: str) -> str:
                 nonlocal run_count
                 run_count += 1
@@ -283,9 +285,7 @@ class TestMaxConcurrencyOneRetryCombo:
         assert result == "ok:test"
         assert_at_least_once_held(run_count, expected_min=3)
 
-    async def test_no_double_execution_under_mutex(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_no_double_execution_under_mutex(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Schedule two tasks with the same lock — they must run serially.
 
         With max_concurrency=1, the second task cannot start while the first
@@ -308,6 +308,7 @@ class TestMaxConcurrencyOneRetryCombo:
                 max_concurrency=1,
             )
 
+            @override
             async def run(self, tag: str) -> str:
                 nonlocal concurrent_count, max_concurrent_seen, completed
                 concurrent_count += 1
@@ -330,9 +331,7 @@ class TestMaxConcurrencyOneRetryCombo:
                 await app.schedule(task_name, "b")
                 await asyncio.wait_for(all_done.wait(), timeout=15.0)
 
-        assert max_concurrent_seen == 1, (
-            f"max_concurrency=1 violated: saw {max_concurrent_seen} concurrent instances"
-        )
+        assert max_concurrent_seen == 1, f"max_concurrency=1 violated: saw {max_concurrent_seen} concurrent instances"
 
 
 # ---------------------------------------------------------------------------
@@ -372,6 +371,7 @@ class TestLockMaxConcurrencySemaphoreCombo:
                 max_concurrency=2,
             )
 
+            @override
             async def run(self, tag: str) -> str:
                 nonlocal peak_concurrent, current, completed
                 current += 1
@@ -398,9 +398,7 @@ class TestLockMaxConcurrencySemaphoreCombo:
         assert peak_concurrent >= 1, "at least one task must have run"
         # No crash — semaphore was respected.
 
-    async def test_lock_dominates_max_concurrency(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_lock_dominates_max_concurrency(self, rabbitmq_url: str, valkey_url: str) -> None:
         """With max_concurrency=1, the lock is a mutex; only 1 runs at a time."""
         queue = _uq("lmc-dom")
         lock_name = f"lmc-dom-{uuid.uuid4().hex[:6]}"
@@ -419,6 +417,7 @@ class TestLockMaxConcurrencySemaphoreCombo:
                 max_concurrency=1,
             )
 
+            @override
             async def run(self, tag: str) -> str:
                 nonlocal peak_concurrent, current, completed
                 current += 1
@@ -441,13 +440,9 @@ class TestLockMaxConcurrencySemaphoreCombo:
                     await app.schedule(task_name, tag)
                 await asyncio.wait_for(all_done.wait(), timeout=20.0)
 
-        assert peak_concurrent == 1, (
-            f"max_concurrency=1 must serialize: saw peak={peak_concurrent}"
-        )
+        assert peak_concurrent == 1, f"max_concurrency=1 must serialize: saw peak={peak_concurrent}"
 
-    async def test_independent_keys_run_in_parallel(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_independent_keys_run_in_parallel(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Tasks with different lock keys do not block each other,
         regardless of max_concurrency setting on each."""
         queue = _uq("lmc-ind")
@@ -465,6 +460,7 @@ class TestLockMaxConcurrencySemaphoreCombo:
                 max_concurrency=1,
             )
 
+            @override
             async def run(self) -> str:
                 started_a.set()
                 await asyncio.sleep(0.5)
@@ -479,6 +475,7 @@ class TestLockMaxConcurrencySemaphoreCombo:
                 max_concurrency=1,
             )
 
+            @override
             async def run(self) -> str:
                 started_b.set()
                 await asyncio.sleep(0.5)
@@ -540,6 +537,7 @@ class TestRateLimitMaxConcurrencyCombo:
                 max_concurrency=2,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 done.set()
                 return val * 2
@@ -557,13 +555,11 @@ class TestRateLimitMaxConcurrencyCombo:
 
         assert result == 14
 
-    async def test_signal_task_rate_limited_when_throttled(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_signal_task_rate_limited_when_throttled(self, rabbitmq_url: str, valkey_url: str) -> None:
         """TASK_RATE_LIMITED signal fires when the rate limit throttles a task."""
         queue = _uq("rlmc-sig")
         task_name = _task_name("rlmc_sig")
-        rate_limited_signals: list[dict] = []
+        rate_limited_signals: list[dict[str, Any]] = []
         done = asyncio.Event()
 
         class TightRateLimitTask(Task):
@@ -576,6 +572,7 @@ class TestRateLimitMaxConcurrencyCombo:
                 retry_base_delay=0.5,
             )
 
+            @override
             async def run(self, idx: int) -> int:
                 done.set()
                 return idx
@@ -623,9 +620,7 @@ class TestGracefulShutdownInflightRetryCombo:
       retry_pending_completes_after_shutdown — retry delay survives worker restart
     """
 
-    async def test_happy_path(
-        self, rabbitmq_url: str, valkey_url: str, unique_queue: str
-    ) -> None:
+    async def test_happy_path(self, rabbitmq_url: str, valkey_url: str, unique_queue: str) -> None:
         """Worker with in-flight task shuts down gracefully after SIGTERM."""
         queue = unique_queue
         from tests.support.worker_subprocess import ensure_fixture_registered
@@ -659,9 +654,7 @@ class TestGracefulShutdownInflightRetryCombo:
         finally:
             kill_subprocess(proc)
 
-    async def test_sigterm_drains_inflight(
-        self, rabbitmq_url: str, valkey_url: str, unique_queue: str
-    ) -> None:
+    async def test_sigterm_drains_inflight(self, rabbitmq_url: str, valkey_url: str, unique_queue: str) -> None:
         """SIGTERM with multiple in-flight tasks: all must complete before exit."""
         queue = unique_queue
         N = 4
@@ -758,9 +751,7 @@ class TestGracefulShutdownInflightRetryCombo:
                         break
                     await asyncio.sleep(0.3)
 
-                assert dlq_count >= 1, (
-                    "exhausted retry must land in DLQ after worker B handles it"
-                )
+                assert dlq_count >= 1, "exhausted retry must land in DLQ after worker B handles it"
 
                 proc_b.send_signal(_signal.SIGTERM)
                 proc_b.wait(timeout=20)
@@ -809,6 +800,7 @@ class TestHotReloadInflightLockCombo:
                 hard_timeout=20,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 done.set()
                 return val + 1
@@ -835,7 +827,7 @@ class TestHotReloadInflightLockCombo:
 
         done2 = asyncio.Event()
 
-        class LockedTask2(Task):  # type: ignore[no-redef]
+        class LockedTask2(Task):
             task_info = TaskInfo(
                 name=task_name,
                 queues=[queue],
@@ -843,6 +835,7 @@ class TestHotReloadInflightLockCombo:
                 hard_timeout=20,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 done2.set()
                 return val + 2
@@ -861,9 +854,7 @@ class TestHotReloadInflightLockCombo:
 
         assert result2 == 42
 
-    async def test_reload_respects_held_lock(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_reload_respects_held_lock(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Worker restart does not leave lock in stuck state.
 
         Scenario: task completes, worker is stopped (simulating reload),
@@ -886,6 +877,7 @@ class TestHotReloadInflightLockCombo:
                 hard_timeout=15,
             )
 
+            @override
             async def run(self, seq: int) -> int:
                 nonlocal completed_count
                 await asyncio.sleep(0.1)
@@ -910,15 +902,11 @@ class TestHotReloadInflightLockCombo:
                 await app.schedule(task_name, 2)
                 await asyncio.wait_for(all_done.wait(), timeout=10.0)
 
-        assert completed_count == 2, (
-            "both tasks must complete across the reload boundary"
-        )
+        assert completed_count == 2, "both tasks must complete across the reload boundary"
 
     @pytest.mark.chaos
     @pytest.mark.timeout(90)
-    async def test_lock_survives_reload(
-        self, rabbitmq_url: str, valkey_url: str, unique_queue: str
-    ) -> None:
+    async def test_lock_survives_reload(self, rabbitmq_url: str, valkey_url: str, unique_queue: str) -> None:
         """SIGKILL + restart cycle: successor worker can acquire lock without
         waiting for full TTL (best-case: lock was released via finally-block
         before SIGKILL caught the process at an await point).
@@ -996,6 +984,7 @@ class TestBurstModeRetryPendingCombo:
                 queues=[queue],
             )
 
+            @override
             async def run(self, val: int) -> int:
                 done.set()
                 return val
@@ -1042,9 +1031,7 @@ class TestBurstModeRetryPendingCombo:
 
         assert result == 99
 
-    async def test_exits_on_idle_with_no_pending(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_exits_on_idle_with_no_pending(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Burst-mode worker exits after burst_idle_timeout when queue empties."""
         queue = _uq("bm-idle")
         task_name = _task_name("bm_idle")
@@ -1053,6 +1040,7 @@ class TestBurstModeRetryPendingCombo:
         class QuickBurstTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self, v: int) -> int:
                 done.set()
                 return v
@@ -1103,9 +1091,7 @@ class TestBurstModeRetryPendingCombo:
         # Should complete well within 30s total.
         assert elapsed < 20.0, f"burst exit took too long: {elapsed:.1f}s"
 
-    async def test_waits_for_retry_backoff_then_exits(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_waits_for_retry_backoff_then_exits(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Burst-mode worker with a task that fails and retries.
 
         The worker is configured with a short idle timeout but a longer retry
@@ -1132,6 +1118,7 @@ class TestBurstModeRetryPendingCombo:
                 retry_backoff="fixed",
             )
 
+            @override
             async def run(self, val: int) -> int:
                 nonlocal attempts
                 attempts += 1
@@ -1275,9 +1262,7 @@ class TestSIGKILLLockAtLeastOnceCombo:
 
     @pytest.mark.chaos
     @pytest.mark.timeout(90)
-    async def test_no_reader_leak_on_successor(
-        self, rabbitmq_url: str, valkey_url: str, unique_queue: str
-    ) -> None:
+    async def test_no_reader_leak_on_successor(self, rabbitmq_url: str, valkey_url: str, unique_queue: str) -> None:
         """After SIGKILL of worker A, successor B must not have aiormq
         reader task leaks (RobustConnection.is_closed lies — only reader
         counts tell the truth).
@@ -1317,9 +1302,7 @@ class TestSIGKILLLockAtLeastOnceCombo:
 
     @pytest.mark.chaos
     @pytest.mark.timeout(90)
-    async def test_lock_recovery_within_ttl(
-        self, rabbitmq_url: str, valkey_url: str, unique_queue: str
-    ) -> None:
+    async def test_lock_recovery_within_ttl(self, rabbitmq_url: str, valkey_url: str, unique_queue: str) -> None:
         """After a crash the orphaned scheduler lock expires by TTL and the
         successor takes it over within that TTL.
 
@@ -1410,6 +1393,7 @@ class TestSchedulerLeaderFailoverCombo:
         class ScheduledTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self) -> str:
                 done.set()
                 return "fired"
@@ -1432,10 +1416,11 @@ class TestSchedulerLeaderFailoverCombo:
                 scheduler_lock_ttl=1.0,
                 scheduler_poll_interval=0.1,
             ) as worker_app:
-                worker_app._signal_dispatcher.connect(
-                    Signal.SCHEDULER_LEADER,
-                    lambda **_: leader_elected.set() or asyncio.coroutine(lambda: None)(),
-                )
+
+                async def _on_leader(**_: Any) -> None:
+                    leader_elected.set()
+
+                worker_app._signal_dispatcher.connect(Signal.SCHEDULER_LEADER, _on_leader)
                 tid = await app.schedule(task_name)
                 await asyncio.wait_for(done.wait(), timeout=12.0)
                 result = await app.get_result(tid, timeout=5)
@@ -1505,9 +1490,7 @@ class TestSchedulerLeaderFailoverCombo:
                 result = await app.get_result(task_id, timeout=20)
                 assert result == "slept:0.5"
                 # B takes over the orphaned leadership after the TTL.
-                await wait_for_scheduler_leader(
-                    valkey_url, child_b.pid, timeout=SHORT_SCHEDULER_LOCK_TTL_S + 10.0
-                )
+                await wait_for_scheduler_leader(valkey_url, child_b.pid, timeout=SHORT_SCHEDULER_LOCK_TTL_S + 10.0)
 
                 proc_b.send_signal(_signal.SIGTERM)
                 proc_b.wait(timeout=20)
@@ -1519,9 +1502,7 @@ class TestSchedulerLeaderFailoverCombo:
 
     @pytest.mark.chaos
     @pytest.mark.timeout(90)
-    async def test_signal_scheduler_leader_failover_emitted(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_signal_scheduler_leader_failover_emitted(self, rabbitmq_url: str, valkey_url: str) -> None:
         """When the current leader's TTL expires, the new leader emits
         SCHEDULER_LEADER_FAILOVER (not SCHEDULER_LEADER).
 
@@ -1597,9 +1578,7 @@ class TestSchedulerLeaderFailoverCombo:
             if task_b is not None:
                 task_b.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.gather(
-                    task_a, *([task_b] if task_b is not None else []), return_exceptions=True
-                )
+                await asyncio.gather(task_a, *([task_b] if task_b is not None else []), return_exceptions=True)
             for br, be in ((broker_a, backend_a), (broker_b, backend_b)):
                 with contextlib.suppress(Exception):
                     await br.close()
@@ -1632,9 +1611,7 @@ class TestProcessManagerWorkerCrashLockCombo:
 
     @pytest.mark.chaos
     @pytest.mark.timeout(90)
-    async def test_pm_restarts_crashed_worker(
-        self, rabbitmq_url: str, valkey_url: str, unique_queue: str
-    ) -> None:
+    async def test_pm_restarts_crashed_worker(self, rabbitmq_url: str, valkey_url: str, unique_queue: str) -> None:
         """The supervisor restarts a crashed worker child; the restarted
         child processes the redelivered tasks.
 
@@ -1673,7 +1650,10 @@ class TestProcessManagerWorkerCrashLockCombo:
 
                 # The supervisor restarts the slot with a fresh child.
                 await asyncio.to_thread(
-                    wait_for_worker_children, proc_a, exclude={crashed_pid}, timeout=20.0,
+                    wait_for_worker_children,
+                    proc_a,
+                    exclude={crashed_pid},
+                    timeout=20.0,
                 )
                 assert proc_a.poll() is None, "supervisor must survive a child crash"
 
@@ -1687,9 +1667,7 @@ class TestProcessManagerWorkerCrashLockCombo:
 
     @pytest.mark.chaos
     @pytest.mark.timeout(90)
-    async def test_no_zombie_state(
-        self, rabbitmq_url: str, valkey_url: str, unique_queue: str
-    ) -> None:
+    async def test_no_zombie_state(self, rabbitmq_url: str, valkey_url: str, unique_queue: str) -> None:
         """After crash + restart cycle, no dangling locks remain.
 
         Postcondition: Valkey scheduler lock is not held (no zombie leader
@@ -1726,8 +1704,10 @@ class TestProcessManagerWorkerCrashLockCombo:
         try:
             from swarmq.locking import SCHEDULER_LOCK_KEY
 
+            client = backend._client
+            assert client is not None
             await assert_no_deadlock(
-                lambda: backend._client.exists(SCHEDULER_LOCK_KEY),
+                lambda: client.exists(SCHEDULER_LOCK_KEY),
                 max_wait_s=SHORT_SCHEDULER_LOCK_TTL_S + 2.0,
             )
         finally:
@@ -1735,9 +1715,7 @@ class TestProcessManagerWorkerCrashLockCombo:
 
     @pytest.mark.chaos
     @pytest.mark.timeout(90)
-    async def test_restarted_worker_respects_lock(
-        self, rabbitmq_url: str, valkey_url: str, unique_queue: str
-    ) -> None:
+    async def test_restarted_worker_respects_lock(self, rabbitmq_url: str, valkey_url: str, unique_queue: str) -> None:
         """Restarted worker does not deadlock on tasks with lock.
 
         After SIGKILL, task locks (not scheduler lock) must also clear via TTL.
@@ -1814,9 +1792,7 @@ class TestAutoscaleShrinkRunningCombo:
 
     @pytest.mark.chaos
     @pytest.mark.timeout(90)
-    async def test_shrink_waits_for_inflight(
-        self, rabbitmq_url: str, valkey_url: str, unique_queue: str
-    ) -> None:
+    async def test_shrink_waits_for_inflight(self, rabbitmq_url: str, valkey_url: str, unique_queue: str) -> None:
         """Scale-down SIGTERM: in-flight task completes before worker exits."""
         queue = unique_queue
         from tests.support.worker_subprocess import ensure_fixture_registered
@@ -1858,9 +1834,7 @@ class TestAutoscaleShrinkRunningCombo:
                 proc_a.send_signal(_signal.SIGTERM)
                 rc_a = proc_a.wait(timeout=25)
                 # Graceful exit expected (rc=0 or signal).
-                assert rc_a in (0, -_signal.SIGTERM), (
-                    f"unexpected rc={rc_a} for shrunk worker"
-                )
+                assert rc_a in (0, -_signal.SIGTERM), f"unexpected rc={rc_a} for shrunk worker"
 
                 # Worker B continues and handles remaining tasks.
                 results = await app.get_results(tids, timeout=25)
@@ -1875,9 +1849,7 @@ class TestAutoscaleShrinkRunningCombo:
 
     @pytest.mark.chaos
     @pytest.mark.timeout(90)
-    async def test_shrink_signal_emitted(
-        self, rabbitmq_url: str, valkey_url: str, unique_queue: str
-    ) -> None:
+    async def test_shrink_signal_emitted(self, rabbitmq_url: str, valkey_url: str, unique_queue: str) -> None:
         """WORKER_SHUTDOWN signal fires when a worker is scaled down via SIGTERM."""
         queue = unique_queue
         from tests.support.worker_subprocess import ensure_fixture_registered
@@ -1926,9 +1898,7 @@ class TestAutoscaleShrinkRunningCombo:
 
     @pytest.mark.chaos
     @pytest.mark.timeout(90)
-    async def test_sigkill_path_for_unresponsive(
-        self, rabbitmq_url: str, valkey_url: str, unique_queue: str
-    ) -> None:
+    async def test_sigkill_path_for_unresponsive(self, rabbitmq_url: str, valkey_url: str, unique_queue: str) -> None:
         """SIGKILL fallback for worker that didn't respond to SIGTERM.
 
         Scenario: worker A is SIGKILLed (simulating autoscale's escalation
@@ -2016,9 +1986,7 @@ class TestHotReloadSchedulerLeaderCombo:
 
     @pytest.mark.chaos
     @pytest.mark.timeout(90)
-    async def test_reload_during_leader_releases_lock(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_reload_during_leader_releases_lock(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Graceful stop of leader emits SCHEDULER_LEADER_HANDOVER.
 
         The standby worker detects the handover and becomes leader via
@@ -2097,9 +2065,7 @@ class TestHotReloadSchedulerLeaderCombo:
             if task_b is not None:
                 task_b.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.gather(
-                    task_a, *([task_b] if task_b is not None else []), return_exceptions=True
-                )
+                await asyncio.gather(task_a, *([task_b] if task_b is not None else []), return_exceptions=True)
             for br, be in ((broker_a, backend_a), (broker_b, backend_b)):
                 with contextlib.suppress(Exception):
                     await br.close()
@@ -2108,9 +2074,7 @@ class TestHotReloadSchedulerLeaderCombo:
 
     @pytest.mark.chaos
     @pytest.mark.timeout(90)
-    async def test_new_leader_election_post_reload(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_new_leader_election_post_reload(self, rabbitmq_url: str, valkey_url: str) -> None:
         """After graceful leader stop, standby worker takes over leadership.
 
         Precondition: two workers, A is leader.
@@ -2124,6 +2088,7 @@ class TestHotReloadSchedulerLeaderCombo:
         class ReloadSchedTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self) -> str:
                 task_fired.set()
                 return "ok"
@@ -2191,9 +2156,7 @@ class TestHotReloadSchedulerLeaderCombo:
             if task_b is not None:
                 task_b.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await asyncio.gather(
-                    task_a, *([task_b] if task_b is not None else []), return_exceptions=True
-                )
+                await asyncio.gather(task_a, *([task_b] if task_b is not None else []), return_exceptions=True)
             for br, be in (
                 (broker_a, backend_a),
                 (broker_b, backend_b),

@@ -68,17 +68,22 @@ class Result:
 
 
 def print_result(r: Result) -> None:
-    print(f"  {r.broker:<16} | workers={r.concurrency:<3} work={r.work_ms:>5.0f}ms | "
-          f"{r.throughput_msg_s:>8,.0f} msg/s | eff: {r.effective_msg_s:>8,.0f} msg/s | "
-          f"P50={r.p50:>7.2f}ms P95={r.p95:>7.2f}ms P99={r.p99:>7.2f}ms")
+    print(
+        f"  {r.broker:<16} | workers={r.concurrency:<3} work={r.work_ms:>5.0f}ms | "
+        f"{r.throughput_msg_s:>8,.0f} msg/s | eff: {r.effective_msg_s:>8,.0f} msg/s | "
+        f"P50={r.p50:>7.2f}ms P95={r.p95:>7.2f}ms P99={r.p99:>7.2f}ms"
+    )
 
 
 # ---------------------------------------------------------------------------
 # RabbitMQ: Concurrent Async Worker mit Ack-after-Process
 # ---------------------------------------------------------------------------
 
+
 async def rmq_concurrent_ack(
-    n: int, concurrency: int, work_ms: float,
+    n: int,
+    concurrency: int,
+    work_ms: float,
 ) -> Result:
     conn = await aio_pika.connect_robust(RABBITMQ_URL)
 
@@ -141,8 +146,15 @@ async def rmq_concurrent_ack(
     effective = min(throughput, theoretical_max)
 
     return Result(
-        "RabbitMQ", "concurrent_ack", n, concurrency, work_ms,
-        dur, throughput, effective, latencies,
+        "RabbitMQ",
+        "concurrent_ack",
+        n,
+        concurrency,
+        work_ms,
+        dur,
+        throughput,
+        effective,
+        latencies,
     )
 
 
@@ -150,8 +162,11 @@ async def rmq_concurrent_ack(
 # Valkey Streams: Concurrent Async Worker mit XREADGROUP + XACK
 # ---------------------------------------------------------------------------
 
+
 async def valkey_stream_concurrent_ack(
-    n: int, concurrency: int, work_ms: float,
+    n: int,
+    concurrency: int,
+    work_ms: float,
 ) -> Result:
     client = Valkey.from_url(VALKEY_URL, decode_responses=False)
 
@@ -189,9 +204,11 @@ async def valkey_stream_concurrent_ack(
 
         while not done.is_set():
             results = await client.xreadgroup(
-                group, consumer_name,
+                group,
+                consumer_name,
                 {STREAM_KEY: ">"},
-                count=batch_size, block=500,
+                count=batch_size,
+                block=500,
             )
             if not results:
                 continue
@@ -229,8 +246,15 @@ async def valkey_stream_concurrent_ack(
     effective = min(throughput, theoretical_max)
 
     return Result(
-        "Valkey/Stream", "concurrent_ack", n, concurrency, work_ms,
-        dur, throughput, effective, latencies,
+        "Valkey/Stream",
+        "concurrent_ack",
+        n,
+        concurrency,
+        work_ms,
+        dur,
+        throughput,
+        effective,
+        latencies,
     )
 
 
@@ -238,8 +262,11 @@ async def valkey_stream_concurrent_ack(
 # Valkey LIST: Concurrent Async Worker mit BRPOP (kein natives Ack)
 # ---------------------------------------------------------------------------
 
+
 async def valkey_list_concurrent_ack(
-    n: int, concurrency: int, work_ms: float,
+    n: int,
+    concurrency: int,
+    work_ms: float,
 ) -> Result:
     client = Valkey.from_url(VALKEY_URL, decode_responses=False)
 
@@ -299,14 +326,22 @@ async def valkey_list_concurrent_ack(
     effective = min(throughput, theoretical_max)
 
     return Result(
-        "Valkey/List", "concurrent_ack", n, concurrency, work_ms,
-        dur, throughput, effective, latencies,
+        "Valkey/List",
+        "concurrent_ack",
+        n,
+        concurrency,
+        work_ms,
+        dur,
+        throughput,
+        effective,
+        latencies,
     )
 
 
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
+
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description="SwarmQ Realistic Broker Benchmark")
@@ -397,6 +432,7 @@ async def main() -> None:
 if __name__ == "__main__":
     try:
         import uvloop
+
         uvloop.install()
         print("(uvloop aktiviert)")
     except ImportError:

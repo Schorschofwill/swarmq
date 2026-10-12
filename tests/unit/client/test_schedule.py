@@ -4,6 +4,7 @@ schedule/schedule_many, Delay/ETA, Unique/Dedup, Middleware+Signale."""
 from __future__ import annotations
 
 import uuid
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -17,6 +18,8 @@ from swarmq.serialization import decode_json
 from swarmq.signals import Signal, SignalDispatcher
 from swarmq.task import DeliveryMode, Task, TaskInfo
 
+_Batch = list[tuple[str, tuple[Any, ...], dict[str, Any]]]
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -24,7 +27,8 @@ from swarmq.task import DeliveryMode, Task, TaskInfo
 
 @pytest.mark.asyncio
 async def test_schedule_explicit_queue_generates_uuid7_publishes_returns_id(
-    client, broker,
+    client,
+    broker,
 ):
     task_id = await client.schedule("add", 1, 2, queue="math")
 
@@ -95,10 +99,13 @@ async def test_schedule_empty_args_kwargs(client, broker):
 
 @pytest.mark.asyncio
 async def test_client_mode_no_registry_explicit_queue(
-    client_no_registry, broker,
+    client_no_registry,
+    broker,
 ):
     task_id = await client_no_registry.schedule(
-        "any.task.name", "arg1", queue="my-queue",
+        "any.task.name",
+        "arg1",
+        queue="my-queue",
     )
 
     parsed = uuid.UUID(task_id)
@@ -144,7 +151,7 @@ async def test_schedule_many_empty_list(client, broker):
 
 @pytest.mark.asyncio
 async def test_schedule_many_resolves_queue_from_registry(client, broker, registry):
-    tasks = [("add", (1, 2), {})]
+    tasks: _Batch = [("add", (1, 2), {})]
     task_ids = await client.schedule_many(tasks)
 
     assert len(task_ids) == 1
@@ -174,7 +181,12 @@ class TestClientMiddlewareAndSignals:
 
     @pytest.fixture
     def client_with_hooks(
-        self, broker, backend, registry, middleware_chain, signal_dispatcher,
+        self,
+        broker,
+        backend,
+        registry,
+        middleware_chain,
+        signal_dispatcher,
     ):
         return Client(
             broker=broker,
@@ -190,15 +202,14 @@ class TestClientMiddlewareAndSignals:
 
     @pytest.mark.asyncio
     async def test_pre_enqueue_called_before_publish(
-        self, client_with_hooks, broker, middleware_chain,
+        self,
+        client_with_hooks,
+        broker,
+        middleware_chain,
     ):
         call_order = []
-        middleware_chain.run_pre_enqueue = AsyncMock(
-            side_effect=lambda msg: call_order.append("pre_enqueue")
-        )
-        broker.publish = AsyncMock(
-            side_effect=lambda *a, **kw: call_order.append("publish")
-        )
+        middleware_chain.run_pre_enqueue = AsyncMock(side_effect=lambda msg: call_order.append("pre_enqueue"))
+        broker.publish = AsyncMock(side_effect=lambda *a, **kw: call_order.append("publish"))
 
         await client_with_hooks.schedule("add", 1, 2, queue="math")
 
@@ -211,15 +222,14 @@ class TestClientMiddlewareAndSignals:
 
     @pytest.mark.asyncio
     async def test_post_enqueue_called_after_publish(
-        self, client_with_hooks, broker, middleware_chain,
+        self,
+        client_with_hooks,
+        broker,
+        middleware_chain,
     ):
         call_order = []
-        broker.publish = AsyncMock(
-            side_effect=lambda *a, **kw: call_order.append("publish")
-        )
-        middleware_chain.run_post_enqueue = AsyncMock(
-            side_effect=lambda msg: call_order.append("post_enqueue")
-        )
+        broker.publish = AsyncMock(side_effect=lambda *a, **kw: call_order.append("publish"))
+        middleware_chain.run_post_enqueue = AsyncMock(side_effect=lambda msg: call_order.append("post_enqueue"))
 
         await client_with_hooks.schedule("add", 1, 2, queue="math")
 
@@ -232,7 +242,10 @@ class TestClientMiddlewareAndSignals:
 
     @pytest.mark.asyncio
     async def test_task_enqueued_signal_dispatched_with_fields(
-        self, client_with_hooks, broker, signal_dispatcher,
+        self,
+        client_with_hooks,
+        broker,
+        signal_dispatcher,
     ):
         task_id = await client_with_hooks.schedule("add", 1, 2, queue="math")
 
@@ -251,12 +264,13 @@ class TestClientMiddlewareAndSignals:
 
     @pytest.mark.asyncio
     async def test_pre_enqueue_raises_blocks_publish(
-        self, client_with_hooks, broker, middleware_chain,
+        self,
+        client_with_hooks,
+        broker,
+        middleware_chain,
         signal_dispatcher,
     ):
-        middleware_chain.run_pre_enqueue = AsyncMock(
-            side_effect=RuntimeError("veto")
-        )
+        middleware_chain.run_pre_enqueue = AsyncMock(side_effect=RuntimeError("veto"))
 
         with pytest.raises(RuntimeError, match="veto"):
             await client_with_hooks.schedule("add", 1, 2, queue="math")
@@ -271,9 +285,11 @@ class TestClientMiddlewareAndSignals:
 
     @pytest.mark.asyncio
     async def test_schedule_many_pre_enqueue_per_task(
-        self, client_with_hooks, middleware_chain,
+        self,
+        client_with_hooks,
+        middleware_chain,
     ):
-        tasks = [
+        tasks: _Batch = [
             ("add", (1, 2), {}),
             ("add", (3, 4), {}),
             ("add", (5, 6), {}),
@@ -288,9 +304,12 @@ class TestClientMiddlewareAndSignals:
 
     @pytest.mark.asyncio
     async def test_schedule_many_post_enqueue_and_signal_per_task(
-        self, client_with_hooks, middleware_chain, signal_dispatcher,
+        self,
+        client_with_hooks,
+        middleware_chain,
+        signal_dispatcher,
     ):
-        tasks = [
+        tasks: _Batch = [
             ("add", (1, 2), {}),
             ("add", (3, 4), {}),
             ("add", (5, 6), {}),
@@ -299,9 +318,7 @@ class TestClientMiddlewareAndSignals:
 
         assert middleware_chain.run_post_enqueue.await_count == 3
         assert signal_dispatcher.dispatch.await_count == 3
-        dispatched_task_ids = [
-            c[1]["task_id"] for c in signal_dispatcher.dispatch.await_args_list
-        ]
+        dispatched_task_ids = [c[1]["task_id"] for c in signal_dispatcher.dispatch.await_args_list]
         assert set(dispatched_task_ids) == set(task_ids)
         for call in signal_dispatcher.dispatch.await_args_list:
             assert call[0][0] is Signal.TASK_ENQUEUED
@@ -314,10 +331,16 @@ class TestClientMiddlewareAndSignals:
 
     @pytest.mark.asyncio
     async def test_message_dict_contains_canonical_fields(
-        self, client_with_hooks, middleware_chain,
+        self,
+        client_with_hooks,
+        middleware_chain,
     ):
         task_id = await client_with_hooks.schedule(
-            "add", 10, 20, queue="math", extra="foo",
+            "add",
+            10,
+            20,
+            queue="math",
+            extra="foo",
         )
 
         # pre_enqueue receives the canonical message_dict
@@ -354,10 +377,13 @@ class TestClientMiddlewareAndSignals:
 
     @pytest.mark.asyncio
     async def test_backward_compat_schedule_many_no_hooks(
-        self, broker, backend, registry,
+        self,
+        broker,
+        backend,
+        registry,
     ):
         plain_client = Client(broker=broker, backend=backend, registry=registry)
-        tasks = [("add", (1, 2), {}), ("add", (3, 4), {})]
+        tasks: _Batch = [("add", (1, 2), {}), ("add", (3, 4), {})]
         task_ids = await plain_client.schedule_many(tasks, queue="math")
 
         assert len(task_ids) == 2
@@ -369,14 +395,16 @@ class TestClientMiddlewareAndSignals:
 
     @pytest.mark.asyncio
     async def test_schedule_many_pre_enqueue_raises_aborts_batch(
-        self, client_with_hooks, broker, middleware_chain, signal_dispatcher,
+        self,
+        client_with_hooks,
+        broker,
+        middleware_chain,
+        signal_dispatcher,
     ):
         # Pre_enqueue succeeds for first, raises on second
-        middleware_chain.run_pre_enqueue = AsyncMock(
-            side_effect=[None, RuntimeError("veto"), None]
-        )
+        middleware_chain.run_pre_enqueue = AsyncMock(side_effect=[None, RuntimeError("veto"), None])
 
-        tasks = [
+        tasks: _Batch = [
             ("add", (1, 2), {}),
             ("add", (3, 4), {}),
             ("add", (5, 6), {}),
@@ -398,7 +426,10 @@ class TestClientMiddlewareAndSignals:
 
     @pytest.mark.asyncio
     async def test_add_middleware_after_client_construction(
-        self, broker, backend, registry,
+        self,
+        broker,
+        backend,
+        registry,
     ):
         """Factory reads a live list -> schedule() sees middleware added later.
 
@@ -406,20 +437,22 @@ class TestClientMiddlewareAndSignals:
         bug: before the fix, Client captured a MiddlewareChain snapshot at
         __init__ time and appending to the source list had no effect.
         """
-        from swarmq.middleware import Middleware, MiddlewareChain
+        from swarmq.middleware import MessageContext, Middleware, MiddlewareChain
 
         # Live list — tests mutate this after Client construction.
         live_middlewares: list[Middleware] = []
 
         class Spy(Middleware):
             def __init__(self) -> None:
-                self.pre_calls: list[dict] = []
-                self.post_calls: list[dict] = []
+                self.pre_calls: list[MessageContext] = []
+                self.post_calls: list[MessageContext] = []
 
-            async def pre_enqueue(self, message: dict) -> None:
+            @override
+            async def pre_enqueue(self, message: MessageContext) -> None:
                 self.pre_calls.append(message)
 
-            async def post_enqueue(self, message: dict) -> None:
+            @override
+            async def post_enqueue(self, message: MessageContext) -> None:
                 self.post_calls.append(message)
 
         client = Client(
@@ -452,16 +485,20 @@ class TestClientMiddlewareAndSignals:
 
     @pytest.mark.asyncio
     async def test_client_accepts_static_middleware_chain(
-        self, broker, backend, registry,
+        self,
+        broker,
+        backend,
+        registry,
     ):
         """A real MiddlewareChain instance is wrapped in a lambda internally."""
-        from swarmq.middleware import Middleware, MiddlewareChain
+        from swarmq.middleware import MessageContext, Middleware, MiddlewareChain
 
         class Spy(Middleware):
             def __init__(self) -> None:
-                self.pre_calls: list[dict] = []
+                self.pre_calls: list[MessageContext] = []
 
-            async def pre_enqueue(self, message: dict) -> None:
+            @override
+            async def pre_enqueue(self, message: MessageContext) -> None:
                 self.pre_calls.append(message)
 
         spy = Spy()
@@ -482,7 +519,10 @@ class TestClientMiddlewareAndSignals:
         assert client._get_chain() is static_chain
 
     def test_client_rejects_invalid_middleware_chain_type(
-        self, broker, backend, registry,
+        self,
+        broker,
+        backend,
+        registry,
     ):
         """Client.__init__ raises TypeError including the received type name."""
         with pytest.raises(
@@ -500,12 +540,13 @@ class TestClientMiddlewareAndSignals:
 @pytest.mark.asyncio
 async def test_schedule_resolves_delivery_mode_from_registry(broker, backend):
     """Registered task with FIRE_AND_FORGET -> message_dict has that value."""
-    from swarmq.middleware import Middleware, MiddlewareChain
+    from swarmq.middleware import MessageContext, Middleware, MiddlewareChain
 
-    captured: list[dict] = []
+    captured: list[dict[str, Any]] = []
 
     class CaptureMiddleware(Middleware):
-        async def pre_enqueue(self, message: dict) -> None:
+        @override
+        async def pre_enqueue(self, message: MessageContext) -> None:
             captured.append(dict(message))
 
     # Registry mock whose TaskInfo has FIRE_AND_FORGET delivery
@@ -536,12 +577,13 @@ async def test_schedule_resolves_delivery_mode_from_registry(broker, backend):
 @pytest.mark.asyncio
 async def test_schedule_default_delivery_mode_without_registry(broker, backend):
     """No registry + explicit queue -> default delivery_mode is 'at_least_once'."""
-    from swarmq.middleware import Middleware, MiddlewareChain
+    from swarmq.middleware import MessageContext, Middleware, MiddlewareChain
 
-    captured: list[dict] = []
+    captured: list[dict[str, Any]] = []
 
     class CaptureMiddleware(Middleware):
-        async def pre_enqueue(self, message: dict) -> None:
+        @override
+        async def pre_enqueue(self, message: MessageContext) -> None:
             captured.append(dict(message))
 
     chain = MiddlewareChain([CaptureMiddleware()])
@@ -558,7 +600,7 @@ async def test_schedule_default_delivery_mode_without_registry(broker, backend):
 
 
 @pytest.fixture
-def _patched_schedule_store(monkeypatch):
+def patched_schedule_store(monkeypatch):
     """Replace ScheduleStore with an AsyncMock so we can assert calls
     without needing a connected backend + Lua scripts."""
     from swarmq.client import schedule as client_mod
@@ -575,23 +617,21 @@ def _patched_schedule_store(monkeypatch):
 
 class TestClientScheduleDelayEta:
     async def test_schedule_without_delay_or_eta_takes_normal_path(
-        self, client, broker, backend, _patched_schedule_store
+        self, client, broker, backend, patched_schedule_store
     ):
         await client.schedule("add", 1, 2, queue="math")
         # Normal publish path, no ScheduleStore touch
         broker.publish.assert_awaited()
-        _patched_schedule_store.add_schedule.assert_not_awaited()
+        patched_schedule_store.add_schedule.assert_not_awaited()
 
-    async def test_schedule_with_delay_writes_to_store(
-        self, client, broker, backend, _patched_schedule_store
-    ):
+    async def test_schedule_with_delay_writes_to_store(self, client, broker, backend, patched_schedule_store):
         tid = await client.schedule("add", 1, 2, queue="math", delay=60.0)
 
         # Normal publish is bypassed for deferred schedules
         broker.publish.assert_not_awaited()
 
-        _patched_schedule_store.add_schedule.assert_awaited_once()
-        definition = _patched_schedule_store.add_schedule.await_args.args[0]
+        patched_schedule_store.add_schedule.assert_awaited_once()
+        definition = patched_schedule_store.add_schedule.await_args.args[0]
         # schedule_name encodes the task_id so that one-shots are
         # discoverable in list_schedules
         assert definition.schedule_name == f"oneshot:{tid}"
@@ -599,72 +639,63 @@ class TestClientScheduleDelayEta:
         assert definition.source == "cli"
         # fire_ts is now + delay*1000 — within a reasonable window
         import time
+
         now_ms = int(time.time() * 1000)
         assert now_ms + 55_000 <= definition.fire_ts_ms <= now_ms + 65_000
 
-    async def test_schedule_with_delay_persists_returned_task_id(
-        self, client, _patched_schedule_store
-    ):
+    async def test_schedule_with_delay_persists_returned_task_id(self, client, patched_schedule_store):
         # BZ-02 (Plan 0.12.0, MR 5): der Leader feuert unter dieser ID.
         tid = await client.schedule("add", 1, 2, queue="math", delay=60.0)
 
-        definition = _patched_schedule_store.add_schedule.await_args.args[0]
+        definition = patched_schedule_store.add_schedule.await_args.args[0]
         assert definition.task_id == tid
 
-    async def test_schedule_with_eta_writes_to_store(
-        self, client, broker, backend, _patched_schedule_store
-    ):
+    async def test_schedule_with_eta_writes_to_store(self, client, broker, backend, patched_schedule_store):
         from datetime import UTC, datetime, timedelta
+
         eta = datetime.now(UTC) + timedelta(hours=2)
         await client.schedule("add", queue="math", eta=eta)
 
-        _patched_schedule_store.add_schedule.assert_awaited_once()
-        definition = _patched_schedule_store.add_schedule.await_args.args[0]
+        patched_schedule_store.add_schedule.assert_awaited_once()
+        definition = patched_schedule_store.add_schedule.await_args.args[0]
         expected_ms = int(eta.timestamp() * 1000)
         assert definition.fire_ts_ms == expected_ms
 
-    async def test_schedule_with_both_delay_and_eta_raises(
-        self, client, _patched_schedule_store
-    ):
+    @pytest.mark.usefixtures("patched_schedule_store")
+    async def test_schedule_with_both_delay_and_eta_raises(self, client):
         from datetime import UTC, datetime, timedelta
+
         eta = datetime.now(UTC) + timedelta(seconds=60)
         with pytest.raises(ValueError, match="delay OR eta"):
             await client.schedule("add", queue="math", delay=1.0, eta=eta)
 
-    async def test_schedule_with_negative_delay_raises(
-        self, client, _patched_schedule_store
-    ):
+    @pytest.mark.usefixtures("patched_schedule_store")
+    async def test_schedule_with_negative_delay_raises(self, client):
         with pytest.raises(ValueError, match="delay"):
             await client.schedule("add", queue="math", delay=-0.5)
 
-    async def test_schedule_with_past_eta_raises(
-        self, client, _patched_schedule_store
-    ):
+    @pytest.mark.usefixtures("patched_schedule_store")
+    async def test_schedule_with_past_eta_raises(self, client):
         from datetime import UTC, datetime, timedelta
+
         past = datetime.now(UTC) - timedelta(hours=1)
         with pytest.raises(ValueError, match="eta"):
             await client.schedule("add", queue="math", eta=past)
 
-    async def test_schedule_with_delay_zero_uses_normal_publish(
-        self, client, broker, backend, _patched_schedule_store
-    ):
+    async def test_schedule_with_delay_zero_uses_normal_publish(self, client, broker, backend, patched_schedule_store):
         """delay=0 is explicitly sofortiger publish, not a zero-delay
         scheduler detour (plan test-scenario)."""
         await client.schedule("add", queue="math", delay=0)
         broker.publish.assert_awaited()
-        _patched_schedule_store.add_schedule.assert_not_awaited()
+        patched_schedule_store.add_schedule.assert_not_awaited()
 
-    async def test_schedule_reuses_existing_store(
-        self, client, _patched_schedule_store
-    ):
+    async def test_schedule_reuses_existing_store(self, client, patched_schedule_store):
         """Lazy-init: second delay-schedule uses the cached store."""
         await client.schedule("add", queue="math", delay=1.0)
         await client.schedule("add", queue="math", delay=2.0)
-        assert _patched_schedule_store.add_schedule.await_count == 2
+        assert patched_schedule_store.add_schedule.await_count == 2
 
-    async def test_schedule_with_delay_without_connected_backend_raises(
-        self, client, broker
-    ):
+    async def test_schedule_with_delay_without_connected_backend_raises(self, client, broker):
         """If backend is not connected, lazy-init must not silently proceed
         (Fork 2 — clear RuntimeError with migration hint)."""
         # Ensure backend has no _client attribute (unconnected)
@@ -673,6 +704,7 @@ class TestClientScheduleDelayEta:
 
         from swarmq.client import Client as _Client
         from swarmq.exceptions import BackendConnectionError
+
         backend = MagicMock()
         # U18: die Fassade wirft vor connect() auf ``.schedules``
         type(backend).schedules = PropertyMock(side_effect=BackendConnectionError("not connected"))
@@ -695,7 +727,10 @@ class TestClientUniqueSchedule:
         return Client(broker=broker, backend=backend_setnx, registry=registry)
 
     async def test_schedule_without_unique_for_is_unchanged(
-        self, client_setnx, broker, backend_setnx,
+        self,
+        client_setnx,
+        broker,
+        backend_setnx,
     ):
         """No unique_for kwarg + TaskInfo default is None → no SETNX call,
         only R4.4 enqueued-at header (no dedup headers)."""
@@ -709,10 +744,17 @@ class TestClientUniqueSchedule:
         assert isinstance(headers["x-swarmq-enqueued-at"], int)
 
     async def test_schedule_with_unique_for_calls_setnx_and_sets_header(
-        self, client_setnx, broker, backend_setnx,
+        self,
+        client_setnx,
+        broker,
+        backend_setnx,
     ):
         task_id = await client_setnx.schedule(
-            "add", 1, 2, queue="math", unique_for=60,
+            "add",
+            1,
+            2,
+            queue="math",
+            unique_for=60,
         )
         backend_setnx.claim_unique.assert_awaited_once()
         setnx_call = backend_setnx.claim_unique.await_args
@@ -728,24 +770,34 @@ class TestClientUniqueSchedule:
         assert publish_kwargs["headers"]["x-swarmq-unique-until"] == "completion"
 
     async def test_schedule_duplicate_returns_existing_task_id(
-        self, client_setnx, broker, backend_setnx,
+        self,
+        client_setnx,
+        broker,
+        backend_setnx,
     ):
         """Silent dedup: schedule() returns existing task_id, does not publish."""
         backend_setnx.claim_unique = AsyncMock(return_value="t-existing")
         task_id = await client_setnx.schedule(
-            "add", 1, 2, queue="math", unique_for=60,
+            "add",
+            1,
+            2,
+            queue="math",
+            unique_for=60,
         )
         assert task_id == "t-existing"
         broker.publish.assert_not_awaited()
 
     async def test_schedule_duplicate_emits_signal(
-        self, client_setnx, broker, backend_setnx,
+        self,
+        client_setnx,
+        broker,
+        backend_setnx,
     ):
         """TASK_DUPLICATE_DETECTED signal emitted with expected payload."""
         from swarmq.signals import Signal, SignalDispatcher
 
         dispatcher = SignalDispatcher()
-        received: list[dict] = []
+        received: list[dict[str, Any]] = []
 
         @dispatcher.on_signal(Signal.TASK_DUPLICATE_DETECTED)
         async def handler(**kwargs):
@@ -753,12 +805,17 @@ class TestClientUniqueSchedule:
 
         backend_setnx.claim_unique = AsyncMock(return_value="t-win")
         client = Client(
-            broker=broker, backend=backend_setnx,
+            broker=broker,
+            backend=backend_setnx,
             registry=client_setnx._registry,
             signal_dispatcher=dispatcher,
         )
         returned = await client.schedule(
-            "add", 1, 2, queue="math", unique_for=60,
+            "add",
+            1,
+            2,
+            queue="math",
+            unique_for=60,
         )
         assert returned == "t-win"
         assert len(received) == 1
@@ -768,18 +825,27 @@ class TestClientUniqueSchedule:
         assert len(received[0]["dedup_hash"]) == 64
 
     async def test_schedule_per_call_override_none_disables_dedup(
-        self, client_setnx, broker, backend_setnx,
+        self,
+        client_setnx,
+        broker,
+        backend_setnx,
     ):
         """Per-call unique_for=None overrides TaskInfo default."""
         # Registry fixture's task_info has no unique_for (None by default).
         # Use explicit None — same outcome.
         await client_setnx.schedule(
-            "add", 1, 2, queue="math", unique_for=None,
+            "add",
+            1,
+            2,
+            queue="math",
+            unique_for=None,
         )
         backend_setnx.claim_unique.assert_not_awaited()
 
     async def test_schedule_unique_for_uses_taskinfo_default(
-        self, broker, backend_setnx,
+        self,
+        broker,
+        backend_setnx,
     ):
         """When kwarg is _MISSING (not passed), use TaskInfo.unique_for."""
         # Build registry with unique_for=30 TaskInfo default.
@@ -787,7 +853,10 @@ class TestClientUniqueSchedule:
         registry.has = MagicMock(return_value=True)
         entry = MagicMock()
         entry.task_info = TaskInfo(
-            name="add", queues=["math"], unique_for=30, unique_until="start",
+            name="add",
+            queues=["math"],
+            unique_for=30,
+            unique_until="start",
         )
         registry.get_entry = MagicMock(return_value=entry)
 
@@ -800,7 +869,9 @@ class TestClientUniqueSchedule:
         assert publish_kwargs["headers"]["x-swarmq-unique-until"] == "start"
 
     async def test_schedule_client_modus_ignores_taskinfo_default(
-        self, broker, backend_setnx,
+        self,
+        broker,
+        backend_setnx,
     ):
         """Client-Modus (registry=None) can't resolve TaskInfo — _MISSING → None."""
         client = Client(broker=broker, backend=backend_setnx, registry=None)
@@ -808,26 +879,37 @@ class TestClientUniqueSchedule:
         backend_setnx.claim_unique.assert_not_awaited()
 
     async def test_schedule_client_modus_explicit_unique_for_works(
-        self, broker, backend_setnx,
+        self,
+        broker,
+        backend_setnx,
     ):
         """Client-Modus still honors explicit per-call unique_for."""
         client = Client(broker=broker, backend=backend_setnx, registry=None)
         await client.schedule(
-            "add", 1, queue="math", unique_for=60, unique_until="start",
+            "add",
+            1,
+            queue="math",
+            unique_for=60,
+            unique_until="start",
         )
         backend_setnx.claim_unique.assert_awaited_once()
         publish_kwargs = broker.publish.await_args.kwargs
         assert publish_kwargs["headers"]["x-swarmq-unique-until"] == "start"
 
     async def test_schedule_per_call_unique_until_overrides_taskinfo(
-        self, broker, backend_setnx,
+        self,
+        broker,
+        backend_setnx,
     ):
         """Per-call unique_until overrides TaskInfo default."""
         registry = MagicMock()
         registry.has = MagicMock(return_value=True)
         entry = MagicMock()
         entry.task_info = TaskInfo(
-            name="add", queues=["math"], unique_for=30, unique_until="completion",
+            name="add",
+            queues=["math"],
+            unique_for=30,
+            unique_until="completion",
         )
         registry.get_entry = MagicMock(return_value=entry)
 
@@ -837,14 +919,15 @@ class TestClientUniqueSchedule:
         assert publish_kwargs["headers"]["x-swarmq-unique-until"] == "start"
 
     async def test_schedule_same_args_produce_stable_hash(
-        self, client_setnx, backend_setnx,
+        self,
+        client_setnx,
+        backend_setnx,
     ):
         """Hash must be stable across calls with identical args+kwargs."""
         captured_hashes: list[str] = []
 
         async def capture_setnx(h, _tid, _ttl, **_kw):
             captured_hashes.append(h)
-            return None
 
         backend_setnx.claim_unique = AsyncMock(side_effect=capture_setnx)
         await client_setnx.schedule("add", 1, 2, queue="math", unique_for=60)
@@ -852,28 +935,40 @@ class TestClientUniqueSchedule:
         assert captured_hashes[0] == captured_hashes[1]
 
     async def test_schedule_different_kwargs_order_same_hash(
-        self, client_setnx, backend_setnx,
+        self,
+        client_setnx,
+        backend_setnx,
     ):
         """kwarg insertion order must not affect hash (canonical_encode key-sort)."""
         captured_hashes: list[str] = []
 
         async def capture_setnx(h, _tid, _ttl, **_kw):
             captured_hashes.append(h)
-            return None
 
         backend_setnx.claim_unique = AsyncMock(side_effect=capture_setnx)
         await client_setnx.schedule(
-            "add", queue="math", unique_for=60, a=1, b=2,
+            "add",
+            queue="math",
+            unique_for=60,
+            a=1,
+            b=2,
         )
         await client_setnx.schedule(
-            "add", queue="math", unique_for=60, b=2, a=1,
+            "add",
+            queue="math",
+            unique_for=60,
+            b=2,
+            a=1,
         )
         assert captured_hashes[0] == captured_hashes[1]
 
     # --- P1 #1 / COR-001: rollback claims on post-SETNX failure ---
 
     async def test_publish_failure_rolls_back_dedup_flag(
-        self, client_setnx, broker, backend_setnx,
+        self,
+        client_setnx,
+        broker,
+        backend_setnx,
     ):
         """broker.publish raises after SETNX success → flag must be released.
 
@@ -885,7 +980,11 @@ class TestClientUniqueSchedule:
 
         with pytest.raises(RuntimeError, match="broker down"):
             await client_setnx.schedule(
-                "add", 1, 2, queue="math", unique_for=60,
+                "add",
+                1,
+                2,
+                queue="math",
+                unique_for=60,
             )
         backend_setnx.claim_unique.assert_awaited_once()
         backend_setnx.release_unique.assert_awaited_once()
@@ -909,21 +1008,32 @@ class TestClientUniqueDeferred:
         return Client(broker=broker, backend=backend_setnx, registry=registry)
 
     async def test_deferred_without_unique_for_skips_setnx(
-        self, client_setnx, backend_setnx, _patched_schedule_store,
+        self,
+        client_setnx,
+        backend_setnx,
+        patched_schedule_store,
     ):
         """delay= + no unique_for → no SETNX, ScheduleDefinition stays source=cli."""
         await client_setnx.schedule("add", 1, queue="math", delay=60.0)
         backend_setnx.claim_unique.assert_not_awaited()
-        definition = _patched_schedule_store.add_schedule.await_args.args[0]
+        definition = patched_schedule_store.add_schedule.await_args.args[0]
         assert definition.source == "cli"
         assert definition.dedup_hash is None
 
     async def test_deferred_with_unique_for_sets_flag_and_persists_hash(
-        self, client_setnx, backend_setnx, _patched_schedule_store,
+        self,
+        client_setnx,
+        backend_setnx,
+        patched_schedule_store,
     ):
         """delay=60 + unique_for=300 → SETNX with TTL 360_000ms; hash persisted."""
         task_id = await client_setnx.schedule(
-            "add", 1, 2, queue="math", delay=60.0, unique_for=300,
+            "add",
+            1,
+            2,
+            queue="math",
+            delay=60.0,
+            unique_for=300,
         )
         backend_setnx.claim_unique.assert_awaited_once()
         call = backend_setnx.claim_unique.await_args
@@ -936,29 +1046,40 @@ class TestClientUniqueDeferred:
         # so total between 355_000 and 365_000 (slack for clock).
         assert 355_000 <= ttl_ms <= 365_000
 
-        definition = _patched_schedule_store.add_schedule.await_args.args[0]
+        definition = patched_schedule_store.add_schedule.await_args.args[0]
         assert definition.source == "cli_unique"
         assert definition.dedup_hash == dedup_hash
 
     async def test_deferred_duplicate_returns_existing_and_skips_store(
-        self, client_setnx, backend_setnx, _patched_schedule_store,
+        self,
+        client_setnx,
+        backend_setnx,
+        patched_schedule_store,
     ):
         """Dup: return existing task_id; no ScheduleStore.add_schedule call."""
         backend_setnx.claim_unique = AsyncMock(return_value="t-existing")
         tid = await client_setnx.schedule(
-            "add", 1, queue="math", delay=10.0, unique_for=60,
+            "add",
+            1,
+            queue="math",
+            delay=10.0,
+            unique_for=60,
         )
         assert tid == "t-existing"
-        _patched_schedule_store.add_schedule.assert_not_awaited()
+        patched_schedule_store.add_schedule.assert_not_awaited()
 
+    @pytest.mark.usefixtures("patched_schedule_store")
     async def test_deferred_duplicate_emits_signal(
-        self, broker, backend_setnx, registry, _patched_schedule_store,
+        self,
+        broker,
+        backend_setnx,
+        registry,
     ):
         """TASK_DUPLICATE_DETECTED dispatched on deferred dedup conflict."""
         from swarmq.signals import Signal, SignalDispatcher
 
         dispatcher = SignalDispatcher()
-        received: list[dict] = []
+        received: list[dict[str, Any]] = []
 
         @dispatcher.on_signal(Signal.TASK_DUPLICATE_DETECTED)
         async def handler(**kwargs):
@@ -966,11 +1087,17 @@ class TestClientUniqueDeferred:
 
         backend_setnx.claim_unique = AsyncMock(return_value="t-win")
         client = Client(
-            broker=broker, backend=backend_setnx,
-            registry=registry, signal_dispatcher=dispatcher,
+            broker=broker,
+            backend=backend_setnx,
+            registry=registry,
+            signal_dispatcher=dispatcher,
         )
         await client.schedule(
-            "add", 1, queue="math", delay=5.0, unique_for=30,
+            "add",
+            1,
+            queue="math",
+            delay=5.0,
+            unique_for=30,
         )
         assert len(received) == 1
         assert received[0]["existing_task_id"] == "t-win"
@@ -979,35 +1106,54 @@ class TestClientUniqueDeferred:
         assert received[0]["source"] == "client.schedule_deferred"
         assert received[0]["task_name"] == "add"
 
+    @pytest.mark.usefixtures("patched_schedule_store")
     async def test_deferred_with_eta_ttl_covers_fire_plus_unique_for(
-        self, client_setnx, backend_setnx, _patched_schedule_store,
+        self,
+        client_setnx,
+        backend_setnx,
     ):
         """eta=now+120s + unique_for=300 → TTL ≈ (300+120)*1000 ms."""
         from datetime import UTC, datetime, timedelta
+
         eta = datetime.now(UTC) + timedelta(seconds=120)
         await client_setnx.schedule(
-            "add", 1, queue="math", eta=eta, unique_for=300,
+            "add",
+            1,
+            queue="math",
+            eta=eta,
+            unique_for=300,
         )
         ttl_ms = backend_setnx.claim_unique.await_args[0][2]
         # Range allows for any clock drift / asyncio scheduling.
         assert 415_000 <= ttl_ms <= 425_000
 
+    @pytest.mark.usefixtures("patched_schedule_store")
     async def test_deferred_past_eta_clamps_fire_offset_to_zero(
-        self, client_setnx, backend_setnx, _patched_schedule_store,
+        self,
+        client_setnx,
+        backend_setnx,
     ):
         """eta in the past (within 1s lenience) → TTL == unique_for*1000."""
         from datetime import UTC, datetime, timedelta
+
         # Lenience window allows 1s past — use 0.5s in the past.
         eta = datetime.now(UTC) - timedelta(milliseconds=500)
         await client_setnx.schedule(
-            "add", 1, queue="math", eta=eta, unique_for=60,
+            "add",
+            1,
+            queue="math",
+            eta=eta,
+            unique_for=60,
         )
         ttl_ms = backend_setnx.claim_unique.await_args[0][2]
         # fire_offset clamped to 0, so TTL stays at unique_for * 1000.
         assert ttl_ms == 60_000
 
+    @pytest.mark.usefixtures("patched_schedule_store")
     async def test_deferred_client_modus_requires_explicit_unique_for(
-        self, broker, backend_setnx, _patched_schedule_store,
+        self,
+        broker,
+        backend_setnx,
     ):
         """Without registry, _MISSING → no dedup; explicit unique_for works."""
         client = Client(broker=broker, backend=backend_setnx, registry=None)
@@ -1015,33 +1161,45 @@ class TestClientUniqueDeferred:
         backend_setnx.claim_unique.assert_not_awaited()
 
         await client.schedule(
-            "add", queue="math", delay=10.0, unique_for=60,
+            "add",
+            queue="math",
+            delay=10.0,
+            unique_for=60,
         )
         backend_setnx.claim_unique.assert_awaited_once()
 
     async def test_deferred_setnx_call_before_store_insert(
-        self, client_setnx, backend_setnx, _patched_schedule_store,
+        self,
+        client_setnx,
+        backend_setnx,
+        patched_schedule_store,
     ):
         """SETNX must happen BEFORE store.add_schedule — dup path skips store."""
         call_order: list[str] = []
 
         async def track_setnx(*args, **kwargs):
             call_order.append("setnx")
-            return None
 
         async def track_store(*args, **kwargs):
             call_order.append("store")
 
         backend_setnx.claim_unique = AsyncMock(side_effect=track_setnx)
-        _patched_schedule_store.add_schedule = AsyncMock(side_effect=track_store)
+        patched_schedule_store.add_schedule = AsyncMock(side_effect=track_store)
 
         await client_setnx.schedule(
-            "add", 1, queue="math", delay=10.0, unique_for=60,
+            "add",
+            1,
+            queue="math",
+            delay=10.0,
+            unique_for=60,
         )
         assert call_order == ["setnx", "store"]
 
     async def test_deferred_store_failure_rolls_back_flag(
-        self, client_setnx, backend_setnx, _patched_schedule_store,
+        self,
+        client_setnx,
+        backend_setnx,
+        patched_schedule_store,
     ):
         """store.add_schedule raises after SETNX success → flag released.
 
@@ -1050,13 +1208,15 @@ class TestClientUniqueDeferred:
         of that duration blocks re-schedule silently.
         """
         backend_setnx.release_unique = AsyncMock(return_value=True)
-        _patched_schedule_store.add_schedule = AsyncMock(
-            side_effect=RuntimeError("store error")
-        )
+        patched_schedule_store.add_schedule = AsyncMock(side_effect=RuntimeError("store error"))
 
         with pytest.raises(RuntimeError, match="store error"):
             await client_setnx.schedule(
-                "add", 1, queue="math", delay=60.0, unique_for=300,
+                "add",
+                1,
+                queue="math",
+                delay=60.0,
+                unique_for=300,
             )
         backend_setnx.claim_unique.assert_awaited_once()
         backend_setnx.release_unique.assert_awaited_once()
@@ -1075,10 +1235,13 @@ class TestClientUniqueScheduleMany:
         return Client(broker=broker, backend=backend_setnx, registry=registry)
 
     async def test_schedule_many_without_unique_for_is_unchanged(
-        self, client_setnx, broker, backend_setnx,
+        self,
+        client_setnx,
+        broker,
+        backend_setnx,
     ):
         """Baseline: no unique_for → no SETNX, only R4.4 enqueued-at header."""
-        tasks = [("add", (1, 2), {}), ("add", (3, 4), {})]
+        tasks: _Batch = [("add", (1, 2), {}), ("add", (3, 4), {})]
         ids = await client_setnx.schedule_many(tasks, queue="math")
         assert len(ids) == 2
         backend_setnx.claim_unique.assert_not_awaited()
@@ -1090,12 +1253,17 @@ class TestClientUniqueScheduleMany:
             assert isinstance(headers["x-swarmq-enqueued-at"], int)
 
     async def test_schedule_many_per_element_setnx_and_header(
-        self, client_setnx, broker, backend_setnx,
+        self,
+        client_setnx,
+        broker,
+        backend_setnx,
     ):
         """unique_for=60 → SETNX per task, header carried on publish."""
-        tasks = [("add", (1,), {}), ("add", (2,), {}), ("add", (3,), {})]
+        tasks: _Batch = [("add", (1,), {}), ("add", (2,), {}), ("add", (3,), {})]
         ids = await client_setnx.schedule_many(
-            tasks, queue="math", unique_for=60,
+            tasks,
+            queue="math",
+            unique_for=60,
         )
         assert len(ids) == 3
         assert backend_setnx.claim_unique.await_count == 3
@@ -1106,7 +1274,10 @@ class TestClientUniqueScheduleMany:
             assert headers["x-swarmq-unique-until"] == "completion"
 
     async def test_schedule_many_duplicate_returns_existing_at_position(
-        self, client_setnx, broker, backend_setnx,
+        self,
+        client_setnx,
+        broker,
+        backend_setnx,
     ):
         """Dup element gets existing_task_id; non-dups get fresh ids.
 
@@ -1119,27 +1290,33 @@ class TestClientUniqueScheduleMany:
 
         backend_setnx.claim_unique = AsyncMock(side_effect=setnx_mock)
 
-        tasks = [("add", (1,), {}), ("add", (2,), {}), ("add", (3,), {})]
+        tasks: _Batch = [("add", (1,), {}), ("add", (2,), {}), ("add", (3,), {})]
         ids = await client_setnx.schedule_many(
-            tasks, queue="math", unique_for=60,
+            tasks,
+            queue="math",
+            unique_for=60,
         )
         assert len(ids) == 3
         assert ids[0] == "t-existing-0"
         assert ids[2] == "t-existing-2"
         # Middle fresh id is a uuid7.
         import uuid as _uuid
+
         assert _uuid.UUID(ids[1]).version == 7
         # Only the single non-dup publishes.
         assert broker.publish.await_count == 1
 
     async def test_schedule_many_duplicate_emits_signal_with_batch_index(
-        self, broker, backend_setnx, registry,
+        self,
+        broker,
+        backend_setnx,
+        registry,
     ):
         """Dup path emits TASK_DUPLICATE_DETECTED with batch_index + schedule_many source."""
         from swarmq.signals import Signal, SignalDispatcher
 
         dispatcher = SignalDispatcher()
-        received: list[dict] = []
+        received: list[dict[str, Any]] = []
 
         @dispatcher.on_signal(Signal.TASK_DUPLICATE_DETECTED)
         async def handler(**kwargs):
@@ -1152,10 +1329,12 @@ class TestClientUniqueScheduleMany:
 
         backend_setnx.claim_unique = AsyncMock(side_effect=setnx_mock)
         client = Client(
-            broker=broker, backend=backend_setnx,
-            registry=registry, signal_dispatcher=dispatcher,
+            broker=broker,
+            backend=backend_setnx,
+            registry=registry,
+            signal_dispatcher=dispatcher,
         )
-        tasks = [("add", (1,), {}), ("add", (2,), {}), ("add", (3,), {})]
+        tasks: _Batch = [("add", (1,), {}), ("add", (2,), {}), ("add", (3,), {})]
         await client.schedule_many(tasks, queue="math", unique_for=60)
         assert len(received) == 1
         assert received[0]["existing_task_id"] == "t-dup"
@@ -1163,36 +1342,45 @@ class TestClientUniqueScheduleMany:
         assert received[0]["batch_index"] == 1
 
     async def test_schedule_many_batch_override_none_disables_dedup(
-        self, broker, backend_setnx,
+        self,
+        broker,
+        backend_setnx,
     ):
         """Batch-level unique_for=None disables SETNX for all elements."""
         registry = MagicMock()
         registry.has = MagicMock(return_value=True)
         entry = MagicMock()
         entry.task_info = TaskInfo(
-            name="add", queues=["math"], unique_for=30,
+            name="add",
+            queues=["math"],
+            unique_for=30,
         )
         registry.get_entry = MagicMock(return_value=entry)
         client = Client(broker=broker, backend=backend_setnx, registry=registry)
 
-        tasks = [("add", (1,), {}), ("add", (2,), {})]
+        tasks: _Batch = [("add", (1,), {}), ("add", (2,), {})]
         await client.schedule_many(tasks, queue="math", unique_for=None)
         backend_setnx.claim_unique.assert_not_awaited()
 
     async def test_schedule_many_uses_taskinfo_default_when_missing(
-        self, broker, backend_setnx,
+        self,
+        broker,
+        backend_setnx,
     ):
         """_MISSING resolves per-element TaskInfo.unique_for."""
         registry = MagicMock()
         registry.has = MagicMock(return_value=True)
         entry = MagicMock()
         entry.task_info = TaskInfo(
-            name="add", queues=["math"], unique_for=45, unique_until="start",
+            name="add",
+            queues=["math"],
+            unique_for=45,
+            unique_until="start",
         )
         registry.get_entry = MagicMock(return_value=entry)
         client = Client(broker=broker, backend=backend_setnx, registry=registry)
 
-        tasks = [("add", (1,), {}), ("add", (2,), {})]
+        tasks: _Batch = [("add", (1,), {}), ("add", (2,), {})]
         await client.schedule_many(tasks, queue="math")
         assert backend_setnx.claim_unique.await_count == 2
         # All elements use the TaskInfo default TTL.
@@ -1202,14 +1390,19 @@ class TestClientUniqueScheduleMany:
             assert call.kwargs["headers"]["x-swarmq-unique-until"] == "start"
 
     async def test_schedule_many_empty_list_still_returns_empty(
-        self, client_setnx, backend_setnx,
+        self,
+        client_setnx,
+        backend_setnx,
     ):
         ids = await client_setnx.schedule_many([], queue="math", unique_for=60)
         assert ids == []
         backend_setnx.claim_unique.assert_not_awaited()
 
     async def test_schedule_many_duplicates_skip_task_enqueued_signal(
-        self, broker, backend_setnx, registry,
+        self,
+        broker,
+        backend_setnx,
+        registry,
     ):
         """A duplicated element must NOT emit TASK_ENQUEUED (dup replaces it)."""
         from swarmq.signals import Signal, SignalDispatcher
@@ -1228,10 +1421,12 @@ class TestClientUniqueScheduleMany:
 
         backend_setnx.claim_unique = AsyncMock(side_effect=setnx_mock)
         client = Client(
-            broker=broker, backend=backend_setnx,
-            registry=registry, signal_dispatcher=dispatcher,
+            broker=broker,
+            backend=backend_setnx,
+            registry=registry,
+            signal_dispatcher=dispatcher,
         )
-        tasks = [("add", (1,), {}), ("add", (2,), {})]
+        tasks: _Batch = [("add", (1,), {}), ("add", (2,), {})]
         ids = await client.schedule_many(tasks, queue="math", unique_for=60)
         assert ids[1] == "t-dup"
         # Only the fresh publish emits TASK_ENQUEUED.
@@ -1240,7 +1435,10 @@ class TestClientUniqueScheduleMany:
     # --- P1 #2 / COR-002 / ADV-004: rollback claims on partial batch failure ---
 
     async def test_schedule_many_partial_publish_failure_rolls_back_failed_flags(
-        self, broker, backend_setnx, registry,
+        self,
+        broker,
+        backend_setnx,
+        registry,
     ):
         """Element 1 publish raises → its flag is released; element 0's
         successful publish keeps its flag (worker will release at terminal)."""
@@ -1256,7 +1454,7 @@ class TestClientUniqueScheduleMany:
         broker.publish = AsyncMock(side_effect=publish_mock)
 
         client = Client(broker=broker, backend=backend_setnx, registry=registry)
-        tasks = [("add", (1,), {}), ("add", (2,), {})]
+        tasks: _Batch = [("add", (1,), {}), ("add", (2,), {})]
 
         with pytest.raises(RuntimeError, match="blip on element 1"):
             await client.schedule_many(tasks, queue="math", unique_for=60)
@@ -1265,7 +1463,9 @@ class TestClientUniqueScheduleMany:
         backend_setnx.release_unique.assert_awaited_once()
 
     async def test_schedule_many_validation_fails_before_any_setnx(
-        self, broker, backend_setnx,
+        self,
+        broker,
+        backend_setnx,
     ):
         """TaskNotFoundError on any element aborts Pass 0 validation
         BEFORE any SETNX fires, so no flags are claimed or orphaned.
@@ -1283,7 +1483,7 @@ class TestClientUniqueScheduleMany:
         registry.get_entry = MagicMock(return_value=entry)
 
         client = Client(broker=broker, backend=backend_setnx, registry=registry)
-        tasks = [("add", (1,), {}), ("unknown", (), {})]
+        tasks: _Batch = [("add", (1,), {}), ("unknown", (), {})]
 
         with pytest.raises(TaskNotFoundError):
             await client.schedule_many(tasks, queue="math", unique_for=60)
@@ -1294,7 +1494,10 @@ class TestClientUniqueScheduleMany:
         backend_setnx.release_unique.assert_not_awaited()
 
     async def test_schedule_many_parallel_setnx_pre_enqueue_fail_rolls_back(
-        self, broker, backend_setnx, registry,
+        self,
+        broker,
+        backend_setnx,
+        registry,
     ):
         """If pre_enqueue raises during Pass 2 after all SETNX succeeded
         in Pass 1, every claimed flag must be rolled back."""
@@ -1305,16 +1508,19 @@ class TestClientUniqueScheduleMany:
         class BoomMiddleware(Middleware):
             call_count = 0
 
+            @override
             async def pre_enqueue(self, ctx):
                 type(self).call_count += 1
                 if type(self).call_count == 3:
                     raise RuntimeError("pre_enqueue boom")
 
         client = Client(
-            broker=broker, backend=backend_setnx, registry=registry,
+            broker=broker,
+            backend=backend_setnx,
+            registry=registry,
             middleware_chain=MiddlewareChain([BoomMiddleware()]),
         )
-        tasks = [("add", (i,), {}) for i in range(3)]
+        tasks: _Batch = [("add", (i,), {}) for i in range(3)]
 
         with pytest.raises(RuntimeError, match="pre_enqueue boom"):
             await client.schedule_many(tasks, queue="math", unique_for=60)
@@ -1330,9 +1536,12 @@ class TestClientPriorityRouting:
 
         class P(Task):
             task_info = TaskInfo(
-                name="p_task", queues=["work"], priority=priority,  # type: ignore[arg-type]
+                name="p_task",
+                queues=["work"],
+                priority=priority,  # type: ignore[arg-type]
             )
 
+            @override
             async def run(self) -> str:
                 return "ok"
 
@@ -1342,7 +1551,9 @@ class TestClientPriorityRouting:
         registry = TaskRegistry()
         registry.register(P)
         client = Client(
-            broker=broker, backend=backend, registry=registry,
+            broker=broker,
+            backend=backend,
+            registry=registry,
             signal_dispatcher=SignalDispatcher(),
         )
         return client, broker
@@ -1387,7 +1598,7 @@ class TestClientPriorityRouting:
 #    WARNING mit ``error_type`` und ``error`` -- der TTL heilt den Claim.
 
 
-def _schedule_events(entries: list[dict], event: str) -> list[dict]:
+def _schedule_events(entries: list[dict[str, Any]], event: str) -> list[dict[str, Any]]:
     return [e for e in entries if e["event"] == event and e["logger"] == "swarmq.client.schedule"]
 
 
@@ -1408,7 +1619,11 @@ class TestScheduleLogging:
 
     @pytest.mark.timeout(5)
     async def test_failed_rollback_logs_dedup_rollback_failed_with_error_fields(
-        self, broker, backend, registry, swarmq_logs,
+        self,
+        broker,
+        backend,
+        registry,
+        swarmq_logs,
     ):
         backend.claim_unique = AsyncMock(return_value=None)
         backend.release_unique = AsyncMock(side_effect=ConnectionError("valkey down"))

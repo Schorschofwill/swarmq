@@ -45,6 +45,7 @@ from swarmq.task import UniqueUntil
 
 logger = get_logger(__name__)
 
+
 class ClientBroker(Publisher, Protocol):
     """Broker-Bedarf des Clients (U15): publish + Verbindungs-Lifecycle."""
 
@@ -98,7 +99,9 @@ class ClientScheduling(ClientScheduleResolve):
         """
         dedup_hash = compute_dedup_hash(task_name, args, kwargs)
         existing = await self._backend.claim_unique(
-            dedup_hash, task_id, ttl_ms,
+            dedup_hash,
+            task_id,
+            ttl_ms,
             op_timeout=self._backend_op_timeout,
         )
         if existing is None:
@@ -112,13 +115,16 @@ class ClientScheduling(ClientScheduleResolve):
             **extra_signal_payload,
         }
         await self._signal_dispatcher.dispatch(
-            Signal.TASK_DUPLICATE_DETECTED, **payload,
+            Signal.TASK_DUPLICATE_DETECTED,
+            **payload,
         )
         logger.info("dedup_detected", **payload)
         return dedup_hash, existing
 
     async def _rollback_unique_claim(
-        self, dedup_hash: str, task_id: str,
+        self,
+        dedup_hash: str,
+        task_id: str,
     ) -> None:
         """Best-effort release of a dedup flag whose enqueue failed.
 
@@ -131,10 +137,11 @@ class ClientScheduling(ClientScheduleResolve):
         """
         try:
             await self._backend.release_unique(
-                dedup_hash, task_id,
+                dedup_hash,
+                task_id,
                 op_timeout=self._backend_op_timeout,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Rollback best effort, Fehler wird geloggt
             logger.warning(
                 "dedup_rollback_failed",
                 dedup_hash=dedup_hash,
@@ -185,9 +192,7 @@ class ClientScheduling(ClientScheduleResolve):
             raise TaskNotFoundError(task_name)
 
         # --- queue resolution chain + delivery_mode resolution ---
-        resolved_queue, delivery_mode = self._resolve_queue_and_delivery_mode(
-            task_name, queue
-        )
+        resolved_queue, delivery_mode = self._resolve_queue_and_delivery_mode(task_name, queue)
 
         # --- deferred path: delay= / eta= ---
         if delay is not None and eta is not None:
@@ -200,9 +205,7 @@ class ClientScheduling(ClientScheduleResolve):
             # Resolve R3.5 dedup up here so deferred path + immediate path
             # apply the same precedence rules (_MISSING → TaskInfo default,
             # None → dedup off, int → explicit).
-            resolved_unique_for, resolved_unique_until = self._resolve_unique(
-                task_name, unique_for, unique_until
-            )
+            resolved_unique_for, resolved_unique_until = self._resolve_unique(task_name, unique_for, unique_until)
             return await self._schedule_deferred(
                 task_name,
                 list(args),
@@ -218,15 +221,16 @@ class ClientScheduling(ClientScheduleResolve):
         task_id = str(uuid.uuid7())
 
         # --- R3.5 dedup resolution ---
-        resolved_unique_for, resolved_unique_until = self._resolve_unique(
-            task_name, unique_for, unique_until
-        )
+        resolved_unique_for, resolved_unique_until = self._resolve_unique(task_name, unique_for, unique_until)
         dedup_hash: str | None = None
         headers: dict[str, Any] = {}
 
         if resolved_unique_for is not None:
             dedup_hash, existing = await self._claim_unique_flag(
-                task_name, args, kwargs, task_id,
+                task_name,
+                args,
+                kwargs,
+                task_id,
                 ttl_ms=resolved_unique_for * 1000,
                 source="client.schedule",
             )
@@ -285,7 +289,7 @@ class ClientScheduling(ClientScheduleResolve):
             await self._broker.publish(
                 resolved_queue,
                 encode_json(message),
-                headers=headers if headers else None,
+                headers=headers or None,
             )
         except PublishIndeterminate:
             # Die Frist riss beim Warten auf das Publisher-Confirm — der
@@ -313,7 +317,8 @@ class ClientScheduling(ClientScheduleResolve):
         return task_id
 
     async def _batch_claim_flags(
-        self, prepped: list[dict[str, Any]],
+        self,
+        prepped: list[dict[str, Any]],
     ) -> tuple[dict[int, asyncio.Task[str | None]], dict[int, str | None], dict[int, BaseException]]:
         """Pass 1 (parallel): fire all SETNX calls concurrently. A sequential
         loop was the main per-batch latency cost for dedup-tagged batches —
@@ -324,7 +329,8 @@ class ClientScheduling(ClientScheduleResolve):
                 continue
             setnx_tasks[i] = asyncio.create_task(
                 self._backend.claim_unique(
-                    entry["dedup_hash"], entry["task_id"],
+                    entry["dedup_hash"],
+                    entry["task_id"],
                     entry["dedup_ttl_ms"],
                     op_timeout=self._backend_op_timeout,
                 ),
@@ -355,13 +361,17 @@ class ClientScheduling(ClientScheduleResolve):
             if setnx_results.get(i) is None and i in setnx_tasks:
                 # Claim succeeded in Pass 1.
                 await self._rollback_unique_claim(
-                    entry["dedup_hash"], entry["task_id"],
+                    entry["dedup_hash"],
+                    entry["task_id"],
                 )
 
     async def _batch_emit_duplicate(
-        self, i: int, entry: dict[str, Any], existing: str,
+        self,
+        i: int,
+        entry: dict[str, Any],
+        existing: str,
     ) -> None:
-        payload = {
+        payload: dict[str, Any] = {
             "existing_task_id": existing,
             "task_name": entry["task_name"],
             "dedup_hash": entry["dedup_hash"],
@@ -369,7 +379,8 @@ class ClientScheduling(ClientScheduleResolve):
             "batch_index": i,
         }
         await self._signal_dispatcher.dispatch(
-            Signal.TASK_DUPLICATE_DETECTED, **payload,
+            Signal.TASK_DUPLICATE_DETECTED,
+            **payload,
         )
         logger.info("dedup_detected", **payload)
 
@@ -388,19 +399,13 @@ class ClientScheduling(ClientScheduleResolve):
             self._broker.publish(
                 state["resolved_queues"][i],
                 state["encoded_messages"][i],
-                headers=state["dedup_headers"][i] if state["dedup_headers"][i] else None,
+                headers=state["dedup_headers"][i] or None,
             )
             for i in publish_indices
         ]
         results = await asyncio.gather(*coros, return_exceptions=True)
-        errors = [
-            (publish_indices[k], r)
-            for k, r in enumerate(results) if isinstance(r, BaseException)
-        ]
-        ok_indices = [
-            publish_indices[k]
-            for k, r in enumerate(results) if not isinstance(r, BaseException)
-        ]
+        errors = [(publish_indices[k], r) for k, r in enumerate(results) if isinstance(r, BaseException)]
+        ok_indices = [publish_indices[k] for k, r in enumerate(results) if not isinstance(r, BaseException)]
         if errors:
             # Log partially-submitted task_ids so they can be recovered.
             submitted = [task_ids[i] for i in ok_indices]
@@ -481,7 +486,7 @@ class ClientScheduling(ClientScheduleResolve):
         # TASK_DUPLICATE_DETECTED handlers see events in batch-index order.
         try:
             if setnx_errors:
-                raise next(iter(setnx_errors.values()))
+                raise next(iter(setnx_errors.values()))  # noqa: TRY301 - erster SETNX-Fehler laeuft bewusst durch den Rollback-Pfad
 
             for i, entry in enumerate(prepped):
                 headers: dict[str, Any] = {}
@@ -505,15 +510,17 @@ class ClientScheduling(ClientScheduleResolve):
                 state["task_names"][i] = entry["task_name"]
                 state["resolved_queues"][i] = entry["queue"]
                 state["dedup_headers"][i] = headers
-                state["encoded_messages"][i] = encode_json({
-                    "task": {
-                        "id": entry["task_id"],
-                        "queue": entry["queue"],
-                        "name": entry["task_name"],
-                    },
-                    "args": list(entry["args"]),
-                    "kwargs": entry["kwargs"],
-                })
+                state["encoded_messages"][i] = encode_json(
+                    {
+                        "task": {
+                            "id": entry["task_id"],
+                            "queue": entry["queue"],
+                            "name": entry["task_name"],
+                        },
+                        "args": list(entry["args"]),
+                        "kwargs": entry["kwargs"],
+                    }
+                )
                 message_dict: MessageContext = {
                     "task_id": entry["task_id"],
                     "task_name": entry["task_name"],
@@ -565,10 +572,7 @@ class ClientScheduling(ClientScheduleResolve):
             fire_ts_ms = int(eta.timestamp() * 1000)
             # Allow a 1s lenience for clock skew / scheduling latency.
             if fire_ts_ms < now_ms - 1_000:
-                raise ValueError(
-                    f"eta is in the past: {eta.isoformat()}. "
-                    "Use delay=0 for immediate execution."
-                )
+                raise ValueError(f"eta is in the past: {eta.isoformat()}. Use delay=0 for immediate execution.")
         else:
             assert delay is not None  # caller-side validated
             fire_ts_ms = now_ms + int(delay * 1000)
@@ -587,7 +591,10 @@ class ClientScheduling(ClientScheduleResolve):
             fire_offset_s = (fire_offset_ms + 999) // 1000  # ceiling division
             ttl_ms = (unique_for + int(fire_offset_s)) * 1000
             dedup_hash, existing = await self._claim_unique_flag(
-                task_name, tuple(args), kwargs, task_id,
+                task_name,
+                tuple(args),
+                kwargs,
+                task_id,
                 ttl_ms=ttl_ms,
                 source="client.schedule_deferred",
             )

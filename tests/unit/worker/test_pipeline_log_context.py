@@ -22,7 +22,7 @@ Test-Liste:
 from __future__ import annotations
 
 import asyncio
-from typing import ClassVar
+from typing import Any, ClassVar, override
 
 import pytest
 import structlog
@@ -44,18 +44,19 @@ _task_logger = get_logger("swarmq.tests.task_context")
 class _LoggingTask(Task):
     task_info = TaskInfo(name="logs_inside", queues=["default"])
 
+    @override
     async def run(self) -> str:
         _task_logger.info("inside_task")
         return "ok"
 
 
-@pytest.fixture()
+@pytest.fixture
 def ctx_worker(worker, registry):
     registry.register(_LoggingTask)
     return worker
 
 
-def _inside(entries: list[dict]) -> list[dict]:
+def _inside(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [e for e in entries if e["event"] == "inside_task"]
 
 
@@ -87,7 +88,10 @@ async def test_log_context_carries_the_worker_identity_as_string(broker, backend
     registry = TaskRegistry()
     registry.register(_LoggingTask)
     config = SwarmQConfig(
-        broker_url="amqp://x", backend_url="valkey://x", worker_id="phx", worker_slot=2,
+        broker_url="amqp://x",
+        backend_url="valkey://x",
+        worker_id="phx",
+        worker_slot=2,
     )
     worker = Worker(broker=broker, backend=backend, registry=registry, config=config)
 
@@ -97,7 +101,7 @@ async def test_log_context_carries_the_worker_identity_as_string(broker, backend
     assert entry["worker_id"] == "phx:2"
 
 
-def _message(*, task_id: str = "t-ctx", headers: dict | None = None):
+def _message(*, task_id: str = "t-ctx", headers: dict[str, Any] | None = None):
     msg = make_message(_default_payload(task_id=task_id, name="logs_inside", args=[], kwargs={}), headers=headers)
     msg.queue = "default"
     return msg
@@ -157,6 +161,7 @@ class _InterleavedTask(Task):
     started: ClassVar[dict[str, asyncio.Event]] = {}
     proceed: ClassVar[dict[str, asyncio.Event]] = {}
 
+    @override
     async def run(self, tag: str) -> str:
         _task_logger.info("before_wait", tag=tag)
         type(self).started[tag].set()

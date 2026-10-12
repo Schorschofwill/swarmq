@@ -17,6 +17,8 @@ Testliste:
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from swarmq.client import Client
@@ -27,7 +29,7 @@ pytestmark = pytest.mark.timeout(5)
 _EVENT = "client_task_defaults_unresolved"
 
 
-def _warnings(logs: list[dict]) -> list[dict]:
+def _warnings(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [e for e in logs if e["event"] == _EVENT]
 
 

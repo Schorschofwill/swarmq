@@ -10,7 +10,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, override
 
 from croniter import CroniterBadCronError, croniter
 
@@ -26,6 +26,8 @@ if TYPE_CHECKING:
     from swarmq.workflow import Signature
 
 _progress_logger = get_logger(__name__)
+
+_MAX_TASK_NAME_LEN = 255
 
 # Cron syntax we intentionally do NOT support in v1: L (last), W (nearest
 # weekday), # (nth weekday of month). Rejected at construction so the failure
@@ -177,20 +179,15 @@ class TaskInfo:
     def _validate_identity_and_retry(self) -> None:
         if not self.name:
             raise ValueError("name must not be empty")
-        if len(self.name) > 255:
+        if len(self.name) > _MAX_TASK_NAME_LEN:
             raise ValueError("name must not exceed 255 characters")
         if not self.queues:
             raise ValueError("queues must have at least 1 element")
-        if (
-            self.soft_timeout is not None
-            and self.hard_timeout is not None
-            and self.hard_timeout <= self.soft_timeout
-        ):
+        if self.soft_timeout is not None and self.hard_timeout is not None and self.hard_timeout <= self.soft_timeout:
             raise ValueError("hard_timeout must be greater than soft_timeout")
         if self.retry_backoff not in _VALID_BACKOFF_STRATEGIES:
             raise ValueError(
-                f"retry_backoff must be one of {sorted(_VALID_BACKOFF_STRATEGIES)}, "
-                f"got {self.retry_backoff!r}"
+                f"retry_backoff must be one of {sorted(_VALID_BACKOFF_STRATEGIES)}, got {self.retry_backoff!r}"
             )
         if self.retry_base_delay < 0:
             raise ValueError("retry_base_delay must be >= 0")
@@ -203,33 +200,23 @@ class TaskInfo:
         if self.max_age is not None and self.max_age <= 0:
             raise ValueError("max_age must be > 0 when set")
         if self.priority not in ("high", "normal", "low"):
-            raise ValueError(
-                f"priority must be 'high' | 'normal' | 'low', "
-                f"got {self.priority!r}"
-            )
+            raise ValueError(f"priority must be 'high' | 'normal' | 'low', got {self.priority!r}")
         if self.max_concurrency < 1:
-            raise ValueError(
-                f"max_concurrency must be >= 1 (got {self.max_concurrency})"
-            )
+            raise ValueError(f"max_concurrency must be >= 1 (got {self.max_concurrency})")
         if self.max_concurrency != 1 and self.lock is None:
-            raise ValueError(
-                "max_concurrency requires lock to be set"
-            )
+            raise ValueError("max_concurrency requires lock to be set")
         if self.lock is not None:
             # Empty / whitespace-only lock would render to the bare Valkey
             # namespace key "sq:lock:" and silently collide with every
             # other empty-locked task in the system. Reject at construction.
             if not self.lock.strip():
-                raise ValueError(
-                    "lock must not be empty or whitespace-only"
-                )
+                raise ValueError("lock must not be empty or whitespace-only")
             # Locks need a finite ceiling for safe TTL derivation. Surface
             # the requirement at TaskInfo construction (module import) so
             # the bug fires at the obvious site, not inside the worker loop
             # at first schedule. compute_lock_ttl_ms encapsulates the
             # contract — its ValueError is the right message verbatim.
             compute_lock_ttl_ms(self.hard_timeout)
-
 
     def _validate_scheduling(self) -> None:
         # catchup=True is reserved for a future release; fail fast at
@@ -241,37 +228,26 @@ class TaskInfo:
         # catches NotImplementedError for abstract-method handling must
         # not accidentally swallow it.
         if self.catchup:
-            raise ValueError(
-                "catchup=True is reserved for a future release; "
-                "set catchup=False"
-            )
+            raise ValueError("catchup=True is reserved for a future release; set catchup=False")
 
         if self.cron is not None:
             # Reject extended cron-syntax (L/W/#) at construction.
             if _FORBIDDEN_CRON_CHARS.search(self.cron):
                 raise ValueError(
-                    f"cron uses unsupported extended syntax (L/W/#): "
-                    f"{self.cron!r}; use a standard 5-field expression"
+                    f"cron uses unsupported extended syntax (L/W/#): {self.cron!r}; use a standard 5-field expression"
                 )
             try:
                 croniter(self.cron, datetime.now(UTC))
             except (CroniterBadCronError, ValueError) as exc:
-                raise ValueError(
-                    f"cron is not a valid expression: {self.cron!r} ({exc})"
-                ) from exc
+                raise ValueError(f"cron is not a valid expression: {self.cron!r} ({exc})") from exc
 
         if self.timezone is not None:
             if self.cron is None:
-                raise ValueError(
-                    f"timezone requires cron (got timezone={self.timezone!r})"
-                )
+                raise ValueError(f"timezone requires cron (got timezone={self.timezone!r})")
             # Plan U3: eine ausdrückliche UTC-Angabe bleibt "UTC" (None
             # heißt „nicht gesetzt“ und fiele auf den globalen Standard
             # zurück); erst die gespeicherte Definition kennt UTC als None.
-            object.__setattr__(
-                self, "timezone", normalize_timezone(self.timezone) or "UTC"
-            )
-
+            object.__setattr__(self, "timezone", normalize_timezone(self.timezone) or "UTC")
 
     def _validate_unique(self) -> None:
         # R3.5 Unique Tasks validation (origin CD6):
@@ -285,18 +261,11 @@ class TaskInfo:
         #   dataclass "is the value default or explicit").
         if self.unique_for is not None:
             if self.unique_for == 0:
-                raise ValueError(
-                    "unique_for=0 is invalid; use None to disable dedup"
-                )
+                raise ValueError("unique_for=0 is invalid; use None to disable dedup")
             if self.unique_for < 0:
-                raise ValueError(
-                    f"unique_for must be > 0 (got {self.unique_for})"
-                )
+                raise ValueError(f"unique_for must be > 0 (got {self.unique_for})")
         if self.unique_until not in _VALID_UNIQUE_UNTIL:
-            raise ValueError(
-                f"unique_until must be one of {sorted(_VALID_UNIQUE_UNTIL)}, "
-                f"got {self.unique_until!r}"
-            )
+            raise ValueError(f"unique_until must be one of {sorted(_VALID_UNIQUE_UNTIL)}, got {self.unique_until!r}")
 
 
 _PROGRESS_MIN_INTERVAL_S = 0.5
@@ -326,6 +295,7 @@ class Task:
     # class-level instance would be shared across all Task instances).
     _progress_lock: asyncio.Lock | None = None
 
+    @override
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
         if hasattr(cls, "task_info"):
@@ -355,9 +325,7 @@ class Task:
             args,
             kwargs,
             immutable=False,
-            _is_fire_and_forget=(
-                cls.task_info.delivery is DeliveryMode.FIRE_AND_FORGET
-            ),
+            _is_fire_and_forget=(cls.task_info.delivery is DeliveryMode.FIRE_AND_FORGET),
         )
 
     @classmethod
@@ -371,9 +339,7 @@ class Task:
             args,
             kwargs,
             immutable=True,
-            _is_fire_and_forget=(
-                cls.task_info.delivery is DeliveryMode.FIRE_AND_FORGET
-            ),
+            _is_fire_and_forget=(cls.task_info.delivery is DeliveryMode.FIRE_AND_FORGET),
         )
 
     async def pre_execution(self) -> None:
@@ -433,10 +399,7 @@ class Task:
             is_final = current >= total
             if is_final and self._progress_final_flushed:
                 return
-            if (
-                not is_final
-                and loop_time - self._last_progress_update < _PROGRESS_MIN_INTERVAL_S
-            ):
+            if not is_final and loop_time - self._last_progress_update < _PROGRESS_MIN_INTERVAL_S:
                 return
             # Reserve the slot now so concurrent callers see the new
             # timestamp on their throttle check.
@@ -450,11 +413,7 @@ class Task:
             if self._task_start_time is not None
             else ""
         )
-        elapsed = (
-            (loop_time - self._task_start_time)
-            if self._task_start_time is not None
-            else 0.0
-        )
+        elapsed = (loop_time - self._task_start_time) if self._task_start_time is not None else 0.0
         if current > 0 and elapsed > 0 and not is_final:
             eta_seconds: int | None = int(elapsed / current * (total - current))
         else:
@@ -475,12 +434,15 @@ class Task:
         # is the HASH (Pub/Sub is the optional real-time channel).
         try:
             await self._backend.set_progress(
-                self._task_id, fields, ttl_ms=self._result_ttl_ms,
+                self._task_id,
+                fields,
+                ttl_ms=self._result_ttl_ms,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Fortschritt best effort, Fehler wird geloggt
             _progress_logger.warning(
                 "update_progress_hset_failed",
-                task_id=self._task_id, **_error_fields(exc),
+                task_id=self._task_id,
+                **_error_fields(exc),
             )
             return  # Skip publish if HSET failed — no point notifying.
 
@@ -489,10 +451,11 @@ class Task:
                 self._task_id,
                 json.dumps(fields).encode("utf-8"),
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Fortschritt best effort, Fehler wird geloggt
             _progress_logger.warning(
                 "update_progress_publish_failed",
-                task_id=self._task_id, **_error_fields(exc),
+                task_id=self._task_id,
+                **_error_fields(exc),
             )
 
 
@@ -511,7 +474,7 @@ def _check_run_signature_reserved_params(cls: type) -> None:
         return
     try:
         params = inspect.signature(run).parameters
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         # Builtin / C-implemented run — skip.
         return
     conflicts = _RESERVED_RUN_PARAM_NAMES & set(params)

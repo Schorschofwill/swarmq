@@ -47,6 +47,7 @@ class TestRabbitMQBrokerConnect:
             await broker.connect()
 
         mock_connect.assert_awaited_once()
+        assert mock_connect.await_args is not None
         assert mock_connect.await_args.args == ("amqp://guest:guest@localhost/",)
         # BZ-16 (MR 16): der Consume-Kanal entsteht erst mit ``consume()`` auf
         # einer eigenen Verbindung.
@@ -68,6 +69,7 @@ class TestRabbitMQBrokerConnect:
             await broker.connect()
 
         mock_connect.assert_awaited_once()
+        assert mock_connect.await_args is not None
         assert mock_connect.await_args.args == ("amqp://guest:guest@localhost/",)
         assert mock_connection.channel.await_count == 2
         assert broker._publish_channel is mock_publish_channel
@@ -204,7 +206,8 @@ class TestRabbitMQBrokerInjection:
         assert broker._connection is None
 
     async def test_pool_acquire_exhausted_raises_instead_of_hanging(
-        self, monkeypatch,
+        self,
+        monkeypatch,
     ):
         """Härtung R2 P1-3: ``pool.acquire().__aenter__()`` blockiert
         bei erschöpftem (nicht-overflow) Pool unbegrenzt auf
@@ -214,7 +217,8 @@ class TestRabbitMQBrokerInjection:
         import asyncio
 
         monkeypatch.setattr(
-            "swarmq.broker.rabbitmq.connection._POOL_ACQUIRE_TIMEOUT_S", 0.1,
+            "swarmq.broker.rabbitmq.connection._POOL_ACQUIRE_TIMEOUT_S",
+            0.1,
         )
 
         async def _never_returns():
@@ -315,7 +319,7 @@ class TestRabbitMQBrokerInjection:
 
 
 class TestRabbitMQBrokerDeclareQueue:
-    @pytest.fixture()
+    @pytest.fixture
     def connected_broker(self):
         broker = RabbitMQBroker("amqp://guest:guest@localhost/")
         broker._publish_channel = AsyncMock(is_closed=False)
@@ -738,10 +742,13 @@ class TestRabbitMQBrokerConnectError:
     async def test_connect_wraps_connection_error_in_broker_error(self):
         broker = RabbitMQBroker("amqp://guest:guest@localhost/")
 
-        with patch(
-            "swarmq.broker.rabbitmq.connection.aio_pika.connect_robust",
-            side_effect=ConnectionError("refused"),
-        ), pytest.raises(BrokerConnectionError):
+        with (
+            patch(
+                "swarmq.broker.rabbitmq.connection.aio_pika.connect_robust",
+                side_effect=ConnectionError("refused"),
+            ),
+            pytest.raises(BrokerConnectionError),
+        ):
             await broker.connect()
 
 
@@ -759,7 +766,7 @@ class TestRabbitMQBrokerErrorSanitization:
         broker._connection = conn
 
         with pytest.raises(BrokerConnectionError) as exc_info:
-            await broker._ensure_publish_channel()
+            _ = await broker._ensure_publish_channel()
 
         message = str(exc_info.value)
         assert "supersecret" not in message
@@ -774,7 +781,7 @@ class TestRabbitMQBrokerErrorSanitization:
         broker._connection = conn
 
         with pytest.raises(BrokerConnectionError) as exc_info:
-            await broker._ensure_publish_channel()
+            _ = await broker._ensure_publish_channel()
 
         message = str(exc_info.value)
         assert "supersecret" not in message
@@ -940,9 +947,14 @@ class TestDeadLetterTtl:
 
     async def test_list_puts_message_back_with_remaining_ttl(self):
         dead_lettered_at = int((self._NOW - 3600) * 1000)
-        broker = self._dlq_broker(self._incoming(headers={
-            "x-swarmq-dead-lettered-at": dead_lettered_at, "x-swarmq-dead-letter-ttl-ms": 7_200_000,
-        }))
+        broker = self._dlq_broker(
+            self._incoming(
+                headers={
+                    "x-swarmq-dead-lettered-at": dead_lettered_at,
+                    "x-swarmq-dead-letter-ttl-ms": 7_200_000,
+                }
+            )
+        )
         await broker.list_dead_letters("tasks")
         [(routing_key, msg)] = broker.published
         assert routing_key == "tasks.XQ"
@@ -977,7 +989,8 @@ class TestDeadLetterTtl:
         broker = self._dlq_broker(stamped)
         found, _ = await broker.retry_dead_letter("tasks", "t-1")
         [(routing_key, msg)] = broker.published
-        assert found is True and routing_key == "tasks"
+        assert found is True
+        assert routing_key == "tasks"
         assert msg.properties.expiration is None
         assert "x-swarmq-dead-lettered-at" not in msg.headers
 
@@ -1020,7 +1033,8 @@ class TestBrokerLogging:
             await broker.cancel_consume()
 
         [entry] = [
-            e for e in swarmq_logs
+            e
+            for e in swarmq_logs
             if e["event"] == "consumer_cancel_failed" and e["logger"] == "swarmq.broker.rabbitmq.delivery"
         ]
         assert entry["log_level"] == "warning"
@@ -1040,7 +1054,8 @@ class TestBrokerLogging:
         await broker.close()  # sammelt den nebenlaeufigen Schliess-Task ein
 
         [entry] = [
-            e for e in swarmq_logs
+            e
+            for e in swarmq_logs
             if e["event"] == "publish_channel_close_incomplete" and e["logger"] == "swarmq.broker.rabbitmq.connection"
         ]
         assert entry["log_level"] == "warning"

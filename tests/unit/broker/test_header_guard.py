@@ -17,10 +17,12 @@ Testliste:
 # [x] frame_max nicht lesbar (Mock, getrennte Verbindung) -> 131072
 """
 
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pamqp.encode
 import pytest
+from pamqp.common import FieldTable
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.broker.rabbitmq.header_guard import guard_headers, negotiated_frame_max
@@ -35,7 +37,7 @@ def test_small_headers_are_unchanged() -> None:
     assert guard_headers(headers, _FRAME_MAX) == {"x-swarmq-traceback": "boom", "x-swarmq-retry-count": 1}
 
 
-def _encoded_size(headers: dict[str, object]) -> int:
+def _encoded_size(headers: FieldTable) -> int:
     return len(pamqp.encode.field_table(headers))
 
 
@@ -68,8 +70,9 @@ def _broker(frame_max: object = None) -> RabbitMQBroker:
 
 
 def _published_headers(broker: RabbitMQBroker) -> dict[str, object]:
-    message = broker._publish_channel.default_exchange.publish.call_args.args[0]
-    return message.headers
+    message = cast("AsyncMock", broker._publish_channel).default_exchange.publish.call_args.args[0]
+    headers: dict[str, object] = message.headers
+    return headers
 
 
 async def test_broker_publish_bounds_headers_by_the_negotiated_frame_max() -> None:
@@ -103,4 +106,4 @@ async def test_broker_publish_with_too_large_headers_raises_without_any_publish_
     with pytest.raises(MessageHeadersTooLarge):
         await broker.publish("tasks", b"body", headers=headers)
 
-    broker._publish_channel.default_exchange.publish.assert_not_awaited()
+    cast("AsyncMock", broker._publish_channel).default_exchange.publish.assert_not_awaited()

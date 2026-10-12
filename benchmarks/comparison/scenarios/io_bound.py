@@ -36,9 +36,7 @@ async def run_io_bound(
 
         payloads = [{"sleep_ms": sleep_ms}] * n
         t_start = time.perf_counter()
-        latencies = await run_timed_batch_concurrent(
-            system, "io_task", payloads, concurrency=concurrency
-        )
+        latencies = await run_timed_batch_concurrent(system, "io_task", payloads, concurrency=concurrency)
         t_end = time.perf_counter()
 
         return make_result(

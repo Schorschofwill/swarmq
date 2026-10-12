@@ -89,7 +89,7 @@ import io
 import json
 import logging
 import threading
-from collections.abc import Iterator
+from typing import override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -117,6 +117,7 @@ class _Collect(logging.Handler):
         super().__init__(level)
         self.records: list[logging.LogRecord] = []
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         self.records.append(record)
 
@@ -124,7 +125,7 @@ class _Collect(logging.Handler):
         return [r.getMessage() for r in self.records]
 
 
-@pytest.fixture()
+@pytest.fixture
 def broker() -> MagicMock:
     b = MagicMock(spec=RabbitMQBroker)
     b._url = "amqp://guest:guest@localhost/"
@@ -133,7 +134,7 @@ def broker() -> MagicMock:
     return b
 
 
-@pytest.fixture()
+@pytest.fixture
 def backend() -> MagicMock:
     b = MagicMock(spec=ValkeyBackend)
     b._url = "valkey://localhost:6379/0"
@@ -142,21 +143,21 @@ def backend() -> MagicMock:
     return b
 
 
-@pytest.fixture()
-def app_handler() -> Iterator[_Collect]:
+@pytest.fixture
+def app_handler() -> _Collect:
     """Die App besitzt Root: genau ein Handler, Level INFO."""
     root = logging.getLogger()
     handler = _Collect()
     root.handlers[:] = [handler]
     root.setLevel(logging.INFO)
-    yield handler
+    return handler
 
 
 def _listener_threads() -> list[threading.Thread]:
     return [t for t in threading.enumerate() if t.name == LISTENER_THREAD_NAME]
 
 
-@pytest.fixture()
+@pytest.fixture
 def call_handlers_hook(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Haengt sich wie Sentrys ``LoggingIntegration`` an
     ``Logger.callHandlers`` und merkt sich die Nachricht je Aufruf."""
@@ -172,7 +173,9 @@ def call_handlers_hook(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 
 def test_listener_starts_on_the_first_record_not_at_construction(
-    broker: MagicMock, backend: MagicMock, app_handler: _Collect,
+    broker: MagicMock,
+    backend: MagicMock,
+    app_handler: _Collect,
 ) -> None:
     SwarmQ(broker, backend, log_queue=True)
     assert _listener_threads() == []
@@ -185,22 +188,24 @@ def test_listener_starts_on_the_first_record_not_at_construction(
 
 
 class _Blocking(_Collect):
-    """Ein langsamer Handler der App: blockiert, bis ``release`` gesetzt ist."""
+    """Ein langsamer Handler der App: blockiert, bis ``unblock`` gesetzt ist."""
 
     def __init__(self) -> None:
         super().__init__()
         self.entered = threading.Event()
-        self.release = threading.Event()
+        self.unblock = threading.Event()
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         self.entered.set()
-        self.release.wait(5)
+        self.unblock.wait(5)
         super().emit(record)
 
 
 @pytest.mark.timeout(5)
 async def test_a_blocking_app_handler_does_not_stall_the_calling_coroutine(
-    broker: MagicMock, backend: MagicMock,
+    broker: MagicMock,
+    backend: MagicMock,
 ) -> None:
     blocking = _Blocking()
     logging.getLogger().handlers[:] = [blocking]
@@ -210,13 +215,15 @@ async def test_a_blocking_app_handler_does_not_stall_the_calling_coroutine(
     assert blocking.entered.wait(5)
     _LOG.warning("optin_slow_2")  # Handler blockiert noch: der Aufruf nicht
 
-    blocking.release.set()
+    blocking.unblock.set()
     shutdown_logging()
     assert blocking.events() == ["optin_slow_1", "optin_slow_2"]
 
 
 def test_swarmq_level_follows_log_level_despite_a_warning_root(
-    broker: MagicMock, backend: MagicMock, app_handler: _Collect,
+    broker: MagicMock,
+    backend: MagicMock,
+    app_handler: _Collect,
 ) -> None:
     logging.getLogger().setLevel(logging.WARNING)
     SwarmQ(broker, backend, log_queue=True, log_level="INFO")
@@ -240,7 +247,9 @@ def test_app_handler_levels_still_apply(broker: MagicMock, backend: MagicMock) -
 
 
 def test_a_handler_added_after_the_first_record_receives_later_events(
-    broker: MagicMock, backend: MagicMock, app_handler: _Collect,
+    broker: MagicMock,
+    backend: MagicMock,
+    app_handler: _Collect,
 ) -> None:
     SwarmQ(broker, backend, log_queue=True)
     _LOG.warning("optin_early")
@@ -255,7 +264,9 @@ def test_a_handler_added_after_the_first_record_receives_later_events(
 
 
 def test_without_any_app_handler_a_warning_reaches_last_resort(
-    broker: MagicMock, backend: MagicMock, monkeypatch: pytest.MonkeyPatch,
+    broker: MagicMock,
+    backend: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     last_resort = _Collect(logging.WARNING)
     monkeypatch.setattr(logging, "lastResort", last_resort)
@@ -274,6 +285,7 @@ _CORRELATION_ID: contextvars.ContextVar[str] = contextvars.ContextVar("correlati
 class _CorrelationFilter(logging.Filter):
     """Ein Filter der App, der eine Kontextvariable liest."""
 
+    @override
     def filter(self, record: logging.LogRecord) -> bool:
         record.correlation_id = _CORRELATION_ID.get()
         return True
@@ -281,7 +293,9 @@ class _CorrelationFilter(logging.Filter):
 
 @pytest.mark.timeout(5)
 async def test_a_handler_filter_sees_the_callers_context_variables(
-    broker: MagicMock, backend: MagicMock, app_handler: _Collect,
+    broker: MagicMock,
+    backend: MagicMock,
+    app_handler: _Collect,
 ) -> None:
     app_handler.addFilter(_CorrelationFilter())
     SwarmQ(broker, backend, log_queue=True)
@@ -298,7 +312,8 @@ async def test_a_handler_filter_sees_the_callers_context_variables(
 
 
 def test_an_extra_adder_formatter_shows_no_internal_context_attribute(
-    broker: MagicMock, backend: MagicMock,
+    broker: MagicMock,
+    backend: MagicMock,
 ) -> None:
     stream = io.StringIO()
     handler = logging.StreamHandler(stream)
@@ -327,7 +342,9 @@ def _swarmq_state() -> tuple[list[logging.Handler], int, bool]:
 
 @pytest.mark.timeout(5)
 async def test_leaving_the_app_restores_handler_propagate_and_level(
-    broker: MagicMock, backend: MagicMock, app_handler: _Collect,
+    broker: MagicMock,
+    backend: MagicMock,
+    app_handler: _Collect,
 ) -> None:
     logging.getLogger("swarmq").setLevel(logging.ERROR)
     before = _swarmq_state()
@@ -340,7 +357,9 @@ async def test_leaving_the_app_restores_handler_propagate_and_level(
 
 @pytest.mark.timeout(5)
 async def test_two_instances_share_one_handler_until_the_last_one_leaves(
-    broker: MagicMock, backend: MagicMock, app_handler: _Collect,
+    broker: MagicMock,
+    backend: MagicMock,
+    app_handler: _Collect,
 ) -> None:
     before = _swarmq_state()
     first = SwarmQ(broker, backend, log_queue=True)
@@ -357,7 +376,8 @@ async def test_two_instances_share_one_handler_until_the_last_one_leaves(
 
 
 def test_opt_in_is_ineffective_after_a_builtin_entry_point_setup(
-    broker: MagicMock, backend: MagicMock,
+    broker: MagicMock,
+    backend: MagicMock,
 ) -> None:
     configure_logging(LoggingSettings())
     before = _swarmq_state()
@@ -368,7 +388,9 @@ def test_opt_in_is_ineffective_after_a_builtin_entry_point_setup(
 
 
 def test_opt_in_works_when_the_entry_point_does_not_configure(
-    broker: MagicMock, backend: MagicMock, app_handler: _Collect,
+    broker: MagicMock,
+    backend: MagicMock,
+    app_handler: _Collect,
 ) -> None:
     configure_logging(LoggingSettings(configure=False))
 
@@ -381,7 +403,8 @@ def test_opt_in_works_when_the_entry_point_does_not_configure(
 
 
 def test_a_builtin_setup_deactivates_an_active_opt_in(
-    broker: MagicMock, backend: MagicMock,
+    broker: MagicMock,
+    backend: MagicMock,
 ) -> None:
     logging.getLogger("swarmq").setLevel(logging.ERROR)
     before = _swarmq_state()
@@ -393,7 +416,9 @@ def test_a_builtin_setup_deactivates_an_active_opt_in(
 
 
 def test_after_a_fork_the_opt_in_still_reaches_the_app_without_inherited_records(
-    broker: MagicMock, backend: MagicMock, app_handler: _Collect,
+    broker: MagicMock,
+    backend: MagicMock,
+    app_handler: _Collect,
 ) -> None:
     SwarmQ(broker, backend, log_queue=True)
     blocking = _Blocking()
@@ -412,7 +437,7 @@ def test_after_a_fork_the_opt_in_still_reaches_the_app_without_inherited_records
 
         assert run_in_forked_child(child) == 0
     finally:
-        blocking.release.set()
+        blocking.unblock.set()
 
 
 def test_log_queue_size_bounds_the_opt_in_queue(broker: MagicMock, backend: MagicMock) -> None:
@@ -431,11 +456,13 @@ def test_log_queue_size_bounds_the_opt_in_queue(broker: MagicMock, backend: Magi
 
         assert dropped_log_records() - before == 3
     finally:
-        blocking.release.set()
+        blocking.unblock.set()
 
 
 def test_a_call_handlers_hook_sees_each_opt_in_record_once(
-    broker: MagicMock, backend: MagicMock, app_handler: _Collect,
+    broker: MagicMock,
+    backend: MagicMock,
+    app_handler: _Collect,
     call_handlers_hook: list[str],
 ) -> None:
     SwarmQ(broker, backend, log_queue=True)
@@ -451,6 +478,7 @@ class _Raising(logging.Handler):
     """Root-Handler der App, dessen ``emit`` wirft, ohne ``handleError``
     -- etwa ein Log-Shipper ohne Verbindung (Analyse S2)."""
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         raise ConnectionError("log shipper down")
 
@@ -463,6 +491,7 @@ class _Arrival(_Collect):
         self.event = event
         self.arrived = threading.Event()
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         super().emit(record)
         if record.getMessage() == self.event:
@@ -471,7 +500,8 @@ class _Arrival(_Collect):
 
 @pytest.mark.timeout(5)
 def test_a_raising_app_handler_does_not_kill_the_listener(
-    broker: MagicMock, backend: MagicMock,
+    broker: MagicMock,
+    backend: MagicMock,
 ) -> None:
     arrival = _Arrival("optin_after_poison")
     logging.getLogger().handlers[:] = [_Raising(), arrival]
@@ -489,6 +519,7 @@ _CORRELATION: contextvars.ContextVar[str] = contextvars.ContextVar("correlation_
 class _NeedsCorrelation(logging.Filter):
     """Filter der App, der eine Kontextvariable ohne Standardwert liest."""
 
+    @override
     def filter(self, record: logging.LogRecord) -> bool:
         record.correlation_id = _CORRELATION.get()
         return True
@@ -496,7 +527,8 @@ class _NeedsCorrelation(logging.Filter):
 
 @pytest.mark.timeout(5)
 def test_a_raising_app_filter_does_not_kill_the_listener(
-    broker: MagicMock, backend: MagicMock,
+    broker: MagicMock,
+    backend: MagicMock,
 ) -> None:
     arrival = _Arrival("optin_after_poison")
     strict = _Collect()
@@ -515,7 +547,9 @@ def test_a_raising_app_filter_does_not_kill_the_listener(
 
 @pytest.mark.timeout(5)
 def test_when_every_app_handler_raises_the_report_reaches_stderr(
-    broker: MagicMock, backend: MagicMock, capsys: pytest.CaptureFixture[str],
+    broker: MagicMock,
+    backend: MagicMock,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     logging.getLogger().handlers[:] = [_Raising()]
     SwarmQ(broker, backend, log_queue=True)
@@ -530,7 +564,8 @@ def test_when_every_app_handler_raises_the_report_reaches_stderr(
 
 @pytest.mark.timeout(5)
 async def test_leaving_the_app_drains_without_stalling_the_event_loop(
-    broker: MagicMock, backend: MagicMock,
+    broker: MagicMock,
+    backend: MagicMock,
 ) -> None:
     blocking = _Blocking()
     logging.getLogger().handlers[:] = [blocking]
@@ -545,14 +580,15 @@ async def test_leaving_the_app_drains_without_stalling_the_event_loop(
     await other_ran.wait()
 
     assert not leaving.done()
-    blocking.release.set()
+    blocking.unblock.set()
     await leaving
     assert blocking.events() == ["optin_drain_1", "optin_drain_2"]
 
 
 @pytest.mark.timeout(5)
 async def test_leaving_the_app_gives_up_at_the_drain_timeout_and_counts_the_rest(
-    broker: MagicMock, backend: MagicMock,
+    broker: MagicMock,
+    backend: MagicMock,
 ) -> None:
     from swarmq.logging import dropped_log_records
 
@@ -569,12 +605,13 @@ async def test_leaving_the_app_gives_up_at_the_drain_timeout_and_counts_the_rest
 
         assert dropped_log_records() - before == 1
     finally:
-        blocking.release.set()
+        blocking.unblock.set()
 
 
 @pytest.mark.timeout(5)
 async def test_leaving_the_app_restores_swarmq_before_the_queue_is_drained(
-    broker: MagicMock, backend: MagicMock,
+    broker: MagicMock,
+    backend: MagicMock,
 ) -> None:
     blocking = _Blocking()
     logging.getLogger().handlers[:] = [blocking]
@@ -591,13 +628,14 @@ async def test_leaving_the_app_restores_swarmq_before_the_queue_is_drained(
 
     assert not leaving.done()
     assert _swarmq_state() == before
-    blocking.release.set()
+    blocking.unblock.set()
     await leaving
 
 
 @pytest.mark.timeout(5)
 async def test_a_new_instance_while_draining_gets_a_fresh_handler_and_queue(
-    broker: MagicMock, backend: MagicMock,
+    broker: MagicMock,
+    backend: MagicMock,
 ) -> None:
     blocking = _Blocking()
     logging.getLogger().handlers[:] = [blocking]
@@ -615,7 +653,7 @@ async def test_a_new_instance_while_draining_gets_a_fresh_handler_and_queue(
 
     (new_handler,) = logging.getLogger("swarmq").handlers
     assert new_handler is not old_handler
-    blocking.release.set()
+    blocking.unblock.set()
     await leaving
     await second.__aexit__(None, None, None)
     assert sorted(blocking.events()) == ["optin_new", "optin_old"]
@@ -623,7 +661,8 @@ async def test_a_new_instance_while_draining_gets_a_fresh_handler_and_queue(
 
 @pytest.mark.timeout(5)
 async def test_leaving_the_app_returns_at_the_drain_timeout_with_a_busy_executor(
-    broker: MagicMock, backend: MagicMock,
+    broker: MagicMock,
+    backend: MagicMock,
 ) -> None:
     from concurrent.futures import ThreadPoolExecutor
 
@@ -655,13 +694,14 @@ async def test_leaving_the_app_returns_at_the_drain_timeout_with_a_busy_executor
         assert dropped_log_records() - before == 1
     finally:
         app_work_done.set()
-        blocking.release.set()
+        blocking.unblock.set()
         await app_work
 
 
 @pytest.mark.timeout(5)
 def test_an_embedded_app_sets_the_drain_timeout_of_shutdown_logging(
-    broker: MagicMock, backend: MagicMock,
+    broker: MagicMock,
+    backend: MagicMock,
 ) -> None:
     from swarmq.logging import dropped_log_records
 
@@ -678,12 +718,13 @@ def test_an_embedded_app_sets_the_drain_timeout_of_shutdown_logging(
 
         assert dropped_log_records() - before == 1
     finally:
-        blocking.release.set()
+        blocking.unblock.set()
 
 
 @pytest.mark.timeout(5)
 def test_a_builtin_setup_lifts_an_opt_in_with_a_stuck_app_handler_in_time(
-    broker: MagicMock, backend: MagicMock,
+    broker: MagicMock,
+    backend: MagicMock,
 ) -> None:
     from swarmq.logging import dropped_log_records
 
@@ -700,12 +741,14 @@ def test_a_builtin_setup_lifts_an_opt_in_with_a_stuck_app_handler_in_time(
 
         assert dropped_log_records() - before == 1
     finally:
-        blocking.release.set()
+        blocking.unblock.set()
 
 
 @pytest.mark.timeout(5)
 async def test_cancelling_the_drain_still_counts_and_reports_the_rest(
-    broker: MagicMock, backend: MagicMock, monkeypatch: pytest.MonkeyPatch,
+    broker: MagicMock,
+    backend: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from swarmq.logging import dropped_log_records
 
@@ -738,12 +781,13 @@ async def test_cancelling_the_drain_still_counts_and_reports_the_rest(
         assert notices == [1]
         assert dropped_log_records() - before == 1
     finally:
-        blocking.release.set()
+        blocking.unblock.set()
 
 
 @pytest.mark.timeout(5)
 async def test_cancelling_a_drain_that_finishes_in_time_loses_nothing(
-    broker: MagicMock, backend: MagicMock,
+    broker: MagicMock,
+    backend: MagicMock,
 ) -> None:
     from swarmq.logging import dropped_log_records
 
@@ -762,7 +806,7 @@ async def test_cancelling_a_drain_that_finishes_in_time_loses_nothing(
     leaving.cancel()
     with pytest.raises(asyncio.CancelledError):
         await leaving
-    blocking.release.set()
+    blocking.unblock.set()
     for thread in _listener_threads():
         thread.join(2)
 
@@ -772,7 +816,9 @@ async def test_cancelling_a_drain_that_finishes_in_time_loses_nothing(
 
 @pytest.mark.timeout(5)
 async def test_leaving_the_app_after_the_default_executor_shut_down_does_not_raise(
-    broker: MagicMock, backend: MagicMock, app_handler: _Collect,
+    broker: MagicMock,
+    backend: MagicMock,
+    app_handler: _Collect,
 ) -> None:
     app = SwarmQ(broker, backend, log_queue=True)
     _LOG.warning("optin_after_executor_shutdown")
@@ -785,7 +831,8 @@ async def test_leaving_the_app_after_the_default_executor_shut_down_does_not_rai
 
 @pytest.mark.timeout(5)
 async def test_leaving_the_app_without_executor_returns_at_the_drain_timeout(
-    broker: MagicMock, backend: MagicMock,
+    broker: MagicMock,
+    backend: MagicMock,
 ) -> None:
     from swarmq.logging import dropped_log_records
 
@@ -803,4 +850,4 @@ async def test_leaving_the_app_without_executor_returns_at_the_drain_timeout(
 
         assert dropped_log_records() - before == 1
     finally:
-        blocking.release.set()
+        blocking.unblock.set()

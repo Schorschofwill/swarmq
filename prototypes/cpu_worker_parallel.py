@@ -122,7 +122,7 @@ def own_zombies() -> list[int]:
                 fields = fh.read().rsplit(") ", 1)[1].split()
             if fields[0] == "Z" and int(fields[1]) == me:
                 out.append(int(entry))
-        except (OSError, IndexError, ValueError):
+        except OSError, IndexError, ValueError:
             continue
     return out
 
@@ -170,11 +170,7 @@ def child_task(
         scope = token = None
         if container is not _MISSING:
             scope = container(
-                context={
-                    TaskContext: TaskContext(
-                        task_id=task_id, task_name=task_name, queue=QUEUE, retry_count=0
-                    )
-                }
+                context={TaskContext: TaskContext(task_id=task_id, task_name=task_name, queue=QUEUE, retry_count=0)}
             )
             token = request_container.set(await scope.__aenter__())
         try:
@@ -379,20 +375,29 @@ async def series_e(fs: Any) -> None:
     gaps = await hb
 
     speedup = seq_wall / par_wall if par_wall > 0 else 0.0
-    check("E1", speedup >= SLOTS * 0.6,
-          f"{SLOTS} Tasks: sequenziell {seq_wall:.2f}s, parallel {par_wall:.2f}s "
-          f"-> Speedup {speedup:.1f}x (von {SLOTS}x moeglich)")
+    check(
+        "E1",
+        speedup >= SLOTS * 0.6,
+        f"{SLOTS} Tasks: sequenziell {seq_wall:.2f}s, parallel {par_wall:.2f}s "
+        f"-> Speedup {speedup:.1f}x (von {SLOTS}x moeglich)",
+    )
 
-    check("E2", len(gaps) > 20 and max(gaps) < 100,
-          f"Loop-Prozess waehrend der Rechnung {len(gaps)}x drangekommen, "
-          f"Jitter max {max(gaps):.1f}ms / median {statistics.median(gaps):.1f}ms")
+    check(
+        "E2",
+        len(gaps) > 20 and max(gaps) < 100,
+        f"Loop-Prozess waehrend der Rechnung {len(gaps)}x drangekommen, "
+        f"Jitter max {max(gaps):.1f}ms / median {statistics.median(gaps):.1f}ms",
+    )
 
     vals = par.ok_values()
     pids = {v["pid"] for v in vals}
-    check("E3", len(vals) == SLOTS and all(v["correct"] for v in vals) and len(pids) == SLOTS,
-          f"{len(vals)}/{SLOTS} korrekt in {len(pids)} verschiedenen Prozessen, "
-          f"je {statistics.median([v['cpu_s'] for v in vals]) * 1000:.0f}ms BLAS "
-          f"bei {vals[0]['threads'] if vals else '?'} Thread(s)")
+    check(
+        "E3",
+        len(vals) == SLOTS and all(v["correct"] for v in vals) and len(pids) == SLOTS,
+        f"{len(vals)}/{SLOTS} korrekt in {len(pids)} verschiedenen Prozessen, "
+        f"je {statistics.median([v['cpu_s'] for v in vals]) * 1000:.0f}ms BLAS "
+        f"bei {vals[0]['threads'] if vals else '?'} Thread(s)",
+    )
 
     # --- E4: echter Speicherdruck auf allen Slots gleichzeitig -------------
     rss_before = rss_mb()
@@ -405,16 +410,15 @@ async def series_e(fs: Any) -> None:
     mem_gaps = await hb
     rss_after = rss_mb()
     mvals = mem.ok_values()
-    ok = (
-        len(mvals) == SLOTS
-        and all(v["correct"] for v in mvals)
-        and (rss_after - rss_before) < 40
+    ok = len(mvals) == SLOTS and all(v["correct"] for v in mvals) and (rss_after - rss_before) < 40
+    check(
+        "E4",
+        ok,
+        f"{len(mvals)}/{SLOTS} Kinder gleichzeitig mit je "
+        f"{statistics.median([v['resident_mb'] for v in mvals]):.0f}MB resident "
+        f"({SLOTS * 400}MB Druck); Loop-RSS {rss_before:.0f} -> {rss_after:.0f}MB, "
+        f"Jitter max {max(mem_gaps):.1f}ms",
     )
-    check("E4", ok,
-          f"{len(mvals)}/{SLOTS} Kinder gleichzeitig mit je "
-          f"{statistics.median([v['resident_mb'] for v in mvals]):.0f}MB resident "
-          f"({SLOTS * 400}MB Druck); Loop-RSS {rss_before:.0f} -> {rss_after:.0f}MB, "
-          f"Jitter max {max(mem_gaps):.1f}ms")
 
     # --- E5: ein Slot stirbt, die Geschwister nicht ------------------------
     kill_jobs = [("proto.par_blas", SCHWER, f"e5-{i}") for i in range(SLOTS)]
@@ -424,12 +428,13 @@ async def series_e(fs: Any) -> None:
     victim = "e5-0"
     killed = kp.kill(victim)
     await task
-    survivors = [v for tid, v in ((t, r[2]) for t, r in kp.results.items() if r[0] == "ok")
-                 if tid != victim]
-    check("E5", killed and victim not in kp.results
-          and len(survivors) == SLOTS - 1 and all(v["correct"] for v in survivors),
-          f"Slot '{victim}' getoetet (Ergebnis fehlt: {victim not in kp.results}); "
-          f"{len(survivors)}/{SLOTS - 1} Geschwister rechneten korrekt zu Ende")
+    survivors = [v for tid, v in ((t, r[2]) for t, r in kp.results.items() if r[0] == "ok") if tid != victim]
+    check(
+        "E5",
+        killed and victim not in kp.results and len(survivors) == SLOTS - 1 and all(v["correct"] for v in survivors),
+        f"Slot '{victim}' getoetet (Ergebnis fehlt: {victim not in kp.results}); "
+        f"{len(survivors)}/{SLOTS - 1} Geschwister rechneten korrekt zu Ende",
+    )
 
     # --- E6: Slot-Auslastung bei ungleichen Laufzeiten ---------------------
     mixed = [("proto.mixed", (1 + (i * 7) % 12,), f"e6-{i}") for i in range(40)]
@@ -439,9 +444,12 @@ async def series_e(fs: Any) -> None:
     wall = time.perf_counter() - t0
     util = mp_pool.busy_s / (wall * SLOTS) if wall > 0 else 0.0
     done = len(mp_pool.ok_values())
-    check("E6", done == 40 and util >= 0.80,
-          f"40 Tasks ungleicher Laenge in {wall:.2f}s, Slot-Auslastung "
-          f"{util * 100:.0f}% (Leerlauf {(1 - util) * 100:.0f}%)")
+    check(
+        "E6",
+        done == 40 and util >= 0.80,
+        f"40 Tasks ungleicher Laenge in {wall:.2f}s, Slot-Auslastung "
+        f"{util * 100:.0f}% (Leerlauf {(1 - util) * 100:.0f}%)",
+    )
 
     _pruefe_threadbegrenzung()
 
@@ -459,10 +467,13 @@ def _pruefe_threadbegrenzung() -> None:
         check("E7", False, f"Sondierung fehlgeschlagen: pinned={pinned} unpinned={unpinned}")
         return
     ok = max(pinned["threads"]) == 1 and max(unpinned["threads"]) > 1
-    check("E7", ok,
-          f"mit Begrenzung 1 Thread je Kind ({pinned['wall']:.2f}s), ohne "
-          f"{max(unpinned['threads'])} je Kind = {sum(unpinned['threads'])} auf "
-          f"{os.cpu_count()} Kernen ({unpinned['wall']:.2f}s)")
+    check(
+        "E7",
+        ok,
+        f"mit Begrenzung 1 Thread je Kind ({pinned['wall']:.2f}s), ohne "
+        f"{max(unpinned['threads'])} je Kind = {sum(unpinned['threads'])} auf "
+        f"{os.cpu_count()} Kernen ({unpinned['wall']:.2f}s)",
+    )
 
 
 def _probe(*, pin: bool) -> dict[str, Any] | None:
@@ -476,12 +487,14 @@ def _probe(*, pin: bool) -> dict[str, Any] | None:
     env["PROTO_MODE"] = "probe"
     env["PROTO_PIN"] = "1" if pin else "0"
     if not pin:
-        for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS",
-                    "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
             env.pop(var, None)
     proc = subprocess.run(
         [sys.executable, "-u", str(Path(__file__).resolve())],
-        capture_output=True, text=True, env=env, timeout=300,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=300,
     )
     for line in proc.stdout.splitlines():
         if line.startswith("PROBE "):
@@ -499,11 +512,17 @@ async def probe_mode() -> int:
     await pool.run_all(jobs)
     wall = time.perf_counter() - t0
     vals = pool.ok_values()
-    print("PROBE " + json.dumps({
-        "wall": wall,
-        "threads": [v["threads"] for v in vals],
-        "cpu_s": [v["cpu_s"] for v in vals],
-    }), flush=True)
+    print(
+        "PROBE "
+        + json.dumps(
+            {
+                "wall": wall,
+                "threads": [v["threads"] for v in vals],
+                "cpu_s": [v["cpu_s"] for v in vals],
+            }
+        ),
+        flush=True,
+    )
     return 0
 
 
@@ -527,15 +546,14 @@ async def _oeffne_infra() -> tuple[Any, Any]:
     broker = RabbitMQBroker(BROKER_URL)
     await broker.connect()
     await broker.declare_queue(QUEUE)
-    await backend.set_progress(
-        "proto-f7-vorher", {"current": "1", "total": "1"}, ttl_ms=3_600_000
-    )
+    await backend.set_progress("proto-f7-vorher", {"current": "1", "total": "1"}, ttl_ms=3_600_000)
     return backend, broker
 
 
 async def _dauerlauf(fs: Any, seconds: float) -> tuple[ChildPool, list[Sample], float]:
     """Faehrt den Pool ueber die Laufzeit und protokolliert dabei die
     Groessen, die erst mit der Zeit driften."""
+
     def jobs() -> Iterator[tuple[str, tuple[Any, ...], str]]:
         """Unbegrenzt: die Laufzeit begrenzt den Lauf, nicht die Liste.
 
@@ -576,10 +594,14 @@ async def _dauerlauf(fs: Any, seconds: float) -> tuple[ChildPool, list[Sample], 
 
 def _bewerte_dauerlauf(pool: ChildPool, samples: list[Sample], wall: float) -> None:
     erwartet = pool.completed - len(pool.killed)
-    check("F1", pool.ok_count == erwartet and pool.wrong_count == 0 and pool.err_count == 0,
-          f"{pool.ok_count}/{erwartet} Tasks mit korrektem Ergebnis in {wall:.0f}s "
-          f"({len(pool.killed)} absichtlich getoetet, {len(pool.pids)} verschiedene PIDs"
-          + (f", Fehler: {pool.errors}" if pool.errors else "") + ")")
+    check(
+        "F1",
+        pool.ok_count == erwartet and pool.wrong_count == 0 and pool.err_count == 0,
+        f"{pool.ok_count}/{erwartet} Tasks mit korrektem Ergebnis in {wall:.0f}s "
+        f"({len(pool.killed)} absichtlich getoetet, {len(pool.pids)} verschiedene PIDs"
+        + (f", Fehler: {pool.errors}" if pool.errors else "")
+        + ")",
+    )
 
     # Die Steigung zaehlt, nicht nur der Endwert: ein Leck von 5 MB/min
     # bleibt in 5 Minuten unter jeder absoluten Schranke und fuellt in
@@ -588,17 +610,23 @@ def _bewerte_dauerlauf(pool: ChildPool, samples: list[Sample], wall: float) -> N
     rss_max = max(s[1] for s in samples)
     minuten = max(wall / 60, 1e-9)
     steigung = (rss_last - rss_first) / minuten
-    check("F2", steigung < 1.0 and (rss_max - rss_first) < 30,
-          f"Loop-RSS {rss_first:.0f} -> {rss_last:.0f}MB (Maximum {rss_max:.0f}MB) "
-          f"ueber {len(samples)} Proben, Steigung {steigung:+.2f} MB/min "
-          f"= {steigung * 1440:+.0f} MB/Tag "
-          f"[Buchfuehrung: {len(pool._started)} offen, {len(pool.results)} Ergebnisse, "
-          f"{len(pool.pids)} PIDs gedeckelt]")
+    check(
+        "F2",
+        steigung < 1.0 and (rss_max - rss_first) < 30,
+        f"Loop-RSS {rss_first:.0f} -> {rss_last:.0f}MB (Maximum {rss_max:.0f}MB) "
+        f"ueber {len(samples)} Proben, Steigung {steigung:+.2f} MB/min "
+        f"= {steigung * 1440:+.0f} MB/Tag "
+        f"[Buchfuehrung: {len(pool._started)} offen, {len(pool.results)} Ergebnisse, "
+        f"{len(pool.pids)} PIDs gedeckelt]",
+    )
 
     fd_first, fd_last = samples[0][2], samples[-1][2]
     fd_max = max(s[2] for s in samples)
-    check("F3", (fd_last - fd_first) <= 8 and (fd_max - fd_first) <= 16,
-          f"Dateideskriptoren {fd_first} -> {fd_last} (Maximum {fd_max})")
+    check(
+        "F3",
+        (fd_last - fd_first) <= 8 and (fd_max - fd_first) <= 16,
+        f"Dateideskriptoren {fd_first} -> {fd_last} (Maximum {fd_max})",
+    )
 
     def rate(seg: list[Sample]) -> float:
         dt = seg[-1][0] - seg[0][0]
@@ -607,23 +635,24 @@ def _bewerte_dauerlauf(pool: ChildPool, samples: list[Sample], wall: float) -> N
     fifth = max(1, len(samples) // 5)
     r_early, r_late = rate(samples[: fifth + 1]), rate(samples[-(fifth + 1) :])
     ratio = r_late / r_early if r_early > 0 else 0.0
-    check("F4", ratio >= 0.85,
-          f"Durchsatz erstes Fuenftel {r_early:.0f}/s, letztes {r_late:.0f}/s "
-          f"({ratio * 100:.0f}%)")
+    check(
+        "F4", ratio >= 0.85, f"Durchsatz erstes Fuenftel {r_early:.0f}/s, letztes {r_late:.0f}/s ({ratio * 100:.0f}%)"
+    )
 
     zombies = own_zombies()
     check("F5", not zombies, f"{len(zombies)} Zombie-Kind(er) nach dem Lauf")
 
-    check("F6", len(pool.killed) >= 3 and pool.ok_count == erwartet,
-          f"{len(pool.killed)}x Kind mitten im Task getoetet — der Pool hat jedes Mal "
-          f"weitergearbeitet")
+    check(
+        "F6",
+        len(pool.killed) >= 3 and pool.ok_count == erwartet,
+        f"{len(pool.killed)}x Kind mitten im Task getoetet — der Pool hat jedes Mal weitergearbeitet",
+    )
 
 
 async def _pruefe_infra(fs: Any, backend: Any, broker: Any, wall: float) -> None:
     """F7: Sind die ueber den Lauf offen gehaltenen Verbindungen noch gut?"""
     raw = await backend.get_progress("proto-f7-vorher")
-    await backend.set_progress("proto-f7-nachher", {"current": "2", "total": "2"},
-                               ttl_ms=60_000)
+    await backend.set_progress("proto-f7-nachher", {"current": "2", "total": "2"}, ttl_ms=60_000)
     raw2 = await backend.get_progress("proto-f7-nachher")
     await broker.publish(QUEUE, b'{"task":"proto.par_blas","args":[400,1]}')
 
@@ -641,9 +670,11 @@ async def _pruefe_infra(fs: Any, backend: Any, broker: Any, wall: float) -> None
     after = ChildPool(fs, 1)
     await after.run_all([(msg["task"], tuple(msg["args"]), "f7")])
     vals = after.ok_values()
-    check("F7", raw is not None and raw2 is not None and len(vals) == 1 and vals[0]["correct"],
-          f"nach {wall:.0f}s Leerlauf: Valkey lesbar und schreibbar, RabbitMQ "
-          f"publish -> consume -> Rechenkind korrekt")
+    check(
+        "F7",
+        raw is not None and raw2 is not None and len(vals) == 1 and vals[0]["correct"],
+        f"nach {wall:.0f}s Leerlauf: Valkey lesbar und schreibbar, RabbitMQ publish -> consume -> Rechenkind korrekt",
+    )
 
 
 async def series_f(fs: Any, minutes: float) -> None:
@@ -654,8 +685,7 @@ async def series_f(fs: Any, minutes: float) -> None:
         backend, broker = await _oeffne_infra()
         print("      Broker und Backend verbunden — bleiben ueber den Lauf offen", flush=True)
     except Exception as exc:
-        print(f"      Kein Broker/Backend erreichbar ({type(exc).__name__}: {exc}) "
-              f"— F7 wird uebersprungen", flush=True)
+        print(f"      Kein Broker/Backend erreichbar ({type(exc).__name__}: {exc}) — F7 wird uebersprungen", flush=True)
 
     pool, samples, wall = await _dauerlauf(fs, minutes * 60)
     _bewerte_dauerlauf(pool, samples, wall)
@@ -664,8 +694,7 @@ async def series_f(fs: Any, minutes: float) -> None:
         try:
             await _pruefe_infra(fs, backend, broker, wall)
         except Exception as exc:
-            check("F7", False,
-                  f"Verbindung nach dem Lauf unbrauchbar: {type(exc).__name__}: {exc}")
+            check("F7", False, f"Verbindung nach dem Lauf unbrauchbar: {type(exc).__name__}: {exc}")
         finally:
             await broker.close()
             await backend.close()
@@ -684,8 +713,10 @@ async def main() -> int:
         return await probe_mode()
 
     pinned = os.environ.get("OMP_NUM_THREADS", "<nicht gesetzt>")
-    print(f"Python {sys.version.split()[0]}  |  Kerne {os.cpu_count()}  |  "
-          f"Slots {SLOTS}  |  OMP_NUM_THREADS={pinned}\n", flush=True)
+    print(
+        f"Python {sys.version.split()[0]}  |  Kerne {os.cpu_count()}  |  Slots {SLOTS}  |  OMP_NUM_THREADS={pinned}\n",
+        flush=True,
+    )
 
     fs = mp.get_context("forkserver")
     fs.set_forkserver_preload(PRELOAD)
@@ -695,8 +726,11 @@ async def main() -> int:
 
     failed = [e for e, ok, _ in _RESULTS if not ok]
     print("\n" + "=" * 72, flush=True)
-    print(f"{len(_RESULTS) - len(failed)}/{len(_RESULTS)} Punkte bestaetigt"
-          + (f" — offen: {', '.join(failed)}" if failed else ""), flush=True)
+    print(
+        f"{len(_RESULTS) - len(failed)}/{len(_RESULTS)} Punkte bestaetigt"
+        + (f" — offen: {', '.join(failed)}" if failed else ""),
+        flush=True,
+    )
     return 1 if failed else 0
 
 

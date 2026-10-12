@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
+from typing import Any, override
 
 import pytest
 import valkey.asyncio as aio_valkey
@@ -68,8 +69,7 @@ async def _run_worker_until(
     worker_task = asyncio.create_task(worker_app.start_worker())
     try:
         await asyncio.sleep(0.4)  # let the worker connect + declare + consume
-        result = await asyncio.wait_for(wait_coro, timeout=timeout)
-        return result
+        return await asyncio.wait_for(wait_coro, timeout=timeout)
     finally:
         worker_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -81,8 +81,10 @@ async def _run_worker_until(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_e2e_queued_cancel_full_stack(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
 ):
     """Full stack: schedule → cancel → worker → TaskCancelledError."""
     queue = _unique_queue()
@@ -91,6 +93,7 @@ async def test_e2e_queued_cancel_full_stack(
     class SlowTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self) -> str:
             await asyncio.sleep(10)
             return "should-not-return"
@@ -110,6 +113,7 @@ async def test_e2e_queued_cancel_full_stack(
         assert await client_app.cancel(task_id) is True
 
         async with worker_app:
+
             async def wait_for_result():
                 with pytest.raises(TaskCancelledError):
                     await client_app.get_result(task_id, timeout=5)
@@ -122,8 +126,10 @@ async def test_e2e_queued_cancel_full_stack(
         assert 0 < await _cancel_flag_pttl(valkey_url, task_id) <= 3_600_000
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_e2e_faf_cancel_emits_signal_no_result(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
 ):
     """FAF + cancel: TASK_CANCELLED fires, but no result is stored."""
     queue = _unique_queue()
@@ -131,9 +137,12 @@ async def test_e2e_faf_cancel_emits_signal_no_result(
 
     class FafTask(Task):
         task_info = TaskInfo(
-            name=task_name, queues=[queue],
+            name=task_name,
+            queues=[queue],
             delivery=DeliveryMode.FIRE_AND_FORGET,
         )
+
+        @override
         async def run(self) -> None:
             await asyncio.sleep(10)
 
@@ -145,7 +154,7 @@ async def test_e2e_faf_cancel_emits_signal_no_result(
     worker_backend = ValkeyBackend(valkey_url)
     worker_app = SwarmQ(worker_broker, worker_backend, queues=[queue], concurrency=1)
 
-    captured: list[dict] = []
+    captured: list[dict[str, Any]] = []
 
     async with client_app:
         await client_broker.declare_queue(queue)
@@ -176,8 +185,10 @@ async def test_e2e_faf_cancel_emits_signal_no_result(
         assert raw is None
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_e2e_cancel_unknown_task_id_is_harmless(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
 ):
     """cancel() for a never-scheduled task_id: True, no side-effect."""
     client_broker = RabbitMQBroker(rabbitmq_url)
@@ -191,8 +202,10 @@ async def test_e2e_cancel_unknown_task_id_is_harmless(
         await client_backend.clear_cancel_flag(fake_id)
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_e2e_parallel_cancels_via_gather(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
 ):
     """10 parallel cancels via asyncio.gather — all should succeed and get TaskCancelledError."""
     queue = _unique_queue()
@@ -200,6 +213,8 @@ async def test_e2e_parallel_cancels_via_gather(
 
     class SleepTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
+
+        @override
         async def run(self) -> str:
             await asyncio.sleep(10)
             return "nope"
@@ -211,7 +226,10 @@ async def test_e2e_parallel_cancels_via_gather(
     worker_broker = RabbitMQBroker(rabbitmq_url)
     worker_backend = ValkeyBackend(valkey_url)
     worker_app = SwarmQ(
-        worker_broker, worker_backend, queues=[queue], concurrency=5,
+        worker_broker,
+        worker_backend,
+        queues=[queue],
+        concurrency=5,
     )
 
     async with client_app:
@@ -221,9 +239,7 @@ async def test_e2e_parallel_cancels_via_gather(
         task_ids = [await client_app.schedule(task_name) for _ in range(10)]
 
         # Cancel them all concurrently.
-        results = await asyncio.gather(
-            *[client_app.cancel(tid) for tid in task_ids]
-        )
+        results = await asyncio.gather(*[client_app.cancel(tid) for tid in task_ids])
         assert all(r is True for r in results)
 
         async with worker_app:
@@ -240,8 +256,10 @@ async def test_e2e_parallel_cancels_via_gather(
                     await worker_task
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_e2e_cancel_in_retry_delay_full_stack(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
 ):
     """Task retries with delay, cancel during delay, redelivered message is cancelled."""
     queue = _unique_queue()
@@ -249,9 +267,13 @@ async def test_e2e_cancel_in_retry_delay_full_stack(
 
     class FailOnce(Task):
         task_info = TaskInfo(
-            name=task_name, queues=[queue],
-            max_retries=3, retry_base_delay=1.0,
+            name=task_name,
+            queues=[queue],
+            max_retries=3,
+            retry_base_delay=1.0,
         )
+
+        @override
         async def run(self) -> str:
             raise RuntimeError("will retry")
 
@@ -262,7 +284,10 @@ async def test_e2e_cancel_in_retry_delay_full_stack(
     worker_broker = RabbitMQBroker(rabbitmq_url)
     worker_backend = ValkeyBackend(valkey_url)
     worker_app = SwarmQ(
-        worker_broker, worker_backend, queues=[queue], concurrency=1,
+        worker_broker,
+        worker_backend,
+        queues=[queue],
+        concurrency=1,
     )
 
     async with client_app:
@@ -292,8 +317,10 @@ async def test_e2e_cancel_in_retry_delay_full_stack(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_e2e_running_cancel_full_stack(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
 ):
     """Task is already running → cancel → TaskCancelledError within poll interval."""
     queue = _unique_queue()
@@ -301,6 +328,8 @@ async def test_e2e_running_cancel_full_stack(
 
     class LongRun(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
+
+        @override
         async def run(self) -> str:
             await asyncio.sleep(10)
             return "should-not-return"
@@ -312,7 +341,10 @@ async def test_e2e_running_cancel_full_stack(
     worker_broker = RabbitMQBroker(rabbitmq_url)
     worker_backend = ValkeyBackend(valkey_url)
     worker_app = SwarmQ(
-        worker_broker, worker_backend, queues=[queue], concurrency=1,
+        worker_broker,
+        worker_backend,
+        queues=[queue],
+        concurrency=1,
         cancel_poll_interval=0.1,
     )
 
@@ -338,8 +370,10 @@ async def test_e2e_running_cancel_full_stack(
                     await worker_task
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_e2e_cancel_with_lock_releases_for_successor(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
 ):
     """Task holds lock, cancel greift, Lock frei für Nachfolger."""
     queue = _unique_queue()
@@ -350,18 +384,26 @@ async def test_e2e_cancel_with_lock_releases_for_successor(
 
     class LongLocked(Task):
         task_info = TaskInfo(
-            name=long_name, queues=[queue],
-            lock=lock_name, hard_timeout=30,
+            name=long_name,
+            queues=[queue],
+            lock=lock_name,
+            hard_timeout=30,
         )
+
+        @override
         async def run(self) -> str:
             await asyncio.sleep(30)
             return "no"
 
     class ShortLocked(Task):
         task_info = TaskInfo(
-            name=short_name, queues=[queue],
-            lock=lock_name, hard_timeout=30,
+            name=short_name,
+            queues=[queue],
+            lock=lock_name,
+            hard_timeout=30,
         )
+
+        @override
         async def run(self) -> str:
             return "ok"
 
@@ -372,7 +414,10 @@ async def test_e2e_cancel_with_lock_releases_for_successor(
     worker_broker = RabbitMQBroker(rabbitmq_url)
     worker_backend = ValkeyBackend(valkey_url)
     worker_app = SwarmQ(
-        worker_broker, worker_backend, queues=[queue], concurrency=2,
+        worker_broker,
+        worker_backend,
+        queues=[queue],
+        concurrency=2,
         cancel_poll_interval=0.1,
     )
 
@@ -405,8 +450,10 @@ async def test_e2e_cancel_with_lock_releases_for_successor(
                     await worker_task
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_e2e_parallel_mixed_cancel_and_complete(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
 ):
     """50 tasks scheduled, 25 get cancelled mid-run, 25 complete — no crosstalk."""
     queue = _unique_queue()
@@ -414,6 +461,8 @@ async def test_e2e_parallel_mixed_cancel_and_complete(
 
     class MixedTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
+
+        @override
         async def run(self, sleep_s: float, marker: int) -> int:
             await asyncio.sleep(sleep_s)
             return marker
@@ -429,7 +478,10 @@ async def test_e2e_parallel_mixed_cancel_and_complete(
     TOTAL = 20
     TO_CANCEL = 10
     worker_app = SwarmQ(
-        worker_broker, worker_backend, queues=[queue], concurrency=10,
+        worker_broker,
+        worker_backend,
+        queues=[queue],
+        concurrency=10,
         cancel_poll_interval=0.1,
     )
 
@@ -476,8 +528,10 @@ async def test_e2e_parallel_mixed_cancel_and_complete(
                     await worker_task
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_e2e_shutdown_during_running_cancel(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
 ):
     """SIGTERM during a cancelled run: detached_releases drained, no lock leak."""
     queue = _unique_queue()
@@ -486,9 +540,13 @@ async def test_e2e_shutdown_during_running_cancel(
 
     class LockedLong(Task):
         task_info = TaskInfo(
-            name=task_name, queues=[queue],
-            lock=lock_name, hard_timeout=30,
+            name=task_name,
+            queues=[queue],
+            lock=lock_name,
+            hard_timeout=30,
         )
+
+        @override
         async def run(self) -> str:
             await asyncio.sleep(30)
             return "no"
@@ -500,8 +558,12 @@ async def test_e2e_shutdown_during_running_cancel(
     worker_broker = RabbitMQBroker(rabbitmq_url)
     worker_backend = ValkeyBackend(valkey_url)
     worker_app = SwarmQ(
-        worker_broker, worker_backend, queues=[queue], concurrency=1,
-        cancel_poll_interval=0.1, shutdown_timeout=2,
+        worker_broker,
+        worker_backend,
+        queues=[queue],
+        concurrency=1,
+        cancel_poll_interval=0.1,
+        shutdown_timeout=2,
     )
 
     async with client_app:
@@ -526,7 +588,7 @@ async def test_e2e_shutdown_during_running_cancel(
         # Lock must be gone from Valkey even though shutdown cancelled
         # the handler mid-release.
         from swarmq.locking import lock_key
+
+        assert client_backend._client is not None
         raw = await client_backend._client.get(lock_key(lock_name))
-        assert raw is None, (
-            f"lock was not released during shutdown-cancel: {raw!r}"
-        )
+        assert raw is None, f"lock was not released during shutdown-cancel: {raw!r}"

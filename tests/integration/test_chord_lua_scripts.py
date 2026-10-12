@@ -26,6 +26,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.timeout(5)]
 async def manager(valkey_url):
     be = ValkeyBackend(valkey_url)
     await be.connect()
+    assert be._client is not None
     yield ChordManager(be._client)
     await be.close()
 
@@ -37,13 +38,7 @@ def _ids():
 async def test_exactly_one_completion_fires_body(manager):
     wf_id, chord_id = _ids()
     members = [f"m{i}" for i in range(5)]
-    fired = []
-    for m in members:
-        fired.append(
-            await manager.record_and_check_complete(
-                wf_id, chord_id, m, expected_n=5, ttl_ms=60_000
-            )
-        )
+    fired = [await manager.record_and_check_complete(wf_id, chord_id, m, expected_n=5, ttl_ms=60_000) for m in members]
     assert fired.count(True) == 1
     # The last completion is the one that fires.
     assert fired == [False, False, False, False, True]
@@ -52,16 +47,12 @@ async def test_exactly_one_completion_fires_body(manager):
 async def test_redelivered_member_is_noop(manager):
     wf_id, chord_id = _ids()
     # m0 completes twice (redelivery) before m1.
-    assert await manager.record_and_check_complete(
-        wf_id, chord_id, "m0", expected_n=2, ttl_ms=60_000
-    ) is False
-    assert await manager.record_and_check_complete(
-        wf_id, chord_id, "m0", expected_n=2, ttl_ms=60_000
-    ) is False  # redelivery: SADD no-op, count still 1
+    assert await manager.record_and_check_complete(wf_id, chord_id, "m0", expected_n=2, ttl_ms=60_000) is False
+    assert (
+        await manager.record_and_check_complete(wf_id, chord_id, "m0", expected_n=2, ttl_ms=60_000) is False
+    )  # redelivery: SADD no-op, count still 1
     # only m1 brings the distinct count to 2 → fires.
-    assert await manager.record_and_check_complete(
-        wf_id, chord_id, "m1", expected_n=2, ttl_ms=60_000
-    ) is True
+    assert await manager.record_and_check_complete(wf_id, chord_id, "m1", expected_n=2, ttl_ms=60_000) is True
 
 
 async def test_redelivery_of_last_member_still_reports_complete(manager):
@@ -71,29 +62,18 @@ async def test_redelivery_of_last_member_still_reports_complete(manager):
     # enqueue. This is the safe direction: the body can never be LOST in the
     # completion->publish crash window.
     wf_id, chord_id = _ids()
-    await manager.record_and_check_complete(
-        wf_id, chord_id, "m0", expected_n=2, ttl_ms=60_000
-    )
-    assert await manager.record_and_check_complete(
-        wf_id, chord_id, "m1", expected_n=2, ttl_ms=60_000
-    ) is True
+    await manager.record_and_check_complete(wf_id, chord_id, "m0", expected_n=2, ttl_ms=60_000)
+    assert await manager.record_and_check_complete(wf_id, chord_id, "m1", expected_n=2, ttl_ms=60_000) is True
     # m1 redelivered after completion → still reports complete (idempotent
     # SADD keeps the count at N); the one-shot lives in the advancer.
-    assert await manager.record_and_check_complete(
-        wf_id, chord_id, "m1", expected_n=2, ttl_ms=60_000
-    ) is True
+    assert await manager.record_and_check_complete(wf_id, chord_id, "m1", expected_n=2, ttl_ms=60_000) is True
 
 
 async def test_concurrent_last_completers_fire_once(manager):
     wf_id, chord_id = _ids()
     # 10 distinct members complete concurrently; exactly one call fires.
     results = await asyncio.gather(
-        *[
-            manager.record_and_check_complete(
-                wf_id, chord_id, f"m{i}", expected_n=10, ttl_ms=60_000
-            )
-            for i in range(10)
-        ]
+        *[manager.record_and_check_complete(wf_id, chord_id, f"m{i}", expected_n=10, ttl_ms=60_000) for i in range(10)]
     )
     assert results.count(True) == 1
 
@@ -101,9 +81,5 @@ async def test_concurrent_last_completers_fire_once(manager):
 async def test_distinct_chords_independent(manager):
     wf_id, c1 = _ids()
     _, c2 = _ids()
-    assert await manager.record_and_check_complete(
-        wf_id, c1, "m0", expected_n=1, ttl_ms=60_000
-    ) is True
-    assert await manager.record_and_check_complete(
-        wf_id, c2, "m0", expected_n=1, ttl_ms=60_000
-    ) is True
+    assert await manager.record_and_check_complete(wf_id, c1, "m0", expected_n=1, ttl_ms=60_000) is True
+    assert await manager.record_and_check_complete(wf_id, c2, "m0", expected_n=1, ttl_ms=60_000) is True

@@ -22,6 +22,7 @@ möglicher Zustand mehr (Entwurf §4).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import override
 
 
 class DeliveryOutcome:
@@ -32,12 +33,14 @@ class DeliveryOutcome:
 
 @dataclass(frozen=True, slots=True)
 class _Continue(DeliveryOutcome):
+    @override
     def __repr__(self) -> str:
         return "Continue"
 
 
 @dataclass(frozen=True, slots=True)
 class _Redelivered(DeliveryOutcome):
+    @override
     def __repr__(self) -> str:
         return "Redelivered"
 

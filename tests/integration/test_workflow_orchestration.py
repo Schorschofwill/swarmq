@@ -8,6 +8,8 @@ published with workflow headers, reattach, and workflow-level cancel.
 
 from __future__ import annotations
 
+from typing import override
+
 import pytest
 
 from swarmq.backend.valkey import ValkeyBackend
@@ -28,6 +30,7 @@ _QUEUE = "wf_apply_test"
 class WA(Task):
     task_info = TaskInfo(name="wa", queues=[_QUEUE])
 
+    @override
     async def run(self, x: str = "") -> str:
         return f"a:{x}"
 
@@ -35,6 +38,7 @@ class WA(Task):
 class WB(Task):
     task_info = TaskInfo(name="wb", queues=[_QUEUE])
 
+    @override
     async def run(self, x: str = "") -> str:
         return f"b:{x}"
 

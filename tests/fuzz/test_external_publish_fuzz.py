@@ -37,7 +37,8 @@ import contextlib
 import json
 import random
 import uuid
-from typing import Any
+from collections.abc import AsyncGenerator
+from typing import Any, cast, override
 
 import aio_pika
 import pytest
@@ -48,6 +49,7 @@ from hypothesis import strategies as st
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
+from swarmq.progress import ProgressInfo
 from swarmq.task import Task, TaskInfo
 from tests.chaos.conftest import ChaosStack
 
@@ -63,11 +65,7 @@ def _unique_queue() -> str:
     return f"fuzz-{uuid.uuid4().hex[:10]}"
 
 
-_SAFE_HEADER_CHARS = (
-    "abcdefghijklmnopqrstuvwxyz"
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    "0123456789_-"
-)
+_SAFE_HEADER_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
 
 
 def _make_random_headers(rng: random.Random) -> dict[str, Any]:
@@ -107,7 +105,8 @@ class TestAmqpHeaderFuzz:
     """
 
     async def test_amqp_random_headers_no_crash(
-        self, chaos_stack: ChaosStack,
+        self,
+        chaos_stack: ChaosStack,
     ) -> None:
         """Random AMQP header dicts + random bodies go to the worker.
 
@@ -121,6 +120,7 @@ class TestAmqpHeaderFuzz:
         class CanaryTask(Task):
             task_info = TaskInfo(name=canary_name, queues=[queue], max_retries=0)
 
+            @override
             async def run(self, x: int) -> int:
                 return x + 1
 
@@ -134,8 +134,10 @@ class TestAmqpHeaderFuzz:
             worker_broker = RabbitMQBroker(chaos_stack.rabbitmq_url)
             worker_backend = ValkeyBackend(chaos_stack.valkey_url)
             worker_app = SwarmQ(
-                worker_broker, worker_backend,
-                queues=[queue], concurrency=1,
+                worker_broker,
+                worker_backend,
+                queues=[queue],
+                concurrency=1,
             )
             worker_task = asyncio.create_task(worker_app.start_worker())
 
@@ -169,7 +171,8 @@ class TestAmqpHeaderFuzz:
                                 delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
                             )
                             await ch.default_exchange.publish(
-                                msg, routing_key=queue,
+                                msg,
+                                routing_key=queue,
                             )
                         except Exception:
                             # Some header codec edges still slip
@@ -186,9 +189,7 @@ class TestAmqpHeaderFuzz:
                 # Canary: a well-formed task must still succeed post-fuzz.
                 tid = await app.schedule(canary_name, 41)
                 result = await app.get_result(tid, timeout=30)
-                assert result == 42, (
-                    f"post-fuzz canary failed: got {result!r}"
-                )
+                assert result == 42, f"post-fuzz canary failed: got {result!r}"
             finally:
                 worker_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -217,7 +218,9 @@ class TestPubsubPayloadFuzz:
         ],
     )
     def test_pubsub_random_payloads_dropped_by_watch_progress(
-        self, chaos_stack: ChaosStack, payload: bytes,
+        self,
+        chaos_stack: ChaosStack,
+        payload: bytes,
     ) -> None:
         """Random bytes on the progress channel must be silently dropped.
 
@@ -233,7 +236,12 @@ class TestPubsubPayloadFuzz:
             app = SwarmQ(broker, backend, queues=[_unique_queue()])
             task_id = f"fuzz-pubsub-{uuid.uuid4().hex[:8]}"
             async with app:
-                iterator = app.client.watch_progress(task_id).__aiter__()
+                # watch_progress ist als AsyncIterator annotiert, liefert aber
+                # einen async Generator; aclose() unten braucht diesen Typ.
+                iterator = cast(
+                    "AsyncGenerator[ProgressInfo]",
+                    app.client.watch_progress(task_id),
+                )
 
                 # Give the iterator a chance to register its pubsub.
                 # We trigger the inner subscribe by running one step
@@ -260,7 +268,8 @@ class TestPubsubPayloadFuzz:
                         "metadata": {},
                     }
                     await raw.publish(
-                        channel, json.dumps(valid).encode("utf-8"),
+                        channel,
+                        json.dumps(valid).encode("utf-8"),
                     )
                 finally:
                     await raw.aclose()
@@ -276,9 +285,7 @@ class TestPubsubPayloadFuzz:
                         f"fuzz payload {payload!r} likely broke the iterator"
                     )
                 else:
-                    assert info.percent == 50.0, (
-                        f"iterator surfaced wrong event: {info!r}"
-                    )
+                    assert info.percent == 50.0, f"iterator surfaced wrong event: {info!r}"
                     # Close the async generator cleanly.
                     with contextlib.suppress(Exception):
                         await iterator.aclose()

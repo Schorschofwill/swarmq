@@ -21,7 +21,8 @@ import time
 import weakref
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from pathlib import Path
+from typing import Any, ClassVar, cast
 
 from swarmq.exceptions import LoggingConfigError
 from swarmq.logging_drain import Deadline, abandon, drain_expired
@@ -52,7 +53,7 @@ class RateLimitedReport:
         self.count = 0
         self.reported = 0
         self._emit = emit
-        self._last_report = float("-inf")
+        self._last_report: float = float("-inf")
 
     def add(self, n: int = 1) -> None:
         """Zaehlt ``n`` weitere Ereignisse; ohne Lock wie der Aufrufer
@@ -72,14 +73,13 @@ class RateLimitedReport:
         count = self.count
         if count <= self.reported:
             return False
-        now = type(self).clock()  # ueber die Klasse: eine Funktion bindet nicht
+        # ueber die Klasse: eine Funktion bindet nicht
+        now: float = type(self).clock()  # pyright: ignore[reportAttributeAccessIssue,reportUnknownMemberType,reportUnknownVariableType]  # Klassenzugriff bindet bewusst nicht
         if not final and now - self._last_report < self.INTERVAL_S:
             return False
         self._last_report = now
         self.reported = count
-        report = logging.LogRecord(
-            "swarmq.logging", logging.WARNING, __file__, 0, self.event, None, None
-        )
+        report = logging.LogRecord("swarmq.logging", logging.WARNING, __file__, 0, self.event, None, None)
         report.count = count
         self._emit(report)
         return True
@@ -114,7 +114,7 @@ class HandlerErrors:
         abgelaufen ist -- auch wenn keine Fehler mehr folgen."""
         try:
             self._dispatch(record)
-        except Exception:
+        except Exception:  # noqa: BLE001 - Fehler wird gezaehlt, Logging laeuft weiter
             self.failed()
         else:
             self.report_due()
@@ -129,7 +129,7 @@ class HandlerErrors:
         count = self.count
         if self._report.report_due(final=final) and self.count != count:
             with contextlib.suppress(Exception):
-                print(
+                print(  # noqa: T201 - letzter Ausweg, wenn das Logging selbst versagt
                     f"swarmq: log_handler_errors — {count} error(s) in log handlers so far",
                     file=sys.stderr,
                 )
@@ -168,7 +168,7 @@ def load_log_config(path: str) -> str:
     selbst nie lesen.
     """
     try:
-        with open(path, encoding="utf-8") as fh:
+        with Path(path).open(encoding="utf-8") as fh:
             config = _parse_log_config(path, fh.read())
     except (OSError, ValueError, ImportError) as exc:
         # ValueError deckt JSONDecodeError und UnicodeDecodeError ab.
@@ -176,7 +176,7 @@ def load_log_config(path: str) -> str:
     if not isinstance(config, dict):
         cause = TypeError(f"expected a mapping, got {type(config).__name__}")
         raise LoggingConfigError(path, cause) from cause
-    config.setdefault("disable_existing_loggers", False)
+    cast("dict[str, Any]", config).setdefault("disable_existing_loggers", False)
     return jsonlib.dumps(config)
 
 
@@ -201,10 +201,13 @@ class DictConfigProbe:
     """
 
     def __init__(self, raw: str) -> None:
-        self._proc: subprocess.Popen[str] = subprocess.Popen(
+        self._proc: subprocess.Popen[str] = subprocess.Popen(  # noqa: S603 - feste Argumente, sys.executable, keine Shell
             [sys.executable, "-c", _DICT_CONFIG_PROBE],
-            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-            text=True, start_new_session=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
         )
         assert self._proc.stdin is not None
         try:
@@ -275,7 +278,7 @@ def _parse_log_config(path: str, text: str) -> Any:
     if not path.endswith((".yaml", ".yml")):
         return jsonlib.loads(text)
     try:
-        import yaml  # type: ignore[import-untyped]
+        import yaml  # type: ignore[import-untyped]  # PyYAML ohne mitgelieferte Typen
     except ImportError as exc:
         msg = "YAML logging configs need PyYAML (pip install pyyaml)"
         raise ImportError(msg) from exc
@@ -299,7 +302,9 @@ Kind zurueck (Plan 2026-10-06-1811, KTD10)."""
 
 
 def start_queue_listeners(
-    on_drop: Callable[[], None], *, skip: tuple[type[logging.Handler], ...] = (),
+    on_drop: Callable[[], None],
+    *,
+    skip: tuple[type[logging.Handler], ...] = (),
     drain: Callable[[], None] | None = None,
 ) -> None:
     """Startet die Listener aller ``QueueHandler`` aus der dictConfig (KTD9).
@@ -349,11 +354,11 @@ def _drain_before_multiprocessing_exit(drain: Callable[[], None]) -> None:
     Pipe schliessen -- vorher noch ungelesene Records waeren verloren, und
     der Listener stuerbe mit ``EOFError``/``OSError``-Traceback. Ein
     ``Finalize`` gilt nur im Prozess, der es angelegt hat."""
-    global _MP_EXIT_DRAIN_PID
+    global _MP_EXIT_DRAIN_PID  # noqa: PLW0603 - Modul-Singleton
     pid = os.getpid()
     if pid == _MP_EXIT_DRAIN_PID:
         return
-    _MP_EXIT_DRAIN_PID = pid
+    _MP_EXIT_DRAIN_PID = pid  # pyright: ignore[reportConstantRedefinition]  # Modul-Zustand je Prozess
     from multiprocessing import util  # schon importiert: Die Queue braucht es
 
     util.Finalize(None, drain, exitpriority=_BEFORE_MULTIPROCESSING_QUEUES)
@@ -376,8 +381,8 @@ def reset_queue_listeners_after_fork() -> None:
     Records schreibt der Elternprozess -- im Kind erschienen sie doppelt.
     Ein beim Fork gehaltenes Wiederstart-Lock hat im Kind keinen Besitzer
     mehr und wird ersetzt."""
-    global _CONFIG_LISTENER_LOCK
-    _CONFIG_LISTENER_LOCK = threading.Lock()
+    global _CONFIG_LISTENER_LOCK  # noqa: PLW0603 - Modul-Singleton
+    _CONFIG_LISTENER_LOCK = threading.Lock()  # pyright: ignore[reportConstantRedefinition]  # nach Fork ersetzt
     CONFIG_LISTENERS.clear()
     for handler, drops in list(_STARTED_HANDLERS.items()):
         # Die Drops des Elternprozesses meldet der Elternprozess.
@@ -443,9 +448,11 @@ def _fresh_queue(inherited: object) -> Any:
     ``multiprocessing``-Queue verbindet das Kind mit dem Elternprozess, eine
     eigene Klasse der App hat einen unbekannten Konstruktor."""
     if type(inherited) is queue.SimpleQueue:
-        return queue.SimpleQueue()
+        fresh_simple: queue.SimpleQueue[Any] = queue.SimpleQueue()
+        return fresh_simple
     if type(inherited) is queue.Queue:
-        return queue.Queue(inherited.maxsize)
+        fresh: queue.Queue[Any] = queue.Queue(inherited.maxsize)
+        return fresh
     return None
 
 
@@ -482,9 +489,7 @@ class _ListenerState:
     lesen laesst sie sich nicht mehr."""
 
 
-_STATES: weakref.WeakKeyDictionary[logging.handlers.QueueListener, _ListenerState] = (
-    weakref.WeakKeyDictionary()
-)
+_STATES: weakref.WeakKeyDictionary[logging.handlers.QueueListener, _ListenerState] = weakref.WeakKeyDictionary()
 
 
 def _state(listener: logging.handlers.QueueListener) -> _ListenerState:
@@ -543,11 +548,11 @@ class FileDraining:
 def _offer_sentinel(listener: logging.handlers.QueueListener, timeout: float) -> bool:
     """Reiht den Sentinel ein, hoechstens ``timeout`` Sekunden lang; ``False``
     bei voller Queue. ``put_nowait`` des stdlib-``stop`` wuerfe dort."""
-    sentinel = listener._sentinel  # type: ignore[attr-defined]
+    sentinel: object = cast("Any", listener)._sentinel  # privates stdlib-Attribut, nicht in typeshed
     target: Any = listener.queue  # ``_QueueLike`` kennt nur ``put_nowait``/``get``
     try:
         if timeout > 0:
-            target.put(sentinel, True, timeout)
+            target.put(sentinel, True, timeout)  # noqa: FBT003 - Queue.put(item, block, timeout) einer fremden Queue-API
         else:
             target.put_nowait(sentinel)
     except queue.Full:
@@ -558,9 +563,9 @@ def _offer_sentinel(listener: logging.handlers.QueueListener, timeout: float) ->
 def _qsize(queue_: Any) -> int:
     try:
         return int(queue_.qsize())
-    except (NotImplementedError, AttributeError):  # etwa ``multiprocessing`` auf macOS
+    except NotImplementedError, AttributeError:  # etwa ``multiprocessing`` auf macOS
         return 0
-    except (EOFError, OSError):  # Proxy eines beendeten Managers
+    except EOFError, OSError:  # Proxy eines beendeten Managers
         return 0
 
 
@@ -617,7 +622,7 @@ def discard_pending(queue_: Any) -> int:
     while True:
         try:
             queue_.get_nowait()
-        except (queue.Empty, queue.ShutDown, EOFError, OSError):
+        except queue.Empty, queue.ShutDown, EOFError, OSError:
             return count
         count += 1
 
@@ -651,7 +656,7 @@ def _report_from_listener(listener: logging.handlers.QueueListener) -> RateLimit
     nach deren Finalizer, ein beendeter Manager --, endet er ohne Traceback;
     was noch in ihr liegt, zaehlt das naechste Leeren als verworfen."""
     reports = ListenerReports(listener.handle)
-    monitor = listener._monitor  # type: ignore[attr-defined]
+    monitor: Callable[[], None] = cast("Any", listener)._monitor  # privates stdlib-Attribut, nicht in typeshed
 
     def serve() -> None:
         # Thread-Ziel des stdlib-``start``.
@@ -668,7 +673,7 @@ def _report_from_listener(listener: logging.handlers.QueueListener) -> RateLimit
             raise queue.Empty
         try:
             return dequeue(block)
-        except (EOFError, OSError):
+        except EOFError, OSError:
             _state(listener).closed = True
             raise queue.Empty from None
 

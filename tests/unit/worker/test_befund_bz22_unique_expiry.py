@@ -17,6 +17,7 @@ Testliste:
 from __future__ import annotations
 
 import time
+from typing import override
 
 import pytest
 
@@ -35,6 +36,7 @@ _HASH = "a" * 64
 class UniqueReport(Task):
     task_info = TaskInfo(name="bz22_report", queues=["default"], unique_for=3600, max_age=60)
 
+    @override
     async def run(self) -> None:
         raise AssertionError("abgelaufen, darf nicht laufen")
 

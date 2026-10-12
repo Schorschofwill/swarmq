@@ -36,9 +36,7 @@ def _pending_scheduler_tasks() -> list[str]:
     return out
 
 
-async def test_cancel_does_not_orphan_scheduler_tasks(
-    rabbitmq_url: str, valkey_url: str
-) -> None:
+async def test_cancel_does_not_orphan_scheduler_tasks(rabbitmq_url: str, valkey_url: str) -> None:
     queue = f"e2e-cancel-teardown-{uuid.uuid4().hex[:10]}"
     app = SwarmQ(
         RabbitMQBroker(rabbitmq_url),

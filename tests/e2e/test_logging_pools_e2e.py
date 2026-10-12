@@ -28,7 +28,6 @@ import asyncio
 import json
 import subprocess
 import uuid
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -51,7 +50,11 @@ CONFIG_EXIT_CODE = 78  # EX_CONFIG: ungueltige Konfiguration, kein Neustart
 
 
 def _run_worker(
-    pool: str, mode: str, *extra: str, tmp_path: Path, env_extra: dict[str, str] | None = None,
+    pool: str,
+    mode: str,
+    *extra: str,
+    tmp_path: Path,
+    env_extra: dict[str, str] | None = None,
     task_lines_on_stdout: bool = True,
 ) -> list[str]:
     """Worker starten, einen Task abarbeiten lassen, beenden; liefert alle
@@ -64,10 +67,25 @@ def _run_worker(
     env.update(env_extra or {})
     proc = subprocess.Popen(
         [
-            str(SWARMQ_SCRIPT), "worker", "--module", APP_MODULE, "--queues", queue,
-            "--processes", "1", "--concurrency", "1", "--pool", pool, *extra,
+            str(SWARMQ_SCRIPT),
+            "worker",
+            "--module",
+            APP_MODULE,
+            "--queues",
+            queue,
+            "--processes",
+            "1",
+            "--concurrency",
+            "1",
+            "--pool",
+            pool,
+            *extra,
         ],
-        cwd=str(tmp_path), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        cwd=str(tmp_path),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
         start_new_session=True,
     )
     out = _LineCollector(proc)
@@ -89,7 +107,8 @@ async def _roundtrip(queue: str, value: str) -> str:
     app = SwarmQ(RabbitMQBroker(rabbitmq_amqp_url()), ValkeyBackend(valkey_db_url()), queues=[queue])
     async with app:
         task_id = await app.schedule("pools_task", value, queue=queue)
-        return await app.get_result(task_id, timeout=30)
+        result: str = await app.get_result(task_id, timeout=30)
+        return result
 
 
 def _task_lines(lines: list[str]) -> list[str]:
@@ -97,11 +116,10 @@ def _task_lines(lines: list[str]) -> list[str]:
 
 
 @pytest.fixture(autouse=True)
-def _queue_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+def _queue_env(monkeypatch: pytest.MonkeyPatch) -> None:
     # Der Testprozess importiert das App-Modul zum Einreihen -- ohne Modus,
     # also ohne Eingriff in sein eigenes Logging.
     monkeypatch.delenv("POOLS_APP_MODE", raising=False)
-    yield
 
 
 @pytest.mark.parametrize("pool", POOLS)
@@ -109,19 +127,24 @@ def test_basicconfig_has_no_effect_and_json_applies_to_every_task_line(pool: str
     lines = _task_lines(_run_worker(pool, "basic", "--log-format", "json", tmp_path=tmp_path))
 
     events = [json.loads(line)["event"] for line in lines]  # jede Zeile ist JSON
-    assert "pools_info_v1" in events and "pools_warn_v1" in events, lines
+    assert "pools_info_v1" in events, lines
+    assert "pools_warn_v1" in events, lines
 
 
 @pytest.mark.parametrize("pool", POOLS)
 def test_the_log_config_file_applies_to_the_task_lines(pool: str, tmp_path: Path) -> None:
     cfg = tmp_path / "logcfg.json"
-    cfg.write_text(json.dumps({
-        "version": 1,
-        "disable_existing_loggers": False,
-        "formatters": {"f": {"format": "LOGCFG|%(name)s|%(message)s"}},
-        "handlers": {"h": {"class": "logging.StreamHandler", "formatter": "f"}},
-        "root": {"handlers": ["h"], "level": "INFO"},
-    }))
+    cfg.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "disable_existing_loggers": False,
+                "formatters": {"f": {"format": "LOGCFG|%(name)s|%(message)s"}},
+                "handlers": {"h": {"class": "logging.StreamHandler", "formatter": "f"}},
+                "root": {"handlers": ["h"], "level": "INFO"},
+            }
+        )
+    )
 
     lines = _task_lines(_run_worker(pool, "basic", "--log-config", str(cfg), tmp_path=tmp_path))
 
@@ -146,8 +169,13 @@ def test_an_app_queue_listener_started_in_the_configure_hook_gets_the_compute_ch
     app_log = tmp_path / "app.log"
 
     _run_worker(
-        "cpu", "cookbook", "--configure", f"{APP_MODULE}:start_listener",
-        tmp_path=tmp_path, env_extra={"POOLS_APP_LOG": str(app_log)}, task_lines_on_stdout=False,
+        "cpu",
+        "cookbook",
+        "--configure",
+        f"{APP_MODULE}:start_listener",
+        tmp_path=tmp_path,
+        env_extra={"POOLS_APP_LOG": str(app_log)},
+        task_lines_on_stdout=False,
     )
 
     task_lines = [line.split("|", 2)[2] for line in app_log.read_text().splitlines() if "pools_" in line]
@@ -160,7 +188,11 @@ def test_an_app_queue_listener_started_at_import_is_named_by_the_thread_check(tm
     env.update(POOLS_APP_MODE="cookbook_start", POOLS_APP_LOG=str(tmp_path / "app.log"))
     proc = subprocess.Popen(
         [str(SWARMQ_SCRIPT), "worker", "--module", APP_MODULE, "--queues", queue, "--processes", "1", "--pool", "cpu"],
-        cwd=str(tmp_path), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        cwd=str(tmp_path),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
         start_new_session=True,
     )
     out = _LineCollector(proc)

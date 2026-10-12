@@ -22,6 +22,7 @@ import multiprocessing
 import signal
 import sys
 import time
+from typing import Any, override
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -43,6 +44,8 @@ from tests.unit.process_manager._helpers import (
     _make_test_cfg,
     _register,
     _report_pdeathsig_entry,
+    as_mock,
+    channel_of,
 )
 
 
@@ -50,32 +53,41 @@ class TestProcessManagerCore:
     def test_rejects_invalid_autoscale(self):
         with pytest.raises(ValueError, match="min >= 1"):
             ProcessManager(
-                num_workers=1, worker_entry=_entry_stub,
-                autoscale=(0, 3), queue_depth_fn=lambda: 0,
+                num_workers=1,
+                worker_entry=_entry_stub,
+                autoscale=(0, 3),
+                queue_depth_fn=lambda: 0,
             )
         with pytest.raises(ValueError, match="min >= 1"):
             ProcessManager(
-                num_workers=1, worker_entry=_entry_stub,
-                autoscale=(5, 3), queue_depth_fn=lambda: 0,
+                num_workers=1,
+                worker_entry=_entry_stub,
+                autoscale=(5, 3),
+                queue_depth_fn=lambda: 0,
             )
 
     def test_autoscale_requires_queue_depth_fn(self):
         with pytest.raises(ValueError, match="queue_depth_fn"):
             ProcessManager(
-                num_workers=1, worker_entry=_entry_stub,
+                num_workers=1,
+                worker_entry=_entry_stub,
                 autoscale=(1, 3),
             )
 
     def test_autoscale_clamps_initial_count(self):
         pm = ProcessManager(
-            num_workers=10, worker_entry=_entry_stub,
-            autoscale=(1, 3), queue_depth_fn=lambda: 0,
+            num_workers=10,
+            worker_entry=_entry_stub,
+            autoscale=(1, 3),
+            queue_depth_fn=lambda: 0,
         )
         assert pm.initial_workers == 3
 
         pm2 = ProcessManager(
-            num_workers=0, worker_entry=_entry_stub,
-            autoscale=(2, 5), queue_depth_fn=lambda: 0,
+            num_workers=0,
+            worker_entry=_entry_stub,
+            autoscale=(2, 5),
+            queue_depth_fn=lambda: 0,
         )
         assert pm2.initial_workers == 2
 
@@ -96,7 +108,7 @@ class TestProcessManagerCore:
         erbte sie -- sein SIGTERM blieb anhaengig, der Container endete erst
         per SIGKILL nach dem Stop-Timeout. Das Ziel des Kindprozesses hebt
         die Maske darum selbst auf, bevor irgendein Entry laeuft."""
-        seen: dict[str, object] = {}
+        seen: dict[str, Any] = {}
 
         def entry(worker_id, shutdown_event, *args):
             seen["mask"] = signal.pthread_sigmask(signal.SIG_BLOCK, set())
@@ -135,9 +147,7 @@ class TestProcessManagerCore:
 
         ctx = multiprocessing.get_context("spawn")
         parent_conn, child_conn = ctx.Pipe(duplex=False)
-        proc = ctx.Process(
-            target=run_worker_entry, args=(_report_pdeathsig_entry, child_conn)
-        )
+        proc = ctx.Process(target=run_worker_entry, args=(_report_pdeathsig_entry, child_conn))
         proc.start()
         try:
             assert parent_conn.poll(30), "das Kind meldete sein Parent-Death-Signal nicht"
@@ -152,7 +162,8 @@ class TestProcessManagerCore:
         pm._ctx = MagicMock()
         pm._ctx.Process = MagicMock(
             side_effect=[
-                _fake_process(pid=1), _fake_process(pid=2),
+                _fake_process(pid=1),
+                _fake_process(pid=2),
                 _fake_process(pid=3),
             ],
         )
@@ -194,8 +205,10 @@ class TestProcessManagerCore:
         previous = {
             s: signal.getsignal(s)
             for s in (
-                signal.SIGINT, signal.SIGTERM,
-                signal.SIGHUP, signal.SIGCHLD,
+                signal.SIGINT,
+                signal.SIGTERM,
+                signal.SIGHUP,
+                signal.SIGCHLD,
             )
         }
         try:
@@ -214,9 +227,10 @@ class TestProcessManagerRestart:
 
     def test_maybe_restart_spawns_new_worker(self):
         pm = self._pm()
-        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=77))
+        as_mock(pm._ctx).Process = MagicMock(return_value=_fake_process(pid=77))
         old = WorkerInfo(
-            process=_fake_process(alive=False, pid=1), worker_id=0,
+            process=_fake_process(alive=False, pid=1),
+            worker_id=0,
         )
         pm._maybe_restart(old)
         assert 77 in pm.workers
@@ -225,11 +239,12 @@ class TestProcessManagerRestart:
         """ce-review C-01: rolling-window blocks on MAX_RESTARTS
         timestamps inside the window."""
         pm = self._pm()
-        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=99))
+        as_mock(pm._ctx).Process = MagicMock(return_value=_fake_process(pid=99))
         now = time.monotonic()
         # MAX_RESTARTS recent timestamps already in the window.
         old = WorkerInfo(
-            process=_fake_process(alive=False, pid=1), worker_id=0,
+            process=_fake_process(alive=False, pid=1),
+            worker_id=0,
             restart_timestamps=[now - 1.0] * pm.MAX_RESTARTS,
         )
         pm._maybe_restart(old)
@@ -240,10 +255,11 @@ class TestProcessManagerRestart:
         """Exact-boundary: 4 timestamps in window, the 5th should
         still be allowed (count reaches but does not exceed MAX)."""
         pm = self._pm()
-        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=88))
+        as_mock(pm._ctx).Process = MagicMock(return_value=_fake_process(pid=88))
         now = time.monotonic()
         old = WorkerInfo(
-            process=_fake_process(alive=False, pid=1), worker_id=0,
+            process=_fake_process(alive=False, pid=1),
+            worker_id=0,
             restart_timestamps=[now - 10.0] * (pm.MAX_RESTARTS - 1),
         )
         pm._maybe_restart(old)
@@ -254,14 +270,13 @@ class TestProcessManagerRestart:
         """Entries older than RESTART_WINDOW are dropped, freeing
         restart budget without a full counter reset."""
         pm = self._pm()
-        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=42))
+        as_mock(pm._ctx).Process = MagicMock(return_value=_fake_process(pid=42))
         now = time.monotonic()
         # All entries older than the window → treated as if fresh.
         old = WorkerInfo(
-            process=_fake_process(alive=False, pid=1), worker_id=0,
-            restart_timestamps=[
-                now - pm.RESTART_WINDOW - 1 for _ in range(10)
-            ],
+            process=_fake_process(alive=False, pid=1),
+            worker_id=0,
+            restart_timestamps=[now - pm.RESTART_WINDOW - 1 for _ in range(10)],
         )
         pm._maybe_restart(old)
         # Pruning dropped all 10; new restart allowed.
@@ -274,12 +289,13 @@ class TestProcessManagerRestart:
         still sliding-window-violating) must still block until
         the oldest entry ages out."""
         pm = self._pm()
-        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=55))
+        as_mock(pm._ctx).Process = MagicMock(return_value=_fake_process(pid=55))
         now = time.monotonic()
         # Five restarts spread across the window — oldest at (now-100).
         ts = [now - 100.0 + i for i in range(pm.MAX_RESTARTS)]
         old = WorkerInfo(
-            process=_fake_process(alive=False, pid=1), worker_id=0,
+            process=_fake_process(alive=False, pid=1),
+            worker_id=0,
             restart_timestamps=ts,
         )
         pm._maybe_restart(old)
@@ -304,7 +320,7 @@ class TestProcessManagerRestart:
 
     def test_check_dead_workers_restarts_crashed(self):
         pm = self._pm()
-        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=500))
+        as_mock(pm._ctx).Process = MagicMock(return_value=_fake_process(pid=500))
         dead = _fake_process(alive=False, exitcode=-11, pid=5)  # segfault
         pm.workers = {5: WorkerInfo(process=dead, worker_id=0)}
         pm._check_dead_workers()
@@ -356,10 +372,12 @@ class TestProcessManagerRestart:
         pm._ctx = MagicMock()
         pm._on_shutdown_signal(signal.SIGTERM, None)
         assert [e for e in swarmq_logs if e["event"] == "process_manager_shutdown_signal"] == []
-        with patch.object(pm, "_start_all_workers"), \
-             patch.object(pm, "_setup_signals"), \
-             patch.object(pm, "_shutdown_all_workers"), \
-             patch.object(pm, "_collect_zombies"):
+        with (
+            patch.object(pm, "_start_all_workers"),
+            patch.object(pm, "_setup_signals"),
+            patch.object(pm, "_shutdown_all_workers"),
+            patch.object(pm, "_collect_zombies"),
+        ):
             assert pm.run() == 0
         (event,) = [e for e in swarmq_logs if e["event"] == "process_manager_shutdown_signal"]
         assert event["signal"] == "SIGTERM"
@@ -369,33 +387,42 @@ class TestProcessManagerRestart:
         pm._ctx = MagicMock()
         pm._reload_requested = True
         # Skip all worker management; we only verify execvp is called.
-        with patch.object(pm, "_start_all_workers"), \
-             patch.object(pm, "_setup_signals"), \
-             patch.object(pm, "_monitor_loop", return_value=0), \
-             patch.object(pm, "_shutdown_all_workers"), \
-             patch.object(pm, "_collect_zombies"), \
-             patch("swarmq.process_manager.supervisor.os.execvpe") as execvp:
+        with (
+            patch.object(pm, "_start_all_workers"),
+            patch.object(pm, "_setup_signals"),
+            patch.object(pm, "_monitor_loop", return_value=0),
+            patch.object(pm, "_shutdown_all_workers"),
+            patch.object(pm, "_collect_zombies"),
+            patch("swarmq.process_manager.supervisor.os.execvpe") as execvp,
+        ):
             pm.run()
             execvp.assert_called_once()
-
 
     def test_a_supervisor_started_with_blocked_shutdown_signals_unblocks_them(self):
         """Review A6: ``reexec`` blockiert SIGTERM/SIGINT ueber ``execve``
         hinweg. Der neue Supervisor muss sie nach dem Einrichten der Handler
         freigeben, sonst bliebe SIGTERM fuer immer anhaengig."""
-        seen: list[set[signal.Signals]] = []
+        seen: list[set[int | signal.Signals]] = []
+
+        def record_mask() -> int:
+            seen.append(signal.pthread_sigmask(signal.SIG_BLOCK, set()))
+            return 0
+
         pm = ProcessManager(num_workers=0, worker_entry=_entry_stub)
         pm._ctx = MagicMock()
         before = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM, signal.SIGINT})
         try:
-            with patch.object(pm, "_start_all_workers"), \
-                 patch.object(pm, "_setup_signals"), \
-                 patch.object(
-                     pm, "_monitor_loop",
-                     side_effect=lambda: seen.append(signal.pthread_sigmask(signal.SIG_BLOCK, set())) or 0,
-                 ), \
-                 patch.object(pm, "_shutdown_all_workers"), \
-                 patch.object(pm, "_collect_zombies"):
+            with (
+                patch.object(pm, "_start_all_workers"),
+                patch.object(pm, "_setup_signals"),
+                patch.object(
+                    pm,
+                    "_monitor_loop",
+                    side_effect=record_mask,
+                ),
+                patch.object(pm, "_shutdown_all_workers"),
+                patch.object(pm, "_collect_zombies"),
+            ):
                 pm.run()
         finally:
             signal.pthread_sigmask(signal.SIG_SETMASK, before)
@@ -419,8 +446,10 @@ class TestProcessManagerRestart:
         old_handler = signal.signal(signal.SIGTERM, lambda signum, _frame: received.append(signum))
         old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, [])
         try:
-            with patch("swarmq.process_manager.reload.shutdown_logging"), \
-                 patch("swarmq.process_manager.reload.os.execvpe", side_effect=execvpe):
+            with (
+                patch("swarmq.process_manager.reload.shutdown_logging"),
+                patch("swarmq.process_manager.reload.os.execvpe", side_effect=execvpe),
+            ):
                 reload_module.reexec(pm, 0)
         finally:
             signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
@@ -439,20 +468,22 @@ class TestProcessManagerRestart:
         pm._reload_requested = True
         log = MagicMock()
         log.info.side_effect = lambda event, **kw: calls.append(event)
-        with patch.object(pm, "_start_all_workers"), \
-             patch.object(pm, "_setup_signals"), \
-             patch.object(pm, "_monitor_loop", return_value=0), \
-             patch.object(pm, "_shutdown_all_workers"), \
-             patch.object(pm, "_collect_zombies"), \
-             patch("swarmq.process_manager.reload.logger", log), \
-             patch(
-                 "swarmq.process_manager.reload.shutdown_logging",
-                 side_effect=lambda: calls.append("shutdown_logging"),
-             ), \
-             patch(
-                 "swarmq.process_manager.supervisor.os.execvpe",
-                 side_effect=lambda *a: calls.append("execvpe"),
-             ):
+        with (
+            patch.object(pm, "_start_all_workers"),
+            patch.object(pm, "_setup_signals"),
+            patch.object(pm, "_monitor_loop", return_value=0),
+            patch.object(pm, "_shutdown_all_workers"),
+            patch.object(pm, "_collect_zombies"),
+            patch("swarmq.process_manager.reload.logger", log),
+            patch(
+                "swarmq.process_manager.reload.shutdown_logging",
+                side_effect=lambda: calls.append("shutdown_logging"),
+            ),
+            patch(
+                "swarmq.process_manager.supervisor.os.execvpe",
+                side_effect=lambda *a: calls.append("execvpe"),
+            ),
+        ):
             pm.run()
         assert calls[-3:] == ["process_manager_reload_execvp", "shutdown_logging", "execvpe"]
 
@@ -460,35 +491,41 @@ class TestProcessManagerRestart:
         pm = ProcessManager(num_workers=0, worker_entry=_entry_stub)
         pm._ctx = MagicMock()
         pm._reload_requested = True
-        with patch.object(pm, "_start_all_workers"), \
-             patch.object(pm, "_setup_signals"), \
-             patch.object(pm, "_monitor_loop", return_value=0), \
-             patch.object(pm, "_shutdown_all_workers"), \
-             patch.object(pm, "_collect_zombies"), \
-             patch("swarmq.process_manager.reload.shutdown_logging"), \
-             patch(
-                 "swarmq.process_manager.supervisor.os.execvpe",
-                 side_effect=PermissionError("python not executable"),
-             ):
+        with (
+            patch.object(pm, "_start_all_workers"),
+            patch.object(pm, "_setup_signals"),
+            patch.object(pm, "_monitor_loop", return_value=0),
+            patch.object(pm, "_shutdown_all_workers"),
+            patch.object(pm, "_collect_zombies"),
+            patch("swarmq.process_manager.reload.shutdown_logging"),
+            patch(
+                "swarmq.process_manager.supervisor.os.execvpe",
+                side_effect=PermissionError("python not executable"),
+            ),
+        ):
             assert pm.run() == 1
         [entry] = [e for e in swarmq_logs if e["event"] == "reload_execvp_failed"]
         assert entry["log_level"] == "error"
-        assert entry["error_type"] == "PermissionError" and entry["error"] == "python not executable"
+        assert entry["error_type"] == "PermissionError"
+        assert entry["error"] == "python not executable"
 
     def test_file_watcher_stop_failure_logs_error_fields(self, swarmq_logs):
         pm = ProcessManager(num_workers=0, worker_entry=_entry_stub)
         pm._ctx = MagicMock()
         pm._file_watcher = MagicMock()
         pm._file_watcher.stop.side_effect = RuntimeError("inotify stuck")
-        with patch.object(pm, "_start_all_workers"), \
-             patch.object(pm, "_setup_signals"), \
-             patch.object(pm, "_monitor_loop", return_value=0), \
-             patch.object(pm, "_shutdown_all_workers"), \
-             patch.object(pm, "_collect_zombies"):
+        with (
+            patch.object(pm, "_start_all_workers"),
+            patch.object(pm, "_setup_signals"),
+            patch.object(pm, "_monitor_loop", return_value=0),
+            patch.object(pm, "_shutdown_all_workers"),
+            patch.object(pm, "_collect_zombies"),
+        ):
             assert pm.run() == 0
         [entry] = [e for e in swarmq_logs if e["event"] == "file_watcher_stop_failed"]
         assert entry["log_level"] == "warning"
-        assert entry["error_type"] == "RuntimeError" and entry["error"] == "inotify stuck"
+        assert entry["error_type"] == "RuntimeError"
+        assert entry["error"] == "inotify stuck"
 
 
 class TestCrashLoopExhaustion:
@@ -508,7 +545,8 @@ class TestCrashLoopExhaustion:
         pm = self._pm()
         now = time.monotonic()
         old = WorkerInfo(
-            process=_fake_process(alive=False, pid=1), worker_id=0,
+            process=_fake_process(alive=False, pid=1),
+            worker_id=0,
             restart_timestamps=[now - 1.0] * pm.MAX_RESTARTS,
         )
         pm._maybe_restart(old)
@@ -530,8 +568,10 @@ class TestCrashLoopExhaustion:
         """Autoscale-Pfad: Ziel bleibt len(workers) — Scale-up ist
         nachfragegetrieben mit Cooldown, kein Backfill-Bypass."""
         pm = ProcessManager(
-            num_workers=2, worker_entry=_entry_stub,
-            autoscale=(1, 3), queue_depth_fn=lambda: 0,
+            num_workers=2,
+            worker_entry=_entry_stub,
+            autoscale=(1, 3),
+            queue_depth_fn=lambda: 0,
         )
         pm._ctx = MagicMock()
         pm._slots.lock(2)
@@ -557,7 +597,7 @@ class TestCrashLoopExhaustion:
 
         import threading
 
-        result: dict = {}
+        result: dict[str, int] = {}
         t = threading.Thread(
             target=lambda: result.update(rc=pm._monitor_loop()),
             daemon=True,
@@ -569,7 +609,7 @@ class TestCrashLoopExhaustion:
         t.join(timeout=2)
         assert still_running, "loop must keep supervising the live worker"
         # Kein Backfill über das reduzierte Ziel hinaus gespawnt.
-        pm._ctx.Process.assert_not_called()
+        as_mock(pm._ctx).Process.assert_not_called()
 
     def test_crash_storm_bounded_and_manager_exits_real_processes(self):
         """Regression mit ECHTEN Subprozessen (kein gemockter
@@ -579,7 +619,8 @@ class TestCrashLoopExhaustion:
         import threading
 
         pm = ProcessManager(
-            num_workers=1, worker_entry=_instant_crash_entry,
+            num_workers=1,
+            worker_entry=_instant_crash_entry,
         )
         pm.MAX_RESTARTS = 2
         pm.MONITOR_INTERVAL = 0.05
@@ -593,7 +634,7 @@ class TestCrashLoopExhaustion:
         pm._start_worker = counting_start  # type: ignore[method-assign]
         pm._start_all_workers()
 
-        result: dict = {}
+        result: dict[str, int] = {}
         t = threading.Thread(
             target=lambda: result.update(rc=pm._monitor_loop()),
             daemon=True,
@@ -604,8 +645,7 @@ class TestCrashLoopExhaustion:
             pm._shutting_down = True
             t.join(timeout=5)
             pytest.fail(
-                "monitor loop did not exit after slot exhaustion "
-                f"(spawned {len(spawned_slots)} workers)",
+                f"monitor loop did not exit after slot exhaustion (spawned {len(spawned_slots)} workers)",
             )
         try:
             assert result["rc"] != 0
@@ -628,8 +668,10 @@ class TestProcessManagerAutoscale:
             return next(it, 0)
 
         pm = ProcessManager(
-            num_workers=2, worker_entry=_entry_stub,
-            autoscale=(min_w, max_w), queue_depth_fn=depth_fn,
+            num_workers=2,
+            worker_entry=_entry_stub,
+            autoscale=(min_w, max_w),
+            queue_depth_fn=depth_fn,
         )
         pm._ctx = MagicMock()
         pm.AUTOSCALE_SAMPLE_INTERVAL = 0.0  # always tick in tests
@@ -650,7 +692,8 @@ class TestProcessManagerAutoscale:
         pm._queue_depth_fn = failing_depth
         pm._autoscale_tick()
         [entry] = [e for e in swarmq_logs if e["event"] == "autoscale_sample_failed"]
-        assert entry["log_level"] == "warning" and entry["error_type"] == "ConnectionError"
+        assert entry["log_level"] == "warning"
+        assert entry["error_type"] == "ConnectionError"
         assert entry["error"] == "amqp://user:***@rabbit/vh"
 
     def test_scale_up_when_depth_exceeds_threshold(self):
@@ -716,8 +759,10 @@ class TestProcessManagerAutoscale:
             return 0
 
         pm = ProcessManager(
-            num_workers=1, worker_entry=_entry_stub,
-            autoscale=(1, 3), queue_depth_fn=depth_fn,
+            num_workers=1,
+            worker_entry=_entry_stub,
+            autoscale=(1, 3),
+            queue_depth_fn=depth_fn,
         )
         pm.AUTOSCALE_SAMPLE_INTERVAL = 999.0  # effectively disable re-entry
         pm._autoscale_tick()
@@ -745,8 +790,10 @@ class TestProcessManagerAutoscale:
             raise RuntimeError("broker gone")
 
         pm = ProcessManager(
-            num_workers=1, worker_entry=_entry_stub,
-            autoscale=(1, 3), queue_depth_fn=boom,
+            num_workers=1,
+            worker_entry=_entry_stub,
+            autoscale=(1, 3),
+            queue_depth_fn=boom,
         )
         pm.AUTOSCALE_SAMPLE_INTERVAL = 0.0
         pm._ctx = MagicMock()
@@ -760,7 +807,8 @@ class TestProcessManagerAutoscale:
     def test_non_idle_resets_idle_timer(self):
         depths = iter([0, 10, 0])  # idle → load → idle
         pm = ProcessManager(
-            num_workers=2, worker_entry=_entry_stub,
+            num_workers=2,
+            worker_entry=_entry_stub,
             autoscale=(1, 5),
             queue_depth_fn=lambda: next(depths, 0),
         )
@@ -792,12 +840,14 @@ class TestReloadOrphanGuard:
     def test_execvp_called_when_no_alive_children(self):
         """Happy path: workers dict empty → guard passes → execvp fires."""
         pm = self._base_pm()
-        with patch.object(pm, "_start_all_workers"), \
-             patch.object(pm, "_setup_signals"), \
-             patch.object(pm, "_monitor_loop", return_value=0), \
-             patch.object(pm, "_shutdown_all_workers"), \
-             patch.object(pm, "_collect_zombies"), \
-             patch("swarmq.process_manager.supervisor.os.execvpe") as execvp:
+        with (
+            patch.object(pm, "_start_all_workers"),
+            patch.object(pm, "_setup_signals"),
+            patch.object(pm, "_monitor_loop", return_value=0),
+            patch.object(pm, "_shutdown_all_workers"),
+            patch.object(pm, "_collect_zombies"),
+            patch("swarmq.process_manager.supervisor.os.execvpe") as execvp,
+        ):
             pm.run()
             execvp.assert_called_once()
 
@@ -806,12 +856,14 @@ class TestReloadOrphanGuard:
         pm = self._base_pm()
         survivor = _fake_process(alive=True, pid=999)
         pm.workers = {999: WorkerInfo(process=survivor, worker_id=0)}
-        with patch.object(pm, "_start_all_workers"), \
-             patch.object(pm, "_setup_signals"), \
-             patch.object(pm, "_monitor_loop", return_value=0), \
-             patch.object(pm, "_shutdown_all_workers"), \
-             patch.object(pm, "_collect_zombies"), \
-             patch("swarmq.process_manager.supervisor.os.execvpe") as execvp:
+        with (
+            patch.object(pm, "_start_all_workers"),
+            patch.object(pm, "_setup_signals"),
+            patch.object(pm, "_monitor_loop", return_value=0),
+            patch.object(pm, "_shutdown_all_workers"),
+            patch.object(pm, "_collect_zombies"),
+            patch("swarmq.process_manager.supervisor.os.execvpe") as execvp,
+        ):
             rc = pm.run()
             execvp.assert_not_called()
             assert rc == 0  # clean exit — systemd must not restart
@@ -820,13 +872,14 @@ class TestReloadOrphanGuard:
         """If execvp itself fails (bad sys.executable), return 1 with
         ERROR log — not a raw traceback."""
         pm = self._base_pm()
-        with patch.object(pm, "_start_all_workers"), \
-             patch.object(pm, "_setup_signals"), \
-             patch.object(pm, "_monitor_loop", return_value=0), \
-             patch.object(pm, "_shutdown_all_workers"), \
-             patch.object(pm, "_collect_zombies"), \
-             patch("swarmq.process_manager.supervisor.os.execvpe",
-                   side_effect=OSError("permission denied")):
+        with (
+            patch.object(pm, "_start_all_workers"),
+            patch.object(pm, "_setup_signals"),
+            patch.object(pm, "_monitor_loop", return_value=0),
+            patch.object(pm, "_shutdown_all_workers"),
+            patch.object(pm, "_collect_zombies"),
+            patch("swarmq.process_manager.supervisor.os.execvpe", side_effect=OSError("permission denied")),
+        ):
             rc = pm.run()
             assert rc == 1
 
@@ -836,8 +889,11 @@ class TestArgvSnapshot:
 
     def test_argv_captured_on_init(self, monkeypatch):
         import sys as _sys
+
         monkeypatch.setattr(
-            _sys, "orig_argv", ["python", "/venv/bin/swarmq", "worker", "--module=x"],
+            _sys,
+            "orig_argv",
+            ["python", "/venv/bin/swarmq", "worker", "--module=x"],
         )
         pm = ProcessManager(num_workers=1, worker_entry=_entry_stub)
         # orig_argv[0] (das Interpreter-Wort) ersetzt der Re-Exec durch sys.executable.
@@ -847,6 +903,7 @@ class TestArgvSnapshot:
         """Post-__init__ mutation of sys.orig_argv must NOT be visible in
         the snapshot used by execvp."""
         import sys as _sys
+
         monkeypatch.setattr(_sys, "orig_argv", ["python", "swarmq", "worker"])
         pm = ProcessManager(num_workers=1, worker_entry=_entry_stub)
         _sys.orig_argv[1] = "mutated"
@@ -855,20 +912,25 @@ class TestArgvSnapshot:
 
     def test_execvp_uses_snapshot_not_live_argv(self, monkeypatch):
         import sys as _sys
+
         monkeypatch.setattr(
-            _sys, "orig_argv", ["python", "swarmq", "worker", "--module=safe"],
+            _sys,
+            "orig_argv",
+            ["python", "swarmq", "worker", "--module=safe"],
         )
         pm = ProcessManager(num_workers=0, worker_entry=_entry_stub)
         pm._ctx = MagicMock()
         pm._reload_requested = True
         # Mutate sys.orig_argv between __init__ and run():
         _sys.orig_argv.append("--injected")
-        with patch.object(pm, "_start_all_workers"), \
-             patch.object(pm, "_setup_signals"), \
-             patch.object(pm, "_monitor_loop", return_value=0), \
-             patch.object(pm, "_shutdown_all_workers"), \
-             patch.object(pm, "_collect_zombies"), \
-             patch("swarmq.process_manager.supervisor.os.execvpe") as execvpe:
+        with (
+            patch.object(pm, "_start_all_workers"),
+            patch.object(pm, "_setup_signals"),
+            patch.object(pm, "_monitor_loop", return_value=0),
+            patch.object(pm, "_shutdown_all_workers"),
+            patch.object(pm, "_collect_zombies"),
+            patch("swarmq.process_manager.supervisor.os.execvpe") as execvpe,
+        ):
             pm.run()
             execvpe.assert_called_once()
             _, argv_used, _ = execvpe.call_args.args
@@ -882,27 +944,39 @@ class TestArgvSnapshot:
         sonst laeuft das neue Abbild die Datei als Skript (cwd fehlt auf
         sys.path, Spawn-Kinder scheitern im Bootstrapping)."""
         import sys as _sys
+
         monkeypatch.setattr(
-            _sys, "orig_argv",
+            _sys,
+            "orig_argv",
             ["python", "-X", "dev", "-m", "swarmq.cli", "worker", "--module=safe"],
         )
         monkeypatch.setattr(
-            _sys, "argv", ["/venv/swarmq/cli/__main__.py", "worker", "--module=safe"],
+            _sys,
+            "argv",
+            ["/venv/swarmq/cli/__main__.py", "worker", "--module=safe"],
         )
         pm = ProcessManager(num_workers=0, worker_entry=_entry_stub)
         pm._ctx = MagicMock()
         pm._reload_requested = True
-        with patch.object(pm, "_start_all_workers"), \
-             patch.object(pm, "_setup_signals"), \
-             patch.object(pm, "_monitor_loop", return_value=0), \
-             patch.object(pm, "_shutdown_all_workers"), \
-             patch.object(pm, "_collect_zombies"), \
-             patch("swarmq.process_manager.supervisor.os.execvpe") as execvpe:
+        with (
+            patch.object(pm, "_start_all_workers"),
+            patch.object(pm, "_setup_signals"),
+            patch.object(pm, "_monitor_loop", return_value=0),
+            patch.object(pm, "_shutdown_all_workers"),
+            patch.object(pm, "_collect_zombies"),
+            patch("swarmq.process_manager.supervisor.os.execvpe") as execvpe,
+        ):
             pm.run()
             path_used, argv_used, _ = execvpe.call_args.args
             assert path_used == _sys.executable
             assert argv_used == [
-                _sys.executable, "-X", "dev", "-m", "swarmq.cli", "worker", "--module=safe",
+                _sys.executable,
+                "-X",
+                "dev",
+                "-m",
+                "swarmq.cli",
+                "worker",
+                "--module=safe",
             ]
 
     def test_env_snapshot_captured_on_init(self, monkeypatch):
@@ -922,12 +996,14 @@ class TestArgvSnapshot:
         pm._reload_requested = True
         # Attacker-like mutation after init.
         monkeypatch.setenv("PYTHONPATH", "/tmp/evil:/safe/path")
-        with patch.object(pm, "_start_all_workers"), \
-             patch.object(pm, "_setup_signals"), \
-             patch.object(pm, "_monitor_loop", return_value=0), \
-             patch.object(pm, "_shutdown_all_workers"), \
-             patch.object(pm, "_collect_zombies"), \
-             patch("swarmq.process_manager.supervisor.os.execvpe") as execvpe:
+        with (
+            patch.object(pm, "_start_all_workers"),
+            patch.object(pm, "_setup_signals"),
+            patch.object(pm, "_monitor_loop", return_value=0),
+            patch.object(pm, "_shutdown_all_workers"),
+            patch.object(pm, "_collect_zombies"),
+            patch("swarmq.process_manager.supervisor.os.execvpe") as execvpe,
+        ):
             pm.run()
             _, _, env_used = execvpe.call_args.args
             assert env_used.get("PYTHONPATH") == "/safe/path"
@@ -939,8 +1015,10 @@ class TestScaleDownMinAge:
 
     def _pm_with_age(self, min_age_s: float) -> ProcessManager:
         pm = ProcessManager(
-            num_workers=3, worker_entry=_entry_stub,
-            autoscale=(1, 5), queue_depth_fn=lambda: 0,
+            num_workers=3,
+            worker_entry=_entry_stub,
+            autoscale=(1, 5),
+            queue_depth_fn=lambda: 0,
         )
         pm._ctx = MagicMock()
         pm.SCALE_MIN_AGE_S = min_age_s
@@ -978,8 +1056,8 @@ class TestScaleDownMinAge:
         spawned_at among ages >= threshold, U1)."""
         pm = self._pm_with_age(min_age_s=30.0)
         now = time.monotonic()
-        p_old1 = _fake_process(pid=1)   # worker_id=0, age 120s
-        p_old2 = _fake_process(pid=2)   # worker_id=1, age 60s
+        p_old1 = _fake_process(pid=1)  # worker_id=0, age 120s
+        p_old2 = _fake_process(pid=2)  # worker_id=1, age 60s
         p_young = _fake_process(pid=3)  # worker_id=2, age 5s
         _register(
             pm,
@@ -999,35 +1077,42 @@ class TestReloadReentrancy:
     Handler merkt den Reload nur vor; das ``busy`` des Reload-Controllers,
     das der FileWatcher liest, kippt sofort."""
 
+    @pytest.mark.usefixtures("_restore_default_signals")
     def test_real_sighup_marks_the_reload_pending_and_busy(
-        self, _restore_default_signals,
+        self,
     ):
         """Main-thread SIGHUP runs the handler synchronously (CPython
         delivers pending signals between bytecodes)."""
         import os as _os
 
         pm = ProcessManager(
-            num_workers=0, worker_entry=_entry_stub,
-            reload=True, watch_dirs=("/tmp",),
+            num_workers=0,
+            worker_entry=_entry_stub,
+            reload=True,
+            watch_dirs=("/tmp",),
         )
         pm._setup_signals()  # installs the real handler
 
-        assert pm.reloader.busy is False
+        busy_before = pm.reloader.busy
+        assert busy_before is False
         _os.kill(_os.getpid(), signal.SIGHUP)
         assert pm.reloader.pending is True
         assert pm.reloader.busy is True
         assert pm._shutting_down is False
 
+    @pytest.mark.usefixtures("_restore_default_signals")
     def test_second_sighup_while_busy_is_idempotent(
-        self, _restore_default_signals,
+        self,
     ):
         """Double-fire raises no exception and keeps exactly one pending
         reload (KTD8: zusammengefasst)."""
         import os as _os
 
         pm = ProcessManager(
-            num_workers=0, worker_entry=_entry_stub,
-            reload=True, watch_dirs=("/tmp",),
+            num_workers=0,
+            worker_entry=_entry_stub,
+            reload=True,
+            watch_dirs=("/tmp",),
         )
         pm._setup_signals()
 
@@ -1074,16 +1159,18 @@ class TestFileWatcherIntegration:
         # trigger closure (built inside run()) captures the mock.
         # Patching only around trigger() call-time misses the lambda
         # binding and would fire a real SIGHUP at the test process.
-        with patch.object(pm, "_start_all_workers"), \
-             patch.object(pm, "_setup_signals"), \
-             patch.object(pm, "_monitor_loop", return_value=0), \
-             patch.object(pm, "_shutdown_all_workers"), \
-             patch.object(pm, "_collect_zombies"), \
-             patch(
-                 "swarmq.hot_reload.FileWatcher",
-                 return_value=fake_watcher,
-             ) as fw_cls, \
-             patch("swarmq.process_manager.supervisor.os.kill") as mock_kill:
+        with (
+            patch.object(pm, "_start_all_workers"),
+            patch.object(pm, "_setup_signals"),
+            patch.object(pm, "_monitor_loop", return_value=0),
+            patch.object(pm, "_shutdown_all_workers"),
+            patch.object(pm, "_collect_zombies"),
+            patch(
+                "swarmq.hot_reload.FileWatcher",
+                return_value=fake_watcher,
+            ) as fw_cls,
+            patch("swarmq.process_manager.supervisor.os.kill") as mock_kill,
+        ):
             pm.run()
 
             fake_watcher.start.assert_called_once()
@@ -1094,7 +1181,8 @@ class TestFileWatcherIntegration:
             assert kwargs["watch_dirs"] == ("/tmp",)
             is_busy = kwargs["is_busy"]
             trigger = kwargs["trigger"]
-            assert callable(is_busy) and callable(trigger)
+            assert callable(is_busy)
+            assert callable(trigger)
 
             # is_busy reads pm._reload_requested live — static-False
             # closure would fail this.
@@ -1121,30 +1209,36 @@ class TestFileWatcherIntegration:
         """Smoke-test: with reload=False, FileWatcher must never be
         constructed — the optional-dep path stays cold."""
         pm = self._pm(reload=False)
-        with patch.object(pm, "_start_all_workers"), \
-             patch.object(pm, "_setup_signals"), \
-             patch.object(pm, "_monitor_loop", return_value=0), \
-             patch.object(pm, "_shutdown_all_workers"), \
-             patch.object(pm, "_collect_zombies"), \
-             patch("swarmq.hot_reload.FileWatcher") as FW:
+        with (
+            patch.object(pm, "_start_all_workers"),
+            patch.object(pm, "_setup_signals"),
+            patch.object(pm, "_monitor_loop", return_value=0),
+            patch.object(pm, "_shutdown_all_workers"),
+            patch.object(pm, "_collect_zombies"),
+            patch("swarmq.hot_reload.FileWatcher") as FW,
+        ):
             pm.run()
         FW.assert_not_called()
 
     def test_run_stops_watcher_even_when_monitor_raises(self):
         pm = self._pm(reload=True, watch_dirs=("/tmp",))
         fake_watcher = MagicMock()
-        with patch.object(pm, "_start_all_workers"), \
-             patch.object(pm, "_setup_signals"), \
-             patch.object(
-                 pm, "_monitor_loop",
-                 side_effect=RuntimeError("monitor bug"),
-             ), \
-             patch.object(pm, "_shutdown_all_workers"), \
-             patch.object(pm, "_collect_zombies"), \
-             patch(
-                 "swarmq.hot_reload.FileWatcher",
-                 return_value=fake_watcher,
-             ), pytest.raises(RuntimeError, match="monitor bug"):
+        with (
+            patch.object(pm, "_start_all_workers"),
+            patch.object(pm, "_setup_signals"),
+            patch.object(
+                pm,
+                "_monitor_loop",
+                side_effect=RuntimeError("monitor bug"),
+            ),
+            patch.object(pm, "_shutdown_all_workers"),
+            patch.object(pm, "_collect_zombies"),
+            patch(
+                "swarmq.hot_reload.FileWatcher",
+                return_value=fake_watcher,
+            ),
+            pytest.raises(RuntimeError, match="monitor bug"),
+        ):
             pm.run()
         fake_watcher.stop.assert_called_once()
 
@@ -1236,7 +1330,7 @@ class TestCleanExitIsNotRefilled:
 
     def test_clean_exit_reduces_target_and_is_not_respawned(self):
         pm = self._pm(n=2)
-        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=500))
+        as_mock(pm._ctx).Process = MagicMock(return_value=_fake_process(pid=500))
         dead = _fake_process(alive=False, exitcode=0, pid=5)
         pm.workers = {
             5: WorkerInfo(process=dead, worker_id=0),
@@ -1246,14 +1340,15 @@ class TestCleanExitIsNotRefilled:
         assert pm._clean_exits == 1
         assert pm._current_target() == 1
         assert list(pm.workers) == [6]
-        pm._ctx.Process.assert_not_called()
+        as_mock(pm._ctx).Process.assert_not_called()
 
     def test_clean_exit_logs_worker_died_as_info(self, swarmq_logs):
         pm = self._pm(n=2)
         pm.workers = {5: WorkerInfo(process=_fake_process(alive=False, exitcode=0, pid=5), worker_id=0)}
         pm._check_dead_workers()
         [entry] = [e for e in swarmq_logs if e["event"] == "worker_died"]
-        assert entry["log_level"] == "info" and entry["exitcode"] == 0
+        assert entry["log_level"] == "info"
+        assert entry["exitcode"] == 0
 
     def test_expected_shutdown_logs_worker_died_as_info(self, swarmq_logs):
         pm = self._pm(n=2)
@@ -1262,15 +1357,17 @@ class TestCleanExitIsNotRefilled:
         pm.workers = {5: info}
         pm._check_dead_workers()
         [entry] = [e for e in swarmq_logs if e["event"] == "worker_died"]
-        assert entry["log_level"] == "info" and entry["expected"] is True
+        assert entry["log_level"] == "info"
+        assert entry["expected"] is True
 
     def test_crash_logs_worker_died_as_warning(self, swarmq_logs):
         pm = self._pm(n=2)
-        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=500))
+        as_mock(pm._ctx).Process = MagicMock(return_value=_fake_process(pid=500))
         pm.workers = {5: WorkerInfo(process=_fake_process(alive=False, exitcode=1, pid=5), worker_id=0)}
         pm._check_dead_workers()
         [entry] = [e for e in swarmq_logs if e["event"] == "worker_died"]
-        assert entry["log_level"] == "warning" and entry["exitcode"] == 1
+        assert entry["log_level"] == "warning"
+        assert entry["exitcode"] == 1
 
     def test_expected_shutdown_does_not_count_as_clean_exit(self):
         pm = self._pm(n=2)
@@ -1288,7 +1385,7 @@ class TestCleanExitIsNotRefilled:
             6: WorkerInfo(process=_fake_process(alive=False, exitcode=0, pid=6), worker_id=1),
         }
         assert pm._monitor_loop() == 0
-        pm._ctx.Process.assert_not_called()
+        as_mock(pm._ctx).Process.assert_not_called()
 
     def test_monitor_loop_exits_one_when_mixed_clean_and_exhausted(self):
         pm = self._pm(n=2)
@@ -1305,8 +1402,12 @@ class TestHeartbeatReplacement:
 
     def _pm(self, **kw) -> ProcessManager:
         pm = ProcessManager(
-            num_workers=1, worker_entry=_entry_stub, worker_args=(_make_test_cfg(),),
-            heartbeat_timeout_s=kw.pop("timeout", 10.0), delivery_limit=kw.pop("delivery_limit", 2), **kw,
+            num_workers=1,
+            worker_entry=_entry_stub,
+            worker_args=(_make_test_cfg(),),
+            heartbeat_timeout_s=kw.pop("timeout", 10.0),
+            delivery_limit=kw.pop("delivery_limit", 2),
+            **kw,
         )
         pm._ctx = MagicMock()
         pm._ctx.Process = MagicMock(return_value=_fake_process(pid=500))
@@ -1327,7 +1428,7 @@ class TestHeartbeatReplacement:
         pm = self._pm()
         info = pm._start_worker(0)
         assert info.channel is not None
-        args = pm._ctx.Process.call_args.kwargs["args"]
+        args = as_mock(pm._ctx).Process.call_args.kwargs["args"]
         assert args[-1] is info.channel  # als letztes Argument an den Entry
 
     def test_stale_heartbeat_replaces_worker_and_marks_expected_shutdown(self):
@@ -1341,7 +1442,8 @@ class TestHeartbeatReplacement:
         assert pm.workers[5].expected_shutdown is True
         hung.terminate.assert_called_once()
         assert 500 in pm.workers  # Ersatz gestartet
-        assert pm._exhausted_slots == 0 and len(pm._hang_timestamps) == 1
+        assert pm._exhausted_slots == 0
+        assert len(pm._hang_timestamps) == 1
         # SIGKILL erst nach der Frist
         pm._escalate_terminating()
         hung.kill.assert_not_called()
@@ -1357,8 +1459,9 @@ class TestHeartbeatReplacement:
         just_spawned = WorkerInfo(process=_fake_process(pid=6), worker_id=1, channel=self._channel(None))
         pm.workers = {5: fresh, 6: just_spawned}
         pm._check_heartbeats()
-        assert not fresh.expected_shutdown and not just_spawned.expected_shutdown
-        pm._ctx.Process.assert_not_called()
+        assert not fresh.expected_shutdown
+        assert not just_spawned.expected_shutdown
+        as_mock(pm._ctx).Process.assert_not_called()
 
     def test_draining_worker_gets_the_longer_deadline(self):
         import time
@@ -1372,7 +1475,7 @@ class TestHeartbeatReplacement:
         pm.workers = {5: draining}
         pm._check_heartbeats()
         assert draining.expected_shutdown is False  # 5 s < 30 s + 5 s
-        draining.channel.heartbeat.value = time.monotonic() - 40
+        channel_of(draining).heartbeat.value = time.monotonic() - 40
         pm._check_heartbeats()
         assert draining.expected_shutdown is True
 
@@ -1381,12 +1484,10 @@ class TestHeartbeatReplacement:
 
         pm = self._pm(timeout=1.0, delivery_limit=1)  # Budget = 2 Ersatzungen je Stunde
         for pid in (5, 6, 7):  # drei Generationen desselben Slots 0
-            info = WorkerInfo(
-                process=_fake_process(pid=pid), worker_id=0, channel=self._channel(time.monotonic() - 9)
-            )
+            info = WorkerInfo(process=_fake_process(pid=pid), worker_id=0, channel=self._channel(time.monotonic() - 9))
             pm.workers = {pid: info}
             pm._check_heartbeats()
-        assert pm._ctx.Process.call_count == 2  # dritter Haenger: Budget erschoepft
+        assert as_mock(pm._ctx).Process.call_count == 2  # dritter Haenger: Budget erschoepft
         assert pm._exhausted_slots == 1
 
     def test_expected_shutdown_is_not_replaced_on_dead(self):
@@ -1399,7 +1500,7 @@ class TestHeartbeatReplacement:
         hung.is_alive.return_value = False
         hung.exitcode = -9
         pm._check_dead_workers()
-        assert pm._ctx.Process.call_count == 1  # kein zweiter Ersatz durch den SIGKILL-Exit
+        assert as_mock(pm._ctx).Process.call_count == 1  # kein zweiter Ersatz durch den SIGKILL-Exit
 
 
 class TestRecycleIntent:
@@ -1426,9 +1527,9 @@ class TestRecycleIntent:
         old.is_alive.return_value = False
         old.exitcode = 0
         pm._check_dead_workers()
-        assert pm._clean_exits == 0 and pm._ctx.Process.call_count == 1
+        assert pm._clean_exits == 0
+        assert pm._ctx.Process.call_count == 1
         assert pm._current_target() == 1
-
 
     def test_acknowledged_recycler_that_freezes_in_drain_is_killed_not_replaced(self):
         """Review #13: nach dem ack war der Recycler von jeder Heartbeat-Pruefung ausgeschlossen
@@ -1439,7 +1540,10 @@ class TestRecycleIntent:
         from swarmq.supervision import SupervisorChannel
 
         pm = ProcessManager(
-            num_workers=1, worker_entry=_entry_stub, worker_args=(_make_test_cfg(),), heartbeat_timeout_s=1.0,
+            num_workers=1,
+            worker_entry=_entry_stub,
+            worker_args=(_make_test_cfg(),),
+            heartbeat_timeout_s=1.0,
         )
         pm._ctx = MagicMock()
         pm._ctx.Process = MagicMock(return_value=_fake_process(pid=500))
@@ -1448,7 +1552,8 @@ class TestRecycleIntent:
         old = _fake_process(pid=5)
         pm.workers = {5: WorkerInfo(process=old, worker_id=0, channel=ch)}
         pm._check_heartbeats()  # Absicht -> Ersatz + ack
-        assert pm._ctx.Process.call_count == 1 and old.terminate.call_count == 0
+        assert pm._ctx.Process.call_count == 1
+        assert old.terminate.call_count == 0
         fresh = SupervisorChannel.create(multiprocessing.get_context("spawn"))  # der Ersatz schlaegt
         fresh.heartbeat.value = time.monotonic()
         pm.workers[500].channel = fresh
@@ -1500,8 +1605,8 @@ class TestSlotTable:
 
     def _kill(self, pm: ProcessManager, pid: int, exitcode: int = -9) -> None:
         proc = pm.workers[pid].process
-        proc.is_alive.return_value = False
-        proc.exitcode = exitcode
+        as_mock(proc).is_alive.return_value = False
+        as_mock(proc).exitcode = exitcode
 
     def test_crashed_slot_is_refilled_with_the_same_slot(self):
         """Covers AE1: --processes 3 vergibt 0, 1, 2; der Ersatz für Slot 1 trägt Slot 1."""
@@ -1511,14 +1616,18 @@ class TestSlotTable:
         self._kill(pm, 101)
         pm._check_dead_workers()
         assert sorted(w.worker_id for w in pm.workers.values()) == [0, 1, 2]
-        kwargs = pm._ctx.Process.call_args.kwargs
-        assert kwargs["args"][1] == 1 and kwargs["name"] == "swarmq-worker-1"
+        kwargs = as_mock(pm._ctx).Process.call_args.kwargs
+        assert kwargs["args"][1] == 1
+        assert kwargs["name"] == "swarmq-worker-1"
 
     def test_autoscale_upper_bound_defines_the_slot_table(self):
         pm = self._pm(n=2, autoscale=(1, 4), queue_depth_fn=lambda: 0)
         pm._start_all_workers()
         assert [pm.slot_state(s) for s in range(4)] == [
-            SlotState.ACTIVE, SlotState.ACTIVE, SlotState.FREE, SlotState.FREE,
+            SlotState.ACTIVE,
+            SlotState.ACTIVE,
+            SlotState.FREE,
+            SlotState.FREE,
         ]
 
     def test_headroom_defines_the_slot_table_regardless_of_the_start_count(self):
@@ -1559,68 +1668,72 @@ class TestSlotTable:
         assert pm._exhausted_slots == 1
         assert pm._current_target() == 2
         self._run_monitor_briefly(pm)
-        assert pm._ctx.Process.call_count == 3  # kein Backfill fuer Slot 2
+        assert as_mock(pm._ctx).Process.call_count == 3  # kein Backfill fuer Slot 2
         assert sorted(w.worker_id for w in pm.workers.values()) == [0, 1]
 
     def test_recycling_replacement_shares_the_slot_until_the_predecessor_exits(self):
         pm = self._pm(n=2)
         pm._start_all_workers()
-        pm.workers[101].channel.request_recycle()
+        channel_of(pm.workers[101]).request_recycle()
         pm._check_heartbeats()
         assert [w.worker_id for w in pm.workers.values()] == [0, 1, 1]
         assert pm.slot_state(1) is SlotState.TRANSITION
         self._kill(pm, 101, exitcode=0)
         pm._check_dead_workers()
         assert pm.slot_state(1) is SlotState.ACTIVE
-        assert pm._ctx.Process.call_count == 3  # kein zweiter Ersatz
-        assert pm._current_target() == 2 and pm._clean_exits == 0
+        assert as_mock(pm._ctx).Process.call_count == 3  # kein zweiter Ersatz
+        assert pm._current_target() == 2
+        assert pm._clean_exits == 0
 
     def test_hang_replacement_keeps_the_slot_in_transition_until_the_kill_lands(self):
         pm = self._pm(n=1, heartbeat_timeout_s=10.0)
         pm._start_all_workers()
         hung = pm.workers[100]
-        hung.channel.heartbeat.value = time.monotonic() - 61
+        channel_of(hung).heartbeat.value = time.monotonic() - 61
         pm._check_heartbeats()
         assert [w.worker_id for w in pm.workers.values()] == [0, 0]
         assert pm.slot_state(0) is SlotState.TRANSITION
         pm._terminating = [(info, 0.0) for info, _ in pm._terminating]
         pm._escalate_terminating()
-        hung.process.kill.assert_called_once()
+        as_mock(hung.process).kill.assert_called_once()
         assert pm.slot_state(0) is SlotState.TRANSITION  # der Vorgaenger lebt noch
         self._kill(pm, 100)
         pm._check_dead_workers()
         assert pm.slot_state(0) is SlotState.ACTIVE
-        assert pm._ctx.Process.call_count == 2
+        assert as_mock(pm._ctx).Process.call_count == 2
 
     def test_replacement_dying_before_the_predecessor_keeps_transition_and_respawns(self):
         pm = self._pm(n=1)
         pm._start_all_workers()
-        pm.workers[100].channel.request_recycle()
+        channel_of(pm.workers[100]).request_recycle()
         pm._check_heartbeats()  # Ersatz pid 200 teilt Slot 0 mit dem drainenden Vorgaenger
         self._kill(pm, 200, exitcode=-11)
         pm._check_dead_workers()
         assert pm.slot_state(0) is SlotState.TRANSITION
         assert sorted(pm.workers) == [100, 300]  # Vorgaenger + weiterer Ersatz
-        assert pm._ctx.Process.call_count == 3
-        assert pm.workers[300].restart_timestamps and pm.workers[300].worker_id == 0
+        assert as_mock(pm._ctx).Process.call_count == 3
+        assert pm.workers[300].restart_timestamps
+        assert pm.workers[300].worker_id == 0
 
     def test_exhausted_hang_budget_locks_the_slot_while_the_predecessor_lives(self):
         pm = self._pm(n=1, heartbeat_timeout_s=10.0, delivery_limit=1)  # Budget 2
         pm._start_all_workers()
         pm._hang_timestamps = [time.monotonic()] * 2
-        pm.workers[100].channel.heartbeat.value = time.monotonic() - 61
+        channel_of(pm.workers[100]).heartbeat.value = time.monotonic() - 61
         pm._check_heartbeats()
         assert pm.workers[100].process.is_alive()
         assert pm.slot_state(0) is SlotState.LOCKED
-        assert pm._current_target() == 0 and pm._ctx.Process.call_count == 1
+        assert pm._current_target() == 0
+        assert as_mock(pm._ctx).Process.call_count == 1
         self._kill(pm, 100)
         pm._check_dead_workers()
-        assert pm.slot_state(0) is SlotState.LOCKED and not pm.workers
+        assert pm.slot_state(0) is SlotState.LOCKED
+        assert not pm.workers
 
     def test_autoscale_target_counts_occupied_slots_not_processes(self):
         pm = self._pm(n=2, autoscale=(1, 4), queue_depth_fn=lambda: 0)
         pm._start_all_workers()
-        pm.workers[101].channel.request_recycle()
+        channel_of(pm.workers[101]).request_recycle()
         pm._check_heartbeats()
         assert len(pm.workers) == 3
         assert pm._current_target() == 2  # Slot 1 im Uebergang zaehlt einmal
@@ -1631,10 +1744,11 @@ class TestSlotTable:
         pm.workers[101].expected_shutdown = True  # Ende ohne Ersatz: Slot 1 wird frei
         self._kill(pm, 101, exitcode=0)
         pm._check_dead_workers()
-        assert pm.slot_state(1) is SlotState.FREE and pm._current_target() == 2
+        assert pm.slot_state(1) is SlotState.FREE
+        assert pm._current_target() == 2
         self._run_monitor_briefly(pm)
         assert sorted(w.worker_id for w in pm.workers.values()) == [0, 1]
-        assert pm._ctx.Process.call_count == 3
+        assert as_mock(pm._ctx).Process.call_count == 3
         assert pm.slot_state(1) is SlotState.ACTIVE
 
     def _autoscale_pm(self, depth: int, n: int = 1, bounds: tuple[int, int] = (1, 4)) -> ProcessManager:
@@ -1661,8 +1775,8 @@ class TestSlotTable:
         pm.workers[101].spawned_at = now - 100.0
         pm._autoscale_tick()  # idle_since
         pm._autoscale_tick()
-        pm.workers[100].process.terminate.assert_called_once()
-        pm.workers[101].process.terminate.assert_not_called()
+        as_mock(pm.workers[100].process).terminate.assert_called_once()
+        as_mock(pm.workers[101].process).terminate.assert_not_called()
         assert pm.workers[100].expected_shutdown is True
 
     def test_scale_down_tie_on_spawn_time_frees_the_highest_slot(self):
@@ -1678,20 +1792,20 @@ class TestSlotTable:
             info.spawned_at = now - 100.0
         pm._autoscale_tick()
         pm._autoscale_tick()
-        pm.workers[102].process.terminate.assert_called_once()
-        pm.workers[100].process.terminate.assert_not_called()
-        pm.workers[101].process.terminate.assert_not_called()
+        as_mock(pm.workers[102].process).terminate.assert_called_once()
+        as_mock(pm.workers[100].process).terminate.assert_not_called()
+        as_mock(pm.workers[101].process).terminate.assert_not_called()
 
     def test_slot_in_transition_counts_once_for_the_autoscaler(self):
         pm = self._autoscale_pm(depth=0, n=2, bounds=(2, 4))
         pm._start_all_workers()
-        pm.workers[101].channel.request_recycle()
+        channel_of(pm.workers[101]).request_recycle()
         pm._check_heartbeats()
         assert len(pm.workers) == 3
         pm._autoscale_tick()
         pm._autoscale_tick()
         for info in pm.workers.values():  # 2 belegte Slots == min: kein Scale-Down
-            info.process.terminate.assert_not_called()
+            as_mock(info.process).terminate.assert_not_called()
 
     def test_scale_down_never_picks_the_fresh_replacement_of_a_transition(self):
         pm = self._autoscale_pm(depth=0, n=2)
@@ -1699,13 +1813,13 @@ class TestSlotTable:
         now = time.monotonic()
         pm.workers[100].spawned_at = now - 100.0
         pm.workers[101].spawned_at = now - 50.0
-        pm.workers[100].channel.request_recycle()
+        channel_of(pm.workers[100]).request_recycle()
         pm._check_heartbeats()  # Ersatz pid 200 ist der juengste Prozess, Slot 0 im Uebergang
         pm._autoscale_tick()
         pm._autoscale_tick()
-        pm.workers[101].process.terminate.assert_called_once()
-        pm.workers[200].process.terminate.assert_not_called()
-        pm.workers[100].process.terminate.assert_not_called()
+        as_mock(pm.workers[101].process).terminate.assert_called_once()
+        as_mock(pm.workers[200].process).terminate.assert_not_called()
+        as_mock(pm.workers[100].process).terminate.assert_not_called()
 
     def test_burst_exit_frees_the_slot_without_backfill(self):
         pm = self._pm(n=2)
@@ -1713,9 +1827,11 @@ class TestSlotTable:
         self._kill(pm, 100, exitcode=0)
         pm._check_dead_workers()
         assert pm.slot_state(0) is SlotState.FREE
-        assert pm._clean_exits == 1 and pm._current_target() == 1
+        assert pm._clean_exits == 1
+        assert pm._current_target() == 1
         self._run_monitor_briefly(pm)
-        assert pm._ctx.Process.call_count == 2 and list(pm.workers) == [101]
+        assert as_mock(pm._ctx).Process.call_count == 2
+        assert list(pm.workers) == [101]
 
     def test_restart_timestamps_travel_to_the_replacement_in_the_same_slot(self):
         pm = self._pm(n=2)
@@ -1780,12 +1896,14 @@ class TestReloadStateMachine:
     def _run(pm, on_tick, shutdown_all=None):
         """``run`` mit echtem Monitor-Loop; Start, Signale und Worker-Stopp gefaelscht."""
         execvpe = MagicMock()
-        with patch.object(pm, "_start_all_workers"), \
-             patch.object(pm, "_setup_signals"), \
-             patch.object(pm, "_shutdown_all_workers", side_effect=shutdown_all), \
-             patch.object(pm, "_collect_zombies"), \
-             patch("swarmq.process_manager.reload.shutdown_logging"), \
-             patch("swarmq.process_manager.supervisor.os.execvpe", execvpe):
+        with (
+            patch.object(pm, "_start_all_workers"),
+            patch.object(pm, "_setup_signals"),
+            patch.object(pm, "_shutdown_all_workers", side_effect=shutdown_all),
+            patch.object(pm, "_collect_zombies"),
+            patch("swarmq.process_manager.reload.shutdown_logging"),
+            patch("swarmq.process_manager.supervisor.os.execvpe", execvpe),
+        ):
             rc = TestReloadStateMachine._run_loop_via(pm, on_tick, pm.run)
         return rc, execvpe
 
@@ -1824,28 +1942,33 @@ class TestReloadStateMachine:
         pm, _ = self._pm(tmp_path, probe)
         pm._on_reload_signal(signal.SIGHUP, None)
         execvpe = MagicMock()
-        with patch.object(pm, "_start_all_workers"), \
-             patch.object(pm, "_setup_signals"), \
-             patch.object(pm, "_shutdown_all_workers"), \
-             patch.object(pm, "_collect_zombies"), \
-             patch(
-                 "swarmq.process_manager.reload.shutdown_logging",
-                 side_effect=lambda: pm._on_shutdown_signal(signal.SIGTERM, None),
-             ), \
-             patch("swarmq.process_manager.supervisor.os.execvpe", execvpe):
+        with (
+            patch.object(pm, "_start_all_workers"),
+            patch.object(pm, "_setup_signals"),
+            patch.object(pm, "_shutdown_all_workers"),
+            patch.object(pm, "_collect_zombies"),
+            patch(
+                "swarmq.process_manager.reload.shutdown_logging",
+                side_effect=lambda: pm._on_shutdown_signal(signal.SIGTERM, None),
+            ),
+            patch("swarmq.process_manager.supervisor.os.execvpe", execvpe),
+        ):
             rc = self._run_loop_via(pm, lambda n: None, pm.run)
         assert rc == 0
         execvpe.assert_not_called()
 
     def test_sigterm_while_workers_stop_for_an_accepted_reload_ends_the_supervisor(
-        self, tmp_path, swarmq_logs,
+        self,
+        tmp_path,
+        swarmq_logs,
     ):
         """Probe gueltig, Reload beschlossen, SIGTERM waehrend des Worker-Stopps:
         kein ``execvpe``, Ende mit 0, und das Signal steht im Log."""
         pm, _ = self._pm(tmp_path, FakeProbe(rc=0))
         pm._on_reload_signal(signal.SIGHUP, None)
         rc, execvpe = self._run(
-            pm, lambda n: None,
+            pm,
+            lambda n: None,
             shutdown_all=lambda: pm._on_shutdown_signal(signal.SIGTERM, None),
         )
         assert rc == 0
@@ -1925,18 +2048,20 @@ class TestReloadStateMachine:
         calls: list[str] = []
         pm, _ = self._pm(tmp_path, FakeProbe(rc=0))
         pm._on_reload_signal(signal.SIGHUP, None)
-        with patch.object(pm, "_start_all_workers"), \
-             patch.object(pm, "_setup_signals"), \
-             patch.object(pm, "_shutdown_all_workers", side_effect=lambda: calls.append("stop_workers")), \
-             patch.object(pm, "_collect_zombies"), \
-             patch(
-                 "swarmq.process_manager.reload.shutdown_logging",
-                 side_effect=lambda: calls.append("shutdown_logging"),
-             ), \
-             patch(
-                 "swarmq.process_manager.supervisor.os.execvpe",
-                 side_effect=lambda *a: calls.append("execvpe"),
-             ):
+        with (
+            patch.object(pm, "_start_all_workers"),
+            patch.object(pm, "_setup_signals"),
+            patch.object(pm, "_shutdown_all_workers", side_effect=lambda: calls.append("stop_workers")),
+            patch.object(pm, "_collect_zombies"),
+            patch(
+                "swarmq.process_manager.reload.shutdown_logging",
+                side_effect=lambda: calls.append("shutdown_logging"),
+            ),
+            patch(
+                "swarmq.process_manager.supervisor.os.execvpe",
+                side_effect=lambda *a: calls.append("execvpe"),
+            ),
+        ):
             self._run_loop_via(pm, lambda n: None, pm.run)
         assert calls == ["stop_workers", "shutdown_logging", "execvpe"]
 
@@ -1945,15 +2070,18 @@ class TestReloadStateMachine:
         nachdem die Probe gueltig war, aber bevor der Loop den Reload
         beschliesst. Auch dann gewinnt SIGTERM."""
         pm, _ = self._pm(tmp_path)
-        probe = FakeProbe(rc=None)
 
-        def poll():
-            pm._on_shutdown_signal(signal.SIGTERM, None)
-            return 0
+        class _SignallingProbe(FakeProbe):
+            @override
+            def poll(self) -> int | None:
+                pm._on_shutdown_signal(signal.SIGTERM, None)
+                return 0
 
-        probe.poll = poll
+        probe = _SignallingProbe(rc=None)
         pm.reloader = ReloadController(
-            pm.reloader.log_config, probe_factory=FakeProbeFactory(probe), clock=FakeClock(),
+            pm.reloader.log_config,
+            probe_factory=FakeProbeFactory(probe),
+            clock=FakeClock(),
         )
         pm._on_reload_signal(signal.SIGHUP, None)
         rc, execvpe = self._run(pm, lambda n: None)

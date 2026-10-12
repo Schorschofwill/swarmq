@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import multiprocessing
+from typing import Any
 
 import pytest
 
@@ -29,11 +30,18 @@ async def _wait_for(pred, timeout=3.0):
         await asyncio.sleep(0.02)
 
 
+def _state(worker: Any) -> WorkerState:
+    # Liest den Zustand frisch: nach ``assert worker._state is RUNNING``
+    # verengte mypy sonst auch den Ausdruck in der Lambda.
+    state: WorkerState = worker._state
+    return state
+
+
 def _arm(worker, **cfg):
     for k, v in cfg.items():
         setattr(worker._config, k, v)
     worker._state = WorkerState.RUNNING
-    events: list[dict] = []
+    events: list[dict[str, Any]] = []
 
     async def _rec(**kw):
         events.append(kw)
@@ -67,9 +75,12 @@ async def test_task_count_threshold_recycles_with_ack(worker, channel, monkeypat
     await _wait_for(lambda: channel.intent_value() == sv.INTENT_RECYCLE)
     assert worker._state is WorkerState.RUNNING  # wartet auf die Bestaetigung
     channel.acknowledge_replacement()
-    await _wait_for(lambda: worker._state is WorkerState.DRAINING)
+    await _wait_for(lambda: _state(worker) is WorkerState.DRAINING)
     assert worker._recycle_ack_missing is False
-    assert events and events[0]["kind"] == "worker" and events[0]["reason"] == "tasks" and events[0]["value"] == 2.0
+    assert events
+    assert events[0]["kind"] == "worker"
+    assert events[0]["reason"] == "tasks"
+    assert events[0]["value"] == 2.0
     assert worker._drain_timeout_override == float(worker._config.shutdown_timeout)
 
 
@@ -103,7 +114,8 @@ async def test_rss_threshold_wins_over_task_count(worker, channel, monkeypatch):
     channel.acknowledge_replacement()
     await worker._signal_dispatcher.dispatch(Signal.TASK_COMPLETED, task_id="t", task_name="n", queue="q")
     await _wait_for(lambda: worker._state is WorkerState.DRAINING)
-    assert events[0]["reason"] == "rss" and events[0]["value"] == 320.0
+    assert events[0]["reason"] == "rss"
+    assert events[0]["value"] == 320.0
 
 
 def test_drain_timeout_uses_largest_hard_timeout_plus_buffer(worker):
@@ -170,20 +182,20 @@ class TestBindRetryBudget:
         from swarmq.process_manager.entry import worker_subprocess_entry
         from swarmq.supervision import SHUTDOWN_TERM_S
         from swarmq.worker.lifecycle import _LIFECYCLE_DISPATCH_TIMEOUT_S
-        from tests.unit.process_manager.test_entry import _make_test_cfg
+        from tests.unit.process_manager._helpers import _make_test_cfg
 
-        captured: dict = {}
+        captured: dict[str, Any] = {}
 
         async def capture_ns(ns):
             captured["ns"] = ns
 
         monkeypatch.setattr("swarmq.cli.run_worker_async", capture_ns)
         worker_subprocess_entry(
-            worker_id=0, shutdown_event=threading.Event(), cfg=_make_test_cfg(),
+            worker_id=0,
+            shutdown_event=threading.Event(),
+            cfg=_make_test_cfg(),
         )
-        assert captured["ns"].bind_retry_budget_s > max(
-            SHUTDOWN_TERM_S, _LIFECYCLE_DISPATCH_TIMEOUT_S
-        )
+        assert captured["ns"].bind_retry_budget_s > max(SHUTDOWN_TERM_S, _LIFECYCLE_DISPATCH_TIMEOUT_S)
 
     def test_embedded_default_stays_short(self):
         """Ohne Supervisor haelt kein Vorgaenger den Port — ein langes Budget
@@ -208,7 +220,7 @@ class TestBindRetryBudget:
 
         monkeypatch.setattr(recycling, "start_with_bind_retry", fake_start_with_bind_retry)
         worker._config.bind_retry_budget_s = 12.0
-        started = []
+        started: list[str] = []
         await worker._start_with_bind_retry(lambda: _noop(started))
         assert seen["budget"] == 12.0
         assert started == ["started"]

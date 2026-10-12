@@ -23,8 +23,9 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -56,13 +57,30 @@ def _spawn(queue: str, group: str) -> subprocess.Popen[str]:
     env["SWARMQ_SHUTDOWN_TIMEOUT"] = str(_GRACE_S)  # kurze Gnadenfrist -> kurzes Verfallsdatum
     return subprocess.Popen(
         [
-            sys.executable, "-m", "swarmq.cli", "worker",
-            "--module", "tests.integration._cli_fixture_tasks",
-            "--queues", queue, "--concurrency", "2",
-            "--processes", "1", "--max-processes", "4", "--group", group,
-            "--log-format", "json",
+            sys.executable,
+            "-m",
+            "swarmq.cli",
+            "worker",
+            "--module",
+            "tests.integration._cli_fixture_tasks",
+            "--queues",
+            queue,
+            "--concurrency",
+            "2",
+            "--processes",
+            "1",
+            "--max-processes",
+            "4",
+            "--group",
+            group,
+            "--log-format",
+            "json",
         ],
-        cwd=str(REPO_ROOT), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        cwd=str(REPO_ROOT),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
         start_new_session=True,
     )
 
@@ -73,36 +91,44 @@ def _drain(proc: subprocess.Popen[str], sink: list[str]) -> threading.Thread:
     def run() -> None:
         assert proc.stdout is not None
         for line in proc.stdout:
-            sink.append(line)
+            sink.append(line)  # noqa: PERF402 - jede Zeile muss sofort sichtbar sein, waehrend der Test parallel auf sie wartet
 
     t = threading.Thread(target=run, daemon=True)
     t.start()
     return t
 
 
-async def _with_store(fn: Callable[[ValkeySetpointStore], object]) -> object:
+async def _with_store[T](fn: Callable[[ValkeySetpointStore], Awaitable[T]]) -> T:
     store = ValkeySetpointStore(valkey_db_url())
     await store.connect()
     try:
-        return await fn(store)  # type: ignore[misc]
+        return await fn(store)
     finally:
         await store.close()
 
 
-def _read_status(group: str, supervisor: str) -> dict | None:
-    return asyncio.run(_with_store(lambda s: s.read_status(group, supervisor)))  # type: ignore[return-value]
+def _read_status(group: str, supervisor: str) -> dict[str, Any] | None:
+    return asyncio.run(_with_store(lambda s: s.read_status(group, supervisor)))
 
 
-def _wait_for_status(group: str, supervisor: str, predicate: Callable[[dict | None], bool], *,
-                     timeout_s: float, output: list[str]) -> dict | None:
+def _wait_for_status(
+    group: str,
+    supervisor: str,
+    predicate: Callable[[dict[str, Any] | None], bool],
+    *,
+    timeout_s: float,
+    output: list[str],
+) -> dict[str, Any] | None:
     deadline = time.monotonic() + timeout_s
+    status: dict[str, Any] | None = None
     while time.monotonic() < deadline:
         status = _read_status(group, supervisor)
         if predicate(status):
             return status
         time.sleep(0.2)
-    pytest.fail(f"status did not reach the expected state within {timeout_s}s; last={status!r}\n"
-                + "".join(output[-40:]))
+    pytest.fail(
+        f"status did not reach the expected state within {timeout_s}s; last={status!r}\n" + "".join(output[-40:])
+    )
 
 
 def test_runtime_setpoint_applies_reverts_and_the_status_expires_after_exit() -> None:
@@ -114,32 +140,46 @@ def test_runtime_setpoint_applies_reverts_and_the_status_expires_after_exit() ->
     _drain(proc, output)
     try:
         started = _wait_for_status(
-            group, supervisor, lambda s: s is not None and s["slots"]["occupied"] == 1, timeout_s=40, output=output,
+            group,
+            supervisor,
+            lambda s: s is not None and s["slots"]["occupied"] == 1,
+            timeout_s=40,
+            output=output,
         )
         assert started is not None
-        assert started["effective"] == {"min": 1, "max": 1} and started["source"] == "startup"
-        assert started["store"] == "absent" and started["setpoint"] is None
-        assert started["headroom"] == 4 and started["group"] == group
+        assert started["effective"] == {"min": 1, "max": 1}
+        assert started["source"] == "startup"
+        assert started["store"] == "absent"
+        assert started["setpoint"] is None
+        assert started["headroom"] == 4
+        assert started["group"] == group
 
         # U6: Sollwert 3..3 wirkt innerhalb eines Abtastintervalls (plus Startzeit der Kinder).
         asyncio.run(_with_store(lambda s: s.write_setpoint(group, Setpoint(3, 3))))
         written_at = time.monotonic()
         applied = _wait_for_status(
-            group, supervisor,
+            group,
+            supervisor,
             lambda s: s is not None and s["effective"] == {"min": 3, "max": 3} and s["slots"]["occupied"] == 3,
-            timeout_s=30, output=output,
+            timeout_s=30,
+            output=output,
         )
-        assert applied is not None and applied["source"] == "setpoint" and applied["store"] == "present"
+        assert applied is not None
+        assert applied["source"] == "setpoint"
+        assert applied["store"] == "present"
         assert time.monotonic() - written_at < 3 * DEFAULT_SAMPLE_INTERVAL_S
 
         # AE9: entfernter Sollwert -> Startargumente; die zwei ueberzaehligen Worker enden sanft.
         asyncio.run(_with_store(lambda s: s.clear_setpoint(group)))
         reverted = _wait_for_status(
-            group, supervisor,
+            group,
+            supervisor,
             lambda s: s is not None and s["source"] == "startup" and s["slots"]["occupied"] == 1,
-            timeout_s=40, output=output,
+            timeout_s=40,
+            output=output,
         )
-        assert reverted is not None and reverted["effective"] == {"min": 1, "max": 1}
+        assert reverted is not None
+        assert reverted["effective"] == {"min": 1, "max": 1}
         assert reverted["store"] == "absent"
 
         proc.send_signal(signal.SIGTERM)
@@ -148,8 +188,11 @@ def test_runtime_setpoint_applies_reverts_and_the_status_expires_after_exit() ->
 
         # U7: die Rueckmeldung verfaellt von selbst -- Gnadenfrist + Terminierungsfrist + ein Intervall.
         _wait_for_status(
-            group, supervisor, lambda s: s is None,
-            timeout_s=_GRACE_S + 5.0 + DEFAULT_SAMPLE_INTERVAL_S + 15.0, output=output,
+            group,
+            supervisor,
+            lambda s: s is None,
+            timeout_s=_GRACE_S + 5.0 + DEFAULT_SAMPLE_INTERVAL_S + 15.0,
+            output=output,
         )
     finally:
         terminate_worker_process(proc)

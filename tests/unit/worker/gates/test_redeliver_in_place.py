@@ -40,7 +40,8 @@ pytestmark = pytest.mark.timeout(5)
 def no_jitter(monkeypatch):
     """Zufallsquelle des Jitters auf 1,0: die Wartezeit ist exakt pruefbar."""
     monkeypatch.setattr(
-        gates_module, "backend_defer_delay",
+        gates_module,
+        "backend_defer_delay",
         functools.partial(backend_defer_delay, uniform=lambda low, high: 1.0),
     )
 

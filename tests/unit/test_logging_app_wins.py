@@ -39,6 +39,7 @@ import sys
 import threading
 import weakref
 from collections.abc import Iterator
+from typing import Self, override
 
 import pytest
 
@@ -60,6 +61,7 @@ APP_RECORDS: list[logging.LogRecord] = []
 class AppHandler(logging.Handler):
     """Per dictConfig (``"()"``) referenzierbarer Handler der App."""
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         APP_RECORDS.append(record)
 
@@ -69,6 +71,7 @@ class BlockingAppHandler(AppHandler):
 
     RELEASE = threading.Event()
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         if record.getMessage() == "evt_r6":
             self.RELEASE.wait(3)
@@ -89,9 +92,7 @@ def isolated_app_logging(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setattr(logging, "_handlers", weakref.WeakValueDictionary())
     monkeypatch.setattr(sys, "stderr", io.StringIO())
     loggers = logging.Logger.manager.loggerDict
-    disabled = {
-        name: lg.disabled for name, lg in loggers.items() if isinstance(lg, logging.Logger)
-    }
+    disabled = {name: lg.disabled for name, lg in loggers.items() if isinstance(lg, logging.Logger)}
     saved_tasks = list(Task._registered_tasks)
     Task._clear_registered_tasks()
     APP_RECORDS.clear()
@@ -112,10 +113,17 @@ def _app_module(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, body: s
 
 def _args(module: str, configure: str | None = None) -> argparse.Namespace:
     return argparse.Namespace(
-        module=module, queues=["default"], concurrency=1,
-        log_level=None, log_format=None, burst=False,
-        burst_idle_timeout=60.0, priorities=False,
-        metrics_port=None, health_port=None, configure=configure,
+        module=module,
+        queues=["default"],
+        concurrency=1,
+        log_level=None,
+        log_format=None,
+        burst=False,
+        burst_idle_timeout=60.0,
+        priorities=False,
+        metrics_port=None,
+        health_port=None,
+        configure=configure,
     )
 
 
@@ -142,12 +150,14 @@ logging.config.dictConfig({{
 
 @pytest.mark.timeout(5)
 async def test_app_replacing_root_stops_the_listener_and_reports_once(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     configure_logging(LoggingSettings(format="json"))
     get_logger("swarmq.tests.app_wins").warning("evt_before_import")
     root_listener = _root_listener()
-    assert root_listener.running
+    running_before = root_listener.running
+    assert running_before
     module = _app_module(tmp_path, monkeypatch, _REPLACE_ROOT)
 
     with pytest.raises(ConfigurationError, match="no tasks registered"):
@@ -160,12 +170,14 @@ async def test_app_replacing_root_stops_the_listener_and_reports_once(
 
 @pytest.mark.timeout(5)
 async def test_disabled_swarmq_loggers_are_reenabled_and_counted(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     configure_logging(LoggingSettings(format="json"))
     existing = logging.getLogger("swarmq.tests.app_wins.existing")
     module = _app_module(
-        tmp_path, monkeypatch,
+        tmp_path,
+        monkeypatch,
         _REPLACE_ROOT.replace('"disable_existing_loggers": False,', ""),
     )
 
@@ -182,14 +194,15 @@ async def test_disabled_swarmq_loggers_are_reenabled_and_counted(
 
 @pytest.mark.timeout(5)
 async def test_added_root_handler_is_reported_and_kept(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, swarmq_logs: list[dict[str, object]],
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    swarmq_logs: list[dict[str, object]],
 ) -> None:
     configure_logging(LoggingSettings(format="json"))
-    (swarmq_handler,) = (
-        h for h in logging.getLogger().handlers if isinstance(h, _StructlogQueueHandler)
-    )
+    (swarmq_handler,) = (h for h in logging.getLogger().handlers if isinstance(h, _StructlogQueueHandler))
     module = _app_module(
-        tmp_path, monkeypatch,
+        tmp_path,
+        monkeypatch,
         f"import {__name__} as t\nlogging.getLogger().addHandler(t.AppHandler())\n",
     )
 
@@ -212,6 +225,7 @@ def _fake_swarmq(monkeypatch: pytest.MonkeyPatch) -> None:
 
         task_info = TaskInfo(name="app_wins_probe", queues=["default"])
 
+        @override
         async def run(self) -> None:
             pass
 
@@ -219,7 +233,7 @@ def _fake_swarmq(monkeypatch: pytest.MonkeyPatch) -> None:
         def __init__(self, broker: object, backend: object, **kwargs: object) -> None:
             pass
 
-        async def __aenter__(self) -> _FakeApp:
+        async def __aenter__(self) -> Self:
             return self
 
         async def __aexit__(self, *exc: object) -> bool:
@@ -233,14 +247,13 @@ def _fake_swarmq(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("swarmq.app.SwarmQ", _FakeApp)
 
 
-_HOOK_REPLACES_ROOT = "def setup(app):\n" + "".join(
-    f"    {line}\n" for line in _REPLACE_ROOT.strip().splitlines()
-)
+_HOOK_REPLACES_ROOT = "def setup(app):\n" + "".join(f"    {line}\n" for line in _REPLACE_ROOT.strip().splitlines())
 
 
 @pytest.mark.timeout(5)
 async def test_configure_hook_replacing_root_reacts_like_an_import(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     configure_logging(LoggingSettings(format="json"))
     get_logger("swarmq.tests.app_wins").warning("evt_before_import")
@@ -257,7 +270,8 @@ async def test_configure_hook_replacing_root_reacts_like_an_import(
 
 @pytest.mark.timeout(5)
 async def test_replacement_at_import_and_in_the_hook_is_reported_once(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     configure_logging(LoggingSettings(format="json"))
     _fake_swarmq(monkeypatch)
@@ -271,7 +285,8 @@ async def test_replacement_at_import_and_in_the_hook_is_reported_once(
 
 @pytest.mark.timeout(5)
 async def test_app_handlers_survive_swarmq_construction(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """KTD4: ``run_worker_async`` richtet nichts ein, und ``SwarmQ(...)``
     ueberschreibt die Einrichtung der App nicht."""
@@ -294,14 +309,17 @@ async def test_app_handlers_survive_swarmq_construction(
 
 @pytest.mark.timeout(5)
 async def test_without_swarmq_setup_nothing_is_reported_or_touched(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, swarmq_logs: list[dict[str, object]],
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    swarmq_logs: list[dict[str, object]],
 ) -> None:
     """R12: Unter ``--no-configure-logging`` gehoert das Logging der App --
     auch stummgeschaltete ``swarmq.*``-Logger bleiben ihre Entscheidung."""
     configure_logging(LoggingSettings(configure=False))
     existing = logging.getLogger("swarmq.tests.app_wins.quiet")
     module = _app_module(
-        tmp_path, monkeypatch,
+        tmp_path,
+        monkeypatch,
         _REPLACE_ROOT + 'logging.getLogger("swarmq.tests.app_wins.quiet").disabled = True\n',
     )
 
@@ -317,26 +335,32 @@ def _file_mode_settings(tmp_path: pathlib.Path) -> LoggingSettings:
     import json
 
     path = tmp_path / "swarmq-logging.json"
-    path.write_text(json.dumps({
-        "version": 1,
-        "disable_existing_loggers": False,
-        "handlers": {"file_mode": {"class": "logging.NullHandler"}},
-        "root": {"level": "INFO", "handlers": ["file_mode"]},
-    }))
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "disable_existing_loggers": False,
+                "handlers": {"file_mode": {"class": "logging.NullHandler"}},
+                "root": {"level": "INFO", "handlers": ["file_mode"]},
+            }
+        )
+    )
     return LoggingSettings(log_config=str(path))
 
 
 @pytest.mark.timeout(5)
 @pytest.mark.parametrize("mode", ["builtin", "file"])
 async def test_a_blocking_app_handler_does_not_stall_swarmq_after_the_takeover(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, mode: str,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
 ) -> None:
     BlockingAppHandler.RELEASE.clear()
-    configure_logging(
-        LoggingSettings(format="json") if mode == "builtin" else _file_mode_settings(tmp_path)
-    )
+    configure_logging(LoggingSettings(format="json") if mode == "builtin" else _file_mode_settings(tmp_path))
     module = _app_module(
-        tmp_path, monkeypatch, _REPLACE_ROOT.replace(_APP_HANDLER, f"{__name__}.BlockingAppHandler"),
+        tmp_path,
+        monkeypatch,
+        _REPLACE_ROOT.replace(_APP_HANDLER, f"{__name__}.BlockingAppHandler"),
     )
     with pytest.raises(ConfigurationError, match="no tasks registered"):
         await cli.run_worker_async(_args(module))
@@ -351,7 +375,8 @@ async def test_a_blocking_app_handler_does_not_stall_swarmq_after_the_takeover(
 
 @pytest.mark.timeout(5)
 async def test_a_call_handlers_hook_sees_each_swarmq_record_once_after_the_takeover(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seen: list[str] = []
     original = logging.Logger.callHandlers

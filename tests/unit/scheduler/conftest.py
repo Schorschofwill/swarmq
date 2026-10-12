@@ -19,7 +19,6 @@ from tests.unit.scheduler._helpers import _LEADER_TOKEN
 pytestmark = [pytest.mark.timeout(5)]
 
 
-
 @pytest.fixture
 def config():
     return SwarmQConfig(

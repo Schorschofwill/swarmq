@@ -115,7 +115,12 @@ async def test_duplicate_fire_after_a_long_backlog_is_still_skipped(
     assert await gate.apply(make_message(headers=dict(fire)), first) is Continue
     # Abschluss wie im finally des Runners (terminal): Completed-Marker.
     assert await finalize_schedfire(
-        first, terminal=True, backend=backend, config=deps.config, gate_deps=deps, log=MagicMock(),
+        first,
+        terminal=True,
+        backend=backend,
+        config=deps.config,
+        gate_deps=deps,
+        log=MagicMock(),
     )
 
     await clock.advance(_BACKLOG_S)  # Duplikat (Leader-Doppelung) wartet hinter dem Rueckstand

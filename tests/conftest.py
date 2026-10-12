@@ -12,6 +12,7 @@ from swarmq.task import Task
 # Task registry isolation — prevents __init_subclass__ pollution across tests
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(autouse=True)
 def _reset_task_registry():
     """Save and restore Task._registered_tasks between every test."""
@@ -33,6 +34,7 @@ def _reset_dishka_container():
     snapshot = _di.get_registered_container()
     yield
     _di._container = snapshot
+
 
 # ---------------------------------------------------------------------------
 # Auto-marker: tag every test with unit / integration / e2e based on its path

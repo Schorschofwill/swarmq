@@ -24,6 +24,7 @@ from __future__ import annotations
 #       mit (``exc``): Traceback bzw. ``SystemExit``-Meldung auf fd 2 wie in
 #       ``console_main``
 import os
+from typing import Any, override
 
 import pytest
 
@@ -60,12 +61,13 @@ class TestWorkerSubprocessEntry:
         async def fakerun_worker_async(ns):
             # Model a non-cooperative worker that does NOT consult
             # shutdown_event. Exit only when SIGTERM is "delivered".
-            while not worker_exited.is_set():
+            while not worker_exited.is_set():  # noqa: ASYNC110 - pollt ein threading.Event, das der Kill-Pfad aus einem anderen Thread setzt
                 await asyncio.sleep(0.02)
 
         monkeypatch.setattr("swarmq.process_manager.supervisor.os.kill", fake_kill)
         monkeypatch.setattr(
-            "swarmq.cli.run_worker_async", fakerun_worker_async,
+            "swarmq.cli.run_worker_async",
+            fakerun_worker_async,
         )
 
         timer = threading.Timer(0.1, shutdown_event.set)
@@ -80,6 +82,7 @@ class TestWorkerSubprocessEntry:
             timer.cancel()
 
         import signal as _signal
+
         assert kills, "shutdown watcher never called os.kill"
         pid, sig = kills[0]
         assert pid == os.getpid()
@@ -109,7 +112,7 @@ class TestWorkerSubprocessEntry:
         spawn N watchers, one per worker, each killing its own PID."""
         import threading
 
-        captured: dict = {}
+        captured: dict[str, Any] = {}
 
         async def capture_ns(ns):
             captured["ns"] = ns
@@ -125,13 +128,9 @@ class TestWorkerSubprocessEntry:
 
         ns = captured["ns"]
         assert not hasattr(ns, "reload"), (
-            "reload leaked to worker Namespace — "
-            "kwargs.pop('reload') missing in worker_subprocess_entry"
+            "reload leaked to worker Namespace — kwargs.pop('reload') missing in worker_subprocess_entry"
         )
-        assert not hasattr(ns, "watch_dirs"), (
-            "watch_dirs leaked to worker Namespace"
-        )
-
+        assert not hasattr(ns, "watch_dirs"), "watch_dirs leaked to worker Namespace"
 
     def test_slot_reaches_the_worker_namespace(self, monkeypatch):
         """U2 (R3/KTD2): Der Supervisor kennt den Slot bereits und uebergibt
@@ -139,7 +138,7 @@ class TestWorkerSubprocessEntry:
         Speicheradresse."""
         import threading
 
-        captured: dict = {}
+        captured: dict[str, Any] = {}
 
         async def capture_ns(ns):
             captured["ns"] = ns
@@ -155,7 +154,7 @@ class TestWorkerSubprocessEntry:
         assert captured["ns"].worker_slot == 2
 
 
-def _capture_entry_logs(monkeypatch) -> list[dict]:
+def _capture_entry_logs(monkeypatch) -> list[dict[str, Any]]:
     """Faengt die Logsaetze des Entry ab.
 
     ``structlog.testing.capture_logs`` hilft hier nicht: das Entry ruft
@@ -165,7 +164,7 @@ def _capture_entry_logs(monkeypatch) -> list[dict]:
     """
     from swarmq.process_manager import entry as entry_module
 
-    events: list[dict] = []
+    events: list[dict[str, Any]] = []
 
     class _Recorder:
         def error(self, event, **kwargs):
@@ -246,8 +245,7 @@ def _broken_log_config_settings(**kwargs):
     return LoggingSettings(
         log_config="/abs/log.json",
         log_config_json=(
-            '{"version": 1, "disable_existing_loggers": false,'
-            ' "handlers": {"h": {"class": "nope.Missing"}}}'
+            '{"version": 1, "disable_existing_loggers": false, "handlers": {"h": {"class": "nope.Missing"}}}'
         ),
         **kwargs,
     )
@@ -280,7 +278,9 @@ class TestLoggingConfigErrorInTheChild:
 
         with pytest.raises(SystemExit) as exc_info:
             worker_subprocess_entry(
-                0, shutdown_event, _make_test_cfg(logging_settings=_broken_log_config_settings()),
+                0,
+                shutdown_event,
+                _make_test_cfg(logging_settings=_broken_log_config_settings()),
             )
 
         assert exc_info.value.code == CONFIG_ERROR_EXIT_CODE
@@ -296,12 +296,12 @@ class TestLoggingConfigErrorInTheChild:
 
         with pytest.raises(SystemExit):
             worker_subprocess_entry(
-                0, shutdown_event, _make_test_cfg(logging_settings=_broken_log_config_settings()),
+                0,
+                shutdown_event,
+                _make_test_cfg(logging_settings=_broken_log_config_settings()),
             )
 
-        line = next(
-            line for line in capfd.readouterr().err.splitlines() if "worker_config_error" in line
-        )
+        line = next(line for line in capfd.readouterr().err.splitlines() if "worker_config_error" in line)
         assert "LoggingConfigError" in line
         assert "/abs/log.json" in line
 
@@ -415,7 +415,8 @@ class TestEntryLogging:
         shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
 
         worker_subprocess_entry(
-            0, shutdown_event,
+            0,
+            shutdown_event,
             _make_test_cfg(logging_settings=LoggingSettings(configure=False)),
         )
 
@@ -428,7 +429,7 @@ class TestEntryLogging:
 
         from swarmq.logging_settings import LoggingSettings
 
-        seen: dict = {}
+        seen: dict[str, Any] = {}
 
         async def fake_run(ns):
             seen["level"] = logging.getLogger().level
@@ -562,13 +563,16 @@ class TestHardExitAfterTheDrain:
 
         with pytest.raises(SystemExit):
             worker_subprocess_entry(
-                0, shutdown_event, _make_test_cfg(logging_settings=_broken_log_config_settings()),
+                0,
+                shutdown_event,
+                _make_test_cfg(logging_settings=_broken_log_config_settings()),
             )
 
         assert calls[-2:] == ["shutdown_logging", ("exit_if_log_thread_stuck", 78)]
 
     def test_the_fallback_after_a_broken_logging_config_keeps_the_drain_timeout(
-        self, monkeypatch,
+        self,
+        monkeypatch,
     ):
         import io
         import sys
@@ -577,6 +581,7 @@ class TestHardExitAfterTheDrain:
         class BlockedStderr(io.StringIO):
             opened = threading.Event()
 
+            @override
             def write(self, text: str) -> int:
                 self.opened.wait()
                 return super().write(text)
@@ -585,7 +590,8 @@ class TestHardExitAfterTheDrain:
         stderr = BlockedStderr()
         monkeypatch.setattr(sys, "stderr", stderr)
         monkeypatch.setattr(
-            "swarmq.process_manager.entry.exit_if_log_thread_stuck", lambda code, exc=None: None,
+            "swarmq.process_manager.entry.exit_if_log_thread_stuck",
+            lambda code, exc=None: None,
         )
         shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
         settings = _broken_log_config_settings(drain_timeout=0.05)

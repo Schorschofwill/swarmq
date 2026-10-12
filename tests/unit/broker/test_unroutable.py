@@ -15,10 +15,12 @@ Test-Liste:
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
 from aio_pika.exceptions import PublishError
+from aiormq.abc import DeliveredMessage
 from pamqp.commands import Basic
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
@@ -46,7 +48,7 @@ async def test_reopened_publish_channel_raises_on_return() -> None:
     conn.channel.return_value = AsyncMock(is_closed=False)
     broker._connection = conn
 
-    await broker._ensure_publish_channel()
+    _ = await broker._ensure_publish_channel()
 
     conn.channel.assert_awaited_once_with(on_return_raises=True)
 
@@ -54,7 +56,7 @@ async def test_reopened_publish_channel_raises_on_return() -> None:
 def _returned(routing_key: str) -> PublishError:
     """Ein ``basic.return`` NO_ROUTE, wie aiormq es mit ``on_return_raises`` wirft."""
     frame = Basic.Return(reply_code=312, reply_text="NO_ROUTE", exchange="", routing_key=routing_key)
-    return PublishError(SimpleNamespace(delivery=frame), frame)
+    return PublishError(cast("DeliveredMessage", SimpleNamespace(delivery=frame)), frame)
 
 
 async def test_returned_publish_raises_unroutable_without_retry_and_keeps_channel() -> None:
@@ -95,7 +97,7 @@ def _declared_names(channel: AsyncMock) -> list[str]:
 
 def _all_throwaway_channels_closed(broker: RabbitMQBroker, throwaway: AsyncMock) -> bool:
     """Jeder Wegwerf-Channel der Kette wird wieder geschlossen (Review MR 8, H1)."""
-    opened = broker._connection.channel.call_count  # type: ignore[union-attr]
+    opened: int = cast("AsyncMock", broker._connection).channel.call_count
     return opened > 0 and throwaway.close.await_count == opened
 
 
@@ -109,7 +111,7 @@ async def test_retry_later_redeclares_own_queue_on_throwaway_channel_and_retries
     channel.declare_queue.assert_not_awaited()
     assert _all_throwaway_channels_closed(broker, throwaway)
     assert channel.default_exchange.publish.await_count == 2
-    delivery.handle.ack.assert_awaited_once()
+    cast("AsyncMock", delivery.handle).ack.assert_awaited_once()
 
 
 async def test_dead_letter_redeclares_own_queue_and_retries() -> None:
@@ -120,7 +122,7 @@ async def test_dead_letter_redeclares_own_queue_and_retries() -> None:
 
     assert _declared_names(throwaway) == ["tasks.p5", "tasks.p5.DQ", "tasks.p5.XQ", *delay_tiers("tasks.p5")]
     assert channel.default_exchange.publish.await_count == 2
-    delivery.handle.ack.assert_awaited_once()
+    cast("AsyncMock", delivery.handle).ack.assert_awaited_once()
 
 
 async def test_failed_redeclare_becomes_broker_connection_error_and_leaves_original_unacked() -> None:
@@ -133,7 +135,7 @@ async def test_failed_redeclare_becomes_broker_connection_error_and_leaves_origi
 
     assert not isinstance(exc_info.value, UnroutableMessage)
     assert channel.default_exchange.publish.await_count == 1
-    delivery.handle.ack.assert_not_awaited()
+    cast("AsyncMock", delivery.handle).ack.assert_not_awaited()
 
 
 async def test_second_unroutable_publish_raises_after_a_single_redeclare() -> None:
@@ -144,4 +146,4 @@ async def test_second_unroutable_publish_raises_after_a_single_redeclare() -> No
         await broker.retry_later(delivery, delay_ms=1000, headers={})
 
     assert _declared_names(throwaway) == ["tasks", "tasks.DQ", "tasks.XQ", *delay_tiers("tasks")]
-    delivery.handle.ack.assert_not_awaited()
+    cast("AsyncMock", delivery.handle).ack.assert_not_awaited()

@@ -18,6 +18,7 @@ Test-Liste U5 (Pruefregeln R10, Lesen beim Start):
 from __future__ import annotations
 
 import multiprocessing
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -25,7 +26,7 @@ import pytest
 from swarmq.contracts.control import Setpoint, SetpointUnreadable
 from swarmq.process_manager import ProcessManager, setpoint
 from swarmq.process_manager.slots import SlotState
-from tests.unit.process_manager._helpers import _entry_stub, _fake_process
+from tests.unit.process_manager._helpers import _entry_stub, _fake_process, as_mock
 
 
 class TestValidate:
@@ -35,7 +36,8 @@ class TestValidate:
 
     def test_upper_bound_above_headroom_names_the_headroom(self):
         reason = setpoint.validate(Setpoint(2, 12), headroom=8, autoscaling=True)
-        assert reason is not None and "headroom 8" in reason
+        assert reason is not None
+        assert "headroom 8" in reason
 
     @pytest.mark.parametrize("sp", [Setpoint(0, 4), Setpoint(-1, 4), Setpoint(6, 2)])
     def test_lower_bound_below_one_and_inverted_bounds_are_rejected(self, sp):
@@ -44,7 +46,8 @@ class TestValidate:
     def test_range_without_autoscaling_demands_the_fixed_form(self):
         """Covers AE11 (Rechen-Pool) und AE13 (Autoskalierung aus): beide laufen ohne Autoskalierung."""
         reason = setpoint.validate(Setpoint(2, 6), headroom=8, autoscaling=False)
-        assert reason is not None and "N..N" in reason
+        assert reason is not None
+        assert "N..N" in reason
 
 
 class FakeStore:
@@ -54,7 +57,7 @@ class FakeStore:
         self.result = result
         self.fail = fail
         self.read_fail = read_fail
-        self.status_writes: list[dict] = []
+        self.status_writes: list[dict[str, Any]] = []
         self.status_ttls: list[float] = []
         self.status_keys: list[tuple[str, str]] = []
         self.reads = 0
@@ -83,8 +86,12 @@ def _pm(n: int = 2, *, store=None, factory=None, **kw) -> ProcessManager:
     if factory is None and store is not None:
         factory = lambda: store  # noqa: E731
     pm = ProcessManager(
-        num_workers=n, worker_entry=_entry_stub, setpoint_store_factory=factory,
-        supervisor_id="host:p1", group="orders", **kw,
+        num_workers=n,
+        worker_entry=_entry_stub,
+        setpoint_store_factory=factory,
+        supervisor_id="host:p1",
+        group="orders",
+        **kw,
     )
     pm._ctx = MagicMock()
     generations: dict[int, int] = {}
@@ -139,36 +146,44 @@ class TestReadAtStart:
         pm._start_all_workers()
         assert pm.effective_bounds == (2, 4)
         assert len(pm.workers) == 2
-        assert pm._setpoint.rejection is not None and "headroom 4" in pm._setpoint.rejection
+        assert pm._setpoint.rejection is not None
+        assert "headroom 4" in pm._setpoint.rejection
 
     def test_rejection_is_logged_as_warning_with_reason(self, swarmq_logs):
         pm = _pm(n=2, store=FakeStore(Setpoint(2, 8)), autoscale=(2, 4), queue_depth_fn=lambda: 0, max_processes=4)
         setpoint.read_at_start(pm)
         [entry] = [e for e in swarmq_logs if e["event"] == "setpoint_rejected"]
-        assert entry["log_level"] == "warning" and entry["logger"] == "swarmq.process_manager.setpoint"
-        assert entry["group"] == pm.group and entry["setpoint"] == [2, 8] and "headroom 4" in entry["reason"]
+        assert entry["log_level"] == "warning"
+        assert entry["logger"] == "swarmq.process_manager.setpoint"
+        assert entry["group"] == pm.group
+        assert entry["setpoint"] == [2, 8]
+        assert "headroom 4" in entry["reason"]
 
     def test_unreachable_store_keeps_the_start_arguments_and_marks_unread(self):
         """Covers AE7 (erster Teil)."""
         pm = _pm(n=2, store=FakeStore(fail=True), max_processes=8)
         setpoint.read_at_start(pm)
         pm._start_all_workers()
-        assert pm.effective_bounds == (2, 2) and len(pm.workers) == 2
+        assert pm.effective_bounds == (2, 2)
+        assert len(pm.workers) == 2
         assert pm._setpoint.store == "unread"
 
     def test_unreadable_setpoint_is_treated_like_a_rejection(self):
         pm = _pm(n=2, store=FakeStore(SetpointUnreadable("not json")), max_processes=8)
         setpoint.read_at_start(pm)
         pm._start_all_workers()
-        assert pm.effective_bounds == (2, 2) and len(pm.workers) == 2
-        assert pm._setpoint.rejection is not None and "unreadable" in pm._setpoint.rejection
+        assert pm.effective_bounds == (2, 2)
+        assert len(pm.workers) == 2
+        assert pm._setpoint.rejection is not None
+        assert "unreadable" in pm._setpoint.rejection
 
     def test_range_setpoint_on_a_group_without_autoscaling_is_rejected(self):
         """Covers AE11/AE13: feste Prozesszahl (auch Rechen-Pool) nimmt nur N..N."""
         pm = _pm(n=4, store=FakeStore(Setpoint(2, 6)), max_processes=8)
         setpoint.read_at_start(pm)
         assert pm.effective_bounds == (4, 4)
-        assert pm._setpoint.rejection is not None and "N..N" in pm._setpoint.rejection
+        assert pm._setpoint.rejection is not None
+        assert "N..N" in pm._setpoint.rejection
 
 
 def _live_slots(pm: ProcessManager) -> list[int]:
@@ -198,8 +213,14 @@ class TestTick:
     """
 
     def _autoscaled(self, n: int, store: FakeStore, depth: int = 0, **kw) -> ProcessManager:
-        pm = _pm(n=n, store=store, autoscale=kw.pop("autoscale", (2, 4)), queue_depth_fn=lambda: depth,
-                 max_processes=kw.pop("max_processes", 16), **kw)
+        pm = _pm(
+            n=n,
+            store=store,
+            autoscale=kw.pop("autoscale", (2, 4)),
+            queue_depth_fn=lambda: depth,
+            max_processes=kw.pop("max_processes", 16),
+            **kw,
+        )
         pm.SETPOINT_SAMPLE_INTERVAL = 0.0
         pm._start_all_workers()
         return pm
@@ -220,11 +241,12 @@ class TestTick:
         store.result = Setpoint(4, 4)
         setpoint.tick(pm)
         assert pm.effective_bounds == (4, 4)
-        assert len(_live_slots(pm)) == 4 and len(_drained(pm)) == 2
+        assert len(_live_slots(pm)) == 4
+        assert len(_drained(pm)) == 2
         for info in pm.workers.values():
             if info.expected_shutdown:
-                info.process.terminate.assert_called_once()
-                info.process.kill.assert_not_called()
+                as_mock(info.process).terminate.assert_called_once()
+                as_mock(info.process).kill.assert_not_called()
 
     def test_fresh_workers_are_not_exempt_from_the_shrink(self):
         store = FakeStore(None)
@@ -242,14 +264,15 @@ class TestTick:
         for slot in (1, 2):
             pm.workers[old[slot]].expected_shutdown = True
             pm._start_worker(slot)
-        assert pm.slot_state(1) is SlotState.TRANSITION and pm.slot_state(2) is SlotState.TRANSITION
+        assert pm.slot_state(1) is SlotState.TRANSITION
+        assert pm.slot_state(2) is SlotState.TRANSITION
         store.result = Setpoint(1, 1)
         setpoint.tick(pm)
         # Nur Slot 0 war waehlbar: Ziel 1 noch nicht erreicht.
         assert _live_slots(pm) == [1, 2]
         for slot in (1, 2):  # Vorgaenger enden, Uebergang loest sich
-            pm.workers[old[slot]].process.is_alive.return_value = False
-            pm.workers[old[slot]].process.exitcode = 0
+            as_mock(pm.workers[old[slot]].process).is_alive.return_value = False
+            as_mock(pm.workers[old[slot]].process).exitcode = 0
         pm._check_dead_workers()
         setpoint.tick(pm)
         assert len(_live_slots(pm)) == 1
@@ -259,7 +282,8 @@ class TestTick:
         store = FakeStore(Setpoint(4, 4))
         pm = self._autoscaled(2, store)
         setpoint.tick(pm)
-        assert pm.effective_bounds == (4, 4) and len(_live_slots(pm)) == 4
+        assert pm.effective_bounds == (4, 4)
+        assert len(_live_slots(pm)) == 4
         store.result = None
         setpoint.tick(pm)
         assert pm.effective_bounds == (2, 4)
@@ -283,15 +307,17 @@ class TestTick:
         pm._start_all_workers()
         store.result = Setpoint(4, 4)
         setpoint.tick(pm)
-        spawned = pm._ctx.Process.call_count
-        assert pm._current_target() == 4 and pm._slots.occupied() == 6
+        spawned = as_mock(pm._ctx).Process.call_count
+        assert pm._current_target() == 4
+        assert pm._slots.occupied() == 6
         for info in list(pm.workers.values()):
             if info.expected_shutdown:
-                info.process.is_alive.return_value = False
-                info.process.exitcode = 0
+                as_mock(info.process).is_alive.return_value = False
+                as_mock(info.process).exitcode = 0
         pm._check_dead_workers()
-        assert pm._current_target() == 4 and pm._slots.occupied() == 4
-        assert pm._ctx.Process.call_count == spawned  # nichts nachgefuellt
+        assert pm._current_target() == 4
+        assert pm._slots.occupied() == 4
+        assert as_mock(pm._ctx).Process.call_count == spawned  # nichts nachgefuellt
 
     def test_fixed_then_range_then_startup_moves_no_exit_condition(self):
         store = FakeStore(Setpoint(4, 4))
@@ -303,11 +329,13 @@ class TestTick:
         setpoint.tick(pm)
         for info in list(pm.workers.values()):
             if info.expected_shutdown:
-                info.process.is_alive.return_value = False
-                info.process.exitcode = 0
+                as_mock(info.process).is_alive.return_value = False
+                as_mock(info.process).exitcode = 0
         pm._check_dead_workers()
-        assert pm._clean_exits == 0 and pm._exhausted_slots == 0
-        assert pm.initial_workers == 2 and pm._autoscale == (2, 4)
+        assert pm._clean_exits == 0
+        assert pm._exhausted_slots == 0
+        assert pm.initial_workers == 2
+        assert pm._autoscale == (2, 4)
 
     def test_no_worker_starts_once_shutdown_began(self):
         """KTD2: der Durchlauf ruht im Herunterfahren -- es wird nicht einmal gelesen."""
@@ -322,7 +350,8 @@ class TestTick:
         pm._start_all_workers()
         pm._shutting_down = True
         setpoint.tick(pm)
-        assert calls == [] and len(pm.workers) == 2
+        assert calls == []
+        assert len(pm.workers) == 2
 
     def test_sample_interval_gates_reads_also_after_a_failure(self):
         store = FakeStore(read_fail=True)
@@ -379,9 +408,12 @@ class TestStatus:
         pm = self._pm(store)
         setpoint.tick(pm)
         status = store.status_writes[-1]
-        assert status["store"] == "absent" and status["setpoint"] is None
-        assert status["effective"] == {"min": 2, "max": 2} and status["source"] == "startup"
-        assert status["rejection"] is None and status["headroom"] == 8
+        assert status["store"] == "absent"
+        assert status["setpoint"] is None
+        assert status["effective"] == {"min": 2, "max": 2}
+        assert status["source"] == "startup"
+        assert status["rejection"] is None
+        assert status["headroom"] == 8
 
     def test_rejection_carries_the_reason_and_the_still_effective_bounds(self):
         """Covers AE5: Spielraum 8, wirksam 2..6, Sollwert 2..12 -> bleibt 2..6, Grund nennt den Spielraum."""
@@ -391,7 +423,8 @@ class TestStatus:
         store.result = Setpoint(2, 12)
         setpoint.tick(pm)
         status = store.status_writes[-1]
-        assert status["effective"] == {"min": 2, "max": 6} and status["source"] == "setpoint"
+        assert status["effective"] == {"min": 2, "max": 6}
+        assert status["source"] == "setpoint"
         assert status["setpoint"] == {"min": 2, "max": 12}
         assert "headroom 8" in status["rejection"]
 
@@ -402,12 +435,14 @@ class TestStatus:
         pm = self._pm(store)
         setpoint.tick(pm)
         status = store.status_writes[-1]
-        assert status["store"] == "unread" and status["source"] == "startup"
+        assert status["store"] == "unread"
+        assert status["source"] == "startup"
         assert status["effective"] == {"min": 2, "max": 2}
         store.read_fail = False
         setpoint.tick(pm)
         status = store.status_writes[-1]
-        assert status["store"] == "present" and status["effective"] == {"min": 4, "max": 4}
+        assert status["store"] == "present"
+        assert status["effective"] == {"min": 4, "max": 4}
 
     def test_locked_slots_are_counted(self):
         store = FakeStore(None)

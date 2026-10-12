@@ -48,7 +48,12 @@ class SetpointStore(Protocol):
     async def read_setpoint(self, group: str) -> SetpointRead: ...
 
     async def write_status(
-        self, group: str, supervisor_id: str, status: Mapping[str, Any], *, ttl_s: float,
+        self,
+        group: str,
+        supervisor_id: str,
+        status: Mapping[str, Any],
+        *,
+        ttl_s: float,
     ) -> None: ...
 
 
@@ -70,7 +75,7 @@ def read_setpoint_sync(factory: SetpointStoreFactory, group: str) -> SetpointRea
                 store = factory()
                 await store.connect()
                 return await store.read_setpoint(group)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Fehler wird geloggt, Aufrufer erhält SetpointUnread
             reason = f"{type(exc).__name__}: {sanitize_url(str(exc))}"
             logger.warning("setpoint_read_failed", group=group, **_sanitized_error_fields(exc))
             return SetpointUnread(reason=reason)
@@ -99,7 +104,7 @@ def write_status_sync(
                 await store.connect()
                 await store.write_status(group, supervisor_id, status, ttl_s=ttl_s)
                 return True
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Fehler wird geloggt, Aufrufer erhält False
             logger.warning("setpoint_status_write_failed", group=group, **_sanitized_error_fields(exc))
             return False
         finally:
@@ -122,5 +127,5 @@ async def _close_quietly(store: SetpointStore | None) -> None:
     try:
         async with asyncio.timeout(CLOSE_TIMEOUT_S):
             await store.close()
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 - Close best effort
         pass

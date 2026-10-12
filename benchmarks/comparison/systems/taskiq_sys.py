@@ -129,7 +129,7 @@ class TaskIQSystem:
         # Wait briefly, then cancel if still running
         try:
             await asyncio.wait_for(self._worker_task, timeout=5.0)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except asyncio.TimeoutError, asyncio.CancelledError:
             self._worker_task.cancel()
             try:
                 await self._worker_task
@@ -157,10 +157,7 @@ class TaskIQSystem:
         """
         task_func = _TASK_REGISTRY.get(task_name)
         if task_func is None:
-            raise ValueError(
-                f"Unknown task {task_name!r}. "
-                f"Available: {sorted(_TASK_REGISTRY)}"
-            )
+            raise ValueError(f"Unknown task {task_name!r}. Available: {sorted(_TASK_REGISTRY)}")
 
         result_handle = await task_func.kiq(**payload)
         return result_handle.task_id
@@ -195,14 +192,10 @@ class TaskIQSystem:
                 # TaskIQ wraps results in a TaskiqResult dataclass.
                 # If the task raised, ``result.is_err`` is True.
                 if result.is_err:
-                    raise RuntimeError(
-                        f"Task {task_id} failed: {result.error}"
-                    )
+                    raise RuntimeError(f"Task {task_id} failed: {result.error}")
                 return result.return_value
 
             if asyncio.get_event_loop().time() >= deadline:
-                raise TimeoutError(
-                    f"Task {task_id} did not complete within {timeout}s"
-                )
+                raise TimeoutError(f"Task {task_id} did not complete within {timeout}s")
 
             await asyncio.sleep(poll_interval)

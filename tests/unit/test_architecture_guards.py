@@ -41,9 +41,9 @@ _LOC_EXCEPTIONS: dict[str, str] = {}
 
 # (Quelle, Ziel) auf Paketebene; Wurzel ``swarmq`` matcht nur exakt.
 _CYCLE_ALLOWLIST: list[tuple[str, str]] = [
-    ("swarmq.process_manager", "swarmq.cli"),          # entry → cli (lazy, KTD7)
-    ("swarmq.cli", "swarmq.process_manager"),          # KTD7
-    ("swarmq", "swarmq.app"),                          # PEP-562-Fassade ↔ app
+    ("swarmq.process_manager", "swarmq.cli"),  # entry → cli (lazy, KTD7)
+    ("swarmq.cli", "swarmq.process_manager"),  # KTD7
+    ("swarmq", "swarmq.app"),  # PEP-562-Fassade ↔ app
     ("swarmq.app", "swarmq"),
 ]
 
@@ -57,26 +57,45 @@ _ALIAS_MODULES: frozenset[str] = frozenset()  # seit U15 leer (KTD10 abgeschloss
 
 _SPLIT_MODULES: dict[str, list[str]] = {
     "swarmq.broker.rabbitmq": [
-        "connection", "delivery", "admin", "consumer_watch", "topology",  # U5; U6; 0.12 MR 0
+        "connection",
+        "delivery",
+        "admin",
+        "consumer_watch",
+        "topology",  # U5; U6; 0.12 MR 0
         "declarations",  # Plan 0.12.0, MR 8
     ],
     "swarmq.backend.valkey": ["connection", "results", "environment"],  # U17; environment: Plan 0.12.0, MR 14
     # ``decode`` seit U6 (Plan 2026-09-08-001): Header-Pruefung, Size-Cap und
     # Body-Dekodierung aus ``pipeline.py`` gezogen.
     "swarmq.worker": [
-        "outcome", "pipeline", "gates", "execution", "retry", "results",
-        "lifecycle", "decode",
-        "shutdown", "finalize",  # Plan 0.12.0, MR 0
-        "redelivery", "terminal",  # Plan 0.12.0, MR 3 (BZ-29, BZ-13)
-        "lock_keeper", "lock_wait_tracker",  # Plan 0.12.0, MR 13 (BZ-25, BZ-05)
+        "outcome",
+        "pipeline",
+        "gates",
+        "execution",
+        "retry",
+        "results",
+        "lifecycle",
+        "decode",
+        "shutdown",
+        "finalize",  # Plan 0.12.0, MR 0
+        "redelivery",
+        "terminal",  # Plan 0.12.0, MR 3 (BZ-29, BZ-13)
+        "lock_keeper",
+        "lock_wait_tracker",  # Plan 0.12.0, MR 13 (BZ-25, BZ-05)
         "prefetch",  # Plan 0.12.0, MR 18 (BZ-20)
     ],  # U6-U9
     "swarmq.client": ["schedule", "results", "workflows", "schedule_resolve"],  # U10; Plan 0.12.0, MR 0
     # U11; fire: Plan 0.12.0, MR 0; valkey_watch: MR 14; orphaned_queues: MR 18
     "swarmq.scheduler": ["definition", "loop", "sync", "fire", "valkey_watch", "orphaned_queues"],
     "swarmq.process_manager": [
-        "config", "supervisor", "entry", "sampler", "check", "run",
-        "setpoint_store", "setpoint",  # Kontrollkanal U2/U5
+        "config",
+        "supervisor",
+        "entry",
+        "sampler",
+        "check",
+        "run",
+        "setpoint_store",
+        "setpoint",  # Kontrollkanal U2/U5
         "reload",  # Plan 2026-10-06-1811, U8
         "worker_target",  # Restpunkte 0.9.0: Kindziel aus ``supervisor``
         "restart_budget",  # Plan 0.12.0, MR 0: Lebenszeichen und Neustart-Budget
@@ -128,9 +147,8 @@ def test_no_object_patches_on_split_facades() -> None:
     """U6-Guard-Lücke (Follow-Up 0.2.x): ``monkeypatch.setattr(fassade, …)``
     und ``patch.object(fassade, …)`` liefen am String-Guard vorbei."""
     hits = arch.object_patch_targets(_TESTS, _SPLIT_MODULES)
-    assert not hits, (
-        "Objekt-Patches auf aufgeteilte Fassaden — auf das Submodul zielen: "
-        + ", ".join(f"{p.name}: {t}" for p, t in hits)
+    assert not hits, "Objekt-Patches auf aufgeteilte Fassaden — auf das Submodul zielen: " + ", ".join(
+        f"{p.name}: {t}" for p, t in hits
     )
 
 
@@ -223,8 +241,7 @@ class TestPurityGuard:
             {
                 "pkg/__init__.py": "",
                 "pkg/core/__init__.py": (
-                    "from typing import TYPE_CHECKING\n"
-                    "if TYPE_CHECKING:\n    from pkg.backend.valkey import Impl\n"
+                    "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from pkg.backend.valkey import Impl\n"
                 ),
                 "pkg/backend/__init__.py": "",
                 "pkg/backend/valkey.py": "import valkey\nclass Impl: ...\n",
@@ -253,8 +270,7 @@ class TestPurityGuard:
             {
                 "pkg/__init__.py": "",
                 "pkg/core/__init__.py": (
-                    "import importlib\n"
-                    "def load():\n    return importlib.import_module('pkg.backend.valkey')\n"
+                    "import importlib\ndef load():\n    return importlib.import_module('pkg.backend.valkey')\n"
                 ),
                 "pkg/backend/__init__.py": "",
                 "pkg/backend/valkey.py": "",
@@ -278,7 +294,7 @@ class TestPurityGuard:
         assert arch.purity_violations(graph, "pkg.core", self._FORBIDDEN, alias_modules=["pkg.helper"]) == set()
 
     def test_existing_core_package_without_activation_is_found(self) -> None:
-        graph = {"pkg.core": set(), "pkg.core.x": set(), "pkg.util": set()}
+        graph: dict[str, set[str]] = {"pkg.core": set(), "pkg.core.x": set(), "pkg.util": set()}
         active = frozenset({"pkg.util"})
         existing = [p for p in ("pkg.core", "pkg.util", "pkg.other") if arch.modules_of(graph, p)]
         assert existing == ["pkg.core", "pkg.util"]
@@ -358,7 +374,7 @@ class TestPatchPathGuard:
                     "from unittest.mock import patch\n"
                     "def test_a():\n"
                     "    with patch('pkg.worker.logger'):\n        pass\n"
-                    "    with patch(\"pkg.worker.pipeline.logger\"):\n        pass\n"
+                    '    with patch("pkg.worker.pipeline.logger"):\n        pass\n'
                     "def test_b(monkeypatch):\n"
                     "    monkeypatch.setattr('pkg.worker.decode', None)\n"
                 ),
@@ -406,7 +422,10 @@ class TestBindingGuard:
         )
         (b,) = arch.collect_contract_bindings(root)
         assert (b.base, b.case_count, b.overridden_tests, b.skip_marks) == (
-            "tests.contracts.coordination.LockStoreContract", 3, [], [],
+            "tests.contracts.coordination.LockStoreContract",
+            3,
+            [],
+            [],
         )
 
     def test_binding_overriding_test_method_is_reported(self, tmp_path: Path) -> None:

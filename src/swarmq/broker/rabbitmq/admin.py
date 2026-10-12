@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, cast
 
 import aio_pika
 from aio_pika.exceptions import ChannelNotFoundEntity
@@ -147,19 +147,21 @@ class RabbitMQAdmin(RabbitMQDelivery):
         """
         try:
             payload = json.loads(body)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return None, None, None
         if not isinstance(payload, dict):
             return None, None, None
-        task = payload.get("task")
+        payload_dict = cast("dict[str, Any]", payload)
+        task: object = payload_dict.get("task")
         if not isinstance(task, dict):
-            return None, None, payload
-        task_id = task.get("id")
-        task_name = task.get("name")
+            return None, None, payload_dict
+        task_dict = cast("dict[str, Any]", task)
+        task_id: object = task_dict.get("id")
+        task_name: object = task_dict.get("name")
         return (
             task_id if isinstance(task_id, str) else None,
             task_name if isinstance(task_name, str) else None,
-            payload,
+            payload_dict,
         )
 
     @staticmethod
@@ -240,7 +242,7 @@ class RabbitMQAdmin(RabbitMQDelivery):
         error is re-raised so the caller observes the failure.
         """
         queue = await self._dlq_queue(queue_name)
-        # (Nachricht, body, headers, is_match, is_malformed)
+        # Tupel je Nachricht: Nachricht, body, headers, is_match, is_malformed
         drained: list[tuple[Any, bytes, dict[str, Any], bool, bool]] = []
         entries: list[dict[str, Any]] = []
         matched: list[dict[str, Any]] = []
@@ -362,7 +364,7 @@ class RabbitMQAdmin(RabbitMQDelivery):
                 # the aio_pika internal drain_future CancelledError
                 # via current_task().cancelling() guard.
                 raise
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - Fehler je Nachricht sammeln, Rest weiter republishen
                 errors.append(exc)
                 continue
             await self._ack_dlq_original(msg)
@@ -381,7 +383,7 @@ class RabbitMQAdmin(RabbitMQDelivery):
         zurueck (bei einer Kopie: doppelt) -- kein Verlust, nur eine WARNING."""
         try:
             await msg.ack()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Ack best effort, Nachricht kehrt zurueck, WARNING
             logger.warning(
                 "dlq_read_ack_failed",
                 **_error_fields(exc),
@@ -639,13 +641,6 @@ class RabbitMQAdmin(RabbitMQDelivery):
 
     # ------------------------------------------------------------------
     # ------------------------------------------------------------------
-
-
-
-
-
-
-
 
     async def _passive_message_count(self, name: str) -> int:
         return await self._throwaway_channel_message_count(name)

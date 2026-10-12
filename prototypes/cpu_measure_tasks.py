@@ -40,7 +40,11 @@ class MeasureKillMe(Task):
     per SIGKILL getoetet. Der zweite Versuch (Retry) liefert das Ergebnis."""
 
     task_info = TaskInfo(
-        name="measure_kill_me", queues=[QUEUE], max_retries=1, retry_backoff="fixed", retry_base_delay=0.5,
+        name="measure_kill_me",
+        queues=[QUEUE],
+        max_retries=1,
+        retry_backoff="fixed",
+        retry_base_delay=0.5,
     )
 
     async def run(self, pid_file: str, marker_dir: str) -> str:
@@ -72,7 +76,11 @@ class MeasureFail(Task):
     """I5: typerhaltende Exception, drei Versuche, dann DLQ."""
 
     task_info = TaskInfo(
-        name="measure_fail", queues=[QUEUE], max_retries=2, retry_backoff="fixed", retry_base_delay=0.3,
+        name="measure_fail",
+        queues=[QUEUE],
+        max_retries=2,
+        retry_backoff="fixed",
+        retry_base_delay=0.3,
     )
 
     async def run(self) -> None:

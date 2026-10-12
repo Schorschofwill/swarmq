@@ -26,6 +26,7 @@ Test-Liste:
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -43,7 +44,7 @@ _NOW_MS = int(_NOW_S * 1000)
 _SCORE_MS = 1_700_000_000_000
 
 
-def _cron(name: str = "cron_a", **fields: object) -> ScheduleDefinition:
+def _cron(name: str = "cron_a", **fields: Any) -> ScheduleDefinition:
     return ScheduleDefinition(
         schedule_name=name,
         task_name="ping",
@@ -96,7 +97,7 @@ async def test_unroutable_cron_fire_emits_the_unroutable_signal(loop, signal_dis
     assert seen == [{"worker_id": "w-1", "schedule_name": "cron_a", "queue": "missing", "kind": "cron_lost"}]
 
 
-def _loop_events(logs, event: str) -> list[dict[str, object]]:
+def _loop_events(logs, event: str) -> list[dict[str, Any]]:
     return [e for e in logs if e["logger"] == "swarmq.scheduler.loop" and e["event"] == event]
 
 
@@ -144,7 +145,8 @@ async def test_foreign_hint_names_vhost_and_namespace(loop, swarmq_logs):
     await loop._fire_one("cron_a", _SCORE_MS, _cron())
 
     [foreign] = _loop_events(swarmq_logs, "scheduler_fire_unroutable_foreign")
-    assert "vhost" in foreign["hint"] and "SWARMQ_NAMESPACE" in foreign["hint"]
+    assert "vhost" in foreign["hint"]
+    assert "SWARMQ_NAMESPACE" in foreign["hint"]
 
 
 @pytest.mark.parametrize("error", [BrokerConnectionError("down"), PublishIndeterminate("deadline")])
@@ -157,8 +159,8 @@ async def test_other_publish_errors_still_skip_the_commit(loop, broker, store, e
     store.commit_fire.assert_not_awaited()
 
 
-def _oneshot(name: str = "oneshot:t-1", **fields: object) -> ScheduleDefinition:
-    values: dict[str, object] = {"source": "cli", "task_id": "t-1", **fields}
+def _oneshot(name: str = "oneshot:t-1", **fields: Any) -> ScheduleDefinition:
+    values: dict[str, Any] = {"source": "cli", "task_id": "t-1", **fields}
     return ScheduleDefinition(
         schedule_name=name,
         task_name="ping",
@@ -207,7 +209,7 @@ async def test_oneshot_unroutable_past_the_limit_is_dropped(loop, store, config,
     assert seen == [{"worker_id": "w-1", "schedule_name": "oneshot:t-1", "queue": "missing", "kind": "oneshot_dropped"}]
 
 
-def _expired(config, **fields: object) -> ScheduleDefinition:
+def _expired(config, **fields: Any) -> ScheduleDefinition:
     return _oneshot(unroutable_since=_NOW_MS - int(config.scheduler_unroutable_oneshot_max_s * 1000), **fields)
 
 

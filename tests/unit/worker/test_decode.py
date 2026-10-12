@@ -23,11 +23,15 @@ def _deps() -> GateDeps:
     broker = MagicMock()
     broker.route_via_dlx = AsyncMock()
     return GateDeps(
-        broker=broker, backend=MagicMock(),
+        broker=broker,
+        backend=MagicMock(),
         config=SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x"),
-        signals=MagicMock(dispatch=AsyncMock()), registry=MagicMock(),
-        rate_limiter=lambda: None, lock_manager=lambda: None,
-        finalize_schedfire=AsyncMock(), maybe_release_unique=AsyncMock(),
+        signals=MagicMock(dispatch=AsyncMock()),
+        registry=MagicMock(),
+        rate_limiter=lambda: None,
+        lock_manager=lambda: None,
+        finalize_schedfire=AsyncMock(),
+        maybe_release_unique=AsyncMock(),
         extract_valid_workflow_id=lambda _m: None,
         register_lock=lambda _h, _e: None,
     )

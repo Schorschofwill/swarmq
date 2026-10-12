@@ -85,15 +85,17 @@ def print_scenario_report(scenario: str, system_results: dict[str, list[dict]]) 
         p99s = [r["latency_p99_ms"] for r in results]
         durations = [r["total_duration"] for r in results]
 
-        rows.append([
-            system_name,
-            f"{median(throughputs):>8.1f}",
-            f"{median(p50s):>8.3f}",
-            f"{median(p95s):>8.3f}",
-            f"{median(p99s):>8.3f}",
-            f"{median(durations):>8.2f}",
-            str(len(results)),
-        ])
+        rows.append(
+            [
+                system_name,
+                f"{median(throughputs):>8.1f}",
+                f"{median(p50s):>8.3f}",
+                f"{median(p95s):>8.3f}",
+                f"{median(p99s):>8.3f}",
+                f"{median(durations):>8.2f}",
+                str(len(results)),
+            ]
+        )
 
     print(format_table(headers, rows))
     print()

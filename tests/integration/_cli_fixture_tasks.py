@@ -11,6 +11,7 @@ test run can use a unique queue and avoid bleed-over.
 from __future__ import annotations
 
 import os
+from typing import override
 
 from swarmq.task import Task, TaskInfo
 
@@ -20,6 +21,7 @@ _QUEUE = os.environ.get("CLI_TEST_QUEUE", "cli_test_default")
 class CliEchoTask(Task):
     task_info = TaskInfo(name="cli_echo", queues=[_QUEUE])
 
+    @override
     async def run(self, value: str) -> str:
         return f"echoed:{value}"
 
@@ -34,7 +36,9 @@ class CliFlakyTask(Task):
 
     task_info = TaskInfo(name="cli_flaky", queues=[_QUEUE], max_retries=1, retry_base_delay=0.1)
 
+    @override
     async def run(self) -> str:
+        assert self._task_id is not None
         if self._task_id not in _flaky_seen:
             _flaky_seen.add(self._task_id)
             raise RuntimeError("first attempt fails")

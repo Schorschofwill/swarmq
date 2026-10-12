@@ -180,7 +180,8 @@ class BrokerContract:
         assert (await impl.retry_dead_letter(queue, "ctr-gen"))[0] is True
         replay = await inbox.next()
         assert replay.headers["x-swarmq-replay-id"] == letter["x-swarmq-replay-id"]
-        assert "x-swarmq-dlq-gen" not in replay.headers and "x-swarmq-dead-lettered-at" not in replay.headers
+        assert "x-swarmq-dlq-gen" not in replay.headers
+        assert "x-swarmq-dead-lettered-at" not in replay.headers
         assert replay.headers["x-swarmq-enqueued-at"] != 7
         await impl.ack(replay)
 

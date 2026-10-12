@@ -26,6 +26,7 @@ and Fork-1 static-update paths.
 from __future__ import annotations
 
 import uuid
+from typing import Any
 from unittest.mock import AsyncMock
 
 import msgspec
@@ -53,6 +54,7 @@ async def store(valkey_url):
 @pytest.fixture
 async def valkey_client(valkey_url):
     import valkey.asyncio as valkey_asyncio
+
     client = valkey_asyncio.Valkey.from_url(valkey_url)
     try:
         await client.ping()
@@ -66,11 +68,15 @@ def sched_name() -> str:
     return f"sched-{uuid.uuid4().hex[:12]}"
 
 
-def _def(name: str, *, cron: str | None = "* * * * *",
-         fire_ts_ms: int | None = 1_700_000_000_000,
-         source: str = "static",
-         **overrides) -> ScheduleDefinition:
-    base = {
+def _def(
+    name: str,
+    *,
+    cron: str | None = "* * * * *",
+    fire_ts_ms: int | None = 1_700_000_000_000,
+    source: str = "static",
+    **overrides: Any,
+) -> ScheduleDefinition:
+    base: dict[str, Any] = {
         "schedule_name": name,
         "task_name": "ping",
         "args": (),
@@ -97,9 +103,7 @@ class TestRoundtrip:
         # Second call with the same name is a no-op
         assert await store.add_schedule(d) is False
 
-    async def test_add_existing_cli_not_overwritten_by_static(
-        self, store, sched_name
-    ):
+    async def test_add_existing_cli_not_overwritten_by_static(self, store, sched_name):
         """CD11: CLI ownership beats static on insert-if-absent."""
         cli = _def(sched_name, source="cli", cron="*/5 * * * *")
         assert await store.add_schedule(cli) is True
@@ -114,12 +118,10 @@ class TestRoundtrip:
 
 class TestUpdateStaticSchedule:
     async def test_update_overwrites_existing(self, store, sched_name):
-        original = _def(sched_name, cron="* * * * *",
-                        fire_ts_ms=1_700_000_000_000)
+        original = _def(sched_name, cron="* * * * *", fire_ts_ms=1_700_000_000_000)
         await store.add_schedule(original)
 
-        modified = _def(sched_name, cron="*/10 * * * *",
-                        fire_ts_ms=1_700_000_500_000)
+        modified = _def(sched_name, cron="*/10 * * * *", fire_ts_ms=1_700_000_500_000)
         await store.update_static_schedule(modified)
 
         schedules = {s.schedule_name: s for s in await store.list_schedules()}
@@ -135,7 +137,10 @@ class TestRemoveDisable:
         assert not any(s.schedule_name == sched_name for s in schedules)
 
     async def test_disable_sets_flag_and_removes_from_zset(
-        self, store, sched_name, valkey_client,
+        self,
+        store,
+        sched_name,
+        valkey_client,
     ):
         """disable_schedule must (a) persist disabled=True in defs and
         (b) remove the entry from the zset so poll_due stops returning
@@ -159,8 +164,7 @@ class TestPollDue:
         rows = await store.poll_due(now_ms=2_000, limit=10)
 
         assert any(
-            name == sched_name and score == 1_000
-            and definition.schedule_name == sched_name
+            name == sched_name and score == 1_000 and definition.schedule_name == sched_name
             for name, score, definition in rows
         )
 
@@ -173,9 +177,7 @@ class TestPollDue:
 
 
 class TestCommitFire:
-    async def test_commit_with_valid_owner_updates_state(
-        self, store, valkey_client, sched_name
-    ):
+    async def test_commit_with_valid_owner_updates_state(self, store, valkey_client, sched_name):
         owner = uuid.uuid4().hex
         await valkey_client.set(SCHEDULER_LOCK_KEY, owner)
 
@@ -191,9 +193,7 @@ class TestCommitFire:
 
         await valkey_client.delete(SCHEDULER_LOCK_KEY)
 
-    async def test_commit_with_stale_owner_is_rejected(
-        self, store, valkey_client, sched_name
-    ):
+    async def test_commit_with_stale_owner_is_rejected(self, store, valkey_client, sched_name):
         real = uuid.uuid4().hex
         stale = uuid.uuid4().hex
         await valkey_client.set(SCHEDULER_LOCK_KEY, real)
@@ -211,9 +211,7 @@ class TestCommitFire:
 
         await valkey_client.delete(SCHEDULER_LOCK_KEY)
 
-    async def test_commit_one_shot_removes_entry(
-        self, store, valkey_client, sched_name
-    ):
+    async def test_commit_one_shot_removes_entry(self, store, valkey_client, sched_name):
         owner = uuid.uuid4().hex
         await valkey_client.set(SCHEDULER_LOCK_KEY, owner)
 
@@ -254,9 +252,7 @@ class TestCommitVsConcurrentChange:
             owner_token=owner,
         )
 
-    async def _fire_with_concurrent_change(
-        self, valkey_url, valkey_client, sched_name, change
-    ):
+    async def _fire_with_concurrent_change(self, valkey_url, valkey_client, sched_name, change):
         backend = ValkeyBackend(valkey_url)
         await backend.connect()
         try:
@@ -279,58 +275,42 @@ class TestCommitVsConcurrentChange:
         finally:
             await backend.close()
 
-    async def test_disable_during_fire_survives_commit(
-        self, valkey_url, valkey_client, sched_name
-    ):
+    async def test_disable_during_fire_survives_commit(self, valkey_url, valkey_client, sched_name):
         async def _disable(store):
             assert await store.disable_schedule(sched_name) is True
 
-        await self._fire_with_concurrent_change(
-            valkey_url, valkey_client, sched_name, _disable
-        )
+        await self._fire_with_concurrent_change(valkey_url, valkey_client, sched_name, _disable)
 
         raw = await valkey_client.hget("sq:{sched}:defs", sched_name)
         assert msgspec.json.decode(raw, type=ScheduleDefinition).disabled is True
         assert await valkey_client.zscore("sq:{sched}:zset", sched_name) is None
 
-    async def test_permanent_remove_during_fire_is_not_revived(
-        self, valkey_url, valkey_client, sched_name
-    ):
+    async def test_permanent_remove_during_fire_is_not_revived(self, valkey_url, valkey_client, sched_name):
         async def _remove(store):
             assert await store.remove_schedule(sched_name) is True
 
-        await self._fire_with_concurrent_change(
-            valkey_url, valkey_client, sched_name, _remove
-        )
+        await self._fire_with_concurrent_change(valkey_url, valkey_client, sched_name, _remove)
 
         assert await valkey_client.hget("sq:{sched}:defs", sched_name) is None
         assert await valkey_client.zscore("sq:{sched}:zset", sched_name) is None
 
-    async def test_replan_during_fire_is_not_overwritten(
-        self, valkey_url, valkey_client, sched_name
-    ):
+    async def test_replan_during_fire_is_not_overwritten(self, valkey_url, valkey_client, sched_name):
         replanned = _def(sched_name, cron="0 0 1 1 *", fire_ts_ms=4_000_000_000_000)
 
         async def _replan(store):
             await store.update_static_schedule(replanned)
 
-        await self._fire_with_concurrent_change(
-            valkey_url, valkey_client, sched_name, _replan
-        )
+        await self._fire_with_concurrent_change(valkey_url, valkey_client, sched_name, _replan)
 
         raw = await valkey_client.hget("sq:{sched}:defs", sched_name)
         assert msgspec.json.decode(raw, type=ScheduleDefinition) == replanned
         assert await valkey_client.zscore("sq:{sched}:zset", sched_name) == 4_000_000_000_000
 
-    async def test_commit_without_concurrent_change_advances_schedule(
-        self, valkey_url, valkey_client, sched_name
-    ):
+    async def test_commit_without_concurrent_change_advances_schedule(self, valkey_url, valkey_client, sched_name):
         async def _nothing(store):
             return None
 
-        await self._fire_with_concurrent_change(
-            valkey_url, valkey_client, sched_name, _nothing
-        )
+        await self._fire_with_concurrent_change(valkey_url, valkey_client, sched_name, _nothing)
 
         raw = await valkey_client.hget("sq:{sched}:defs", sched_name)
         committed = msgspec.json.decode(raw, type=ScheduleDefinition)
@@ -339,9 +319,7 @@ class TestCommitVsConcurrentChange:
 
 
 class TestCronReportsServerTime:
-    async def test_report_uses_valkey_time_not_worker_clock(
-        self, valkey_url, valkey_client, sched_name, monkeypatch
-    ):
+    async def test_report_uses_valkey_time_not_worker_clock(self, valkey_url, valkey_client, sched_name, monkeypatch):
         import time as time_module
 
         backend = ValkeyBackend(valkey_url)
@@ -352,9 +330,7 @@ class TestCronReportsServerTime:
             monkeypatch.setattr(time_module, "time", lambda: real_time() + 86_400)
             seconds, micros = await valkey_client.time()
             before_ms = seconds * 1000 + micros // 1000
-            await backend.schedules.report_cron(
-                sched_name, "fp", b"def", live_window_ms=60_000
-            )
+            await backend.schedules.report_cron(sched_name, "fp", b"def", live_window_ms=60_000)
             snapshot = await backend.schedules.cron_reports()
         finally:
             await backend.close()
@@ -366,7 +342,10 @@ class TestCronReportsServerTime:
 
 class TestPruneRoundtrip:
     async def test_pruned_disabled_cron_comes_back_disabled(
-        self, valkey_url, valkey_client, sched_name,
+        self,
+        valkey_url,
+        valkey_client,
+        sched_name,
     ):
         import asyncio
 
@@ -375,23 +354,33 @@ class TestPruneRoundtrip:
         backend = ValkeyBackend(valkey_url)
         await backend.connect()
         config = SwarmQConfig(
-            broker_url="amqp://unused", backend_url=valkey_url,
-            scheduler_seen_interval_s=0.05, scheduler_prune_after_s=0.2,
+            broker_url="amqp://unused",
+            backend_url=valkey_url,
+            scheduler_seen_interval_s=0.05,
+            scheduler_prune_after_s=0.2,
         )
         leader = SchedulerLoop(
-            backend=backend, broker=AsyncMock(), config=config,
-            lock_manager=backend.locks, store=ScheduleStore(backend),
-            signal_dispatcher=SignalDispatcher(), owner_token="leader",
+            backend=backend,
+            broker=AsyncMock(),
+            config=config,
+            lock_manager=backend.locks,
+            store=ScheduleStore(backend),
+            signal_dispatcher=SignalDispatcher(),
+            owner_token="leader",
         )
         wanted = _def(sched_name, cron="0 1 * * *", fire_ts_ms=None)
         try:
             await backend.schedules.add(
-                sched_name, msgspec.json.encode(_def(sched_name, cron="0 1 * * *", disabled=True)), None,
+                sched_name,
+                msgspec.json.encode(_def(sched_name, cron="0 1 * * *", disabled=True)),
+                None,
             )
 
             async def _report() -> None:
                 await backend.schedules.report_cron(
-                    sched_name, cron_fingerprint(wanted), msgspec.json.encode(wanted),
+                    sched_name,
+                    cron_fingerprint(wanted),
+                    msgspec.json.encode(wanted),
                     live_window_ms=150,
                 )
 

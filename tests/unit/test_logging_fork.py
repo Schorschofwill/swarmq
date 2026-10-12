@@ -69,7 +69,7 @@ import threading
 import time
 import weakref
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, override
 from unittest.mock import MagicMock
 
 import pytest
@@ -96,6 +96,7 @@ RELEASE = threading.Event()
 class RecordingHandler(logging.Handler):
     """Per dictConfig (``"()"``) referenzierbarer Sammel-Handler."""
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         with RECORDED:
             RECORDS.append(record)
@@ -106,6 +107,7 @@ class BlockingHandler(RecordingHandler):
     """Haelt den Listener beim ersten Record fest, bis ``RELEASE`` gesetzt
     ist -- im Elternprozess. Im Kind ist ``ENTERED`` schon gesetzt."""
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         if not ENTERED.is_set():
             ENTERED.set()
@@ -164,7 +166,9 @@ def isolated_logging(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 
 def _configure_file_mode(
-    tmp_path: pathlib.Path, handler: str = "RecordingHandler", **queue_handler: object,
+    tmp_path: pathlib.Path,
+    handler: str = "RecordingHandler",
+    **queue_handler: object,
 ) -> logging.handlers.QueueHandler:
     config = {
         "version": 1,
@@ -197,7 +201,8 @@ def _wait_for_message(message: str, timeout: float = 2.0) -> bool:
     ids=["queue.Queue", "queue.SimpleQueue"],
 )
 def test_the_child_does_not_replay_records_inherited_in_the_file_mode_queue(
-    tmp_path: pathlib.Path, queue_config: dict[str, object],
+    tmp_path: pathlib.Path,
+    queue_config: dict[str, object],
 ) -> None:
     _configure_file_mode(tmp_path, "BlockingHandler", **queue_config)
     log = logging.getLogger("app")
@@ -214,7 +219,8 @@ def test_the_child_does_not_replay_records_inherited_in_the_file_mode_queue(
 
 
 def test_a_multiprocessing_queue_is_kept_in_the_child(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     handler = _configure_file_mode(tmp_path, queue={"()": "multiprocessing.Queue"})
     inherited = handler.queue
@@ -395,6 +401,7 @@ class SignallingLock(SpyLock):
         self.owner = owner
         self.taken_by_owner = threading.Event()
 
+    @override
     def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
         acquired = super().acquire(blocking, timeout)
         if acquired and threading.get_ident() == self.owner:
@@ -408,7 +415,7 @@ def test_fork_does_not_deadlock_with_a_thread_holding_the_logging_lock(
     handler = _configure_file_mode(tmp_path)
     (target,) = handler.listener.handlers  # type: ignore[union-attr]
     lock = SignallingLock(owner=threading.get_ident())
-    target.lock = lock  # type: ignore[assignment]
+    target.lock = lock
     holds_module_lock = threading.Event()
 
     def reconfigure() -> None:
@@ -433,7 +440,8 @@ def test_fork_does_not_deadlock_with_a_thread_holding_the_logging_lock(
 
 
 def test_the_child_can_fork_again_without_hook_errors(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _configure_file_mode(tmp_path)
     hook_errors: list[object] = []
@@ -559,7 +567,7 @@ def test_multiprocessing_exit_before_shutdown_logging_writes_all_records(
 
         # Wie im Kind von ``multiprocessing.Process``: keine geerbten
         # Finalizer und Kinder des Testprozesses.
-        multiprocessing.util._finalizer_registry.clear()
+        multiprocessing.util._finalizer_registry.clear()  # type: ignore[attr-defined]  # private API, fehlt in typeshed
         multiprocessing.process._children.clear()  # type: ignore[attr-defined]
         thread_errors: list[object] = []
         threading.excepthook = thread_errors.append
@@ -588,7 +596,7 @@ def test_a_record_after_multiprocessing_closed_the_pipe_is_counted_as_dropped(
 
         from swarmq.logging import dropped_log_records
 
-        multiprocessing.util._finalizer_registry.clear()
+        multiprocessing.util._finalizer_registry.clear()  # type: ignore[attr-defined]  # private API, fehlt in typeshed
         multiprocessing.process._children.clear()  # type: ignore[attr-defined]
         thread_errors: list[object] = []
         threading.excepthook = thread_errors.append
@@ -617,7 +625,7 @@ def test_a_sentinel_left_in_a_closed_queue_is_not_counted_as_dropped(
 
         from swarmq.logging import dropped_log_records
 
-        multiprocessing.util._finalizer_registry.clear()
+        multiprocessing.util._finalizer_registry.clear()  # type: ignore[attr-defined]  # private API, fehlt in typeshed
         multiprocessing.process._children.clear()  # type: ignore[attr-defined]
         handler = _configure_file_mode(tmp_path, queue={"()": "multiprocessing.Queue"})
         listener = handler.listener

@@ -36,7 +36,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from typing import Any, ClassVar
+from typing import Any, ClassVar, override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -103,7 +103,13 @@ def _message(task_name: str, queue: str) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def _report_tasks() -> tuple[type[Task], type[Task]]:
+class _ReportTask(Task):
+    """Gemeinsame Basis ohne ``task_info``: wird nicht registriert, typisiert nur ``runs``."""
+
+    runs: ClassVar[list[str]]
+
+
+def _report_tasks() -> tuple[type[_ReportTask], type[_ReportTask]]:
     """Zwei Apps mit gleichnamigem Task.
 
     Erst im Test definiert: Auf Modulebene stuenden beide Klassen unter
@@ -112,17 +118,19 @@ def _report_tasks() -> tuple[type[Task], type[Task]]:
     autouse-Fixture ``_reset_task_registry`` raeumt nach dem Test auf.
     """
 
-    class _ReportA(Task):
+    class _ReportA(_ReportTask):
         task_info = TaskInfo(name="bz10_send_report", queues=["app_a"], rate_limit="1/m")
         runs: ClassVar[list[str]] = []
 
+        @override
         async def run(self) -> None:
             type(self).runs.append("a")
 
-    class _ReportB(Task):
+    class _ReportB(_ReportTask):
         task_info = TaskInfo(name="bz10_send_report", queues=["app_b"], rate_limit="1/m")
         runs: ClassVar[list[str]] = []
 
+        @override
         async def run(self) -> None:
             type(self).runs.append("b")
 
@@ -158,6 +166,7 @@ class _ExportA(Task):
     started: ClassVar[asyncio.Event]
     finish: ClassVar[asyncio.Event]
 
+    @override
     async def run(self) -> None:
         type(self).started.set()
         await type(self).finish.wait()
@@ -167,6 +176,7 @@ class _ExportB(Task):
     task_info = TaskInfo(name="bz10_export_b", queues=["app_b"], lock="export", hard_timeout=30)
     runs: ClassVar[list[str]] = []
 
+    @override
     async def run(self) -> None:
         type(self).runs.append("b")
 
@@ -304,7 +314,9 @@ async def test_other_apps_cron_is_published_through_that_apps_broker(valkey_url:
     await _run_two_apps(valkey_url, broker_a, broker_b, published_b, ("bz10-a", "bz10-b"))
 
     queues_a = [c.args[0] for c in broker_a.publish.await_args_list]
-    assert published_b.is_set() and "app_b" not in queues_a, (
+    msg = (
         f"der Cron von App B ging ueber den Broker von App A (Queues: {queues_a}); "
         "liegen die Apps auf getrennten Brokern/vhosts, landet er dort ohne Consumer"
     )
+    assert published_b.is_set(), msg
+    assert "app_b" not in queues_a, msg

@@ -19,16 +19,16 @@ def _parse(data: bytes) -> list[list[bytes]]:
     pos = 0
     while pos < len(data):
         end = data.index(b"\r\n", pos)
-        assert data[pos:pos + 1] == b"*"
-        count = int(data[pos + 1:end])
+        assert data[pos : pos + 1] == b"*"
+        count = int(data[pos + 1 : end])
         pos = end + 2
         argv: list[bytes] = []
         for _ in range(count):
             end = data.index(b"\r\n", pos)
-            assert data[pos:pos + 1] == b"$"
-            size = int(data[pos + 1:end])
+            assert data[pos : pos + 1] == b"$"
+            size = int(data[pos + 1 : end])
             pos = end + 2
-            argv.append(data[pos:pos + size])
+            argv.append(data[pos : pos + size])
             pos += size + 2
         commands.append(argv)
     return commands

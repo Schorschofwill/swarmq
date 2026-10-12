@@ -21,6 +21,7 @@ import subprocess
 import sys
 import uuid
 from pathlib import Path
+from typing import override
 
 import pytest
 
@@ -63,6 +64,7 @@ def _run_cli(
         env=env,
         capture_output=True,
         text=True,
+        check=False,
         timeout=30,
     )
 
@@ -71,11 +73,14 @@ async def _dlq_count(rabbitmq_url: str, queue: str) -> int:
     """Return the current message count in ``{queue}.XQ`` via passive
     declare (always returns fresh broker-side count)."""
     import aio_pika
+
     conn = await aio_pika.connect_robust(rabbitmq_url)
     try:
         ch = await conn.channel()
         decl = await ch.declare_queue(f"{queue}.XQ", passive=True)
-        return decl.declaration_result.message_count
+        count = decl.declaration_result.message_count
+        assert count is not None
+        return count
     finally:
         await conn.close()
 
@@ -96,17 +101,20 @@ async def _poison_queue(
     DLQ count rather than relying on TASK_FAILED signal wiring — the
     count is the authoritative source for "message is in DLQ."
     """
+
     class PoisonTask(Task):
         # max_retries=1 keeps the retry-exhaustion DLQ path exercised
         # (since Härtung R2, max_retries=0 also DLQ-routes — the old
         # "silently stores and acks" gate is gone).
         task_info = TaskInfo(
-            name=task_name, queues=[queue],
+            name=task_name,
+            queues=[queue],
             max_retries=1,
             retry_backoff="fixed",
             retry_base_delay=0.1,
         )
 
+        @override
         async def run(self) -> None:
             raise ValueError("poison")
 
@@ -118,7 +126,10 @@ async def _poison_queue(
     worker_broker = RabbitMQBroker(rabbitmq_url)
     worker_backend = ValkeyBackend(valkey_url)
     worker_app = SwarmQ(
-        worker_broker, worker_backend, queues=[queue], concurrency=4,
+        worker_broker,
+        worker_backend,
+        queues=[queue],
+        concurrency=4,
     )
 
     task_ids: list[str] = []
@@ -141,8 +152,7 @@ async def _poison_queue(
                 await asyncio.sleep(0.2)
             else:
                 raise AssertionError(
-                    f"DLQ never reached {count} messages "
-                    f"(got {await _dlq_count(rabbitmq_url, queue)})"
+                    f"DLQ never reached {count} messages (got {await _dlq_count(rabbitmq_url, queue)})"
                 )
             await asyncio.sleep(0.3)
         finally:
@@ -154,24 +164,27 @@ async def _poison_queue(
     return task_ids
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_dlq_list_finds_poisoned_messages(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
 ):
     queue = _unique_queue()
     task_name = _task_name("poison")
     await _poison_queue(
-        rabbitmq_url=rabbitmq_url, valkey_url=valkey_url,
-        queue=queue, task_name=task_name, count=3,
+        rabbitmq_url=rabbitmq_url,
+        valkey_url=valkey_url,
+        queue=queue,
+        task_name=task_name,
+        count=3,
     )
 
     result = _run_cli(
         ["dlq", "list", "--queue", queue, "--format", "json"],
-        rabbitmq_url, valkey_url,
+        rabbitmq_url,
+        valkey_url,
     )
-    assert result.returncode == 0, (
-        f"dlq list failed: rc={result.returncode} "
-        f"stderr={result.stderr!r}"
-    )
+    assert result.returncode == 0, f"dlq list failed: rc={result.returncode} stderr={result.stderr!r}"
     data = json.loads(result.stdout)
     entries = data["entries"]
     assert len(entries) == 3
@@ -179,8 +192,10 @@ async def test_dlq_list_finds_poisoned_messages(
     assert names == {task_name}
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_dlq_list_empty_queue_returns_empty(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
 ):
     queue = _unique_queue()
     # Declare the main queue (auto-creates the .XQ) but don't poison.
@@ -193,31 +208,36 @@ async def test_dlq_list_empty_queue_returns_empty(
 
     result = _run_cli(
         ["dlq", "list", "--queue", queue, "--format", "json"],
-        rabbitmq_url, valkey_url,
+        rabbitmq_url,
+        valkey_url,
     )
     assert result.returncode == 0
     data = json.loads(result.stdout)
     assert data["entries"] == []
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_dlq_inspect_shows_payload_and_retry_count(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
 ):
     queue = _unique_queue()
     task_name = _task_name("inspect")
     task_ids = await _poison_queue(
-        rabbitmq_url=rabbitmq_url, valkey_url=valkey_url,
-        queue=queue, task_name=task_name, count=2,
+        rabbitmq_url=rabbitmq_url,
+        valkey_url=valkey_url,
+        queue=queue,
+        task_name=task_name,
+        count=2,
     )
     tid = task_ids[0]
 
     result = _run_cli(
         ["dlq", "inspect", tid, "--queue", queue, "--format", "json"],
-        rabbitmq_url, valkey_url,
+        rabbitmq_url,
+        valkey_url,
     )
-    assert result.returncode == 0, (
-        f"dlq inspect failed: stderr={result.stderr!r}"
-    )
+    assert result.returncode == 0, f"dlq inspect failed: stderr={result.stderr!r}"
     data = json.loads(result.stdout)
     assert data["task_id"] == tid
     assert data["task_name"] == task_name
@@ -225,13 +245,13 @@ async def test_dlq_inspect_shows_payload_and_retry_count(
     # header records the final retry_count value (1) at DLQ time.
     headers = data.get("headers", {})
     retry_count = headers.get("x-swarmq-retry-count")
-    assert retry_count in (1, "1"), (
-        f"unexpected retry-count header: {retry_count!r}"
-    )
+    assert retry_count in (1, "1"), f"unexpected retry-count header: {retry_count!r}"
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_dlq_inspect_unknown_task_id_exits_3(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
 ):
     queue = _unique_queue()
     # Declare main queue so the XQ exists and the scan doesn't error.
@@ -244,22 +264,27 @@ async def test_dlq_inspect_unknown_task_id_exits_3(
 
     result = _run_cli(
         ["dlq", "inspect", "does-not-exist", "--queue", queue],
-        rabbitmq_url, valkey_url,
+        rabbitmq_url,
+        valkey_url,
     )
     assert result.returncode == 3, (
-        f"expected exit code 3 (not-found); got {result.returncode} "
-        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        f"expected exit code 3 (not-found); got {result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}"
     )
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_dlq_retry_single_republishes_into_main_queue(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
 ):
     queue = _unique_queue()
     task_name = _task_name("retry1")
     task_ids = await _poison_queue(
-        rabbitmq_url=rabbitmq_url, valkey_url=valkey_url,
-        queue=queue, task_name=task_name, count=3,
+        rabbitmq_url=rabbitmq_url,
+        valkey_url=valkey_url,
+        queue=queue,
+        task_name=task_name,
+        count=3,
     )
 
     before_count = await _dlq_count(rabbitmq_url, queue)
@@ -267,67 +292,74 @@ async def test_dlq_retry_single_republishes_into_main_queue(
 
     result = _run_cli(
         ["dlq", "retry", task_ids[0], "--queue", queue, "--format", "json"],
-        rabbitmq_url, valkey_url,
+        rabbitmq_url,
+        valkey_url,
     )
-    assert result.returncode == 0, (
-        f"dlq retry failed: stderr={result.stderr!r}"
-    )
+    assert result.returncode == 0, f"dlq retry failed: stderr={result.stderr!r}"
     # Give the broker a moment to settle the republish.
     await asyncio.sleep(0.3)
     after_count = await _dlq_count(rabbitmq_url, queue)
-    assert after_count == 2, (
-        f"expected 2 messages left in DLQ after retrying one; got "
-        f"{after_count}"
-    )
+    assert after_count == 2, f"expected 2 messages left in DLQ after retrying one; got {after_count}"
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_dlq_retry_all_republishes_every_message(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
 ):
     queue = _unique_queue()
     task_name = _task_name("retryall")
     await _poison_queue(
-        rabbitmq_url=rabbitmq_url, valkey_url=valkey_url,
-        queue=queue, task_name=task_name, count=5,
+        rabbitmq_url=rabbitmq_url,
+        valkey_url=valkey_url,
+        queue=queue,
+        task_name=task_name,
+        count=5,
     )
 
     result = _run_cli(
         ["dlq", "retry", "--all", "--queue", queue, "--format", "json"],
-        rabbitmq_url, valkey_url,
+        rabbitmq_url,
+        valkey_url,
     )
-    assert result.returncode == 0, (
-        f"dlq retry --all failed: stderr={result.stderr!r}"
-    )
+    assert result.returncode == 0, f"dlq retry --all failed: stderr={result.stderr!r}"
     await asyncio.sleep(0.5)
     after_count = await _dlq_count(rabbitmq_url, queue)
     assert after_count == 0
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_dlq_purge_empties_queue(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
 ):
     queue = _unique_queue()
     task_name = _task_name("purge")
     await _poison_queue(
-        rabbitmq_url=rabbitmq_url, valkey_url=valkey_url,
-        queue=queue, task_name=task_name, count=4,
+        rabbitmq_url=rabbitmq_url,
+        valkey_url=valkey_url,
+        queue=queue,
+        task_name=task_name,
+        count=4,
     )
 
     assert await _dlq_count(rabbitmq_url, queue) == 4
 
     result = _run_cli(
         ["dlq", "purge", "--queue", queue],
-        rabbitmq_url, valkey_url,
+        rabbitmq_url,
+        valkey_url,
     )
     assert result.returncode == 0, (
-        f"dlq purge failed: rc={result.returncode} "
-        f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        f"dlq purge failed: rc={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}"
     )
     assert await _dlq_count(rabbitmq_url, queue) == 0
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_dlq_list_scans_beyond_default_limit(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
 ):
     """Drain-and-republish invariant: list must surface all N messages
     even when N exceeds the implicit prefetch. Poisons 25 messages,
@@ -335,22 +367,28 @@ async def test_dlq_list_scans_beyond_default_limit(
     queue = _unique_queue()
     task_name = _task_name("manydlq")
     await _poison_queue(
-        rabbitmq_url=rabbitmq_url, valkey_url=valkey_url,
-        queue=queue, task_name=task_name, count=25,
+        rabbitmq_url=rabbitmq_url,
+        valkey_url=valkey_url,
+        queue=queue,
+        task_name=task_name,
+        count=25,
     )
 
     result = _run_cli(
         [
-            "dlq", "list", "--queue", queue,
-            "--limit", "100", "--format", "json",
+            "dlq",
+            "list",
+            "--queue",
+            queue,
+            "--limit",
+            "100",
+            "--format",
+            "json",
         ],
-        rabbitmq_url, valkey_url,
+        rabbitmq_url,
+        valkey_url,
     )
-    assert result.returncode == 0, (
-        f"dlq list failed: stderr={result.stderr!r}"
-    )
+    assert result.returncode == 0, f"dlq list failed: stderr={result.stderr!r}"
     data = json.loads(result.stdout)
     entries = data["entries"]
-    assert len(entries) == 25, (
-        f"drain-and-republish scan lost messages: got {len(entries)}/25"
-    )
+    assert len(entries) == 25, f"drain-and-republish scan lost messages: got {len(entries)}/25"

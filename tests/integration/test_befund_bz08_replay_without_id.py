@@ -26,7 +26,7 @@ import asyncio
 import contextlib
 import uuid
 from collections.abc import AsyncIterator, Callable
-from typing import Any
+from typing import Any, override
 
 import pytest
 
@@ -57,6 +57,7 @@ def _tasks(queue: str, runs: list[str]) -> Any:
     class FailsOnce(Task):
         task_info = TaskInfo(name="bz08_fails_once", queues=[queue], max_retries=0)
 
+        @override
         async def run(self) -> str:
             runs.append("run")
             if len(runs) == 1:
@@ -93,6 +94,7 @@ async def _move_back_like_shovel(rabbitmq_url: str, queue: str) -> dict[str, Any
     broker = RabbitMQBroker(rabbitmq_url)
     await broker.connect()
     try:
+        assert broker._connection is not None
         channel = await broker._connection.channel()
         message = await (await channel.get_queue(f"{queue}.XQ")).get(no_ack=True)
         await channel.close()
@@ -105,7 +107,8 @@ async def _move_back_like_shovel(rabbitmq_url: str, queue: str) -> dict[str, Any
         await broker.close()
 
 
-async def test_replay_without_replay_id_runs_the_task_again(rabbitmq_url, valkey_url, queue, runs, _tasks) -> None:
+@pytest.mark.usefixtures("_tasks")
+async def test_replay_without_replay_id_runs_the_task_again(rabbitmq_url, valkey_url, queue, runs) -> None:
     with capture_swarmq_logs() as logs:
         async with _worker(rabbitmq_url, valkey_url, queue) as app:
             task_id = await app.schedule("bz08_fails_once")

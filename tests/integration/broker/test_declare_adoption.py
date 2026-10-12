@@ -144,13 +144,14 @@ async def test_other_conflict_fails_and_keeps_publish_channel(
 
 def _open_channel_numbers(broker: RabbitMQBroker) -> set[int]:
     assert broker._connection is not None
-    underlay = broker._connection.transport.connection  # type: ignore[attr-defined]
+    assert broker._connection.transport is not None
+    underlay = broker._connection.transport.connection
     return {number for number, channel in underlay.channels.items() if channel is not None and not channel.is_closed}
 
 
 async def test_no_probe_channel_stays_open(rabbitmq_url: str, broker: RabbitMQBroker, queue: str) -> None:
     await _create_like_012(rabbitmq_url, queue, delivery_limit=40)
-    await broker._ensure_publish_channel()
+    _ = await broker._ensure_publish_channel()
     before = _open_channel_numbers(broker)
 
     await broker.declare_queue(queue)

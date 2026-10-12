@@ -64,8 +64,7 @@ def _capture_help(argv_prefix: tuple[str, ...]) -> str:
     with redirect_stdout(buf_out), redirect_stderr(buf_err), pytest.raises(SystemExit) as excinfo:
         parser.parse_args([*argv_prefix, "--help"])
     assert excinfo.value.code == 0, (
-        f"--help for {argv_prefix!r} exited with {excinfo.value.code}, "
-        f"stderr={buf_err.getvalue()!r}"
+        f"--help for {argv_prefix!r} exited with {excinfo.value.code}, stderr={buf_err.getvalue()!r}"
     )
     return buf_out.getvalue()
 
@@ -103,8 +102,11 @@ def test_worker_help_describes_current_supervisor_reload_and_check_semantics() -
     assert "Missing 'watchfiles' exits with code 78 (1 under --check)" in text
     # --check: Basis-Ports sind erlaubt; beschrieben wird, was geprueft wird.
     assert "multi-process mode is not combined" not in text
-    assert "port ranges" in text and "65535" in text
-    assert "--log-config" in text and "--max-processes" in text
+    assert "port ranges" in text
+    assert "65535" in text
+    assert "--log-config" in text
+    assert "--max-processes" in text
     # Neustart per execvpe mit dem sys.orig_argv-Schnappschuss, nicht execvp.
-    assert "os.execvp()" not in text and "execvp)" not in text
+    assert "os.execvp()" not in text
+    assert "execvp)" not in text
     assert "os.execvpe()" in text

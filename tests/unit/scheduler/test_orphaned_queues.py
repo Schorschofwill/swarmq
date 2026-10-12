@@ -133,7 +133,8 @@ async def test_unreported_queue_with_backlog_and_no_consumer_is_reported(
 
     [warning] = [e for e in swarmq_logs if e["event"] == "scheduler_queue_orphaned"]
     assert warning["log_level"] == "warning"
-    assert warning["queue"] == "old" and warning["message_count"] == 3
+    assert warning["queue"] == "old"
+    assert warning["message_count"] == 3
     assert seen == [{"worker_id": "w-1", "queue": "old", "orphaned": True, "message_count": 3, "orphaned_count": 1}]
 
 
@@ -192,7 +193,8 @@ async def test_drained_queue_is_no_longer_orphaned(
     await loop.check_orphaned_queues()
 
     [resolved] = [e for e in swarmq_logs if e["event"] == "scheduler_queue_orphan_resolved"]
-    assert resolved["log_level"] == "info" and resolved["queue"] == "old"
+    assert resolved["log_level"] == "info"
+    assert resolved["queue"] == "old"
     assert seen[-1] == {"worker_id": "w-1", "queue": "old", "orphaned": False, "message_count": 0, "orphaned_count": 0}
 
 
@@ -293,7 +295,8 @@ async def test_takeover_adopt_does_not_check_only_the_periodic_tick_does(
 
     async def _probe(names: Any) -> dict[str, QueueStatus | None]:
         checked.set()
-        return await probe(names)
+        statuses: dict[str, QueueStatus | None] = await probe(names)
+        return statuses
 
     broker.queue_statuses = AsyncMock(side_effect=_probe)
     adopts: list[int] = []

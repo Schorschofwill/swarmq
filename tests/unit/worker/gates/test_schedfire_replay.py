@@ -62,7 +62,8 @@ async def test_replay_of_a_completed_fire_runs_under_its_own_key(deps: MagicMock
 
     ctx = _ctx()
     assert await gate.apply(make_message(headers=dict(replay)), ctx) is Continue
-    assert ctx.schedfire_claim is not None and ctx.schedfire_claim.key == f"{_KEY}|r1"
+    assert ctx.schedfire_claim is not None
+    assert ctx.schedfire_claim.key == f"{_KEY}|r1"
     # Duplikat des Replays (at-least-once, zweiter dlq retry): In-Flight-Claim fremd.
     assert await gate.apply(make_message(headers=dict(replay)), _ctx("fire-2")) == Terminal.never_release()
 
@@ -75,7 +76,8 @@ async def test_replay_after_a_broker_dead_letter_uses_the_death_count(
     deaths = [{"queue": "q", "count": 2, "reason": "rejected"}]
     ctx = _ctx()
     assert await gate.apply(make_message(headers={"x-swarmq-schedfire": _KEY, "x-death": deaths}), ctx) is Continue
-    assert ctx.schedfire_claim is not None and ctx.schedfire_claim.key == f"{_KEY}|#2"
+    assert ctx.schedfire_claim is not None
+    assert ctx.schedfire_claim.key == f"{_KEY}|#2"
 
 
 async def test_a_plain_duplicate_fire_keeps_the_key_and_is_skipped(deps: MagicMock, backend: InMemoryBackend) -> None:
@@ -91,6 +93,7 @@ def test_completed_marker_ttl_follows_the_wait_within_its_caps(monkeypatch: pyte
     ``max(base, max_age + 300)`` und ``execution_guard_backlog_ttl_s``, nie
     unter ``scheduler_dedup_ttl``."""
     config = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x")
+    assert config.scheduler_dedup_ttl is not None
     base_ms = int(config.scheduler_dedup_ttl * 1000)
     monkeypatch.setattr("swarmq.worker.gates.schedfire.time.time", lambda: 1_760_000_000.0)
     waited = {"x-swarmq-enqueued-at": 1_760_000_000 - 7_200}

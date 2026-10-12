@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
+from typing import override
 
 import pytest
 
@@ -33,6 +34,7 @@ async def test_successful_roundtrip(rabbitmq_url: str, valkey_url: str) -> None:
     class AddTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self, a: int, b: int) -> int:
             return a + b
 
@@ -78,6 +80,7 @@ async def test_task_with_error(rabbitmq_url: str, valkey_url: str) -> None:
     class FailTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self) -> None:
             raise ValueError("intentional error")
 
@@ -120,6 +123,7 @@ async def test_task_with_none_return(rabbitmq_url: str, valkey_url: str) -> None
     class NoneTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self) -> None:
             return None
 

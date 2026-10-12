@@ -10,7 +10,9 @@ from swarmq.worker.compute import envelope as env
 
 def test_success_envelope_keeps_picklable_value():
     e = env.success_envelope("t1", {"a": 1})
-    assert e.ok and e.value == {"a": 1} and e.error() is None
+    assert e.ok
+    assert e.value == {"a": 1}
+    assert e.error() is None
     assert pickle.loads(pickle.dumps(e)).value == {"a": 1}
 
 
@@ -59,11 +61,18 @@ def test_compute_job_carries_the_child_logging_settings_across_pickle():
     dem bisherigen Verhalten (eingebaute Einrichtung)."""
     plain = env.ComputeJob("t1", "task", "q", (), {})
     assert (
-        plain.log_config_json, plain.configure_logging, plain.logger_levels, plain.log_queue_size,
+        plain.log_config_json,
+        plain.configure_logging,
+        plain.logger_levels,
+        plain.log_queue_size,
     ) == (None, True, (), 10_000)
 
     job = env.ComputeJob(
-        "t1", "task", "q", (), {},
+        "t1",
+        "task",
+        "q",
+        (),
+        {},
         log_level="CRITICAL",
         log_config_json='{"version": 1}',
         configure_logging=False,

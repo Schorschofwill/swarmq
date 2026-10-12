@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import signal
+import subprocess
 import time
 import uuid
 
@@ -52,6 +53,7 @@ async def _counter(stack: ChaosStack, key: str) -> int:
     backend = ValkeyBackend(stack.valkey_url)
     await backend.connect()
     try:
+        assert backend._client is not None
         raw = await backend._client.get(key)
         return int(raw) if raw is not None else 0
     finally:
@@ -95,9 +97,8 @@ def _cleanup_tasks():
 class TestChordIdempotency:
     """One chaos_stack per class (amortised ~10s startup)."""
 
-    async def test_header_redelivery_fires_body_exactly_once(
-        self, chaos_stack: ChaosStack, _cleanup_tasks
-    ) -> None:
+    @pytest.mark.usefixtures("_cleanup_tasks")
+    async def test_header_redelivery_fires_body_exactly_once(self, chaos_stack: ChaosStack) -> None:
         """SIGKILL the worker mid-fan-in so unacked header members redeliver
         to a successor. The chord body must still fire exactly once and the
         workflow must complete with the correct aggregate."""
@@ -108,7 +109,7 @@ class TestChordIdempotency:
         # Short execution-guard TTL: B runs the redelivered members only once
         # A's running markers expired (default 60 s > the 60 s wait below).
         proc_a = _spawn_worker(chaos_stack, queue, concurrency=4, env_extra=SHORT_EXECUTION_GUARD_ENV)
-        proc_b: object | None = None
+        proc_b: subprocess.Popen[str] | None = None
         try:
             _wait_for_worker_started(proc_a)
 
@@ -147,8 +148,9 @@ class TestChordIdempotency:
             if proc_b is not None:
                 _kill_subprocess(proc_b)
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_chords_under_latency_each_fire_body_once(
-        self, chaos_stack: ChaosStack, toxiproxy: ToxiproxyClient, _cleanup_tasks
+        self, chaos_stack: ChaosStack, toxiproxy: ToxiproxyClient
     ) -> None:
         """Run several chords back-to-back while the broker AND backend paths
         carry injected latency + jitter. Each chord must complete correctly

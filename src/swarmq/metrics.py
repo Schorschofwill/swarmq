@@ -40,11 +40,13 @@ method. Attaching the HTTP exposition server is a worker-side concern
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncGenerator, Iterator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
-try:
+if TYPE_CHECKING:
+    # Typprüfer sehen die echten (typisierten) Klassen; der None-Fallback
+    # unten existiert nur zur Laufzeit ohne das optionale Paket.
     import prometheus_client
     from prometheus_client import (
         CollectorRegistry,
@@ -55,29 +57,38 @@ try:
     )
     from prometheus_client.core import CounterMetricFamily
 
-    _HAVE_PROMETHEUS = True
-except ImportError:  # pragma: no cover — optional
-    prometheus_client = None  # type: ignore[assignment]
-    CollectorRegistry = None  # type: ignore[assignment,misc]
-    Counter = None  # type: ignore[assignment,misc]
-    Gauge = None  # type: ignore[assignment,misc]
-    Histogram = None  # type: ignore[assignment,misc]
-    generate_latest = None  # type: ignore[assignment]
-    CounterMetricFamily = None  # type: ignore[assignment,misc]
-
-    _HAVE_PROMETHEUS = False
-
-if TYPE_CHECKING:
     from swarmq.signals import SignalDispatcher
+
+    _HAVE_PROMETHEUS: bool = True
+else:
+    try:
+        import prometheus_client
+        from prometheus_client import (
+            CollectorRegistry,
+            Counter,
+            Gauge,
+            Histogram,
+            generate_latest,
+        )
+        from prometheus_client.core import CounterMetricFamily
+
+        _HAVE_PROMETHEUS = True
+    except ImportError:  # pragma: no cover — optional
+        prometheus_client = None  # type: ignore[assignment]  # Platzhalter, wenn prometheus_client fehlt
+        CollectorRegistry = None  # type: ignore[assignment,misc]  # Platzhalter, wenn prometheus_client fehlt
+        Counter = None  # type: ignore[assignment,misc]  # Platzhalter, wenn prometheus_client fehlt
+        Gauge = None  # type: ignore[assignment,misc]  # Platzhalter, wenn prometheus_client fehlt
+        Histogram = None  # type: ignore[assignment,misc]  # Platzhalter, wenn prometheus_client fehlt
+        generate_latest = None  # type: ignore[assignment]  # Platzhalter, wenn prometheus_client fehlt
+        CounterMetricFamily = None  # type: ignore[assignment,misc]  # Platzhalter, wenn prometheus_client fehlt
+
+        _HAVE_PROMETHEUS = False
+
 
 # CONTENT_TYPE used by /metrics endpoint. Falls back to the Prometheus
 # text-exposition default when the client is absent so callers do not
 # have to branch.
-CONTENT_TYPE = (
-    prometheus_client.CONTENT_TYPE_LATEST
-    if _HAVE_PROMETHEUS
-    else "text/plain; version=0.0.4; charset=utf-8"
-)
+CONTENT_TYPE = prometheus_client.CONTENT_TYPE_LATEST if _HAVE_PROMETHEUS else "text/plain; version=0.0.4; charset=utf-8"
 
 
 class _NoopMetric:
@@ -92,11 +103,20 @@ class _NoopMetric:
     def labels(self, *_a: Any, **_kw: Any) -> _NoopMetric:
         return self
 
-    def inc(self, _amount: float = 1.0) -> None: pass
-    def dec(self, _amount: float = 1.0) -> None: pass
-    def set(self, _value: float) -> None: pass
-    def remove(self, *_labelvalues: Any) -> None: pass
-    def observe(self, _value: float) -> None: pass
+    def inc(self, _amount: float = 1.0) -> None:
+        pass
+
+    def dec(self, _amount: float = 1.0) -> None:
+        pass
+
+    def set(self, _value: float) -> None:
+        pass
+
+    def remove(self, *_labelvalues: Any) -> None:
+        pass
+
+    def observe(self, _value: float) -> None:
+        pass
 
 
 class _LogRecordsDroppedCollector:
@@ -156,8 +176,20 @@ class Metrics:
                 # Buckets tuned for mixed-workload queues: sub-second
                 # latency bands + long-tail coverage up to 5 min.
                 buckets=(
-                    0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5,
-                    1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 300.0,
+                    0.005,
+                    0.01,
+                    0.025,
+                    0.05,
+                    0.1,
+                    0.25,
+                    0.5,
+                    1.0,
+                    2.5,
+                    5.0,
+                    10.0,
+                    30.0,
+                    60.0,
+                    300.0,
                 ),
             )
             self.tasks_active: Gauge | _NoopMetric = Gauge(
@@ -192,10 +224,7 @@ class Metrics:
             )
             self.tasks_rejected_total: Counter | _NoopMetric = Counter(
                 f"{namespace}_tasks_rejected_total",
-                (
-                    "Messages handed to the broker DLX without diagnostic "
-                    "headers, by reason (U6, R13)"
-                ),
+                ("Messages handed to the broker DLX without diagnostic headers, by reason (U6, R13)"),
                 labelnames=("queue", "reason"),
                 registry=self.registry,
             )
@@ -250,19 +279,13 @@ class Metrics:
             )
             self.consumer_reregistrations_total: Counter | _NoopMetric = Counter(
                 f"{namespace}_consumer_reregistrations_total",
-                (
-                    "Consumers the worker registered again after the broker "
-                    "ended them (consumer timeout, channel close)"
-                ),
+                ("Consumers the worker registered again after the broker ended them (consumer timeout, channel close)"),
                 labelnames=("queue",),
                 registry=self.registry,
             )
             self.execution_guard_events_total: Counter | _NoopMetric = Counter(
                 f"{namespace}_execution_guard_events_total",
-                (
-                    "Execution guard events: duplicate_skipped, deferred, "
-                    "orphan_limit, lease_lost, defer_stalled"
-                ),
+                ("Execution guard events: duplicate_skipped, deferred, orphan_limit, lease_lost, defer_stalled"),
                 labelnames=("event",),
                 registry=self.registry,
             )
@@ -361,7 +384,7 @@ class Metrics:
     def enabled(self) -> bool:
         return self._enabled
 
-    def count_consumer_reregistration(self, queue: str, reason: str) -> None:
+    def count_consumer_reregistration(self, queue: str, reason: str) -> None:  # noqa: ARG002 - Hook-Signatur, Grund steht im Log
         """Hook des Consumer-Waechters (Plan 2026-10-08-1541, U6). Der Grund
         steht im Log ``consumer_reregistered``, nicht im Label."""
         self.consumer_reregistrations_total.labels(queue=queue).inc()
@@ -399,14 +422,19 @@ class MetricsServer:
     """
 
     def __init__(
-        self, metrics: Metrics,
-        host: str = "127.0.0.1", port: int = 9090,
+        self,
+        metrics: Metrics,
+        host: str = "127.0.0.1",
+        port: int = 9090,
     ) -> None:
         from swarmq._http import AsyncHttpServer
+
         self._metrics = metrics
         self._server = AsyncHttpServer(
             self._handle_request,
-            host=host, port=port, label="metrics_server",
+            host=host,
+            port=port,
+            label="metrics_server",
         )
 
     async def start(self) -> None:
@@ -417,12 +445,13 @@ class MetricsServer:
 
     async def _handle_request(
         self,
-        method: str,
+        method: str,  # noqa: ARG002 - Handler-Signatur des HTTP-Servers vorgegeben
         path: str,
         writer: asyncio.StreamWriter,
     ) -> None:
         from swarmq._http import write_http_response
-        if path.split("?")[0] != "/metrics":
+
+        if path.split("?", maxsplit=1)[0] != "/metrics":
             await write_http_response(writer, 404, b"not found\n")
             return
         body = self._metrics.render()
@@ -431,8 +460,10 @@ class MetricsServer:
 
 @asynccontextmanager
 async def serve_metrics(
-    metrics: Metrics, host: str = "127.0.0.1", port: int = 9090,
-) -> AsyncIterator[MetricsServer]:
+    metrics: Metrics,
+    host: str = "127.0.0.1",
+    port: int = 9090,
+) -> AsyncGenerator[MetricsServer]:
     """Async context manager: start MetricsServer on enter, stop on exit."""
     server = MetricsServer(metrics, host=host, port=port)
     await server.start()
@@ -443,7 +474,8 @@ async def serve_metrics(
 
 
 def _install_lifecycle_collectors(
-    dispatcher: SignalDispatcher, metrics: Metrics,
+    dispatcher: SignalDispatcher,
+    metrics: Metrics,
 ) -> None:
     from swarmq.signals import Signal
 
@@ -457,12 +489,15 @@ def _install_lifecycle_collectors(
         name = kw.get("task_name", "")
         metrics.tasks_active.labels(queue=queue).dec()
         metrics.tasks_total.labels(
-            task_name=name, queue=queue, outcome="completed",
+            task_name=name,
+            queue=queue,
+            outcome="completed",
         ).inc()
         duration_ms = kw.get("duration_ms")
         if isinstance(duration_ms, (int, float)):
             metrics.task_duration_seconds.labels(
-                task_name=name, queue=queue,
+                task_name=name,
+                queue=queue,
             ).observe(duration_ms / 1000.0)
 
     @dispatcher.on_signal(Signal.TASK_RETRYING)
@@ -479,7 +514,8 @@ def _install_recycling_counter(dispatcher: SignalDispatcher, metrics: Metrics) -
 
     async def _count(**kw: Any) -> None:
         metrics.recyclings_total.labels(
-            kind=str(kw.get("kind", "")), reason=str(kw.get("reason", "")),
+            kind=str(kw.get("kind", "")),
+            reason=str(kw.get("reason", "")),
         ).inc()
 
     dispatcher.on_signal(Signal.WORKER_RECYCLING)(_count)
@@ -496,7 +532,8 @@ def _install_rejected_counter(dispatcher: SignalDispatcher, metrics: Metrics) ->
 
     async def _count(**kw: Any) -> None:
         metrics.tasks_rejected_total.labels(
-            queue=str(kw.get("queue") or ""), reason=str(kw.get("reason") or ""),
+            queue=str(kw.get("queue") or ""),
+            reason=str(kw.get("reason") or ""),
         ).inc()
 
     dispatcher.on_signal(Signal.TASK_REJECTED)(_count)
@@ -508,7 +545,8 @@ def _install_rejected_counter(dispatcher: SignalDispatcher, metrics: Metrics) ->
 
 
 def _install_outcome_counters(
-    dispatcher: SignalDispatcher, metrics: Metrics,
+    dispatcher: SignalDispatcher,
+    metrics: Metrics,
 ) -> None:
     """Ein generischer Zähler-Handler pro Terminal-Outcome.
 
@@ -528,6 +566,7 @@ def _install_outcome_counters(
         (Signal.TASK_DLQ, "dlq", False),
     ]
     for signal, outcome, dec_active in outcomes:
+
         def _make(outcome: str = outcome, dec_active: bool = dec_active) -> Any:
             async def _count(**kw: Any) -> None:
                 queue = kw.get("queue", "")
@@ -538,12 +577,15 @@ def _install_outcome_counters(
                     queue=queue,
                     outcome=outcome,
                 ).inc()
+
             return _count
+
         dispatcher.on_signal(signal)(_make())
 
 
 def _install_scheduler_gauge(
-    dispatcher: SignalDispatcher, metrics: Metrics,
+    dispatcher: SignalDispatcher,
+    metrics: Metrics,
 ) -> None:
     """Leader-Status als 0/1-Gauge, damit Split-Brain (zwei Leader) und
     Zero-Leader (Cron still gestoppt) alertbar sind; dazu der Zähler langer
@@ -608,7 +650,8 @@ def _install_scheduler_gauge(
 
 
 def install_signal_collectors(
-    dispatcher: SignalDispatcher, metrics: Metrics,
+    dispatcher: SignalDispatcher,
+    metrics: Metrics,
 ) -> None:
     """Register Metrics-updater handlers on the given SignalDispatcher.
 

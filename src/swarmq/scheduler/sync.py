@@ -2,6 +2,7 @@
 übernimmt pro Name die jüngste lebende Cron-Meldung aller Worker
 (Plan 2026-10-08-1541, KTD10) per ``apply_static_definition`` in den Store
 (CLI-Einträge schatten mit Warnung; geänderte Cron behält ``disabled``)."""
+
 from __future__ import annotations
 
 import time
@@ -50,6 +51,7 @@ class SchedulerCronSync:
     _reported_names: frozenset[str] = frozenset()
 
     if TYPE_CHECKING:
+
         async def _emit(self, signal: Signal, **extra: Any) -> None: ...
         async def prune_static_crons(self, snapshot: CronReports) -> None: ...
         async def _load_known_names(self, schedules: Any) -> None: ...
@@ -57,7 +59,10 @@ class SchedulerCronSync:
         async def _maybe_recheck_valkey(self) -> None: ...
 
     async def _replan_if_unscored(
-        self, existing: ScheduleDefinition, existing_raw: bytes, fire_ts_ms: int,
+        self,
+        existing: ScheduleDefinition,
+        existing_raw: bytes,
+        fire_ts_ms: int,
     ) -> None:
         """Heilung (U3): eine aktive, unveränderte Definition ohne Score im
         Fire-Index (etwa nach ``scheduler_next_fire_failed``) neu einplanen.
@@ -67,7 +72,10 @@ class SchedulerCronSync:
         healed = msgspec.structs.replace(existing, fire_ts_ms=fire_ts_ms)
         try:
             await self._backend.schedules.replan_if_unchanged(
-                name, existing_raw, msgspec.json.encode(healed), fire_ts_ms,
+                name,
+                existing_raw,
+                msgspec.json.encode(healed),
+                fire_ts_ms,
             )
         except BackendConnectionError as exc:
             logger.warning(
@@ -82,9 +90,7 @@ class SchedulerCronSync:
         try:
             snapshot = await self._backend.schedules.cron_reports()
         except BackendConnectionError as exc:
-            logger.warning(
-                "scheduler_cron_reports_read_failed", **_error_fields(exc)
-            )
+            logger.warning("scheduler_cron_reports_read_failed", **_error_fields(exc))
             return
         now_ms = int(time.time() * 1000)
         choices = choose_reports(
@@ -116,7 +122,7 @@ class SchedulerCronSync:
                 )
             try:
                 desired = _validated(choice.report.payload, now_ms)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - ungültige Meldung wird geloggt und übersprungen
                 logger.error(
                     "scheduler_cron_report_invalid",
                     schedule_name=choice.report.name,
@@ -138,12 +144,12 @@ class SchedulerCronSync:
                 )
             )
         except BackendConnectionError as exc:
-            logger.warning(
-                "scheduler_cron_reports_prune_failed", **_error_fields(exc)
-            )
+            logger.warning("scheduler_cron_reports_prune_failed", **_error_fields(exc))
 
     async def apply_static_definition(
-        self, desired: ScheduleDefinition, now_ms: int,
+        self,
+        desired: ScheduleDefinition,
+        now_ms: int,
     ) -> None:
         """Insert-or-Update einer gewünschten statischen Definition gegen
         den Bestand (Plan 2026-10-08-1541, U3/KTD12). ``desired.cron`` ist
@@ -219,18 +225,13 @@ class SchedulerCronSync:
             return
 
         try:
-            existing = msgspec.json.decode(
-                existing_raw, type=ScheduleDefinition
-            )
+            existing = msgspec.json.decode(existing_raw, type=ScheduleDefinition)
         except msgspec.DecodeError as exc:
             logger.error(
                 "scheduler_sync_decode_error_skipped",
                 schedule_name=schedule_name,
                 **_error_fields(exc),
-                hint=(
-                    "run 'swarmq schedule remove --permanent <name>' "
-                    "to clear the malformed entry, then redeploy"
-                ),
+                hint=("run 'swarmq schedule remove --permanent <name>' to clear the malformed entry, then redeploy"),
             )
             return
 
@@ -247,13 +248,9 @@ class SchedulerCronSync:
             # ``scheduler_next_fire_failed``) plant der Leader neu ein.
             if not existing.disabled:
                 assert definition.fire_ts_ms is not None  # aus der Cron berechnet
-                await self._replan_if_unscored(
-                    existing, existing_raw, definition.fire_ts_ms
-                )
+                await self._replan_if_unscored(existing, existing_raw, definition.fire_ts_ms)
             return
-        propagated = msgspec.structs.replace(
-            definition, disabled=existing.disabled
-        )
+        propagated = msgspec.structs.replace(definition, disabled=existing.disabled)
         logger.info(
             "scheduler_static_cron_updated",
             schedule_name=schedule_name,
@@ -267,12 +264,8 @@ class SchedulerCronSync:
             score = await self._backend.schedules.fire_ts(schedule_name)
             due = score is not None and score <= now_ms
             if due:
-                propagated = msgspec.structs.replace(
-                    propagated, fire_ts_ms=score
-                )
-            await self._store.update_static_schedule(
-                propagated, keep_fire_index=due
-            )
+                propagated = msgspec.structs.replace(propagated, fire_ts_ms=score)
+            await self._store.update_static_schedule(propagated, keep_fire_index=due)
         except BackendConnectionError as exc:
             # Per-schedule error isolation (Unit 5).
             logger.warning(
