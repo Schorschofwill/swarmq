@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import importlib.util
+import pathlib
+import types
+from annotationlib import ForwardRef
 from typing import override
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -470,6 +474,56 @@ class TestSwarmQStartWorkerDiValidation:
             await app.start_worker()
 
         MockWorker.return_value.start.assert_awaited_once()
+
+
+def _load_pep649_tasks(request: pytest.FixtureRequest) -> types.ModuleType:
+    """Lädt ``_pep649_run_annotations.py`` je Test frisch, damit die Tasks in
+    der gerade geleerten Registry stehen (N2)."""
+    path = pathlib.Path(__file__).with_name("_pep649_run_annotations.py")
+    spec = importlib.util.spec_from_file_location(f"_pep649_run_annotations__{request.node.name}", path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class TestSwarmQBuildToleratesRunAnnotations:
+    """N2 (Plan 2026-10-12-1105, MR 7, von Georg am 2026-10-12 entschieden):
+    Der Bau der App liest die Annotationen von ``run()`` tolerant. Ein
+    unauflösbarer Name (etwa nur unter ``TYPE_CHECKING`` importiert) lässt
+    ``SwarmQ(...)`` nicht mehr mit ``NameError`` scheitern.
+
+    Test-Liste:
+    - PEP 563: unauflösbarer Parameter- und Rückgabetyp → Bau gelingt,
+      Rückgabetyp als ForwardRef
+    - PEP 649: dasselbe ohne Future-Import
+    """
+
+    @pytest.mark.usefixtures("empty_task_registry")
+    def test_pep563_unresolvable_run_annotations_build_app(self, broker, backend):
+        class UnresolvableTask(Task):
+            task_info = TaskInfo(name="n2_pep563", queues=["q"])
+
+            @override
+            async def run(self, x: Undefined) -> Missing:  # type: ignore[name-defined]  # noqa: F821 - absichtlich unauflösbar
+                pass
+
+        app = SwarmQ(broker, backend)
+
+        return_type = app.registry.get_entry("n2_pep563").return_type
+        assert isinstance(return_type, ForwardRef)
+        assert return_type.__forward_arg__ == "Missing"
+
+    @pytest.mark.usefixtures("empty_task_registry")
+    def test_pep649_unresolvable_run_annotations_build_app(self, broker, backend, request):
+        _load_pep649_tasks(request)
+
+        app = SwarmQ(broker, backend)
+
+        return_type = app.registry.get_entry("n2_pep649").return_type
+        assert isinstance(return_type, ForwardRef)
+        assert return_type.__forward_arg__ == "Missing"
 
 
 class TestSwarmQMiddlewareAndSignals:

@@ -21,7 +21,8 @@ Test-Liste:
 - 6 Forward-Ref auf später definierte Klasse (Alias, FromComponent) →
   Definition ok, nicht gewrappt; Start → ConfigurationError (Task, Parameter)
 - 6a Alias auflösbar plus ``x: OnlyTC`` → Start nennt ``x``
-- 7 unauflösbar ohne DI-Key → auch beim Start kein Fehler
+- 7 unauflösbar ohne DI-Key → auch beim Start kein Fehler (DI-Prüfung und
+  Registrierung beim Bau der App, N2)
 - 7a ``Depends[Svc] | None`` → beim Start als wirkungslos abgelehnt
 - 8 PEP 649, ``Annotated[Svc, FromComponent("c")]`` → gewrappt
 - 8a PEP 649, ``Depends[Later]`` → NameError mit Hinweis
@@ -43,6 +44,7 @@ from dishka.integrations.base import default_parse_dependency, is_dishka_injecte
 
 from swarmq.dishka import validate_registered_tasks
 from swarmq.exceptions import ConfigurationError
+from swarmq.registry import TaskRegistry
 
 Depends = FromDishka  # type: ignore[type-arg]  # Phoenix-Muster: Alias ohne Typargument
 _FWD = annotationlib.Format.FORWARDREF
@@ -190,10 +192,13 @@ def test_pep563_di_key_with_forward_ref_fails_worker_start(request, task_attr, t
 )
 def test_pep563_task_without_di_key_passes_worker_start(request, stem, task_attr):
     """Test 7 (Grenze, Abschnitt 7): unauflösbar und ohne erkennbaren DI-Key ->
-    kein Fehler, keine Warnung. Ebenso eine kaputte String-Annotation."""
+    kein Fehler, keine Warnung. Ebenso eine kaputte String-Annotation. N2:
+    auch die Registrierung beim Bau der App (``SwarmQ(...)``) scheitert nicht."""
     mod = _load(stem, request)
+    task = getattr(mod, task_attr)
 
-    validate_registered_tasks([getattr(mod, task_attr)])
+    validate_registered_tasks([task])
+    TaskRegistry().register(task)
 
 
 def test_pep563_alias_with_unresolvable_non_di_param_names_that_param_at_start(request):

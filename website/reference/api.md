@@ -995,10 +995,9 @@ setup_dishka(container: dishka.AsyncContainer) -> None
       (for example a type imported only under `TYPE_CHECKING`, or under
       PEP 649 `Depends[Later] | None` with a later class) is not injected
       and not reported. The class definition of a task without DI never
-      fails on an unresolvable annotation. Building the app
-      (`SwarmQ(...)`, also at `swarmq worker` start) still evaluates the
-      annotations of `run()` and raises `NameError` for an unresolvable
-      one, as before.
+      fails on an unresolvable annotation, and neither does building the
+      app (`SwarmQ(...)`, also at `swarmq worker` start), which reads the
+      annotations of `run()` tolerantly.
 - `FromDishka[X] | None` and `Depends[X] | None` derive no dependency
   key; the worker start rejects them with `ConfigurationError`.
 - The DI check runs at `swarmq worker` start, in an embedded worker

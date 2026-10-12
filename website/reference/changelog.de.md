@@ -101,6 +101,11 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   Klassendefinition an einer unauflösbaren Annotation** (ohne
   `from __future__ import annotations`); ein Lock-Template mit
   Platzhaltern wird für einen solchen Task ebenfalls gerendert.
+- **Der Bau der App scheitert nicht mehr mit `NameError` an einer
+  unauflösbaren Annotation von `run()`** (etwa einem Typ, der nur unter
+  `TYPE_CHECKING` importiert wird), mit und ohne
+  `from __future__ import annotations`; `SwarmQ(...)` und der Start von
+  `swarmq worker` lesen diese Annotationen tolerant.
 
 - **`task_sent_to_dlq` erscheint nicht mehr, wenn der Dead-Letter-Publish
   scheiterte und die Nachricht neu zugestellt wurde; diesen Fall meldet
@@ -173,10 +178,6 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   erhält das Verhalten von 0.12.
 - **`swarmq worker --check` prüft nur die Tasks, die der Import von
   `--module` registriert.**
-- **Der Bau der App wertet die Annotationen von `run()` weiter aus.**
-  Ein Task, dessen `run()`-Annotationen beim Bau von `SwarmQ(...)` nicht
-  auflösbar sind, scheitert dort mit `NameError`, mit und ohne
-  Future-Import, wie bisher.
 
 ## [0.12.0rc1] — 2026-10-11
 

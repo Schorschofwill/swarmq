@@ -95,6 +95,11 @@ All notable changes to SwarmQ. This project follows
   because of an unresolvable annotation** (without
   `from __future__ import annotations`); a lock template with
   placeholders renders for such a task too.
+- **Building the app no longer fails with `NameError` on an unresolvable
+  annotation of `run()`** (for example a type imported only under
+  `TYPE_CHECKING`), with or without `from __future__ import annotations`;
+  `SwarmQ(...)` and the `swarmq worker` start read these annotations
+  tolerantly.
 
 - **`task_sent_to_dlq` is no longer logged when the dead-letter publish
   failed and the message was redelivered; `dlq_publish_failed` reports
@@ -162,10 +167,6 @@ All notable changes to SwarmQ. This project follows
   0.12.
 - **`swarmq worker --check` checks only the tasks that importing
   `--module` registers.**
-- **Building the app still evaluates the annotations of `run()`.** A
-  task whose `run()` annotations do not resolve when `SwarmQ(...)` is
-  built fails there with `NameError`, with or without the future import,
-  as before.
 
 ## [0.12.0rc1] — 2026-10-11
 

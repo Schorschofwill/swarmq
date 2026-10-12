@@ -1019,10 +1019,9 @@ setup_dishka(container: dishka.AsyncContainer) -> None
       der nur unter `TYPE_CHECKING` importiert wird, oder unter PEP 649
       `Depends[Later] | None` mit einer späteren Klasse) wird nicht
       injiziert und nicht gemeldet. Die Klassendefinition eines Tasks ohne
-      DI scheitert nie an einer unauflösbaren Annotation. Der Bau der App
-      (`SwarmQ(...)`, auch beim Start von `swarmq worker`) wertet die
-      Annotationen von `run()` weiterhin aus und wirft bei einer
-      unauflösbaren `NameError`, wie bisher.
+      DI scheitert nie an einer unauflösbaren Annotation, ebenso wenig der
+      Bau der App (`SwarmQ(...)`, auch beim Start von `swarmq worker`), der
+      die Annotationen von `run()` tolerant liest.
 - `FromDishka[X] | None` und `Depends[X] | None` ergeben keinen
   Dependency-Key; der Worker-Start lehnt sie mit `ConfigurationError` ab.
 - Die DI-Prüfung läuft beim Start von `swarmq worker`, im eingebetteten

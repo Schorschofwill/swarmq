@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import override
 
 import pytest
@@ -101,6 +102,61 @@ def test_return_type_annotation_is_cached():
     assert entry.return_type is float
     assert entry.task_info is MathTask.task_info
     assert entry.task_class is MathTask
+
+
+# N2 (Plan 2026-10-12-1105, MR 7): Rückgabetyp von run() tolerant lesen.
+# Test-Liste:
+# - kaputte String-Annotation (SyntaxError) → Registrierung gelingt, roher Text
+# - ohne Return-Annotation → inspect.Parameter.empty
+# - auflösbare Rückgabetypen (None, list[int]) bleiben wie bisher
+
+
+def test_broken_string_return_annotation_registers_with_raw_text():
+    from tests.unit._pep649_run_annotations import Pep649BrokenReturnTask
+
+    registry = TaskRegistry()
+    registry.register(Pep649BrokenReturnTask)
+
+    assert registry.get_entry("n2_pep649_broken").return_type == "list[int"
+
+
+def test_missing_return_annotation_is_stored_as_empty():
+    registry = TaskRegistry()
+
+    class NoReturnTask(Task):
+        task_info = TaskInfo(name="no_return", queues=["q"])
+
+        @override
+        async def run(self, x: int):
+            pass
+
+    registry.register(NoReturnTask)
+
+    assert registry.get_entry("no_return").return_type is inspect.Parameter.empty
+
+
+def test_resolvable_return_types_are_stored_unchanged():
+    registry = TaskRegistry()
+
+    class NoneTask(Task):
+        task_info = TaskInfo(name="returns_none", queues=["q"])
+
+        @override
+        async def run(self) -> None:
+            pass
+
+    class ListTask(Task):
+        task_info = TaskInfo(name="returns_list", queues=["q"])
+
+        @override
+        async def run(self) -> list[int]:
+            return []
+
+    registry.register(NoneTask)
+    registry.register(ListTask)
+
+    assert registry.get_entry("returns_none").return_type is None
+    assert registry.get_entry("returns_list").return_type == list[int]
 
 
 def test_get_unknown_raises_task_not_found_error():
