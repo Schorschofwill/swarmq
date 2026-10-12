@@ -360,7 +360,10 @@ async def test_invalid_json_nacked_no_requeue(worker, broker, backend):
 
     await worker._handle_message(msg)
 
-    broker.route_via_dlx.assert_awaited_once_with(msg)
+    # Plan 2026-10-12-1105, MR 8: Kopie mit Ablaufzeit statt DLX-Route.
+    broker.dead_letter.assert_awaited_once()
+    assert broker.dead_letter.await_args.args == (msg,)
+    broker.route_via_dlx.assert_not_awaited()
     broker.ack.assert_not_awaited()
     backend.store_result.assert_not_awaited()
 
@@ -377,7 +380,10 @@ async def test_missing_task_name_nacked_no_requeue(worker, broker, backend):
 
     await worker._handle_message(msg)
 
-    broker.route_via_dlx.assert_awaited_once_with(msg)
+    # Plan 2026-10-12-1105, MR 8: Kopie mit Ablaufzeit statt DLX-Route.
+    broker.dead_letter.assert_awaited_once()
+    assert broker.dead_letter.await_args.args == (msg,)
+    broker.route_via_dlx.assert_not_awaited()
     broker.ack.assert_not_awaited()
     backend.store_result.assert_not_awaited()
 
@@ -1967,7 +1973,10 @@ class TestWorkerMiddlewareAndSignals:
         msg = make_message(_default_payload())
         await w._handle_message(msg)
 
-        broker.route_via_dlx.assert_awaited_once_with(msg)
+        # Plan 2026-10-12-1105, MR 8: Kopie mit Ablaufzeit statt DLX-Route.
+        broker.dead_letter.assert_awaited_once()
+        assert broker.dead_letter.await_args.args == (msg,)
+        broker.route_via_dlx.assert_not_awaited()
         broker.ack.assert_not_awaited()
 
 
@@ -2799,7 +2808,10 @@ class TestWorkerUniqueRelease:
         )
         await w._handle_message(msg)
 
-        broker.route_via_dlx.assert_awaited_once_with(msg)
+        # Plan 2026-10-12-1105, MR 8: Kopie statt DLX-Route; die Freigabe bleibt.
+        broker.dead_letter.assert_awaited_once()
+        assert broker.dead_letter.await_args.args == (msg,)
+        broker.route_via_dlx.assert_not_awaited()
         backend.release_unique.assert_awaited_once()
 
     async def test_malformed_unique_hash_header_is_ignored(
@@ -3004,7 +3016,10 @@ class TestBodySizeCap:
             await worker._handle_message(msg)
 
         mock_decode.assert_not_called()
-        broker.route_via_dlx.assert_awaited_once_with(msg)
+        # Plan 2026-10-12-1105, MR 8, E6 A: Kopie mit Ablaufzeit statt DLX-Route.
+        broker.dead_letter.assert_awaited_once()
+        assert broker.dead_letter.await_args.args == (msg,)
+        broker.route_via_dlx.assert_not_awaited()
 
     async def test_body_at_cap_still_processed(self, worker, broker, backend):
         """Genau am Cap: normal verarbeiten (Grenze ist exklusiv)."""

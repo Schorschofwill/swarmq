@@ -40,7 +40,7 @@ means the feature is not active.
 |---|---|---|---|
 | `x-swarmq-enqueued-at` | `int` (unix seconds) | Client / Scheduler | Used by the worker's `max_age` check. |
 | `x-swarmq-retry-count` | `int` | Worker | Monotonic counter; reset by `swarmq dlq retry`. |
-| `x-swarmq-traceback` | `string` | Worker (on failure) | Full Python traceback of the raising attempt. |
+| `x-swarmq-traceback` | `string` | Worker (on failure) | Full Python traceback of the raising attempt; on a message the worker rejects (`TASK_REJECTED`) `<reason>: <error>`. |
 | `x-swarmq-unique-hash` | `string` (hex) | Client | SHA-256 of canonical `(name, args, kwargs)`. |
 | `x-swarmq-unique-until` | `"start"` \| `"completion"` | Client | When the worker releases the dedup flag. |
 | `x-swarmq-schedfire` | `int` (unix ms) | Scheduler | Present on scheduler-published messages; worker dedupes on it. |
@@ -436,8 +436,11 @@ error result exists for `task_id`.
   `"dlq_publish_failed"`.
 - `task_id` and `task_name` are `null` when the body never decoded
   (`body_too_large`, `undecodable`).
-- No error result is stored; the message carries only the broker's
-  `x-death` header in `.XQ`.
+- No error result is stored. For `body_too_large`, `undecodable` and
+  `middleware_chain_factory` the worker puts a copy with retention into
+  `.XQ`, with `x-swarmq-traceback` = `<reason>: <error>`; only when that
+  copy fails, and for `dlq_publish_failed`, the message carries just the
+  broker's `x-death` header instead.
 
 ### `WORKFLOW_STEP_ENQUEUED`
 

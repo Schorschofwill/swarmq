@@ -4,7 +4,9 @@ Die Funktionen hier entscheiden, ob aus einer Zustellung ueberhaupt ein
 Task-Aufruf werden kann. Sie sind aus ``pipeline.py`` gezogen, weil sie eine
 eigene Frage beantworten -- "ist diese Nachricht brauchbar?" -- und weil das
 Modul sonst das Zeilenlimit der Architektur-Guards reisst. Die Ablehnung
-laeuft ueber ``route_via_dlx``, das seit U6 ``TASK_REJECTED`` ausloest.
+laeuft ueber ``reject_to_dead_letter`` (Kopie mit Ablaufzeit, Plan
+2026-10-12-1105, MR 8; ``route_via_dlx`` als Rueckfall), das
+``TASK_REJECTED`` ausloest.
 """
 
 from __future__ import annotations
@@ -14,7 +16,8 @@ from typing import Any, cast
 from swarmq.headers import HEADER_RETRY_COUNT, HEADER_UNIQUE_HASH, HEADER_WORKFLOW_ID
 from swarmq.logging import _error_fields, get_logger
 from swarmq.serialization import decode_json
-from swarmq.worker.gates import GateDeps, route_via_dlx
+from swarmq.worker.gates import GateDeps
+from swarmq.worker.gates.reject import reject_to_dead_letter
 
 logger = get_logger(__name__)
 
@@ -86,7 +89,7 @@ def attempt_number(message: Any) -> int | None:
 
 async def decode_and_validate(deps: GateDeps, message: Any) -> tuple[str, str, str, list[Any], dict[str, Any]] | None:
     """Size-Cap + Deserialize + Shape-Validierung; ``None`` = behandelt
-    (Oversize/Malformed → DLX-Route ohne Redelivery)."""
+    (Oversize/Malformed → Kopie ins ``.XQ`` ohne Redelivery)."""
     # Size cap BEFORE the decode. msgspec has a built-in recursion-depth
     # guard but no size guard — a compromised/misconfigured producer
     # could otherwise make the worker decode an arbitrarily large body
@@ -98,7 +101,7 @@ async def decode_and_validate(deps: GateDeps, message: Any) -> tuple[str, str, s
             cap_bytes=deps.config.max_message_body_bytes,
             hint="raise SWARMQ_MAX_MESSAGE_BODY_BYTES if legitimate",
         )
-        await route_via_dlx(
+        await reject_to_dead_letter(
             deps,
             message,
             reason="body_too_large",
@@ -125,12 +128,7 @@ async def decode_and_validate(deps: GateDeps, message: Any) -> tuple[str, str, s
         logger.error("deserialize_failed", **_error_fields(exc))
         # Plan Unit 11 Risks: deserialize-fail cannot release (task_id
         # unknown). Accepted limitation — flag self-heals via TTL.
-        await route_via_dlx(
-            deps,
-            message,
-            reason="undecodable",
-            error=str(exc),
-        )
+        await reject_to_dead_letter(deps, message, reason="undecodable", error=str(exc))
         return None
     # mypy engt Any per isinstance auf list[Any] ein (redundanter Cast),
     # basedpyright auf list[Unknown]; der Cast bedient basedpyright.

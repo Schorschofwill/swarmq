@@ -140,7 +140,7 @@ Every worker with metrics enabled (`--metrics-port`/`SWARMQ_METRICS_PORT`,
 | `swarmq_task_duration_seconds` | histogram | `task_name`, `queue` | Duration of `run()` for completed tasks. Buckets from 5 ms to 300 s. |
 | `swarmq_tasks_active` | gauge | `queue` | Tasks currently in flight. |
 | `swarmq_retries_total` | counter | `task_name`, `queue` | Retries scheduled. |
-| `swarmq_tasks_rejected_total` | counter | `queue`, `reason` | Messages handed to the broker DLX without diagnostic headers (`TASK_REJECTED`), e.g. `body_too_large`, `undecodable`; `unregistered_task` counts a task dead-lettered after `SWARMQ_UNKNOWN_TASK_GRACE_S`. |
+| `swarmq_tasks_rejected_total` | counter | `queue`, `reason` | Messages the worker rejected (`TASK_REJECTED`), e.g. `body_too_large`, `undecodable` (a copy with retention in `.XQ`) or `dlq_publish_failed` (broker DLX without diagnostic headers); `unregistered_task` counts a task dead-lettered after `SWARMQ_UNKNOWN_TASK_GRACE_S`. |
 | `swarmq_tasks_unknown_deferred_total` | counter | `queue` | Messages the worker deferred because it does not register the task, within `SWARMQ_UNKNOWN_TASK_GRACE_S` (`TASK_UNKNOWN_DEFERRED`; [unregistered tasks](../guides/dead-letter-queues.md#unregistered-tasks-and-rolling-deploys)). |
 | `swarmq_recyclings_total` | counter | `kind`, `reason` | Process recyclings; `kind` is `worker` or `compute_child`. |
 | `swarmq_queue_depth` | gauge | `queue`, `kind` | Broker-reported message count, sampled every `SWARMQ_METRICS_SAMPLE_INTERVAL`: `kind="pending"` is `{queue}` plus all delay queues, `kind="delayed"` (since 0.12) the delay queues only ([delay tiers](../explanation/delivery-semantics.md#delay-tiers)). |

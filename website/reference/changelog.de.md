@@ -88,6 +88,21 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   erreichen die `.XQ` nicht mehr über den Dead-Letter-Exchange des
   Brokers ([Dead-Letter-Queues](../guides/dead-letter-queues.md)).
 
+- **Nachrichten, die der Worker abweist (`undecodable`,
+  `middleware_chain_factory`, `body_too_large`), gehen jetzt als Kopie
+  mit der Dead-Letter-Frist und dem Diagnose-Header nach `{queue}.XQ`,
+  wie unregistrierte Tasks; sie halten den Verfall am Kopf der `.XQ`
+  nicht mehr auf.** Grund und Fehler reisen im bestehenden
+  `x-swarmq-traceback` als `<reason>: <error>`, `swarmq dlq list` zeigt
+  sie deshalb in `ERROR_PREVIEW` (z. B. `undecodable: …`).
+  `TASK_REJECTED` und `swarmq_tasks_rejected_total` feuern einmal mit
+  denselben `reason`-Werten wie bisher; es wird kein Fehlerergebnis
+  gespeichert, und `TASK_DLQ` feuert nicht. Der Dead-Letter-Exchange des
+  Brokers bleibt der Rückfall, wenn die Kopie scheitert. Worker bis
+  0.12.0rc1 an derselben Queue routen diese Nachrichten weiter über den
+  Dead-Letter-Exchange; beides landet in `.XQ`
+  ([Dead-Letter-Queues](../guides/dead-letter-queues.md#drei-wege-in-die-xq)).
+
 ### Behoben
 
 - **`Annotated[X, FromComponent(...)]` und Aliase von `FromDishka`
@@ -156,6 +171,13 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   swarmq holt jetzt die Ausnahme genau dieses Futures ab.
 
 ### Bekannte Grenzen
+
+- **Eine abgewiesene Nachricht, deren Kopie scheitert, landet wie
+  bisher ohne Frist in `.XQ` (Rückfall über den Dead-Letter-Exchange).**
+  Endete die Kopie vor dem Rückfall mit unbestimmtem Publish-Ausgang,
+  kann die Nachricht zweimal in `.XQ` liegen, einmal mit und einmal ohne
+  Frist. Eine Broker-Policy auf `\.XQ$` bleibt die einzige vollständige
+  Begrenzung.
 
 - **`error_class` ist beratend.** Ergebnisse älterer Worker haben das
   Feld nicht, ebenso Pfade ohne Exception-Klasse (Ablauf durch

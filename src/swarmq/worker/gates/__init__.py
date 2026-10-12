@@ -351,10 +351,10 @@ async def route_via_dlx(
         task_name=task_name,
         error=error,
     )
-    await _fail_workflow_best_effort(deps, delivery, task_id, task_name, error or reason)
+    await fail_workflow_best_effort(deps, delivery, task_id, task_name, error or reason)
 
 
-async def _fail_workflow_best_effort(
+async def fail_workflow_best_effort(
     deps: GateDeps, delivery: Any, task_id: str | None, task_name: str | None, error_message: str
 ) -> None:
     """BZ-13: ein per DLX beendeter Workflow-Schritt markiert seinen Workflow
@@ -377,6 +377,7 @@ __all__ = [
     "SchedfireClaim",
     "WorkerBackend",
     "WorkerBroker",
+    "fail_workflow_best_effort",
     "redeliver_in_place",
     "route_via_dlx",
 ]

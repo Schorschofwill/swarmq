@@ -27,7 +27,8 @@ stay, and how to switch dead-lettering of task failures off.
 | Lock-render failure (template kwarg missing, empty render) | `x-swarmq-lock-render-error` with the error message, `x-swarmq-traceback` | still dead-lettered |
 | Wait for a task lock ended (stalled holder or `SWARMQ_LOCK_WAIT_MAX_S`) | `x-swarmq-lock-name`, `x-swarmq-traceback` with `LockWaitExceeded` | still dead-lettered |
 | Task name not registered in the worker, after the grace period `SWARMQ_UNKNOWN_TASK_GRACE_S` (default 15 min; `0` = at first contact), see [unregistered tasks](#unregistered-tasks-and-rolling-deploys) | `x-swarmq-traceback` with `task '…' is not registered`; the stored error result says the same | still dead-lettered |
-| Body over the size cap, undecodable body, broken middleware-chain factory, failed dead-letter publish | none from SwarmQ — only the broker's `x-death` | still dead-lettered |
+| Body over the size cap, undecodable body, broken middleware-chain factory | `x-swarmq-traceback` with `<reason>: <error>` (e.g. `undecodable: Expecting value …`) | still dead-lettered |
+| Failed dead-letter publish (fallback of the worker's own copy) | none from SwarmQ — only the broker's `x-death` | still dead-lettered |
 
 Every message the worker dead-letters itself also carries
 `x-swarmq-dead-lettered-at` (Unix milliseconds) and a per-message
@@ -48,11 +49,13 @@ knowing which path fired tells you what to fix.
 | Path | Who moves the message | Signal | Metric | Headers |
 |---|---|---|---|---|
 | **Dead-lettering by the worker** — retries exhausted, `NoRetry`, `max_age`, lock errors, delivery limit about to trip, orphan limit of the execution guard, unregistered task after its grace period | Worker publishes to `.XQ` and acks the original | `TASK_DLQ` (`task_id`, `task_name`, `queue`, `error`) for retries exhausted, `NoRetry`, the delivery limit, the orphan limit, lock errors (render failure, end of a lock wait) and the unregistered task (there followed by `TASK_REJECTED` with `unregistered_task`); `TASK_EXPIRED` for `max_age` | `swarmq_tasks_total{outcome="dlq"}` | SwarmQ diagnostics (`x-swarmq-retry-count`, `x-swarmq-traceback`, `x-swarmq-lock-*`, see the table above); an error result is stored |
-| **Rejection by the worker** — the message could not be turned into a task | Worker rejects without requeue; the broker's dead-letter exchange routes it | `TASK_REJECTED` (`queue`, `reason`, `task_id`, `task_name`, `error`) | `swarmq_tasks_rejected_total{queue,reason}` | only the broker's `x-death`; `task_id`/`task_name` are `None` when the body never decoded |
+| **Rejection by the worker** — the message could not be turned into a task | Worker publishes a copy with retention to `.XQ` and acks the original; if the copy fails, it rejects without requeue and the broker's dead-letter exchange routes it | `TASK_REJECTED` (`queue`, `reason`, `task_id`, `task_name`, `error`) | `swarmq_tasks_rejected_total{queue,reason}` | `x-swarmq-traceback` with `<reason>: <error>` and the retention stamps (`x-swarmq-dead-lettered-at`, `x-swarmq-dead-letter-ttl-ms`); no error result. Only the fallback carries the broker's `x-death` instead. `task_id`/`task_name` are `None` when the body never decoded |
 | **Dead-lettering by the broker** — `x-delivery-limit` after repeated worker crashes, message TTL, queue length limit | RabbitMQ itself | none — no worker saw the terminal delivery | `swarmq_dlq_messages{queue}` (depth gauge sampled by the worker) | only `x-death` |
 
 `reason` on the rejection path is one of `body_too_large`,
-`undecodable`, `middleware_chain_factory`, `dlq_publish_failed`;
+`undecodable`, `middleware_chain_factory`, `dlq_publish_failed`
+(`swarmq dlq list` shows the first three in `ERROR_PREVIEW`, e.g.
+`undecodable: …`);
 `unregistered_task` is the exception that comes from the first path
 (from 0.12, see below). `unregistered_task` after a deploy usually means
 the worker and the producer run different versions of the task module;
@@ -284,17 +287,21 @@ it until a `dlq list` gives it a retention. Such messages are old stock
 and messages the broker's dead-letter exchange routed:
 
 - messages over the queue's `x-delivery-limit`,
-- messages the worker rejects before decoding a task: undecodable
-  bodies (`undecodable`), bodies over `SWARMQ_MAX_MESSAGE_BODY_BYTES`
-  (`body_too_large`) and a failing middleware factory
-  (`middleware_chain_factory`),
 - the fallback when the worker's own dead-letter copy could not be
-  published (`dlq_publish_failed` on the lock and unknown-task paths).
+  published (`dlq_publish_failed` on the lock and unknown-task paths,
+  and a failed copy of a rejected message: `undecodable`,
+  `body_too_large`, `middleware_chain_factory`). If such a copy ended
+  with an indeterminate publish, the message can be in `.XQ` twice,
+  once with and once without retention.
 
 Unknown tasks are no longer among them: since 0.12 the worker puts
 them into `.XQ` itself, with a retention, once
-`SWARMQ_UNKNOWN_TASK_GRACE_S` has passed. Only a broker policy bounds
-the paths above completely.
+`SWARMQ_UNKNOWN_TASK_GRACE_S` has passed. From this release the same
+holds for the messages the worker rejects (undecodable bodies, bodies
+over `SWARMQ_MAX_MESSAGE_BODY_BYTES`, a failing middleware factory);
+workers before this release (up to 0.12.0rc1) on the same queue still
+route them via the dead-letter exchange. Only a broker policy bounds the paths above
+completely.
 
 ## Bounding the `.XQ` with a broker policy
 

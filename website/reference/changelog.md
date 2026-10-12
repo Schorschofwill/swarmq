@@ -82,6 +82,20 @@ All notable changes to SwarmQ. This project follows
   Unknown tasks no longer reach the `.XQ` via the broker's dead-letter
   exchange ([dead-letter queues](../guides/dead-letter-queues.md)).
 
+- **Messages the worker rejects (`undecodable`,
+  `middleware_chain_factory`, `body_too_large`) now go to `{queue}.XQ` as
+  a copy with the dead-letter retention and the diagnostic header, like
+  unregistered tasks; they no longer hold up expiry at the head of the
+  `.XQ`.** The reason and error travel in the existing
+  `x-swarmq-traceback` as `<reason>: <error>`, so `swarmq dlq list` shows
+  them in `ERROR_PREVIEW` (e.g. `undecodable: …`). `TASK_REJECTED` and
+  `swarmq_tasks_rejected_total` fire once with the same `reason` values
+  as before; no error result is stored and `TASK_DLQ` does not fire. The
+  broker's dead-letter exchange remains the fallback when the copy fails.
+  Workers up to 0.12.0rc1 on the same queue still route these messages
+  via the dead-letter exchange; both end up in `.XQ`
+  ([dead-letter queues](../guides/dead-letter-queues.md#three-ways-into-the-xq)).
+
 ### Fixed
 
 - **`Annotated[X, FromComponent(...)]` and aliases of `FromDishka` are
@@ -146,6 +160,12 @@ All notable changes to SwarmQ. This project follows
   now retrieves the exception of exactly that future.
 
 ### Known limits
+
+- **A rejected message whose copy fails lands in `.XQ` without
+  retention, as before (dead-letter exchange fallback).** If the copy
+  ended with an indeterminate publish before the fallback, the message
+  can be in `.XQ` twice, once with and once without retention. A broker
+  policy on `\.XQ$` remains the only complete bound.
 
 - **`error_class` is advisory.** Results of older workers do not have
   it, nor do paths without an exception class (expiry by `max_age`,

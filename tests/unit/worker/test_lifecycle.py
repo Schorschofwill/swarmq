@@ -672,20 +672,25 @@ class TestMetricsSampler:
 
 class TestPayloadShapeValidation:
     """2026-06-02 audit P2-6: a wrong-typed args/kwargs payload must be
-    routed to the DLQ (nack requeue=False), not executed with garbage."""
+    routed to the DLQ, not executed with garbage. Seit Plan 2026-10-12-1105
+    (MR 8) als Kopie mit Ablaufzeit ueber ``dead_letter``."""
 
     async def test_string_args_not_executed(self, worker, broker):
         # args="hello" would otherwise unpack character-by-character.
         msg = make_message(_default_payload(args=cast("Any", "hello")))  # absichtlich falscher Typ
         await worker._handle_message(msg)
-        broker.route_via_dlx.assert_awaited_once_with(msg)
+        broker.dead_letter.assert_awaited_once()
+        assert broker.dead_letter.await_args.args == (msg,)
+        broker.route_via_dlx.assert_not_awaited()
         # Task never ran (no result stored).
         assert len(worker._active_tasks) == 0
 
     async def test_non_dict_kwargs_not_executed(self, worker, broker):
         msg = make_message(_default_payload(kwargs=cast("Any", ["not", "a", "dict"])))  # absichtlich falscher Typ
         await worker._handle_message(msg)
-        broker.route_via_dlx.assert_awaited_once_with(msg)
+        broker.dead_letter.assert_awaited_once()
+        assert broker.dead_letter.await_args.args == (msg,)
+        broker.route_via_dlx.assert_not_awaited()
 
 
 class TestLifecycleSignalTimeout:

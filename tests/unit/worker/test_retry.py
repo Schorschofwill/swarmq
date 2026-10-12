@@ -510,7 +510,9 @@ async def test_delivery_count_gate_and_undecodable_messages_still_reach_the_dlq(
     broker.dead_letter.assert_awaited_once()
 
     await worker._handle_message(make_message(body=b"not json"))
-    broker.route_via_dlx.assert_awaited_once()
+    # Plan 2026-10-12-1105, MR 8: die undekodierbare Nachricht als Kopie.
+    assert broker.dead_letter.await_count == 2
+    broker.route_via_dlx.assert_not_awaited()
 
 
 async def test_dead_letter_with_failed_ack_after_publish_is_terminal(broker, backend, config, swarmq_logs):
