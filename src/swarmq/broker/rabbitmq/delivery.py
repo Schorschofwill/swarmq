@@ -29,6 +29,7 @@ from swarmq.broker.rabbitmq.connection import (
 from swarmq.broker.rabbitmq.consumer_watch import ConsumerWatch, ReregisteredHook
 from swarmq.broker.rabbitmq.declarations import RabbitMQDeclarations
 from swarmq.broker.rabbitmq.header_guard import guard_headers, negotiated_frame_max
+from swarmq.broker.rabbitmq.publish_phase import collect_orphaned_confirm, sent_before_failure
 from swarmq.broker.rabbitmq.redeclare import publish_redeclaring_once
 from swarmq.contracts import Delivery, DeliveryCallback, PublishReceipt
 from swarmq.exceptions import (
@@ -76,6 +77,18 @@ async def settle(action: Awaitable[None], verb: str) -> None:
             if current is not None and current.cancelling() > 0:
                 raise
         raise BrokerConnectionError(f"{verb} failed, channel or connection lost: {exc}") from exc
+
+
+def _raise_if_sent(routing_key: str, exc: BaseException) -> None:
+    """B24: Hatte aiormq die Nachricht schon gesendet und fehlt nur das
+    Confirm, ist der Ausgang unbestimmt -- gleich, mit welcher Ausnahme die
+    offenen Futures scheiterten. Kein erneutes Senden, sonst liefe der Task
+    womoeglich doppelt; der Aufrufer bekommt ``PublishIndeterminate``."""
+    if sent_before_failure(exc):
+        raise PublishIndeterminate(
+            f"publish to {routing_key!r} lost the connection while waiting for the broker's "
+            f"confirm; delivery is indeterminate: {exc}"
+        ) from exc
 
 
 class RabbitMQDelivery(RabbitMQDeclarations):
@@ -266,6 +279,7 @@ class RabbitMQDelivery(RabbitMQDeclarations):
                 if attempt < _PUBLISH_MAX_ATTEMPTS - 1:
                     await asyncio.sleep(0.05 * (2**attempt))
             except _CHANNEL_TRANSIENT_ERRORS as exc:
+                collect_orphaned_confirm(exc)
                 # Distinguish task-level cancellation from aio_pika's
                 # internal drain cancellation. If our own task is being
                 # cancelled, propagate.
@@ -273,6 +287,7 @@ class RabbitMQDelivery(RabbitMQDeclarations):
                     current = asyncio.current_task()
                     if current is not None and current.cancelling() > 0:
                         raise
+                _raise_if_sent(routing_key, exc)
                 last_exc = exc
                 # Den womoeglich kaputten Kanal verwerfen, damit der
                 # naechste _ensure_publish_channel neu oeffnet. Derselbe
@@ -284,6 +299,11 @@ class RabbitMQDelivery(RabbitMQDeclarations):
                 # exhaustion.
                 if attempt < _PUBLISH_MAX_ATTEMPTS - 1:
                     await asyncio.sleep(0.05 * (2**attempt))
+            except Exception as exc:
+                # Kein bekannter Kanalfehler (etwa ein pamqp-Framefehler, an
+                # dem aiormqs Reader endete): nach dem Senden ebenso unbestimmt.
+                _raise_if_sent(routing_key, exc)
+                raise
             else:
                 return
         # Review MR 15, P2-2: ein negatives Confirm haengt an der Queue, nicht

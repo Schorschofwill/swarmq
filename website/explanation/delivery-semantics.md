@@ -37,6 +37,20 @@ It does **not** promise:
 Everything on the "does not promise" list is a consequence of how
 at-least-once delivery works at the broker level.
 
+### When `schedule()` raises
+
+A failed publish ends in one of two ways, depending on whether the
+message had already been sent:
+
+- `BrokerConnectionError` (and its other subclasses): nothing was sent,
+  retrying is safe. A connection loss before the message reached the
+  socket is retried internally first.
+- `PublishIndeterminate`: the message was sent, but the publish deadline
+  ran out or the connection broke while waiting for the broker's
+  confirm. The broker may hold the message, so a retry can run the task
+  twice. swarmq never resends in this case; a `unique_for` claim stays
+  in place ([error reference](../reference/errors.md#publishindeterminate)).
+
 ## When a message is considered delivered
 
 RabbitMQ routes the message into the queue the moment `basic.publish`

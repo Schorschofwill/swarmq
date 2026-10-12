@@ -234,9 +234,9 @@ have the task in its registry: workers report `unique_for` and
 
 If the publish of a fire fails after the leader claimed the flag, the
 leader releases the flag again, so the retry on the next tick is not
-taken for a duplicate. The flag stays when the publish timed out while
-waiting for the broker's confirm (`PublishIndeterminate`), because the
-message may have arrived. A flag that `schedule(delay=|eta=)` claimed
+taken for a duplicate. The flag stays when the publish timed out or
+lost its connection while waiting for the broker's confirm
+(`PublishIndeterminate`), because the message may have arrived. A flag that `schedule(delay=|eta=)` claimed
 belongs to the producer and is never released on such a failure.
 
 ### Per-call override

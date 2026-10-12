@@ -23,7 +23,7 @@ except SwarmQError as exc:
 | `LoggingConfigError` | `ConfigurationError` | Logging config file (`--log-config`) not loadable or invalid |
 | `QueueArgumentsMismatch` | `ConfigurationError` | An existing queue has other arguments than the configuration, which swarmq cannot adopt (for example a changed `SWARMQ_QUEUE_TYPE`) |
 | `BrokerConnectionError` | `SwarmQError` | Cannot reach RabbitMQ |
-| `PublishIndeterminate` | `BrokerConnectionError` | A publish broke its deadline; whether it arrived is unknown |
+| `PublishIndeterminate` | `BrokerConnectionError` | A publish was sent but broke its deadline or lost its connection before the confirm; whether it arrived is unknown |
 | `SettleFailedAfterPublish` | `BrokerConnectionError` | Worker-internal: a retry or dead-letter copy was published, only the ack of the original failed |
 | `MessageHeadersTooLarge` | `BrokerConnectionError` | Message headers do not fit into half of `frame_max`, even with long texts truncated; nothing was sent |
 | `UnroutableMessage` | `BrokerConnectionError` | The broker returned a publish: no queue with this name exists; nothing was delivered |
@@ -149,11 +149,16 @@ unacknowledged message.
 
 !!! warning "A publish-deadline failure does not mean the message was not sent"
 
-    When the message reads `exceeded the publish deadline`, delivery is
-    **indeterminate**: the deadline runs out while waiting for the broker's
-    publisher confirm, so the broker may already hold the message. Retrying
-    such a call can execute the task a second time. This is different from
-    every other cause listed here, where nothing was sent.
+    When the message reads `exceeded the publish deadline` or `lost the
+    connection while waiting for the broker's confirm`, delivery is
+    **indeterminate**: the message was sent and the deadline ran out or
+    the connection broke while waiting for the broker's publisher confirm,
+    so the broker may already hold the message. Retrying such a call can
+    execute the task a second time. This is different from every other
+    cause listed here, where nothing was sent. swarmq itself never resends
+    such a message; a connection loss before the message was written to
+    the socket is retried internally and, if it persists, ends as a plain
+    `BrokerConnectionError`.
 
     A task submitted with `unique_for` **is** protected: swarmq keeps the
     dedup claim in this one case instead of releasing it, so a retry is
@@ -418,11 +423,13 @@ class LongJob(Task):
 
 **When raised.** By `schedule()`, `schedule_many()`, `run()` and
 `apply()` when a publish exceeds `SWARMQ_PUBLISH_TIMEOUT_S` while
-waiting for the broker's publisher confirm. Subclass of
+waiting for the broker's publisher confirm, or when the connection or
+channel breaks in that phase (for example a broker restart or a network
+cut right after the message was sent). Subclass of
 `BrokerConnectionError`.
 
-**Cause.** The broker or the network stalled after the message was
-sent; the broker may or may not have it.
+**Cause.** The broker or the network stalled or broke after the
+message was sent; the broker may or may not have it.
 
 **Recovery.** Treat delivery as unknown. Retry only when the task is
 idempotent or was submitted with `unique_for` (SwarmQ keeps the dedup
@@ -431,7 +438,8 @@ running twice). See the warning under
 [`BrokerConnectionError`](#brokerconnectionerror). A scheduler leader
 does not count it towards stepping down: missing confirms usually hang
 on one queue (for example a quorum queue without quorum), not on the
-leader's connection.
+leader's connection. After a connection loss the following publishes,
+which send nothing, fail as `BrokerConnectionError` and do count.
 
 ```python
 from swarmq import BrokerConnectionError, PublishIndeterminate

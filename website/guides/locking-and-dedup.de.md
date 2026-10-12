@@ -248,8 +248,9 @@ hat: Worker melden `unique_for` und `unique_until` mit ihren Crons
 Scheitert der Publish eines Termins, nachdem der Leader das Flag
 genommen hat, gibt er es wieder frei; der Versuch im nächsten Takt gilt
 dann nicht als Duplikat. Das Flag bleibt, wenn der Publish beim Warten
-auf das Confirm des Brokers seine Frist gerissen hat
-(`PublishIndeterminate`), denn die Nachricht kann angekommen sein. Ein
+auf das Confirm des Brokers seine Frist gerissen oder die Verbindung
+verloren hat (`PublishIndeterminate`), denn die Nachricht kann
+angekommen sein. Ein
 Flag, das `schedule(delay=|eta=)` genommen hat, gehört dem Producer und
 wird bei einem solchen Fehler nie freigegeben.
 

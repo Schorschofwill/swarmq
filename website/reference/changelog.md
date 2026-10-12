@@ -4,6 +4,48 @@ All notable changes to SwarmQ. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **B24: a connection loss while waiting for the publisher confirm is
+  `PublishIndeterminate`, no longer a raw `AMQPConnectionError`.** When
+  the broker connection broke after a message was sent but before the
+  broker confirmed it (broker restart, network cut), `schedule()` and
+  the other publish paths ended with `aiormq.exceptions.AMQPConnectionError`.
+  The message had usually arrived and ran; a producer that retried, as
+  documented for `BrokerConnectionError`, ran the task twice, and
+  `schedule()` released the `unique_for` claim. swarmq now tells the
+  phases apart: if the message was written to the socket, the publish
+  ends as `PublishIndeterminate` and swarmq does not resend it (this
+  also applies to a closed channel and to aio-pika's internal
+  cancellation, which swarmq used to resend); if the connection broke
+  before that, swarmq retries as before and ends with
+  `BrokerConnectionError` if that fails. The worker's retry and
+  dead-letter copies, workflow steps, scheduler fires and `swarmq dlq
+  retry` get the same distinction. An ack that fails with
+  `AMQPConnectionError` is now a `BrokerConnectionError`
+  ([`PublishIndeterminate`](errors.md#publishindeterminate)).
+- **`schedule_many()` keeps the `unique_for` claim of an indeterminate
+  element**, as `schedule()` does; it used to release the claims of all
+  failed elements, so a retry could run a task whose message had
+  arrived. If any element is indeterminate, the batch now raises its
+  `PublishIndeterminate` instead of the first error by index
+  ([`schedule_many()`](api.md#schedule_many)).
+- **A broken frame from the broker no longer escapes as a raw pamqp
+  error.** When aiormq's reader stops at an unreadable frame
+  (`pamqp.exceptions.AMQPFrameError` and the like) before the message was
+  written, swarmq retries on a new channel like after any other
+  connection loss and ends with `BrokerConnectionError` if that fails;
+  after the message was written it is `PublishIndeterminate`. A failed
+  ack with such an error is a `BrokerConnectionError` too.
+- **No more "Future exception was never retrieved" after a publish that
+  ended before its message was written.** aiormq creates the
+  publisher-confirm future before writing; when the write failed or the
+  caller cancelled the publish (`asyncio.wait_for`), nobody awaited it,
+  and asyncio logged its connection error on garbage collection. swarmq
+  now retrieves the exception of exactly that future.
+
 ## [0.12.0rc1] — 2026-10-11
 
 Release candidate for 0.12.0 (install with `pip install --pre`). It fixes the findings of the review

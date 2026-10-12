@@ -37,6 +37,21 @@ Es verspricht **nicht**:
 Alles auf der „verspricht nicht"-Liste folgt aus der Art, wie
 at-least-once-Zustellung auf Broker-Ebene funktioniert.
 
+### Wenn `schedule()` scheitert
+
+Ein gescheiterter Publish endet auf einem von zwei Wegen, je nachdem, ob
+die Nachricht schon gesendet war:
+
+- `BrokerConnectionError` (und seine übrigen Unterklassen): Nichts wurde
+  gesendet, Wiederholen ist sicher. Reißt die Verbindung, bevor die
+  Nachricht auf dem Socket ist, wiederholt swarmq zuerst intern.
+- `PublishIndeterminate`: Die Nachricht ist gesendet, aber beim Warten
+  auf das Confirm des Brokers ist die Publish-Frist gerissen oder die
+  Verbindung abgebrochen. Der Broker kann die Nachricht haben, ein
+  Wiederholversuch kann den Task doppelt ausführen. swarmq sendet in
+  diesem Fall nie selbst erneut; eine `unique_for`-Sperre bleibt stehen
+  ([Fehlerreferenz](../reference/errors.md#publishindeterminate)).
+
 ## Wann eine Nachricht als zugestellt gilt
 
 RabbitMQ routet die Nachricht in die Queue, sobald

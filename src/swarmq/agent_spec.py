@@ -122,9 +122,9 @@ _ERROR_SEMANTICS: dict[str, dict[str, Any]] = {
         "transport_field": "stderr line",
     },
     "PublishIndeterminate": {
-        # Absichtlich NICHT retriable: Die Frist riss beim Warten auf das
-        # Publisher-Confirm, der Broker kann die Nachricht also bereits
-        # haben. Ein blindes Wiederholen fuehrt den Task moeglicherweise
+        # Absichtlich NICHT retriable: Die Frist riss oder die Verbindung
+        # brach (B24) beim Warten auf das Publisher-Confirm, der Broker kann
+        # die Nachricht also bereits haben. Ein blindes Wiederholen fuehrt den Task moeglicherweise
         # ein zweites Mal aus (Plan 2026-08-28-001, R11).
         "origin": "library",
         "when": ["schedule", "run"],

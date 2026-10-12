@@ -417,7 +417,11 @@ class ClientScheduling(ClientScheduleResolve):
                 )
             # Rollback flags for elements whose publish failed (the
             # successful ones still have matching messages in the broker).
-            for idx, _ in errors:
+            # Wie ``schedule``: nach ``PublishIndeterminate`` kann die
+            # Nachricht angekommen sein, die Sperre bleibt (B24).
+            for idx, exc in errors:
+                if isinstance(exc, PublishIndeterminate):
+                    continue
                 claim = state["claimed_flags"].get(idx)
                 if claim is not None:
                     await self._rollback_unique_claim(*claim)
@@ -430,7 +434,11 @@ class ClientScheduling(ClientScheduleResolve):
                 queue=state["resolved_queues"][i],
             )
         if errors:
-            raise errors[0][1]
+            # Ein unbestimmter Eintrag macht den Batch unbestimmt: ein
+            # bestimmter Fehler an kleinerem Index hiesse sonst "nichts
+            # gesendet, Wiederholen sicher" (B24).
+            indeterminate = [exc for _, exc in errors if isinstance(exc, PublishIndeterminate)]
+            raise indeterminate[0] if indeterminate else errors[0][1]
 
     async def schedule_many(
         self,
