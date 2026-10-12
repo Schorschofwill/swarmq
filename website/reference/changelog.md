@@ -33,6 +33,21 @@ All notable changes to SwarmQ. This project follows
   `78`). Older workers (up to 0.12.0rc1) ignore the variable
   ([turning the scheduler off](../guides/scheduling-and-retries.md#turning-the-scheduler-off-on-single-workers)).
 
+- **`swarmq worker` and `swarmq inspect` find task modules in the
+  working directory again; `--app-dir DIR` names another directory.**
+  The console script used to search only the virtualenv's `bin`
+  directory, so `--module myapp.tasks` needed `PYTHONPATH` unless the
+  worker was started with `python -m swarmq.cli`. The working directory
+  now comes first on `sys.path` as with `python -m`, but not under
+  `PYTHONSAFEPATH`/`-P`; an explicit `--app-dir` always applies. It also
+  covers `--configure`, `--check`, the supervisor's worker children and
+  the compute children of `--pool cpu`. Known limit: a file in the app
+  directory shadows an installed package or standard-library module of
+  the same name (`valkey.py`, `queue.py`); `PYTHONSAFEPATH=1` turns the
+  default off. A module that cannot be found now names `--app-dir` and
+  the directory searched first
+  ([finding the task module](cli.md#finding-the-task-module)).
+
 ### Changed
 
 - **`raise Retry(...)` now retries even when the task sets

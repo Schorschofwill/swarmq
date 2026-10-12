@@ -188,6 +188,22 @@ def _watch_dir_path(raw: str) -> str:
     return resolved
 
 
+#: Hilfetext von ``--app-dir`` an ``worker`` und ``inspect`` (Plan 2026-10-12-1105, P6).
+_APP_DIR_HELP = (
+    "Directory put first on sys.path before --module is imported. Default: "
+    "the current working directory, as with 'python -m', unless "
+    "PYTHONSAFEPATH or -P is set."
+)
+
+
+def _app_dir_path(raw: str) -> str:
+    """argparse type-function fuer ``--app-dir DIR``: nur bestehende
+    Verzeichnisse, als absoluter Pfad (Plan 2026-10-12-1105, P6)."""
+    if not Path(raw).is_dir():
+        raise argparse.ArgumentTypeError(f"--app-dir {raw!r} is not an existing directory")
+    return os.path.abspath(raw)  # noqa: PTH100 - abspath normalisiert ohne Symlinks aufzulösen
+
+
 def _queue_list(raw: str) -> list[str]:
     """Comma-separated queue names with whitespace stripped.
 
@@ -275,3 +291,31 @@ def _render_table(rows: Sequence[tuple[str, ...]], empty_label: str) -> str:
     widths = [max(len(str(row[i])) for row in rows) for i in range(len(rows[0]))]
     lines = ["  ".join(str(cell).ljust(widths[i]) for i, cell in enumerate(row)) for row in rows]
     return "\n".join(lines)
+
+
+def apply_app_dir(args: argparse.Namespace, *, safe_path: bool = sys.flags.safe_path) -> None:
+    """App-Verzeichnis an ``sys.path[0]`` stellen (Plan 2026-10-12-1105, P6, E1 C).
+
+    Das Console-Script hat dort das ``bin`` des venv, nicht das
+    Arbeitsverzeichnis. Ohne ``--app-dir`` gilt das Arbeitsverzeichnis wie bei
+    ``python -m``, also nicht unter ``-P``/``PYTHONSAFEPATH`` (``safe_path``
+    ist injizierbar, weil ``sys.flags`` schreibgeschuetzt ist) und nicht, wenn
+    es geloescht wurde. Ein ausdrueckliches ``--app-dir`` gilt immer. Steht der
+    Pfad schon an Stelle 0, passiert nichts. Spawn-Kinder und der Forkserver
+    erben ``sys.path`` (Spike S2). Befehle ohne die Option (``schedule``,
+    ``dlq``, ``check``) importieren kein App-Modul und bleiben unberuehrt.
+    """
+    if not hasattr(args, "app_dir"):
+        return
+    if args.app_dir is not None:
+        raw = args.app_dir
+    elif safe_path:
+        return
+    else:
+        try:
+            raw = os.getcwd()  # noqa: PTH109 - os.getcwd wie python -m
+        except FileNotFoundError:
+            return
+    app_dir = os.path.abspath(raw)  # noqa: PTH100 - abspath normalisiert ohne Symlinks aufzulösen
+    if sys.path[:1] != [app_dir]:
+        sys.path.insert(0, app_dir)

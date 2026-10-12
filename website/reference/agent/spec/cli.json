@@ -228,6 +228,17 @@
     {
       "arguments": [
         {
+          "default": null,
+          "flags": [
+            "--app-dir"
+          ],
+          "help": "Directory put first on sys.path before --module is imported. Default: the current working directory, as with 'python -m', unless PYTHONSAFEPATH or -P is set.",
+          "name": "--app-dir",
+          "positional": false,
+          "required": false,
+          "type": "app_dir_path"
+        },
+        {
           "choices": [
             "table",
             "json"
@@ -512,6 +523,17 @@
         {
           "default": null,
           "flags": [
+            "--app-dir"
+          ],
+          "help": "Directory put first on sys.path before --module is imported. Default: the current working directory, as with 'python -m', unless PYTHONSAFEPATH or -P is set. Also used for --configure; supervisor and CPU compute children inherit it.",
+          "name": "--app-dir",
+          "positional": false,
+          "required": false,
+          "type": "app_dir_path"
+        },
+        {
+          "default": null,
+          "flags": [
             "--autoscale"
           ],
           "help": "R4.7: enable autoscaling between MIN..MAX workers based on queue depth. Scale-up when pending tasks exceed 50 * active workers; scale-down after 60s of sustained idle. 30s cooldown between decisions. Implies --processes (the initial count is clamped into [MIN,MAX]).",
@@ -721,7 +743,7 @@
           "flags": [
             "--module"
           ],
-          "help": "Python module containing Task subclasses to register, e.g. 'myapp.tasks'. Must be importable from the current Python path.",
+          "help": "Python module containing Task subclasses to register, e.g. 'myapp.tasks'. Imported with --app-dir (default: the current working directory) first on the Python path.",
           "name": "--module",
           "positional": false,
           "required": true,

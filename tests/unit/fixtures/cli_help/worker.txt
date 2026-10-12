@@ -1,5 +1,6 @@
-usage: swarmq worker [-h] --module DOTTED.PATH [--configure MODULE:CALLABLE]
-                     [--queues A,B,C] [--concurrency N] [--pool {io,cpu}]
+usage: swarmq worker [-h] --module DOTTED.PATH [--app-dir DIR]
+                     [--configure MODULE:CALLABLE] [--queues A,B,C]
+                     [--concurrency N] [--pool {io,cpu}]
                      [--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}]
                      [--log-format {human,json}] [--log-config PATH]
                      [--no-configure-logging] [--logger-level NAME=LEVEL]
@@ -19,8 +20,14 @@ top-level code — this is the standard Python convention.
 options:
   -h, --help            show this help message and exit
   --module DOTTED.PATH  Python module containing Task subclasses to register,
-                        e.g. 'myapp.tasks'. Must be importable from the
-                        current Python path.
+                        e.g. 'myapp.tasks'. Imported with --app-dir (default:
+                        the current working directory) first on the Python
+                        path.
+  --app-dir DIR         Directory put first on sys.path before --module is
+                        imported. Default: the current working directory, as
+                        with 'python -m', unless PYTHONSAFEPATH or -P is set.
+                        Also used for --configure; supervisor and CPU compute
+                        children inherit it.
   --configure MODULE:CALLABLE
                         Callable invoked with the SwarmQ app after
                         construction and before the worker starts, e.g.

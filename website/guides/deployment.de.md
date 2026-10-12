@@ -136,6 +136,12 @@ Weitere Hinweise für Container:
   "worker", ...]`), damit er `SIGTERM` selbst erhält; eine Shell als
   PID 1 leitet es nicht weiter. Ein Init-Prozess (`docker run --init`,
   tini) räumt verwaiste Enkelprozesse ab.
+- **Arbeitsverzeichnis:** `swarmq worker` importiert `--module` aus dem
+  Arbeitsverzeichnis. Setze `WORKDIR` daher auf das Verzeichnis, das dein
+  Paket enthält (`WORKDIR /app` für `/app/myapp/tasks.py`), oder übergib
+  `--app-dir /app`. Vor diesem Release brauchte das Konsolenskript dafür
+  `PYTHONPATH`
+  ([Das Task-Modul finden](../reference/cli.md#das-task-modul-finden)).
 - **Uhren:** NTP auf jedem Host. `max_age` vergleicht die Uhr des
   Producers mit der des Workers, und das Warten auf einen Lock toleriert
   einen Versatz von etwa 60 s.

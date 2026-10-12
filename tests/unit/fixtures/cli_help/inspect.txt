@@ -1,4 +1,5 @@
-usage: swarmq inspect [-h] --module DOTTED.PATH [--format {table,json}]
+usage: swarmq inspect [-h] --module DOTTED.PATH [--app-dir DIR]
+                      [--format {table,json}]
 
 Import a module, register its Task subclasses, and print their declarative
 TaskInfo fields — queues, retry config, rate_limit, lock, R3.5 unique_for /
@@ -7,6 +8,9 @@ unique_until. Read-only; does not connect to broker or backend.
 options:
   -h, --help            show this help message and exit
   --module DOTTED.PATH  Python module whose Task subclasses to introspect.
+  --app-dir DIR         Directory put first on sys.path before --module is
+                        imported. Default: the current working directory, as
+                        with 'python -m', unless PYTHONSAFEPATH or -P is set.
   --format {table,json}
                         Output format. Default: 'table' on a TTY, 'json' on a
                         pipe. Override the default with

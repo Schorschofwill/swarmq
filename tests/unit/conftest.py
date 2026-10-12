@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 # Task registry reset is handled by root conftest.py (_reset_task_registry).
+import sys
 import threading
 import weakref
+from pathlib import Path
 
 import pytest
 
@@ -109,3 +111,36 @@ def _no_real_redeliver_pause(monkeypatch):
         return None
 
     monkeypatch.setattr("swarmq.worker.redelivery._sleep", instant)
+
+
+def _is_below(file: str, roots: list[Path]) -> bool:
+    path = Path(file).resolve()
+    return any(path.is_relative_to(root) for root in roots)
+
+
+@pytest.fixture(autouse=True)
+def _restore_sys_path():
+    """Plan 2026-10-12-1105, MR 6 (Review P1-13): ``main(["worker"|"inspect",
+    ...])`` stellt das App-Verzeichnis an ``sys.path[0]``. Nach jedem Test gilt
+    wieder der alte ``sys.path``.
+
+    Aus ``sys.modules`` fallen nur Module, die waehrend des Tests aus einem
+    neu hinzugekommenen Pfad geladen wurden und nicht unter einem schon
+    vorhandenen liegen. ``swarmq.*``, ``tests.*`` und Bibliotheken bleiben:
+    ein erneuter Import ergaebe doppelte Klassenobjekte.
+    """
+    saved_path = list(sys.path)
+    saved_modules = set(sys.modules)
+    yield
+    added = [entry for entry in sys.path if entry and entry not in saved_path]
+    sys.path[:] = saved_path
+    if not added:
+        return
+    added_roots = [Path(entry).resolve() for entry in added]
+    known_roots = [Path(entry).resolve() for entry in saved_path if entry]
+    for name in set(sys.modules) - saved_modules:
+        if name.partition(".")[0] in {"swarmq", "tests"}:
+            continue
+        file = getattr(sys.modules[name], "__file__", None)
+        if file and _is_below(file, added_roots) and not _is_below(file, known_roots):
+            del sys.modules[name]

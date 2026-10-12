@@ -14,6 +14,17 @@ from swarmq.slots import effective_concurrency, resolve_default_slots, validate_
 _MAX_TCP_PORT = 65535
 
 
+def app_dir_hint() -> str:
+    """Hinweis fuer einen nicht gefundenen ``--module`` (Plan 2026-10-12-1105, P6).
+
+    Nennt ``sys.path[0]``: nach ``apply_app_dir`` das verwendete
+    App-Verzeichnis; im Worker-Kind ist ``--app-dir`` selbst unbekannt, der
+    geerbte ``sys.path`` aber derselbe.
+    """
+    first = sys.path[0] if sys.path else ""
+    return f"searched first in {first!r}; pass --app-dir DIR if the module lives elsewhere"
+
+
 def _validate_module_importable(module: str) -> ModuleSpec:
     """Pre-flight check: raise ConfigurationError if ``module`` cannot
     be resolved.
@@ -52,13 +63,14 @@ def _validate_module_importable(module: str) -> ModuleSpec:
         # specified for '.relative'" case; ValueError handles some
         # malformed dotted paths depending on Python version.
         raise ConfigurationError(
-            f"--module {module!r} cannot be imported: {exc}",
+            f"--module {module!r} cannot be imported: {exc}; {app_dir_hint()}",
         ) from exc
     # ``spec.origin is None`` für Namespace-Packages ohne __init__.py —
     # find_spec liefert einen spec, aber import_module wird scheitern.
     if spec is None or spec.origin is None:
         raise ConfigurationError(
-            f"--module {module!r} resolves to no loadable spec — check spelling, PYTHONPATH, and __init__.py presence",
+            f"--module {module!r} resolves to no loadable spec — check spelling, PYTHONPATH, "
+            f"and __init__.py presence; {app_dir_hint()}",
         )
     # Return the spec so run_multi_process_worker
     # can hand it to resolve_watch_dirs instead of calling find_spec

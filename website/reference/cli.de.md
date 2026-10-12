@@ -21,7 +21,7 @@ swarmq [--version]
 swarmq worker   --module DOTTED.PATH [options]
 swarmq schedule (list | add | remove | status) [options]
 swarmq dlq      (list | inspect | retry | purge) [options]
-swarmq inspect  --module DOTTED.PATH [--format FORMAT]
+swarmq inspect  --module DOTTED.PATH [--app-dir DIR] [--format FORMAT]
 swarmq check    [--format FORMAT]
 ```
 
@@ -75,7 +75,7 @@ konsumiert. `SWARMQ_BROKER_URL` und `SWARMQ_BACKEND_URL` müssen
 gesetzt sein.
 
 ```text
-swarmq worker --module DOTTED.PATH
+swarmq worker --module DOTTED.PATH [--app-dir DIR]
               [--configure MODULE:CALLABLE]
               [--queues A,B,C]
               [--concurrency N] [--pool {io,cpu}]
@@ -98,7 +98,8 @@ swarmq worker --module DOTTED.PATH
 
 | Flag | Default | Beschreibung |
 |---|---|---|
-| `--module DOTTED.PATH` | *pflicht* | Python-Modul mit zu registrierenden `Task`-Subklassen (z. B. `myapp.tasks`). Muss vom aktuellen `PYTHONPATH` importierbar sein. |
+| `--module DOTTED.PATH` | *pflicht* | Python-Modul mit zu registrierenden `Task`-Subklassen (z. B. `myapp.tasks`). Importiert mit `--app-dir` (Standard: das aktuelle Arbeitsverzeichnis) an erster Stelle von `sys.path`, danach der übrige Python-Pfad. |
+| `--app-dir DIR` | Arbeitsverzeichnis | Verzeichnis, das vor dem Import von `--module` an die erste Stelle von `sys.path` kommt. Ohne die Option gilt das aktuelle Arbeitsverzeichnis wie bei `python -m`, außer unter `PYTHONSAFEPATH` oder `-P`; ein ausdrückliches `--app-dir` gilt immer. `--configure`, `--check`, die Worker-Kinder des Supervisors und die Rechenkinder von `--pool cpu` nutzen denselben Pfad. Siehe [Das Task-Modul finden](#das-task-modul-finden). |
 | `--configure MODULE:CALLABLE` | ungesetzt | Callable, das mit der `SwarmQ`-App nach ihrer Konstruktion und vor dem Start des Workers aufgerufen wird, z. B. `myapp.hooks:setup`. Damit lassen sich Middleware und Signal-Handler registrieren, ohne einen eigenen Worker-Einstieg zu schreiben. Läuft genau einmal je Worker-Prozess, nie im Forkserver und nie in `schedule`, `dlq` oder `inspect`; ein Awaitable als Rückgabe wird abgewartet. Jede Ausnahme aus dem Hook ist ein Konfigurationsfehler (Exit `78`). Siehe [das Beispiel](#middleware-per-configure-registrieren). |
 | `--queues A,B,C` | `default` | Komma-separierte Queue-Namen zum Konsumieren. Env-Var: `SWARMQ_QUEUES`. |
 | `--concurrency N` | `10` (io) / zugeteilte CPUs (cpu) | Maximal parallel ausgeführte Tasks. Mit `--pool cpu` die Zahl der Rechenslots; Voreinstellung sind die dem Worker zugeteilten CPUs (Affinität und cgroup-Quote) geteilt durch `--max-processes`, falls gesetzt, sonst durch `--processes`. Env-Var: `SWARMQ_CONCURRENCY`. |
@@ -149,6 +150,30 @@ swarmq worker \
   --metrics-port 9100 \
   --health-port 9200
 ```
+
+### Das Task-Modul finden
+
+Das Konsolenskript `swarmq` hat das `bin`-Verzeichnis des Virtualenv an
+erster Stelle von `sys.path`, nicht das Arbeitsverzeichnis. Seit diesem
+Release stellen `swarmq worker` und `swarmq inspect` das
+Arbeitsverzeichnis voran, wie es `python -m swarmq.cli worker` immer
+tat; `--module myapp.tasks` findet also `./myapp/tasks.py` ohne
+`PYTHONPATH`. Liegt der Code woanders, hilft `--app-dir DIR`:
+
+```bash
+swarmq worker --app-dir /srv/app --module myapp.tasks
+```
+
+!!! warning "Lokale Dateien überdecken installierte Pakete"
+    Eine Datei im App-Verzeichnis gewinnt gegen ein installiertes Paket
+    oder ein Modul der Standardbibliothek gleichen Namens: Eine
+    verirrte `valkey.py`, `queue.py` oder `select.py` im
+    Arbeitsverzeichnis legt den Worker lahm. `PYTHONSAFEPATH=1` (oder
+    `python -P`) hält das Arbeitsverzeichnis aus `sys.path`; ein
+    ausdrückliches `--app-dir` gilt trotzdem.
+
+Wird das Modul nicht gefunden, nennt der Fehler `--app-dir` und das
+zuerst durchsuchte Verzeichnis.
 
 ### Middleware per `--configure` registrieren
 
@@ -467,14 +492,15 @@ ist.
 ## `swarmq inspect`
 
 ```text
-swarmq inspect --module DOTTED.PATH [--format (table|json)]
+swarmq inspect --module DOTTED.PATH [--app-dir DIR] [--format (table|json)]
 ```
 
 Importiert ein Modul, registriert seine `Task`-Subklassen und
 druckt die `TaskInfo`-Metadaten jedes Tasks — Queues, Retry-Policy,
 Rate-Limit, Lock, Dedup-Settings, Cron. Read-only. Verbindet sich
 nicht mit Broker oder Backend. Nützlich als Container-Healthcheck
-oder in CI.
+oder in CI. `--app-dir` wirkt wie bei
+[`swarmq worker`](#das-task-modul-finden).
 
 ### Beispiel
 

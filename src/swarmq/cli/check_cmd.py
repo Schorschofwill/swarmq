@@ -216,6 +216,7 @@ def _is_check_invocation(argv: Sequence[str] | None) -> bool:
     # real parser, not here.
     worker_sub.add_argument("--task", default=None)
     worker_sub.add_argument("--module", default=None)
+    worker_sub.add_argument("--app-dir", default=None)
     worker_sub.add_argument("--queue", default=None)
     worker_sub.add_argument("--watch-dir", action="append", default=None)
     worker_sub.add_argument("--log-level", default=None)

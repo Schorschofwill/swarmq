@@ -130,6 +130,12 @@ Further container hints:
   "worker", ...]`) so it receives `SIGTERM` itself; a shell as PID 1
   does not forward it. An init process (`docker run --init`, tini)
   reaps orphaned grandchildren.
+- **Working directory:** `swarmq worker` imports `--module` from the
+  working directory, so set `WORKDIR` to the directory that contains
+  your package (`WORKDIR /app` for `/app/myapp/tasks.py`), or pass
+  `--app-dir /app`. Before this release the console script needed
+  `PYTHONPATH` for that
+  ([finding the task module](../reference/cli.md#finding-the-task-module)).
 - **Clocks:** run NTP on every host. `max_age` compares the producer's
   clock with the worker's, and the lock wait tolerates a skew of about
   60 s.

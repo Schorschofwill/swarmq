@@ -20,7 +20,7 @@ swarmq [--version]
 swarmq worker   --module DOTTED.PATH [options]
 swarmq schedule (list | add | remove | status) [options]
 swarmq dlq      (list | inspect | retry | purge) [options]
-swarmq inspect  --module DOTTED.PATH [--format FORMAT]
+swarmq inspect  --module DOTTED.PATH [--app-dir DIR] [--format FORMAT]
 swarmq check    [--format FORMAT]
 ```
 
@@ -71,7 +71,7 @@ broker + backend, and consume. `SWARMQ_BROKER_URL` and
 `SWARMQ_BACKEND_URL` must be set.
 
 ```text
-swarmq worker --module DOTTED.PATH
+swarmq worker --module DOTTED.PATH [--app-dir DIR]
               [--configure MODULE:CALLABLE]
               [--queues A,B,C]
               [--concurrency N] [--pool {io,cpu}]
@@ -94,7 +94,8 @@ swarmq worker --module DOTTED.PATH
 
 | Flag | Default | Description |
 |---|---|---|
-| `--module DOTTED.PATH` | *required* | Python module containing `Task` subclasses to register (e.g. `myapp.tasks`). Must be importable from the current `PYTHONPATH`. |
+| `--module DOTTED.PATH` | *required* | Python module containing `Task` subclasses to register (e.g. `myapp.tasks`). Imported with `--app-dir` (default: the current working directory) first on `sys.path`, then the rest of the Python path. |
+| `--app-dir DIR` | working directory | Directory put first on `sys.path` before `--module` is imported. Without the flag the current working directory is used, as `python -m` does, unless `PYTHONSAFEPATH` or `-P` is set; an explicit `--app-dir` always applies. `--configure`, `--check`, the supervisor's worker children and the compute children of `--pool cpu` use the same path. See [finding the task module](#finding-the-task-module). |
 | `--configure MODULE:CALLABLE` | unset | Callable invoked with the `SwarmQ` app after construction and before the worker starts, e.g. `myapp.hooks:setup`. Use it to register middleware and signal handlers without writing your own worker entry point. Runs exactly once per worker process, never in the forkserver and never in `schedule`, `dlq` or `inspect`; an awaitable return value is awaited. Any exception from the hook is a configuration error (exit `78`). See [the example](#registering-middleware-with-configure). |
 | `--queues A,B,C` | `default` | Comma-separated queue names the worker consumes. Env var: `SWARMQ_QUEUES`. |
 | `--concurrency N` | `10` (io) / assigned CPUs (cpu) | Maximum tasks executed in parallel. With `--pool cpu` the number of compute slots; the default is the CPUs assigned to the worker (affinity and cgroup quota) divided by `--max-processes` if set, otherwise by `--processes`. Env var: `SWARMQ_CONCURRENCY`. |
@@ -145,6 +146,30 @@ swarmq worker \
   --metrics-port 9100 \
   --health-port 9200
 ```
+
+### Finding the task module
+
+The `swarmq` console script has the virtualenv's `bin` directory first
+on `sys.path`, not the working directory. Since this release
+`swarmq worker` and `swarmq inspect` put the working directory first,
+as `python -m swarmq.cli worker` always did, so `--module myapp.tasks`
+finds `./myapp/tasks.py` without `PYTHONPATH`. Use `--app-dir DIR` when
+the code lives elsewhere:
+
+```bash
+swarmq worker --app-dir /srv/app --module myapp.tasks
+```
+
+!!! warning "Local files shadow installed packages"
+    A file in the app directory wins over an installed package or a
+    standard-library module of the same name: a stray `valkey.py`,
+    `queue.py` or `select.py` in the working directory breaks the
+    worker. Set `PYTHONSAFEPATH=1` (or run `python -P`) to keep the
+    working directory off `sys.path`; an explicit `--app-dir` still
+    applies.
+
+If the module cannot be found, the error names `--app-dir` and the
+directory searched first.
 
 ### Registering middleware with `--configure`
 
@@ -452,13 +477,14 @@ the DLQ contents are known-bad and not worth inspecting.
 ## `swarmq inspect`
 
 ```text
-swarmq inspect --module DOTTED.PATH [--format (table|json)]
+swarmq inspect --module DOTTED.PATH [--app-dir DIR] [--format (table|json)]
 ```
 
 Import a module, register its `Task` subclasses, and print each
 task's `TaskInfo` metadata — queues, retry policy, rate limit, lock,
 dedup settings, cron. Read-only. Does not connect to broker or
-backend. Useful as a container healthcheck or in CI.
+backend. Useful as a container healthcheck or in CI. `--app-dir`
+works as for [`swarmq worker`](#finding-the-task-module).
 
 ### Example
 

@@ -14,8 +14,10 @@ import importlib.metadata
 from typing import Any
 
 from swarmq.cli._shared import (
+    _APP_DIR_HELP,
     _VALID_LOG_FORMATS,
     _VALID_LOG_LEVELS,
+    _app_dir_path,
     _autoscale_range,
     _configure_hook,
     _dotted_module_name,
@@ -87,9 +89,16 @@ def _add_worker_parser(subparsers: Any) -> None:
         metavar="DOTTED.PATH",
         help=(
             "Python module containing Task subclasses to register, "
-            "e.g. 'myapp.tasks'. Must be importable from the current "
-            "Python path."
+            "e.g. 'myapp.tasks'. Imported with --app-dir (default: the "
+            "current working directory) first on the Python path."
         ),
+    )
+    worker.add_argument(
+        "--app-dir",
+        type=_app_dir_path,
+        default=None,
+        metavar="DIR",
+        help=_APP_DIR_HELP + " Also used for --configure; supervisor and CPU compute children inherit it.",
     )
     worker.add_argument(
         "--configure",
