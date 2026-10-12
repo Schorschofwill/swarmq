@@ -55,6 +55,20 @@ BZ-17 (Plan 0.12.0, MR 2) -- begrenzter Fehlertext-Header:
 
 22. Die Dead-Letter-Kopie traegt ``x-swarmq-traceback`` hoechstens 8 KiB lang.
 23. Die Retry-Kopie ebenso.
+
+P7b (Plan 2026-10-12-1105, MR 1, T9) -- ``task_sent_to_dlq`` nur, wenn die
+Kopie liegt oder der DLX-Rueckfall lief:
+
+24. DLQ-Publish scheitert ohne ``on_publish_failure`` -> ``dlq_publish_failed``
+    einmal, kein ``task_sent_to_dlq``, ``redeliver`` einmal.
+25. DLQ-Publish scheitert mit ``on_publish_failure`` (DLX-Rueckfall) ->
+    ``task_sent_to_dlq`` einmal.
+26. ``SettleFailedAfterPublish`` (Kopie liegt) -> ``task_sent_to_dlq`` einmal.
+27. Workflow-Fehlmarkierung scheitert voruebergehend -> kein
+    ``task_sent_to_dlq``.
+28. Erfolg -> ``task_sent_to_dlq`` einmal mit ``error_type`` (Liste 8/9).
+29. Kopie liegt, ``maybe_release_unique`` wirft (ohne ``on_publish_failure``)
+    -> ``task_sent_to_dlq`` einmal (exakte Bedingung aus T9).
 """
 
 from __future__ import annotations
@@ -574,3 +588,92 @@ async def test_dead_letter_of_a_step_that_already_succeeded_does_not_fail_its_wo
 
     worker._workflow_advancer.fail.assert_not_awaited()
     broker.dead_letter.assert_awaited_once()
+
+
+@pytest.mark.timeout(5)
+async def test_failed_dlq_publish_with_redelivery_does_not_log_task_sent_to_dlq(broker, backend, config, swarmq_logs):
+    """Liste 24 (P7b, T9): Die Nachricht liegt nicht in der XQ, sondern wird
+    neu zugestellt -- ``dlq_publish_failed`` beschreibt den Fall allein."""
+    from swarmq.exceptions import BrokerConnectionError
+
+    handler, _ = _handler(broker, backend, config)
+    broker.dead_letter = AsyncMock(side_effect=BrokerConnectionError("broker gone"))
+    msg = make_message(_default_payload(name="dlq-task"))
+
+    placed = await handler.dead_letter(msg, _ctx(), "boom", "RuntimeError")
+
+    assert placed is False
+    assert len(_events(swarmq_logs, "dlq_publish_failed")) == 1
+    assert _events(swarmq_logs, "task_sent_to_dlq") == []
+    broker.redeliver.assert_awaited_once_with(msg)
+
+
+@pytest.mark.timeout(5)
+async def test_placed_copy_with_failing_release_still_logs_task_sent_to_dlq(broker, backend, config, swarmq_logs):
+    """Liste 29 (P7b, T9, Review P1-10): ``placed`` gilt ab der liegenden
+    Kopie. Wirft danach die Unique-Freigabe, liegt die Nachricht trotzdem in
+    der XQ -- das Event bleibt. Die vorbestehende Doppelbehandlung
+    (``dlq_publish_failed`` und Neuzustellung) aendert P7b nicht."""
+    handler, worker = _handler(broker, backend, config)
+    worker._gate_deps.maybe_release_unique = AsyncMock(side_effect=ConnectionError("valkey down"))
+
+    placed = await handler.dead_letter(make_message(_default_payload(name="dlq-task")), _ctx(), "boom", "RuntimeError")
+
+    assert placed is True
+    broker.dead_letter.assert_awaited_once()
+    [entry] = _events(swarmq_logs, "task_sent_to_dlq")
+    assert entry["error_type"] == "RuntimeError"
+
+
+@pytest.mark.timeout(5)
+async def test_failed_dlq_publish_with_dlx_fallback_logs_task_sent_to_dlq(broker, backend, config, swarmq_logs):
+    """Liste 25 (P7b, T9): Mit ``on_publish_failure`` (Lock- und
+    Unknown-Pfade) liegt die Nachricht danach ueber den Broker-DLX in der
+    XQ -- das Event bleibt."""
+    from swarmq.exceptions import BrokerConnectionError
+
+    handler, _ = _handler(broker, backend, config)
+    broker.dead_letter = AsyncMock(side_effect=BrokerConnectionError("broker gone"))
+    fallback = AsyncMock()
+
+    placed = await handler.dead_letter(
+        make_message(_default_payload(name="dlq-task")),
+        _ctx(),
+        "boom",
+        "LockWaitExceeded",
+        on_publish_failure=fallback,
+    )
+
+    assert placed is False
+    fallback.assert_awaited_once()
+    broker.redeliver.assert_not_awaited()
+    [entry] = _events(swarmq_logs, "task_sent_to_dlq")
+    assert entry["error_type"] == "LockWaitExceeded"
+
+
+@pytest.mark.timeout(5)
+async def test_settle_failed_after_publish_logs_task_sent_to_dlq_once(broker, backend, config, swarmq_logs):
+    """Liste 26 (P7b): ``SettleFailedAfterPublish`` heisst, die Kopie liegt --
+    ``placed`` und genau ein ``task_sent_to_dlq``."""
+    handler, _ = _handler(broker, backend, config)
+    broker.dead_letter = AsyncMock(side_effect=SettleFailedAfterPublish("channel closed"))
+
+    placed = await handler.dead_letter(make_message(_default_payload(name="dlq-task")), _ctx(), "boom", "RuntimeError")
+
+    assert placed is True
+    assert len(_events(swarmq_logs, "task_sent_to_dlq")) == 1
+
+
+@pytest.mark.timeout(5)
+async def test_transient_workflow_fail_mark_error_does_not_log_task_sent_to_dlq(broker, backend, config, swarmq_logs):
+    """Liste 27 (P7b): Scheitert die Workflow-Fehlmarkierung voruebergehend,
+    kehrt ``dead_letter`` vor der Kopie zurueck -- kein Event."""
+    handler, worker = _handler(broker, backend, config)
+    worker._workflow_advancer.fail = AsyncMock(side_effect=BackendConnectionError("down"))
+    msg = make_message(_default_payload(name="dlq-task"), headers={HEADER_WORKFLOW_ID: _WF_ID})
+
+    placed = await handler.dead_letter(msg, _ctx(), "boom", "RuntimeError")
+
+    assert placed is False
+    broker.dead_letter.assert_not_awaited()
+    assert _events(swarmq_logs, "task_sent_to_dlq") == []

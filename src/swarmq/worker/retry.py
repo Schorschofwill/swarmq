@@ -307,6 +307,9 @@ class RetryHandler:
                     pass
                 # Non-terminal — leave the flag so the redelivery's terminal
                 # path releases it. No release here.
-        # KTD11: der Task ist endgueltig fehlgeschlagen -> ERROR.
-        logger.error("task_sent_to_dlq", error_type=error_type, error=error_message)
+        # KTD11: der Task ist endgueltig fehlgeschlagen -> ERROR. Nur wenn die
+        # Kopie liegt oder der DLX-Rueckfall des Aufrufers lief (P7b); nach
+        # gescheitertem Publish mit Neuzustellung meldet ``dlq_publish_failed``.
+        if placed or on_publish_failure is not None:
+            logger.error("task_sent_to_dlq", error_type=error_type, error=error_message)
         return placed

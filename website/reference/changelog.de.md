@@ -8,6 +8,12 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ### Behoben
 
+- **`task_sent_to_dlq` erscheint nicht mehr, wenn der Dead-Letter-Publish
+  scheiterte und die Nachricht neu zugestellt wurde; diesen Fall meldet
+  `dlq_publish_failed`.** Das Event bleibt, wenn die Kopie in der
+  Dead-Letter-Queue liegt (auch wenn danach nur das Ack scheiterte) und
+  wenn ein Lock- oder Unknown-Task-Pfad die Nachricht über den Broker-DLX
+  dorthin leitete ([Logging-Referenz](logging.md)).
 - **B24: Ein Verbindungsabbruch beim Warten auf das Publisher-Confirm
   ist `PublishIndeterminate`, kein rohes `AMQPConnectionError` mehr.**
   Riss die Broker-Verbindung, nachdem eine Nachricht gesendet war, aber
