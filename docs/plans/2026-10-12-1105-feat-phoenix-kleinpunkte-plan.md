@@ -3,7 +3,7 @@ title: Konfliktfreie Punkte aus der Phoenix-Migrationsanalyse (P1, P2, P5b, P6, 
 type: feat
 date: 2026-10-12
 revision: 1 (Erstfassung; alle Code-Stellen gegen origin/main 5bfa106 geprüft)
-artifact_readiness: decisions-pending (Abschnitt 1.2)
+artifact_readiness: decisions-made (Abschnitt 1.2, von Georg am 2026-10-12 entschieden)
 execution: code
 ---
 
@@ -85,9 +85,11 @@ execution: code
   - `TASK_REJECTED` feuert weiter mit denselben `reason`-Werten, nach der liegenden Kopie, genau einmal. Die Metrik `swarmq_tasks_rejected_total{reason}` bleibt.
   - `TASK_DLQ` feuert auf diesen Pfaden nicht. Ein Ergebnis wird nicht gespeichert und die Unique-Freigabe nicht ausgeführt, wie heute: Nur der Transport ändert sich.
 
-### 1.2 Offen – Georg entscheidet
+### 1.2 Von Georg am 2026-10-12 entschieden
 
-| ID | Frage | Optionen | Empfehlung |
+Alle neun Fragen wurden wie empfohlen entschieden („mach das so“). Es gilt jeweils die Spalte „Empfehlung“: E1 C, E2 A, E3 A, E4 A, E5 A, E6 A bei bestandenem Spike S1, sonst B, E7 A, E8 A, E9 A (in MR 7).
+
+| ID | Frage | Optionen | Empfehlung (= Entscheidung) |
 |---|---|---|---|
 | E1 (P6) | Standard von `--app-dir` | **A** Arbeitsverzeichnis immer voranstellen (wie uvicorn). **B** Opt-in: nur mit `--app-dir`; bei ImportError ein Hinweis auf die Option. **C** Arbeitsverzeichnis voranstellen wie `python -m` es tut, also nicht unter `PYTHONSAFEPATH`/`-P` (`sys.flags.safe_path`). Ein ausdrückliches `--app-dir` gilt immer. | **C.** `swarmq worker` verhält sich dann wie `python -m swarmq.cli worker` heute, und wer `PYTHONSAFEPATH` bewusst setzt, behält den Schutz. Bei A überdecken lokale Dateien Pakete ohne Ausweg. Bei B bleibt die Phoenix-Falle für jeden neuen Nutzer. |
 | E2 (P1) | Semantik von `SWARMQ_SCHEDULER=off` | **A** Keine Leader-Bewerbung, kein Feuern, kein Adopt/Prune. Die Meldungen (Crons, Version, Queues, Epoch) laufen weiter (T2). **B** `SchedulerLoop` gar nicht starten. **C** Bewerben, aber als Leader nicht feuern. | **A.** B lässt den Leader die Crons dieses Workers nach 24 h löschen und meldet seine Queues als verwaist. C hält die Leader-Rolle besetzt und legt das Feuern für alle still. |
