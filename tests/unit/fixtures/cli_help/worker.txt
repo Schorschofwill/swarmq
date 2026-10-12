@@ -5,10 +5,10 @@ usage: swarmq worker [-h] --module DOTTED.PATH [--configure MODULE:CALLABLE]
                      [--no-configure-logging] [--logger-level NAME=LEVEL]
                      [--log-queue-size N] [--log-drain-timeout SECONDS]
                      [--log-lifecycle-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}]
-                     [--burst] [--metrics-port PORT] [--health-port PORT]
-                     [--priorities] [--processes N] [--autoscale MIN,MAX]
-                     [--max-processes N] [--group LABEL] [--reload]
-                     [--watch-dir PATH] [--check]
+                     [--burst] [--no-scheduler] [--metrics-port PORT]
+                     [--health-port PORT] [--priorities] [--processes N]
+                     [--autoscale MIN,MAX] [--max-processes N] [--group LABEL]
+                     [--reload] [--watch-dir PATH] [--check]
                      [--burst-idle-timeout SECONDS]
 
 Import a Python module so its Task subclasses register, then connect to broker
@@ -77,6 +77,11 @@ options:
                         seconds. Useful for batch / cron-style deployments
                         where a worker should drain and exit rather than long-
                         poll forever.
+  --no-scheduler        Keep this worker out of the scheduler leader election
+                        (SWARMQ_SCHEDULER=off). It still reports its crons.
+                        Crons, delay/eta tasks and oneshots fire only while
+                        another worker on the same Valkey and namespace runs
+                        the scheduler.
   --metrics-port PORT   R5.1: serve Prometheus /metrics on the given port.
                         Auto-wires the signal-based collectors (task_total,
                         retries_total, etc.). Requires 'pip install

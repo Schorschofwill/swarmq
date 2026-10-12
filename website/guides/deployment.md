@@ -165,6 +165,11 @@ Further container hints:
   set `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S=0`, so the leadership does
   not move to a 0.11 app
   ([namespace](../reference/configuration.md#namespace-several-apps-on-one-valkey)).
+- **`SWARMQ_SCHEDULER=off`** keeps a worker out of the scheduler leader
+  election, for example a developer machine against a copy of live data.
+  At least one worker per Valkey and namespace must keep `on`, otherwise
+  no cron, `delay`/`eta` task or oneshot fires
+  ([turning the scheduler off](scheduling-and-retries.md#turning-the-scheduler-off-on-single-workers)).
 
 ## Step 5: permissions, policies, sizing
 

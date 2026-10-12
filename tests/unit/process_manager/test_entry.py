@@ -23,6 +23,10 @@ from __future__ import annotations
 # - [x] Endet der Worker an einer Ausnahme, bekommt das harte Ende sie
 #       mit (``exc``): Traceback bzw. ``SystemExit``-Meldung auf fd 2 wie in
 #       ``console_main``
+# Plan 2026-10-12-1105, MR 5 (P1, Review P0-2):
+# - [x] ``WorkerConfig.scheduler="off"`` landet in der Kind-Namespace und
+#       ergibt dort ``SwarmQConfig.scheduler == "off"``, auch wenn im Kind
+#       ``SWARMQ_SCHEDULER=on`` gesetzt ist
 import os
 from typing import Any, override
 
@@ -152,6 +156,31 @@ class TestWorkerSubprocessEntry:
         )
 
         assert captured["ns"].worker_slot == 2
+
+    def test_scheduler_switch_beats_the_child_environment(self, monkeypatch):
+        import threading
+
+        from swarmq.cli.worker_options import resolve_worker_options, worker_config_kwargs
+        from swarmq.config import SwarmQConfig
+
+        captured: dict[str, Any] = {}
+
+        async def capture_ns(ns):
+            captured["ns"] = ns
+
+        monkeypatch.setattr("swarmq.cli.run_worker_async", capture_ns)
+        worker_subprocess_entry(
+            worker_id=0,
+            shutdown_event=threading.Event(),
+            cfg=_make_test_cfg(scheduler="off"),
+        )
+
+        ns = captured["ns"]
+        assert ns.scheduler == "off"
+        monkeypatch.setenv("SWARMQ_SCHEDULER", "on")
+        resolve_worker_options(ns, os.environ)
+        config = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x", **worker_config_kwargs(ns))  # type: ignore[arg-type]  # kwargs aus der Namespace
+        assert config.scheduler == "off"
 
 
 def _capture_entry_logs(monkeypatch) -> list[dict[str, Any]]:

@@ -171,6 +171,11 @@ Weitere Hinweise für Container:
   setze `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S=0`, damit die Führung nicht
   zu einer 0.11-App wechselt
   ([Namensraum](../reference/configuration.md#namensraum-mehrere-apps-auf-einem-valkey)).
+- **`SWARMQ_SCHEDULER=off`** hält einen Worker aus der Wahl des
+  Scheduler-Leaders heraus, etwa einen Entwicklerrechner gegen eine Kopie
+  der Live-Daten. Mindestens ein Worker je Valkey und Namensraum muss
+  `on` behalten, sonst feuert kein Cron, kein `delay`/`eta`-Task und kein
+  Oneshot ([Scheduler abschalten](scheduling-and-retries.md#scheduler-auf-einzelnen-workern-abschalten)).
 
 ## Schritt 5: Rechte, Policies, Mengen
 

@@ -740,6 +740,18 @@
           "type": "str"
         },
         {
+          "default": null,
+          "flags": [
+            "--no-scheduler"
+          ],
+          "help": "Keep this worker out of the scheduler leader election (SWARMQ_SCHEDULER=off). It still reports its crons. Crons, delay/eta tasks and oneshots fire only while another worker on the same Valkey and namespace runs the scheduler.",
+          "name": "--no-scheduler",
+          "nargs": 0,
+          "positional": false,
+          "required": false,
+          "type": "str"
+        },
+        {
           "choices": [
             "io",
             "cpu"

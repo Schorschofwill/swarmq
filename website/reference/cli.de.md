@@ -85,6 +85,7 @@ swarmq worker --module DOTTED.PATH
               [--log-queue-size N] [--log-lifecycle-level LEVEL]
               [--log-drain-timeout SECONDS]
               [--burst] [--burst-idle-timeout SECONDS]
+              [--no-scheduler]
               [--priorities]
               [--metrics-port PORT] [--health-port PORT]
               [--processes N | -p N] [--autoscale MIN,MAX]
@@ -112,6 +113,7 @@ swarmq worker --module DOTTED.PATH
 | `--log-drain-timeout SECONDS` | `5` | Obergrenze für jedes Leeren der Log-Queues: beim Prozessende, vor einem Reload, vor jedem Ergebnis eines Rechenkinds. Nicht rechtzeitig geschriebene Einträge gelten als verworfen. Muss größer als 0 und höchstens `threading.TIMEOUT_MAX` sein, sonst Exit `78`. Env-Var: `SWARMQ_LOG_DRAIN_TIMEOUT`. Siehe [Logging](logging.md#begrenztes-leeren). |
 | `--burst` | aus | Exited sauber, sobald alle Queues `--burst-idle-timeout` Sekunden Idle waren. Env-Var: `SWARMQ_BURST_MODE`. |
 | `--burst-idle-timeout SECONDS` | `5.0` | Sekunden Queue-Stille, bevor `--burst` exited. Env-Var: `SWARMQ_BURST_IDLE_TIMEOUT`. |
+| `--no-scheduler` | Scheduler an | Hält diesen Worker aus der Wahl des Scheduler-Leaders heraus. Er meldet seine Crons weiter. Crons, `delay`/`eta`-Tasks und Oneshots feuern nur, solange ein anderer Worker am selben Valkey und Namensraum Leader ist. Env-Var: `SWARMQ_SCHEDULER=off` ([Scheduler abschalten](../guides/scheduling-and-retries.de.md#scheduler-auf-einzelnen-workern-abschalten)). |
 | `--priorities` | aus | Auto-Deklaration und Konsum des `{queue}.high`/`.normal`/`.low`-Triplets für jede Queue. Env-Var: `SWARMQ_PRIORITIES`. Ohne das Flag wirft der Publish eines Tasks mit `TaskInfo(priority="high"\|"low")` `UnroutableMessage` (ab 0.12; vorher ging die Nachricht still verloren). |
 | `--metrics-port PORT` | ungesetzt | **Basisport** für Prometheus `/metrics`: Der Worker in Slot `s` serviert auf `PORT + s`, `--processes 3 --metrics-port 9000` belegt also `9000-9002`. Braucht `pip install 'swarmq[metrics]'`. Bind-Host: `SWARMQ_METRICS_HOST` (Default `127.0.0.1`). Siehe [Basisports](configuration.de.md#observability). |
 | `--health-port PORT` | ungesetzt | **Basisport** für `/health` + `/ready`, derselbe Slot-Versatz wie bei `--metrics-port`. Bind-Host: `SWARMQ_HEALTH_HOST` (Default `127.0.0.1`). |
@@ -492,8 +494,8 @@ swarmq check [--format (table|json)]
 
 Prüft nur lesend die Umgebung, in der swarmq läuft (neu in 0.12). Liest
 `SWARMQ_BACKEND_URL`, `SWARMQ_VALKEY_EVICTION_CHECK`,
-`SWARMQ_SHUTDOWN_TIMEOUT`, `SWARMQ_NAMESPACE` und für den Abschnitt
-`queues` `SWARMQ_BROKER_URL` und `SWARMQ_SCHEDULER_SEEN_INTERVAL_S`.
+`SWARMQ_SHUTDOWN_TIMEOUT`, `SWARMQ_NAMESPACE`, `SWARMQ_SCHEDULER` und
+für den Abschnitt `queues` `SWARMQ_BROKER_URL` und `SWARMQ_SCHEDULER_SEEN_INTERVAL_S`.
 Schickt an Valkey nur `CONFIG GET`, `INFO`, `SCAN` und Lesebefehle, an
 RabbitMQ nur passive Declares. **Vor einem Upgrade** mit der neuen swarmq-Version in einem
 eigenen virtualenv gegen Produktion laufen lassen; unter Kubernetes
@@ -525,6 +527,9 @@ Abschnitte:
   `missing_dead_letter_queues` nennt gemeldete Queues, deren `.XQ` fehlt
   (der Broker verwirft dorthin geleitete gescheiterte Tasks)
   ([Task in eine andere Queue verschieben](../guides/defining-tasks.de.md#task-in-eine-andere-queue-verschieben)).
+- `scheduler`: `scheduler`, der Wert von
+  `SWARMQ_SCHEDULER` (ohne die Variable `on`). Ob überhaupt ein Worker
+  Scheduler-Leader ist, wird nicht geprüft.
 
 `findings` nennt jedes Problem mit `section`, `level` (`error` oder
 `warning`), `code` und `message`: `eviction_policy` (unter `strict` ein
@@ -536,14 +541,17 @@ migriert; [Namensraum](configuration.md#namensraum-mehrere-apps-auf-einem-valkey
 `unprefixed_keys_unknown` (`SCAN` gescheitert, verboten oder vor dem
 ersten Fund am Zeitlimit), `orphaned_queue`, `dead_letter_queue_missing`
 und `queues_unchecked` (die gemeldeten Queues waren aus Valkey nicht
-lesbar, etwa per ACL verboten). Eine unvollständige Zählung lautet `at least
+lesbar, etwa per ACL verboten), `scheduler_disabled` (Warnung:
+`SWARMQ_SCHEDULER=off`, ein Worker mit dieser Umgebung bewirbt sich
+nicht um die Leader-Rolle) und `scheduler_invalid` (Fehler: ein anderer
+Wert als `on` oder `off`). Eine unvollständige Zählung lautet `at least
 <n> keys … (count incomplete …)`; im Cluster-Modus nennt die Meldung
 zusätzlich, dass nur ein Knoten gezählt wurde.
 
 Exit-Codes: `0`, wenn nichts blockiert (Warnungen erlaubt), `78`, wenn
 ein Worker in dieser Umgebung den Start verweigern würde (verdrängende
 Policy unter `SWARMQ_VALKEY_EVICTION_CHECK=strict`, ungültiger
-`SWARMQ_NAMESPACE`), `1`, wenn Valkey
+`SWARMQ_NAMESPACE` oder `SWARMQ_SCHEDULER`), `1`, wenn Valkey
 nicht erreichbar ist, `SWARMQ_BACKEND_URL` fehlt oder `SWARMQ_BROKER_URL`
 gesetzt und der Broker nicht erreichbar ist.
 

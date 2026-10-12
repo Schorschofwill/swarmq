@@ -115,9 +115,9 @@ class Worker(WorkerLifecycle, WorkerShutdown):
         self._workflow_advancer: WorkflowAdvancer | None = None
         # Embedded scheduler (Phase 3c). Lazy-constructed in start() after
         # the backend is connected — ScheduleStore's registered Lua
-        # scripts need a live client. None means "this worker is not
-        # running the scheduler loop" (only possible if explicitly
-        # disabled; default is enabled).
+        # scripts need a live client. None means "not started yet" (or
+        # already torn down). With ``scheduler="off"`` the loop exists but
+        # only reports and never runs for leader (P1).
         self._scheduler: SchedulerLoop | None = None
         # Backup registry for graceful-shutdown lock cleanup. Keyed by a
         # per-_handle_message UUID (NOT task_id, which can collide under

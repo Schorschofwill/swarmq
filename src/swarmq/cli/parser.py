@@ -220,6 +220,19 @@ def _add_worker_parser(subparsers: Any) -> None:
         ),
     )
     worker.add_argument(
+        "--no-scheduler",
+        dest="scheduler",
+        action="store_const",
+        const="off",
+        default=None,  # aufgeloest in cli.worker_options: Flag > SWARMQ_SCHEDULER > on
+        help=(
+            "Keep this worker out of the scheduler leader election "
+            "(SWARMQ_SCHEDULER=off). It still reports its crons. Crons, "
+            "delay/eta tasks and oneshots fire only while another worker "
+            "on the same Valkey and namespace runs the scheduler."
+        ),
+    )
+    worker.add_argument(
         "--metrics-port",
         type=_positive_int,
         default=None,

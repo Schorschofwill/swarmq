@@ -292,6 +292,9 @@ class SwarmQConfig(ConfigValidation):
     # werden. ``log`` loggt nur, ``off`` schaltet das Aufraeumen ab.
     scheduler_prune: str = "on"
     scheduler_prune_after_s: float = 86400.0
+    # Scheduler je Worker abschaltbar (Plan 2026-10-12-1105, P1): ``off``
+    # haelt den Worker aus der Leader-Wahl; seine Meldungen laufen weiter.
+    scheduler: str = "on"
     # Unroutbare Oneshots (Plan 0.12.0, MR 6, BZ-03): der Leader stellt einen
     # verzoegerten Task, dessen Queue fehlt, alle 60 s zurueck und verwirft ihn
     # nach dieser Frist ab dem ersten unroutbaren Versuch (Fehlerergebnis).
@@ -473,6 +476,7 @@ class SwarmQConfig(ConfigValidation):
         ("SWARMQ_SCHEDULER_TIMEZONE", "scheduler_timezone", "str"),
         ("SWARMQ_SCHEDULER_SEEN_INTERVAL_S", "scheduler_seen_interval_s", "float"),
         ("SWARMQ_SCHEDULER_PRUNE", "scheduler_prune", "str"),
+        ("SWARMQ_SCHEDULER", "scheduler", "str"),
         ("SWARMQ_SCHEDULER_PRUNE_AFTER_S", "scheduler_prune_after_s", "float"),
         ("SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S", "scheduler_unroutable_oneshot_max_s", "float"),
         ("SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S", "scheduler_publish_stepdown_s", "float"),
@@ -547,6 +551,7 @@ class SwarmQConfig(ConfigValidation):
     )
     _VALID_POOLS: ClassVar[frozenset[str]] = frozenset({"io", "cpu"})
     _VALID_PRUNE_MODES: ClassVar[tuple[str, ...]] = ("off", "log", "on")
+    _VALID_SCHEDULER_MODES: ClassVar[tuple[str, ...]] = ("on", "off")
     # Voreinstellungen fuer wiederverwendete DI-Kinder im CPU-Modus (R28, H-Serie).
     CPU_DEFAULT_RECYCLE_RSS_MB: ClassVar[int] = 250
     CPU_DEFAULT_RECYCLE_MAX_TASKS: ClassVar[int] = 1000
@@ -661,6 +666,7 @@ class SwarmQConfig(ConfigValidation):
         self._validate_core()
         self._validate_scheduler_relations()
         self._validate_scheduler_prune()
+        self._validate_scheduler_mode()
         self._validate_execution_guard()
         try:
             self.scheduler_timezone = normalize_timezone(self.scheduler_timezone, "scheduler_timezone")

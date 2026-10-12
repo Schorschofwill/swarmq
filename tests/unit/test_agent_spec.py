@@ -211,6 +211,13 @@ def test_config_spec_enum_choices_match_validation() -> None:
         SwarmQConfig(**base, queue_type=qt)
     with pytest.raises(ConfigurationError):
         SwarmQConfig(**base, queue_type="streaming")
+    # P1 (Plan 2026-10-12-1105, MR 5, Review P2-25): Scheduler-Schalter.
+    assert by_name["scheduler"]["env_var"] == "SWARMQ_SCHEDULER"
+    assert by_name["scheduler"]["choices"] == ["off", "on"]
+    for mode in by_name["scheduler"]["choices"]:
+        SwarmQConfig(**base, scheduler=mode)
+    with pytest.raises(ConfigurationError):
+        SwarmQConfig(**base, scheduler="no")
 
 
 # === U3: CLI spec ===
@@ -274,6 +281,8 @@ def test_cli_spec_worker_argument_details() -> None:
     assert args["--pool"]["choices"] == ["io", "cpu"]
     assert args["--log-format"]["choices"] == list(_VALID_LOG_FORMATS)
     assert args["--burst"]["type"] == "bool"  # store_true flag
+    # P1 (Plan 2026-10-12-1105, MR 5): setzt ``scheduler`` auf ``off``.
+    assert args["--no-scheduler"]["nargs"] == 0
 
 
 def test_cli_spec_schedule_add_has_positional_and_required_task() -> None:

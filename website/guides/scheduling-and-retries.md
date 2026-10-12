@@ -402,6 +402,42 @@ under the old per-owner key that successors before 0.12 scan for, and
 a 0.12 successor recognises the marker of a leader before 0.12 through
 the leader it saw last. A missed marker only changes the signal.
 
+### Turning the scheduler off on single workers
+
+Every worker runs for scheduler leader by default. `SWARMQ_SCHEDULER=off`
+(or `swarmq worker --no-scheduler`) keeps a worker out of the election.
+The typical case is local development against a copy of live data: the
+developer's worker consumes its queues but must not fire the crons of
+production. Embedded workers take the same switch:
+`SwarmQ(broker, backend, scheduler="off")`.
+
+```bash
+SWARMQ_SCHEDULER=off swarmq worker --module myapp.tasks
+# or
+swarmq worker --module myapp.tasks --no-scheduler
+```
+
+What it changes:
+
+- The leader fires crons, oneshots **and** `delay`/`eta` tasks, because
+  `schedule(..., delay=...)` stores them in the scheduler store. If every
+  worker on the same Valkey and namespace runs with `off`, all of them
+  wait until a worker with `on` starts.
+- Pruning and adoption of crons, the check for orphaned queues and the
+  hourly Valkey check also run only on the leader.
+- The worker keeps reporting its static crons, its version and its
+  queues. The leader therefore does not prune the crons of this worker
+  after `SWARMQ_SCHEDULER_PRUNE_AFTER_S`, and `swarmq check` does not
+  report its queues as orphaned.
+- Each worker process logs the WARNING `scheduler_disabled` at start:
+  N times with `--processes N`, and again after every recycle.
+  `swarmq check` reports `scheduler_disabled` as a warning; any value
+  other than `on` or `off` is an error there and at worker start
+  (exit `78`).
+
+Workers before this release ignore `SWARMQ_SCHEDULER` and keep running
+for leader. `swarmq check` does not check whether any leader is alive.
+
 ### Missing queues
 
 Queues are declared by the workers that consume them. From 0.12 a

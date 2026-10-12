@@ -106,6 +106,7 @@ beenden `swarmq worker` mit Exit `78`.
 
 | Variable | Default | Beschreibung |
 |---|---|---|
+| `SWARMQ_SCHEDULER` | `on` | `off` hält diesen Worker aus der Wahl des Scheduler-Leaders heraus (auch `swarmq worker --no-scheduler`). Er meldet weiter seine Crons, Version und Queues, der Leader räumt seine Crons also nicht ab. Crons, `delay`/`eta`-Tasks und Oneshots feuern nur, solange ein anderer Worker am selben Valkey und Namensraum mit `on` läuft; mit `off` überall feuert nichts. Jeder andere Wert ist ein `ConfigurationError` (Exit `78`). Worker vor diesem Release ignorieren die Variable ([Scheduler abschalten](../guides/scheduling-and-retries.md#scheduler-auf-einzelnen-workern-abschalten)). |
 | `SWARMQ_SCHEDULER_POLL_INTERVAL` | `1.0` | Sekunden zwischen Scheduler-Tick-Polls. |
 | `SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL` | `10.0` | Sekunden zwischen Leader-Heartbeat-Renews. |
 | `SWARMQ_SCHEDULER_LOCK_TTL` | `30.0` | Leader-Lock-TTL; muss `≥ 2 × heartbeat_interval` sein. |

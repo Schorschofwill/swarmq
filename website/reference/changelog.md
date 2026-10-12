@@ -23,6 +23,16 @@ All notable changes to SwarmQ. This project follows
   ([message formats](agent/message-formats.md#task-result-valkey),
   [`TaskError`](errors.md#taskerror)).
 
+- **`SWARMQ_SCHEDULER=on|off` and `swarmq worker --no-scheduler` keep a
+  worker out of the scheduler leader election.** It still reports its
+  crons, so the leader does not prune them. If no worker runs the
+  scheduler, crons, oneshots and `delay`/`eta` tasks do not fire.
+  `scheduler_disabled` (WARNING) is logged once per worker process;
+  `swarmq check` has a new section `scheduler` with the findings
+  `scheduler_disabled` (warning) and `scheduler_invalid` (error, exit
+  `78`). Older workers (up to 0.12.0rc1) ignore the variable
+  ([turning the scheduler off](../guides/scheduling-and-retries.md#turning-the-scheduler-off-on-single-workers)).
+
 ### Changed
 
 - **`raise Retry(...)` now retries even when the task sets

@@ -11,6 +11,9 @@ Test-Liste:
 - ungueltiger Env-Wert mit Flag wird nicht geparst
 - cli_fields nennt nur die per Flag gesetzten Felder
 - idempotent: zweiter Aufruf aendert nichts
+- scheduler (Plan 2026-10-12-1105, MR 5): --no-scheduler schlaegt
+  SWARMQ_SCHEDULER=on; Env gilt ohne Flag; Default "on";
+  worker_config_kwargs nennt scheduler samt resolved_fields
 """
 
 from __future__ import annotations
@@ -142,3 +145,31 @@ class TestCliFields:
             3,
             frozenset({"concurrency"}),
         )
+
+
+class TestScheduler:
+    def test_flag_wins_over_environment(self):
+        args = _args(scheduler="off")
+        resolve_worker_options(args, {"SWARMQ_SCHEDULER": "on"})
+        assert args.scheduler == "off"
+
+    def test_environment_applies_without_flag(self):
+        args = _args()
+        resolve_worker_options(args, {"SWARMQ_SCHEDULER": "off"})
+        assert args.scheduler == "off"
+
+    def test_default_without_flag_and_environment(self):
+        args = _args()
+        resolve_worker_options(args, {})
+        assert args.scheduler == "on"
+
+    def test_worker_config_kwargs_carry_the_resolved_value(self):
+        from swarmq.cli.worker_options import worker_config_kwargs
+
+        args = _args(scheduler="off")
+        resolve_worker_options(args, {})
+        kwargs = worker_config_kwargs(args)
+        assert kwargs["scheduler"] == "off"
+        resolved = kwargs["resolved_fields"]
+        assert isinstance(resolved, tuple)
+        assert "scheduler" in resolved

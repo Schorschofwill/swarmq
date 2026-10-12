@@ -105,6 +105,7 @@ with exit `78`.
 
 | Variable | Default | Description |
 |---|---|---|
+| `SWARMQ_SCHEDULER` | `on` | `off` keeps this worker out of the scheduler leader election (also `swarmq worker --no-scheduler`). It still reports its crons, version and queues, so the leader does not prune its crons. Crons, `delay`/`eta` tasks and oneshots fire only while another worker on the same Valkey and namespace runs with `on`; with `off` everywhere nothing fires. Any other value is a `ConfigurationError` (exit `78`). Workers before this release ignore the variable ([turning the scheduler off](../guides/scheduling-and-retries.md#turning-the-scheduler-off-on-single-workers)). |
 | `SWARMQ_SCHEDULER_POLL_INTERVAL` | `1.0` | Seconds between scheduler tick polls. |
 | `SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL` | `10.0` | Seconds between leader heartbeat renewals. |
 | `SWARMQ_SCHEDULER_LOCK_TTL` | `30.0` | Leader lock TTL; must be `≥ 2 × heartbeat_interval`. |

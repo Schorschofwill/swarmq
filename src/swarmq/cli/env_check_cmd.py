@@ -15,6 +15,8 @@ Abschnitte:
   von Workern ab 0.12 gemeldeten Queues per passivem Declare: verwaiste Queues
   (Rueckstand, kein Consumer, kein lebender Worker meldet sie) und fehlende
   ``.XQ``. Beides sind Warnungen.
+- ``scheduler`` (Plan 2026-10-12-1105, P1): ``SWARMQ_SCHEDULER`` der Umgebung;
+  ``off`` ist eine Warnung, ein ungueltiger Wert ein Fehler (Exit 78).
 
 Exit-Codes: 0 ohne Fehler (Warnungen erlaubt), 78, wenn ein Worker mit dieser
 Umgebung den Start verweigern wuerde (verdraengende Policy unter ``strict``),
@@ -265,6 +267,37 @@ def _shutdown_section() -> tuple[dict[str, Any], list[dict[str, str]]]:
     return {"shutdown_timeout": timeout, "min_grace_period_s": timeout + GRACE_RESERVE_S}, []
 
 
+def _scheduler_section() -> tuple[dict[str, Any], list[dict[str, str]]]:
+    """P1 (Plan 2026-10-12-1105): Scheduler-Schalter aus der Umgebung. Ein
+    ungueltiger Wert ist ein Fehler (Exit 78), wie beim Worker-Start."""
+    from swarmq.config import SwarmQConfig
+
+    value = os.environ.get("SWARMQ_SCHEDULER", "") or "on"
+    findings: list[dict[str, str]] = []
+    valid = SwarmQConfig._VALID_SCHEDULER_MODES
+    if value not in valid:
+        findings.append(
+            _finding(
+                "scheduler",
+                "error",
+                "scheduler_invalid",
+                f"SWARMQ_SCHEDULER must be one of {list(valid)}, got {value!r} (a worker refuses to start)",
+            )
+        )
+    elif value == "off":
+        findings.append(
+            _finding(
+                "scheduler",
+                "warning",
+                "scheduler_disabled",
+                "SWARMQ_SCHEDULER=off: a worker with this environment does not run for scheduler leader; "
+                "crons, delay/eta tasks and oneshots fire only while another worker on the same Valkey "
+                "and namespace is leader",
+            )
+        )
+    return {"scheduler": value}, findings
+
+
 def _queues_section(state: QueueState | None) -> tuple[dict[str, Any], list[dict[str, str]]]:
     """BZ-14: verwaiste Queues und fehlende ``.XQ`` (Warnungen, Exit 0)."""
     from swarmq.queue_names import queue_family
@@ -319,19 +352,22 @@ def build_report(url: str, described: dict[str, Any], mode: str, *, queues: Queu
     findings += shutdown_findings
     queues_section, queue_findings = _queues_section(queues)
     findings += queue_findings
+    scheduler_section, scheduler_findings = _scheduler_section()
+    findings += scheduler_findings
     ok = not any(f["level"] == "error" for f in findings)
     return {
         "ok": ok,
         "valkey": valkey_section,
         "shutdown": shutdown_section,
         "queues": queues_section,
+        "scheduler": scheduler_section,
         "findings": findings,
     }
 
 
 def _render_table(report: dict[str, Any]) -> str:
     lines: list[str] = []
-    for name in ("valkey", "shutdown", "queues"):
+    for name in ("valkey", "shutdown", "queues", "scheduler"):
         for key, value in report[name].items():
             lines.append(f"{name}  {key}  {'-' if value is None else value}")
     lines.extend(

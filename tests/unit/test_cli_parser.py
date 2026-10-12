@@ -125,3 +125,20 @@ class TestLoggingOptions:
     def test_critical_is_accepted(self):
         args = self._parse("--log-level", "CRITICAL", "--log-lifecycle-level", "CRITICAL")
         assert (args.log_level, args.log_lifecycle_level) == ("CRITICAL", "CRITICAL")
+
+
+class TestNoSchedulerOption:
+    """Plan 2026-10-12-1105, MR 5 (P1, T1): ``--no-scheduler`` setzt ``off``;
+    ohne Flag bleibt der Wert ``None`` (aufgeloest in ``worker_options``)."""
+
+    @staticmethod
+    def _parse(*extra: str):
+        from swarmq.cli.parser import _build_parser
+
+        return _build_parser().parse_args(["worker", "--module", "app.tasks", *extra])
+
+    def test_flag_sets_off(self):
+        assert self._parse("--no-scheduler").scheduler == "off"
+
+    def test_default_is_none(self):
+        assert self._parse().scheduler is None

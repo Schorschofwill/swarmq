@@ -412,6 +412,7 @@ _CONFIG_CHOICES: dict[str, list[str]] = {
     "log_level": ["CRITICAL", "DEBUG", "ERROR", "INFO", "WARNING"],
     "log_lifecycle_level": ["CRITICAL", "DEBUG", "ERROR", "INFO", "WARNING"],
     "queue_type": ["classic", "quorum"],
+    "scheduler": ["off", "on"],
 }
 
 
