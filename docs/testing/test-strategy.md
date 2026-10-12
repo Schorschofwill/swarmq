@@ -208,12 +208,15 @@ basedpyright, Stubs); `uv sync` und `uv run` ziehen beide über
 
 ```bash
 uv sync --extra test --extra reload
-uv run prek install --hook-type pre-commit --hook-type pre-push
+uv run prek install --hook-type pre-commit --hook-type pre-push --allow-missing-config
 git config blame.ignoreRevsFile .git-blame-ignore-revs
 ```
 
 Beim Commit prüfen die Hooks Format und Lint der geänderten Dateien, vor dem
-Push beide Typprüfer. Die Versionen kommen aus `uv.lock`. Reine
+Push beide Typprüfer. Die Hooks liegen im gemeinsamen `.git/hooks` und gelten
+damit für alle Worktrees des Klons; `--allow-missing-config` lässt sie in
+einem Worktree ohne `.pre-commit-config.yaml` (älterer Branch) nichts tun,
+statt jeden Commit dort abzulehnen. Die Versionen kommen aus `uv.lock`. Reine
 Formatierungs-Commits stehen in `.git-blame-ignore-revs`.
 
 ## Lokale Ausführung
