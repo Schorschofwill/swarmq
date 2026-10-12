@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import importlib.util
+import pathlib
+import types
+from annotationlib import ForwardRef
 from typing import override
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from dishka import FromDishka
 
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
@@ -35,6 +40,15 @@ def backend():
     b.set_cancel_flag = AsyncMock(return_value=True)
     b.clear_cancel_flag = AsyncMock()
     return b
+
+
+@pytest.fixture
+def empty_task_registry():
+    """T7 (Plan 2026-10-12-1105, Abschnitt 6): ``start_worker()`` prüft die
+    App-Registry auf DI-Tasks. Andere Testmodule registrieren DI-Tasks ohne
+    Container auf Modulebene; die App wird deshalb aus einer leeren Registry
+    gebaut. Die Wurzel-Fixture stellt die Registry danach wieder her."""
+    Task._clear_registered_tasks()
 
 
 class TestSwarmQInstantiation:
@@ -148,6 +162,7 @@ class TestSwarmQStartWorkerInjectionGuard:
             await app.start_worker()
 
     @pytest.mark.anyio
+    @pytest.mark.usefixtures("empty_task_registry")
     async def test_start_worker_proceeds_for_url_constructed_backends(self):
         broker = RabbitMQBroker("amqp://guest:guest@localhost/")
         backend = ValkeyBackend("valkey://localhost:6379/0")
@@ -380,6 +395,7 @@ class TestSwarmQLogging:
 
 class TestSwarmQStartWorker:
     @pytest.mark.anyio
+    @pytest.mark.usefixtures("empty_task_registry")
     async def test_start_worker_creates_and_starts_worker(self, broker, backend):
         app = SwarmQ(broker, backend)
 
@@ -401,6 +417,113 @@ class TestSwarmQStartWorker:
             assert isinstance(factory(), MiddlewareChain)
             assert call_kwargs["signal_dispatcher"] is app._signal_dispatcher
             mock_instance.start.assert_awaited_once()
+
+
+class _InjectedSvc:
+    pass
+
+
+def _define_di_task() -> type[Task]:
+    """DI-Task in einer frisch geleerten Registry (T7, Plan 2026-10-12-1105)."""
+
+    class EmbeddedDiTask(Task):
+        task_info = TaskInfo(name="embedded_di", queues=["q"])
+
+        @override
+        async def run(self, svc: FromDishka[_InjectedSvc]) -> None:
+            pass
+
+    return EmbeddedDiTask
+
+
+class TestSwarmQStartWorkerDiValidation:
+    """T7: ``start_worker()`` prüft die DI-Tasks der App-Registry, bevor eine
+    Verbindung entsteht."""
+
+    @pytest.mark.anyio
+    @pytest.mark.usefixtures("empty_task_registry")
+    async def test_di_task_without_container_fails_before_worker_and_connect(self, broker, backend):
+        from swarmq import dishka as di
+
+        _define_di_task()
+        di._reset_container()
+        app = SwarmQ(broker, backend)
+
+        with patch("swarmq.app.Worker") as MockWorker, pytest.raises(ConfigurationError, match="embedded_di"):
+            await app.start_worker()
+
+        MockWorker.assert_not_called()
+        broker.connect.assert_not_awaited()
+        backend.connect.assert_not_awaited()
+
+    @pytest.mark.anyio
+    @pytest.mark.usefixtures("empty_task_registry")
+    async def test_di_task_with_resolving_container_starts_worker(self, broker, backend):
+        from dishka import Provider, Scope, make_async_container
+
+        from swarmq import dishka as di
+
+        _define_di_task()
+        provider = Provider(scope=Scope.REQUEST)
+        provider.provide(_InjectedSvc)
+        di.setup_dishka(make_async_container(provider))
+        app = SwarmQ(broker, backend)
+
+        with patch("swarmq.app.Worker") as MockWorker:
+            MockWorker.return_value.start = AsyncMock()
+            await app.start_worker()
+
+        MockWorker.return_value.start.assert_awaited_once()
+
+
+def _load_pep649_tasks(request: pytest.FixtureRequest) -> types.ModuleType:
+    """Lädt ``_pep649_run_annotations.py`` je Test frisch, damit die Tasks in
+    der gerade geleerten Registry stehen (N2)."""
+    path = pathlib.Path(__file__).with_name("_pep649_run_annotations.py")
+    spec = importlib.util.spec_from_file_location(f"_pep649_run_annotations__{request.node.name}", path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class TestSwarmQBuildToleratesRunAnnotations:
+    """N2 (Plan 2026-10-12-1105, MR 7, von Georg am 2026-10-12 entschieden):
+    Der Bau der App liest die Annotationen von ``run()`` tolerant. Ein
+    unauflösbarer Name (etwa nur unter ``TYPE_CHECKING`` importiert) lässt
+    ``SwarmQ(...)`` nicht mehr mit ``NameError`` scheitern.
+
+    Test-Liste:
+    - PEP 563: unauflösbarer Parameter- und Rückgabetyp → Bau gelingt,
+      Rückgabetyp als ForwardRef
+    - PEP 649: dasselbe ohne Future-Import
+    """
+
+    @pytest.mark.usefixtures("empty_task_registry")
+    def test_pep563_unresolvable_run_annotations_build_app(self, broker, backend):
+        class UnresolvableTask(Task):
+            task_info = TaskInfo(name="n2_pep563", queues=["q"])
+
+            @override
+            async def run(self, x: Undefined) -> Missing:  # type: ignore[name-defined]  # noqa: F821 - absichtlich unauflösbar
+                pass
+
+        app = SwarmQ(broker, backend)
+
+        return_type = app.registry.get_entry("n2_pep563").return_type
+        assert isinstance(return_type, ForwardRef)
+        assert return_type.__forward_arg__ == "Missing"
+
+    @pytest.mark.usefixtures("empty_task_registry")
+    def test_pep649_unresolvable_run_annotations_build_app(self, broker, backend, request):
+        _load_pep649_tasks(request)
+
+        app = SwarmQ(broker, backend)
+
+        return_type = app.registry.get_entry("n2_pep649").return_type
+        assert isinstance(return_type, ForwardRef)
+        assert return_type.__forward_arg__ == "Missing"
 
 
 class TestSwarmQMiddlewareAndSignals:

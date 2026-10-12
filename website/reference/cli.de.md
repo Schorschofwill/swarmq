@@ -21,7 +21,7 @@ swarmq [--version]
 swarmq worker   --module DOTTED.PATH [options]
 swarmq schedule (list | add | remove | status) [options]
 swarmq dlq      (list | inspect | retry | purge) [options]
-swarmq inspect  --module DOTTED.PATH [--format FORMAT]
+swarmq inspect  --module DOTTED.PATH [--app-dir DIR] [--format FORMAT]
 swarmq check    [--format FORMAT]
 ```
 
@@ -75,7 +75,7 @@ konsumiert. `SWARMQ_BROKER_URL` und `SWARMQ_BACKEND_URL` müssen
 gesetzt sein.
 
 ```text
-swarmq worker --module DOTTED.PATH
+swarmq worker --module DOTTED.PATH [--app-dir DIR]
               [--configure MODULE:CALLABLE]
               [--queues A,B,C]
               [--concurrency N] [--pool {io,cpu}]
@@ -85,6 +85,7 @@ swarmq worker --module DOTTED.PATH
               [--log-queue-size N] [--log-lifecycle-level LEVEL]
               [--log-drain-timeout SECONDS]
               [--burst] [--burst-idle-timeout SECONDS]
+              [--no-scheduler]
               [--priorities]
               [--metrics-port PORT] [--health-port PORT]
               [--processes N | -p N] [--autoscale MIN,MAX]
@@ -97,7 +98,8 @@ swarmq worker --module DOTTED.PATH
 
 | Flag | Default | Beschreibung |
 |---|---|---|
-| `--module DOTTED.PATH` | *pflicht* | Python-Modul mit zu registrierenden `Task`-Subklassen (z. B. `myapp.tasks`). Muss vom aktuellen `PYTHONPATH` importierbar sein. |
+| `--module DOTTED.PATH` | *pflicht* | Python-Modul mit zu registrierenden `Task`-Subklassen (z. B. `myapp.tasks`). Importiert mit `--app-dir` (Standard: das aktuelle Arbeitsverzeichnis) an erster Stelle von `sys.path`, danach der übrige Python-Pfad. |
+| `--app-dir DIR` | Arbeitsverzeichnis | Verzeichnis, das vor dem Import von `--module` an die erste Stelle von `sys.path` kommt. Ohne die Option gilt das aktuelle Arbeitsverzeichnis wie bei `python -m`, außer unter `PYTHONSAFEPATH` oder `-P`; ein ausdrückliches `--app-dir` gilt immer. `--configure`, `--check`, die Worker-Kinder des Supervisors und die Rechenkinder von `--pool cpu` nutzen denselben Pfad. Siehe [Das Task-Modul finden](#das-task-modul-finden). |
 | `--configure MODULE:CALLABLE` | ungesetzt | Callable, das mit der `SwarmQ`-App nach ihrer Konstruktion und vor dem Start des Workers aufgerufen wird, z. B. `myapp.hooks:setup`. Damit lassen sich Middleware und Signal-Handler registrieren, ohne einen eigenen Worker-Einstieg zu schreiben. Läuft genau einmal je Worker-Prozess, nie im Forkserver und nie in `schedule`, `dlq` oder `inspect`; ein Awaitable als Rückgabe wird abgewartet. Jede Ausnahme aus dem Hook ist ein Konfigurationsfehler (Exit `78`). Siehe [das Beispiel](#middleware-per-configure-registrieren). |
 | `--queues A,B,C` | `default` | Komma-separierte Queue-Namen zum Konsumieren. Env-Var: `SWARMQ_QUEUES`. |
 | `--concurrency N` | `10` (io) / zugeteilte CPUs (cpu) | Maximal parallel ausgeführte Tasks. Mit `--pool cpu` die Zahl der Rechenslots; Voreinstellung sind die dem Worker zugeteilten CPUs (Affinität und cgroup-Quote) geteilt durch `--max-processes`, falls gesetzt, sonst durch `--processes`. Env-Var: `SWARMQ_CONCURRENCY`. |
@@ -112,6 +114,7 @@ swarmq worker --module DOTTED.PATH
 | `--log-drain-timeout SECONDS` | `5` | Obergrenze für jedes Leeren der Log-Queues: beim Prozessende, vor einem Reload, vor jedem Ergebnis eines Rechenkinds. Nicht rechtzeitig geschriebene Einträge gelten als verworfen. Muss größer als 0 und höchstens `threading.TIMEOUT_MAX` sein, sonst Exit `78`. Env-Var: `SWARMQ_LOG_DRAIN_TIMEOUT`. Siehe [Logging](logging.md#begrenztes-leeren). |
 | `--burst` | aus | Exited sauber, sobald alle Queues `--burst-idle-timeout` Sekunden Idle waren. Env-Var: `SWARMQ_BURST_MODE`. |
 | `--burst-idle-timeout SECONDS` | `5.0` | Sekunden Queue-Stille, bevor `--burst` exited. Env-Var: `SWARMQ_BURST_IDLE_TIMEOUT`. |
+| `--no-scheduler` | Scheduler an | Hält diesen Worker aus der Wahl des Scheduler-Leaders heraus. Er meldet seine Crons weiter. Crons, `delay`/`eta`-Tasks und Oneshots feuern nur, solange ein anderer Worker am selben Valkey und Namensraum Leader ist. Env-Var: `SWARMQ_SCHEDULER=off` ([Scheduler abschalten](../guides/scheduling-and-retries.de.md#scheduler-auf-einzelnen-workern-abschalten)). |
 | `--priorities` | aus | Auto-Deklaration und Konsum des `{queue}.high`/`.normal`/`.low`-Triplets für jede Queue. Env-Var: `SWARMQ_PRIORITIES`. Ohne das Flag wirft der Publish eines Tasks mit `TaskInfo(priority="high"\|"low")` `UnroutableMessage` (ab 0.12; vorher ging die Nachricht still verloren). |
 | `--metrics-port PORT` | ungesetzt | **Basisport** für Prometheus `/metrics`: Der Worker in Slot `s` serviert auf `PORT + s`, `--processes 3 --metrics-port 9000` belegt also `9000-9002`. Braucht `pip install 'swarmq[metrics]'`. Bind-Host: `SWARMQ_METRICS_HOST` (Default `127.0.0.1`). Siehe [Basisports](configuration.de.md#observability). |
 | `--health-port PORT` | ungesetzt | **Basisport** für `/health` + `/ready`, derselbe Slot-Versatz wie bei `--metrics-port`. Bind-Host: `SWARMQ_HEALTH_HOST` (Default `127.0.0.1`). |
@@ -121,7 +124,7 @@ swarmq worker --module DOTTED.PATH
 | `--group LABEL` | sortierte Menge der `--queues` | Gruppenschlüssel des Kontrollkanals. Jeder Supervisor mit demselben Schlüssel (im selben Backend) folgt demselben Sollwert, jeder für sich. Deployments, die sich ein Backend teilen und dieselben Queues bedienen, brauchen verschiedene Labels, sonst steuern sie einander. |
 | `--reload` | aus | Beobachtet Task-Module und triggert SIGHUP-Reload bei Änderung. Nur Developer. Braucht `pip install 'swarmq[reload]'`. |
 | `--watch-dir PATH` | Elternverzeichnis der `--module`-Quelle | Zu überwachendes Verzeichnis (wiederholbar). Ohne `--reload` ignoriert. |
-| `--check` | aus | Dry-Run-Validierung: prüft, ob `--module` importierbar ist, ob eine `--configure`-Angabe die Form `MODULE:CALLABLE` hat und ihr Modul auffindbar ist (ohne es zu importieren), mit `--reload` dass `watchfiles` installiert ist und Watch-Dirs auflösbar sind, dass die Beobachtungs-Portbereiche unter 65535 bleiben und sich nicht überschneiden, dass die Logging-Einstellungen gültig sind und eine `--log-config`-Datei lädt und von `dictConfig` angenommen wird (Probe in einem eigenen Interpreter), dass `--pool cpu` nicht mit `--autoscale` kombiniert ist und dass `--max-processes` nicht unter `--processes` oder der `--autoscale`-Obergrenze liegt und mit `--pool cpu` die zugeteilten CPUs nicht überbucht. Druckt eine JSON-Zusammenfassung inklusive `metrics_ports` und `health_ports` (die genauen Ports, die die Slots binden) und exited `0`/`1` ohne Supervisor-Start oder Broker/Backend-Kontakt. Payload: [Nachrichtenformate](agent/message-formats.de.md#payload-von-swarmq-worker-check). |
+| `--check` | aus | Dry-Run-Validierung: prüft, ob `--module` importierbar ist (`--check` importiert es, Ausgaben des Moduls gehen nach stderr, und wendet die [DI-Prüfung](api.md#dependency-injection-dishka) des Worker-Starts auf die Tasks an, die der Import registriert), ob eine `--configure`-Angabe die Form `MODULE:CALLABLE` hat und ihr Modul auffindbar ist (ohne es zu importieren), mit `--reload` dass `watchfiles` installiert ist und Watch-Dirs auflösbar sind, dass die Beobachtungs-Portbereiche unter 65535 bleiben und sich nicht überschneiden, dass die Logging-Einstellungen gültig sind und eine `--log-config`-Datei lädt und von `dictConfig` angenommen wird (Probe in einem eigenen Interpreter), dass `--pool cpu` nicht mit `--autoscale` kombiniert ist und dass `--max-processes` nicht unter `--processes` oder der `--autoscale`-Obergrenze liegt und mit `--pool cpu` die zugeteilten CPUs nicht überbucht. Druckt eine JSON-Zusammenfassung inklusive `metrics_ports` und `health_ports` (die genauen Ports, die die Slots binden) und exited `0`/`1` ohne Supervisor-Start oder Broker/Backend-Kontakt. Payload: [Nachrichtenformate](agent/message-formats.de.md#payload-von-swarmq-worker-check). |
 
 ### Beispiele
 
@@ -147,6 +150,30 @@ swarmq worker \
   --metrics-port 9100 \
   --health-port 9200
 ```
+
+### Das Task-Modul finden
+
+Das Konsolenskript `swarmq` hat das `bin`-Verzeichnis des Virtualenv an
+erster Stelle von `sys.path`, nicht das Arbeitsverzeichnis. Seit diesem
+Release stellen `swarmq worker` und `swarmq inspect` das
+Arbeitsverzeichnis voran, wie es `python -m swarmq.cli worker` immer
+tat; `--module myapp.tasks` findet also `./myapp/tasks.py` ohne
+`PYTHONPATH`. Liegt der Code woanders, hilft `--app-dir DIR`:
+
+```bash
+swarmq worker --app-dir /srv/app --module myapp.tasks
+```
+
+!!! warning "Lokale Dateien überdecken installierte Pakete"
+    Eine Datei im App-Verzeichnis gewinnt gegen ein installiertes Paket
+    oder ein Modul der Standardbibliothek gleichen Namens: Eine
+    verirrte `valkey.py`, `queue.py` oder `select.py` im
+    Arbeitsverzeichnis legt den Worker lahm. `PYTHONSAFEPATH=1` (oder
+    `python -P`) hält das Arbeitsverzeichnis aus `sys.path`; ein
+    ausdrückliches `--app-dir` gilt trotzdem.
+
+Wird das Modul nicht gefunden, nennt der Fehler `--app-dir` und das
+zuerst durchsuchte Verzeichnis.
 
 ### Middleware per `--configure` registrieren
 
@@ -465,14 +492,15 @@ ist.
 ## `swarmq inspect`
 
 ```text
-swarmq inspect --module DOTTED.PATH [--format (table|json)]
+swarmq inspect --module DOTTED.PATH [--app-dir DIR] [--format (table|json)]
 ```
 
 Importiert ein Modul, registriert seine `Task`-Subklassen und
 druckt die `TaskInfo`-Metadaten jedes Tasks — Queues, Retry-Policy,
 Rate-Limit, Lock, Dedup-Settings, Cron. Read-only. Verbindet sich
 nicht mit Broker oder Backend. Nützlich als Container-Healthcheck
-oder in CI.
+oder in CI. `--app-dir` wirkt wie bei
+[`swarmq worker`](#das-task-modul-finden).
 
 ### Beispiel
 
@@ -492,8 +520,8 @@ swarmq check [--format (table|json)]
 
 Prüft nur lesend die Umgebung, in der swarmq läuft (neu in 0.12). Liest
 `SWARMQ_BACKEND_URL`, `SWARMQ_VALKEY_EVICTION_CHECK`,
-`SWARMQ_SHUTDOWN_TIMEOUT`, `SWARMQ_NAMESPACE` und für den Abschnitt
-`queues` `SWARMQ_BROKER_URL` und `SWARMQ_SCHEDULER_SEEN_INTERVAL_S`.
+`SWARMQ_SHUTDOWN_TIMEOUT`, `SWARMQ_NAMESPACE`, `SWARMQ_SCHEDULER` und
+für den Abschnitt `queues` `SWARMQ_BROKER_URL` und `SWARMQ_SCHEDULER_SEEN_INTERVAL_S`.
 Schickt an Valkey nur `CONFIG GET`, `INFO`, `SCAN` und Lesebefehle, an
 RabbitMQ nur passive Declares. **Vor einem Upgrade** mit der neuen swarmq-Version in einem
 eigenen virtualenv gegen Produktion laufen lassen; unter Kubernetes
@@ -525,6 +553,9 @@ Abschnitte:
   `missing_dead_letter_queues` nennt gemeldete Queues, deren `.XQ` fehlt
   (der Broker verwirft dorthin geleitete gescheiterte Tasks)
   ([Task in eine andere Queue verschieben](../guides/defining-tasks.de.md#task-in-eine-andere-queue-verschieben)).
+- `scheduler`: `scheduler`, der Wert von
+  `SWARMQ_SCHEDULER` (ohne die Variable `on`). Ob überhaupt ein Worker
+  Scheduler-Leader ist, wird nicht geprüft.
 
 `findings` nennt jedes Problem mit `section`, `level` (`error` oder
 `warning`), `code` und `message`: `eviction_policy` (unter `strict` ein
@@ -536,14 +567,17 @@ migriert; [Namensraum](configuration.md#namensraum-mehrere-apps-auf-einem-valkey
 `unprefixed_keys_unknown` (`SCAN` gescheitert, verboten oder vor dem
 ersten Fund am Zeitlimit), `orphaned_queue`, `dead_letter_queue_missing`
 und `queues_unchecked` (die gemeldeten Queues waren aus Valkey nicht
-lesbar, etwa per ACL verboten). Eine unvollständige Zählung lautet `at least
+lesbar, etwa per ACL verboten), `scheduler_disabled` (Warnung:
+`SWARMQ_SCHEDULER=off`, ein Worker mit dieser Umgebung bewirbt sich
+nicht um die Leader-Rolle) und `scheduler_invalid` (Fehler: ein anderer
+Wert als `on` oder `off`). Eine unvollständige Zählung lautet `at least
 <n> keys … (count incomplete …)`; im Cluster-Modus nennt die Meldung
 zusätzlich, dass nur ein Knoten gezählt wurde.
 
 Exit-Codes: `0`, wenn nichts blockiert (Warnungen erlaubt), `78`, wenn
 ein Worker in dieser Umgebung den Start verweigern würde (verdrängende
 Policy unter `SWARMQ_VALKEY_EVICTION_CHECK=strict`, ungültiger
-`SWARMQ_NAMESPACE`), `1`, wenn Valkey
+`SWARMQ_NAMESPACE` oder `SWARMQ_SCHEDULER`), `1`, wenn Valkey
 nicht erreichbar ist, `SWARMQ_BACKEND_URL` fehlt oder `SWARMQ_BROKER_URL`
 gesetzt und der Broker nicht erreichbar ist.
 

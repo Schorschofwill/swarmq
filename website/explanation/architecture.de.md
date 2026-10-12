@@ -163,11 +163,12 @@ eine Task-Queue tatsächlich braucht:
   Brokers ist das Sicherheitsnetz
   ([effektives Delivery-Limit](delivery-semantics.md#effektives-delivery-limit)).
 - **Natives DLQ-Routing.** Jede Queue wird mit einem
-  Dead-Letter-Exchange deklariert: Eine Nachricht, die der Worker
-  ablehnt (nicht dekodierbar) oder die das Zustelllimit erreicht,
-  landet ohne Worker-Code in `{queue}.XQ`. Bei Retry-Erschöpfung,
-  `NoRetry`, `max_age`, Lock-Fehlern und unregistrierten Tasks (nach
-  `SWARMQ_UNKNOWN_TASK_GRACE_S`) publiziert
+  Dead-Letter-Exchange deklariert: Eine Nachricht, die das
+  Zustelllimit erreicht oder deren Dead-Letter-Kopie scheiterte, landet
+  ohne Worker-Code in `{queue}.XQ`. Bei Retry-Erschöpfung, `NoRetry`,
+  `max_age`, Lock-Fehlern, unregistrierten Tasks (nach
+  `SWARMQ_UNKNOWN_TASK_GRACE_S`) und Nachrichten, die er abweist (nicht
+  dekodierbar, zu groß), publiziert
   der Worker selbst nach `{queue}.XQ`, mit Diagnose-Headern
   (`x-swarmq-traceback` u. a.), und bestätigt das Original erst, wenn
   der Broker die Kopie bestätigt hat.

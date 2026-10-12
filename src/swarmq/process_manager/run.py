@@ -173,6 +173,7 @@ def _run_multi_process_worker_configured(
         max_processes=max_processes,
         group=group_key,
         logging_settings=logging_settings,
+        scheduler=args.scheduler,
     )
 
     pm = ProcessManager(

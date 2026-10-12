@@ -160,6 +160,13 @@ class WorkerLifecycle:
         # the election and poll sub-coroutines; only the elected leader
         # will actually do work, standbys no-op.
         schedule_store = ScheduleStore(self._backend)
+        candidate = self._config.scheduler == "on"
+        if not candidate:
+            logger.warning(
+                "scheduler_disabled",
+                hint="this worker does not run for scheduler leader; crons, delay/eta tasks and "
+                "oneshots fire only while another worker on the same Valkey and namespace is leader",
+            )
         self._scheduler = SchedulerLoop(
             backend=self._backend,
             broker=self._broker,
@@ -178,6 +185,7 @@ class WorkerLifecycle:
             ),
             # BZ-14: die konsumierten Queues (mit Prioritaeten je Band).
             consumed_queues=self._config.consumed_queues,
+            candidate=candidate,
         )
         await self._scheduler.start()
 

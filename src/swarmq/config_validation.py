@@ -39,6 +39,7 @@ class ConfigValidation:
         scheduler_dedup_ttl: float | None
         scheduler_seen_interval_s: float
         scheduler_prune: str
+        scheduler: str
         scheduler_prune_after_s: float
         pool: str
         heartbeat_interval_s: float
@@ -53,6 +54,7 @@ class ConfigValidation:
         _POSITIVE_FIELDS: ClassVar[tuple[str, ...]]
         _VALID_POOLS: ClassVar[frozenset[str]]
         _VALID_PRUNE_MODES: ClassVar[tuple[str, ...]]
+        _VALID_SCHEDULER_MODES: ClassVar[tuple[str, ...]]
 
         def _apply_pool_defaults(self) -> None: ...
 
@@ -214,6 +216,12 @@ class ConfigValidation:
                 f"got dedup_ttl={self.scheduler_dedup_ttl}, "
                 f"retry_max_delay={self.retry_max_delay}"
             )
+            raise ConfigurationError(msg)
+
+    def _validate_scheduler_mode(self) -> None:
+        """Scheduler je Worker abschaltbar (Plan 2026-10-12-1105, P1)."""
+        if self.scheduler not in self._VALID_SCHEDULER_MODES:
+            msg = f"scheduler must be one of {list(self._VALID_SCHEDULER_MODES)}, got {self.scheduler!r}"
             raise ConfigurationError(msg)
 
     def _validate_scheduler_prune(self) -> None:

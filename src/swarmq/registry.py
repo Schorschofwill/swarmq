@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import annotationlib
 import inspect
 from dataclasses import dataclass
 from typing import Any
@@ -17,6 +18,23 @@ class RegistryEntry:
     return_type: Any
 
 
+def _read_return_type(run: Any) -> Any:
+    """Liest den Rückgabetyp von ``run()`` tolerant (N2): ein unauflösbarer
+    Name bleibt ein ``ForwardRef``, statt den Bau der App mit ``NameError``
+    scheitern zu lassen. Auflösbare Typen kommen unverändert zurück, eine
+    kaputte String-Annotation als roher Text."""
+    fmt = annotationlib.Format.FORWARDREF
+    return_type = annotationlib.get_annotations(run, format=fmt).get("return", inspect.Parameter.empty)
+    if isinstance(return_type, str):
+        try:
+            return_type = annotationlib.ForwardRef(return_type, owner=run).evaluate(format=fmt)
+        except SyntaxError:
+            # Wie in MR 7 (T5 Regel 2): eine kaputte String-Annotation bleibt
+            # als roher Text stehen.
+            pass
+    return return_type
+
+
 class TaskRegistry:
     def __init__(self) -> None:
         self._tasks: dict[str, type[Task]] = {}
@@ -26,7 +44,7 @@ class TaskRegistry:
         name = task_class.task_info.name
         if name in self._tasks:
             raise ConfigurationError(f"Task {name!r} is already registered")
-        return_type = inspect.get_annotations(task_class.run, eval_str=True).get("return", inspect.Parameter.empty)
+        return_type = _read_return_type(task_class.run)
         entry = RegistryEntry(
             task_class=task_class,
             task_info=task_class.task_info,

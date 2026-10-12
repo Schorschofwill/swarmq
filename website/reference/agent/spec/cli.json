@@ -228,6 +228,17 @@
     {
       "arguments": [
         {
+          "default": null,
+          "flags": [
+            "--app-dir"
+          ],
+          "help": "Directory put first on sys.path before --module is imported. Default: the current working directory, as with 'python -m', unless PYTHONSAFEPATH or -P is set.",
+          "name": "--app-dir",
+          "positional": false,
+          "required": false,
+          "type": "app_dir_path"
+        },
+        {
           "choices": [
             "table",
             "json"
@@ -512,6 +523,17 @@
         {
           "default": null,
           "flags": [
+            "--app-dir"
+          ],
+          "help": "Directory put first on sys.path before --module is imported. Default: the current working directory, as with 'python -m', unless PYTHONSAFEPATH or -P is set. Also used for --configure; supervisor and CPU compute children inherit it.",
+          "name": "--app-dir",
+          "positional": false,
+          "required": false,
+          "type": "app_dir_path"
+        },
+        {
+          "default": null,
+          "flags": [
             "--autoscale"
           ],
           "help": "R4.7: enable autoscaling between MIN..MAX workers based on queue depth. Scale-up when pending tasks exceed 50 * active workers; scale-down after 60s of sustained idle. 30s cooldown between decisions. Implies --processes (the initial count is clamped into [MIN,MAX]).",
@@ -548,7 +570,7 @@
           "flags": [
             "--check"
           ],
-          "help": "Dry-run validation mode. Verify --module is importable, (with --reload) that 'watchfiles' is installed + watch-dirs resolve, that the --metrics-port/--health-port ranges across all worker processes stay <= 65535 and do not overlap, the logging settings and --log-config (dictConfig probe), pool constraints (--pool cpu with --autoscale) and the --max-processes headroom. Prints a JSON summary to stdout, exits 0 on success or 1 on any validation error. Does NOT connect to broker or backend.",
+          "help": "Dry-run validation mode. Verify --module is importable (--check imports --module and validates the dependency injection of its tasks like the worker start), (with --reload) that 'watchfiles' is installed + watch-dirs resolve, that the --metrics-port/--health-port ranges across all worker processes stay <= 65535 and do not overlap, the logging settings and --log-config (dictConfig probe), pool constraints (--pool cpu with --autoscale) and the --max-processes headroom. Prints a JSON summary to stdout, exits 0 on success or 1 on any validation error. Does NOT connect to broker or backend.",
           "name": "--check",
           "nargs": 0,
           "positional": false,
@@ -721,7 +743,7 @@
           "flags": [
             "--module"
           ],
-          "help": "Python module containing Task subclasses to register, e.g. 'myapp.tasks'. Must be importable from the current Python path.",
+          "help": "Python module containing Task subclasses to register, e.g. 'myapp.tasks'. Imported with --app-dir (default: the current working directory) first on the Python path.",
           "name": "--module",
           "positional": false,
           "required": true,
@@ -734,6 +756,18 @@
           ],
           "help": "Do not set up logging in any swarmq process. Overrides SWARMQ_CONFIGURE_LOGGING.",
           "name": "--no-configure-logging",
+          "nargs": 0,
+          "positional": false,
+          "required": false,
+          "type": "str"
+        },
+        {
+          "default": null,
+          "flags": [
+            "--no-scheduler"
+          ],
+          "help": "Keep this worker out of the scheduler leader election (SWARMQ_SCHEDULER=off). It still reports its crons. Crons, delay/eta tasks and oneshots fire only while another worker on the same Valkey and namespace runs the scheduler.",
+          "name": "--no-scheduler",
           "nargs": 0,
           "positional": false,
           "required": false,

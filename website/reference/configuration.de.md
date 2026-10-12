@@ -106,6 +106,7 @@ beenden `swarmq worker` mit Exit `78`.
 
 | Variable | Default | Beschreibung |
 |---|---|---|
+| `SWARMQ_SCHEDULER` | `on` | `off` hält diesen Worker aus der Wahl des Scheduler-Leaders heraus (auch `swarmq worker --no-scheduler`). Er meldet weiter seine Crons, Version und Queues, der Leader räumt seine Crons also nicht ab. Crons, `delay`/`eta`-Tasks und Oneshots feuern nur, solange ein anderer Worker am selben Valkey und Namensraum mit `on` läuft; mit `off` überall feuert nichts. Jeder andere Wert ist ein `ConfigurationError` (Exit `78`). Worker vor diesem Release ignorieren die Variable ([Scheduler abschalten](../guides/scheduling-and-retries.md#scheduler-auf-einzelnen-workern-abschalten)). |
 | `SWARMQ_SCHEDULER_POLL_INTERVAL` | `1.0` | Sekunden zwischen Scheduler-Tick-Polls. |
 | `SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL` | `10.0` | Sekunden zwischen Leader-Heartbeat-Renews. |
 | `SWARMQ_SCHEDULER_LOCK_TTL` | `30.0` | Leader-Lock-TTL; muss `≥ 2 × heartbeat_interval` sein. |
@@ -140,7 +141,7 @@ Jeder Worker mit eingeschalteten Metriken (`--metrics-port`/`SWARMQ_METRICS_PORT
 | `swarmq_task_duration_seconds` | Histogram | `task_name`, `queue` | Dauer von `run()` bei erfolgreichen Tasks. Buckets von 5 ms bis 300 s. |
 | `swarmq_tasks_active` | Gauge | `queue` | Gerade laufende Tasks. |
 | `swarmq_retries_total` | Counter | `task_name`, `queue` | Eingeplante Retries. |
-| `swarmq_tasks_rejected_total` | Counter | `queue`, `reason` | Nachrichten, die ohne Diagnose-Header an den Broker-DLX gingen (`TASK_REJECTED`), z. B. `body_too_large`, `undecodable`; `unregistered_task` zählt einen nach `SWARMQ_UNKNOWN_TASK_GRACE_S` dead-geletterten Task. |
+| `swarmq_tasks_rejected_total` | Counter | `queue`, `reason` | Nachrichten, die der Worker abwies (`TASK_REJECTED`), z. B. `body_too_large`, `undecodable` (Kopie mit Frist in `.XQ`) oder `dlq_publish_failed` (Broker-DLX ohne Diagnose-Header); `unregistered_task` zählt einen nach `SWARMQ_UNKNOWN_TASK_GRACE_S` dead-geletterten Task. |
 | `swarmq_tasks_unknown_deferred_total` | Counter | `queue` | Nachrichten, die der Worker zurückgestellt hat, weil er den Task nicht registriert, innerhalb von `SWARMQ_UNKNOWN_TASK_GRACE_S` (`TASK_UNKNOWN_DEFERRED`; [unregistrierte Tasks](../guides/dead-letter-queues.de.md#unregistrierte-tasks-und-rolling-deploys)). |
 | `swarmq_recyclings_total` | Counter | `kind`, `reason` | Prozess-Recyclings; `kind` ist `worker` oder `compute_child`. |
 | `swarmq_queue_depth` | Gauge | `queue`, `kind` | Vom Broker gemeldete Nachrichtenzahl, alle `SWARMQ_METRICS_SAMPLE_INTERVAL` abgetastet: `kind="pending"` ist `{queue}` plus alle Delay-Queues, `kind="delayed"` (seit 0.12) nur die Delay-Queues ([Delay-Stufen](../explanation/delivery-semantics.md#delay-stufen)). |

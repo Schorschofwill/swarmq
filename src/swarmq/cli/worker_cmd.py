@@ -50,6 +50,11 @@ async def run_worker_async(args: argparse.Namespace) -> None:
                 f"is not installed but a task uses FromDishka: {exc}. "
                 f"Install it with: pip install 'swarmq[dishka]'"
             ) from exc
+        if isinstance(exc, ModuleNotFoundError) and (args.module == missing or args.module.startswith(missing + ".")):
+            # P6 (Plan 2026-10-12-1105): gleicher Typ, Meldung mit Hinweis.
+            from swarmq.process_manager.check import app_dir_hint
+
+            raise ModuleNotFoundError(f"{exc}; {app_dir_hint()}", name=exc.name, path=exc.path) from exc
         raise
 
     react_to_app_logging(before_import)

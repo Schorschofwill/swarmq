@@ -63,6 +63,8 @@ flowchart TD
   diesen Versuch. Nutze, wenn du die exakte korrekte Wartezeit
   kennst (z. B. HTTP `Retry-After: 60`).
 - `Retry()` ohne Delay — nutze die konfigurierte Backoff-Formel.
+- `Retry` gilt unabhängig davon, ob `retry_exceptions` ihn nennt, und
+  verbraucht das Retry-Budget: Bei `max_retries=0` endet er terminal.
 - `NoRetry(reason)` — Short-Circuit zur DLQ. Nutze für harte
   Fehler (4xx-Responses, Validierungsfehler, Schema-Drift).
 - Exception entweichen lassen — Default-Pfad; das Retry-Budget
@@ -111,8 +113,9 @@ flowchart TD
     Run[Task.run aufgerufen] --> Raise{Raised?}
     Raise -->|Nein| Ack[ack]
     Raise -->|Ja| Cls{Exception-Klasse}
-    Cls -->|NoRetry| DLQ[DLQ via DLX]
-    Cls -->|Andere, retry_exceptions<br/>passen oder ungesetzt| Budget{"retry_count < max_retries"}
+    Cls -->|Retry| Budget{"retry_count < max_retries"}
+    Cls -->|NoRetry| DLQ[Worker legt Kopie in die DLQ]
+    Cls -->|Andere, retry_exceptions<br/>passen oder ungesetzt| Budget
     Cls -->|Andere, retry_exceptions<br/>passen NICHT| DLQ
     Budget -->|Ja| Delay[Delay-Queue-Republish]
     Budget -->|Nein| DLQ

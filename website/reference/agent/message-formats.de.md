@@ -40,7 +40,7 @@ bedeutet, das Feature ist nicht aktiv.
 |---|---|---|---|
 | `x-swarmq-enqueued-at` | `int` (Unix-Sekunden) | Client / Scheduler | Genutzt vom `max_age`-Check des Workers. |
 | `x-swarmq-retry-count` | `int` | Worker | Monotoner Counter; von `swarmq dlq retry` zurückgesetzt. |
-| `x-swarmq-traceback` | `string` | Worker (bei Fehler) | Voller Python-Traceback des raisenden Versuchs. |
+| `x-swarmq-traceback` | `string` | Worker (bei Fehler) | Voller Python-Traceback des raisenden Versuchs; bei einer vom Worker abgewiesenen Nachricht (`TASK_REJECTED`) `<reason>: <error>`. |
 | `x-swarmq-unique-hash` | `string` (hex) | Client | SHA-256 der kanonischen `(name, args, kwargs)`. |
 | `x-swarmq-unique-until` | `"start"` \| `"completion"` | Client | Wann der Worker den Dedup-Flag freigibt. |
 | `x-swarmq-schedfire` | `int` (Unix-ms) | Scheduler | Vorhanden auf scheduler-publishten Nachrichten; Worker dedupt darauf. |
@@ -82,9 +82,21 @@ gleich dem aufgelösten `result_ttl`.
   "task": {"id": "01HV...", "name": "send_email", "queue": "emails"},
   "is_error": false,
   "is_cancelled": false,
-  "result": "sent to alice@example.com",
-  "error_message": null,
-  "error_class": null
+  "error_message": "",
+  "result": "sent to alice@example.com"
+}
+```
+
+Ein Fehlerergebnis trägt zusätzlich `error_class`:
+
+```jsonc
+{
+  "task": {"id": "01HV...", "name": "send_email", "queue": "emails"},
+  "is_error": true,
+  "is_cancelled": false,
+  "error_message": "",
+  "result": null,
+  "error_class": "builtins.ValueError"
 }
 ```
 
@@ -96,15 +108,16 @@ gleich dem aufgelösten `result_ttl`.
 | `is_error` | `bool` | `true`, wenn der Task beim letzten Versuch eine uncaught Exception raiste. |
 | `is_cancelled` | `bool` | `true`, wenn der Task via `Client.cancel` abgebrochen wurde. |
 | `result` | `any` | Vorhanden, wenn `is_error=false` und `is_cancelled=false`. msgpack-native Typen. |
-| `error_message` | `string \| null` | `str(exc)` vom scheiternden Versuch; vorhanden, wenn `is_error=true`. |
-| `error_class` | `string \| null` | Voll qualifizierter Klassenname der Exception. Beratend — nicht garantiert Wire-Encoding zukünftiger Versionen zu überleben. |
+| `error_message` | `string` | Immer vorhanden. Bei `is_error=true` `str(exc)` vom scheiternden Versuch, sonst `""`. Eine Exception ohne Text ergibt ebenfalls `""`; `error_class` nennt dann trotzdem die Klasse. |
+| `error_class` | `string` (optional) | Nur auf Fehlerergebnissen und nur, wenn eine Klasse bekannt ist: die voll qualifizierte Klasse der Exception als `modul.qualname` (eingebaute als `builtins.ValueError`). Im CPU-Modus die Klasse, die das Rechenkind meldet, auch wenn der Elternprozess sie nicht laden konnte. Pfade, die im Worker ohne Task-Exception enden, nennen die öffentliche swarmq-Klasse, wo es eine gibt (`swarmq.exceptions.TaskNotFoundError`, `LockWaitExceeded`, `RedeliveryLimitError`, `UnroutableMessage`, `ResultSerializationError`). Sonst **fehlt** der Schlüssel (nie `null`): Ergebnisse älterer Worker, Ablauf durch `max_age`, `WorkerHungError` und Fehler, die der Worker selbst erzeugt (harter Timeout, Drain, verlorenes Rechenkind, Kind ohne Fehlerdetail). Beratend: zum Unterscheiden von Fehlern, nicht als stabile API. |
 
 ### Dekodierungs-Priorität
 
 Beim Konsum eines Ergebnisses in dieser Reihenfolge auswerten:
 
 1. `is_cancelled` → `TaskCancelledError` raisen.
-2. `is_error` → `TaskError(error_message)` raisen.
+2. `is_error` → `TaskError(error_message)` raisen; `TaskError.error_class`
+   trägt `error_class` (`None`, wenn der Schlüssel fehlt).
 3. Sonst → `result` zurückgeben.
 
 ## Progress-Update (Valkey)
@@ -427,8 +440,12 @@ Für `task_id` existiert ein Fehlerergebnis.
   `"dlq_publish_failed"`.
 - `task_id` und `task_name` sind `null`, wenn der Body nie dekodiert
   wurde (`body_too_large`, `undecodable`).
-- Es wird kein Fehlerergebnis gespeichert; die Nachricht trägt in der
-  `.XQ` nur den `x-death`-Header des Brokers.
+- Es wird kein Fehlerergebnis gespeichert. Bei `body_too_large`,
+  `undecodable` und `middleware_chain_factory` legt der Worker eine
+  Kopie mit Frist in die `.XQ`, mit `x-swarmq-traceback` =
+  `<reason>: <error>`; nur wenn diese Kopie scheitert, und bei
+  `dlq_publish_failed`, trägt die Nachricht stattdessen nur den
+  `x-death`-Header des Brokers.
 
 ### `WORKFLOW_STEP_ENQUEUED`
 

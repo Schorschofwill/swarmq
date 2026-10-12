@@ -1,5 +1,11 @@
 """Client-Ergebnis-Tests (Plan U10) — verbatim: get_result(s), run,
-cancel, Fortschritt."""
+cancel, Fortschritt.
+
+Test-Liste P9 (Plan 2026-10-12-1105, MR 3, Q2):
+
+- Fehlerergebnis mit ``error_class`` -> ``TaskError.error_class`` gesetzt,
+  Text unveraendert; ohne Schluessel (0.12.0rc1-/0.11.1-Worker) -> ``None``.
+"""
 
 from __future__ import annotations
 
@@ -70,6 +76,26 @@ async def test_get_result_error_raises_task_error(client, backend):
 
     with pytest.raises(TaskError, match="division by zero"):
         await client.get_result("err-task", timeout=1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(5)
+async def test_get_result_error_exposes_error_class_when_present(client, backend):
+    base = {"task": {"id": "e", "queue": "q", "name": "n"}, "result": None, "is_error": True, "is_cancelled": False}
+    backend.get_result = AsyncMock(
+        side_effect=[
+            encode_result({**base, "error_message": "", "error_class": "builtins.ValueError"}),
+            encode_result({**base, "error_message": "boom"}),
+        ]
+    )
+
+    with pytest.raises(TaskError) as with_class:
+        await client.get_result("e", timeout=1)
+    with pytest.raises(TaskError) as without_class:
+        await client.get_result("e", timeout=1)
+
+    assert (str(with_class.value), with_class.value.error_class) == ("", "builtins.ValueError")
+    assert (str(without_class.value), without_class.value.error_class) == ("boom", None)
 
 
 @pytest.mark.asyncio

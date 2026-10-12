@@ -234,7 +234,7 @@
     },
     {
       "dlq_on_uncaught": "n/a",
-      "doc": null,
+      "doc": "Currently never raised; a stable hook for later telling an expired\nresult apart from one that is not ready yet. After the result TTL,\n``get_result`` raises ``ResultNotReadyError``.",
       "exception_class": "swarmq.exceptions.ResultExpiredError",
       "exit_code_on_cli": null,
       "init_params": [],
@@ -243,7 +243,7 @@
       "origin": "library",
       "parent": "SwarmQError",
       "retriable": "no",
-      "transport_field": "raised to caller",
+      "transport_field": "not raised (reserved)",
       "when": [
         "result"
       ]
@@ -367,16 +367,18 @@
     },
     {
       "dlq_on_uncaught": "n/a",
-      "doc": null,
+      "doc": "Ein Task endete mit einem Fehlerergebnis (bzw. ein Workflow scheiterte).\n\n``error_class`` (P9, beratend) nennt die voll qualifizierte Klasse der\nausloesenden Exception (``modul.qualname``, z. B.\n``builtins.ValueError``), im CPU-Modus den Namen aus dem Rechenkind.\n``None``, wenn das Ergebnis keine Klasse traegt: Ergebnisse aelterer\nWorker und vom Worker selbst erzeugte Fehler (harter Timeout, Drain,\nverlorenes Rechenkind, Ablauf).",
       "exception_class": "swarmq.exceptions.TaskError",
       "exit_code_on_cli": null,
-      "init_params": [],
+      "init_params": [
+        "error_class"
+      ],
       "module": "swarmq.exceptions",
       "name": "TaskError",
       "origin": "library",
       "parent": "SwarmQError",
       "retriable": "n/a",
-      "transport_field": "error_message, is_error=true",
+      "transport_field": "error_message, error_class, is_error=true",
       "when": [
         "result"
       ]

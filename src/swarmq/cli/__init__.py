@@ -45,7 +45,7 @@ if TYPE_CHECKING:
 
 import msgspec as msgspec
 
-from swarmq.cli import env_check_cmd
+from swarmq.cli import _shared, env_check_cmd
 from swarmq.cli._shared import (
     _DOTTED_IDENTIFIER_RE,
     _FORBIDDEN_WATCH_PREFIXES,
@@ -465,6 +465,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if isinstance(parsed, int):
         return parsed
     args = parsed
+    # P6 (Plan 2026-10-12-1105, T8): vor jeder Verzweigung, auch fuer --check.
+    _shared.apply_app_dir(args)
 
     # Plan 2026-04-23-001 CLI-04 / Unit 5: resolve the TTY-aware
     # ``--format`` default (+ SWARMQ_DEFAULT_FORMAT escape) centrally

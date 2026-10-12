@@ -6,6 +6,10 @@
 # 1. ``watch_dir_ignored_without_reload`` ueber ``swarmq_logs`` statt
 #    gepatchtem Logger.
 # 2. ``log_config_reload_failed`` traegt ``error`` ohne Klassen-Praefix (R17).
+#
+# Test list (Plan 2026-10-12-1105, MR 5, P1, Review P0-2):
+# 3. ``--no-scheduler`` ohne Env -> ``WorkerConfig.scheduler == "off"``.
+# 4. Ohne Flag mit ``SWARMQ_SCHEDULER=off`` -> ebenfalls ``"off"``.
 
 from __future__ import annotations
 
@@ -695,3 +699,28 @@ class TestControlChannelWiring:
         with_headroom = self._run(setpoint_store_factory=factory, max_processes=8)
         assert with_headroom["setpoint_store_factory"] is factory
         assert with_headroom["supervisor_id"].endswith(f":p{os.getpid()}")
+
+
+class TestSchedulerSwitchReachesTheChildren:
+    """Review P0-2: ohne das Feld verwuerfe der Supervisor ``--no-scheduler``."""
+
+    def _cfg(self, monkeypatch, env=None, **over):
+        from swarmq.process_manager import run_multi_process_worker
+
+        monkeypatch.delenv("SWARMQ_SCHEDULER", raising=False)
+        args = TestReloadRoutingThroughCLI()._args(**over)
+        pm_mock = MagicMock()
+        pm_mock.run.return_value = 0
+        with (
+            patch.dict(os.environ, {**TestReloadRoutingThroughCLI()._env(), **(env or {})}, clear=False),
+            patch("swarmq.process_manager.run.ProcessManager", return_value=pm_mock) as PM,
+            patch("swarmq.process_manager.check._validate_module_importable"),
+        ):
+            assert run_multi_process_worker(args) == 0
+        return PM.call_args.kwargs["worker_args"][0]
+
+    def test_flag_reaches_the_worker_config(self, monkeypatch):
+        assert self._cfg(monkeypatch, scheduler="off").scheduler == "off"
+
+    def test_environment_reaches_the_worker_config(self, monkeypatch):
+        assert self._cfg(monkeypatch, env={"SWARMQ_SCHEDULER": "off"}).scheduler == "off"

@@ -48,7 +48,6 @@ from swarmq.worker.gates import (
     WorkerBackend,
     WorkerBroker,
     redeliver_in_place,
-    route_via_dlx,
 )
 from swarmq.worker.gates.cancel import CancelGate
 from swarmq.worker.gates.delivery_count import DeliveryCountGate
@@ -61,6 +60,7 @@ from swarmq.worker.gates.lock import (  # noqa: F401  # Re-Export der Konstanten
     release_acquired_locks,
 )
 from swarmq.worker.gates.rate_limit import RateLimitGate
+from swarmq.worker.gates.reject import reject_to_dead_letter
 from swarmq.worker.gates.schedfire import SchedfireGate
 from swarmq.worker.gates.unknown_task import lookup_task_or_route
 from swarmq.worker.guarded_broker import GuardedBroker
@@ -115,9 +115,9 @@ class Worker(WorkerLifecycle, WorkerShutdown):
         self._workflow_advancer: WorkflowAdvancer | None = None
         # Embedded scheduler (Phase 3c). Lazy-constructed in start() after
         # the backend is connected — ScheduleStore's registered Lua
-        # scripts need a live client. None means "this worker is not
-        # running the scheduler loop" (only possible if explicitly
-        # disabled; default is enabled).
+        # scripts need a live client. None means "not started yet" (or
+        # already torn down). With ``scheduler="off"`` the loop exists but
+        # only reports and never runs for leader (P1).
         self._scheduler: SchedulerLoop | None = None
         # Backup registry for graceful-shutdown lock cleanup. Keyed by a
         # per-_handle_message UUID (NOT task_id, which can collide under
@@ -404,7 +404,7 @@ class Worker(WorkerLifecycle, WorkerShutdown):
         except Exception as exc:  # noqa: BLE001 - Nutzer-Factory darf Consumer-Loop nicht stoppen
             logger.error("middleware_chain_factory_failed", **_error_fields(exc))
             if not acked_before_execute:
-                await route_via_dlx(
+                await reject_to_dead_letter(
                     self._gate_deps,
                     message,
                     reason="middleware_chain_factory",

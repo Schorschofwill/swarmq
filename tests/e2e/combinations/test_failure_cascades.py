@@ -516,12 +516,14 @@ class TestDLQRetryResultTTLCombo:
 
     async def test_result_ttl_applies_to_dlq_result(self, rabbitmq_url: str, valkey_url: str) -> None:
         """A very short result_ttl causes the stored failure result to expire.
-        get_result after TTL expiry must raise ResultExpiredError or similar.
+        get_result after TTL expiry raises ResultNotReadyError
+        (ResultExpiredError is currently never raised; Plan 2026-10-12-1105,
+        MR 4, P12d).
 
         Uses result_ttl=1 (1 second) to make the expiry observable in test
         time without making the test flaky.
         """
-        from swarmq.exceptions import ResultExpiredError, TaskError
+        from swarmq.exceptions import ResultNotReadyError
 
         queue = _uq("dlq-rt-ttl")
         task_name = _task_name("dlq_rt_ttl")
@@ -562,7 +564,7 @@ class TestDLQRetryResultTTLCombo:
             await asyncio.sleep(1.5)
 
             # After expiry, get_result must raise (not return stale value).
-            with pytest.raises((ResultExpiredError, TaskError, Exception)):
+            with pytest.raises(ResultNotReadyError):
                 await app.get_result(tid, timeout=3)
 
 

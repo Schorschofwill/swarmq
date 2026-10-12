@@ -3,6 +3,12 @@
 Covers the result-dict builders and the reason-discriminator constants
 extracted from ``swarmq.worker`` in the Phase 3b.3 review-follow-up
 Unit 6.
+
+Test-Liste P9 (Plan 2026-10-12-1105, MR 3, T11) -- ``error_class``:
+
+1. ``build_error_result_dict(..., error_class="builtins.ValueError")``
+   enthaelt den Schluessel; ohne Argument fehlt er.
+2. ``build_result_dict`` fuer Erfolg und Cancel schreibt nie ``error_class``.
 """
 
 from __future__ import annotations
@@ -134,3 +140,28 @@ class TestBuildErrorResultDict:
         )
         assert d["is_error"] is True
         assert d["error_message"] == ""
+
+
+class TestErrorClass:
+    def test_error_result_carries_error_class_only_when_given(self):
+        with_class = build_error_result_dict(
+            task_id="t", queue="q", task_name="n", error_message="", error_class="builtins.ValueError"
+        )
+        without = build_error_result_dict(task_id="t", queue="q", task_name="n", error_message="boom")
+        assert with_class["error_class"] == "builtins.ValueError"
+        assert with_class["error_message"] == ""
+        assert "error_class" not in without
+
+    @pytest.mark.parametrize(("is_cancelled", "result"), [(False, 42), (True, None)])
+    def test_success_and_cancel_results_never_carry_error_class(self, is_cancelled, result):
+        d = build_result_dict(
+            task_id="t",
+            queue="q",
+            task_name="n",
+            is_error=False,
+            is_cancelled=is_cancelled,
+            result=result,
+            error_class="builtins.ValueError",
+        )
+        assert "error_class" not in d
+        assert "error_class" not in build_cancel_result_dict(task_id="t", queue="q", task_name="n")

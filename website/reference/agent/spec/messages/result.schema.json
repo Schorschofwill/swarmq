@@ -25,6 +25,17 @@
       "additionalProperties": false,
       "description": "Valkey task-result envelope (``cancellation.build_result_dict``).",
       "properties": {
+        "error_class": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "error_message": {
           "type": "string"
         },

@@ -6,8 +6,121 @@ All notable changes to SwarmQ. This project follows
 
 ## [Unreleased]
 
+### Added
+
+- **Error results carry `error_class` (fully-qualified exception class)
+  and `TaskError.error_class` exposes it; in CPU mode it is the class
+  reported by the child.** The form is `module.qualname`, built-ins as
+  `builtins.ValueError`. Paths without a task exception name the public
+  swarmq class where one exists (`TaskNotFoundError`, `LockWaitExceeded`,
+  `RedeliveryLimitError`, `UnroutableMessage`,
+  `ResultSerializationError`). A failed workflow stores it as
+  `error.class`, and `handle.get()` raises `TaskError` with it. Failures
+  the worker generates itself (hard timeout, drain, lost compute child,
+  expiry) carry no class; the key is then missing, as in results of
+  older workers. `error_message` is unchanged: an exception without text
+  still gives `""`. Older clients ignore the new field
+  ([message formats](agent/message-formats.md#task-result-valkey),
+  [`TaskError`](errors.md#taskerror)).
+
+- **`SWARMQ_SCHEDULER=on|off` and `swarmq worker --no-scheduler` keep a
+  worker out of the scheduler leader election.** It still reports its
+  crons, so the leader does not prune them. If no worker runs the
+  scheduler, crons, oneshots and `delay`/`eta` tasks do not fire.
+  `scheduler_disabled` (WARNING) is logged once per worker process;
+  `swarmq check` has a new section `scheduler` with the findings
+  `scheduler_disabled` (warning) and `scheduler_invalid` (error, exit
+  `78`). Older workers (up to 0.12.0rc1) ignore the variable
+  ([turning the scheduler off](../guides/scheduling-and-retries.md#turning-the-scheduler-off-on-single-workers)).
+
+- **`swarmq worker` and `swarmq inspect` find task modules in the
+  working directory again; `--app-dir DIR` names another directory.**
+  The console script used to search only the virtualenv's `bin`
+  directory, so `--module myapp.tasks` needed `PYTHONPATH` unless the
+  worker was started with `python -m swarmq.cli`. The working directory
+  now comes first on `sys.path` as with `python -m`, but not under
+  `PYTHONSAFEPATH`/`-P`; an explicit `--app-dir` always applies. It also
+  covers `--configure`, `--check`, the supervisor's worker children and
+  the compute children of `--pool cpu`. Known limit: a file in the app
+  directory shadows an installed package or standard-library module of
+  the same name (`valkey.py`, `queue.py`); `PYTHONSAFEPATH=1` turns the
+  default off. A module that cannot be found now names `--app-dir` and
+  the directory searched first
+  ([finding the task module](cli.md#finding-the-task-module)).
+
+### Changed
+
+- **Under `from __future__ import annotations`, a DI method that uses an
+  alias of `FromDishka` or `FromComponent` but cannot be resolved at
+  class definition now fails the worker start with
+  `ConfigurationError` (exit `78`); it used to run silently without
+  injection.** This covers a forward reference to a later class and an
+  unresolvable non-DI parameter next to it; the message names the task,
+  the parameter and the unresolvable one. `Depends[X] | None` (an alias,
+  optional) is now rejected like `FromDishka[X] | None`
+  ([dependency injection](api.md#dependency-injection-dishka)).
+
+- **`raise Retry(...)` now retries even when the task sets
+  `retry_exceptions` without listing `Retry`; it used to go straight to
+  the DLQ.** `Retry` still counts against `max_retries`; with
+  `max_retries=0` it ends terminally
+  ([`Retry`](errors.md#retry)).
+
+- **Docs: argument serialization, middleware argument changes,
+  `ResultExpiredError` (never raised) and the DLQ retention note now
+  describe the actual behaviour.** No behaviour change. Arguments travel as
+  JSON: `datetime`, `Decimal`, `UUID` and `bytes` arrive as `str`,
+  `tuple`/`set` as `list`; an object JSON cannot encode raises
+  `ResultSerializationError` (with `delay`/`eta` a plain `TypeError`)
+  ([defining tasks](../guides/defining-tasks.md#arguments-and-return-values)).
+  A change to the existing `message["kwargs"]` dict or `message["args"]`
+  list in `pre_execute` reaches `run()`, also in CPU mode; this is now a
+  documented contract ([middleware](../guides/middleware.md)).
+  `ResultExpiredError` is never raised; an expired result raises
+  `ResultNotReadyError` ([errors](errors.md#resultexpirederror)); the
+  machine-readable error catalog says `not raised (reserved)`.
+  Unknown tasks no longer reach the `.XQ` via the broker's dead-letter
+  exchange ([dead-letter queues](../guides/dead-letter-queues.md)).
+
+- **Messages the worker rejects (`undecodable`,
+  `middleware_chain_factory`, `body_too_large`) now go to `{queue}.XQ` as
+  a copy with the dead-letter retention and the diagnostic header, like
+  unregistered tasks; they no longer hold up expiry at the head of the
+  `.XQ`.** The reason and error travel in the existing
+  `x-swarmq-traceback` as `<reason>: <error>`, so `swarmq dlq list` shows
+  them in `ERROR_PREVIEW` (e.g. `undecodable: …`). `TASK_REJECTED` and
+  `swarmq_tasks_rejected_total` fire once with the same `reason` values
+  as before; no error result is stored and `TASK_DLQ` does not fire. The
+  broker's dead-letter exchange remains the fallback when the copy fails.
+  Workers up to 0.12.0rc1 on the same queue still route these messages
+  via the dead-letter exchange; both end up in `.XQ`
+  ([dead-letter queues](../guides/dead-letter-queues.md#three-ways-into-the-xq)).
+
 ### Fixed
 
+- **`Annotated[X, FromComponent(...)]` and aliases of `FromDishka` are
+  injected under `from __future__ import annotations`; they were
+  silently skipped.** The DI check also runs in embedded workers
+  (`SwarmQ.start_worker()`, before any connection) and in
+  `swarmq worker --check`, which now imports `--module` for it and checks
+  the tasks that import registers
+  ([dependency injection](api.md#dependency-injection-dishka)).
+- **On Python 3.14 a task without DI no longer fails at class definition
+  because of an unresolvable annotation** (without
+  `from __future__ import annotations`); a lock template with
+  placeholders renders for such a task too.
+- **Building the app no longer fails with `NameError` on an unresolvable
+  annotation of `run()`** (for example a type imported only under
+  `TYPE_CHECKING`), with or without `from __future__ import annotations`;
+  `SwarmQ(...)` and the `swarmq worker` start read these annotations
+  tolerantly.
+
+- **`task_sent_to_dlq` is no longer logged when the dead-letter publish
+  failed and the message was redelivered; `dlq_publish_failed` reports
+  that case.** The event still appears when the copy lies in the
+  dead-letter queue (also if only the ack failed afterwards) and when a
+  lock or unknown-task path routed the message there via the broker DLX
+  ([logging reference](logging.md)).
 - **B24: a connection loss while waiting for the publisher confirm is
   `PublishIndeterminate`, no longer a raw `AMQPConnectionError`.** When
   the broker connection broke after a message was sent but before the
@@ -45,6 +158,35 @@ All notable changes to SwarmQ. This project follows
   caller cancelled the publish (`asyncio.wait_for`), nobody awaited it,
   and asyncio logged its connection error on garbage collection. swarmq
   now retrieves the exception of exactly that future.
+
+### Known limits
+
+- **A rejected message whose copy fails lands in `.XQ` without
+  retention, as before (dead-letter exchange fallback).** If the copy
+  ended with an indeterminate publish before the fallback, the message
+  can be in `.XQ` twice, once with and once without retention. A broker
+  policy on `\.XQ$` remains the only complete bound.
+
+- **`error_class` is advisory.** Results of older workers do not have
+  it, nor do paths without an exception class (expiry by `max_age`,
+  `WorkerHungError`, a lock template error) and failures the worker
+  generates itself (hard timeout, drain, lost compute child, child
+  without error detail). In CPU mode it names the class reported by the
+  child, even if the parent could not load it.
+
+- **DI annotations that resolve neither at class definition nor at
+  worker start, without a recognisable marker** (for example a type
+  imported only under `TYPE_CHECKING`, or under PEP 649
+  `Depends[Later] | None`) are not injected and not reported; that is
+  the price of never failing the class definition of a task without DI.
+  `FromDishka` in the annotation text still raises `NameError` with a
+  hint.
+- **PEP 563 and PEP 649 report an unresolvable DI method differently:**
+  `ConfigurationError` at worker start with the future import,
+  `NameError` at class definition without it. Both keep the behaviour of
+  0.12.
+- **`swarmq worker --check` checks only the tasks that importing
+  `--module` registers.**
 
 ## [0.12.0rc1] — 2026-10-11
 

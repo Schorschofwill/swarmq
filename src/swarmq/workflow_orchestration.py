@@ -195,7 +195,8 @@ class WorkflowHandle:
             raise TaskCancelledError(self.workflow_id)
         if status == STATUS_FAILED:
             err: dict[str, Any] = state.get("error") or {}
-            raise TaskError(err.get("message", "workflow failed"))
+            # ``class`` fehlt in Zustaenden aelterer Worker (P9, Q2).
+            raise TaskError(err.get("message", "workflow failed"), error_class=err.get("class"))
         # completed — resolve the final result via the terminal task id.
         final_id = state.get("final_result_task_id")
         if final_id is None:

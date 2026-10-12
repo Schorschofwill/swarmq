@@ -1,10 +1,12 @@
 """Unit tests for swarmq.serialization."""
 
-from datetime import UTC, datetime
+import dataclasses
+from datetime import UTC, date, datetime, time
 from decimal import Decimal
 from enum import Enum
 from uuid import UUID
 
+import msgspec
 import pytest
 
 from swarmq.exceptions import ResultSerializationError
@@ -420,3 +422,77 @@ class TestDecodeResultLimits:
             "nested": {"set": {1, 2, 3}, "text": "x" * 10_000},
         }
         assert decode_result(encode_result(payload)) == payload
+
+
+# Test list (Plan 2026-10-12-1105, MR 4, P12a -- Charakterisierung der
+# dokumentierten Argument-Kodierung, ohne Produktionscode):
+# 1. ``encode_json`` gibt datetime/date/time als ISO-8601-String, Decimal
+#    und UUID als String, bytes als Base64, tuple/set/frozenset als Liste.
+# 2. Ein eigenes Objekt ergibt ``ResultSerializationError``.
+# 3. Dataclass, ``msgspec.Struct`` und ``Enum`` werden still kodiert;
+#    ``int``-Schlüssel werden Strings; ``nan`` wird ``null``.
+# 4. ``canonical_encode`` (``unique_for``) lehnt bytes und eigene Klassen
+#    mit ``TypeError`` ab.
+# 5. Rückgabewerte: datetime/date/time/Decimal/UUID/set/frozenset kommen
+#    über msgpack typgleich zurück.
+class TestDocumentedArgumentEncoding:
+    @pytest.mark.parametrize(
+        ("value", "wire"),
+        [
+            (datetime(2026, 1, 2, 3, 4, 5), b'"2026-01-02T03:04:05"'),  # noqa: DTZ001 - naive Zeit zeigt die dokumentierte Form ohne Offset
+            (datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC), b'"2026-01-02T03:04:05Z"'),
+            (date(2026, 1, 2), b'"2026-01-02"'),
+            (time(3, 4, 5), b'"03:04:05"'),
+            (Decimal("1.50"), b'"1.50"'),
+            (UUID(int=1), b'"00000000-0000-0000-0000-000000000001"'),
+            (b"ab", b'"YWI="'),
+            ((1, 2), b"[1,2]"),
+            ({1}, b"[1]"),
+            (frozenset({2}), b"[2]"),
+        ],
+    )
+    def test_argument_types_arrive_as_documented(self, value: object, wire: bytes) -> None:
+        assert encode_json(value) == wire
+
+    def test_unknown_object_raises_result_serialization_error(self) -> None:
+        class Custom:
+            pass
+
+        with pytest.raises(ResultSerializationError):
+            encode_json(Custom())
+
+    def test_dataclass_struct_enum_int_keys_and_nan_are_encoded_silently(self) -> None:
+        @dataclasses.dataclass
+        class Point:
+            x: int
+
+        class Box(msgspec.Struct):
+            y: int
+
+        assert encode_json(Point(1)) == b'{"x":1}'
+        assert encode_json(Box(2)) == b'{"y":2}'
+        assert encode_json(Color.RED) == b'"red"'
+        assert encode_json({1: "a"}) == b'{"1":"a"}'
+        assert encode_json(float("nan")) == b"null"
+
+    @pytest.mark.parametrize("value", [b"x", object()])
+    def test_unique_for_canonical_encode_rejects_bytes_and_custom_objects(self, value: object) -> None:
+        with pytest.raises(TypeError):
+            canonical_encode((value,), {})
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            datetime(2026, 1, 2, 3, 4, 5),  # noqa: DTZ001 - naive Zeit kommt naiv zurück (typgleich)
+            date(2026, 1, 2),
+            time(3, 4, 5),
+            Decimal("1.5"),
+            UUID(int=1),
+            {1, 2},
+            frozenset({3}),
+        ],
+    )
+    def test_return_values_round_trip_with_same_type(self, value: object) -> None:
+        decoded = decode_result(encode_result(value))
+        assert decoded == value
+        assert type(decoded) is type(value)

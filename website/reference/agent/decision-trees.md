@@ -59,6 +59,8 @@ flowchart TD
   attempt. Use when you know the exact correct wait (e.g. HTTP
   `Retry-After: 60`).
 - `Retry()` with no delay — use the configured backoff formula.
+- `Retry` applies whether or not `retry_exceptions` lists it, and it
+  consumes the retry budget: with `max_retries=0` it ends terminally.
 - `NoRetry(reason)` — short-circuit to DLQ. Use for hard errors
   (4xx responses, validation failures, schema drift).
 - Letting the exception escape — default path; the retry budget
@@ -105,8 +107,9 @@ flowchart TD
     Run[Task.run called] --> Raise{Raised?}
     Raise -->|No| Ack[ack]
     Raise -->|Yes| Cls{Exception class}
-    Cls -->|NoRetry| DLQ[DLQ via DLX]
-    Cls -->|Other, retry_exceptions<br/>match or unset| Budget{"retry_count < max_retries"}
+    Cls -->|Retry| Budget{"retry_count < max_retries"}
+    Cls -->|NoRetry| DLQ[worker places a copy in the DLQ]
+    Cls -->|Other, retry_exceptions<br/>match or unset| Budget
     Cls -->|Other, retry_exceptions<br/>do NOT match| DLQ
     Budget -->|Yes| Delay[delay-queue republish]
     Budget -->|No| DLQ

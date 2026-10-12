@@ -231,7 +231,12 @@ push-based wait, with 5ms-interval polling as a fallback. When
 **Raises.**
 
 - `ResultNotReadyError` — no result within `timeout` seconds.
-- `TaskError` — task failed; `str(exc)` carries the worker's error message.
+- `TaskError` — task failed; `str(exc)` carries the worker's error message
+  (`""` for an exception without text). `exc.error_class` names the
+  exception class as `module.qualname` (e.g. `builtins.ValueError`, in CPU
+  mode the class reported by the child); it is advisory and `None` for
+  results of older workers and for failures the worker generates itself
+  (hard timeout, drain, lost compute child, expiry).
 - `TaskCancelledError` — cancel flag tripped during execution.
 
 ### `get_results()`
@@ -638,7 +643,7 @@ Lifecycle events emitted by SwarmQ. Register handlers with
 | `TASK_RATE_LIMITED` | `task_id`, `task_name`, `retry_after_ms`, `remaining`, `rate_limit_count` | Rate limit hit; message delayed. |
 | `TASK_DUPLICATE_DETECTED` | `existing_task_id`, `task_name`, `dedup_hash`, `source`[, `batch_index`] | `unique_for` dedup hit. |
 | `TASK_DLQ` | `task_id`, `task_name`, `queue`, `error` | Terminal: the task was dead-lettered (retries exhausted or not retryable). Fires once. |
-| `TASK_REJECTED` | `queue`, `reason`, `task_id`, `task_name`, `error` — `task_id`/`task_name` may be `None` | A message went to the broker DLX without diagnostic headers (`body_too_large`, `undecodable`, `middleware_chain_factory`, `dlq_publish_failed`), or an unregistered task was dead-lettered after `SWARMQ_UNKNOWN_TASK_GRACE_S` (`unregistered_task`, after `TASK_DLQ`). |
+| `TASK_REJECTED` | `queue`, `reason`, `task_id`, `task_name`, `error` — `task_id`/`task_name` may be `None` | The worker rejected a message it cannot run (`body_too_large`, `undecodable`, `middleware_chain_factory`: a copy with retention and `x-swarmq-traceback` in `.XQ`, the broker DLX as fallback), a dead-letter publish failed and the message went to the broker DLX without diagnostic headers (`dlq_publish_failed`), or an unregistered task was dead-lettered after `SWARMQ_UNKNOWN_TASK_GRACE_S` (`unregistered_task`, after `TASK_DLQ`). |
 | `TASK_UNKNOWN_DEFERRED` | `task_id`, `task_name`, `queue`, `delay`, `unknown_since` | The worker does not register the task and deferred the message within `SWARMQ_UNKNOWN_TASK_GRACE_S`; `delay` in seconds, `unknown_since` the first contact in Unix milliseconds. Once per deferral; counted in `swarmq_tasks_unknown_deferred_total`. |
 | `WORKFLOW_STEP_ENQUEUED` | `task_id`, `task_name`, `queue`, `workflow_id`, `step_path` | After each workflow step publish, in addition to `TASK_ENQUEUED`. |
 | `WORKER_ONLINE` / `WORKER_SHUTDOWN` | `worker_id` | Worker start / graceful shutdown. |
@@ -719,7 +724,8 @@ class WorkflowHandle:
 **Raises.** `WorkflowNotFound` when the state is gone (`status()`,
 `children()`, `get()`),
 `ResultNotReadyError` when `get()` times out, `TaskError` for a failed
-workflow, `TaskCancelledError` for a cancelled one,
+workflow (with `error_class` of the failing step when known, see
+[`get_result()`](#get_result)), `TaskCancelledError` for a cancelled one,
 `WorkflowResultExpired` when the workflow completed but its final
 result expired before retrieval.
 
@@ -967,7 +973,38 @@ setup_dishka(container: dishka.AsyncContainer) -> None
   logs `dishka_container_replaced`.
 - Parameters of `run`, `pre_execution` and `post_execution` annotated
   with `FromDishka[...]` (from `dishka`) are injected from a REQUEST
-  scope the worker opens per task.
+  scope the worker opens per task. The same holds for
+  `Annotated[X, FromComponent("c")]` (a named component) and for aliases
+  such as `Depends = FromDishka`, with or without
+  `from __future__ import annotations`.
+- Every annotation of such a method must be resolvable when the task
+  class is defined, including the parameters that are not injected:
+  define or import the types before the class, not only under
+  `TYPE_CHECKING` and not as a forward reference to a later class.
+  Otherwise the method is not injected, and SwarmQ reports it:
+    - With `from __future__ import annotations` (PEP 563) the worker
+      start fails with `ConfigurationError` (exit 78). The message names
+      the task, the injected parameter and, if one is still unresolvable,
+      that parameter.
+    - Without it (PEP 649, Python 3.14) the class definition raises
+      `NameError` with a hint.
+    - An annotation that names `FromDishka` in its text but does not
+      resolve raises `NameError` with a hint at class definition in both
+      modes.
+    - An annotation that is unresolvable and shows no recognisable marker
+      (for example a type imported only under `TYPE_CHECKING`, or under
+      PEP 649 `Depends[Later] | None` with a later class) is not injected
+      and not reported. The class definition of a task without DI never
+      fails on an unresolvable annotation, and neither does building the
+      app (`SwarmQ(...)`, also at `swarmq worker` start), which reads the
+      annotations of `run()` tolerantly.
+- `FromDishka[X] | None` and `Depends[X] | None` derive no dependency
+  key; the worker start rejects them with `ConfigurationError`.
+- The DI check runs at `swarmq worker` start, in an embedded worker
+  (`SwarmQ.start_worker()`, before any connection) and in
+  `swarmq worker --check`. `--check` imports `--module` for this (its
+  output goes to stderr) and checks the tasks that the import
+  registers.
 - `TaskContext` is a frozen dataclass with `task_id`, `task_name`,
   `queue` and `retry_count` for the running task.
 - `SwarmQProvider` is a Dishka provider that makes `TaskContext`

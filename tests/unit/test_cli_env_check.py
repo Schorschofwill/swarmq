@@ -15,6 +15,13 @@ Test-Liste:
 - [x] ohne ``SWARMQ_BACKEND_URL`` -> Exit 1 mit Meldung
 - [x] ``swarmq check`` gilt nicht als ``worker --check`` (kein JSON-Fehlerpfad des Workers)
 - [x] Verbindung zum Backend wird geschlossen
+- Plan 2026-10-12-1105, MR 5 (P1, T4): Abschnitt ``scheduler``:
+  - [x] ``SWARMQ_SCHEDULER=off`` -> ``{"scheduler": "off"}``, Befund
+    ``scheduler_disabled`` (``warning``), ``ok`` bleibt ``True``
+  - [x] ohne Variable -> ``{"scheduler": "on"}``, kein Befund
+  - [x] Tabellenausgabe enthaelt ``scheduler  scheduler  off``
+  - [x] ``SWARMQ_SCHEDULER=no`` -> Befund ``scheduler_invalid`` (``error``),
+    ``ok: false``, Exit 78
 """
 
 from __future__ import annotations
@@ -244,3 +251,56 @@ def test_cli_spec_documents_exit_78_of_check() -> None:
 
     [entry] = [e for e in build_cli_spec()["exit_codes"] if e["code"] == 78]
     assert "`swarmq check`" in entry["meaning"]
+
+
+def test_scheduler_off_warns_but_passes(
+    fake: _FakeValkey, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SWARMQ_SCHEDULER", "off")
+
+    code, report = _run_json(capsys)
+
+    assert code == 0
+    assert report["ok"] is True
+    assert report["scheduler"] == {"scheduler": "off"}
+    assert _codes(report, "warning") == ["scheduler_disabled"]
+    [finding] = report["findings"]
+    assert finding["section"] == "scheduler"
+
+
+def test_scheduler_defaults_to_on_without_finding(
+    fake: _FakeValkey, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("SWARMQ_SCHEDULER", raising=False)
+
+    code, report = _run_json(capsys)
+
+    assert code == 0
+    assert report["scheduler"] == {"scheduler": "on"}
+    assert report["findings"] == []
+
+
+def test_table_shows_the_scheduler_section(
+    fake: _FakeValkey, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SWARMQ_SCHEDULER", "off")
+
+    code = main(["check", "--format", "table"])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "scheduler  scheduler  off" in out.splitlines()
+
+
+def test_invalid_scheduler_value_fails_like_the_worker(
+    fake: _FakeValkey, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SWARMQ_SCHEDULER", "no")
+
+    code, report = _run_json(capsys)
+
+    assert code == 78
+    assert report["ok"] is False
+    assert report["scheduler"] == {"scheduler": "no"}
+    assert _codes(report, "error") == ["scheduler_invalid"]
+    assert _codes(report, "warning") == []

@@ -25,6 +25,7 @@ from swarmq.headers import HEADER_WORKFLOW_ID, HEADER_WORKFLOW_STEP
 from swarmq.logging import _error_fields, get_logger
 from swarmq.serialization import encode_result
 from swarmq.task import DeliveryMode
+from swarmq.worker.error_info import error_class_of
 from swarmq.worker.gates import GateContext, GateDeps, redeliver_in_place
 from swarmq.worker.outcome import DeliveryOutcome, Redelivered, Terminal
 
@@ -47,6 +48,11 @@ def _log_fail_mark_error(event: _FailMarkEvent, **fields: Any) -> None:
         logger.error("workflow_fail_mark_error", **fields)
 
 
+def _error_class(execution: ExecutionResult) -> str | None:
+    """``error_class`` eines Fehlerergebnisses (P9): nur mit Task-Exception."""
+    return None if execution.task_exception is None else error_class_of(execution.task_exception)
+
+
 class ResultTail:
     def __init__(self, deps: GateDeps, *, workflow_advancer: Any) -> None:
         self._deps = deps
@@ -66,6 +72,7 @@ class ResultTail:
             is_cancelled=execution.is_cancelled,
             error_message=execution.error_message,
             result=None if (execution.is_error or execution.is_cancelled) else execution.result_value,
+            error_class=_error_class(execution),
         )
         try:
             return encode_result(result_data)
@@ -76,6 +83,7 @@ class ResultTail:
                 queue=ctx.queue,
                 task_name=ctx.task_name,
                 error_message=str(exc),
+                error_class=error_class_of(exc),
             )
             return encode_result(result_data)
 
@@ -147,6 +155,7 @@ class ResultTail:
         reason: str,
         *,
         event: _FailMarkEvent,
+        error_class: str | None = None,
     ) -> DeliveryOutcome | None:
         """Fehlermarkierung eines Workflows nach R25/KTD12 (U10).
 
@@ -160,12 +169,16 @@ class ResultTail:
         einer Poison-Schleife drehen — also bestätigen und loggen.
 
         Liefert ``Redelivered``, wenn die Nachricht neu zugestellt wurde,
-        sonst ``None`` (der Aufrufer läuft weiter wie bisher)."""
+        sonst ``None`` (der Aufrufer läuft weiter wie bisher).
+        *error_class* (P9, T13) geht nur mit Wert als Keyword an ``fail``."""
         deps = self._deps
         task_info = ctx.task_info
         assert task_info is not None
         try:
-            await advancer.fail(wf_id, error_type, reason)
+            if error_class is None:
+                await advancer.fail(wf_id, error_type, reason)
+            else:
+                await advancer.fail(wf_id, error_type, reason, error_class=error_class)
         except (BackendConnectionError, WorkflowStateConflict) as exc:
             at_least_once = task_info.delivery is DeliveryMode.AT_LEAST_ONCE
             _log_fail_mark_error(event, workflow_id=wf_id, **_error_fields(exc), redelivered=at_least_once)
@@ -206,6 +219,7 @@ class ResultTail:
                 "TaskError",
                 reason,
                 event="workflow_fail_mark_failed",
+                error_class=_error_class(execution),
             )
         headers: dict[str, Any] = delivery.headers or {}
         step_path = headers.get(HEADER_WORKFLOW_STEP, "")

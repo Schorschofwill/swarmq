@@ -14,8 +14,10 @@ import importlib.metadata
 from typing import Any
 
 from swarmq.cli._shared import (
+    _APP_DIR_HELP,
     _VALID_LOG_FORMATS,
     _VALID_LOG_LEVELS,
+    _app_dir_path,
     _autoscale_range,
     _configure_hook,
     _dotted_module_name,
@@ -87,9 +89,16 @@ def _add_worker_parser(subparsers: Any) -> None:
         metavar="DOTTED.PATH",
         help=(
             "Python module containing Task subclasses to register, "
-            "e.g. 'myapp.tasks'. Must be importable from the current "
-            "Python path."
+            "e.g. 'myapp.tasks'. Imported with --app-dir (default: the "
+            "current working directory) first on the Python path."
         ),
+    )
+    worker.add_argument(
+        "--app-dir",
+        type=_app_dir_path,
+        default=None,
+        metavar="DIR",
+        help=_APP_DIR_HELP + " Also used for --configure; supervisor and CPU compute children inherit it.",
     )
     worker.add_argument(
         "--configure",
@@ -220,6 +229,19 @@ def _add_worker_parser(subparsers: Any) -> None:
         ),
     )
     worker.add_argument(
+        "--no-scheduler",
+        dest="scheduler",
+        action="store_const",
+        const="off",
+        default=None,  # aufgeloest in cli.worker_options: Flag > SWARMQ_SCHEDULER > on
+        help=(
+            "Keep this worker out of the scheduler leader election "
+            "(SWARMQ_SCHEDULER=off). It still reports its crons. Crons, "
+            "delay/eta tasks and oneshots fire only while another worker "
+            "on the same Valkey and namespace runs the scheduler."
+        ),
+    )
+    worker.add_argument(
         "--metrics-port",
         type=_positive_int,
         default=None,
@@ -338,7 +360,9 @@ def _add_worker_parser(subparsers: Any) -> None:
         "--check",
         action="store_true",
         help=(
-            "Dry-run validation mode. Verify --module is importable, "
+            "Dry-run validation mode. Verify --module is importable "
+            "(--check imports --module and validates the dependency "
+            "injection of its tasks like the worker start), "
             "(with --reload) that 'watchfiles' is installed + watch-dirs "
             "resolve, that the --metrics-port/--health-port ranges across "
             "all worker processes stay <= 65535 and do not overlap, the "

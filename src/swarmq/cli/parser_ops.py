@@ -8,7 +8,9 @@ from __future__ import annotations
 from typing import Any
 
 from swarmq.cli._shared import (
+    _APP_DIR_HELP,
     _FORMAT_CHOICES,
+    _app_dir_path,
     _dotted_module_name,
     _positive_int,
 )
@@ -381,6 +383,13 @@ def _add_inspect_parser(subparsers: Any) -> None:
         type=_dotted_module_name,
         metavar="DOTTED.PATH",
         help="Python module whose Task subclasses to introspect.",
+    )
+    inspect_parser.add_argument(
+        "--app-dir",
+        type=_app_dir_path,
+        default=None,
+        metavar="DIR",
+        help=_APP_DIR_HELP,
     )
     inspect_parser.add_argument(
         "--format",

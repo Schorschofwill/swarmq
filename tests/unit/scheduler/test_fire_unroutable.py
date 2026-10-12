@@ -22,6 +22,8 @@ Test-Liste:
 - [x] Backend ohne ``store_result`` (MagicMock, Q15): Verwerfen laeuft trotzdem
 - [x] Owner-Check lehnt das Verwerfen ab: kein Ergebnis, Standby
 - [x] zurueckgestellter Oneshot: WARNING ``scheduler_oneshot_unroutable``, gedrosselt wie beim Cron
+- [x] verworfener Oneshot: Fehlerergebnis mit ``error_class ==
+      "swarmq.exceptions.UnroutableMessage"`` (Plan 2026-10-12-1105, MR 3, P9)
 """
 
 from __future__ import annotations
@@ -227,6 +229,16 @@ async def test_dropped_oneshot_stores_an_error_result_under_its_task_id(loop, ba
     assert result["task"] == {"id": "t-1", "queue": "missing", "name": "ping"}
     assert "unroutable" in result["error_message"]
     backend.notify_result.assert_awaited_once_with("t-1")
+
+
+async def test_dropped_oneshot_error_result_names_unroutable_message(loop, backend, config):
+    backend.store_result = AsyncMock()
+    backend.notify_result = AsyncMock()
+
+    await loop._fire_one("oneshot:t-1", _SCORE_MS, _expired(config))
+
+    result = decode_result(backend.store_result.await_args.args[1])
+    assert result["error_class"] == "swarmq.exceptions.UnroutableMessage"
 
 
 async def test_dropped_cli_unique_oneshot_releases_its_unique_claim(loop, backend, config):

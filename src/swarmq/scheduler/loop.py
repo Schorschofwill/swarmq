@@ -136,6 +136,7 @@ class SchedulerLoop(
         static_crons: Sequence[ScheduleDefinition] = (),
         version: str | None = None,
         consumed_queues: Sequence[str] = (),
+        candidate: bool = True,
     ) -> None:
         self._backend = backend
         self._broker = broker
@@ -153,6 +154,9 @@ class SchedulerLoop(
         self._static_crons = tuple(static_crons)
         # Konsumierte Queues dieses Workers, gemeldet im Meldetakt (BZ-14).
         self._consumed_queues = tuple(consumed_queues)
+        # P1 (Plan 2026-10-12-1105): ``False`` bewirbt sich nie um die
+        # Leader-Rolle; nur der Melde-Takt laeuft (Crons, Version, Queues).
+        self._candidate = candidate
         # swarmq-Version dieses Workers (KTD11), Default aus den Metadaten.
         self._version = version or swarmq_version()
         self._leader_watch = LeaderVersionWatch()
@@ -205,14 +209,17 @@ class SchedulerLoop(
         return self._owner_token
 
     async def start(self) -> None:
-        """Launch election + poll coroutines. Idempotent."""
-        if self._election_task is not None:
+        """Launch election + poll coroutines (without ``candidate`` only the
+        report loop). Idempotent: the report loop runs in both roles."""
+        if self._report_task is not None:
             return
         self._stop_event.clear()
         await self._report_crons()
+        self._report_task = asyncio.create_task(self._report_loop())
+        if not self._candidate:
+            return
         self._election_task = asyncio.create_task(self._election_loop())
         self._poll_task = asyncio.create_task(self._poll_loop())
-        self._report_task = asyncio.create_task(self._report_loop())
         self._adopt_task = asyncio.create_task(self._adopt_loop())
 
     async def stop(self) -> None:

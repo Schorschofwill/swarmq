@@ -110,31 +110,46 @@ irgendeines Workers.
 
 ### Was Clients übergeben dürfen
 
-Jedes Argument an `run()` muss **JSON-kompatibel** sein: es geht
-durch `msgspec` auf den Draht. Erlaubte Typen:
+Argumente an `run()` reisen als **JSON**, kodiert mit `msgspec`.
+Einfache `str`, `int`, `float`, `bool`, `None`, `list` und `dict`
+kommen unverändert an. Andere Typen werden unterwegs umgewandelt, und
+der Task erhält den umgewandelten Wert, nicht den ursprünglichen Typ:
 
-- `str`, `int`, `float`, `bool`, `None`
-- `list` / `tuple` / `dict` der obigen
-- `bytes` (base64-kodiert auf dem Transport)
+| Übergeben | Kommt in `run()` an als |
+|---|---|
+| `datetime`, `date`, `time` | ISO-8601-`str` (`"2026-01-02T03:04:05"`) |
+| `Decimal`, `UUID` | `str` |
+| `bytes` | Base64-`str` |
+| `tuple`, `set`, `frozenset` | `list` |
+| Dataclass, `msgspec.Struct` | `dict` |
+| `Enum` | sein Wert |
+| `dict` mit `int`-Schlüsseln | `dict` mit `str`-Schlüsseln (`{1: "a"}` → `{"1": "a"}`) |
+| `float("nan")` | `None` |
 
-Nicht erlaubt:
+Solche Werte in `run()` selbst zurückwandeln (etwa
+`datetime.fromisoformat(...)`) oder gleich als `str` übergeben.
 
-- ORM-Row-Objekte (SQLAlchemy, Django).
-- Klassen ohne JSON-kompatible Repräsentation.
-- `datetime`, `Decimal`, `UUID` — vorher zu `str` kodieren (ISO 8601
-  für Datetimes, Standardform für UUIDs).
+Ein Objekt, das `msgspec` nicht kodieren kann (eine ORM-Zeile, eine
+beliebige Klasse), wird zur Schedule-Zeit abgelehnt, bevor etwas
+veröffentlicht wird:
 
-Der Guardrail erscheint als `SerializationError` zur Schedule-Zeit,
-nicht zur Laufzeit.
+- Ein direktes `schedule()` wirft `ResultSerializationError` (der Name
+  führt in die Irre; so heißt die Klasse, die der JSON-Encoder wirft).
+- Mit `delay=` oder `eta=` gehen die Argumente zuerst in den
+  Scheduler-Store; dort wirft dasselbe Objekt einen einfachen
+  `TypeError`.
+- Mit `unique_for=` lehnt der Dedup-Hash zusätzlich `bytes` und
+  Objekte eigener Klassen mit `TypeError` ab.
 
 ### Was `run()` zurückgibt
 
 Der Rückgabewert geht durch **msgpack** und wird nach Valkey
 unter `sq:result:{task_id}` geschrieben. msgpack ist permissiver
-als JSON — verarbeitet Bytes, verschachtelte Container, Integer-
-Breiten nativ — aber dennoch keine beliebigen Python-Objekte. Ist
-dein Rückgabewert nicht serialisierbar, raist der Worker
-`ResultSerializationError` und der Task gilt als gescheitert.
+als JSON: `datetime`, `date`, `time`, `Decimal`, `UUID`, `set` und
+`frozenset` kommen typgleich zurück, ein `tuple` als `list`. Beliebige
+Python-Objekte gehen nicht. Ist dein Rückgabewert nicht
+serialisierbar, wirft der Worker `ResultSerializationError` und der
+Task gilt als gescheitert.
 
 Im Zweifel: ein `dict` aus Primitiven zurückgeben:
 

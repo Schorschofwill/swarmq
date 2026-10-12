@@ -55,6 +55,33 @@ BZ-17 (Plan 0.12.0, MR 2) -- begrenzter Fehlertext-Header:
 
 22. Die Dead-Letter-Kopie traegt ``x-swarmq-traceback`` hoechstens 8 KiB lang.
 23. Die Retry-Kopie ebenso.
+
+P7b (Plan 2026-10-12-1105, MR 1, T9) -- ``task_sent_to_dlq`` nur, wenn die
+Kopie liegt oder der DLX-Rueckfall lief:
+
+24. DLQ-Publish scheitert ohne ``on_publish_failure`` -> ``dlq_publish_failed``
+    einmal, kein ``task_sent_to_dlq``, ``redeliver`` einmal.
+25. DLQ-Publish scheitert mit ``on_publish_failure`` (DLX-Rueckfall) ->
+    ``task_sent_to_dlq`` einmal.
+26. ``SettleFailedAfterPublish`` (Kopie liegt) -> ``task_sent_to_dlq`` einmal.
+27. Workflow-Fehlmarkierung scheitert voruebergehend -> kein
+    ``task_sent_to_dlq``.
+28. Erfolg -> ``task_sent_to_dlq`` einmal mit ``error_type`` (Liste 8/9).
+29. Kopie liegt, ``maybe_release_unique`` wirft (ohne ``on_publish_failure``)
+    -> ``task_sent_to_dlq`` einmal (exakte Bedingung aus T9).
+
+P8 (Plan 2026-10-12-1105, MR 2, T10, E4 A) -- ``Retry`` gilt unabhaengig von
+``retry_exceptions``, verbraucht aber das Budget:
+
+30. ``retry_exceptions=[KeyError]``, ``max_retries=3``, ``raise Retry()`` ->
+    ``retry_later`` mit Backoff-Verzoegerung, kein ``dead_letter``.
+31. Wie 30 mit ``Retry(delay=7)`` -> ``delay_ms == 7000``.
+32. Wie 30, Budget erschoepft (``x-swarmq-retry-count == 3``) -> terminal.
+33. ``max_retries=0``, ``raise Retry(delay=5)`` -> terminal.
+34. ``ValueError`` nicht im Filter -> weiter terminal (Liste 9,
+    ``test_task_sent_to_dlq_carries_error_type_of_triggering_exception``).
+35. CPU-Modus: aus dem Envelope rekonstruierte ``Retry(delay=5)`` mit
+    Filter -> ``retry_later`` mit 5000 ms.
 """
 
 from __future__ import annotations
@@ -411,7 +438,11 @@ async def test_disabled_dead_lettering_propagates_workflow_failure(broker, backe
     msg = make_message(_default_payload(name="no-dlq-task"), headers={HEADER_WORKFLOW_ID: _WF_ID})
     await handler.evaluate(msg, _ctx(_NoDlqTask), RuntimeError("boom"), "boom", {"retry_count": 0}, MiddlewareChain([]))
 
-    worker._workflow_advancer.fail.assert_awaited_once_with(_WF_ID, "TaskError", "boom")
+    # P9 (Plan 2026-10-12-1105, MR 3, T13, Abschnitt 6): die Klasse der
+    # echten Task-Exception wird durchgereicht.
+    worker._workflow_advancer.fail.assert_awaited_once_with(
+        _WF_ID, "TaskError", "boom", error_class="builtins.RuntimeError"
+    )
     broker.dead_letter.assert_not_awaited()
 
 
@@ -479,7 +510,9 @@ async def test_delivery_count_gate_and_undecodable_messages_still_reach_the_dlq(
     broker.dead_letter.assert_awaited_once()
 
     await worker._handle_message(make_message(body=b"not json"))
-    broker.route_via_dlx.assert_awaited_once()
+    # Plan 2026-10-12-1105, MR 8: die undekodierbare Nachricht als Kopie.
+    assert broker.dead_letter.await_count == 2
+    broker.route_via_dlx.assert_not_awaited()
 
 
 async def test_dead_letter_with_failed_ack_after_publish_is_terminal(broker, backend, config, swarmq_logs):
@@ -574,3 +607,192 @@ async def test_dead_letter_of_a_step_that_already_succeeded_does_not_fail_its_wo
 
     worker._workflow_advancer.fail.assert_not_awaited()
     broker.dead_letter.assert_awaited_once()
+
+
+@pytest.mark.timeout(5)
+async def test_failed_dlq_publish_with_redelivery_does_not_log_task_sent_to_dlq(broker, backend, config, swarmq_logs):
+    """Liste 24 (P7b, T9): Die Nachricht liegt nicht in der XQ, sondern wird
+    neu zugestellt -- ``dlq_publish_failed`` beschreibt den Fall allein."""
+    from swarmq.exceptions import BrokerConnectionError
+
+    handler, _ = _handler(broker, backend, config)
+    broker.dead_letter = AsyncMock(side_effect=BrokerConnectionError("broker gone"))
+    msg = make_message(_default_payload(name="dlq-task"))
+
+    placed = await handler.dead_letter(msg, _ctx(), "boom", "RuntimeError")
+
+    assert placed is False
+    assert len(_events(swarmq_logs, "dlq_publish_failed")) == 1
+    assert _events(swarmq_logs, "task_sent_to_dlq") == []
+    broker.redeliver.assert_awaited_once_with(msg)
+
+
+@pytest.mark.timeout(5)
+async def test_placed_copy_with_failing_release_still_logs_task_sent_to_dlq(broker, backend, config, swarmq_logs):
+    """Liste 29 (P7b, T9, Review P1-10): ``placed`` gilt ab der liegenden
+    Kopie. Wirft danach die Unique-Freigabe, liegt die Nachricht trotzdem in
+    der XQ -- das Event bleibt. Die vorbestehende Doppelbehandlung
+    (``dlq_publish_failed`` und Neuzustellung) aendert P7b nicht."""
+    handler, worker = _handler(broker, backend, config)
+    worker._gate_deps.maybe_release_unique = AsyncMock(side_effect=ConnectionError("valkey down"))
+
+    placed = await handler.dead_letter(make_message(_default_payload(name="dlq-task")), _ctx(), "boom", "RuntimeError")
+
+    assert placed is True
+    broker.dead_letter.assert_awaited_once()
+    [entry] = _events(swarmq_logs, "task_sent_to_dlq")
+    assert entry["error_type"] == "RuntimeError"
+
+
+@pytest.mark.timeout(5)
+async def test_failed_dlq_publish_with_dlx_fallback_logs_task_sent_to_dlq(broker, backend, config, swarmq_logs):
+    """Liste 25 (P7b, T9): Mit ``on_publish_failure`` (Lock- und
+    Unknown-Pfade) liegt die Nachricht danach ueber den Broker-DLX in der
+    XQ -- das Event bleibt."""
+    from swarmq.exceptions import BrokerConnectionError
+
+    handler, _ = _handler(broker, backend, config)
+    broker.dead_letter = AsyncMock(side_effect=BrokerConnectionError("broker gone"))
+    fallback = AsyncMock()
+
+    placed = await handler.dead_letter(
+        make_message(_default_payload(name="dlq-task")),
+        _ctx(),
+        "boom",
+        "LockWaitExceeded",
+        on_publish_failure=fallback,
+    )
+
+    assert placed is False
+    fallback.assert_awaited_once()
+    broker.redeliver.assert_not_awaited()
+    [entry] = _events(swarmq_logs, "task_sent_to_dlq")
+    assert entry["error_type"] == "LockWaitExceeded"
+
+
+@pytest.mark.timeout(5)
+async def test_settle_failed_after_publish_logs_task_sent_to_dlq_once(broker, backend, config, swarmq_logs):
+    """Liste 26 (P7b): ``SettleFailedAfterPublish`` heisst, die Kopie liegt --
+    ``placed`` und genau ein ``task_sent_to_dlq``."""
+    handler, _ = _handler(broker, backend, config)
+    broker.dead_letter = AsyncMock(side_effect=SettleFailedAfterPublish("channel closed"))
+
+    placed = await handler.dead_letter(make_message(_default_payload(name="dlq-task")), _ctx(), "boom", "RuntimeError")
+
+    assert placed is True
+    assert len(_events(swarmq_logs, "task_sent_to_dlq")) == 1
+
+
+@pytest.mark.timeout(5)
+async def test_transient_workflow_fail_mark_error_does_not_log_task_sent_to_dlq(broker, backend, config, swarmq_logs):
+    """Liste 27 (P7b): Scheitert die Workflow-Fehlmarkierung voruebergehend,
+    kehrt ``dead_letter`` vor der Kopie zurueck -- kein Event."""
+    handler, worker = _handler(broker, backend, config)
+    worker._workflow_advancer.fail = AsyncMock(side_effect=BackendConnectionError("down"))
+    msg = make_message(_default_payload(name="dlq-task"), headers={HEADER_WORKFLOW_ID: _WF_ID})
+
+    placed = await handler.dead_letter(msg, _ctx(), "boom", "RuntimeError")
+
+    assert placed is False
+    broker.dead_letter.assert_not_awaited()
+    assert _events(swarmq_logs, "task_sent_to_dlq") == []
+
+
+class _FilteredFixedTask(Task):
+    task_info = TaskInfo(
+        name="filtered-fixed-task",
+        queues=["default"],
+        max_retries=3,
+        retry_exceptions=[KeyError],
+        retry_backoff="fixed",
+        retry_base_delay=2.0,
+    )
+
+
+@pytest.mark.timeout(5)
+async def test_retry_retries_although_retry_exceptions_does_not_list_it(broker, backend, config):
+    """Liste 30 (P8, T10): ``raise Retry()`` ist eine ausdrueckliche
+    Anweisung des Tasks; der Filter ``retry_exceptions`` gilt fuer
+    unerwartete Ausnahmen, nicht fuer ``Retry``."""
+    from swarmq.exceptions import Retry
+    from swarmq.middleware import MiddlewareChain
+
+    handler, _ = _handler(broker, backend, config, _FilteredFixedTask)
+    msg = make_message(_default_payload(name="filtered-fixed-task"))
+
+    await handler.evaluate(msg, _ctx(_FilteredFixedTask), Retry(), "", {"retry_count": 0}, MiddlewareChain([]))
+
+    broker.dead_letter.assert_not_awaited()
+    broker.retry_later.assert_awaited_once()
+    assert broker.retry_later.await_args.kwargs["delay_ms"] == 2000
+
+
+@pytest.mark.timeout(5)
+async def test_retry_delay_wins_although_retry_exceptions_does_not_list_it(broker, backend, config):
+    """Liste 31 (P8): die Verzoegerung aus ``Retry(delay=...)`` gilt auch mit
+    Filter."""
+    from swarmq.exceptions import Retry
+    from swarmq.middleware import MiddlewareChain
+
+    handler, _ = _handler(broker, backend, config, _FilteredFixedTask)
+    msg = make_message(_default_payload(name="filtered-fixed-task"))
+
+    await handler.evaluate(msg, _ctx(_FilteredFixedTask), Retry(delay=7), "", {"retry_count": 0}, MiddlewareChain([]))
+
+    broker.dead_letter.assert_not_awaited()
+    assert broker.retry_later.await_args.kwargs["delay_ms"] == 7000
+
+
+@pytest.mark.timeout(5)
+async def test_retry_with_filter_still_consumes_the_budget(broker, backend, config, swarmq_logs):
+    """Liste 32 (P8, E4 A): ``Retry`` umgeht den Filter, nicht das Budget --
+    nach drei von drei Versuchen endet es terminal."""
+    from swarmq.exceptions import Retry
+    from swarmq.middleware import MiddlewareChain
+
+    handler, _ = _handler(broker, backend, config, _FilteredFixedTask)
+    msg = make_message(_default_payload(name="filtered-fixed-task"), headers={"x-swarmq-retry-count": 3})
+
+    await handler.evaluate(msg, _ctx(_FilteredFixedTask), Retry(delay=7), "", {"retry_count": 0}, MiddlewareChain([]))
+
+    broker.retry_later.assert_not_awaited()
+    broker.dead_letter.assert_awaited_once()
+    [entry] = _events(swarmq_logs, "task_sent_to_dlq")
+    assert entry["error_type"] == "Retry"
+
+
+@pytest.mark.timeout(5)
+async def test_retry_with_zero_max_retries_ends_terminally(broker, backend, config):
+    """Liste 33 (P8, E4 A): bei ``max_retries=0`` endet ``Retry`` terminal."""
+    from swarmq.exceptions import Retry
+    from swarmq.middleware import MiddlewareChain
+
+    handler, _ = _handler(broker, backend, config, _ZeroRetryTask)
+    msg = make_message(_default_payload(name="zero-retry-task"))
+
+    await handler.evaluate(msg, _ctx(_ZeroRetryTask), Retry(delay=5), "", {"retry_count": 0}, MiddlewareChain([]))
+
+    broker.retry_later.assert_not_awaited()
+    broker.dead_letter.assert_awaited_once()
+
+
+@pytest.mark.timeout(5)
+async def test_retry_rebuilt_from_compute_envelope_retries_despite_filter(broker, backend, config):
+    """Liste 35 (P8, T10): Im CPU-Modus kommt ``Retry`` ueber das Envelope
+    aus dem Rechenkind; die rekonstruierte Instanz geht durch denselben
+    ``RetryHandler`` und behaelt ``delay``."""
+    import pickle
+
+    from swarmq.exceptions import Retry
+    from swarmq.middleware import MiddlewareChain
+    from swarmq.worker.compute.envelope import error_envelope
+
+    rebuilt = pickle.loads(pickle.dumps(error_envelope("abc-123", Retry(delay=5)))).error()
+    assert rebuilt is not None
+    handler, _ = _handler(broker, backend, config, _FilteredFixedTask)
+    msg = make_message(_default_payload(name="filtered-fixed-task"))
+
+    await handler.evaluate(msg, _ctx(_FilteredFixedTask), rebuilt, "", {"retry_count": 0}, MiddlewareChain([]))
+
+    broker.dead_letter.assert_not_awaited()
+    assert broker.retry_later.await_args.kwargs["delay_ms"] == 5000

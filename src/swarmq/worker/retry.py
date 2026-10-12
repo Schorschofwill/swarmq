@@ -17,8 +17,9 @@ Queue zu laufen. Abgesichert durch ``tests/e2e/test_retry_band.py``.
 
 from __future__ import annotations
 
+import enum
 from collections.abc import Awaitable, Callable, Mapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from swarmq.backoff import calculate_backoff
 from swarmq.cancellation import build_error_result_dict
@@ -35,6 +36,7 @@ from swarmq.serialization import encode_result
 from swarmq.signals import Signal
 from swarmq.task import DeliveryMode
 from swarmq.worker.compute.pool import SlotUnavailable
+from swarmq.worker.error_info import error_class_of, gate_error_class
 from swarmq.worker.execution import ExecutionResult
 from swarmq.worker.gates import GateContext, GateDeps, dead_letter_copy, redeliver_in_place, republish_headers
 from swarmq.worker.outcome import DeliveryOutcome, Redelivered
@@ -44,6 +46,14 @@ if TYPE_CHECKING:
     from swarmq.middleware import MessageContext, MiddlewareChain
 
 logger = get_logger(__name__)
+
+
+class _ErrorClass(enum.Enum):
+    """Default von ``dead_letter(error_class=...)``: die Gate-Pfade uebergeben
+    keine Klasse, sie kommt aus ``error_type`` (T17)."""
+
+    FROM_ERROR_TYPE = enum.auto()
+
 
 #: Ergebnis-Tail (``ResultTail.finish``): Speichern, Workflow-Fehler, Ack.
 FinishFn = Callable[[Any, GateContext, ExecutionResult], Awaitable[DeliveryOutcome]]
@@ -92,8 +102,14 @@ class RetryHandler:
         if isinstance(exc, NoRetry):
             return await self._terminal_failure(delivery, ctx, exc, error_message)
 
-        # 2. Check retry_exceptions filter
-        if task_info.retry_exceptions is not None and not isinstance(exc, task_info.retry_exceptions):
+        # 2. Check retry_exceptions filter. ``Retry`` ist eine ausdrueckliche
+        # Anweisung des Tasks und gilt unabhaengig vom Filter (P8); das Budget
+        # (Schritt 4) gilt weiter.
+        if (
+            task_info.retry_exceptions is not None
+            and not isinstance(exc, Retry)
+            and not isinstance(exc, task_info.retry_exceptions)
+        ):
             return await self._terminal_failure(delivery, ctx, exc, error_message)
 
         # 3. Read retry count from message headers
@@ -172,11 +188,17 @@ class RetryHandler:
                 task_exception=exc,
             )
             return await self._finish(delivery, ctx, execution)
-        await self.dead_letter(delivery, ctx, error_message, type(exc).__name__)
+        await self.dead_letter(delivery, ctx, error_message, type(exc).__name__, error_class=error_class_of(exc))
         return Redelivered
 
     async def fail_workflow(
-        self, delivery: Any, ctx: GateContext, error_message: str, may_redeliver: bool = True
+        self,
+        delivery: Any,
+        ctx: GateContext,
+        error_message: str,
+        may_redeliver: bool = True,
+        *,
+        error_class: str | None = None,
     ) -> bool:
         """Workflow der Zustellung fehlmarkieren (BZ-13, ``GateDeps.fail_workflow``).
         ``False``: voruebergehend gescheitert und neu zugestellt -- nur bei
@@ -194,6 +216,7 @@ class RetryHandler:
             error_message,
             redeliver=may_redeliver and at_least_once,
             log=logger,
+            error_class=error_class,
         )
 
     async def dead_letter(
@@ -206,6 +229,7 @@ class RetryHandler:
         may_redeliver: bool = True,
         extra_headers: Mapping[str, Any] | None = None,
         on_publish_failure: Callable[[Exception], Awaitable[None]] | None = None,
+        error_class: str | Literal[_ErrorClass.FROM_ERROR_TYPE] | None = _ErrorClass.FROM_ERROR_TYPE,
     ) -> bool:
         """Store error result in backend, dead-letter, and ack the original.
 
@@ -222,7 +246,12 @@ class RetryHandler:
         ``on_publish_failure``: ersetzt das ``redeliver`` nach gescheitertem
         DLQ-Publish (Lock-Pfade: terminaler DLX-Fallback, die Ursache ist
         dauerhaft).
+        ``error_class`` (P9, T17): Klasse fuer das Fehlerergebnis; ohne
+        Angabe (Gate-Pfade) aus ``error_type`` ueber die Tabelle in
+        ``error_info`` (nur oeffentliche swarmq-Klassen, sonst keine).
         """
+        if error_class is _ErrorClass.FROM_ERROR_TYPE:
+            error_class = gate_error_class(error_type)
         deps = self._deps
         task_id, task_name, queue = ctx.task_id, ctx.task_name, ctx.queue
         # Fetch task_info for result_ttl, release-mode and the delivery mode;
@@ -244,12 +273,12 @@ class RetryHandler:
         # nichts zurueckzuhalten. Vor dem Speichern des Fehlerergebnisses:
         # die Markierung prueft, ob der Schritt schon erfolgreich erledigt
         # ist (MR 3, BZ-13), und saehe sonst das eigene Fehlerergebnis.
-        if not await self.fail_workflow(delivery, ctx, error_message, may_redeliver):
+        if not await self.fail_workflow(delivery, ctx, error_message, may_redeliver, error_class=error_class):
             return False
 
         # Store error result so callers of get_result() get a response
         result_data = build_error_result_dict(
-            task_id=task_id, queue=queue, task_name=task_name, error_message=error_message
+            task_id=task_id, queue=queue, task_name=task_name, error_message=error_message, error_class=error_class
         )
         try:
             result_bytes = encode_result(result_data)
@@ -307,6 +336,9 @@ class RetryHandler:
                     pass
                 # Non-terminal — leave the flag so the redelivery's terminal
                 # path releases it. No release here.
-        # KTD11: der Task ist endgueltig fehlgeschlagen -> ERROR.
-        logger.error("task_sent_to_dlq", error_type=error_type, error=error_message)
+        # KTD11: der Task ist endgueltig fehlgeschlagen -> ERROR. Nur wenn die
+        # Kopie liegt oder der DLX-Rueckfall des Aufrufers lief (P7b); nach
+        # gescheitertem Publish mit Neuzustellung meldet ``dlq_publish_failed``.
+        if placed or on_publish_failure is not None:
+            logger.error("task_sent_to_dlq", error_type=error_type, error=error_message)
         return placed

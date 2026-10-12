@@ -19,7 +19,7 @@ swarmq worker --module myapp.tasks --pool cpu --queues images
 | `hard_timeout` | asyncio-Cancel; kann einen blockierten Loop nicht unterbrechen | tötet die Prozessgruppe des Kindes (SIGTERM, 1 s Gnade, SIGKILL); der Task folgt dem üblichen Retry-/DLQ-Pfad |
 | Cancel | asyncio-Cancel | tötet das Kind; der Task endet als abgebrochen, kein Retry |
 | Gates, Middleware, Signale, Ack | Loop-Prozess | Loop-Prozess — unverändert |
-| `FromDishka[...]` | im Loop aufgelöst | im Kind aufgelöst; der Container entsteht beim Import, wird im Forkserver aber nie aufgelöst |
+| `FromDishka[...]`, `Annotated[X, FromComponent(...)]`, Aliase | im Loop aufgelöst | im Kind aufgelöst; der Container entsteht beim Import, wird im Forkserver aber nie aufgelöst. Das Kind importiert das Task-Modul neu, die Annotationen müssen also auch dort bei der Klassendefinition auflösbar sein (siehe [Dependency Injection](../reference/api.md#dependency-injection-dishka)) |
 
 Tasks **ohne** Dependency Injection bekommen ein frisches Kind je Task: Nichts
 überlebt einen Task, also überlebt auch kein Leak. Tasks **mit** `FromDishka`
@@ -62,6 +62,8 @@ Signal `WORKER_RECYCLING` aus.
   ihren Typ (`Retry`, `NoRetry`, `retry_exceptions`), wenn er importierbar ist.
 - `FromDishka[X] | None = None` hat nie injiziert; seit 0.5.0 verweigert der
   Worker mit solcher Annotation den Start (`ConfigurationError`), in jedem Modus.
+  Das gilt ebenso für einen Alias (`Depends[X] | None`), auch unter
+  `from __future__ import annotations`.
 
 ### Fire-and-forget und ein nicht verfügbarer Rechenslot
 

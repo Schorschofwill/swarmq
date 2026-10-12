@@ -136,6 +136,12 @@ Weitere Hinweise für Container:
   "worker", ...]`), damit er `SIGTERM` selbst erhält; eine Shell als
   PID 1 leitet es nicht weiter. Ein Init-Prozess (`docker run --init`,
   tini) räumt verwaiste Enkelprozesse ab.
+- **Arbeitsverzeichnis:** `swarmq worker` importiert `--module` aus dem
+  Arbeitsverzeichnis. Setze `WORKDIR` daher auf das Verzeichnis, das dein
+  Paket enthält (`WORKDIR /app` für `/app/myapp/tasks.py`), oder übergib
+  `--app-dir /app`. Vor diesem Release brauchte das Konsolenskript dafür
+  `PYTHONPATH`
+  ([Das Task-Modul finden](../reference/cli.md#das-task-modul-finden)).
 - **Uhren:** NTP auf jedem Host. `max_age` vergleicht die Uhr des
   Producers mit der des Workers, und das Warten auf einen Lock toleriert
   einen Versatz von etwa 60 s.
@@ -171,6 +177,11 @@ Weitere Hinweise für Container:
   setze `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S=0`, damit die Führung nicht
   zu einer 0.11-App wechselt
   ([Namensraum](../reference/configuration.md#namensraum-mehrere-apps-auf-einem-valkey)).
+- **`SWARMQ_SCHEDULER=off`** hält einen Worker aus der Wahl des
+  Scheduler-Leaders heraus, etwa einen Entwicklerrechner gegen eine Kopie
+  der Live-Daten. Mindestens ein Worker je Valkey und Namensraum muss
+  `on` behalten, sonst feuert kein Cron, kein `delay`/`eta`-Task und kein
+  Oneshot ([Scheduler abschalten](scheduling-and-retries.md#scheduler-auf-einzelnen-workern-abschalten)).
 
 ## Schritt 5: Rechte, Policies, Mengen
 

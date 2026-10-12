@@ -220,5 +220,6 @@ class ClientWorkflows:
             task_id = data.get("task", {}).get("id")
             raise TaskCancelledError(task_id)
         if data.get("is_error"):
-            raise TaskError(data.get("error_message", "unknown error"))
+            # ``error_class`` fehlt bei Ergebnissen aelterer Worker (Q2).
+            raise TaskError(data.get("error_message", "unknown error"), error_class=data.get("error_class"))
         return data["result"]

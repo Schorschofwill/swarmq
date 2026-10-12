@@ -36,7 +36,7 @@ from valkey.crc import key_slot
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.backend.valkey.control import ValkeySetpointStore
 from swarmq.broker.rabbitmq import RabbitMQBroker
-from swarmq.cancellation import build_result_dict
+from swarmq.cancellation import build_error_result_dict, build_result_dict
 from swarmq.contracts.control import Setpoint
 from swarmq.queue_names import queue_family
 from swarmq.scheduler import ScheduleDefinition
@@ -91,6 +91,17 @@ def golden_result_dict() -> dict[str, Any]:
     )
 
 
+def golden_error_result_dict() -> dict[str, Any]:
+    """Fehlerergebnis mit ``error_class`` (P9, Plan 2026-10-12-1105, MR 3)."""
+    return build_error_result_dict(
+        task_id=TASK_ID,
+        queue="golden",
+        task_name="golden.task",
+        error_message="",
+        error_class="builtins.ValueError",
+    )
+
+
 def golden_workflow_state() -> dict[str, Any]:
     topology = chain(
         Signature("golden.a", (1,)),
@@ -115,6 +126,7 @@ def golden_schedule_definition() -> ScheduleDefinition:
 def value_fixtures() -> dict[str, bytes]:
     return {
         "result.msgpack": encode_result(golden_result_dict()),
+        "error_result.msgpack": encode_result(golden_error_result_dict()),
         "workflow_state.json": encode_json(golden_workflow_state()),
         "schedule_definition.json": msgspec.json.encode(golden_schedule_definition()),
         "progress_hash.json": json.dumps(PROGRESS_FIELDS, sort_keys=True).encode(),

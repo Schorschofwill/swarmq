@@ -37,7 +37,7 @@ except SwarmQError as exc:
 | `TaskError` | `SwarmQError` | The task body raised; propagated to `get_result()` |
 | `TaskCancelledError` | `TaskError` | `app.cancel(task_id)` tripped during execution |
 | `ResultNotReadyError` | `SwarmQError` | `get_result()` timed out before a result landed |
-| `ResultExpiredError` | `SwarmQError` | Result existed but Valkey TTL expired it |
+| `ResultExpiredError` | `SwarmQError` | Currently never raised (reserved); an expired result raises `ResultNotReadyError` |
 | `ResultSerializationError` | `SwarmQError` | Result cannot be msgpack-serialised |
 | `Retry` | `SwarmQError` | Control flow — raised by task code to request a retry |
 | `NoRetry` | `SwarmQError` | Control flow — raised by task code to bypass retries |
@@ -251,7 +251,22 @@ use) its retry budget.
 
 **Cause.** Any exception your `run()` method let escape. The original
 exception class is lost across the wire; the error message contains
-the string the worker stored.
+the string the worker stored (`""` for an exception without text).
+`error_class` names the class (advisory): `module.qualname`, e.g.
+`builtins.ValueError`; in CPU mode the class reported by the compute
+child. It is `None` for results of older workers and for failures the
+worker generates itself (hard timeout, drain, lost compute child,
+expiry).
+
+```python
+from swarmq import TaskError
+
+try:
+    result = await app.get_result(task_id, timeout=60)
+except TaskError as exc:
+    if exc.error_class == "builtins.ValueError":
+        ...  # bad input, do not resubmit unchanged
+```
 
 **Recovery.** Read the worker logs — they carry the full traceback.
 Then fix your task body, or widen your `retry_exceptions` so the
@@ -286,7 +301,8 @@ except TaskCancelledError:
 with no result in Valkey.
 
 **Cause.** The task is still running, the worker died, the task was
-DLQ'd without storing a result, or the task_id is wrong.
+DLQ'd without storing a result, the result expired after its
+`result_ttl`, or the task_id is wrong.
 
 **Recovery.** Raise the timeout, check the worker logs, or inspect
 the DLQ if the task is stuck in retry loops.
@@ -303,14 +319,14 @@ except ResultNotReadyError:
 
 ## `ResultExpiredError`
 
-**When raised.** `get_result()` finds the result key gone while a
-metadata marker still indicates the task completed. In v0.x this is
-rare — the backend usually raises `ResultNotReadyError` for the
-"gone" case — and the class is kept as a stable hook for a future
-release that splits the two.
+**When raised.** Currently never. After the result TTL has expired,
+`get_result()` raises `ResultNotReadyError`, the same as for a result
+that is not there yet. The class is kept as a stable hook for a later
+release that tells the two cases apart; catching it today has no
+effect.
 
-**Recovery.** Raise `result_ttl` (`SWARMQ_RESULT_TTL`) or fetch the
-result sooner.
+**Recovery.** To keep results readable longer, raise `result_ttl`
+(`SWARMQ_RESULT_TTL`) or fetch the result sooner.
 
 ## `ResultSerializationError`
 
@@ -360,6 +376,11 @@ class SendEmail(Task):
 
 If `delay` is `None`, the worker applies the configured backoff
 strategy (`retry_backoff`, `retry_base_delay`).
+
+`Retry` retries even when the task sets `retry_exceptions` without
+listing it. It counts against `max_retries`: when the budget is used
+up, and always with `max_retries=0`, the task ends terminally (DLQ, or
+the error result when dead-lettering is disabled).
 
 ## `NoRetry`
 

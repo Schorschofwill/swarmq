@@ -148,3 +148,37 @@ def test_redelivery_limit_error_names_the_dead_letter_reason_of_the_delivery_cou
     assert issubclass(RedeliveryLimitError, exceptions.SwarmQError)
     assert RedeliveryLimitError.__name__ == REDELIVERY_LIMIT_ERROR_TYPE
     assert "RedeliveryLimitError" in swarmq.__all__
+
+
+# Test-Liste P9 (Plan 2026-10-12-1105, MR 3, T14) -- ``TaskError.error_class``:
+# 1. ``TaskError("m").error_class is None``; mit Keyword gesetzt.
+# 2. Pickle-Rundreise erhaelt Meldung und Klasse.
+# 3. ``TaskCancelledError`` unveraendert: ``task_id``, ``args``,
+#    ``error_class is None`` (nicht ueber ``str()``, Review P2-28).
+
+
+def test_task_error_carries_optional_error_class():
+    assert TaskError("m").error_class is None
+    err = TaskError("m", error_class="a.B")
+    assert err.error_class == "a.B"
+    assert str(err) == "m"
+
+
+def test_task_error_pickle_round_trip_keeps_message_and_class():
+    import pickle
+
+    err = pickle.loads(pickle.dumps(TaskError("m", error_class="a.B")))
+    assert (type(err), err.args, err.error_class) == (TaskError, ("m",), "a.B")
+    plain = pickle.loads(pickle.dumps(TaskError("m")))
+    assert plain.error_class is None
+
+
+def test_task_cancelled_error_is_unchanged_by_error_class():
+    import pickle
+
+    err = TaskCancelledError("t-1")
+    assert (err.task_id, err.args, err.error_class) == ("t-1", ("task t-1 was cancelled",), None)
+    # Nach Pickle nicht ueber str() pruefen: die Meldung wird vorbestehend
+    # verdoppelt (Plan 2026-10-12-1105, Abschnitt 9).
+    again = pickle.loads(pickle.dumps(err))
+    assert (again.task_id, again.error_class) == ("t-1", None)

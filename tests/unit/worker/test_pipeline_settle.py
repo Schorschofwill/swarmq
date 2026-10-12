@@ -72,8 +72,10 @@ async def test_unexpected_error_is_logged_with_task_context_and_does_not_escape(
 
 
 async def test_lost_channel_before_task_context_logs_one_warning(worker, broker, swarmq_logs):
-    """Ein nicht dekodierbarer Body geht per DLX-Route; scheitert sie am
-    Kanal, ist noch kein Task-Kontext gebunden (task_id unbekannt)."""
+    """Ein nicht dekodierbarer Body geht als Kopie ins ``.XQ``, im Rueckfall
+    per DLX-Route (Plan 2026-10-12-1105, MR 8); scheitern beide am Kanal,
+    ist noch kein Task-Kontext gebunden (task_id unbekannt)."""
+    broker.dead_letter.side_effect = BrokerConnectionError("publish failed, channel or connection lost")
     broker.route_via_dlx.side_effect = BrokerConnectionError("route_via_dlx failed, channel or connection lost")
     msg = make_message(body=b"not json")
 

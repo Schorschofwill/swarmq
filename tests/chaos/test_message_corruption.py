@@ -232,8 +232,8 @@ class TestMessageCorruption:
         # and tangled-shape values into the int-typed retry-count —
         # exactly what a rogue client or a schema-evolution mistake
         # would emit. The body itself is not valid SwarmQ JSON, so the
-        # worker must fail at the deserialize step and route via the
-        # nack(requeue=False) → DLX path.
+        # worker must fail at the deserialize step and reject it to
+        # ``{queue}.XQ`` (copy with retention, DLX as fallback).
         conn = await aio_pika.connect_robust(chaos_stack.rabbitmq_url)
         try:
             ch = await conn.channel()
@@ -282,17 +282,19 @@ class TestMessageCorruption:
                 main_count = await _queue_message_count(chaos_stack, queue)
                 assert main_count == 0, f"main queue not drained; count={main_count}"
 
-                # Pin landing spot. ``_handle_message`` nacks a
-                # deserialize-fail with requeue=False, which routes to
-                # ``{queue}.XQ`` via the DLX. Accept either outcome so
-                # future refactors that ack-and-discard still pass
-                # while still documenting current behaviour.
+                # Pin landing spot. ``_handle_message`` rejects a
+                # deserialize-fail as a copy with the dead-letter retention
+                # to ``{queue}.XQ``; the DLX (nack(requeue=False)) is only
+                # the fallback when the copy fails (Plan 2026-10-12-1105,
+                # MR 8). Accept either outcome so future refactors that
+                # ack-and-discard still pass while still documenting
+                # current behaviour.
                 dlq_count = await _queue_message_count(
                     chaos_stack,
                     f"{queue}.XQ",
                 )
-                # Current behaviour: 1 (routed to DLQ via nack(requeue=False)
-                # + DLX). Document so a future change surfaces here.
+                # Current behaviour: 1 (copy in the DLQ, or via the DLX
+                # fallback). Document so a future change surfaces here.
                 assert dlq_count in (0, 1), f"unexpected DLQ count for corrupt headers: {dlq_count}"
 
                 proc.send_signal(signal.SIGTERM)

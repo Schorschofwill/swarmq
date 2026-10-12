@@ -20,10 +20,12 @@ Design (see ``docs/plans/2026-05-31-001-feat-dishka-di-tasks-plan.md``):
 
 from __future__ import annotations
 
+import annotationlib
 import contextvars
 import inspect
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Final, Protocol, cast, override
+from typing import TYPE_CHECKING, Any, Final, ForwardRef, Protocol, cast, override
 
 from swarmq.logging import get_logger
 
@@ -134,6 +136,7 @@ def _reset_container() -> None:
 
 
 _LIFECYCLE_METHODS: Final = ("run", "pre_execution", "post_execution")
+_FORWARDREF: Final = annotationlib.Format.FORWARDREF
 
 
 def _key_resolvable(container: object, key: object) -> bool:
@@ -185,6 +188,60 @@ def _reject_ineffective_fromdishka(registered_tasks: list[type], error_cls: type
         )
 
 
+def _unwrapped_di_params(func: object) -> tuple[list[str], list[str]]:
+    """DI-Parameter einer nicht gewrappten Methode, jetzt tolerant ausgewertet,
+    und die Parameter, die auch jetzt noch unaufloesbar sind."""
+    from typing import get_type_hints
+
+    from dishka.integrations.base import default_parse_dependency
+
+    try:
+        hints = get_type_hints(func, include_extras=True, format=_FORWARDREF)
+    except SyntaxError:
+        return [], []  # T5 Regel 2: nicht auswertbar ist kein DI
+    sig = inspect.signature(cast("Any", func), annotation_format=_FORWARDREF)
+    di_params = [
+        pname
+        for pname, param in sig.parameters.items()
+        if pname in hints and default_parse_dependency(param, hints[pname]) is not None
+    ]
+    unresolved = [pname for pname, hint in hints.items() if _contains_forward_ref(hint)]
+    return di_params, unresolved
+
+
+def _reject_unwrapped_di_methods(registered_tasks: list[type], error_cls: type[Exception]) -> None:
+    """T6 (Plan 2026-10-12-1105): eine Methode, die bei der Klassendefinition
+    nicht gewrappt wurde, nun aber einen DI-Key ergibt, injiziert nie.
+
+    Unter PEP 563 ist das ein Alias oder ``FromComponent`` mit einer
+    Annotation, die bei der Definition noch nicht aufloesbar war. Ein spaetes
+    Wrappen griffe in Kindprozessen nicht, also scheitert der Start.
+    """
+    from dishka.integrations.base import is_dishka_injected
+
+    offenders: list[str] = []
+    for task in registered_tasks:
+        for name in _LIFECYCLE_METHODS:
+            func = task.__dict__.get(name)
+            if func is None or is_dishka_injected(func):
+                continue
+            params, unresolved = _unwrapped_di_params(func)
+            if params:
+                task_name = cast("_TaskWithInfo", task).task_info.name
+                offender = f"{task_name}: " + ", ".join(f"{name}.{p}" for p in params)
+                if unresolved:
+                    offender += " (" + ", ".join(f"{name}.{p} is unresolvable" for p in unresolved) + ")"
+                offenders.append(offender)
+    if offenders:
+        raise error_cls(
+            "dependency injection annotation(s) that were not resolvable at class definition, "
+            "so nothing would be injected: "
+            + "; ".join(offenders)
+            + ". Every annotation of the method must be resolvable when the task class is defined: "
+            "define or import the types before the class (no forward references, no TYPE_CHECKING-only imports)."
+        )
+
+
 def validate_registered_tasks(registered_tasks: list[type]) -> None:
     """Worker-start validation for DI tasks (plan R3b).
 
@@ -200,6 +257,7 @@ def validate_registered_tasks(registered_tasks: list[type]) -> None:
     from swarmq.exceptions import ConfigurationError
 
     _reject_ineffective_fromdishka(registered_tasks, ConfigurationError)
+    _reject_unwrapped_di_methods(registered_tasks, ConfigurationError)
     di_tasks = [t for t in registered_tasks if getattr(t, "_dishka_injected_keys", None)]
     if not di_tasks:
         return
@@ -247,7 +305,7 @@ def _collect_method_keys(
     name: str,
     sig: inspect.Signature,
     hints: dict[str, object],
-    raw_annotations: dict[str, object],
+    raw_annotations: Mapping[str, object],
 ) -> tuple[list[object], list[str]]:
     """DependencyKeys einer Lifecycle-Methode plus wirkungslose Annotationen.
 
@@ -265,9 +323,7 @@ def _collect_method_keys(
         dep = default_parse_dependency(param, hint) if hint is not None else None
         if dep is not None:
             keys.append(dep)
-        elif _annotation_mentions_fromdishka(raw_annotations.get(pname)) or (
-            isinstance(raw_annotations.get(pname), str) and "FromDishka" in str(raw_annotations.get(pname))
-        ):
+        elif _annotation_mentions_fromdishka(hint) or _raw_text_mentions_fromdishka(raw_annotations.get(pname)):
             silent.append(f"{name}.{pname}")
     return keys, silent
 
@@ -287,6 +343,37 @@ def _annotation_mentions_fromdishka(raw: object) -> bool:
     return any(_annotation_mentions_fromdishka(arg) for arg in get_args(raw))
 
 
+def _raw_text_mentions_fromdishka(raw: object) -> bool:
+    """Nennt eine Roh-Annotation ``FromDishka`` im Text? Das ist ein
+    PEP-563-String oder unter PEP 649 der Text eines ganzen ForwardRef, z. B.
+    ``ForwardRef('FromDishka[Later] | None')`` (T5 Regel 1)."""
+    if isinstance(raw, ForwardRef):
+        raw = raw.__forward_arg__
+    return isinstance(raw, str) and "FromDishka" in raw
+
+
+def _contains_forward_ref(hint: object) -> bool:
+    """Steckt in einem ausgewerteten Hint (auch verschachtelt) ein ForwardRef?"""
+    from typing import get_args
+
+    return isinstance(hint, ForwardRef) or any(_contains_forward_ref(arg) for arg in get_args(hint))
+
+
+def _strict_hints(cls: type, name: str, func: object) -> dict[str, Any]:
+    """Strikte Auswertung; ein unaufloesbarer Name wird ein NameError mit Hinweis."""
+    from typing import get_type_hints
+
+    try:
+        return get_type_hints(func, include_extras=True)
+    except NameError as exc:
+        raise NameError(
+            f"Cannot resolve type hints on {cls.__name__}.{name} for "
+            f"dishka injection: {exc}. Annotations on FromDishka "
+            f"parameters must be importable at class-definition time "
+            f"(no TYPE_CHECKING-only or forward-reference types)."
+        ) from exc
+
+
 def maybe_wrap_task(cls: type) -> None:
     """Auto-wrap a Task subclass's lifecycle methods for FromDishka injection.
 
@@ -300,29 +387,9 @@ def maybe_wrap_task(cls: type) -> None:
     if not _HAVE_DISHKA:
         return
 
-    import inspect
     from typing import get_type_hints
 
-    from dishka.integrations.base import (
-        default_parse_dependency,
-        is_dishka_injected,
-        wrap_injection,
-    )
-
-    def _raw_mentions_fromdishka(param: inspect.Parameter, raw: object) -> bool:
-        # Cheap, get_type_hints-free pre-check covering both annotation forms:
-        # string annotations (PEP 563 / from __future__ import annotations) and
-        # already-evaluated Annotated objects. Lets non-DI tasks skip the
-        # resolution below entirely, so existing tasks with forward-reference
-        # or TYPE_CHECKING-only annotations are never broken — only genuine DI
-        # users pay the cost and get the strict error.
-        if isinstance(raw, str):
-            return "FromDishka" in raw
-        if default_parse_dependency(param, raw) is not None:
-            return True
-        # R18: ``FromDishka[X] | None`` ergibt keinen Key, nennt FromDishka
-        # aber strukturell — nur so faellt die wirkungslose Annotation auf.
-        return _annotation_mentions_fromdishka(raw)
+    from dishka.integrations.base import is_dishka_injected, wrap_injection
 
     collected: list[object] = []
     ineffective: list[str] = []
@@ -331,30 +398,36 @@ def maybe_wrap_task(cls: type) -> None:
         if func is None or is_dishka_injected(func):
             continue
 
-        sig = inspect.signature(func)
-        raw_annotations = getattr(func, "__annotations__", {})
-        if not any(
-            _raw_mentions_fromdishka(param, raw_annotations.get(pname)) for pname, param in sig.parameters.items()
-        ):
-            continue
-
-        # This method declares FromDishka params. Resolve hints (strictly) and
-        # derive the injected DependencyKeys — wrap_injection does not expose
-        # them on its result.
-        try:
-            hints = get_type_hints(func, include_extras=True)
-        except NameError as exc:
-            raise NameError(
-                f"Cannot resolve type hints on {cls.__name__}.{name} for "
-                f"dishka injection: {exc}. Annotations on FromDishka "
-                f"parameters must be importable at class-definition time "
-                f"(no TYPE_CHECKING-only or forward-reference types)."
-            ) from exc
+        # E9: unter PEP 649 wirft schon der Zugriff auf ``__annotations__``
+        # bei einem unaufloesbaren Namen; FORWARDREF liest tolerant.
+        sig = inspect.signature(func, annotation_format=_FORWARDREF)
+        raw_annotations = annotationlib.get_annotations(func, format=_FORWARDREF)
+        if any(_raw_text_mentions_fromdishka(raw) for raw in raw_annotations.values()):
+            # T5 Regel 1: ``FromDishka`` im Text -- strikt auswerten wie
+            # bisher, ein unaufloesbarer Name ist ein NameError mit Hinweis.
+            hints = _strict_hints(cls, name, func)
+        else:
+            # Tolerant: ein nicht aufloesbarer Name bleibt ein ForwardRef.
+            # Erst die ausgewerteten Hints zeigen Aliase und FromComponent.
+            # T5 Regel 2: was sich so nicht auswerten laesst, ist kein DI.
+            try:
+                hints = get_type_hints(func, include_extras=True, format=_FORWARDREF)
+            except SyntaxError:
+                continue
 
         method_keys, silent = _collect_method_keys(name, sig, hints, raw_annotations)
         ineffective.extend(silent)
         if not method_keys:
             continue
+        unresolved = [pname for pname, hint in hints.items() if _contains_forward_ref(hint)]
+        if unresolved:
+            # T5 Regel 4: ``wrap_injection`` wertet strikt aus und wuerfe einen
+            # rohen NameError. Unter PEP 563 (Strings) bleibt die Methode
+            # ungewrappt, der Start meldet sie (T6); unter PEP 649 bleibt es
+            # beim NameError mit Hinweis.
+            if all(isinstance(raw_annotations.get(pname), str) for pname in unresolved):
+                continue
+            _strict_hints(cls, name, func)
 
         collected.extend(method_keys)
         setattr(

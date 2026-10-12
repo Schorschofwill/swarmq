@@ -174,11 +174,32 @@ Vermeide, mutablen State auf dem `MessageContext`-Dict abzulegen —
 es ist als spezifische Form typisiert, und Ad-hoc-Keys driften
 still vom Vertrag ab.
 
+## Task-Argumente in `pre_execute` ändern
+
+`message["kwargs"]` und `message["args"]` sind in `pre_execute` dasselbe
+Dict und dieselbe Liste, die der Worker an `run()` übergibt. Eine
+Änderung daran erreicht den Task, auch im CPU-Modus (`--pool cpu`
+kopiert die Argumente für das Rechenkind erst nach `pre_execute`):
+
+```python
+class TenantMiddleware(Middleware):
+    async def pre_execute(self, message):
+        message["kwargs"]["tenant"] = current_tenant()  # run() erhält tenant=
+```
+
+Ein neues Objekt zuzuweisen (`message["kwargs"] = {...}` oder
+`message["args"] = [...]`) wirkt nicht: Der Worker behält seine eigene
+Referenz. Die Änderung gilt nur für den laufenden Versuch. Ein Retry
+stellt den ursprünglichen Nachrichtentext erneut zu, und `pre_execute`
+läuft noch einmal; der Hook muss die Änderung also bei jedem Versuch
+machen.
+
 ## Was Middleware **nicht** tun soll
 
-- **`message["args"]` oder `message["kwargs"]` in `pre_execute`
-  modifizieren.** Der Worker hat sie schon für `run()` entpackt;
-  deine Änderungen sind unsichtbar.
+- **`message["args"]` oder `message["kwargs"]` in `pre_execute` neu
+  zuweisen.** Der Worker behält seine eigene Referenz; ein neues Objekt
+  sieht `run()` nicht. Stattdessen das bestehende Dict bzw. die Liste
+  ändern (siehe oben).
 - **Neue Nachrichten via `broker.publish` emittieren.** Nutze
   stattdessen `app.schedule()`, damit Middleware-Stack und Signals
   korrekt feuern.

@@ -423,6 +423,42 @@ Marker zusätzlich unter dem alten Key je Owner, nach dem Nachfolger vor
 vor 0.12 über den zuletzt gesehenen Leader. Ein verpasster Marker
 ändert nur das Signal.
 
+### Scheduler auf einzelnen Workern abschalten
+
+Jeder Worker bewirbt sich standardmäßig um die Leader-Rolle des
+Schedulers. `SWARMQ_SCHEDULER=off` (oder `swarmq worker --no-scheduler`)
+hält einen Worker aus der Wahl heraus. Typischer Fall ist die lokale
+Entwicklung gegen eine Kopie der Live-Daten: Der Worker des Entwicklers
+konsumiert seine Queues, darf aber nicht die Crons der Produktion
+feuern. Eingebettete Worker nehmen denselben Schalter:
+`SwarmQ(broker, backend, scheduler="off")`.
+
+```bash
+SWARMQ_SCHEDULER=off swarmq worker --module myapp.tasks
+# oder
+swarmq worker --module myapp.tasks --no-scheduler
+```
+
+Was sich ändert:
+
+- Der Leader feuert Crons, Oneshots **und** `delay`/`eta`-Tasks, denn
+  `schedule(..., delay=...)` legt sie im Scheduler-Store ab. Laufen alle
+  Worker am selben Valkey und Namensraum mit `off`, warten sie alle, bis
+  ein Worker mit `on` startet.
+- Aufräumen und Übernahme der Crons, die Prüfung verwaister Queues und
+  die stündliche Valkey-Prüfung laufen ebenfalls nur beim Leader.
+- Der Worker meldet weiter seine statischen Crons, seine Version und
+  seine Queues. Der Leader räumt die Crons dieses Workers daher nicht
+  nach `SWARMQ_SCHEDULER_PRUNE_AFTER_S` ab, und `swarmq check` meldet
+  seine Queues nicht als verwaist.
+- Jeder Worker-Prozess loggt beim Start die WARNING `scheduler_disabled`:
+  N-mal bei `--processes N` und erneut nach jedem Recycle. `swarmq check`
+  meldet `scheduler_disabled` als Warnung; jeder andere Wert als `on`
+  oder `off` ist dort und beim Worker-Start ein Fehler (Exit `78`).
+
+Worker vor diesem Release ignorieren `SWARMQ_SCHEDULER` und bewerben
+sich weiter. `swarmq check` prüft nicht, ob überhaupt ein Leader lebt.
+
 ### Fehlende Queues
 
 Queues deklarieren die Worker, die sie konsumieren. Ab 0.12 wirft ein
@@ -598,7 +634,8 @@ task_info = TaskInfo(
 
 Jede andere Exception — `ValueError`, `KeyError`, der
 Card-Declined-Fehler — umgeht das Retry-Budget und geht direkt in
-die DLQ.
+die DLQ. `Retry` (unten) filtert das nicht: Er wiederholt, egal ob
+`retry_exceptions` ihn nennt.
 
 ### Task-Body-Kontrolle mit `Retry` und `NoRetry`
 
@@ -624,6 +661,10 @@ class SendEmail(Task):
   konfigurierten Backoff. Nutze, wenn du die korrekte Wartezeit
   kennst (z. B. HTTP `Retry-After: 60`).
 - `Retry()` ohne Delay — nutzt die Backoff-Formel.
+- `Retry` gilt unabhängig von `retry_exceptions`, zählt aber gegen
+  `max_retries`: Ist das Budget verbraucht, und immer bei
+  `max_retries=0`, endet er terminal (DLQ bzw. Fehlerergebnis, wenn
+  das Dead-Lettering abgeschaltet ist).
 - `NoRetry(reason)` — überspringt das Retry-Budget, routet sofort
   in die DLQ.
 

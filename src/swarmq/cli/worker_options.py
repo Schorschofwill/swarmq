@@ -25,6 +25,7 @@ _OPTIONS: tuple[tuple[str, str, object], ...] = (
     ("priorities", "priorities", False),
     ("metrics_port", "metrics_port", None),
     ("health_port", "health_port", None),
+    ("scheduler", "scheduler", "on"),
 )
 
 

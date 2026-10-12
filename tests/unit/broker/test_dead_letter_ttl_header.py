@@ -21,6 +21,10 @@ Test-Liste:
 8. Abgelaufen nach Header-Frist -> verworfen.
 9. Unlesbarer Frist-Header zaehlt wie fehlender.
 10. ``dlq retry`` entfernt den Frist-Header.
+11. Plan 2026-10-12-1105, MR 8 (P5b): ``dead_letter`` mit undekodierbarem
+    Body (Ablehnung durch den Worker) -> ``expiration`` und Ablage-Stempel
+    gesetzt, keine Replay-ID; JSON mit ``task.id``, ohne ``task.name`` ->
+    Generation und Replay-ID vorhanden (BZ-08, Review P2-22).
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
+from swarmq.contracts.message import Delivery
 
 _NOW = 1_760_000_000.0
 _AT = "x-swarmq-dead-lettered-at"
@@ -162,3 +167,32 @@ async def test_unreadable_ttl_header_counts_as_missing() -> None:
     [(_, msg)] = broker.published
     assert msg.properties.expiration == "7200000"
     assert msg.headers[_TTL] == 7_200_000
+
+
+def _dead_letter(body: bytes) -> Any:
+    """Broker (Env-Frist 2 h, Publishes in ``broker.published``) und die abgelehnte Zustellung."""
+    broker = _dlq_broker()
+    broker.ack = AsyncMock()
+    delivery = Delivery(body=body, headers={"x-custom": "keep"}, queue="tasks", handle=Mock())
+    return broker, delivery
+
+
+async def test_rejected_undecodable_copy_has_expiration_but_no_replay_id() -> None:
+    broker, delivery = _dead_letter(b"{not json")
+    await broker.dead_letter(delivery, headers={**delivery.headers, "x-swarmq-traceback": "undecodable: x"})
+    [(routing_key, msg)] = broker.published
+    assert routing_key == "tasks.XQ"
+    assert msg.properties.expiration == "7200000"
+    assert msg.headers[_AT] == int(_NOW * 1000)
+    assert msg.headers["x-swarmq-traceback"] == "undecodable: x"
+    assert "x-swarmq-replay-id" not in msg.headers
+    broker.ack.assert_awaited_once_with(delivery)
+
+
+async def test_rejected_copy_with_task_id_but_without_name_gets_a_generation() -> None:
+    broker, delivery = _dead_letter(json.dumps({"task": {"id": "t-1", "queue": "tasks"}}).encode())
+    await broker.dead_letter(delivery, headers={**delivery.headers, "x-swarmq-traceback": "undecodable: 'name'"})
+    [(_, msg)] = broker.published
+    assert msg.properties.expiration == "7200000"
+    assert msg.headers["x-swarmq-replay-id"].startswith("g")
+    assert msg.headers["x-swarmq-dlq-gen"] == int(_NOW * 1000)

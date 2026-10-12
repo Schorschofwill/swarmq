@@ -89,6 +89,28 @@ def _check_logging_settings(args: argparse.Namespace) -> None:
         probe_dict_config(path, load_log_config(path))
 
 
+def _check_task_injection(module: str) -> None:
+    """Importiert das Task-Modul und prueft dessen DI-Tasks wie der Start.
+
+    Geprueft werden nur die Tasks, die der Import neu registriert; im
+    kurzlebigen Check-Prozess sind das alle. Ausgaben des Moduls gehen nach
+    stderr, damit stdout genau die eine JSON-Zeile traegt.
+
+    Raises:
+        ConfigurationError: Ein DI-Task injizierte beim Start nicht.
+    """
+    import contextlib
+    import importlib
+
+    from swarmq.dishka import validate_registered_tasks
+    from swarmq.task import Task
+
+    before = set(Task._registered_tasks)
+    with contextlib.redirect_stdout(sys.stderr):
+        importlib.import_module(module)
+    validate_registered_tasks([task for task in Task._registered_tasks if task not in before])
+
+
 def _run_worker_check(args: argparse.Namespace) -> int:
     """``swarmq worker --check`` dry-run entry-point.
 
@@ -147,6 +169,9 @@ def _run_worker_check(args: argparse.Namespace) -> int:
             # Kontrollkanal (U3): derselbe Spielraum-Check wie beim Start.
             max_processes=getattr(args, "max_processes", None),
         )
+        # E8 A (Plan 2026-10-12-1105, T18): die DI-Pruefung des Starts. Nur
+        # hier wird das Modul importiert, nicht im Supervisor-Start.
+        _check_task_injection(args.module)
         payload.update(
             ok=True,
             module_origin=result["module_origin"],
@@ -216,6 +241,7 @@ def _is_check_invocation(argv: Sequence[str] | None) -> bool:
     # real parser, not here.
     worker_sub.add_argument("--task", default=None)
     worker_sub.add_argument("--module", default=None)
+    worker_sub.add_argument("--app-dir", default=None)
     worker_sub.add_argument("--queue", default=None)
     worker_sub.add_argument("--watch-dir", action="append", default=None)
     worker_sub.add_argument("--log-level", default=None)

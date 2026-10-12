@@ -689,6 +689,13 @@ class TestLockGateOutcomes:
         with pytest.raises(ValueError, match="failed to render lock name"):
             render_lock_name("user-{missing}", FormatStringLockTask, [7, 1], {})
 
+    def test_render_lock_name_with_unresolvable_annotation_on_pep649(self):
+        """E9 (Plan 2026-10-12-1105): ein unauflösbarer Name in ``run()`` ohne
+        Future-Import bricht das Rendern des Lock-Namens nicht."""
+        from tests.unit.worker.gates._pep649_lock_task import Pep649LockTask
+
+        assert render_lock_name("user-{lock_id}", Pep649LockTask, [None, 42], {}) == "user-42"
+
 
 class TestLockGateLogging:
     """Plan 2026-10-06-0831, U9 (R17, R18): feste Event-Namen, Fehler mit

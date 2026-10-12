@@ -104,3 +104,14 @@ class CompatSlowRetryTask(Task):
         if await _record("compat_slow_retry", self._task_id) == 1:
             raise RuntimeError("first attempt fails")
         return RUNTIME
+
+
+class CompatEmptyErrorTask(Task):
+    """Scheitert ohne Retry mit einer Exception ohne Text (Plan 2026-10-12-1105,
+    MR 3, P9): das Fehlerergebnis hat ``error_message == ""``."""
+
+    task_info = TaskInfo(name="compat_empty_error", queues=[_QUEUE], max_retries=0)
+
+    @override
+    async def run(self) -> str:
+        raise ValueError

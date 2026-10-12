@@ -155,10 +155,11 @@ queue actually needs:
   with an error result; the broker's own dead-lettering is the safety
   net ([effective delivery limit](delivery-semantics.md#effective-delivery-limit)).
 - **Native DLQ routing.** Every queue is declared with a dead-letter
-  exchange: a message the worker rejects (undecodable) or that hits
-  the delivery limit lands in `{queue}.XQ` without any worker code.
-  For retry exhaustion, `NoRetry`, `max_age`, lock failures and
-  unregistered tasks (after `SWARMQ_UNKNOWN_TASK_GRACE_S`) the worker
+  exchange: a message that hits the delivery limit, or whose
+  dead-letter copy failed, lands in `{queue}.XQ` without any worker
+  code. For retry exhaustion, `NoRetry`, `max_age`, lock failures,
+  unregistered tasks (after `SWARMQ_UNKNOWN_TASK_GRACE_S`) and messages
+  it rejects (undecodable, too large) the worker
   publishes to `{queue}.XQ` itself, with
   diagnostic headers (`x-swarmq-traceback` and others), and acks the
   original only after the broker confirmed the copy.

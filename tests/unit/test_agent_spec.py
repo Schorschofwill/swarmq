@@ -121,6 +121,13 @@ def test_error_catalog_known_semantics() -> None:
     # The workflow exceptions (missing from the original markdown table) are
     # present here — the sync test that surfaced that gap.
     assert by_name["WorkflowValidationError"]["origin"] == "library"
+    # P9 (Plan 2026-10-12-1105, MR 3, Review P2-28): das Fehlerergebnis
+    # traegt zusaetzlich die Klasse.
+    assert by_name["TaskError"]["transport_field"] == "error_message, error_class, is_error=true"
+    # P12d (Plan 2026-10-12-1105, MR 4, T15): ResultExpiredError wird derzeit
+    # nie geworfen; der Katalog sagt das.
+    assert by_name["ResultExpiredError"]["transport_field"] == "not raised (reserved)"
+    assert "never raised" in by_name["ResultExpiredError"]["doc"]
 
 
 # === U2: config spec ===
@@ -204,6 +211,13 @@ def test_config_spec_enum_choices_match_validation() -> None:
         SwarmQConfig(**base, queue_type=qt)
     with pytest.raises(ConfigurationError):
         SwarmQConfig(**base, queue_type="streaming")
+    # P1 (Plan 2026-10-12-1105, MR 5, Review P2-25): Scheduler-Schalter.
+    assert by_name["scheduler"]["env_var"] == "SWARMQ_SCHEDULER"
+    assert by_name["scheduler"]["choices"] == ["off", "on"]
+    for mode in by_name["scheduler"]["choices"]:
+        SwarmQConfig(**base, scheduler=mode)
+    with pytest.raises(ConfigurationError):
+        SwarmQConfig(**base, scheduler="no")
 
 
 # === U3: CLI spec ===
@@ -267,6 +281,8 @@ def test_cli_spec_worker_argument_details() -> None:
     assert args["--pool"]["choices"] == ["io", "cpu"]
     assert args["--log-format"]["choices"] == list(_VALID_LOG_FORMATS)
     assert args["--burst"]["type"] == "bool"  # store_true flag
+    # P1 (Plan 2026-10-12-1105, MR 5): setzt ``scheduler`` auf ``off``.
+    assert args["--no-scheduler"]["nargs"] == 0
 
 
 def test_cli_spec_schedule_add_has_positional_and_required_task() -> None:
@@ -360,6 +376,14 @@ def test_result_schema_validates_real_builder_output() -> None:
             queue="q",
             task_name="n",
             error_message="boom",
+        ),
+        # P9 (Plan 2026-10-12-1105, MR 3, Abschnitt 6): optionales Feld.
+        build_error_result_dict(
+            task_id="t",
+            queue="q",
+            task_name="n",
+            error_message="",
+            error_class="builtins.ValueError",
         ),
         build_cancel_result_dict(task_id="t", queue="q", task_name="n"),
     ):

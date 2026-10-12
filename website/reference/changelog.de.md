@@ -6,8 +6,128 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ## [Unreleased]
 
+### Hinzugefügt
+
+- **Fehlerergebnisse tragen `error_class` (voll qualifizierte
+  Exception-Klasse), und `TaskError.error_class` stellt sie bereit; im
+  CPU-Modus ist es die Klasse, die das Kind meldet.** Die Form ist
+  `modul.qualname`, eingebaute Klassen als `builtins.ValueError`. Pfade
+  ohne Task-Exception nennen die öffentliche swarmq-Klasse, wo es eine
+  gibt (`TaskNotFoundError`, `LockWaitExceeded`, `RedeliveryLimitError`,
+  `UnroutableMessage`, `ResultSerializationError`). Ein gescheiterter
+  Workflow speichert sie als `error.class`, und `handle.get()` wirft
+  `TaskError` damit. Fehler, die der Worker selbst erzeugt (harter
+  Timeout, Drain, verlorenes Rechenkind, Ablauf), tragen keine Klasse;
+  der Schlüssel fehlt dann, wie bei Ergebnissen älterer Worker.
+  `error_message` bleibt unverändert: Eine Exception ohne Text ergibt
+  weiter `""`. Ältere Clients ignorieren das neue Feld
+  ([Nachrichtenformate](agent/message-formats.md#task-ergebnis-valkey),
+  [`TaskError`](errors.md#taskerror)).
+
+- **`SWARMQ_SCHEDULER=on|off` und `swarmq worker --no-scheduler` halten
+  einen Worker aus der Wahl des Scheduler-Leaders heraus.** Er meldet
+  seine Crons weiter, der Leader räumt sie also nicht ab. Läuft auf
+  keinem Worker der Scheduler, feuern Crons, Oneshots und
+  `delay`/`eta`-Tasks nicht. `scheduler_disabled` (WARNING) erscheint
+  einmal je Worker-Prozess; `swarmq check` hat einen neuen Abschnitt
+  `scheduler` mit den Befunden `scheduler_disabled` (Warnung) und
+  `scheduler_invalid` (Fehler, Exit `78`). Ältere Worker (bis
+  0.12.0rc1) ignorieren die Variable
+  ([Scheduler abschalten](../guides/scheduling-and-retries.md#scheduler-auf-einzelnen-workern-abschalten)).
+
+- **`swarmq worker` und `swarmq inspect` finden Task-Module wieder im
+  Arbeitsverzeichnis; `--app-dir DIR` nennt ein anderes Verzeichnis.**
+  Das Konsolenskript suchte bisher nur im `bin`-Verzeichnis des
+  Virtualenv, `--module myapp.tasks` brauchte also `PYTHONPATH`, außer
+  beim Start mit `python -m swarmq.cli`. Das Arbeitsverzeichnis steht
+  jetzt wie bei `python -m` an erster Stelle von `sys.path`, aber nicht
+  unter `PYTHONSAFEPATH`/`-P`; ein ausdrückliches `--app-dir` gilt
+  immer. Das gilt auch für `--configure`, `--check`, die Worker-Kinder
+  des Supervisors und die Rechenkinder von `--pool cpu`. Bekannte
+  Grenze: Eine Datei im App-Verzeichnis überdeckt ein installiertes
+  Paket oder ein Modul der Standardbibliothek gleichen Namens
+  (`valkey.py`, `queue.py`); `PYTHONSAFEPATH=1` schaltet den Standard
+  ab. Ein nicht gefundenes Modul nennt jetzt `--app-dir` und das zuerst
+  durchsuchte Verzeichnis
+  ([Das Task-Modul finden](cli.md#das-task-modul-finden)).
+
+### Geändert
+
+- **Unter `from __future__ import annotations` lässt eine DI-Methode,
+  die einen Alias von `FromDishka` oder `FromComponent` nutzt, aber bei
+  der Klassendefinition nicht auflösbar ist, den Worker-Start jetzt mit
+  `ConfigurationError` (Exit `78`) scheitern; bisher lief sie still
+  ohne Injektion.** Das betrifft einen Vorwärtsverweis auf eine spätere
+  Klasse und einen unauflösbaren Nicht-DI-Parameter daneben; die Meldung
+  nennt Task, Parameter und den unauflösbaren Parameter.
+  `Depends[X] | None` (Alias, optional) wird jetzt wie
+  `FromDishka[X] | None` abgelehnt
+  ([Dependency Injection](api.md#dependency-injection-dishka)).
+
+- **`raise Retry(...)` wiederholt jetzt auch, wenn der Task
+  `retry_exceptions` setzt, ohne `Retry` zu nennen; bisher ging die
+  Nachricht direkt in die DLQ.** `Retry` zählt weiter gegen
+  `max_retries`; bei `max_retries=0` endet er terminal
+  ([`Retry`](errors.md#retry)).
+
+- **Doku: Argument-Serialisierung, Argumentänderungen in Middleware,
+  `ResultExpiredError` (nie geworfen) und der Hinweis zur DLQ-Frist
+  beschreiben jetzt das tatsächliche Verhalten.** Keine Verhaltensänderung.
+  Argumente reisen als JSON: `datetime`, `Decimal`, `UUID` und `bytes`
+  kommen als `str` an, `tuple`/`set` als `list`; ein Objekt, das JSON
+  nicht kodieren kann, wirft `ResultSerializationError` (mit
+  `delay`/`eta` einen einfachen `TypeError`)
+  ([Tasks definieren](../guides/defining-tasks.md#argumente-und-ruckgabewerte)).
+  Eine Änderung am bestehenden `message["kwargs"]`-Dict oder an der
+  `message["args"]`-Liste in `pre_execute` erreicht `run()`, auch im
+  CPU-Modus; das ist jetzt dokumentierter Vertrag
+  ([Middleware](../guides/middleware.md)). `ResultExpiredError` wird
+  nie geworfen; ein abgelaufenes Ergebnis wirft `ResultNotReadyError`
+  ([Fehler](errors.md#resultexpirederror)); der maschinenlesbare
+  Fehlerkatalog nennt `not raised (reserved)`. Unbekannte Tasks
+  erreichen die `.XQ` nicht mehr über den Dead-Letter-Exchange des
+  Brokers ([Dead-Letter-Queues](../guides/dead-letter-queues.md)).
+
+- **Nachrichten, die der Worker abweist (`undecodable`,
+  `middleware_chain_factory`, `body_too_large`), gehen jetzt als Kopie
+  mit der Dead-Letter-Frist und dem Diagnose-Header nach `{queue}.XQ`,
+  wie unregistrierte Tasks; sie halten den Verfall am Kopf der `.XQ`
+  nicht mehr auf.** Grund und Fehler reisen im bestehenden
+  `x-swarmq-traceback` als `<reason>: <error>`, `swarmq dlq list` zeigt
+  sie deshalb in `ERROR_PREVIEW` (z. B. `undecodable: …`).
+  `TASK_REJECTED` und `swarmq_tasks_rejected_total` feuern einmal mit
+  denselben `reason`-Werten wie bisher; es wird kein Fehlerergebnis
+  gespeichert, und `TASK_DLQ` feuert nicht. Der Dead-Letter-Exchange des
+  Brokers bleibt der Rückfall, wenn die Kopie scheitert. Worker bis
+  0.12.0rc1 an derselben Queue routen diese Nachrichten weiter über den
+  Dead-Letter-Exchange; beides landet in `.XQ`
+  ([Dead-Letter-Queues](../guides/dead-letter-queues.md#drei-wege-in-die-xq)).
+
 ### Behoben
 
+- **`Annotated[X, FromComponent(...)]` und Aliase von `FromDishka`
+  werden unter `from __future__ import annotations` injiziert; bisher
+  wurden sie still übergangen.** Die DI-Prüfung läuft auch im
+  eingebetteten Worker (`SwarmQ.start_worker()`, vor jeder Verbindung)
+  und bei `swarmq worker --check`, das dafür jetzt `--module` importiert
+  und die Tasks prüft, die der Import registriert
+  ([Dependency Injection](api.md#dependency-injection-dishka)).
+- **Unter Python 3.14 scheitert ein Task ohne DI nicht mehr bei der
+  Klassendefinition an einer unauflösbaren Annotation** (ohne
+  `from __future__ import annotations`); ein Lock-Template mit
+  Platzhaltern wird für einen solchen Task ebenfalls gerendert.
+- **Der Bau der App scheitert nicht mehr mit `NameError` an einer
+  unauflösbaren Annotation von `run()`** (etwa einem Typ, der nur unter
+  `TYPE_CHECKING` importiert wird), mit und ohne
+  `from __future__ import annotations`; `SwarmQ(...)` und der Start von
+  `swarmq worker` lesen diese Annotationen tolerant.
+
+- **`task_sent_to_dlq` erscheint nicht mehr, wenn der Dead-Letter-Publish
+  scheiterte und die Nachricht neu zugestellt wurde; diesen Fall meldet
+  `dlq_publish_failed`.** Das Event bleibt, wenn die Kopie in der
+  Dead-Letter-Queue liegt (auch wenn danach nur das Ack scheiterte) und
+  wenn ein Lock- oder Unknown-Task-Pfad die Nachricht über den Broker-DLX
+  dorthin leitete ([Logging-Referenz](logging.md)).
 - **B24: Ein Verbindungsabbruch beim Warten auf das Publisher-Confirm
   ist `PublishIndeterminate`, kein rohes `AMQPConnectionError` mehr.**
   Riss die Broker-Verbindung, nachdem eine Nachricht gesendet war, aber
@@ -49,6 +169,37 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   brach der Aufrufer den Publish ab (`asyncio.wait_for`), wartete niemand
   darauf, und asyncio meldete dessen Verbindungsfehler beim Einsammeln.
   swarmq holt jetzt die Ausnahme genau dieses Futures ab.
+
+### Bekannte Grenzen
+
+- **Eine abgewiesene Nachricht, deren Kopie scheitert, landet wie
+  bisher ohne Frist in `.XQ` (Rückfall über den Dead-Letter-Exchange).**
+  Endete die Kopie vor dem Rückfall mit unbestimmtem Publish-Ausgang,
+  kann die Nachricht zweimal in `.XQ` liegen, einmal mit und einmal ohne
+  Frist. Eine Broker-Policy auf `\.XQ$` bleibt die einzige vollständige
+  Begrenzung.
+
+- **`error_class` ist beratend.** Ergebnisse älterer Worker haben das
+  Feld nicht, ebenso Pfade ohne Exception-Klasse (Ablauf durch
+  `max_age`, `WorkerHungError`, Fehler im Lock-Template) und Fehler, die
+  der Worker selbst erzeugt (harter Timeout, Drain, verlorenes
+  Rechenkind, Kind ohne Fehlerdetail). Im CPU-Modus steht dort die
+  Klasse, die das Kind meldet, auch wenn der Elternprozess sie nicht
+  laden konnte.
+
+- **DI-Annotationen, die weder bei der Klassendefinition noch beim
+  Worker-Start auflösbar sind und keinen erkennbaren Marker zeigen**
+  (etwa ein Typ, der nur unter `TYPE_CHECKING` importiert wird, oder
+  unter PEP 649 `Depends[Later] | None`), werden nicht injiziert und
+  nicht gemeldet; das ist der Preis dafür, dass die Klassendefinition
+  eines Tasks ohne DI nie scheitert. `FromDishka` im Annotationstext
+  wirft weiter `NameError` mit Hinweis.
+- **PEP 563 und PEP 649 melden eine unauflösbare DI-Methode
+  verschieden:** mit Future-Import `ConfigurationError` beim
+  Worker-Start, ohne `NameError` bei der Klassendefinition. Beides
+  erhält das Verhalten von 0.12.
+- **`swarmq worker --check` prüft nur die Tasks, die der Import von
+  `--module` registriert.**
 
 ## [0.12.0rc1] — 2026-10-11
 

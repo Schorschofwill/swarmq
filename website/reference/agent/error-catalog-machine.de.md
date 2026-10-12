@@ -15,7 +15,7 @@ Jede Zeile hat die folgenden Spalten:
 | `parent` | `string` | Direkte Parent-Klasse in der SwarmQ-Hierarchie. |
 | `origin` | `"library" \| "task_code"` | Wird die Exception von SwarmQ selbst oder von User-Task-Code (Control Flow) geraist? |
 | `when` | `"startup" \| "schedule" \| "run" \| "result" \| "cli"` | Lifecycle-Stage, der diese Exception auslösen kann. |
-| `retriable` | `"yes" \| "no" \| "controlled"` | `controlled` bedeutet „retriable nur, wenn `retry_exceptions` ihn listet". |
+| `retriable` | `"yes" \| "no" \| "controlled"` | `controlled` bedeutet „retriable nur, wenn `retry_exceptions` ihn listet". `Retry` ist `yes`: Er wiederholt unabhängig von `retry_exceptions`, innerhalb von `max_retries`. |
 | `dlq_on_uncaught` | `"yes" \| "no"` | Routet der Worker in die DLQ, wenn das ungecheckt aus `run()` entkommt? |
 | `exit_code_on_cli` | `int` | CLI-Exit-Code, wenn die Exception aus `swarmq` propagiert (falls anwendbar). |
 | `transport_field` | `string \| null` | Wo die Exception im Task-Result-Envelope oder CLI-JSON-Output erscheint. |
@@ -37,10 +37,10 @@ Jede Zeile hat die folgenden Spalten:
 | `swarmq.exceptions.TaskNotFoundError` | `SwarmQError` | library | schedule | no | n/a | n/a | raised to caller |
 | `swarmq.exceptions.LockWaitExceeded` | `SwarmQError` | library | run | no | yes | n/a | `error_message`, `is_error=true` |
 | `swarmq.exceptions.RedeliveryLimitError` | `SwarmQError` | library | run | no | yes | n/a | `error_message`, `is_error=true` |
-| `swarmq.exceptions.TaskError` | `SwarmQError` | library | result | n/a (post-mortem) | n/a | n/a | `error_message`, `is_error=true` |
+| `swarmq.exceptions.TaskError` | `SwarmQError` | library | result | n/a (post-mortem) | n/a | n/a | `error_message`, `error_class`, `is_error=true` |
 | `swarmq.exceptions.TaskCancelledError` | `TaskError` | library | run, result | no | no (Cancel umgeht DLQ) | n/a | `is_cancelled=true` |
 | `swarmq.exceptions.ResultNotReadyError` | `SwarmQError` | library | result | no | n/a | n/a | raised to caller |
-| `swarmq.exceptions.ResultExpiredError` | `SwarmQError` | library | result | no | n/a | n/a | raised to caller |
+| `swarmq.exceptions.ResultExpiredError` | `SwarmQError` | library | result | no | n/a | n/a | not raised (reserved) |
 | `swarmq.exceptions.ResultSerializationError` | `SwarmQError` | library | run | no | yes | n/a | `error_message`, `is_error=true` |
 | `swarmq.exceptions.Retry` | `SwarmQError` | task_code | run | yes (verbraucht Budget) | no | n/a | Control Flow |
 | `swarmq.exceptions.NoRetry` | `SwarmQError` | task_code | run | no | yes (sofort) | n/a | Control Flow |
@@ -49,6 +49,9 @@ Jede Zeile hat die folgenden Spalten:
 | `swarmq.exceptions.WorkflowNotFound` | `SwarmQError` | library | result | no | n/a | n/a | raised to caller |
 | `swarmq.exceptions.WorkflowResultExpired` | `SwarmQError` | library | result | no | n/a | n/a | raised to caller |
 | `swarmq.exceptions.WorkflowStateConflict` | `SwarmQError` | library | run | yes | no | n/a | Neuzustellung der Schritt-Nachricht |
+
+`ResultExpiredError` wird derzeit nie geworfen; nach Ablauf der
+Ergebnis-TTL wirft `get_result` `ResultNotReadyError`.
 
 ## CLI-Exit-Codes
 
@@ -86,9 +89,12 @@ Beim Bau eines Konsumenten für SwarmQ-Events:
    Control-Flow-Signale aus Task-Code — der Worker verlässt sich
    darauf, dass sie entkommen.
 4. **`TaskError` verliert die Original-Klasse.** Wenn sie
-   `get_result()` erreicht, ist die raisende Klasse nur als
-   String in `error_message` verfügbar (plus beratend
-   `error_class`).
+   `get_result()` erreicht, ist die raisende Klasse nur als Name
+   verfügbar: beratend in `TaskError.error_class` (aus
+   `error_class` des Ergebnisses, z. B. `builtins.ValueError`),
+   neben dem Text in `error_message`. Bei Ergebnissen älterer
+   Worker und bei Fehlern, die der Worker selbst erzeugt (harter
+   Timeout, Drain, verlorenes Rechenkind, Ablauf), ist es `None`.
 5. **`ResultSerializationError` ist ein Programmiererfehler.** Er
    bedeutet, der Task-Body gab etwas zurück, das msgpack nicht
    kodieren kann. Fixe den Task, retry ihn nicht.
@@ -108,7 +114,7 @@ Für Agenten, die eine schnelle Aktionstabelle brauchen:
 | `BackendResponseError` | Valkey hat mit einem Fehler geantwortet (`WRONGTYPE`, Skriptfehler); Warten hilft nicht. Schlüssel oder Skript prüfen, dann erneut versuchen. |
 | `ConfigurationError` | Nicht retry'n. Config fixen und neustarten. |
 | `TaskNotFoundError` bei `schedule()` | Bug melden; der Task ist nicht registriert. |
-| `TaskError` bei `get_result()` | Nach `error_message` klassifizieren. Retry hilft je nach Upstream-Ursache. |
+| `TaskError` bei `get_result()` | Nach `TaskError.error_class` (beratend) klassifizieren, sonst nach `error_message`. Retry hilft je nach Upstream-Ursache. |
 | `TaskCancelledError` bei `get_result()` | User/Operator hat abgebrochen. Nicht retry'n, außer du weißt, dass der Cancel versehentlich war. |
 | `ResultNotReadyError` bei `get_result()` | Timeout erhöhen oder der Task hängt wirklich. Worker-Logs / DLQ prüfen. |
 | CLI-Exit `3` | Task nicht in DLQ. Nachricht wurde bereits retry't, gepurged oder ist nie gescheitert. |

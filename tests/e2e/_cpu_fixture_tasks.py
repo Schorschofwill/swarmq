@@ -101,7 +101,9 @@ class CpuBig(Task):
 
 
 try:  # DI-Tasks nur mit installiertem dishka (test-Extra)
-    from dishka import FromDishka, Provider, Scope, make_async_container, provide
+    from typing import Annotated
+
+    from dishka import FromComponent, FromDishka, Provider, Scope, make_async_container, provide
 
     from swarmq.dishka import SwarmQProvider, setup_dishka
 
@@ -135,6 +137,17 @@ try:  # DI-Tasks nur mit installiertem dishka (test-Extra)
             async with lock:
                 await asyncio.sleep(0.01)
             return os.getpid()
+
+    class CpuDiComponent(Task):
+        """Plan 2026-10-12-1105, MR 7 Test 13: ``Annotated[X, FromComponent()]``
+        unter ``from __future__ import annotations`` wird auch im Rechenkind
+        injiziert (das Kind importiert das Modul neu)."""
+
+        task_info = TaskInfo(name="cpu_di_component", queues=[QUEUE], max_retries=0)
+
+        @override
+        async def run(self, holder: Annotated[PidHolder, FromComponent()]) -> dict[str, int]:
+            return {"app_pid": holder.pid, "pid": os.getpid()}
 
 except ImportError:  # pragma: no cover - ohne dishka keine DI-Tasks
     pass

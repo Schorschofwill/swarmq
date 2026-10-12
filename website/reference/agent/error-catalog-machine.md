@@ -14,7 +14,7 @@ Every row has the following columns:
 | `parent` | `string` | Direct parent class in the SwarmQ hierarchy. |
 | `origin` | `"library" \| "task_code"` | Is the exception raised by SwarmQ itself or by user task code (control flow)? |
 | `when` | `"startup" \| "schedule" \| "run" \| "result" \| "cli"` | Lifecycle stage that can surface this exception. |
-| `retriable` | `"yes" \| "no" \| "controlled"` | `controlled` means "retriable only when `retry_exceptions` lists it". |
+| `retriable` | `"yes" \| "no" \| "controlled"` | `controlled` means "retriable only when `retry_exceptions` lists it". `Retry` is `yes`: it retries regardless of `retry_exceptions`, within `max_retries`. |
 | `dlq_on_uncaught` | `"yes" \| "no"` | Does the worker route to DLQ when this escapes `run()` unchecked? |
 | `exit_code_on_cli` | `int` | CLI exit code when the exception propagates out of `swarmq` (if applicable). |
 | `transport_field` | `string \| null` | Where the exception appears in the task-result envelope or CLI JSON output. |
@@ -36,10 +36,10 @@ Every row has the following columns:
 | `swarmq.exceptions.TaskNotFoundError` | `SwarmQError` | library | schedule | no | n/a | n/a | raised to caller |
 | `swarmq.exceptions.LockWaitExceeded` | `SwarmQError` | library | run | no | yes | n/a | `error_message`, `is_error=true` |
 | `swarmq.exceptions.RedeliveryLimitError` | `SwarmQError` | library | run | no | yes | n/a | `error_message`, `is_error=true` |
-| `swarmq.exceptions.TaskError` | `SwarmQError` | library | result | n/a (post-mortem) | n/a | n/a | `error_message`, `is_error=true` |
+| `swarmq.exceptions.TaskError` | `SwarmQError` | library | result | n/a (post-mortem) | n/a | n/a | `error_message`, `error_class`, `is_error=true` |
 | `swarmq.exceptions.TaskCancelledError` | `TaskError` | library | run, result | no | no (cancel bypasses DLQ) | n/a | `is_cancelled=true` |
 | `swarmq.exceptions.ResultNotReadyError` | `SwarmQError` | library | result | no | n/a | n/a | raised to caller |
-| `swarmq.exceptions.ResultExpiredError` | `SwarmQError` | library | result | no | n/a | n/a | raised to caller |
+| `swarmq.exceptions.ResultExpiredError` | `SwarmQError` | library | result | no | n/a | n/a | not raised (reserved) |
 | `swarmq.exceptions.ResultSerializationError` | `SwarmQError` | library | run | no | yes | n/a | `error_message`, `is_error=true` |
 | `swarmq.exceptions.Retry` | `SwarmQError` | task_code | run | yes (consumes budget) | no | n/a | control flow |
 | `swarmq.exceptions.NoRetry` | `SwarmQError` | task_code | run | no | yes (immediate) | n/a | control flow |
@@ -48,6 +48,9 @@ Every row has the following columns:
 | `swarmq.exceptions.WorkflowNotFound` | `SwarmQError` | library | result | no | n/a | n/a | raised to caller |
 | `swarmq.exceptions.WorkflowResultExpired` | `SwarmQError` | library | result | no | n/a | n/a | raised to caller |
 | `swarmq.exceptions.WorkflowStateConflict` | `SwarmQError` | library | run | yes | no | n/a | redelivery of the step message |
+
+`ResultExpiredError` is currently never raised; after the result TTL
+expires, `get_result` raises `ResultNotReadyError`.
 
 ## CLI exit codes
 
@@ -85,7 +88,11 @@ When building a consumer for SwarmQ events:
    them escaping.
 4. **`TaskError` loses the original class.** By the time it
    reaches `get_result()`, the raising class is only available as
-   a string in `error_message` (and advisory `error_class`).
+   a name: the advisory `TaskError.error_class` (from the result's
+   `error_class`, e.g. `builtins.ValueError`), next to the text in
+   `error_message`. It is `None` for results of older workers and
+   for failures the worker generates itself (hard timeout, drain,
+   lost compute child, expiry).
 5. **`ResultSerializationError` is a programmer error.** It
    means the task body returned something msgpack cannot encode.
    Fix the task, do not retry.
@@ -105,7 +112,7 @@ For agents that need a quick action table:
 | `BackendResponseError` | Valkey answered with an error (`WRONGTYPE`, script error); waiting does not help. Inspect the key or script, then retry. |
 | `ConfigurationError` | Do not retry. Fix the config and restart. |
 | `TaskNotFoundError` at `schedule()` | Report a bug; the task is not registered. |
-| `TaskError` at `get_result()` | Classify by `error_message`. Retry may or may not help depending on upstream cause. |
+| `TaskError` at `get_result()` | Classify by `TaskError.error_class` (advisory), else by `error_message`. Retry may or may not help depending on upstream cause. |
 | `TaskCancelledError` at `get_result()` | User/operator cancelled. Do not retry unless you know the cancel was spurious. |
 | `ResultNotReadyError` at `get_result()` | Increase timeout, or the task is genuinely stuck. Check worker logs / DLQ. |
 | CLI exit `3` | Task not in DLQ. Message was already retried, purged, or never failed. |

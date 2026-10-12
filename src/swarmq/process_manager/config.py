@@ -74,6 +74,9 @@ class WorkerConfig:
     # Logging-Einstellungen; Kinder lesen kein Env mehr. ``None`` haelt
     # Bestandsaufrufer unveraendert, bis die Einstiegspunkte sie setzen (U7).
     logging_settings: LoggingSettings | None = None
+    # P1 (Plan 2026-10-12-1105, Review P0-2): der aufgeloeste Scheduler-Schalter
+    # (``--no-scheduler`` > ``SWARMQ_SCHEDULER`` > ``on``) reist zu den Kindern.
+    scheduler: str = "on"
 
     def __post_init__(self) -> None:
         for f in dataclasses.fields(self):

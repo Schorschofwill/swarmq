@@ -106,29 +106,43 @@ the whole key expires 7 days after the last report of any worker.
 
 ### What clients can pass
 
-Every argument to `run()` must be **JSON-compatible**: it goes
-through `msgspec` on the wire. Allowed types:
+Arguments to `run()` travel as **JSON**, encoded with `msgspec`. Plain
+`str`, `int`, `float`, `bool`, `None`, `list` and `dict` arrive
+unchanged. Other types are converted on the way, and the task receives
+the converted value, not the original type:
 
-- `str`, `int`, `float`, `bool`, `None`
-- `list` / `tuple` / `dict` of the above
-- `bytes` (base64-encoded at the transport)
+| Passed | Arrives in `run()` as |
+|---|---|
+| `datetime`, `date`, `time` | ISO 8601 `str` (`"2026-01-02T03:04:05"`) |
+| `Decimal`, `UUID` | `str` |
+| `bytes` | base64 `str` |
+| `tuple`, `set`, `frozenset` | `list` |
+| dataclass, `msgspec.Struct` | `dict` |
+| `Enum` | its value |
+| `dict` with `int` keys | `dict` with `str` keys (`{1: "a"}` → `{"1": "a"}`) |
+| `float("nan")` | `None` |
 
-Not allowed:
+Convert such values back in `run()` yourself (for example
+`datetime.fromisoformat(...)`), or pass them as `str` in the first
+place.
 
-- ORM row objects (SQLAlchemy, Django).
-- Classes without a JSON-compatible representation.
-- `datetime`, `Decimal`, `UUID` — encode them to `str` first (ISO
-  8601 for datetimes, standard form for UUIDs).
+An object `msgspec` cannot encode (an ORM row, an arbitrary class) is
+rejected at schedule time, before anything is published:
 
-The guardrail surfaces as a `SerializationError` at schedule time,
-not at run time.
+- A direct `schedule()` raises `ResultSerializationError` (the name is
+  misleading; it is the class the JSON encoder raises).
+- With `delay=` or `eta=`, the arguments go into the scheduler store
+  first; there the same object raises a plain `TypeError`.
+- With `unique_for=`, the dedup hash additionally rejects `bytes` and
+  objects of your own classes with `TypeError`.
 
 ### What `run()` returns
 
 The return value goes through **msgpack** and is stored at
 `sq:result:{task_id}` in Valkey. msgpack is more permissive than
-JSON — it handles bytes, nested containers, and integer widths
-natively — but still not arbitrary Python objects. If your return
+JSON: `datetime`, `date`, `time`, `Decimal`, `UUID`, `set` and
+`frozenset` come back with the same type; a `tuple` comes back as a
+`list`. Arbitrary Python objects are not supported. If your return
 value is not serialisable, the worker raises
 `ResultSerializationError` and the task is treated as failed.
 

@@ -332,6 +332,28 @@ class TestRejectReasons:
         assert rejected["task_id"] is None
         assert rejected["task_name"] is None
 
+    async def test_oversized_body_goes_to_dead_letter_copy(self, broker, backend):
+        """Plan 2026-10-12-1105, MR 8, E6 A (Spike S1 bestanden): Kopie mit
+        Ablaufzeit statt DLX-Route; das Signal bleibt ``body_too_large``."""
+        worker, _broker, events = self._worker_with_spy(broker, backend)
+        cap = worker._config.max_message_body_bytes
+        msg = MagicMock()
+        msg.body = b"x" * (cap + 1)
+        msg.headers = {"x-custom": "keep"}
+        msg.queue = "tasks.high"
+
+        await worker._handle_message(msg)
+
+        broker.dead_letter.assert_awaited_once()
+        headers = broker.dead_letter.await_args.kwargs["headers"]
+        assert headers == {
+            "x-custom": "keep",
+            "x-swarmq-traceback": f"body_too_large: body {cap + 1} bytes over cap {cap}",
+        }
+        broker.route_via_dlx.assert_not_awaited()
+        (rejected,) = self._rejections(events)
+        assert rejected["reason"] == "body_too_large"
+
     async def test_undecodable_body(self, broker, backend):
         worker, _broker, events = self._worker_with_spy(broker, backend)
         msg = MagicMock()
@@ -423,6 +445,36 @@ class TestRejectReasons:
         (rejected,) = self._rejections(events)
         assert rejected["task_id"] == payload["task"]["id"]
         assert rejected["task_name"] == "reject-ok-id"
+
+    async def test_broken_middleware_chain_factory_goes_to_dead_letter_copy(self, broker, backend):
+        """Plan 2026-10-12-1105, MR 8: Kopie mit Ablaufzeit statt DLX-Route;
+        das Signal traegt weiter Kennung und Name."""
+
+        class Ok(Task):
+            task_info = TaskInfo(name="reject-ok-copy", queues=["default"])
+
+            @override
+            async def run(self) -> str:
+                return "ok"
+
+        worker, _broker, events = self._worker_with_spy(broker, backend, Ok)
+
+        def boom():
+            raise RuntimeError("factory exploded")
+
+        worker._middleware_chain_factory = boom
+        payload = _default_payload(name="reject-ok-copy")
+        msg = make_message(payload)
+        msg.queue = "default"
+
+        await worker._handle_message(msg)
+
+        broker.dead_letter.assert_awaited_once()
+        headers = broker.dead_letter.await_args.kwargs["headers"]
+        assert headers["x-swarmq-traceback"] == "middleware_chain_factory: factory exploded"
+        broker.route_via_dlx.assert_not_awaited()
+        (rejected,) = self._rejections(events)
+        assert (rejected["task_id"], rejected["task_name"]) == (payload["task"]["id"], "reject-ok-copy")
 
     async def test_broken_middleware_chain_factory_logs_error_fields(self, broker, backend, swarmq_logs):
         """Plan 2026-10-06-0831, U9 (R17)."""

@@ -23,6 +23,10 @@ from __future__ import annotations
 # - [x] Endet der Worker an einer Ausnahme, bekommt das harte Ende sie
 #       mit (``exc``): Traceback bzw. ``SystemExit``-Meldung auf fd 2 wie in
 #       ``console_main``
+# Plan 2026-10-12-1105, MR 5 (P1, Review P0-2):
+# - [x] ``WorkerConfig.scheduler="off"`` landet in der Kind-Namespace und
+#       ergibt dort ``SwarmQConfig.scheduler == "off"``, auch wenn im Kind
+#       ``SWARMQ_SCHEDULER=on`` gesetzt ist
 import os
 from typing import Any, override
 
@@ -153,6 +157,31 @@ class TestWorkerSubprocessEntry:
 
         assert captured["ns"].worker_slot == 2
 
+    def test_scheduler_switch_beats_the_child_environment(self, monkeypatch):
+        import threading
+
+        from swarmq.cli.worker_options import resolve_worker_options, worker_config_kwargs
+        from swarmq.config import SwarmQConfig
+
+        captured: dict[str, Any] = {}
+
+        async def capture_ns(ns):
+            captured["ns"] = ns
+
+        monkeypatch.setattr("swarmq.cli.run_worker_async", capture_ns)
+        worker_subprocess_entry(
+            worker_id=0,
+            shutdown_event=threading.Event(),
+            cfg=_make_test_cfg(scheduler="off"),
+        )
+
+        ns = captured["ns"]
+        assert ns.scheduler == "off"
+        monkeypatch.setenv("SWARMQ_SCHEDULER", "on")
+        resolve_worker_options(ns, os.environ)
+        config = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x", **worker_config_kwargs(ns))  # type: ignore[arg-type]  # kwargs aus der Namespace
+        assert config.scheduler == "off"
+
 
 def _capture_entry_logs(monkeypatch) -> list[dict[str, Any]]:
     """Faengt die Logsaetze des Entry ab.
@@ -219,6 +248,25 @@ class TestConfigErrorExitCode:
         assert exc_info.value.code == CONFIG_ERROR_EXIT_CODE
         entry = next(e for e in events if e["event"] == "worker_config_error")
         assert "pandas" in entry["error"]
+
+    def test_unwrapped_di_method_in_the_child_exits_with_config_code(self, monkeypatch):
+        """Plan 2026-10-12-1105, MR 7 Test 14: die Startprüfung T6 (DI-Key, der
+        bei der Klassendefinition nicht auflösbar war) endet im Kind mit Exit 78."""
+        import pathlib
+
+        from swarmq import dishka as di
+        from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
+        modules = pathlib.Path(__file__).parents[1] / "fixtures" / "dishka_modules"
+        monkeypatch.syspath_prepend(str(modules))
+        di._reset_container()
+        events = _capture_entry_logs(monkeypatch)
+        shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
+        with pytest.raises(SystemExit) as exc_info:
+            worker_subprocess_entry(0, shutdown_event, _make_test_cfg(module="dimod_pep563_forward_ref"))
+        assert exc_info.value.code == CONFIG_ERROR_EXIT_CODE
+        entry = next(e for e in events if e["event"] == "worker_config_error")
+        assert "not resolvable at class definition" in entry["error"]
 
     def test_config_error_carries_error_type_like_the_supervisor(self, monkeypatch, swarmq_logs):
         """R17: Fehler erscheinen als ``error_type`` + ``error`` -- die
