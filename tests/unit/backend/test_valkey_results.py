@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncGenerator
+from typing import Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -27,8 +29,10 @@ from swarmq.exceptions import BackendConnectionError, BackendResponseError
 
 def _backend(get_side_effect: object) -> tuple[ValkeyBackend, AsyncMock, AsyncMock]:
     client = AsyncMock()
-    client.get = AsyncMock(side_effect=get_side_effect) if isinstance(get_side_effect, list) else AsyncMock(
-        return_value=get_side_effect
+    client.get = (
+        AsyncMock(side_effect=get_side_effect)
+        if isinstance(get_side_effect, list)
+        else AsyncMock(return_value=get_side_effect)
     )
     pubsub = AsyncMock()
     pubsub.get_message = AsyncMock(return_value=None)  # no notification by default
@@ -80,8 +84,8 @@ class TestWaitForResult:
         async def _hang(*args: object, **kwargs: object) -> None:
             await asyncio.sleep(60)
 
-        backend, _, _ = _backend(None)
-        backend._client.get = AsyncMock(side_effect=_hang)  # type: ignore[union-attr]
+        backend, client, _ = _backend(None)
+        client.get = AsyncMock(side_effect=_hang)
 
         started = asyncio.get_running_loop().time()
         result = await asyncio.wait_for(backend.wait_for_result("task-id", timeout=0.2), timeout=5)
@@ -127,7 +131,7 @@ def _current(payload: bytes) -> int:
 
 async def _collect(backend: ValkeyBackend, *, until_current: int) -> list[bytes]:
     observed: list[bytes] = []
-    gen = backend.watch_progress("task-x")
+    gen = cast("AsyncGenerator[bytes]", backend.watch_progress("task-x"))
     try:
         async for payload in gen:
             observed.append(payload)
@@ -177,7 +181,8 @@ class TestWatchProgress:
         with patch("swarmq.backend.valkey.results.asyncio.sleep", new=AsyncMock()):
             observed = await _collect(backend, until_current=10)
         currents = [_current(p) for p in observed]
-        assert 7 in currents and currents[-1] == 10
+        assert 7 in currents
+        assert currents[-1] == 10
         assert pubsub.subscribe.await_count == 2
 
     async def test_resubscribe_also_failing_keeps_trying(self) -> None:
@@ -195,7 +200,8 @@ class TestWatchProgress:
         with patch("swarmq.backend.valkey.results.asyncio.sleep", new=AsyncMock()):
             observed = await _collect(backend, until_current=10)
         currents = [_current(p) for p in observed]
-        assert 3 in currents and 10 in currents
+        assert 3 in currents
+        assert 10 in currents
 
     async def test_finally_cleans_up_on_break(self) -> None:
         backend, pubsub = self._progress_backend(_hash(1, 10))
@@ -261,12 +267,8 @@ class TestCompareAndStoreWorkflowState:
 
     async def test_zero_means_conflict_and_script_is_registered_once(self) -> None:
         backend, client, _script = self._backend([1, 0])
-        assert await backend.compare_and_store_workflow_state(
-            "wf-1", b"{}", ttl_ms=5_000, expected_version=0
-        ) is True
-        assert await backend.compare_and_store_workflow_state(
-            "wf-1", b"{}", ttl_ms=5_000, expected_version=0
-        ) is False
+        assert await backend.compare_and_store_workflow_state("wf-1", b"{}", ttl_ms=5_000, expected_version=0) is True
+        assert await backend.compare_and_store_workflow_state("wf-1", b"{}", ttl_ms=5_000, expected_version=0) is False
         client.register_script.assert_called_once()
 
     async def test_before_connect_raises_backend_error(self) -> None:
@@ -293,7 +295,7 @@ class TestCompareAndStoreWorkflowState:
 #    Fehlerfelder.
 
 
-def _results_entry(entries: list[dict], event: str) -> dict:
+def _results_entry(entries: list[dict[str, Any]], event: str) -> dict[str, Any]:
     [entry] = [e for e in entries if e["event"] == event and e["logger"] == "swarmq.backend.valkey.results"]
     return entry
 

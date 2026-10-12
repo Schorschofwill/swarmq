@@ -7,7 +7,7 @@ erfüllt den Vertrag ``ChordStore`` über ``record_member``.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import valkey.asyncio
 
@@ -58,7 +58,9 @@ class ChordManager:
         in the completion→publish window (at worst a rare idempotent
         double-enqueue, absorbed by step idempotency).
         """
-        result = await self._script(keys=[self._keys.chord(wf_id, chord_id)], args=[member_id, expected_n, ttl_ms])
+        result = cast(
+            "int", await self._script(keys=[self._keys.chord(wf_id, chord_id)], args=[member_id, expected_n, ttl_ms])
+        )
         return bool(result == 1)
 
     async def record_member(self, wf_id: str, chord_id: str, member_id: str, *, expected: int, ttl_ms: int) -> bool:

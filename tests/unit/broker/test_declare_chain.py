@@ -26,11 +26,12 @@ Test-Liste:
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import pytest
 from aio_pika.exceptions import ChannelNotFoundEntity, ChannelPreconditionFailed, PublishError
+from aiormq.abc import DeliveredMessage
 from aiormq.exceptions import ChannelInvalidStateError, ConnectionClosed
 from pamqp.commands import Basic
 
@@ -183,8 +184,10 @@ async def test_changed_queue_type_raises_queue_arguments_mismatch() -> None:
 
     assert isinstance(exc_info.value, ConfigurationError)
     message = str(exc_info.value)
-    assert "'tasks'" in message and "x-queue-type" in message
-    assert "'quorum'" in message and "'classic'" in message
+    assert "'tasks'" in message
+    assert "x-queue-type" in message
+    assert "'quorum'" in message
+    assert "'classic'" in message
 
 
 async def test_strict_mode_refuses_an_existing_at_most_once_queue() -> None:
@@ -218,7 +221,7 @@ async def test_declarations_never_touch_the_publish_channel() -> None:
 
     await broker.declare_queue("tasks")
 
-    broker._publish_channel.declare_queue.assert_not_called()  # type: ignore[union-attr]
+    cast("AsyncMock", broker._publish_channel).declare_queue.assert_not_called()
 
 
 async def test_second_declaration_of_the_same_queue_is_cached() -> None:
@@ -238,8 +241,8 @@ async def test_unroutable_publish_drops_the_cached_declaration(routing_key: str)
     broker = make_broker(rabbit)
     await broker.declare_queue("tasks")
     frame = Basic.Return(reply_code=312, reply_text="NO_ROUTE", exchange="", routing_key=routing_key)
-    broker._publish_channel.default_exchange.publish.side_effect = PublishError(  # type: ignore[union-attr]
-        SimpleNamespace(delivery=frame), frame
+    cast("AsyncMock", broker._publish_channel).default_exchange.publish.side_effect = PublishError(
+        cast("DeliveredMessage", SimpleNamespace(delivery=frame)), frame
     )
     with pytest.raises(UnroutableMessage):
         await broker.publish(routing_key, b"{}")
@@ -344,8 +347,8 @@ async def test_legacy_mode_does_not_warn_about_at_most_once_queues(swarmq_logs: 
 
 def _unroutable(broker: RabbitMQBroker, routing_key: str) -> None:
     frame = Basic.Return(reply_code=312, reply_text="NO_ROUTE", exchange="", routing_key=routing_key)
-    broker._publish_channel.default_exchange.publish.side_effect = PublishError(  # type: ignore[union-attr]
-        SimpleNamespace(delivery=frame), frame
+    cast("AsyncMock", broker._publish_channel).default_exchange.publish.side_effect = PublishError(
+        cast("DeliveredMessage", SimpleNamespace(delivery=frame)), frame
     )
 
 
@@ -424,7 +427,7 @@ async def test_unrecognized_refusal_reports_the_broker_message_without_advising_
     die Queue kann Retries und Termine enthalten."""
     refusal = "PRECONDITION_FAILED - cannot declare queue 'tasks': queue limit in vhost '/' (1) is reached"
     broker = make_broker(FakeRabbit())
-    broker._connection.channel = AsyncMock(  # type: ignore[union-attr]
+    cast("AsyncMock", broker._connection).channel = AsyncMock(
         return_value=AsyncMock(is_closed=False, declare_queue=AsyncMock(side_effect=ChannelPreconditionFailed(refusal)))
     )
 
@@ -446,15 +449,15 @@ async def test_redeclare_after_unroutable_runs_the_chain_and_refills_the_cache()
     await broker.declare_queue("tasks")
     rabbit.queues["tasks.DQ"] = legacy("tasks")["tasks.DQ"]  # geloescht, von 0.11 neu angelegt
     frame = Basic.Return(reply_code=312, reply_text="NO_ROUTE", exchange="", routing_key="tasks.DQ")
-    broker._publish_channel.default_exchange.publish.side_effect = [  # type: ignore[union-attr]
-        PublishError(SimpleNamespace(delivery=frame), frame),
+    cast("AsyncMock", broker._publish_channel).default_exchange.publish.side_effect = [
+        PublishError(cast("DeliveredMessage", SimpleNamespace(delivery=frame)), frame),
         None,
     ]
     delivery = Delivery(body=b"{}", headers={}, queue="tasks", handle=AsyncMock(consumer_tag=None))
 
     await broker.retry_later(delivery, delay_ms=1000, headers={})
 
-    delivery.handle.ack.assert_awaited_once()
+    cast("AsyncMock", delivery.handle).ack.assert_awaited_once()
     assert rabbit.queues["tasks.DQ"] == legacy("tasks")["tasks.DQ"]
     opened = len(rabbit.channels)
     await broker.declare_queue("tasks")
@@ -489,7 +492,7 @@ async def test_connection_loss_inside_the_chain_becomes_broker_connection_error(
         channel.declare_queue = AsyncMock(side_effect=declare_queue)
         return channel
 
-    broker._connection.channel = AsyncMock(side_effect=open_failing)  # type: ignore[union-attr]
+    cast("AsyncMock", broker._connection).channel = AsyncMock(side_effect=open_failing)
 
     with pytest.raises(BrokerConnectionError) as exc_info:
         await broker.declare_queue("tasks")

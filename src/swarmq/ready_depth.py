@@ -19,7 +19,7 @@ async def ready_depth_or_none(broker: Any, queue: str) -> int | None:
         return None
     try:
         value = await ready(queue)
-    except Exception:
+    except Exception:  # noqa: BLE001 - Tiefe ist optional, Fehler ergibt None
         return None
     if isinstance(value, bool) or not isinstance(value, int):
         return None

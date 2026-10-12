@@ -20,6 +20,6 @@ def ensure_fixture_registered(module_name: str, task_name: str) -> None:
     if module is None:
         importlib.import_module(module_name)
         return
-    registered = {cls.task_info.name for cls in Task._registered_tasks if cls.task_info is not None}
+    registered = {cls.task_info.name for cls in Task._registered_tasks if cls.task_info is not None}  # type: ignore[redundant-expr]  # Basisklassen ohne task_info
     if task_name not in registered:
         importlib.reload(module)

@@ -56,9 +56,7 @@ class ClientWorkflows:
         _backend_op_timeout: float | None
         _signal_dispatcher: SignalDispatcher
 
-        def _resolve_queue_and_delivery_mode(
-            self, task_name: str, queue: str | None
-        ) -> tuple[str, str]: ...
+        def _resolve_queue_and_delivery_mode(self, task_name: str, queue: str | None) -> tuple[str, str]: ...
 
         def _get_chain(self) -> MiddlewareChain: ...
 
@@ -96,9 +94,7 @@ class ClientWorkflows:
             # so a redelivered step stays idempotent — same id in the chord
             # SADD set, same result key. See workflow_step_task_id.
             task_id = workflow_step_task_id(workflow_id, step_path)
-            resolved_queue, _delivery = self._resolve_queue_and_delivery_mode(
-                signature.task_name, None
-            )
+            resolved_queue, _delivery = self._resolve_queue_and_delivery_mode(signature.task_name, None)
             enqueue_plan.append((step_path, task_id, signature, resolved_queue))
             step_tasks[step_path] = task_id
 
@@ -127,9 +123,7 @@ class ClientWorkflows:
             for step_path, task_id, signature, resolved_queue in enqueue_plan
         ]
         enqueuer = WorkflowStepEnqueuer(
-            publish=lambda queue, body, headers: self._broker.publish(
-                queue, body, headers=headers
-            ),
+            publish=lambda queue, body, headers: self._broker.publish(queue, body, headers=headers),
             dispatch=self._signal_dispatcher.dispatch,
             get_chain=self._get_chain,
         )
@@ -138,7 +132,9 @@ class ClientWorkflows:
         # verwaister ``running``-Zustand zurueck, den niemand mehr weiterdreht.
         await enqueuer.pre_enqueue(steps)
         await self._backend.store_workflow_state(
-            workflow_id, encode_json(state), ttl_ms=state_ttl_ms,
+            workflow_id,
+            encode_json(state),
+            ttl_ms=state_ttl_ms,
             op_timeout=self._backend_op_timeout,
         )
 
@@ -157,9 +153,7 @@ class ClientWorkflows:
                 await self._mark_apply_failed(workflow_id, state, exc, state_ttl_ms)
             raise
 
-        return WorkflowHandle(
-            self._backend, workflow_id, self._unpack, cancel_ttl_ms=state_ttl_ms
-        )
+        return WorkflowHandle(self._backend, workflow_id, self._unpack, cancel_ttl_ms=state_ttl_ms)
 
     async def _mark_apply_failed(
         self, workflow_id: str, state: dict[str, Any], exc: Exception, state_ttl_ms: int
@@ -172,11 +166,10 @@ class ClientWorkflows:
             "type": type(exc).__name__,
             "message": f"apply() failed to enqueue the initial frontier: {exc}",
         }
-        for candidate in (state, None):
+        for known in (state, None):
+            candidate = known
             if candidate is None:
-                raw = await self._backend.get_workflow_state(
-                    workflow_id, op_timeout=self._backend_op_timeout
-                )
+                raw = await self._backend.get_workflow_state(workflow_id, op_timeout=self._backend_op_timeout)
                 if raw is None:
                     return
                 candidate = decode_json(raw)
@@ -185,8 +178,11 @@ class ClientWorkflows:
             expected = int(candidate.get("version", 0))
             failed = dict(candidate, status=STATUS_FAILED, error=error, version=expected + 1)
             if await self._backend.compare_and_store_workflow_state(
-                workflow_id, encode_json(failed), ttl_ms=state_ttl_ms,
-                expected_version=expected, op_timeout=self._backend_op_timeout,
+                workflow_id,
+                encode_json(failed),
+                ttl_ms=state_ttl_ms,
+                expected_version=expected,
+                op_timeout=self._backend_op_timeout,
             ):
                 return
 
@@ -197,15 +193,15 @@ class ClientWorkflows:
         (never started, or expired) — never returns a handle over empty
         state.
         """
-        raw = await self._backend.get_workflow_state(
-            workflow_id, op_timeout=self._backend_op_timeout
-        )
+        raw = await self._backend.get_workflow_state(workflow_id, op_timeout=self._backend_op_timeout)
         if raw is None:
             from swarmq.exceptions import WorkflowNotFound
 
             raise WorkflowNotFound(workflow_id)
         return WorkflowHandle(
-            self._backend, workflow_id, self._unpack,
+            self._backend,
+            workflow_id,
+            self._unpack,
             cancel_ttl_ms=_DEFAULT_WORKFLOW_TTL_MS,
         )
 

@@ -119,9 +119,7 @@ async def run_warm_up(
         task_ids.append(tid)
 
     # Await all results to ensure warm-up is fully processed
-    await asyncio.gather(
-        *(system.get_result(tid, timeout=30.0, poll_interval=poll_interval) for tid in task_ids)
-    )
+    await asyncio.gather(*(system.get_result(tid, timeout=30.0, poll_interval=poll_interval) for tid in task_ids))
 
 
 async def run_timed_batch(
@@ -171,9 +169,7 @@ async def run_timed_batch_concurrent(
             await system.get_result(task_id, timeout=60.0, poll_interval=poll_interval)
             latencies[idx] = time.perf_counter() - t_start
 
-    await asyncio.gather(
-        *(_collect(i, tid, ts) for i, (tid, ts) in enumerate(enqueue_data))
-    )
+    await asyncio.gather(*(_collect(i, tid, ts) for i, (tid, ts) in enumerate(enqueue_data)))
     return latencies
 
 

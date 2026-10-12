@@ -12,7 +12,7 @@ Test-Liste:
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import ClassVar, override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -22,7 +22,7 @@ from swarmq.registry import TaskRegistry
 from swarmq.task import Task, TaskInfo
 from swarmq.worker import Worker
 from tests.support.messages import make_message
-from tests.unit.worker._helpers import _default_payload
+from tests.unit.worker._helpers import _default_payload, as_mock
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -32,6 +32,7 @@ class _Locked(Task):
 
     kept_during_run: ClassVar[list[bool]] = []
 
+    @override
     async def run(self) -> None:
         worker = type(self).worker  # type: ignore[attr-defined]
         type(self).kept_during_run.append(worker._lock_keeper.kept == 1)
@@ -42,10 +43,10 @@ def _worker(broker, backend, config) -> Worker:
     registry.register(_Locked)
     worker = Worker(broker=broker, backend=backend, registry=registry, config=config)
     worker._lock_manager = MagicMock()
-    worker._lock_manager.acquire = AsyncMock(
+    as_mock(worker._lock_manager).acquire = AsyncMock(
         side_effect=lambda name, *, owner, ttl_ms, max_concurrency: LockToken(name, owner, max_concurrency)
     )
-    worker._lock_manager.release = AsyncMock(return_value=True)
+    as_mock(worker._lock_manager).release = AsyncMock(return_value=True)
     _Locked.worker = worker  # type: ignore[attr-defined]
     _Locked.kept_during_run = []
     return worker
@@ -58,7 +59,7 @@ async def test_acquired_lock_is_kept_while_the_handler_runs(broker, backend, con
 
     assert _Locked.kept_during_run == [True]
     assert worker._lock_keeper.kept == 0
-    worker._lock_manager.release.assert_awaited_once()
+    as_mock(worker._lock_manager).release.assert_awaited_once()
 
 
 async def test_shutdown_drops_leftover_locks_and_closes_the_keeper_before_backend_close(
@@ -81,7 +82,7 @@ async def test_shutdown_drops_leftover_locks_and_closes_the_keeper_before_backen
     worker._request_shutdown()
     await worker._execute_shutdown()
 
-    worker._lock_manager.release.assert_awaited_once_with(token)
+    as_mock(worker._lock_manager).release.assert_awaited_once_with(token)
     assert kept_at_close == [0]
 
 
@@ -105,7 +106,8 @@ async def test_gate_without_keep_lock_acquires_as_before(broker, backend, config
     )
 
     assert await gate.apply(make_message(_default_payload(name="kept", args=[], kwargs={})), ctx) is Continue
-    assert len(ctx.acquired_locks) == 1 and worker._lock_keeper.kept == 0
+    assert len(ctx.acquired_locks) == 1
+    assert worker._lock_keeper.kept == 0
 
 
 async def test_abort_teardown_closes_the_keeper(broker, backend, config) -> None:

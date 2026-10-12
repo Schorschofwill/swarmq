@@ -67,18 +67,18 @@ class TestSanitiseError:
 def _free_port() -> int:
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
+    port: int = s.getsockname()[1]
     s.close()
     return port
 
 
-async def _http_get(host: str, port: int, path: str) -> tuple[int, dict, bytes]:
+async def _http_get(host: str, port: int, path: str) -> tuple[int, dict[str, str], bytes]:
     reader, writer = await asyncio.open_connection(host, port)
     writer.write(f"GET {path} HTTP/1.1\r\nHost: x\r\n\r\n".encode())
     await writer.drain()
     status_line = await reader.readline()
     status_code = int(status_line.split()[1])
-    headers: dict = {}
+    headers: dict[str, str] = {}
     while True:
         line = await reader.readline()
         if line in (b"\r\n", b""):
@@ -121,7 +121,8 @@ class TestHealthChecker:
         broker, _ = await self._connected_stubs()
         ok, err = await HealthChecker(broker, backend).check_backend()
         assert ok is False
-        assert err is not None and "not connected" in err
+        assert err is not None
+        assert "not connected" in err
 
     async def test_check_backend_fail_on_timeout(self):
         broker, backend = await self._connected_stubs()
@@ -132,7 +133,8 @@ class TestHealthChecker:
         backend.ping = hang
         ok, err = await HealthChecker(broker, backend, timeout_s=0.1).check_backend()
         assert ok is False
-        assert err is not None and "TimeoutError" in err
+        assert err is not None
+        assert "TimeoutError" in err
 
     async def test_check_backend_failure_logs_warning_with_error_fields(self, swarmq_logs):
         backend = InMemoryBackend(FakeClock())
@@ -249,7 +251,8 @@ class TestComputeReadiness:
         snapshot = await HealthChecker(broker, backend, checks={"compute": dead}).check_all()
         assert snapshot["ready"] is False
         assert snapshot["compute"] == {"ok": False, "error": "forkserver not running"}
-        assert snapshot["broker"]["ok"] and snapshot["backend"]["ok"]
+        assert snapshot["broker"]["ok"]
+        assert snapshot["backend"]["ok"]
 
     async def test_compute_check_success_and_absence(self):
         broker, backend = await self._stubs()
@@ -258,7 +261,8 @@ class TestComputeReadiness:
             return True, None
 
         ok = await HealthChecker(broker, backend, checks={"compute": alive}).check_all()
-        assert ok["ready"] is True and ok["compute"] == {"ok": True, "error": None}
+        assert ok["ready"] is True
+        assert ok["compute"] == {"ok": True, "error": None}
         plain = await HealthChecker(broker, backend).check_all()
         assert "compute" not in plain
 
@@ -288,7 +292,7 @@ class TestConsumerCheck:
     aktiven Consumer, mit Gnadenfrist ``consumer_ready_grace_s``."""
 
     async def test_not_ready_before_the_first_consume(self):
-        check = consumer_check(lambda: {}, ["q1", "q1.high"], grace_s=30.0)
+        check = consumer_check(dict, ["q1", "q1.high"], grace_s=30.0)
 
         assert await check() == (False, "not consuming: q1, q1.high")
 

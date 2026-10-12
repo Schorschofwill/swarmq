@@ -41,10 +41,7 @@ from tests.chaos.conftest import _free_port, _wait_port
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("SWARMQ_RUN_DISK_TESTS") != "1",
-    reason=(
-        "set SWARMQ_RUN_DISK_TESTS=1 to enable "
-        "— flaky in shared CI (F4 disk-pressure)"
-    ),
+    reason=("set SWARMQ_RUN_DISK_TESTS=1 to enable — flaky in shared CI (F4 disk-pressure)"),
 )
 
 
@@ -63,29 +60,39 @@ def oom_valkey() -> Iterator[str]:
     Valkey is AOF-on, no maxmemory, suitable for network tests but not
     for OOM tests. Yields a ``valkey://127.0.0.1:PORT/0`` URL.
     """
-    if subprocess.run(["docker", "info"], capture_output=True).returncode != 0:
+    if subprocess.run(["docker", "info"], capture_output=True, check=False).returncode != 0:
         pytest.skip("docker not available — disk-pressure tests need a daemon")
 
     container = f"swarmq-oom-vkey-{uuid.uuid4().hex[:8]}"
     port = _free_port()
     run = subprocess.run(
         [
-            "docker", "run", "-d", "--rm", "--name", container,
-            "-p", f"{port}:6379",
+            "docker",
+            "run",
+            "-d",
+            "--rm",
+            "--name",
+            container,
+            "-p",
+            f"{port}:6379",
             "valkey/valkey:8-alpine",
             "valkey-server",
-            "--maxmemory", "20mb",
-            "--maxmemory-policy", "noeviction",
-            "--save", "",  # no RDB snapshots — memory accounting is cleaner
-            "--appendonly", "no",
+            "--maxmemory",
+            "20mb",
+            "--maxmemory-policy",
+            "noeviction",
+            "--save",
+            "",  # no RDB snapshots — memory accounting is cleaner
+            "--appendonly",
+            "no",
         ],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
     )
     if run.returncode != 0:
-        pytest.skip(
-            f"could not start constrained valkey container: "
-            f"{run.stderr[-300:] if run.stderr else 'no stderr'}"
-        )
+        pytest.skip(f"could not start constrained valkey container: {run.stderr[-300:] if run.stderr else 'no stderr'}")
 
     url = f"valkey://127.0.0.1:{port}/0"
     try:
@@ -97,12 +104,16 @@ def oom_valkey() -> Iterator[str]:
     finally:
         subprocess.run(
             ["docker", "rm", "-f", container],
-            capture_output=True, timeout=15,
+            capture_output=True,
+            timeout=15,
+            check=False,
         )
 
 
 async def _fill_until_oom(
-    backend: ValkeyBackend, *, max_keys: int = _MAX_FILL_KEYS,
+    backend: ValkeyBackend,
+    *,
+    max_keys: int = _MAX_FILL_KEYS,
 ) -> list[str]:
     """Write ``k_$i`` keys with a large value until the backend raises.
 
@@ -110,6 +121,7 @@ async def _fill_until_oom(
     key that triggered OOM. The caller uses this list to DEL in the
     recovery test.
     """
+    assert backend._client is not None
     written: list[str] = []
     for i in range(max_keys):
         key = f"k_{i}"
@@ -133,7 +145,8 @@ class TestDiskPressure:
     """F4 — disk / memory exhaustion behaviour."""
 
     async def test_valkey_oom_surfaces_as_backend_connection_error(
-        self, oom_valkey: str,
+        self,
+        oom_valkey: str,
     ) -> None:
         """OOM on store_result raises BackendConnectionError, not silent.
 
@@ -145,17 +158,12 @@ class TestDiskPressure:
         await backend.connect()
         try:
             # Prime the backend to near-OOM via direct SETs.
-            with pytest.raises(Exception) as exc_info:
-                await _fill_until_oom(backend)
             # valkey-py raises ResponseError("OOM ...") which is a
-            # ValkeyError subclass. We accept any ValkeyError here;
-            # the real contract check is on store_result below.
-            assert "OOM" in str(exc_info.value) or "memory" in str(
-                exc_info.value
-            ).lower(), (
-                f"expected OOM-flavoured error, got {type(exc_info.value).__name__}: "
-                f"{exc_info.value}"
-            )
+            # ValkeyError subclass. We accept any ValkeyError here with an
+            # OOM-flavoured message; the real contract check is on
+            # store_result below.
+            with pytest.raises(Exception, match=r"OOM|(?i:memory)"):
+                await _fill_until_oom(backend)
 
             # Now the user-facing path: store_result must surface
             # this as BackendConnectionError (not Valkey ResponseError
@@ -163,22 +171,17 @@ class TestDiskPressure:
             with pytest.raises(BackendConnectionError) as bce:
                 await backend.store_result(
                     task_id="t-oom-probe",
-                    result_data=_BIG_VALUE,
+                    data=_BIG_VALUE,
                     ttl_ms=60_000,
                 )
-            assert "OOM" in str(bce.value) or "memory" in str(
-                bce.value
-            ).lower(), (
+            assert "OOM" in str(bce.value) or "memory" in str(bce.value).lower(), (
                 f"BackendConnectionError should mention OOM/memory: {bce.value}"
             )
         finally:
             await backend.close()
 
     @pytest.mark.skip(
-        reason=(
-            "requires custom RabbitMQ config (disk_free_limit / "
-            "memory_high_watermark); deferred — documented stub"
-        )
+        reason=("requires custom RabbitMQ config (disk_free_limit / memory_high_watermark); deferred — documented stub")
     )
     async def test_rabbitmq_disk_alarm_publisher_blocks(self) -> None:
         """RabbitMQ disk alarm blocks publishers cleanly.
@@ -196,13 +199,15 @@ class TestDiskPressure:
         """
 
     async def test_recovery_after_freeing_memory(
-        self, oom_valkey: str,
+        self,
+        oom_valkey: str,
     ) -> None:
         """After DELing filler keys the backend accepts writes again."""
         backend = ValkeyBackend(oom_valkey)
         await backend.connect()
         try:
             # Fill until OOM and capture the filler keys.
+            assert backend._client is not None
             written: list[str] = []
             try:
                 await _fill_until_oom(backend)
@@ -210,22 +215,23 @@ class TestDiskPressure:
                 # Re-read the keys we wrote by scanning — the helper
                 # raises before returning, so we need to recover the
                 # filler set from the server itself.
-                async for key in backend._client.scan_iter(
-                    match="k_*", count=200,
-                ):
-                    written.append(
+                written.extend(
+                    [
                         key.decode() if isinstance(key, bytes) else key
-                    )
+                        async for key in backend._client.scan_iter(
+                            match="k_*",
+                            count=200,
+                        )
+                    ]
+                )
 
-            assert written, (
-                "expected at least one filler key present after OOM-fill"
-            )
+            assert written, "expected at least one filler key present after OOM-fill"
 
             # Sanity: while full, a fresh store_result fails.
             with pytest.raises(BackendConnectionError):
                 await backend.store_result(
                     task_id="t-pre-recovery",
-                    result_data=_BIG_VALUE,
+                    data=_BIG_VALUE,
                     ttl_ms=60_000,
                 )
 
@@ -237,17 +243,15 @@ class TestDiskPressure:
 
             # Give Valkey a breath to finalise memory accounting.
             # (noeviction checks against used_memory at command entry.)
-            time.sleep(0.1)
+            time.sleep(0.1)  # noqa: ASYNC251 - kurze Pause fuer Valkeys Speicherabrechnung, kein nebenlaeufiger Task wird blockiert
 
             # Recovery: store_result now succeeds.
             await backend.store_result(
                 task_id="t-post-recovery",
-                result_data=b"ok",
+                data=b"ok",
                 ttl_ms=60_000,
             )
             value = await backend.get_result("t-post-recovery")
-            assert value == b"ok", (
-                f"expected b'ok' after recovery, got {value!r}"
-            )
+            assert value == b"ok", f"expected b'ok' after recovery, got {value!r}"
         finally:
             await backend.close()

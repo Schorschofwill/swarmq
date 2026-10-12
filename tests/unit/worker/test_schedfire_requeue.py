@@ -27,7 +27,7 @@ Test-Liste (jeder Requeue-Pfad nach gewonnenem Claim):
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -40,7 +40,7 @@ from swarmq.worker import Worker
 from swarmq.worker.execution import ExecutionResult
 from swarmq.worker.gates import GateContext, SchedfireClaim
 from tests.support.messages import make_message
-from tests.unit.worker._helpers import _default_payload
+from tests.unit.worker._helpers import _default_payload, partial_message
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -51,6 +51,7 @@ WF_ID = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"
 class LimitedTask(Task):
     task_info = TaskInfo(name="sfrq-limited", queues=["default"], rate_limit="10/m")
 
+    @override
     async def run(self) -> None:
         raise AssertionError("must not run")
 
@@ -58,6 +59,7 @@ class LimitedTask(Task):
 class LockedTask(Task):
     task_info = TaskInfo(name="sfrq-locked", queues=["default"], lock="the-lock", hard_timeout=30)
 
+    @override
     async def run(self) -> None:
         raise AssertionError("must not run")
 
@@ -65,6 +67,7 @@ class LockedTask(Task):
 class FailingTask(Task):
     task_info = TaskInfo(name="sfrq-failing", queues=["default"], max_retries=3)
 
+    @override
     async def run(self) -> None:
         raise RuntimeError("task boom")
 
@@ -181,13 +184,18 @@ async def test_result_store_failure_releases_the_claim_first(worker: Worker, bro
 class StepTask(Task):
     task_info = TaskInfo(name="sfrq-step", queues=["default"])
 
+    @override
     async def run(self) -> str:
         return "ok"
 
 
 def _claimed_ctx(task: type[Task] = StepTask) -> GateContext:
     ctx = GateContext(
-        task_id="abc-123", task_name=task.task_info.name, queue="default", task_info=task.task_info, task_class=task,
+        task_id="abc-123",
+        task_name=task.task_info.name,
+        queue="default",
+        task_info=task.task_info,
+        task_class=task,
     )
     ctx.schedfire_claim = SchedfireClaim(key=FIRE, owner="tok-1")
     return ctx
@@ -201,9 +209,13 @@ def _step_message() -> Any:
 
 
 def _ok(**overrides: Any) -> ExecutionResult:
-    base: dict[str, Any] = dict(
-        result_value="ok", is_error=False, is_cancelled=False, error_message="", task_exception=None,
-    )
+    base: dict[str, Any] = {
+        "result_value": "ok",
+        "is_error": False,
+        "is_cancelled": False,
+        "error_message": "",
+        "task_exception": None,
+    }
     base.update(overrides)
     return ExecutionResult(**base)
 
@@ -255,7 +267,11 @@ async def test_slot_unavailable_releases_the_claim_first(worker: Worker, broker,
     worker._registry.register(StepTask)
 
     await worker._retry_handler.evaluate(
-        _step_message(), _claimed_ctx(), SlotUnavailable("no ready"), "no ready", {"retry_count": 0},
+        _step_message(),
+        _claimed_ctx(),
+        SlotUnavailable("no ready"),
+        "no ready",
+        partial_message(retry_count=0),
         MiddlewareChain([]),
     )
 
@@ -287,6 +303,7 @@ async def test_dead_letter_publish_failure_releases_the_claim_first(worker: Work
 class ExpiringTask(Task):
     task_info = TaskInfo(name="sfrq-expiring", queues=["default"], max_age=1)
 
+    @override
     async def run(self) -> None:
         raise AssertionError("must not run")
 
@@ -297,7 +314,8 @@ async def test_expiry_dead_letter_failure_releases_the_claim_first(worker: Worke
     worker._registry.register(ExpiringTask)
     broker.dead_letter.side_effect = BrokerConnectionError("broker down")
     msg = make_message(
-        _default_payload(name="sfrq-expiring", args=[], kwargs={}), headers={"x-swarmq-schedfire": FIRE},
+        _default_payload(name="sfrq-expiring", args=[], kwargs={}),
+        headers={"x-swarmq-schedfire": FIRE},
         enqueued_at=1_000,
     )
 

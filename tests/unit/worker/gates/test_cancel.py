@@ -21,6 +21,7 @@ Test-Liste 0.9.0 (drittes Review):
 from __future__ import annotations
 
 import asyncio
+from typing import Any, override
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -38,6 +39,7 @@ from tests.support.messages import make_message
 from tests.unit.worker._helpers import (
     AddTask,
     _default_payload,
+    as_mock,
 )
 
 pytestmark = pytest.mark.timeout(5)
@@ -64,7 +66,10 @@ class TestWorkerPreStartCancelCheck:
         mock_run.assert_not_awaited()
 
     async def test_cancel_flag_set_stores_is_cancelled_result(
-        self, worker, broker, backend,
+        self,
+        worker,
+        broker,
+        backend,
     ):
         """AT_LEAST_ONCE cancel → result_data has is_cancelled=True."""
         backend.is_cancelled = AsyncMock(return_value=True)
@@ -82,7 +87,10 @@ class TestWorkerPreStartCancelCheck:
         assert decoded["task"]["name"] == "add"
 
     async def test_cancel_flag_set_clears_flag_after_store(
-        self, worker, broker, backend,
+        self,
+        worker,
+        broker,
+        backend,
     ):
         """Flag is cleared via backend.clear_cancel_flag."""
         backend.is_cancelled = AsyncMock(return_value=True)
@@ -102,11 +110,14 @@ class TestWorkerPreStartCancelCheck:
         broker.redeliver.assert_not_awaited()
 
     async def test_cancel_flag_set_dispatches_task_cancelled_signal(
-        self, worker, broker, backend,
+        self,
+        worker,
+        broker,
+        backend,
     ):
         """Signal.TASK_CANCELLED is emitted with task_id + task_name."""
         backend.is_cancelled = AsyncMock(return_value=True)
-        captured: list[tuple] = []
+        captured: list[dict[str, Any]] = []
 
         from swarmq.signals import Signal
 
@@ -122,11 +133,17 @@ class TestWorkerPreStartCancelCheck:
         # ce-review COR-M-01 / PR fix: queue label now included so
         # metrics collectors can attribute cancellations per queue.
         assert captured[0] == {
-            "task_id": "abc-123", "task_name": "add", "queue": "default",
+            "task_id": "abc-123",
+            "task_name": "add",
+            "queue": "default",
         }
 
     async def test_cancel_flag_set_does_not_acquire_semaphore(
-        self, worker, broker, backend, config,
+        self,
+        worker,
+        broker,
+        backend,
+        config,
     ):
         """Pipeline-position invariant: semaphore must NOT be acquired.
 
@@ -150,7 +167,10 @@ class TestWorkerPreStartCancelCheck:
             worker._semaphore.release()
 
     async def test_cancel_flag_set_clears_structlog_context(
-        self, worker, broker, backend,
+        self,
+        worker,
+        broker,
+        backend,
     ):
         """Contextvars must be cleared after the cancel branch."""
         backend.is_cancelled = AsyncMock(return_value=True)
@@ -166,7 +186,10 @@ class TestWorkerPreStartCancelCheck:
         assert structlog.contextvars.get_contextvars() == {}
 
     async def test_cancel_flag_not_set_proceeds_to_normal_flow(
-        self, worker, broker, backend,
+        self,
+        worker,
+        broker,
+        backend,
     ):
         """Regression: backend.is_cancelled returns False → full pipeline."""
         backend.is_cancelled = AsyncMock(return_value=False)
@@ -182,17 +205,23 @@ class TestWorkerPreStartCancelCheck:
         assert decoded["result"] == 3  # 1 + 2
 
     async def test_cancel_faf_with_result_ttl_zero_skips_store_result(
-        self, broker, backend, config,
+        self,
+        broker,
+        backend,
+        config,
     ):
         """FAF + result_ttl=0 (default): cancel emits signal, no store_result."""
         registry = TaskRegistry()
 
         class FafTask(Task):
             task_info = TaskInfo(
-                name="faf", queues=["default"],
+                name="faf",
+                queues=["default"],
                 delivery=DeliveryMode.FIRE_AND_FORGET,
                 # result_ttl not set → defaults to None → becomes 0 for FAF
             )
+
+            @override
             async def run(self):  # pragma: no cover - should not be called
                 pass
 
@@ -209,17 +238,23 @@ class TestWorkerPreStartCancelCheck:
         broker.ack.assert_awaited_once_with(msg)
 
     async def test_cancel_faf_with_explicit_result_ttl_stores_result(
-        self, broker, backend, config,
+        self,
+        broker,
+        backend,
+        config,
     ):
         """FAF + result_ttl>0 (opt-in): store_result IS called."""
         registry = TaskRegistry()
 
         class FafTaskWithTtl(Task):
             task_info = TaskInfo(
-                name="faf_ttl", queues=["default"],
+                name="faf_ttl",
+                queues=["default"],
                 delivery=DeliveryMode.FIRE_AND_FORGET,
                 result_ttl=60,
             )
+
+            @override
             async def run(self):  # pragma: no cover
                 pass
 
@@ -235,7 +270,10 @@ class TestWorkerPreStartCancelCheck:
         backend.clear_cancel_flag.assert_awaited_once_with("abc-123", op_timeout=5.0)
 
     async def test_cancel_unknown_task_falls_back_to_at_least_once(
-        self, broker, backend, config,
+        self,
+        broker,
+        backend,
+        config,
     ):
         """Unknown task + cancel flag: store_result is called (ALO fallback)."""
         registry = TaskRegistry()  # empty
@@ -251,13 +289,14 @@ class TestWorkerPreStartCancelCheck:
         broker.ack.assert_awaited_once_with(msg)
 
     async def test_cancel_is_cancelled_raises_defers_via_delay_queue(
-        self, worker, broker, backend,
+        self,
+        worker,
+        broker,
+        backend,
     ):
         """BackendConnectionError during is_cancelled → Zurueckstellung ueber
         die Delay-Queue (neue Nachricht), kein Requeue an derselben Stelle."""
-        backend.is_cancelled = AsyncMock(
-            side_effect=BackendConnectionError("valkey down")
-        )
+        backend.is_cancelled = AsyncMock(side_effect=BackendConnectionError("valkey down"))
         msg = make_message(_default_payload())
 
         await worker._handle_message(msg)
@@ -271,13 +310,14 @@ class TestWorkerPreStartCancelCheck:
         assert structlog.contextvars.get_contextvars() == {}
 
     async def test_cancel_store_result_failure_defers_and_keeps_flag(
-        self, worker, broker, backend,
+        self,
+        worker,
+        broker,
+        backend,
     ):
         """store_result wirft → Zurueckstellung, flag stays for the copy."""
         backend.is_cancelled = AsyncMock(return_value=True)
-        backend.store_result = AsyncMock(
-            side_effect=BackendConnectionError("write failed")
-        )
+        backend.store_result = AsyncMock(side_effect=BackendConnectionError("write failed"))
         msg = make_message(_default_payload())
 
         await worker._handle_message(msg)
@@ -289,13 +329,14 @@ class TestWorkerPreStartCancelCheck:
         backend.clear_cancel_flag.assert_not_awaited()
 
     async def test_cancel_notify_result_failure_still_acks(
-        self, worker, broker, backend,
+        self,
+        worker,
+        broker,
+        backend,
     ):
         """notify_result wirft → log+continue, message is still acked."""
         backend.is_cancelled = AsyncMock(return_value=True)
-        backend.notify_result = AsyncMock(
-            side_effect=Exception("pubsub down")
-        )
+        backend.notify_result = AsyncMock(side_effect=Exception("pubsub down"))
         msg = make_message(_default_payload())
 
         await worker._handle_message(msg)
@@ -304,7 +345,10 @@ class TestWorkerPreStartCancelCheck:
         backend.clear_cancel_flag.assert_awaited_once()
 
     async def test_cancel_does_not_invoke_rate_limiter(
-        self, worker, broker, backend,
+        self,
+        worker,
+        broker,
+        backend,
     ):
         """Pipeline-position: rate-limiter must not be called."""
         backend.is_cancelled = AsyncMock(return_value=True)
@@ -314,9 +358,9 @@ class TestWorkerPreStartCancelCheck:
 
         # Add rate-limit to TaskInfo so the stage would normally fire.
         class RateLimitedTask(Task):
-            task_info = TaskInfo(
-                name="rate_add", queues=["default"], rate_limit="10/s"
-            )
+            task_info = TaskInfo(name="rate_add", queues=["default"], rate_limit="10/s")
+
+            @override
             async def run(self, a: int, b: int) -> int:  # pragma: no cover
                 return a + b
 
@@ -328,13 +372,12 @@ class TestWorkerPreStartCancelCheck:
         msg = make_message(_default_payload(name="rate_add"))
         await w._handle_message(msg)
 
-        w._rate_limiter.check.assert_not_awaited()
+        as_mock(w._rate_limiter).check.assert_not_awaited()
 
 
 # ===========================================================================
 # Phase 3b.3 / Unit 7 — Cancel-Monitor Coroutine (isolated)
 # ===========================================================================
-
 
 
 class TestWorkflowCancelPickup:
@@ -353,14 +396,17 @@ class TestWorkflowCancelPickup:
         )
 
     async def test_cancelled_workflow_step_does_not_run(
-        self, worker, broker, backend,
+        self,
+        worker,
+        broker,
+        backend,
     ):
         backend.is_cancelled = AsyncMock(return_value=False)
         backend.is_workflow_cancelled = AsyncMock(return_value=True)
         # No prior result for this step → the cancel marker is written.
         backend.get_result = AsyncMock(return_value=None)
 
-        events: list[dict] = []
+        events: list[dict[str, Any]] = []
 
         @worker._signal_dispatcher.on_signal(Signal.TASK_CANCELLED)
         async def _c(**kw):
@@ -375,13 +421,17 @@ class TestWorkflowCancelPickup:
         # only store is the cancelled-result marker.
         stored = backend.store_result.await_args
         from swarmq.serialization import decode_result
+
         result = decode_result(stored.args[1])
         assert result["is_cancelled"] is True
         broker.ack.assert_awaited_once_with(msg)
         assert len(events) == 1
 
     async def test_live_workflow_step_runs_normally(
-        self, worker, broker, backend,
+        self,
+        worker,
+        broker,
+        backend,
     ):
         backend.is_cancelled = AsyncMock(return_value=False)
         backend.is_workflow_cancelled = AsyncMock(return_value=False)
@@ -392,12 +442,16 @@ class TestWorkflowCancelPickup:
         backend.is_workflow_cancelled.assert_awaited_once()
         # Task ran: a success result was stored.
         from swarmq.serialization import decode_result
+
         result = decode_result(backend.store_result.await_args.args[1])
         assert result.get("is_cancelled") is False
         assert result.get("result") == 3
 
     async def test_non_workflow_message_skips_workflow_check(
-        self, worker, broker, backend,
+        self,
+        worker,
+        broker,
+        backend,
     ):
         """Kein Workflow-Header → kein zusätzlicher Valkey-Roundtrip."""
         backend.is_workflow_cancelled = AsyncMock(return_value=False)
@@ -406,7 +460,10 @@ class TestWorkflowCancelPickup:
         backend.is_workflow_cancelled.assert_not_awaited()
 
     async def test_workflow_check_backend_error_defers(
-        self, worker, broker, backend,
+        self,
+        worker,
+        broker,
+        backend,
     ):
         from swarmq.exceptions import BackendConnectionError
 
@@ -429,8 +486,6 @@ class TestWorkflowCancelPickup:
 # ---------------------------------------------------------------------------
 # Härtung R2 P2: Body-Size-Cap vor dem JSON-Decode
 # ---------------------------------------------------------------------------
-
-
 
 
 class TestWorkflowCancelDoesNotOverwriteResult:
@@ -457,7 +512,10 @@ class TestWorkflowCancelDoesNotOverwriteResult:
         broker.ack.assert_awaited_once_with(msg)
 
     async def test_per_task_cancel_keeps_unconditional_write(
-        self, worker, broker, backend,
+        self,
+        worker,
+        broker,
+        backend,
     ):
         """Bestandssemantik des per-Task-Cancels unverändert: dort wird
         ohne Existenz-Check geschrieben (Flag existiert nur pre-/mid-run)."""
@@ -470,7 +528,6 @@ class TestWorkflowCancelDoesNotOverwriteResult:
         backend.store_result.assert_awaited_once()
         backend.get_result.assert_not_awaited()
         broker.ack.assert_awaited_once_with(msg)
-
 
     @pytest.mark.timeout(5)
     async def test_hanging_existing_result_read_is_deferred(self, worker, broker, backend, swarmq_logs):
@@ -492,7 +549,8 @@ class TestWorkflowCancelDoesNotOverwriteResult:
         broker.retry_later.assert_awaited_once()
         broker.ack.assert_not_awaited()
         [entry] = [e for e in swarmq_logs if e["log_level"] == "warning"]
-        assert entry["stage"] == "cancel_store_result" and entry["error_type"] == "BackendConnectionError"
+        assert entry["stage"] == "cancel_store_result"
+        assert entry["error_type"] == "BackendConnectionError"
 
 
 class TestCancelGateOutcomes:
@@ -518,7 +576,6 @@ class TestCancelGateOutcomes:
         assert await worker._cancel_gate.apply(msg, self._ctx()) is Redelivered
         broker.retry_later.assert_awaited_once()
         broker.redeliver.assert_not_awaited()
-
 
     async def test_error_reply_is_requeued_not_deferred(self, worker, broker, backend):
         from swarmq.exceptions import BackendResponseError
@@ -556,20 +613,22 @@ class TestCancelGateLogging:
         await worker._cancel_gate.apply(make_message(_default_payload()), self._ctx())
 
         entry = self._single_warning(swarmq_logs)
-        assert entry["gate"] == "cancel" and entry["stage"] == "cancel_check"
+        assert entry["gate"] == "cancel"
+        assert entry["stage"] == "cancel_check"
         assert entry["task_id"] == "abc-123"
-        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+        assert entry["error_type"] == "BackendConnectionError"
+        assert entry["error"] == "valkey down"
 
-    async def test_workflow_cancel_check_backend_error_logs_one_deferral_line(
-        self, worker, backend, swarmq_logs
-    ):
+    async def test_workflow_cancel_check_backend_error_logs_one_deferral_line(self, worker, backend, swarmq_logs):
         backend.is_workflow_cancelled = AsyncMock(side_effect=BackendConnectionError("valkey down"))
         msg = make_message(_default_payload(), headers={"x-swarmq-workflow-id": self.WF_ID})
         await worker._cancel_gate.apply(msg, self._ctx())
 
         entry = self._single_warning(swarmq_logs)
-        assert entry["stage"] == "workflow_cancel_check" and entry["workflow_id"] == self.WF_ID
-        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "valkey down"
+        assert entry["stage"] == "workflow_cancel_check"
+        assert entry["workflow_id"] == self.WF_ID
+        assert entry["error_type"] == "BackendConnectionError"
+        assert entry["error"] == "valkey down"
 
     async def test_cancel_store_result_failure_logs_one_deferral_line(self, worker, backend, swarmq_logs):
         backend.is_cancelled = AsyncMock(return_value=True)
@@ -577,8 +636,10 @@ class TestCancelGateLogging:
         await worker._cancel_gate.apply(make_message(_default_payload()), self._ctx())
 
         entry = self._single_warning(swarmq_logs)
-        assert entry["stage"] == "cancel_store_result" and entry["task_id"] == "abc-123"
-        assert entry["error_type"] == "BackendConnectionError" and entry["error"] == "write failed"
+        assert entry["stage"] == "cancel_store_result"
+        assert entry["task_id"] == "abc-123"
+        assert entry["error_type"] == "BackendConnectionError"
+        assert entry["error"] == "write failed"
 
     async def test_notify_failure_logs_warning_with_error_fields(self, worker, backend, swarmq_logs):
         backend.is_cancelled = AsyncMock(return_value=True)
@@ -587,7 +648,8 @@ class TestCancelGateLogging:
 
         entry = self._entry(swarmq_logs, "publish_notification_failed")
         assert entry["log_level"] == "warning"
-        assert entry["error_type"] == "ConnectionError" and entry["error"] == "pubsub down"
+        assert entry["error_type"] == "ConnectionError"
+        assert entry["error"] == "pubsub down"
 
     @pytest.mark.timeout(5)
     async def test_hanging_notify_is_bounded_and_message_acked(self, worker, broker, backend, swarmq_logs):

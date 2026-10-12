@@ -23,6 +23,7 @@ from __future__ import annotations
 import dataclasses
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -48,7 +49,7 @@ def _all_swarmq_errors() -> set[str]:
     """Independently discover the error class names (root + all subclasses)."""
     found = {SwarmQError.__name__}
 
-    def walk(cls: type) -> None:
+    def walk(cls: type[BaseException]) -> None:
         for sub in cls.__subclasses__():
             found.add(sub.__name__)
             walk(sub)
@@ -83,24 +84,30 @@ def test_error_catalog_init_params_are_code_derived() -> None:
 def test_error_catalog_entries_are_fully_shaped() -> None:
     for entry in build_error_catalog()["errors"]:
         assert set(entry) >= {
-            "exception_class", "name", "parent", "module", "doc",
-            "init_params", "origin", "when", "retriable",
-            "dlq_on_uncaught", "exit_code_on_cli", "transport_field",
+            "exception_class",
+            "name",
+            "parent",
+            "module",
+            "doc",
+            "init_params",
+            "origin",
+            "when",
+            "retriable",
+            "dlq_on_uncaught",
+            "exit_code_on_cli",
+            "transport_field",
         }
         assert entry["exception_class"] == f"{entry['module']}.{entry['name']}"
         assert entry["module"].startswith("swarmq")
         assert entry["origin"] in _ORIGIN
         assert entry["retriable"] in _RETRIABLE
         assert entry["dlq_on_uncaught"] in _DLQ
-        assert isinstance(entry["when"], list) and entry["when"]
+        assert isinstance(entry["when"], list)
+        assert entry["when"]
         assert set(entry["when"]) <= _WHEN
-        assert entry["exit_code_on_cli"] is None or isinstance(
-            entry["exit_code_on_cli"], int
-        )
+        assert entry["exit_code_on_cli"] is None or isinstance(entry["exit_code_on_cli"], int)
         assert entry["doc"] is None or isinstance(entry["doc"], str)
-        assert entry["transport_field"] is None or isinstance(
-            entry["transport_field"], str
-        )
+        assert entry["transport_field"] is None or isinstance(entry["transport_field"], str)
 
 
 def test_error_catalog_known_semantics() -> None:
@@ -178,12 +185,16 @@ def test_config_spec_defaults_are_json_native() -> None:
 def test_config_spec_enum_choices_match_validation() -> None:
     by_name = {o["name"]: o for o in build_config_spec()["options"]}
     assert by_name["log_level"]["choices"] == [
-        "CRITICAL", "DEBUG", "ERROR", "INFO", "WARNING",
+        "CRITICAL",
+        "DEBUG",
+        "ERROR",
+        "INFO",
+        "WARNING",
     ]
     assert by_name["queue_type"]["choices"] == ["classic", "quorum"]
     assert by_name["log_lifecycle_level"]["choices"] == by_name["log_level"]["choices"]
     # The documented choices are exactly what the config accepts/rejects.
-    base = dict(broker_url="amqp://x", backend_url="valkey://x")
+    base: dict[str, Any] = {"broker_url": "amqp://x", "backend_url": "valkey://x"}
     for level in by_name["log_level"]["choices"]:
         SwarmQConfig(**base, log_level=level)  # no raise
         SwarmQConfig(**base, log_lifecycle_level=level)
@@ -205,10 +216,7 @@ def _leaf_commands() -> dict[str, argparse.ArgumentParser]:
     leaves: dict[str, argparse.ArgumentParser] = {}
 
     def walk(parser: argparse.ArgumentParser, prefix: str) -> None:
-        subs = [
-            a for a in parser._actions
-            if isinstance(a, argparse._SubParsersAction)
-        ]
+        subs = [a for a in parser._actions if isinstance(a, argparse._SubParsersAction)]
         if not subs:
             leaves[prefix.strip()] = parser
             return
@@ -243,9 +251,9 @@ def test_cli_spec_arguments_match_parser_per_command() -> None:
     leaves = _leaf_commands()
     by_path = {c["path"]: c for c in build_cli_spec()["commands"]}
     for path, parser in leaves.items():
-        spec_flags = set()
+        spec_flags: set[str] = set()
         for arg in by_path[path]["arguments"]:
-            spec_flags.update(arg["flags"] if arg["flags"] else [arg["name"]])
+            spec_flags.update(arg["flags"] or [arg["name"]])
         assert spec_flags == _option_strings(parser), f"mismatch for {path!r}"
 
 
@@ -317,7 +325,7 @@ _SCHEMA_FILES = {
 }
 
 
-def _schema_props(schema: dict) -> set[str]:
+def _schema_props(schema: dict[str, Any]) -> set[str]:
     """Property names of a (possibly $ref/$defs) msgspec-generated schema."""
     if "properties" in schema:
         return set(schema["properties"])
@@ -330,7 +338,8 @@ def test_message_schemas_cover_expected_formats() -> None:
     schemas = build_message_schemas()
     assert set(schemas) == _SCHEMA_FILES
     for body in schemas.values():
-        assert isinstance(body, dict) and body
+        assert isinstance(body, dict)
+        assert body
         assert "type" in body or "$ref" in body
 
 
@@ -339,11 +348,18 @@ def test_result_schema_validates_real_builder_output() -> None:
     decoding their output into the schema struct fails if the shape drifts."""
     for real in (
         build_result_dict(
-            task_id="t", queue="q", task_name="n",
-            is_error=False, is_cancelled=False, result="ok",
+            task_id="t",
+            queue="q",
+            task_name="n",
+            is_error=False,
+            is_cancelled=False,
+            result="ok",
         ),
         build_error_result_dict(
-            task_id="t", queue="q", task_name="n", error_message="boom",
+            task_id="t",
+            queue="q",
+            task_name="n",
+            error_message="boom",
         ),
         build_cancel_result_dict(task_id="t", queue="q", task_name="n"),
     ):
@@ -354,8 +370,10 @@ def test_result_schema_validates_real_builder_output() -> None:
 def test_result_schema_rejects_drifted_shape() -> None:
     drifted = {
         "task": {"id": "t", "queue": "q", "name": "n"},
-        "is_error": False, "is_cancelled": False,
-        "error_message": "", "result": None,
+        "is_error": False,
+        "is_cancelled": False,
+        "error_message": "",
+        "result": None,
         "surprise": 1,  # an extra key a drifting builder might add
     }
     with pytest.raises(msgspec.ValidationError):
@@ -379,9 +397,7 @@ def test_progress_schema_properties_match_dataclass() -> None:
 
 
 def test_schedule_definition_schema_properties_match_struct() -> None:
-    schema = build_message_schemas()[
-        "messages/schedule-definition.schema.json"
-    ]
+    schema = build_message_schemas()["messages/schedule-definition.schema.json"]
     assert _schema_props(schema) == set(ScheduleDefinition.__struct_fields__)
 
 
@@ -446,7 +462,5 @@ def test_committed_spec_files_match_generators() -> None:
         expected = _dump(builder())
         if rel == "index.json":
             committed, expected = _strip_version(committed), _strip_version(expected)
-        assert committed == expected, (
-            f"{rel} is stale — run `python -m swarmq.agent_spec`"
-        )
+        assert committed == expected, f"{rel} is stale — run `python -m swarmq.agent_spec`"
     assert DEFAULT_LLMS_TXT.read_text(encoding="utf-8") == build_llms_txt()

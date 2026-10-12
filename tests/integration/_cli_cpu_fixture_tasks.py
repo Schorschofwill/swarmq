@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import sys
+from typing import override
 
 from swarmq.task import Task, TaskInfo
 
@@ -27,6 +28,7 @@ class CpuMainProbe(Task):
 
     task_info = TaskInfo(name="cpu_main_probe", queues=[QUEUE], max_retries=0)
 
+    @override
     async def run(self) -> dict[str, object]:
         main = sys.modules.get("__main__")
         return {

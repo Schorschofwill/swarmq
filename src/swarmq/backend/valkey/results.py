@@ -44,9 +44,7 @@ class ValkeyResults(ValkeyConnection):
         eviction_check: str | None = None,
         namespace: str | None = None,
     ) -> None:
-        super().__init__(
-            url, client=client, pool=pool, keys=keys, eviction_check=eviction_check, namespace=namespace
-        )
+        super().__init__(url, client=client, pool=pool, keys=keys, eviction_check=eviction_check, namespace=namespace)
         # R3.5: Lua script is lazy-registered on first use (registration
         # requires a connected client). See _ensure_unique_release_script.
         self._unique_release_script: Any = None
@@ -139,7 +137,7 @@ class ValkeyResults(ValkeyConnection):
         while loop.time() < pub_deadline:
             try:
                 msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.05)
-            except Exception:
+            except Exception:  # noqa: BLE001 - Pub/Sub-Fehler, weiter mit Polling
                 return None  # Pub/Sub error, fall through to polling
             if msg is not None:
                 raw = await get_within_deadline()
@@ -152,7 +150,7 @@ class ValkeyResults(ValkeyConnection):
         try:
             await pubsub.unsubscribe(channel)
             await pubsub.aclose()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 - Teardown best effort
             pass
 
     async def wait_for_result(self, task_id: str, *, timeout: float) -> bytes | None:
@@ -180,7 +178,7 @@ class ValkeyResults(ValkeyConnection):
         pubsub: Any = self._pubsub()
         try:
             await pubsub.subscribe(channel)
-        except Exception:
+        except Exception:  # noqa: BLE001 - Pub/Sub nicht verfuegbar, weiter mit Polling
             pubsub = None  # Pub/Sub unavailable, fall through to polling
 
         try:
@@ -234,9 +232,11 @@ class ValkeyResults(ValkeyConnection):
         decodes via :meth:`ProgressInfo.from_hash`.
         """
         raw: dict[bytes, bytes] = await self._run(
-            "get_progress", self._require_client().hgetall(self._progress_key(task_id)), op_timeout
+            "get_progress",
+            self._require_client().hgetall(self._progress_key(task_id)),
+            op_timeout,
         )
-        return raw if raw else None
+        return raw or None
 
     async def publish_progress(self, task_id: str, payload: bytes) -> None:
         """PUBLISH the progress delta to the per-task channel.
@@ -277,7 +277,7 @@ class ValkeyResults(ValkeyConnection):
         try:
             try:
                 await _subscribe_and_drain()
-            except Exception:
+            except Exception:  # noqa: BLE001 - Abo gescheitert, Schnappschuss als Ersatz
                 fallback = await _snapshot()
                 if fallback is not None:
                     yield fallback
@@ -290,7 +290,7 @@ class ValkeyResults(ValkeyConnection):
             while True:
                 try:
                     msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)
-                except Exception:
+                except Exception:  # noqa: BLE001 - Pub/Sub-Fehler, Schnappschuss und Resubscribe
                     # Pub/Sub-Fehler: Schnappschuss überbrückt, dann aktives
                     # Resubscribe mit 0,5 s Backoff.
                     fallback = await _snapshot()
@@ -310,7 +310,7 @@ class ValkeyResults(ValkeyConnection):
     async def _try_resubscribe(subscribe_and_drain: Any) -> None:
         try:
             await subscribe_and_drain()
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 - Resubscribe best effort, naechster Versuch folgt
             pass
         await asyncio.sleep(0.5)
 
@@ -422,16 +422,17 @@ class ValkeyResults(ValkeyConnection):
                 msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.05)
                 if msg is not None:
                     return True
-            return False
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception:  # noqa: BLE001 - Fehler gilt als keine Benachrichtigung
+            return False
+        else:
             return False
         finally:
             try:
                 await pubsub.unsubscribe(channel)
                 await pubsub.aclose()
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - Teardown best effort
                 pass
 
     # ------------------------------------------------------------------
@@ -481,11 +482,6 @@ class ValkeyResults(ValkeyConnection):
     # ------------------------------------------------------------------
     # Aliase der heutigen Namen (KTD10; entfallen in U15)
     # ------------------------------------------------------------------
-
-
-
-
-
 
 
 if TYPE_CHECKING:  # Konformitäts-Anker (KTD1)

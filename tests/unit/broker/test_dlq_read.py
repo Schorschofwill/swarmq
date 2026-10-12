@@ -176,5 +176,6 @@ async def test_copies_carry_no_broker_delivery_counters(call: str) -> None:
         await broker.retry_dead_letter("tasks", "t-1")
 
     [(_, msg)] = broker.published  # type: ignore[attr-defined]
-    assert "x-delivery-count" not in msg.headers and "x-acquired-count" not in msg.headers
+    assert "x-delivery-count" not in msg.headers
+    assert "x-acquired-count" not in msg.headers
     assert msg.headers["x-keep"] == 1

@@ -31,20 +31,18 @@ _TERMINAL_STATUSES = frozenset({STATUS_COMPLETED, STATUS_FAILED, STATUS_CANCELLE
 WORKFLOW_CAS_MAX_ROUNDS = 25
 
 
-class _StaleWorkflowState(Exception):
+class _StaleWorkflowState(Exception):  # pyright: ignore[reportUnusedClass]  # paketintern importiert (workflow_orchestration, workflow_failure)
     """Intern (KTD11): der lokale Schnappschuss ist gegenueber dem Backend
     veraltet -- ein Compare-and-Set schlug fehl. ``advance()`` faengt sie und
     merged die lokalen Aenderungen in den frischen Zustand (R23)."""
 
 
-class _WorkflowAlreadyTerminal(Exception):
+class _WorkflowAlreadyTerminal(Exception):  # pyright: ignore[reportUnusedClass]  # paketintern importiert (workflow_orchestration)
     """Intern (R24): die frische Lesung vor dem Fan-in fand einen terminalen
     Zustand. ``advance()`` faengt sie und endet ohne Schreibung."""
 
 
-def build_initial_workflow_state(
-    workflow_id: str, topology: dict[str, Any]
-) -> dict[str, Any]:
+def build_initial_workflow_state(workflow_id: str, topology: dict[str, Any]) -> dict[str, Any]:
     """The state dict written at apply() time.
 
     Fields:

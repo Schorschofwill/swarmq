@@ -26,9 +26,7 @@ from swarmq.workflow_topology import (
 def test_workflow_step_task_id_is_deterministic():
     # Determinism is the property that keeps a re-enqueued member's id stable
     # so the chord SADD set cannot be inflated past N under a lost-persist crash.
-    assert workflow_step_task_id("wf-1", "/h/g0") == workflow_step_task_id(
-        "wf-1", "/h/g0"
-    )
+    assert workflow_step_task_id("wf-1", "/h/g0") == workflow_step_task_id("wf-1", "/h/g0")
     assert workflow_step_task_id("wf-1", "/0") != workflow_step_task_id("wf-1", "/1")
 
 

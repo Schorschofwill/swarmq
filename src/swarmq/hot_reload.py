@@ -23,7 +23,6 @@ hint rather than crashing inside the daemon thread.
 from __future__ import annotations
 
 import importlib.util
-import os
 import sys
 import threading
 from collections.abc import Callable, Iterable
@@ -56,11 +55,10 @@ def check_watchfiles_available() -> None:
     thread.
     """
     try:
-        import watchfiles  # noqa: F401
+        import watchfiles  # noqa: F401  # pyright: ignore[reportUnusedImport]  # nur Praesenzpruefung des optionalen Pakets
     except ImportError as exc:
         raise ConfigurationError(
-            "--reload: watchfiles is not installed. "
-            "Install with:  pip install 'swarmq[reload]'"
+            "--reload: watchfiles is not installed. Install with:  pip install 'swarmq[reload]'"
         ) from exc
 
 
@@ -104,8 +102,7 @@ def resolve_watch_dirs(
             spec = importlib.util.find_spec(module)
         except (ImportError, ValueError) as exc:
             raise ConfigurationError(
-                f"--reload: cannot resolve watch directory for module "
-                f"{module!r} ({exc}). Pass --watch-dir explicitly."
+                f"--reload: cannot resolve watch directory for module {module!r} ({exc}). Pass --watch-dir explicitly."
             ) from exc
     if spec is None or spec.origin is None:
         raise ConfigurationError(
@@ -286,7 +283,7 @@ class FileWatcher:
             # argument parsing and supervisor start. Fail loud with the
             # specific path rather than dying inside watchfiles with a
             # generic OSError.
-            missing = [d for d in self._dirs if not os.path.isdir(d)]
+            missing = [d for d in self._dirs if not Path(d).is_dir()]
             if missing:
                 logger.error(
                     "watch_dir_missing",

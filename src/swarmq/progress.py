@@ -43,7 +43,8 @@ class ProgressInfo:
 
     @classmethod
     def from_hash(
-        cls, raw: Mapping[bytes, bytes] | Mapping[str, str],
+        cls,
+        raw: Mapping[bytes, bytes] | Mapping[str, str] | None,
     ) -> ProgressInfo | None:
         """Decode a Valkey HGETALL response into a ProgressInfo.
 
@@ -66,10 +67,7 @@ class ProgressInfo:
         if not isinstance(raw, dict):
             if raw is None:
                 return None
-            raise ValueError(
-                "progress payload must be a mapping, got "
-                f"{type(raw).__name__}"
-            )
+            raise ValueError(f"progress payload must be a mapping, got {type(raw).__name__}")
         if not raw:
             return None
 
@@ -90,14 +88,10 @@ class ProgressInfo:
         total_raw = _decode("total")
         percent_raw = _decode("percent")
         if current_raw is None or total_raw is None or percent_raw is None:
-            raise ValueError(
-                f"progress HASH missing required fields; got keys {list(raw)}"
-            )
+            raise ValueError(f"progress HASH missing required fields; got keys {list(raw)}")
 
         eta_raw = _decode("eta_seconds")
-        eta_seconds: int | None = (
-            int(eta_raw) if eta_raw is not None and eta_raw != "" else None
-        )
+        eta_seconds: int | None = int(eta_raw) if eta_raw is not None and eta_raw != "" else None
 
         return cls(
             current=int(current_raw),

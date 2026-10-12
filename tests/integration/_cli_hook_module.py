@@ -8,7 +8,7 @@ Hook aufgerufen wurde.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, override
 
 import structlog
 
@@ -18,6 +18,7 @@ logger = structlog.get_logger()
 
 
 class CountingMiddleware(Middleware):
+    @override
     async def pre_execute(self, message: Any) -> None:
         logger.info("hook_middleware_pre_execute", task_name=message["task_name"])
 

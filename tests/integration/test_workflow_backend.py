@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
+from typing import override
 
 import pytest
 
@@ -106,7 +107,8 @@ async def test_notify_workflow_reaches_subscriber(backend):
             deadline = asyncio.get_running_loop().time() + 3.0
             while asyncio.get_running_loop().time() < deadline:
                 msg = await pubsub.get_message(
-                    ignore_subscribe_messages=True, timeout=0.05,
+                    ignore_subscribe_messages=True,
+                    timeout=0.05,
                 )
                 if msg is not None:
                     return True
@@ -132,9 +134,7 @@ async def test_op_timeout_wraps_as_backend_error(backend):
     # A 0-second op_timeout forces asyncio.wait_for to time out, which the
     # method maps to BackendConnectionError (same discipline as store_result).
     with pytest.raises(BackendConnectionError):
-        await backend.store_workflow_state(
-            _wf_id(), b"x", ttl_ms=1000, op_timeout=0.0
-        )
+        await backend.store_workflow_state(_wf_id(), b"x", ttl_ms=1000, op_timeout=0.0)
 
 
 # --------------------------------------------------------------------------
@@ -160,6 +160,7 @@ async def test_nested_topology_state_roundtrips_unchanged(backend):
     class Noop(Task):
         task_info = TaskInfo(name="noop_nested", queues=["default"])
 
+        @override
         async def run(self, *args) -> None:
             return None
 
@@ -211,9 +212,7 @@ async def test_compare_and_store_conflict_keeps_existing_document_and_ttl(backen
     wf_id = _wf_id()
     await backend.store_workflow_state(wf_id, b'{"version": 5, "keep": true}', ttl_ms=60_000)
 
-    stored = await backend.compare_and_store_workflow_state(
-        wf_id, b'{"version": 6}', ttl_ms=500, expected_version=4
-    )
+    stored = await backend.compare_and_store_workflow_state(wf_id, b'{"version": 6}', ttl_ms=500, expected_version=4)
     assert stored is False
 
     assert await backend.get_workflow_state(wf_id) == b'{"version": 5, "keep": true}'

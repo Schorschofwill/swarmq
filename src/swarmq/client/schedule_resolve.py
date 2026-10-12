@@ -7,7 +7,7 @@ re-exportiert ihn unveraendert. Mixin ueber dem Client-Zustand.
 from __future__ import annotations
 
 import uuid
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, override
 
 from swarmq.exceptions import TaskNotFoundError
 from swarmq.logging import get_logger
@@ -40,11 +40,12 @@ class _MissingType:
     __slots__ = ()
     _instance: _MissingType | None = None
 
-    def __new__(cls) -> _MissingType:
+    def __new__(cls) -> _MissingType:  # noqa: PYI034 - Singleton liefert die gespeicherte Instanz
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
 
+    @override
     def __repr__(self) -> str:
         return "<_MISSING>"
 

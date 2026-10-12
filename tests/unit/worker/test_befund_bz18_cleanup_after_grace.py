@@ -70,11 +70,14 @@ async def test_locks_and_leader_are_released_within_the_grace_period(worker: Any
     worker._request_shutdown()
     await worker._execute_shutdown()
 
-    assert released_at and stopped_at
+    assert released_at
+    assert stopped_at
     lock_after = released_at[0] - started
     leader_after = stopped_at[0] - started
-    assert lock_after < _GRACE_S and leader_after < _GRACE_S, (
+    msg = (
         f"Lock frei nach {lock_after * 1000:.0f} ms, Scheduler gestoppt nach "
         f"{leader_after * 1000:.0f} ms -- die Gnadenfrist ({_GRACE_S * 1000:.0f} ms, "
         "mit Defaults 30 s = K8s-SIGKILL) war da schon abgelaufen"
     )
+    assert lock_after < _GRACE_S, msg
+    assert leader_after < _GRACE_S, msg

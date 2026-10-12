@@ -43,8 +43,12 @@ def main() -> None:
         try:
             for i, use_di in enumerate(spec["use_di"]):
                 job = ComputeJob(
-                    task_id=f"j{i}", task_name="child_logging_task", queue="q",
-                    args=(f"j{i}",), kwargs={}, **spec["job"],
+                    task_id=f"j{i}",
+                    task_name="child_logging_task",
+                    queue="q",
+                    args=(f"j{i}",),
+                    kwargs={},
+                    **spec["job"],
                 )
                 values.append((await pool.run(job, use_di=use_di)).value)
         finally:

@@ -19,6 +19,7 @@ Schluss-Review (Abweichung vom Plan, freigegeben):
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -29,6 +30,7 @@ from swarmq.task import TaskInfo
 from swarmq.worker.compute import wiring
 from swarmq.worker.compute.executor import ComputeExecutor
 from swarmq.worker.compute.forkserver import MAIN_MODULE_ENV, SENTINEL_ENV, ForkserverHandle
+from swarmq.worker.compute.pool import SlotPool
 
 
 class _T:
@@ -48,8 +50,11 @@ def _worker(pool: str = "cpu", **cfg):
     dispatcher = MagicMock()
     dispatcher.dispatch = AsyncMock()
     return SimpleNamespace(
-        _config=config, _registry=_Registry({"t": _T}), _gate_deps=MagicMock(config=config),
-        _signal_dispatcher=dispatcher, _executor="original",
+        _config=config,
+        _registry=_Registry({"t": _T}),
+        _gate_deps=MagicMock(config=config),
+        _signal_dispatcher=dispatcher,
+        _executor="original",
     )
 
 
@@ -57,7 +62,11 @@ def test_preload_modules_are_the_task_modules():
     # Unter pytest ist __main__ ein Konsolenskript (per Pfad geladen) -> "__main__".
     # U8 (KTD10): das Preload-Modul kommt zuerst, das Hauptmodul bleibt enthalten.
     assert wiring.preload_modules(_Registry({"t": _T})) == [
-        "swarmq.worker.compute.preload", "__main__", "swarmq.logging", "swarmq.worker.compute.child", __name__,
+        "swarmq.worker.compute.preload",
+        "__main__",
+        "swarmq.logging",
+        "swarmq.worker.compute.child",
+        __name__,
     ]
 
 
@@ -79,24 +88,33 @@ async def test_cpu_pool_installs_compute_executor_and_recycle_signal(monkeypatch
         return handle
 
     monkeypatch.setattr(wiring, "start_forkserver", fake_start)
-    monkeypatch.setattr(wiring.SlotPool, "start", AsyncMock())
-    monkeypatch.setattr(wiring.SlotPool, "aclose", AsyncMock())
+    aclose = AsyncMock()
+    monkeypatch.setattr(SlotPool, "start", AsyncMock())
+    monkeypatch.setattr(SlotPool, "aclose", aclose)
     executor = await wiring.start_compute_executor(w)
-    assert isinstance(executor, ComputeExecutor) and w._executor is executor
+    assert isinstance(executor, ComputeExecutor)
+    assert w._executor is executor
     assert seen["preload"] == [
-        "swarmq.worker.compute.preload", "__main__", "swarmq.logging", "swarmq.worker.compute.child", __name__,
+        "swarmq.worker.compute.preload",
+        "__main__",
+        "swarmq.logging",
+        "swarmq.worker.compute.child",
+        __name__,
     ]
     assert seen["kw"] == {"thread_limit": 1, "malloc_trim_threshold": 131072, "malloc_arena_max": 2}
     assert w._compute_handle is handle
     pool = executor._pool
-    assert pool.recycle_rss_mb == 250 and pool.recycle_max_tasks == 1000  # R28-Voreinstellung
+    assert pool.recycle_rss_mb == 250
+    assert pool.recycle_max_tasks == 1000
     await pool._on_recycle(1, "rss", 320.0)
     w._signal_dispatcher.dispatch.assert_awaited_once()
     args, kwargs = w._signal_dispatcher.dispatch.await_args
     assert args[0] is Signal.WORKER_RECYCLING
-    assert kwargs["kind"] == "compute_child" and kwargs["slot"] == 1 and kwargs["reason"] == "rss"
+    assert kwargs["kind"] == "compute_child"
+    assert kwargs["slot"] == 1
+    assert kwargs["reason"] == "rss"
     await wiring.close_compute_executor(w)
-    wiring.SlotPool.aclose.assert_awaited_once()
+    aclose.assert_awaited_once()
 
 
 def test_hard_timeout_over_consumer_timeout_warns(swarmq_logs):
@@ -131,7 +149,8 @@ async def test_forkserver_ready_reports_an_unhealthy_pool(monkeypatch, tmp_path)
     monkeypatch.setattr(wiring, "forkserver_pid", lambda: None)
     worker = SimpleNamespace(_compute_handle=object(), _executor=SimpleNamespace(pool_healthy=False))
     ok, reason = await wiring.forkserver_ready(worker, proc_root=tmp_path)
-    assert ok is False and "unhealthy" in (reason or "")
+    assert ok is False
+    assert "unhealthy" in (reason or "")
     worker._executor.pool_healthy = True
     assert (await wiring.forkserver_ready(worker, proc_root=tmp_path)) == (True, None)
 
@@ -160,9 +179,13 @@ def test_preload_includes_the_child_runtime_modules():
     registry = SimpleNamespace(get_all=lambda: {"demo": Demo})
     preload = preload_modules(registry)
     assert preload[:4] == [
-        "swarmq.worker.compute.preload", "__main__", "swarmq.logging", "swarmq.worker.compute.child",
+        "swarmq.worker.compute.preload",
+        "__main__",
+        "swarmq.logging",
+        "swarmq.worker.compute.child",
     ]
-    assert preload.count("__main__") == 1 and "tests.demo_tasks" in preload
+    assert preload.count("__main__") == 1
+    assert "tests.demo_tasks" in preload
 
 
 @pytest.mark.timeout(5)
@@ -177,14 +200,14 @@ async def test_cpu_pool_sets_main_module_env_before_forkserver_start(monkeypatch
     fake_main.__spec__ = importlib.machinery.ModuleSpec("pkg.mod", None)
     monkeypatch.setitem(sys.modules, "__main__", fake_main)  # wie bei ``python -m pkg.mod``
     monkeypatch.delenv(MAIN_MODULE_ENV, raising=False)
-    seen: dict[str, object] = {}
+    seen: dict[str, Any] = {}
 
     def fake_start(preload, **kw):
         seen["env"], seen["preload"] = os.environ.get(MAIN_MODULE_ENV), preload
         return ForkserverHandle(context=MagicMock(), preload=tuple(preload), pid=42, threads=1)
 
     monkeypatch.setattr(wiring, "start_forkserver", fake_start)
-    monkeypatch.setattr(wiring.SlotPool, "start", AsyncMock())
+    monkeypatch.setattr(SlotPool, "start", AsyncMock())
     await wiring.start_compute_executor(_worker())
     assert seen["env"] == "pkg.mod"
     assert seen["preload"][:2] == ["swarmq.worker.compute.preload", "pkg.mod"]
@@ -217,7 +240,7 @@ async def test_cpu_pool_passes_the_configure_setting_to_the_forkserver(monkeypat
         return ForkserverHandle(context=MagicMock(), preload=tuple(preload), pid=42, threads=1)
 
     monkeypatch.setattr(wiring, "start_forkserver", fake_start)
-    monkeypatch.setattr(wiring.SlotPool, "start", AsyncMock())
+    monkeypatch.setattr(SlotPool, "start", AsyncMock())
     await wiring.start_compute_executor(_worker(configure_logging=configure))
     assert seen["env"] == expected
 

@@ -40,6 +40,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -123,7 +124,8 @@ def test_a_probe_past_its_deadline_is_killed_and_reported_as_timeout(log_config,
     assert ctl.step() is False
     clock.now += 29.9
     assert ctl.step() is False
-    assert probe.killed is False
+    killed_before_timeout = probe.killed
+    assert killed_before_timeout is False
     clock.now += 0.2
     assert ctl.step() is False
     assert probe.killed is True
@@ -193,7 +195,7 @@ def test_abort_kills_a_running_probe(log_config):
 
 def test_an_unloadable_file_logs_reload_failed_without_a_probe(log_config, swarmq_logs):
     factory = _Factory()
-    with open(log_config, "w") as fh:
+    with Path(log_config).open("w") as fh:
         fh.write('{"version": 1,')
     ctl = ReloadController(log_config, probe_factory=factory, clock=_Clock())
     ctl.request()
@@ -239,7 +241,7 @@ def test_killing_the_real_probe_also_reaps_it():
     proc.wait.assert_called_once()
 
 
-def _blocked() -> set[signal.Signals]:
+def _blocked() -> set[int | signal.Signals]:
     return set(signal.pthread_sigmask(signal.SIG_BLOCK, []))
 
 
@@ -259,17 +261,22 @@ def signal_mask():
 
 def _pm(**kwargs):
     defaults = {
-        "workers": {}, "_reload_requested": True, "_shutdown_signal": None,
-        "_startup_argv": ["-m", "swarmq.cli"], "_startup_env": {},
+        "workers": {},
+        "_reload_requested": True,
+        "_shutdown_signal": None,
+        "_startup_argv": ["-m", "swarmq.cli"],
+        "_startup_env": {},
         "_log_shutdown_signal": lambda: None,
     }
     return SimpleNamespace(**{**defaults, **kwargs})
 
 
 def test_execvpe_runs_with_sigterm_and_sigint_blocked(signal_mask):
-    seen: list[set[signal.Signals]] = []
-    with patch("swarmq.process_manager.reload.shutdown_logging"), \
-         patch("swarmq.process_manager.reload.os.execvpe", side_effect=lambda *a: seen.append(_blocked())):
+    seen: list[set[int | signal.Signals]] = []
+    with (
+        patch("swarmq.process_manager.reload.shutdown_logging"),
+        patch("swarmq.process_manager.reload.os.execvpe", side_effect=lambda *a: seen.append(_blocked())),
+    ):
         reexec(_pm(), 0)
 
     [mask] = seen
@@ -292,8 +299,10 @@ def test_without_execvpe_the_mask_is_restored_and_a_held_sigterm_delivered(signa
 
 def test_a_failed_execvpe_restores_the_mask(signal_mask):
     before = _blocked()
-    with patch("swarmq.process_manager.reload.shutdown_logging"), \
-         patch("swarmq.process_manager.reload.os.execvpe", side_effect=OSError("gone")):
+    with (
+        patch("swarmq.process_manager.reload.shutdown_logging"),
+        patch("swarmq.process_manager.reload.os.execvpe", side_effect=OSError("gone")),
+    ):
         assert reexec(_pm(), 0) == 1
 
     assert _blocked() == before

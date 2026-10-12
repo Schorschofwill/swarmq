@@ -9,9 +9,9 @@ from swarmq.process_manager.check import (
 from swarmq.process_manager.config import WorkerConfig
 from swarmq.process_manager.entry import worker_subprocess_entry
 from swarmq.process_manager.run import run_multi_process_worker
-from swarmq.process_manager.sampler import (  # noqa: F401  # Re-Export (KTD10)
-    SAMPLE_TIMEOUT_S,
-    _make_queue_depth_sampler,
+from swarmq.process_manager.sampler import SAMPLE_TIMEOUT_S
+from swarmq.process_manager.sampler import (  # Re-Export (KTD10)
+    _make_queue_depth_sampler as _make_queue_depth_sampler,
 )
 from swarmq.process_manager.slots import WorkerInfo
 from swarmq.process_manager.supervisor import (

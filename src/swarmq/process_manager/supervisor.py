@@ -13,7 +13,7 @@ import socket
 import sys
 import time
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, override
 
 if TYPE_CHECKING:  # pragma: no cover — import-time only
     from swarmq.hot_reload import FileWatcher
@@ -127,8 +127,7 @@ class ProcessManager(RestartBudget):
             min_w, max_w = autoscale
             if min_w < 1 or max_w < min_w:
                 raise ValueError(
-                    f"invalid autoscale bounds (min={min_w}, max={max_w}); "
-                    "require min >= 1 and max >= min",
+                    f"invalid autoscale bounds (min={min_w}, max={max_w}); require min >= 1 and max >= min",
                 )
             if queue_depth_fn is None:
                 raise ValueError(
@@ -344,6 +343,7 @@ class ProcessManager(RestartBudget):
     # Worker lifecycle
     # ------------------------------------------------------------------
 
+    @override
     def _start_worker(self, slot: int) -> WorkerInfo:
         """Spawn one worker subprocess for ``slot`` and register it."""
         if self._locked_slots_shared is None:  # BZ-27: ein Wert fuer alle Kanaele
@@ -368,10 +368,12 @@ class ProcessManager(RestartBudget):
         return self._slots.state(slot)
 
     @property
+    @override
     def _exhausted_slots(self) -> int:
         """Gesperrte Slots (Budget erschoepft); Begruendung bei ``SlotTable.lock``."""
         return self._slots.locked()
 
+    @override
     def _refresh_slot(self, slot: int) -> None:
         """Slot-Zustand aus den Prozessen ableiten, die ihn noch halten."""
         holders = sum(1 for w in self.workers.values() if w.worker_id == slot)
@@ -444,7 +446,7 @@ class ProcessManager(RestartBudget):
                 timeout = min(timeout, max(0.0, deadline - time.monotonic()))
             try:
                 info.process.join(timeout=timeout)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - Join best effort beim Warten auf Worker
                 pass
 
     def _collect_zombies(self) -> None:
@@ -551,7 +553,7 @@ class ProcessManager(RestartBudget):
             exitcode = info.process.exitcode
             try:
                 info.process.join(timeout=1)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - Join best effort, Prozess ist bereits beendet
                 pass
             del self.workers[pid]
             self._refresh_slot(info.worker_id)  # KTD1: Uebergang → aktiv / frei; Sperre bleibt
@@ -593,14 +595,20 @@ class ProcessManager(RestartBudget):
         """
         if exitcode == CONFIG_ERROR_EXIT_CODE:
             logger.error(
-                "worker_config_error", worker_id=info.worker_id, pid=pid, exitcode=exitcode,
+                "worker_config_error",
+                worker_id=info.worker_id,
+                pid=pid,
+                exitcode=exitcode,
                 hint="fix the configuration and start again; no restart attempted",
             )
             self._config_error = True
             return True
         if exitcode == RECYCLE_NOACK_EXIT_CODE:
             logger.warning(
-                "worker_recycle_noack", worker_id=info.worker_id, pid=pid, exitcode=exitcode,
+                "worker_recycle_noack",
+                worker_id=info.worker_id,
+                pid=pid,
+                exitcode=exitcode,
             )
         if exitcode == FORK_SOURCE_REJECTED_EXIT_CODE:  # Schluss-Review: frischer Forkserver
             logger.warning("worker_fork_source_rejected", worker_id=info.worker_id, pid=pid, exitcode=exitcode)
@@ -608,11 +616,13 @@ class ProcessManager(RestartBudget):
 
     # ---- Uhr und Logger fuer ``restart_budget.py`` (Plan 0.12.0, MR 0, Q17)
 
+    @override
     def _monotonic(self) -> float:
         """Liest ``time`` dieses Moduls, damit ``patch("…supervisor.time")`` greift."""
         return time.monotonic()
 
     @property
+    @override
     def _log(self) -> Any:
         """Logger ``swarmq.process_manager.supervisor`` (Name und Patch-Pfad bleiben)."""
         return logger

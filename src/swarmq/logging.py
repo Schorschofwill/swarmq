@@ -8,7 +8,7 @@ import logging
 import logging.config
 import logging.handlers
 import sys
-from collections.abc import Iterator
+from collections.abc import Generator
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
@@ -35,11 +35,12 @@ from swarmq.logging_queue import _SwarmqQueueListener as _SwarmqQueueListener
 from swarmq.logging_queue import dropped_log_records as dropped_log_records
 from swarmq.logging_queue import shutdown_logging as shutdown_logging
 from swarmq.logging_settings import LoggingSettings
+from swarmq.logging_stdlib import handler_refs, module_lock
 
 # Der Queue-Kern liegt in ``swarmq.logging_queue`` (Plan 2026-10-06-1811,
 # U1); die Namen oben bleiben aus ``swarmq.logging`` importierbar. Die
-# Prozessflags ``_CONFIGURED`` und ``_APP_TAKEOVER_REPORTED`` gehoeren dem
-# Kern, weil ``shutdown_logging`` sie zuruecksetzt.
+# Prozessflags ``_STATE.configured`` und ``_STATE.app_takeover_reported``
+# gehoeren dem Kern, weil ``shutdown_logging`` sie zuruecksetzt.
 
 
 def root_handler_snapshot() -> tuple[logging.Handler, ...]:
@@ -71,23 +72,26 @@ def react_to_app_logging(before: tuple[logging.Handler, ...]) -> None:
     dictConfig der App ``swarmq.*``-Logger stummgeschaltet, schaltet swarmq
     sie wieder ein und nennt die Zahl im selben Event.
     """
-    if not _queue_core._CONFIGURED:
+    if not _queue_core._STATE.configured:
         # Nichts eingerichtet (R12): das Logging gehoert ganz der App.
         return
     replaced, added = _app_changes(before, tuple(logging.getLogger().handlers))
     reenabled = _reenable_swarmq_loggers()
-    if (replaced or reenabled) and not _queue_core._APP_TAKEOVER_REPORTED:
+    if (replaced or reenabled) and not _queue_core._STATE.app_takeover_reported:
         if replaced:
             _stop_listeners()
             _activate_swarmq_queue_after_app_takeover(**_queue_options(before))
-        _queue_core._APP_TAKEOVER_REPORTED = True
+        _queue_core._STATE.app_takeover_reported = True
         report_app_logging(
-            get_logger(__name__), "logging_reconfigured_by_app", reenabled_loggers=reenabled,
+            get_logger(__name__),
+            "logging_reconfigured_by_app",
+            reenabled_loggers=reenabled,
         )
     if added and not replaced:
         # Neben swarmqs Handler: beide schreiben -- swarmq entfernt nichts.
         report_app_logging(
-            get_logger(__name__), "logging_handlers_added_by_app",
+            get_logger(__name__),
+            "logging_handlers_added_by_app",
             handler_types=[type(handler).__name__ for handler in added],
         )
 
@@ -132,7 +136,7 @@ def configure_child_logging(settings: LoggingSettings) -> list[tuple[str, dict[s
     if not settings.configure or not root_handler_snapshot():
         configure_logging(settings)
         return []
-    _queue_core._CONFIGURED = _queue_core._APP_TAKEOVER_REPORTED = True
+    _queue_core._STATE.configured = _queue_core._STATE.app_takeover_reported = True
     if settings.log_config is None:
         # Wie im Worker, der structlog vor dem App-Import einrichtet: Nutzer-
         # Tasks loggen per structlog an die Handler der App (R10, KTD6).
@@ -144,9 +148,7 @@ def configure_child_logging(settings: LoggingSettings) -> list[tuple[str, dict[s
     # im ``--configure``-Hook, der nur im Worker laeuft): ohne Start gingen
     # alle Kindzeilen verloren (R13).
     _start_app_queue_listeners()
-    _activate_swarmq_queue_after_app_takeover(
-        json=settings.format == "json", queue_size=settings.queue_size
-    )
+    _activate_swarmq_queue_after_app_takeover(json=settings.format == "json", queue_size=settings.queue_size)
     return [("logging_reconfigured_by_app", {"reenabled_loggers": _reenable_swarmq_loggers()})]
 
 
@@ -175,30 +177,32 @@ def _configure_next_to_app_handlers(
 
 
 @contextlib.contextmanager
-def _hidden_from_dictconfig(handlers: list[logging.Handler]) -> Iterator[None]:
+def _hidden_from_dictconfig(handlers: list[logging.Handler]) -> Generator[None]:
     """Nimmt ``handlers`` voruebergehend aus ``logging._handlerList``
     (Schluss-Review): Eine ``dictConfig`` schliesst sonst jeden bekannten
     Handler (``_clearExistingHandlers``), auch die eben abgehaengten der App.
     Ein ``FileHandler(mode="w")`` oeffnete danach nie wieder, ein Handler mit
     Hintergrund-Thread waere gestoppt. Danach stehen sie wieder in der Liste,
     damit ``logging.shutdown`` sie bei Prozessende leert."""
-    lock = logging._lock  # type: ignore[attr-defined]
+    lock = module_lock()
     with lock:
-        refs = logging._handlerList  # type: ignore[attr-defined]
+        refs = handler_refs()
         hidden = [ref for ref in refs if ref() in handlers]
         refs[:] = [ref for ref in refs if ref not in hidden]
     try:
         yield
     finally:
         with lock:
-            logging._handlerList.extend(hidden)  # type: ignore[attr-defined]
+            handler_refs().extend(hidden)
 
 
 def _start_app_queue_listeners() -> None:
     """Startet geerbte, ungestartete Queue-Listener der App (R13); swarmqs
     eigene Listener starten weiter lazy beim ersten Eintrag (KTD5)."""
     start_queue_listeners(
-        on_drop=_queue_core.count_dropped, skip=(_StructlogQueueHandler,), drain=_stop_listeners,
+        on_drop=_queue_core.count_dropped,
+        skip=(_StructlogQueueHandler,),
+        drain=_stop_listeners,
     )
 
 
@@ -233,9 +237,7 @@ _RESERVED_RECORD_KEYS = frozenset(
 kwargs gehen sie bestimmungsgemaess an die stdlib-Logmethode."""
 
 
-def _guard_reserved_keys(
-    _: Any, __: str, event_dict: structlog.typing.EventDict
-) -> structlog.typing.EventDict:
+def _guard_reserved_keys(_: Any, __: str, event_dict: structlog.typing.EventDict) -> structlog.typing.EventDict:
     """Benennt LogRecord-Attributnamen in ``swarmq_<key>`` um.
 
     Ohne das wirft ``log.info("evt", name=...)`` im stdlib-``makeRecord``
@@ -247,7 +249,9 @@ def _guard_reserved_keys(
 
 
 def _merge_contextvars_guarded(
-    logger: Any, method_name: str, event_dict: structlog.typing.EventDict
+    logger: Any,  # noqa: ARG001 - structlog-Prozessor-Signatur vorgegeben
+    method_name: str,  # noqa: ARG001 - structlog-Prozessor-Signatur vorgegeben
+    event_dict: structlog.typing.EventDict,
 ) -> structlog.typing.EventDict:
     """``merge_contextvars`` mit Schutz der stdlib-Logkwargs.
 
@@ -258,9 +262,8 @@ def _merge_contextvars_guarded(
     ``merge_contextvars`` Vorrang.
     """
     for key, value in structlog.contextvars.get_contextvars().items():
-        if key in structlog.stdlib.LOG_KWARG_NAMES:
-            key = f"swarmq_{key}"
-        event_dict.setdefault(key, value)
+        name = f"swarmq_{key}" if key in structlog.stdlib.LOG_KWARG_NAMES else key
+        event_dict.setdefault(name, value)
     return event_dict
 
 
@@ -270,9 +273,7 @@ _CALLER_STACKLEVEL = 4
 -> stdlib-Logmethode (ermittelt fuer structlog 26.1)."""
 
 
-def _set_caller_stacklevel(
-    logger: Any, __: str, event_dict: structlog.typing.EventDict
-) -> structlog.typing.EventDict:
+def _set_caller_stacklevel(logger: Any, __: str, event_dict: structlog.typing.EventDict) -> structlog.typing.EventDict:
     """Laesst ``funcName``/``lineno`` auf den Aufrufer zeigen statt auf
     structlogs Weiterleitung.
 
@@ -352,9 +353,7 @@ def _task_log_context(**fields: Any) -> contextlib.AbstractContextManager[None]:
     der App bleiben unberuehrt. ``None``-Werte entfallen: ein fehlendes
     ``workflow_id`` fehlt im Eintrag, statt als ``None`` zu erscheinen.
     """
-    return structlog.contextvars.bound_contextvars(
-        **{key: value for key, value in fields.items() if value is not None}
-    )
+    return structlog.contextvars.bound_contextvars(**{key: value for key, value in fields.items() if value is not None})
 
 
 def configure_logging(settings: LoggingSettings) -> None:
@@ -383,7 +382,7 @@ def configure_logging(settings: LoggingSettings) -> None:
     if not settings.configure:
         # "Logging nicht konfigurieren" (R12): die App ist zustaendig.
         return
-    if _queue_core._CONFIGURED:
+    if _queue_core._STATE.configured:
         get_logger(__name__).debug("logging_already_configured")
         return
     # KTD10: Eingebaut und per Datei ist der Opt-in wirkungslos. Ein bereits
@@ -395,7 +394,7 @@ def configure_logging(settings: LoggingSettings) -> None:
     else:
         _configure_builtin(settings)
     _apply_logger_levels(settings)
-    _queue_core._CONFIGURED = True
+    _queue_core._STATE.configured = True
 
 
 def _configure_from_file(settings: LoggingSettings) -> None:
@@ -474,9 +473,7 @@ def _configure_structlog_for_user_code() -> None:
     )
 
 
-def setup_logging(
-    log_level: str = "INFO", log_json: bool = True
-) -> logging.handlers.QueueListener:
+def setup_logging(log_level: str = "INFO", log_json: bool = True) -> logging.handlers.QueueListener:
     """Deprecated: Einstiegspunkte rufen ``configure_logging`` auf (U6).
 
     Baut bei jedem Aufruf neu auf -- ``shutdown_logging()`` und danach
@@ -487,11 +484,10 @@ def setup_logging(
     """
     shutdown_logging()
     structlog.reset_defaults()
-    configure_logging(
-        LoggingSettings(level=log_level, format="json" if log_json else "human")
-    )
+    configure_logging(LoggingSettings(level=log_level, format="json" if log_json else "human"))
     handler = logging.getLogger().handlers[0]
-    assert isinstance(handler, _StructlogQueueHandler) and handler.listener is not None
+    assert isinstance(handler, _StructlogQueueHandler)
+    assert handler.listener is not None
     return handler.listener
 
 
@@ -507,8 +503,6 @@ def sanitize_url(url: str) -> str:
     parsed = urlparse(url)
     if parsed.password:
         # Replace password in netloc
-        replaced = parsed._replace(
-            netloc=parsed.netloc.replace(f":{parsed.password}@", ":***@", 1)
-        )
+        replaced = parsed._replace(netloc=parsed.netloc.replace(f":{parsed.password}@", ":***@", 1))
         return urlunparse(replaced)
     return url

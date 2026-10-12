@@ -9,11 +9,12 @@ dem ``SchedulerLoop``-Zustand; Uhr und Logger wie in ``fire.py`` ueber
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import msgspec
 
 from swarmq.cancellation import build_error_result_dict
+from swarmq.config import resolve_result_ttl
 from swarmq.exceptions import BackendConnectionError
 from swarmq.logging import _error_fields
 from swarmq.serialization import encode_result
@@ -31,6 +32,10 @@ _LOG_WINDOW_S = 600.0
 #: Ab dieser Groesse werden abgelaufene Drossel-Eintraege entfernt; Oneshot-
 #: Namen sind einmalig, die Tabelle wuechse sonst ohne Grenze.
 _LOG_TABLE_PRUNE_AT = 1024
+
+
+_SchedulerState = Literal["standby", "leader", "stopped"]
+"""Zustand des Schedulers; hier definiert, damit Mixin und Loop denselben Typ teilen."""
 
 
 class SchedulerUnroutable:
@@ -51,7 +56,7 @@ class SchedulerUnroutable:
     _backend: Any
     _config: SwarmQConfig
     _owner_token: str
-    _state: str
+    _state: _SchedulerState
 
     #: Letztes Unroutable-Log je Schedule (Wanduhr in s); ``SchedulerLoop.__init__``.
     _unroutable_logged_at: dict[str, float]
@@ -182,7 +187,7 @@ class SchedulerUnroutable:
         nahm (Owner = ``task_id``); sonst blockierte sie bis zu ihrem TTL."""
         try:
             await self._backend.release_unique(dedup_hash, task_id, op_timeout=self._config.backend_op_timeout)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - best effort, Sperre läuft über TTL ab
             self._log.warning(
                 "scheduler_unroutable_unique_release_failed",
                 task_id=task_id,
@@ -194,7 +199,9 @@ class SchedulerUnroutable:
         """Fehlerergebnis unter *task_id*, damit ``get_result()`` endet statt
         in den Timeout zu laufen. Best effort; ein Backend ohne die Methoden
         (Fake, Q15) faellt still auf "kein Ergebnis" zurueck."""
-        ttl_s = self._config.result_ttl if self._config.result_ttl is not None else 86400
+        # Kein Task-Wert: Konfiguration, ein untypisiert gesetztes None faellt
+        # auf DEFAULT_RESULT_TTL_S; <= 0 speichert nicht.
+        ttl_s = resolve_result_ttl(None, self._config.result_ttl, fire_and_forget=False)
         if ttl_s <= 0:
             return
         data = encode_result(
@@ -216,7 +223,7 @@ class SchedulerUnroutable:
                 op_timeout=self._config.backend_op_timeout,
             )
             await self._backend.notify_result(task_id)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Fehler wird geloggt, best effort
             self._log.warning("scheduler_unroutable_result_store_failed", task_id=task_id, **_error_fields(exc))
 
     async def _commit_unroutable(

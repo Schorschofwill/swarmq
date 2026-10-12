@@ -77,8 +77,10 @@ async def test_error_reply_fails_only_its_own_call() -> None:
     script = FakeScript()
 
     results = await asyncio.gather(
-        pipeline.call(script, ["k"], ["good"]), pipeline.call(script, ["k"], ["bad"]),
-        pipeline.call(script, ["k"], ["fine"]), return_exceptions=True,
+        pipeline.call(script, ["k"], ["good"]),
+        pipeline.call(script, ["k"], ["bad"]),
+        pipeline.call(script, ["k"], ["fine"]),
+        return_exceptions=True,
     )
 
     assert results[0] == b"good"
@@ -96,7 +98,9 @@ async def test_transport_error_fails_the_whole_batch_and_drops_the_connection() 
     script = FakeScript()
 
     results = await asyncio.gather(
-        pipeline.call(script, ["k"], ["a"]), pipeline.call(script, ["k"], ["b"]), return_exceptions=True,
+        pipeline.call(script, ["k"], ["a"]),
+        pipeline.call(script, ["k"], ["b"]),
+        return_exceptions=True,
     )
 
     assert all(isinstance(result, ValkeyConnectionError) for result in results)
@@ -177,7 +181,9 @@ async def test_failing_fallback_fails_only_its_call() -> None:
     script = FakeScript(direct_error=ValkeyConnectionError("reset"))
 
     results = await asyncio.gather(
-        pipeline.call(script, ["k"], ["lost"]), pipeline.call(script, ["k"], ["fine"]), return_exceptions=True,
+        pipeline.call(script, ["k"], ["lost"]),
+        pipeline.call(script, ["k"], ["fine"]),
+        return_exceptions=True,
     )
 
     assert isinstance(results[0], ValkeyConnectionError)

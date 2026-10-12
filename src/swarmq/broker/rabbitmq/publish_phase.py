@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 from types import FrameType
+from typing import cast
 
 _PUBLISH_FUNCTION = "basic_publish"
 _DRAIN_LOCAL = "drain_future"
@@ -70,10 +71,11 @@ def collect_orphaned_confirm(exc: BaseException) -> None:
         return
     confirmation = frame.f_locals.get(_CONFIRM_LOCAL)
     if isinstance(confirmation, asyncio.Future):
-        if confirmation.done():
-            _collect(confirmation)
+        future = cast("asyncio.Future[object]", confirmation)
+        if future.done():
+            _collect(future)
         else:
-            confirmation.add_done_callback(_collect)
+            future.add_done_callback(_collect)
 
 
 def _collect(future: asyncio.Future[object]) -> None:

@@ -18,7 +18,7 @@ import signal
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from swarmq.logging_drain import exit_code_for, exit_if_log_thread_stuck
 from swarmq.worker.compute.envelope import (
@@ -27,6 +27,9 @@ from swarmq.worker.compute.envelope import (
     error_envelope,
     success_envelope,
 )
+
+if TYPE_CHECKING:
+    from swarmq.task import Task
 
 _PR_SET_PDEATHSIG = 1
 
@@ -48,13 +51,13 @@ def rss_mb(proc_root: Path = Path("/proc")) -> float | None:
     """Eigener RSS in MB aus ``/proc/self/status``; ``None`` ohne ``/proc``."""
     try:
         text = (proc_root / "self" / "status").read_text(encoding="ascii")
-    except (OSError, UnicodeDecodeError):
+    except OSError, UnicodeDecodeError:
         return None
     for line in text.splitlines():
         if line.startswith("VmRSS:"):
             try:
                 return int(line.split()[1]) / 1024
-            except (IndexError, ValueError):
+            except IndexError, ValueError:
                 return None
     return None
 
@@ -96,11 +99,11 @@ def bind_child_process() -> bool:
     try:
         libc = ctypes.CDLL(None, use_errno=True)
         return int(libc.prctl(_PR_SET_PDEATHSIG, int(signal.SIGKILL), 0, 0, 0)) == 0
-    except (AttributeError, OSError):
+    except AttributeError, OSError:
         return False
 
 
-def _lookup_task_class(task_name: str) -> type:
+def _lookup_task_class(task_name: str) -> type[Task]:
     from swarmq.task import Task
 
     for cls in Task._registered_tasks:
@@ -135,9 +138,13 @@ def _job_log_context(job: ComputeJob) -> Any:
     from swarmq.logging import _task_log_context
 
     return _task_log_context(
-        task_id=job.task_id, task_name=job.task_name, queue=job.queue,
-        worker_id=job.worker_id, workflow_id=job.workflow_id,
-        attempt=job.retry_count + 1, compute_child=os.getpid(),
+        task_id=job.task_id,
+        task_name=job.task_name,
+        queue=job.queue,
+        worker_id=job.worker_id,
+        workflow_id=job.workflow_id,
+        attempt=job.retry_count + 1,
+        compute_child=os.getpid(),
     )
 
 
@@ -149,7 +156,7 @@ async def _run_job(job: ComputeJob, channel: Any, slot: int | None) -> ResultEnv
     except LookupError as exc:
         return error_envelope(job.task_id, exc, duration_s=0.0, rss_mb=rss_mb(), **meta)
 
-    task_info = task_class.task_info  # type: ignore[attr-defined]
+    task_info = task_class.task_info
     instance: Any = task_class()
     instance._task_id = job.task_id
     instance._backend = ProgressBackend(channel)
@@ -193,12 +200,12 @@ async def _run_job(job: ComputeJob, channel: Any, slot: int | None) -> ResultEnv
     except asyncio.CancelledError as exc:
         caught = exc
         raise
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - Task-Fehler wird als Fehler-Envelope gemeldet
         caught = exc
         envelope = error_envelope(job.task_id, exc, **meta)
     finally:
         if token is not None:
-            request_container.reset(token)
+            token.var.reset(token)  # dieselbe ContextVar wie request_container
         if scope is not None:
             et = type(caught) if caught is not None else None
             tb = caught.__traceback__ if caught is not None else None
@@ -221,14 +228,14 @@ def _run_job_with_sigterm(job: ComputeJob, channel: Any, slot: int | None) -> Re
         task = asyncio.ensure_future(run_job(job, channel, slot=slot))
         try:
             loop.add_signal_handler(signal.SIGTERM, task.cancel)
-        except (NotImplementedError, RuntimeError):  # pragma: no cover - kein Unix-Loop
+        except NotImplementedError, RuntimeError:  # pragma: no cover - kein Unix-Loop
             pass
         try:
             return await task
         finally:
             try:
                 loop.remove_signal_handler(signal.SIGTERM)
-            except (NotImplementedError, RuntimeError):  # pragma: no cover
+            except NotImplementedError, RuntimeError:  # pragma: no cover
                 pass
 
     return asyncio.run(_main())
@@ -329,7 +336,7 @@ async def _recv_job(job_conn: Any, stop: asyncio.Event) -> ComputeJob | None:
             return
         try:
             fut.set_result(job_conn.recv())
-        except Exception:
+        except Exception:  # noqa: BLE001 - offenes Future hinge sonst fuer immer
             # EOF/OSError: der Loop-Prozess ist weg (R27, Rueckfallebene). Alles andere
             # (unlesbarer Rahmen): ebenfalls beenden — ein offenes Future hinge fuer immer.
             fut.set_result(None)
@@ -363,7 +370,7 @@ async def _serve_jobs(slot: int, job_conn: Any, channel: Any) -> None:
 
     try:
         loop.add_signal_handler(signal.SIGTERM, _on_sigterm)
-    except (NotImplementedError, RuntimeError):  # pragma: no cover - kein Unix-Loop
+    except NotImplementedError, RuntimeError:  # pragma: no cover - kein Unix-Loop
         pass
     configured = False
     try:

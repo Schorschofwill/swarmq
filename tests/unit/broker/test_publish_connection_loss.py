@@ -164,15 +164,16 @@ async def test_a_reader_failure_while_waiting_for_the_confirm_is_indeterminate_n
     assert caught.value.__cause__ is lost
 
 
-def _delivery() -> Delivery:
-    return Delivery(body=b"{}", headers={}, queue="tasks", handle=AsyncMock(consumer_tag=None))
+def _delivery() -> tuple[Delivery, AsyncMock]:
+    handle = AsyncMock(consumer_tag=None)
+    return Delivery(body=b"{}", headers={}, queue="tasks", handle=handle), handle
 
 
 async def test_dead_letter_whose_ack_loses_the_connection_reports_the_copy_as_published() -> None:
     transport = FakeTransport()
     broker = _broker(transport)
-    delivery = _delivery()
-    delivery.handle.ack.side_effect = AMQPConnectionError(_LOST)
+    delivery, handle = _delivery()
+    handle.ack.side_effect = AMQPConnectionError(_LOST)
     dead_letter = asyncio.create_task(broker.dead_letter(delivery, headers={}))
 
     frame = await transport.next_frame()
@@ -186,7 +187,7 @@ async def test_dead_letter_whose_ack_loses_the_connection_reports_the_copy_as_pu
 async def test_dead_letter_losing_the_copy_confirm_is_indeterminate_and_keeps_the_original() -> None:
     transport = FakeTransport()
     broker = _broker(transport)
-    delivery = _delivery()
+    delivery, handle = _delivery()
     dead_letter = asyncio.create_task(broker.dead_letter(delivery, headers={}))
 
     frame = await transport.next_frame()
@@ -195,7 +196,7 @@ async def test_dead_letter_losing_the_copy_confirm_is_indeterminate_and_keeps_th
 
     with pytest.raises(PublishIndeterminate):
         await dead_letter
-    delivery.handle.ack.assert_not_awaited()
+    handle.ack.assert_not_awaited()
 
 
 async def test_a_reader_failure_before_the_frame_was_written_retries_on_a_new_channel() -> None:

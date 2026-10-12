@@ -17,7 +17,7 @@ execution and would never reach the worker advancement seam (U5).
 
 from __future__ import annotations
 
-from typing import Any, Union
+from typing import Any, Union, override
 
 from swarmq.exceptions import WorkflowValidationError
 
@@ -31,9 +31,7 @@ WorkflowNode = Union["Signature", "Chain", "Group", "Chord"]
 def _coerce_node(obj: Any) -> WorkflowNode:
     if isinstance(obj, (Signature, Chain, Group, Chord)):
         return obj
-    raise WorkflowValidationError(
-        f"expected a Signature/chain/group/chord, got {type(obj).__name__}"
-    )
+    raise WorkflowValidationError(f"expected a Signature/chain/group/chord, got {type(obj).__name__}")
 
 
 def _node_depth(node: WorkflowNode) -> int:
@@ -45,7 +43,7 @@ def _node_depth(node: WorkflowNode) -> int:
         return 1 + max((_node_depth(s) for s in node.steps), default=0)
     if isinstance(node, Group):
         return 1 + max((_node_depth(m) for m in node.members), default=0)
-    if isinstance(node, Chord):
+    if isinstance(node, Chord):  # pyright: ignore[reportUnnecessaryIsInstance]  # defensiv fuer ungetypte Aufrufer
         return 1 + max(_node_depth(node.header), _node_depth(node.body))
     raise WorkflowValidationError(f"unknown node type {type(node).__name__}")
 
@@ -67,7 +65,7 @@ def _reject_faf(node: WorkflowNode) -> None:
     elif isinstance(node, Group):
         for member in node.members:
             _reject_faf(member)
-    elif isinstance(node, Chord):
+    elif isinstance(node, Chord):  # pyright: ignore[reportUnnecessaryIsInstance]  # defensiv fuer ungetypte Aufrufer
         _reject_faf(node.header)
         _reject_faf(node.body)
 
@@ -129,6 +127,7 @@ class Signature:
     def __or__(self, other: WorkflowNode) -> Chain:
         return chain(self, other)
 
+    @override
     def __repr__(self) -> str:
         flag = "si" if self.immutable else "s"
         return f"Signature({self.task_name!r}.{flag}{self.args!r})"
@@ -154,6 +153,7 @@ class Chain:
     def __or__(self, other: WorkflowNode) -> Chain:
         return chain(*self.steps, other)
 
+    @override
     def __repr__(self) -> str:
         return f"Chain({self.steps!r})"
 
@@ -187,6 +187,7 @@ class Group:
     def __or__(self, body: WorkflowNode) -> Chord:
         return chord(self, body)
 
+    @override
     def __repr__(self) -> str:
         return f"Group({self.members!r})"
 
@@ -215,6 +216,7 @@ class Chord:
         _validate(node)
         return node
 
+    @override
     def __repr__(self) -> str:
         return f"Chord(header={self.header!r}, body={self.body!r})"
 
@@ -260,19 +262,14 @@ def chain(*nodes: Any) -> Chain:
 
 def group(*members: Any) -> Group:
     # Accept a single iterable/generator as well as varargs.
-    if len(members) == 1 and not isinstance(
-        members[0], (Signature, Chain, Group, Chord)
-    ):
+    if len(members) == 1 and not isinstance(members[0], (Signature, Chain, Group, Chord)):
         candidate = members[0]
         if hasattr(candidate, "__iter__"):
             members = tuple(candidate)
     if not members:
         raise WorkflowValidationError("group requires at least one member")
     if len(members) > DEFAULT_MAX_GROUP_SIZE:
-        raise WorkflowValidationError(
-            f"group size {len(members)} exceeds max_group_size "
-            f"{DEFAULT_MAX_GROUP_SIZE}"
-        )
+        raise WorkflowValidationError(f"group size {len(members)} exceeds max_group_size {DEFAULT_MAX_GROUP_SIZE}")
     nodes = [_coerce_node(m) for m in members]
     g = Group(nodes)
     _validate(g)
@@ -281,9 +278,7 @@ def group(*members: Any) -> Group:
 
 def chord(header: Any, body: Any) -> Chord:
     if not isinstance(header, Group):
-        raise WorkflowValidationError(
-            "chord header must be a group(...) of header tasks"
-        )
+        raise WorkflowValidationError("chord header must be a group(...) of header tasks")
     ch = Chord(header, _coerce_node(body))
     _validate(ch)
     return ch

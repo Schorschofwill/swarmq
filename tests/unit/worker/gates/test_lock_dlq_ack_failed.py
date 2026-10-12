@@ -17,6 +17,7 @@ Test-Liste:
 from __future__ import annotations
 
 import uuid
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -34,20 +35,27 @@ pytestmark = pytest.mark.timeout(5)
 class _RenderFails(Task):
     task_info = TaskInfo(name="render_fails", queues=["default"], lock="user-{user_id}", hard_timeout=60)
 
+    @override
     async def run(self, user_id: int) -> None:
         return None
 
 
 def _ctx(task_class: type[Task], **overrides: object) -> GateContext:
-    base: dict[str, object] = dict(
-        task_id="t1", task_name=task_class.task_info.name, queue="default",
-        task_info=task_class.task_info, task_class=task_class, args=[], kwargs={}, handler_id=uuid.uuid4(),
-    )
+    base: dict[str, object] = {
+        "task_id": "t1",
+        "task_name": task_class.task_info.name,
+        "queue": "default",
+        "task_info": task_class.task_info,
+        "task_class": task_class,
+        "args": [],
+        "kwargs": {},
+        "handler_id": uuid.uuid4(),
+    }
     base.update(overrides)
     return GateContext(**base)  # type: ignore[arg-type]
 
 
-def _events(logs: list[dict], event: str) -> list[dict]:
+def _events(logs: list[dict[str, Any]], event: str) -> list[dict[str, Any]]:
     return [e for e in logs if e["event"] == event]
 
 
@@ -70,6 +78,7 @@ async def test_render_error_with_failed_ack_after_publish_is_terminal(worker, br
 class _Locked(Task):
     task_info = TaskInfo(name="locked_cap", queues=["default"], lock="resource", hard_timeout=60)
 
+    @override
     async def run(self) -> None:
         return None
 

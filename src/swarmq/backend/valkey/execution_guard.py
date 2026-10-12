@@ -62,7 +62,14 @@ class ValkeyExecutionGuardStore:
             raise as_backend_error(f"execution guard {what} failed: {exc}", exc) from exc
 
     async def claim(
-        self, identity: str, *, owner: str, retry_count: int, ttl_ms: int, state_ttl_ms: int, max_orphans: int,
+        self,
+        identity: str,
+        *,
+        owner: str,
+        retry_count: int,
+        ttl_ms: int,
+        state_ttl_ms: int,
+        max_orphans: int,
         backlog_ttl_ms: int | None = None,
     ) -> GuardClaim:
         args: list[str | int] = [owner, ttl_ms, retry_count, state_ttl_ms, max_orphans, backlog_ttl_ms or 0]
@@ -72,7 +79,8 @@ class ValkeyExecutionGuardStore:
 
     async def renew(self, identity: str, *, owner: str, ttl_ms: int) -> bool:
         result = await self._run(
-            "renew", self._pipeline.call(self._renew_script, [self._keys.guard_run(identity)], [owner, ttl_ms]),
+            "renew",
+            self._pipeline.call(self._renew_script, [self._keys.guard_run(identity)], [owner, ttl_ms]),
         )
         return int(result) == 1
 

@@ -70,7 +70,7 @@ async def finalize_schedfire(
             finalize = backend.schedules.release_fire_claim(schedfire_key, owner=owner)
         # Begrenzt: ein Blackhole darf weder Gate noch finally blockieren.
         await bounded_backend_call(gate_deps, finalize, what="schedfire finalize")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - darf weder nack noch finally ueberspringen
         # Auch eine fremde Ausnahme (Dritt-Store): sie darf weder den
         # ``nack``/die Kopie eines Requeues noch das finally ueberspringen.
         log.warning(
@@ -119,7 +119,8 @@ async def maybe_release_unique(
     # Client.schedule set the header, and we want those overrides
     # to flow end-to-end. TaskInfo is the fallback when the header
     # is absent or malformed.
-    header_mode = (message.headers or {}).get(HEADER_UNIQUE_UNTIL)
+    headers: dict[str, Any] = message.headers or {}
+    header_mode = headers.get(HEADER_UNIQUE_UNTIL)
     mode = header_mode or (task_info.unique_until if task_info is not None else "completion")
     if mode == "start":
         return  # Release already happened at pickup (Unit 10).

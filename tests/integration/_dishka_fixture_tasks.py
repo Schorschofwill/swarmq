@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterable
+from typing import override
 
 from dishka import FromDishka, Provider, Scope, make_async_container, provide
 
-from swarmq import SwarmQProvider, TaskContext, setup_dishka
+from swarmq.dishka import SwarmQProvider, TaskContext, setup_dishka
 from swarmq.task import Task, TaskInfo
 
 _QUEUE = os.environ.get("CLI_TEST_QUEUE", "cli_dishka_default")
@@ -44,6 +45,7 @@ setup_dishka(container)
 class DiEchoTask(Task):
     task_info = TaskInfo(name="cli_di_echo", queues=[_QUEUE])
 
+    @override
     async def run(
         self,
         value: str,

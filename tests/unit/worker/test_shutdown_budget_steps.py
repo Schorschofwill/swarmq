@@ -39,7 +39,7 @@ from swarmq.worker import lifecycle as _lc
 pytestmark = pytest.mark.timeout(5)
 
 
-def _hang(worker: Any) -> asyncio.Task[None]:
+def _hang(worker: Any) -> asyncio.Task[bool]:
     task = asyncio.create_task(asyncio.Event().wait())
     worker._active_tasks.add(task)
     task.add_done_callback(worker._active_tasks.discard)
@@ -61,7 +61,8 @@ async def test_supervised_drain_ends_before_the_supervisor_kills(worker: Any) ->
     finally:
         set_current_channel(None)
 
-    assert cancelled_at and cancelled_at[0] - started < 0.09
+    assert cancelled_at
+    assert cancelled_at[0] - started < 0.09
 
 
 async def _forever(*_args: Any) -> None:
@@ -228,7 +229,8 @@ async def test_recycling_drain_is_exempt_from_the_budget(worker: Any) -> None:
 
     await _shutdown_within(worker, 2.0)
 
-    assert done.is_set() and not task.cancelled()
+    assert done.is_set()
+    assert not task.cancelled()
 
 
 async def test_exhausted_budget_still_gives_each_step_the_floor(worker: Any, monkeypatch: pytest.MonkeyPatch) -> None:

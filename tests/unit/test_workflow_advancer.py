@@ -10,7 +10,9 @@ stores the result, and calls advance() with the step's path.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
+from typing import Any, override
 from unittest.mock import AsyncMock
 
 import pytest
@@ -21,6 +23,7 @@ from swarmq.middleware import Middleware, MiddlewareChain
 from swarmq.serialization import decode_json, decode_result, encode_json, encode_result
 from swarmq.task import Task, TaskInfo
 from swarmq.workflow import _node_from_dict, chain, chord, group
+from swarmq.workflow_enqueue import WorkflowStep
 from swarmq.workflow_orchestration import (
     STATUS_CANCELLED,
     STATUS_COMPLETED,
@@ -41,10 +44,9 @@ pytestmark = [pytest.mark.timeout(5)]
 class Echo(Task):
     task_info = TaskInfo(name="echo", queues=["default"])
 
-    async def run(self, *args) -> list:
+    @override
+    async def run(self, *args) -> list[Any]:
         return list(args)
-
-
 
 
 def _connected_backend() -> InMemoryBackend:
@@ -81,7 +83,7 @@ class Driver:
     def __init__(self, workflow):
         self.backend = _connected_backend()
         self.chord = self.backend.chords
-        self.published: list[tuple[str, bytes, dict]] = []
+        self.published: list[tuple[str, bytes, dict[str, str]]] = []
         self.wf_id = "wf-test"
         self.advancer = WorkflowAdvancer(
             self.backend,
@@ -103,7 +105,7 @@ class Driver:
 
     async def _run_step(self, body: bytes) -> str:
         msg = decode_json(body)
-        task_id = msg["task"]["id"]
+        task_id: str = msg["task"]["id"]
         # Echo task: result is the arg list (captures injected predecessor).
         result_value = list(msg["args"])
         await self.backend.store_result(
@@ -158,10 +160,11 @@ class Driver:
             result_value = decode_result(raw)["result"]
             await self.advancer.advance(self.wf_id, step_path, task_id, result_value)
 
-    async def state(self) -> dict:
+    async def state(self) -> dict[str, Any]:
         raw = await self.backend.get_workflow_state(self.wf_id)
         assert raw is not None
-        return decode_json(raw)
+        state: dict[str, Any] = decode_json(raw)
+        return state
 
     async def final_value(self):
         st = await self.state()
@@ -268,9 +271,7 @@ async def test_group_with_chain_member_keeps_all_members():
 async def test_chord_header_with_chain_member_injects_all_members():
     # R3, AE4. Ungefixt bekommt der Body eine einelementige Header-Liste —
     # der Fehler landet damit in der Rechnung des Bodys, nicht im Rueckgabewert.
-    d = Driver(
-        chord(group(Echo.s("a"), chain(Echo.s("b"), Echo.s())), Echo.s())
-    )
+    d = Driver(chord(group(Echo.s("a"), chain(Echo.s("b"), Echo.s())), Echo.s()))
     await d.seed()
     await d.drain()
     st = await d.state()
@@ -299,9 +300,7 @@ async def test_group_of_only_composite_members():
 
 async def test_group_nested_two_levels_deep():
     # R4, AE5 — die Ableitung ist rekursiv, nicht auf eine Ebene beschraenkt.
-    d = Driver(
-        group(Echo.s("a"), group(Echo.s("b"), chain(Echo.s("c"), Echo.s())))
-    )
+    d = Driver(group(Echo.s("a"), group(Echo.s("b"), chain(Echo.s("c"), Echo.s()))))
     await d.seed()
     await d.drain()
     assert await d.final_value() == [["a"], [["b"], [["c"]]]]
@@ -326,10 +325,10 @@ async def test_every_member_result_lives_where_the_contract_says():
 
     d = Driver(
         group(
-            Echo.s("a"),                                            # /g0 Blatt
-            chain(Echo.s("b"), Echo.s()),                           # /g1 Kette
-            group(Echo.s("c"), Echo.s("d")),                        # /g2 Gruppe
-            chord(group(Echo.s("e")), Echo.s()),                    # /g3 Chord
+            Echo.s("a"),  # /g0 Blatt
+            chain(Echo.s("b"), Echo.s()),  # /g1 Kette
+            group(Echo.s("c"), Echo.s("d")),  # /g2 Gruppe
+            chord(group(Echo.s("e")), Echo.s()),  # /g3 Chord
             chain(Echo.s("f"), group(Echo.si("g"), Echo.si("h"))),  # /g4 Kette->Gruppe
             chord(group(Echo.si("i")), group(Echo.si("j"), Echo.si("k"))),  # /g5 Chord->Gruppe
         )
@@ -351,12 +350,12 @@ async def test_every_member_result_lives_where_the_contract_says():
 
     step_tasks = st["step_tasks"]
     where = [
-        step_tasks["/g0"],                        # Blatt
-        step_tasks["/g1/1"],                      # letzter Kettenschritt
-        aggregate_result_id(d.wf_id, "/g2"),      # Gruppe am Gliedpfad
-        step_tasks["/g3/b"],                      # Chord-Body (Blatt)
-        aggregate_result_id(d.wf_id, "/g4"),      # Kette, die als Gruppe endet
-        aggregate_result_id(d.wf_id, "/g5"),      # Chord mit Gruppen-Body
+        step_tasks["/g0"],  # Blatt
+        step_tasks["/g1/1"],  # letzter Kettenschritt
+        aggregate_result_id(d.wf_id, "/g2"),  # Gruppe am Gliedpfad
+        step_tasks["/g3/b"],  # Chord-Body (Blatt)
+        aggregate_result_id(d.wf_id, "/g4"),  # Kette, die als Gruppe endet
+        aggregate_result_id(d.wf_id, "/g5"),  # Chord mit Gruppen-Body
     ]
     for i, task_id in enumerate(where):
         raw = await d.backend.get_result(task_id)
@@ -369,9 +368,7 @@ async def test_group_member_ending_in_group_behind_a_chain():
     # Schritt eine Gruppe ist. Das Aggregat liegt am Gliedpfad /g1, nicht am
     # tiefsten Pfad /g1/1 — der erste Anlauf griff daneben und meldete
     # faelschlich eine abgelaufene TTL.
-    d = Driver(
-        group(Echo.s("x"), chain(Echo.s("a"), group(Echo.si("b"), Echo.si("c"))))
-    )
+    d = Driver(group(Echo.s("x"), chain(Echo.s("a"), group(Echo.si("b"), Echo.si("c")))))
     await d.seed()
     await d.drain()
     assert (await d.state())["status"] == STATUS_COMPLETED
@@ -458,9 +455,7 @@ async def test_expired_aggregate_of_composite_member_raises():
             # Jetzt laeuft es ab, bevor die aeussere Gruppe es einsammelt.
             await d.backend.delete_result(aggregate_result_id(d.wf_id, "/g0"))
             with pytest.raises(WorkflowResultExpired):
-                await d.advancer.advance(
-                    d.wf_id, step_path, task_id, list(sig.args)
-                )
+                await d.advancer.advance(d.wf_id, step_path, task_id, list(sig.args))
         else:
             await d.advancer.advance(d.wf_id, step_path, task_id, list(sig.args))
 
@@ -493,9 +488,7 @@ async def _seed_results(d, frontier, step_tasks):
 
 async def _drop_step_marker(d, drop_path):
     state = await d.state()
-    state["step_tasks"] = {
-        k: v for k, v in state["step_tasks"].items() if k != drop_path
-    }
+    state["step_tasks"] = {k: v for k, v in state["step_tasks"].items() if k != drop_path}
     await d.backend.store_workflow_state(d.wf_id, encode_json(state), 60_000)
 
 
@@ -535,9 +528,7 @@ async def test_guard_fires_before_chord_body_is_enqueued():
     await _drop_step_marker(d, "/h/g0")
 
     with pytest.raises(WorkflowValidationError) as exc:
-        await d.advancer.advance(
-            d.wf_id, "/h/g1", state["step_tasks"]["/h/g1"], ["b"]
-        )
+        await d.advancer.advance(d.wf_id, "/h/g1", state["step_tasks"]["/h/g1"], ["b"])
     assert "'/h'" in str(exc.value)
     assert d.published == [], "Body wurde trotz unvollstaendiger Eingabe eingereiht"
 
@@ -568,10 +559,11 @@ class MultiDriver:
 
     def __init__(self, workflow):
         self.backend = _connected_backend()
-        self.published: list[tuple[str, bytes, dict]] = []
+        self.published: list[tuple[str, bytes, dict[str, str]]] = []
         self.wf_id = "wf-multi"
         self.workflow = workflow
         self.advancer_count = 0
+        self.cas_calls = 0
 
     def advancer(self) -> WorkflowAdvancer:
         self.advancer_count += 1
@@ -607,17 +599,13 @@ class MultiDriver:
             60_000,
         )
 
-    async def seed(self) -> dict:
+    async def seed(self) -> dict[str, Any]:
         state = build_initial_workflow_state(self.wf_id, self.workflow.to_dict())
         frontier = initial_frontier(self.workflow)
         state["step_tasks"] = {sp: f"seed-{sp}" for sp, _ in frontier}
-        await self.backend.store_workflow_state(
-            self.wf_id, encode_json(state), 60_000
-        )
+        await self.backend.store_workflow_state(self.wf_id, encode_json(state), 60_000)
         for step_path, sig in frontier:
-            await self._store(
-                state["step_tasks"][step_path], sig.task_name, list(sig.args)
-            )
+            await self._store(state["step_tasks"][step_path], sig.task_name, list(sig.args))
         return state
 
     async def run_next(self) -> None:
@@ -630,10 +618,11 @@ class MultiDriver:
         await self._store(task_id, msg["task"]["name"], value)
         await self.advancer().advance(self.wf_id, step_path, task_id, value)
 
-    async def state(self) -> dict:
+    async def state(self) -> dict[str, Any]:
         raw = await self.backend.get_workflow_state(self.wf_id)
         assert raw is not None
-        return decode_json(raw)
+        state: dict[str, Any] = decode_json(raw)
+        return state
 
     async def final_value(self):
         fid = (await self.state())["final_result_task_id"]
@@ -652,9 +641,7 @@ async def test_composite_members_across_separate_advancers():
     m = MultiDriver(group(chain(Echo.s("a"), Echo.s()), chain(Echo.s("c"), Echo.s())))
     state = await m.seed()
     for step_path, sig in initial_frontier(m.workflow):
-        await m.advancer().advance(
-            m.wf_id, step_path, state["step_tasks"][step_path], list(sig.args)
-        )
+        await m.advancer().advance(m.wf_id, step_path, state["step_tasks"][step_path], list(sig.args))
     while m.published:
         await m.run_next()
 
@@ -709,9 +696,7 @@ async def test_stale_snapshot_keeps_both_step_markers():
 
     m.backend.get_workflow_state = stale_once  # type: ignore[method-assign]
     try:
-        await m.advancer().advance(
-            m.wf_id, "/g1/0", state["step_tasks"]["/g1/0"], ["c"]
-        )
+        await m.advancer().advance(m.wf_id, "/g1/0", state["step_tasks"]["/g1/0"], ["c"])
     finally:
         m.backend.get_workflow_state = real_get  # type: ignore[method-assign]
 
@@ -903,14 +888,16 @@ async def test_refresh_before_fan_in_adopts_fresh_version():
     assert m.cas_calls == 1
 
 
+_GOLDEN_WORKFLOW_STATE = (
+    Path(__file__).resolve().parents[1] / "integration" / "backend" / "golden" / "values" / "workflow_state.json"
+)
+
+
 async def test_golden_state_without_version_decodes_and_first_write_is_version_one():
     """R22: Dokumente aus 0.5.x (die Golden-Fixture) tragen keine ``version``;
     sie gelten als 0 und werden beim ersten Schreiben 1. Die Fixture bleibt
     unveraendert -- ein Bruch hier ist Stop-Condition (b) des Plans."""
-    fixture = (
-        Path(__file__).resolve().parents[1]
-        / "integration" / "backend" / "golden" / "values" / "workflow_state.json"
-    ).read_bytes()
+    fixture = await asyncio.to_thread(_GOLDEN_WORKFLOW_STATE.read_bytes)
     golden = decode_json(fixture)
     assert "version" not in golden
     m = MultiDriver(_node_from_dict(golden["topology"]))
@@ -924,7 +911,8 @@ async def test_golden_state_without_version_decodes_and_first_write_is_version_o
     fresh = await m.state()
     assert fresh["version"] == 1
     assert set(fresh["step_tasks"]) == {"/0", "/1/h/g0", "/1/h/g1"}
-    assert fresh["v"] == golden["v"] and fresh["topology"] == golden["topology"]
+    assert fresh["v"] == golden["v"]
+    assert fresh["topology"] == golden["topology"]
 
 
 async def test_expired_member_result_raises_workflow_result_expired():
@@ -1020,8 +1008,13 @@ class TestMarkEnqueuedRequiresReceipt:
     def _advancer(self):
         backend = _connected_backend()
         return WorkflowAdvancer(
-            backend, backend.chords, publisher=_NoopPublisher(), resolve_queue=lambda name: "default",
-            make_task_id=workflow_step_task_id, unpack=_unpack, ttl_ms=60_000,
+            backend,
+            backend.chords,
+            publisher=_NoopPublisher(),
+            resolve_queue=lambda name: "default",
+            make_task_id=workflow_step_task_id,
+            unpack=_unpack,
+            ttl_ms=60_000,
         )
 
     def test_forged_receipt_raises_type_error(self):
@@ -1031,14 +1024,14 @@ class TestMarkEnqueuedRequiresReceipt:
             queue = "q"
             message_id = None
 
-        state = {"step_tasks": {}}
+        state: dict[str, Any] = {"step_tasks": {}}
         with pytest.raises(TypeError, match="PublishReceipt"):
             advancer.mark_enqueued(state, "/1", "tid", Fake())
         assert state["step_tasks"] == {}
 
     def test_real_receipt_marks_the_step(self):
         advancer = self._advancer()
-        state = {"step_tasks": {}}
+        state: dict[str, Any] = {"step_tasks": {}}
         advancer.mark_enqueued(state, "/1", "tid", PublishReceipt(queue="default"))
         assert state["step_tasks"] == {"/1": "tid"}
 
@@ -1050,7 +1043,7 @@ class _RecordingPublisher:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple[str, ...]]] = []
-        self.steps: list = []
+        self.steps: list[WorkflowStep] = []
 
     async def pre_enqueue(self, steps) -> None:
         self.calls.append(("pre_enqueue", tuple(s.step_path for s in steps)))
@@ -1066,9 +1059,13 @@ async def _advance_group_frontier(publisher) -> None:
     Gliedern ist — die Front, die ``pre_enqueue`` als Ganzes sehen muss."""
     backend = _connected_backend()
     advancer = WorkflowAdvancer(
-        backend, backend.chords, publisher=publisher,
-        resolve_queue=lambda name: "default", make_task_id=workflow_step_task_id,
-        unpack=_unpack, ttl_ms=60_000,
+        backend,
+        backend.chords,
+        publisher=publisher,
+        resolve_queue=lambda name: "default",
+        make_task_id=workflow_step_task_id,
+        unpack=_unpack,
+        ttl_ms=60_000,
     )
     wf = chain(Echo.s("a"), group(Echo.s(), Echo.s()))
     state = build_initial_workflow_state("wf-front", wf.to_dict())
@@ -1077,10 +1074,15 @@ async def _advance_group_frontier(publisher) -> None:
     await backend.store_workflow_state("wf-front", encode_json(state), 60_000)
     await backend.store_result(
         "t0",
-        encode_result({
-            "task": {"id": "t0", "queue": "default", "name": "echo"},
-            "is_error": False, "is_cancelled": False, "error_message": "", "result": ["a"],
-        }),
+        encode_result(
+            {
+                "task": {"id": "t0", "queue": "default", "name": "echo"},
+                "is_error": False,
+                "is_cancelled": False,
+                "error_message": "",
+                "result": ["a"],
+            }
+        ),
         60_000,
     )
     await advancer.advance("wf-front", "/0", "t0", ["a"])
@@ -1105,6 +1107,7 @@ async def test_middleware_rejecting_the_second_member_publishes_no_member():
     seen: list[str] = []
 
     class RejectSecondMember(Middleware):
+        @override
         async def pre_enqueue(self, message) -> None:
             seen.append(message["step_path"])
             if message["step_path"] == "/1/g1":
@@ -1133,6 +1136,7 @@ async def test_post_enqueue_failure_does_not_lose_the_step_marker():
     published: list[str] = []
 
     class FailingPost(Middleware):
+        @override
         async def post_enqueue(self, message) -> None:
             raise RuntimeError("metrics sink down")
 
@@ -1142,13 +1146,18 @@ async def test_post_enqueue_failure_does_not_lose_the_step_marker():
 
     backend = _connected_backend()
     publisher = WorkflowStepEnqueuer(
-        publish=_publish, dispatch=AsyncMock(),
+        publish=_publish,
+        dispatch=AsyncMock(),
         get_chain=lambda: MiddlewareChain([FailingPost()]),
     )
     advancer = WorkflowAdvancer(
-        backend, backend.chords, publisher=publisher,
-        resolve_queue=lambda name: "default", make_task_id=workflow_step_task_id,
-        unpack=_unpack, ttl_ms=60_000,
+        backend,
+        backend.chords,
+        publisher=publisher,
+        resolve_queue=lambda name: "default",
+        make_task_id=workflow_step_task_id,
+        unpack=_unpack,
+        ttl_ms=60_000,
     )
     wf = chain(Echo.s("a"), Echo.s())
     state = build_initial_workflow_state("wf-post", wf.to_dict())
@@ -1157,16 +1166,23 @@ async def test_post_enqueue_failure_does_not_lose_the_step_marker():
     await backend.store_workflow_state("wf-post", encode_json(state), 60_000)
     await backend.store_result(
         "t0",
-        encode_result({
-            "task": {"id": "t0", "queue": "default", "name": "echo"},
-            "is_error": False, "is_cancelled": False, "error_message": "", "result": ["a"],
-        }),
+        encode_result(
+            {
+                "task": {"id": "t0", "queue": "default", "name": "echo"},
+                "is_error": False,
+                "is_cancelled": False,
+                "error_message": "",
+                "result": ["a"],
+            }
+        ),
         60_000,
     )
     await advancer.advance("wf-post", "/0", "t0", ["a"])
 
     assert published == ["/1"]
-    fresh = decode_json(await backend.get_workflow_state("wf-post"))
+    raw_state = await backend.get_workflow_state("wf-post")
+    assert raw_state is not None
+    fresh = decode_json(raw_state)
     assert "/1" in fresh["step_tasks"]
 
 
@@ -1176,11 +1192,17 @@ async def test_fail_with_missing_workflow_state_logs_a_warning(swarmq_logs) -> N
     ohne Spur."""
     backend = _connected_backend()
     advancer = WorkflowAdvancer(
-        backend, backend.chords, publisher=_NoopPublisher(), resolve_queue=lambda _n: "default",
-        make_task_id=lambda wf, path: f"{wf}:{path}", unpack=_unpack, ttl_ms=60_000,
+        backend,
+        backend.chords,
+        publisher=_NoopPublisher(),
+        resolve_queue=lambda _n: "default",
+        make_task_id=lambda wf, path: f"{wf}:{path}",
+        unpack=_unpack,
+        ttl_ms=60_000,
     )
 
     await advancer.fail("wf-gone", "TaskError", "boom")
 
     [entry] = [e for e in swarmq_logs if e["event"] == "workflow_state_missing"]
-    assert entry["log_level"] == "warning" and entry["workflow_id"] == "wf-gone"
+    assert entry["log_level"] == "warning"
+    assert entry["workflow_id"] == "wf-gone"

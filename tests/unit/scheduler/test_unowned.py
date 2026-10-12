@@ -185,7 +185,9 @@ async def test_hold_logs_and_signals_only_on_the_transition(leader, store, signa
 
     assert store.commit_fire.await_count == 2
     [held] = [e for e in swarmq_logs if e["event"] == "scheduler_cron_held_unowned"]
-    assert held["log_level"] == "warning" and held["schedule_name"] == "ghost" and held["task_name"] == "ping"
+    assert held["log_level"] == "warning"
+    assert held["schedule_name"] == "ghost"
+    assert held["task_name"] == "ping"
     assert seen == [{"worker_id": "w-1", "schedule_name": "ghost", "task_name": "ping", "held": True, "held_count": 1}]
 
 
@@ -200,7 +202,8 @@ async def test_reported_again_releases_the_hold(leader, known, store, broker, si
 
     broker.publish.assert_awaited_once()
     [released] = [e for e in swarmq_logs if e["event"] == "scheduler_cron_unowned_released"]
-    assert released["log_level"] == "info" and released["schedule_name"] == "ghost"
+    assert released["log_level"] == "info"
+    assert released["schedule_name"] == "ghost"
     assert [(e["held"], e["held_count"]) for e in seen] == [(True, 1), (False, 0)]
 
 

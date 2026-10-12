@@ -108,6 +108,7 @@ def test_a_raising_app_handler_with_a_full_opt_in_queue_still_exits_cleanly() ->
         capture_output=True,
         text=True,
         timeout=_HANG_DEADLINE_S + 20,
+        check=False,
     )
 
     assert proc.returncode == 0, proc.stderr
@@ -208,9 +209,20 @@ def test_the_swarmq_command_ends_with_its_exit_code_while_stderr_never_drains(
     r, w = _full_pipe()
     try:
         proc = subprocess.Popen(
-            [sys.executable, "-c", child, "worker", "--module", "no_such_module_u4",
-             "--log-drain-timeout", str(_DRAIN_S)],
-            cwd=_REPO, env=env, stdout=subprocess.DEVNULL, stderr=w,
+            [
+                sys.executable,
+                "-c",
+                child,
+                "worker",
+                "--module",
+                "no_such_module_u4",
+                "--log-drain-timeout",
+                str(_DRAIN_S),
+            ],
+            cwd=_REPO,
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=w,
         )
         os.close(w)
         try:
@@ -253,11 +265,15 @@ def test_a_pipe_drained_only_after_the_deadline_ends_without_a_fatal_error(
     with os.fdopen(r, "rb") as stderr:
         proc = subprocess.Popen(
             [sys.executable, "-c", _LATE_DRAIN_CHILD, str(dump)],
-            cwd=_REPO, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=w,
+            cwd=_REPO,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=w,
         )
         os.close(w)
         try:
-            assert proc.stdout is not None and proc.stdin is not None
+            assert proc.stdout is not None
+            assert proc.stdin is not None
             ready, _, _ = select.select([proc.stdout], [], [], _HANG_DEADLINE_S + 5)
             assert ready, "Kind meldet nichts: das Leeren haengt"
             assert proc.stdout.readline().strip() == b"deadline_passed"
@@ -298,7 +314,9 @@ def test_the_hard_exit_is_not_blocked_by_stdout_on_the_same_full_pipe(
     try:
         proc = subprocess.Popen(
             [sys.executable, "-c", _SHARED_PIPE_CHILD, str(dump)],
-            cwd=_REPO, stdout=w, stderr=w,
+            cwd=_REPO,
+            stdout=w,
+            stderr=w,
         )
         os.close(w)
         try:
@@ -349,7 +367,9 @@ def test_the_hard_exit_is_not_blocked_by_flushing_stdout_into_a_nearly_full_pipe
     try:
         proc = subprocess.Popen(
             [sys.executable, "-c", _NEARLY_FULL_CHILD, str(dump)],
-            cwd=_REPO, stdout=w, stderr=subprocess.DEVNULL,
+            cwd=_REPO,
+            stdout=w,
+            stderr=subprocess.DEVNULL,
         )
         os.close(w)
         try:
@@ -401,7 +421,11 @@ sys.exit(7)
 def test_an_embedded_app_is_never_ended_hard_and_keeps_its_exit_code() -> None:
     proc = subprocess.run(
         [sys.executable, "-c", _EMBEDDED_CHILD],
-        cwd=_REPO, capture_output=True, text=True, timeout=_HANG_DEADLINE_S + 20,
+        cwd=_REPO,
+        capture_output=True,
+        text=True,
+        timeout=_HANG_DEADLINE_S + 20,
+        check=False,
     )
 
     assert proc.returncode == 7, proc.stderr[-2000:]
@@ -441,7 +465,11 @@ for i in range(40):
 def test_file_mode_with_a_bounded_queue_and_a_raising_handler_ends_in_time() -> None:
     proc = subprocess.run(
         [sys.executable, "-c", _FILE_MODE_CHILD],
-        cwd=_REPO, capture_output=True, text=True, timeout=_DRAIN_S + 15,
+        cwd=_REPO,
+        capture_output=True,
+        text=True,
+        timeout=_DRAIN_S + 15,
+        check=False,
     )
 
     assert proc.returncode == 0, proc.stderr[-2000:]
@@ -478,7 +506,11 @@ _log.warning("normal_line")
 def test_a_record_from_a_finalizer_at_shutdown_is_written_without_a_logging_error() -> None:
     proc = subprocess.run(
         [sys.executable, "-c", _FINALIZATION_CHILD],
-        cwd=_REPO, capture_output=True, text=True, timeout=_HANG_DEADLINE_S + 20,
+        cwd=_REPO,
+        capture_output=True,
+        text=True,
+        timeout=_HANG_DEADLINE_S + 20,
+        check=False,
     )
 
     assert proc.returncode == 0, proc.stderr[-2000:]
@@ -550,7 +582,11 @@ asyncio.run(main())
 def test_leaving_an_embedded_app_keeps_the_event_loop_responsive() -> None:
     proc = subprocess.run(
         [sys.executable, "-c", _AEXIT_CHILD],
-        cwd=_REPO, capture_output=True, text=True, timeout=_HANG_DEADLINE_S + 20,
+        cwd=_REPO,
+        capture_output=True,
+        text=True,
+        timeout=_HANG_DEADLINE_S + 20,
+        check=False,
     )
 
     assert proc.returncode == 0, proc.stderr[-2000:]

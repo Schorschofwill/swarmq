@@ -14,12 +14,13 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, override
 
 # Attribute, die jeder LogRecord mitbringt -- alles andere ist ein Feld.
-_STANDARD_RECORD_ATTRS = frozenset(
-    vars(logging.LogRecord("", logging.INFO, "", 0, "", (), None))
-) | {"message", "asctime"}
+_STANDARD_RECORD_ATTRS = frozenset(vars(logging.LogRecord("", logging.INFO, "", 0, "", (), None))) | {
+    "message",
+    "asctime",
+}
 
 
 class _CollectingHandler(logging.Handler):
@@ -29,15 +30,14 @@ class _CollectingHandler(logging.Handler):
         super().__init__(logging.DEBUG)
         self._entries = entries
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         entry: dict[str, Any] = {
             "event": record.msg,
             "log_level": record.levelname.lower(),
             "logger": record.name,
         }
-        for key, value in vars(record).items():
-            if key not in _STANDARD_RECORD_ATTRS:
-                entry[key] = value
+        entry.update({key: value for key, value in vars(record).items() if key not in _STANDARD_RECORD_ATTRS})
         self._entries.append(entry)
 
 
@@ -97,7 +97,7 @@ def preserved_root_logger() -> Iterator[None]:
         shutdown_logging()
         # Eine im Test eingerichtete Frist (Plan 2026-10-06-1811, U4) gilt
         # nicht fuer den naechsten.
-        _queue_core._DRAIN_TIMEOUT = LoggingSettings().drain_timeout
+        _queue_core.set_drain_timeout(LoggingSettings().drain_timeout)
         # Ein im Test als Fork-Quelle markierter Prozess (U6, KTD6) startet
         # sonst keinen Listener mehr.
         # Ebenso ein im Test angehaengter Forkserver-Sentinel (U9, KTD9).

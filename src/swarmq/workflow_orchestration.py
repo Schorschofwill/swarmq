@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, override
 
 from swarmq.contracts import PublishReceipt
 from swarmq.contracts.coordination import ChordStore
@@ -101,7 +101,7 @@ class WorkflowHandle:
         raw = await self._backend.get_workflow_state(self.workflow_id)
         if raw is None:
             raise WorkflowNotFound(self.workflow_id)
-        return decode_json(raw)  # type: ignore[no-any-return]
+        return decode_json(raw)  # type: ignore[no-any-return]  # decode_json liefert Any aus JSON
 
     async def status(self) -> str:
         state = await self._load_state()
@@ -133,7 +133,7 @@ class WorkflowHandle:
             entry: dict[str, Any] = {"task_id": tid, "status": "completed"}
             try:
                 entry["result"] = self._unpack(raw)
-            except Exception:
+            except Exception:  # noqa: BLE001 - gespeichertes Fehlerergebnis meldet Status failed
                 # Stored result is an error/cancel — report failed status
                 # rather than propagating the exception from an introspection
                 # call; get() is the surface that raises.
@@ -151,9 +151,7 @@ class WorkflowHandle:
         hard kill), and its ``advance()`` then refuses to enqueue
         downstream steps.
         """
-        newly = await self._backend.set_workflow_cancel_flag(
-            self.workflow_id, ttl_ms=self._cancel_ttl_ms
-        )
+        newly = await self._backend.set_workflow_cancel_flag(self.workflow_id, ttl_ms=self._cancel_ttl_ms)
         await self._backend.notify_workflow(self.workflow_id)
         return newly
 
@@ -182,17 +180,12 @@ class WorkflowHandle:
                 raise TaskCancelledError(self.workflow_id)
             remaining = deadline - loop.time()
             if remaining <= 0:
-                raise ResultNotReadyError(
-                    f"workflow {self.workflow_id} did not complete "
-                    f"within {timeout}s"
-                )
+                raise ResultNotReadyError(f"workflow {self.workflow_id} did not complete within {timeout}s")
             # Vertragsmethode (U15): wartet bis zur Benachrichtigung
             # oder zum Slice-Ende; der Poll oben trägt die Liveness.
             try:
-                await self._backend.wait_for_workflow(
-                    self.workflow_id, timeout=min(0.2, remaining)
-                )
-            except Exception:
+                await self._backend.wait_for_workflow(self.workflow_id, timeout=min(0.2, remaining))
+            except Exception:  # noqa: BLE001 - Pub/Sub nicht verfuegbar, Poll-Fallback
                 # Pub/Sub nicht verfügbar — Poll-Fallback.
                 await asyncio.sleep(min(0.05, max(0.0, remaining)))
 
@@ -201,7 +194,7 @@ class WorkflowHandle:
         if status == STATUS_CANCELLED:
             raise TaskCancelledError(self.workflow_id)
         if status == STATUS_FAILED:
-            err = state.get("error") or {}
+            err: dict[str, Any] = state.get("error") or {}
             raise TaskError(err.get("message", "workflow failed"))
         # completed — resolve the final result via the terminal task id.
         final_id = state.get("final_result_task_id")
@@ -263,9 +256,7 @@ class WorkflowAdvancer(WorkflowFailure):
         self._unpack = unpack
         self._ttl_ms = ttl_ms
 
-    async def advance(
-        self, wf_id: str, completed_path: str, completed_task_id: str, result: Any
-    ) -> None:
+    async def advance(self, wf_id: str, completed_path: str, completed_task_id: str, result: Any) -> None:
         """Entry point: a workflow step at *completed_path* finished with
         *result*. Decide and enqueue what runs next, or mark the workflow
         complete. Idempotent against redelivery via the chord set + the
@@ -276,8 +267,10 @@ class WorkflowAdvancer(WorkflowFailure):
             # BZ-13: say so; the chain ends here, and without this line it
             # ended without a trace.
             logger.warning(
-                "workflow_state_missing", workflow_id=wf_id,
-                step_path=completed_path, task_id=completed_task_id,
+                "workflow_state_missing",
+                workflow_id=wf_id,
+                step_path=completed_path,
+                task_id=completed_task_id,
             )
             return
         state: dict[str, Any] = decode_json(raw)
@@ -289,14 +282,13 @@ class WorkflowAdvancer(WorkflowFailure):
                 return
 
             topology = _node_from_dict(state["topology"])
-            await self._on_leaf_complete(
-                wf_id, state, topology, completed_path, completed_task_id, result
-            )
+            await self._on_leaf_complete(wf_id, state, topology, completed_path, completed_task_id, result)
         except _StaleWorkflowState:
             await self._reconcile(wf_id, state)
         except _WorkflowAlreadyTerminal:
             return
 
+    @override
     async def _reconcile(self, wf_id: str, local: dict[str, Any]) -> None:
         """Konfliktbehandlung (R23): den frischen Zustand lesen und die lokalen
         Aenderungen hineinmergen statt den Advance zu wiederholen -- publiziert
@@ -355,25 +347,34 @@ class WorkflowAdvancer(WorkflowFailure):
             i = int(last)
             if i + 1 < len(parent.steps):
                 await self._enqueue_node(
-                    wf_id, state, parent.steps[i + 1], f"{parent_path}/{i + 1}",
+                    wf_id,
+                    state,
+                    parent.steps[i + 1],
+                    f"{parent_path}/{i + 1}",
                     inject=result,
                 )
                 await self._persist(wf_id, state)
             else:
                 # Last chain step done → the chain itself completed.
                 await self._on_container_complete(
-                    wf_id, state, topology, parent_path, result_task_id=task_id,
+                    wf_id,
+                    state,
+                    topology,
+                    parent_path,
+                    result_task_id=task_id,
                     result_value=None,
                 )
         elif isinstance(parent, Group):
-            await self._on_group_member(
-                wf_id, state, topology, parent, parent_path, task_id, result
-            )
+            await self._on_group_member(wf_id, state, topology, parent, parent_path, task_id, result)
         elif isinstance(parent, Chord):
             # Only the body resolves to a chord-child leaf ("/b"); header
             # members live under "/h/g{i}" and hit the Group branch.
             await self._on_container_complete(
-                wf_id, state, topology, parent_path, result_task_id=task_id,
+                wf_id,
+                state,
+                topology,
+                parent_path,
+                result_task_id=task_id,
                 result_value=None,
             )
         else:
@@ -387,7 +388,7 @@ class WorkflowAdvancer(WorkflowFailure):
         group: Group,
         group_path: str,
         member_task_id: str,
-        result: Any,
+        result: Any,  # noqa: ARG002 - einheitliche Signatur der Member-Callbacks
     ) -> None:
         expected_n = len(group.members)
         fired = await self._chord.record_member(
@@ -408,18 +409,22 @@ class WorkflowAdvancer(WorkflowFailure):
         if gp_last == "h":
             chord_node = node_at_path(topology, gp_parent)
             if not isinstance(chord_node, Chord):
-                raise WorkflowValidationError(
-                    f"expected Chord at {gp_parent!r}, "
-                    f"got {type(chord_node).__name__}"
-                )
+                raise WorkflowValidationError(f"expected Chord at {gp_parent!r}, got {type(chord_node).__name__}")
             await self._enqueue_node(
-                wf_id, state, chord_node.body, f"{gp_parent}/b",
+                wf_id,
+                state,
+                chord_node.body,
+                f"{gp_parent}/b",
                 inject=ordered_results,
             )
             await self._persist(wf_id, state)
         else:
             await self._on_container_complete(
-                wf_id, state, topology, group_path, result_task_id=None,
+                wf_id,
+                state,
+                topology,
+                group_path,
+                result_task_id=None,
                 result_value=ordered_results,
             )
 
@@ -437,9 +442,7 @@ class WorkflowAdvancer(WorkflowFailure):
         a result (a stored task id, or an in-memory aggregate value).
         Propagate to its container, or finish the workflow at the root."""
         if node_path == "":
-            await self._mark_terminal(
-                wf_id, state, STATUS_COMPLETED, result_task_id, result_value
-            )
+            await self._mark_terminal(wf_id, state, STATUS_COMPLETED, result_task_id, result_value)
             return
 
         parent_path, last = split_path(node_path)
@@ -455,34 +458,39 @@ class WorkflowAdvancer(WorkflowFailure):
             i = int(last)
             if i + 1 < len(parent.steps):
                 await self._enqueue_node(
-                    wf_id, state, parent.steps[i + 1], f"{parent_path}/{i + 1}",
+                    wf_id,
+                    state,
+                    parent.steps[i + 1],
+                    f"{parent_path}/{i + 1}",
                     inject=value,
                 )
                 await self._persist(wf_id, state)
             else:
                 await self._on_container_complete(
-                    wf_id, state, topology, parent_path,
-                    result_task_id=result_task_id, result_value=value,
+                    wf_id,
+                    state,
+                    topology,
+                    parent_path,
+                    result_task_id=result_task_id,
+                    result_value=value,
                 )
         elif isinstance(parent, Group):
             # A composite that is itself a group member: treat its completion
             # as that member completing (fan-in counts it once via a synthetic
             # member id derived from the node path).
-            synthetic_id = await self._materialise(
-                wf_id, node_path, result_task_id, value
-            )
-            await self._on_group_member(
-                wf_id, state, topology, parent, parent_path, synthetic_id, value
-            )
+            synthetic_id = await self._materialise(wf_id, node_path, result_task_id, value)
+            await self._on_group_member(wf_id, state, topology, parent, parent_path, synthetic_id, value)
         elif isinstance(parent, Chord):
             await self._on_container_complete(
-                wf_id, state, topology, parent_path,
-                result_task_id=result_task_id, result_value=value,
+                wf_id,
+                state,
+                topology,
+                parent_path,
+                result_task_id=result_task_id,
+                result_value=value,
             )
         else:
-            await self._mark_terminal(
-                wf_id, state, STATUS_COMPLETED, result_task_id, value
-            )
+            await self._mark_terminal(wf_id, state, STATUS_COMPLETED, result_task_id, value)
 
     # --- enqueue + state helpers -------------------------------------------
 
@@ -511,20 +519,22 @@ class WorkflowAdvancer(WorkflowFailure):
             injected = inject_result(signature, inject)
             task_id = self._make_task_id(wf_id, step_path)
             queue = self._resolve_queue(injected.task_name)
-            steps.append(WorkflowStep(
-                workflow_id=wf_id,
-                step_path=step_path,
-                task_id=task_id,
-                task_name=injected.task_name,
-                queue=queue,
-                args=list(injected.args),
-                kwargs=injected.kwargs,
-                headers={
-                    HEADER_WORKFLOW_ID: wf_id,
-                    HEADER_WORKFLOW_STEP: step_path,
-                    HEADER_ENQUEUED_AT: enqueued_at,
-                },
-            ))
+            steps.append(
+                WorkflowStep(
+                    workflow_id=wf_id,
+                    step_path=step_path,
+                    task_id=task_id,
+                    task_name=injected.task_name,
+                    queue=queue,
+                    args=list(injected.args),
+                    kwargs=injected.kwargs,
+                    headers={
+                        HEADER_WORKFLOW_ID: wf_id,
+                        HEADER_WORKFLOW_STEP: step_path,
+                        HEADER_ENQUEUED_AT: enqueued_at,
+                    },
+                )
+            )
         if not steps:
             return
         # R15: ``pre_enqueue`` ist ein Gate ueber die GANZE Front. Liefe es je
@@ -536,14 +546,12 @@ class WorkflowAdvancer(WorkflowFailure):
             receipt = await self._publisher.publish(step)
             self.mark_enqueued(state, step.step_path, step.task_id, receipt)
 
-    def mark_enqueued(
-        self, state: dict[str, Any], step_path: str, task_id: str, receipt: PublishReceipt
-    ) -> None:
+    def mark_enqueued(self, state: dict[str, Any], step_path: str, task_id: str, receipt: PublishReceipt) -> None:
         """publish-then-mark (AE5): die Markierung verlangt den Beleg der
         Veröffentlichung. Ohne ``PublishReceipt`` — den nur
         ``Publisher.publish`` erzeugt — ist die Markierung ein Typfehler
         (mypy) und zur Laufzeit ein ``TypeError``."""
-        if not isinstance(receipt, PublishReceipt):
+        if not isinstance(receipt, PublishReceipt):  # pyright: ignore[reportUnnecessaryIsInstance]  # Laufzeitschutz fuer ungetypte Aufrufer (AE5)
             raise TypeError(
                 f"mark_enqueued requires the PublishReceipt returned by Publisher.publish, got {type(receipt).__name__}"
             )
@@ -615,20 +623,14 @@ class WorkflowAdvancer(WorkflowFailure):
             return step_tasks.get(path)
         if isinstance(node, Chain):
             last = len(node.steps) - 1
-            return self._terminal_result_id(
-                wf_id, node.steps[last], f"{path}/{last}", step_tasks, member_path
-            )
+            return self._terminal_result_id(wf_id, node.steps[last], f"{path}/{last}", step_tasks, member_path)
         if isinstance(node, Chord):
-            return self._terminal_result_id(
-                wf_id, node.body, f"{path}/b", step_tasks, member_path
-            )
-        if isinstance(node, Group):
+            return self._terminal_result_id(wf_id, node.body, f"{path}/b", step_tasks, member_path)
+        if isinstance(node, Group):  # pyright: ignore[reportUnnecessaryIsInstance]  # defensiv fuer ungetypte Aufrufer
             return aggregate_result_id(wf_id, member_path)
         raise WorkflowValidationError(f"unknown node type {type(node).__name__}")
 
-    def _ordered_member_ids(
-        self, wf_id: str, state: dict[str, Any], group: Group, group_path: str
-    ) -> list[str]:
+    def _ordered_member_ids(self, wf_id: str, state: dict[str, Any], group: Group, group_path: str) -> list[str]:
         """Gliedkennungen in Definitionsreihenfolge (R5).
 
         Bis 0.3.0 wurde hier stur ``<gruppe>/g<i>`` in ``step_tasks``
@@ -647,9 +649,7 @@ class WorkflowAdvancer(WorkflowFailure):
         step_tasks: dict[str, str] = state["step_tasks"]
         out: list[str] = []
         for i, member in enumerate(group.members):
-            task_id = self._terminal_result_id(
-                wf_id, member, f"{group_path}/g{i}", step_tasks
-            )
+            task_id = self._terminal_result_id(wf_id, member, f"{group_path}/g{i}", step_tasks)
             if task_id is not None:
                 out.append(task_id)
         expected_n = len(group.members)

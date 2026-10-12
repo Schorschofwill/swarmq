@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from typing import cast, override
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -48,6 +49,7 @@ class _ObservedEvent(asyncio.Event):
         super().__init__()
         self.waiting = asyncio.Event()
 
+    @override
     async def wait(self) -> bool:  # type: ignore[override]
         self.waiting.set()
         return await super().wait()
@@ -61,7 +63,7 @@ def _underlying(blocked: bool) -> SimpleNamespace:
 
 
 def _sent(broker: RabbitMQBroker) -> list[str]:
-    publish = broker._publish_channel.default_exchange.publish  # type: ignore[union-attr]
+    publish = cast("AsyncMock", broker._publish_channel).default_exchange.publish
     return [call.kwargs["routing_key"] for call in publish.await_args_list]
 
 

@@ -20,7 +20,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
+from typing import Any, override
 
+import aio_pika
 import pytest
 
 from swarmq.app import SwarmQ
@@ -52,7 +54,10 @@ async def _running_worker(rabbitmq_url: str, valkey_url: str, queue: str):
     worker_broker = RabbitMQBroker(rabbitmq_url)
     worker_backend = ValkeyBackend(valkey_url)
     worker_app = SwarmQ(
-        worker_broker, worker_backend, queues=[queue], concurrency=8,
+        worker_broker,
+        worker_backend,
+        queues=[queue],
+        concurrency=8,
     )
     online = asyncio.Event()
 
@@ -72,8 +77,10 @@ async def _running_worker(rabbitmq_url: str, valkey_url: str, queue: str):
         await worker_backend.close()
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_schedule_many_mixed_success_and_failure(
-    rabbitmq_url, valkey_url, _cleanup_tasks,
+    rabbitmq_url,
+    valkey_url,
 ):
     """50 tasks total: 30 succeed, 20 raise. get_results must surface
     both outcomes in the correct slots."""
@@ -84,12 +91,14 @@ async def test_schedule_many_mixed_success_and_failure(
     class SuccessTask(Task):
         task_info = TaskInfo(name=succ_name, queues=[queue], max_retries=0)
 
+        @override
         async def run(self, n: int) -> int:
             return n * 2
 
     class FailingTask(Task):
         task_info = TaskInfo(name=fail_name, queues=[queue], max_retries=0)
 
+        @override
         async def run(self, n: int) -> None:
             raise ValueError(f"boom-{n}")
 
@@ -102,7 +111,7 @@ async def test_schedule_many_mixed_success_and_failure(
         async with _running_worker(rabbitmq_url, valkey_url, queue):
             # Interleave 30 success + 20 fail (50 total) so index
             # alignment is tested, not just sorted order.
-            batch: list[tuple[str, tuple, dict]] = []
+            batch: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
             success_indices: list[int] = []
             fail_indices: list[int] = []
             for i in range(50):
@@ -128,8 +137,10 @@ async def test_schedule_many_mixed_success_and_failure(
                     assert await client_app.get_result(tid, timeout=8) == idx * 2
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_schedule_many_mixed_success_and_cancellation(
-    rabbitmq_url, valkey_url, _cleanup_tasks,
+    rabbitmq_url,
+    valkey_url,
 ):
     """Batch of slow tasks; cancel a subset before they run. Cancelled
     slots surface as TaskCancelledError, others complete normally."""
@@ -140,6 +151,7 @@ async def test_schedule_many_mixed_success_and_cancellation(
     class SlowTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue], max_retries=0)
 
+        @override
         async def run(self, n: int) -> int:
             run_started.set()
             # Long enough that the cancel-monitor (poll every 200ms by
@@ -155,7 +167,7 @@ async def test_schedule_many_mixed_success_and_cancellation(
     async with client_app:
         await client_app.broker.declare_queue(queue)
         async with _running_worker(rabbitmq_url, valkey_url, queue):
-            batch = [(task_name, (i,), {}) for i in range(10)]
+            batch: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = [(task_name, (i,), {}) for i in range(10)]
             task_ids = await client_app.schedule_many(batch)
 
             # Cancel the first 4 task_ids BEFORE the worker picks
@@ -168,8 +180,7 @@ async def test_schedule_many_mixed_success_and_cancellation(
                 *(client_app.cancel(tid) for tid in cancel_ids),
             )
             assert all(cancel_results), (
-                f"cancel returned False for some task_ids: "
-                f"{list(zip(cancel_ids, cancel_results))}"
+                f"cancel returned False for some task_ids: {list(zip(cancel_ids, cancel_results))}"
             )
 
             # Keep slots must complete normally.
@@ -189,14 +200,13 @@ async def test_schedule_many_mixed_success_and_cancellation(
                     # Raced with completion — tolerated when the
                     # worker picked it up before the cancel landed.
                     pass
-            assert cancelled_count >= 1, (
-                "expected at least one of 4 cancels to land before "
-                "execution completed"
-            )
+            assert cancelled_count >= 1, "expected at least one of 4 cancels to land before execution completed"
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_schedule_many_with_unique_dedup_returns_winner_ids(
-    rabbitmq_url, valkey_url, _cleanup_tasks,
+    rabbitmq_url,
+    valkey_url,
 ):
     """Batch contains 50 unique tasks + 50 duplicates of them (same
     args). Return value length is 100; duplicate slots point to the
@@ -206,10 +216,13 @@ async def test_schedule_many_with_unique_dedup_returns_winner_ids(
 
     class UniqueTask(Task):
         task_info = TaskInfo(
-            name=task_name, queues=[queue], max_retries=0,
+            name=task_name,
+            queues=[queue],
+            max_retries=0,
             unique_for=60,  # seconds
         )
 
+        @override
         async def run(self, n: int) -> int:
             return n
 
@@ -221,8 +234,8 @@ async def test_schedule_many_with_unique_dedup_returns_winner_ids(
         await client_app.broker.declare_queue(queue)
         async with _running_worker(rabbitmq_url, valkey_url, queue):
             # 50 originals interleaved with 50 duplicates (same args).
-            originals = [(task_name, (i,), {}) for i in range(50)]
-            dups = [(task_name, (i,), {}) for i in range(50)]
+            originals: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = [(task_name, (i,), {}) for i in range(50)]
+            dups: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = [(task_name, (i,), {}) for i in range(50)]
             batch = originals + dups
 
             task_ids = await client_app.schedule_many(batch)
@@ -233,9 +246,9 @@ async def test_schedule_many_with_unique_dedup_returns_winner_ids(
             # (task_ids[i - 50]).
             for i in range(50):
                 assert task_ids[i + 50] == task_ids[i], (
-                    f"dup at slot {i+50} did not dedupe to "
+                    f"dup at slot {i + 50} did not dedupe to "
                     f"winner at slot {i}: "
-                    f"dup={task_ids[i+50]!r} winner={task_ids[i]!r}"
+                    f"dup={task_ids[i + 50]!r} winner={task_ids[i]!r}"
                 )
 
             distinct = set(task_ids)
@@ -243,13 +256,19 @@ async def test_schedule_many_with_unique_dedup_returns_winner_ids(
 
             # Every winner should resolve to its arg value.
             for i in range(50):
-                assert await client_app.get_result(
-                    task_ids[i], timeout=10,
-                ) == i
+                assert (
+                    await client_app.get_result(
+                        task_ids[i],
+                        timeout=10,
+                    )
+                    == i
+                )
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_schedule_many_survives_broker_reconnect_midway(
-    rabbitmq_url, valkey_url, _cleanup_tasks,
+    rabbitmq_url,
+    valkey_url,
 ):
     """Force a broker reconnect mid-batch. Phase-1 U1.1 channel-
     recreate must ensure every publish lands — otherwise the batch
@@ -260,6 +279,7 @@ async def test_schedule_many_survives_broker_reconnect_midway(
     class FastTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue], max_retries=0)
 
+        @override
         async def run(self, n: int) -> int:
             return n
 
@@ -271,14 +291,18 @@ async def test_schedule_many_survives_broker_reconnect_midway(
         await client_app.broker.declare_queue(queue)
         async with _running_worker(rabbitmq_url, valkey_url, queue):
             # First half — publish normally.
-            first_half = [(task_name, (i,), {}) for i in range(10)]
+            first_half: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = [(task_name, (i,), {}) for i in range(10)]
             ids_a = await client_app.schedule_many(first_half)
 
             # Trigger a reconnect on the client-side broker.
-            await client_broker._connection.reconnect()
+            connection = client_broker._connection
+            assert isinstance(connection, aio_pika.abc.AbstractRobustConnection)
+            await connection.reconnect()
             # Publish the second half DURING the recovery window; the
             # U1.1 retry wrapper must make this succeed.
-            second_half = [(task_name, (i + 100,), {}) for i in range(10)]
+            second_half: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = [
+                (task_name, (i + 100,), {}) for i in range(10)
+            ]
             ids_b = await client_app.schedule_many(second_half)
 
             assert len(ids_a) == 10

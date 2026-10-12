@@ -8,10 +8,7 @@ import os
 import signal as _signal
 import sys
 import time
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:  # pragma: no cover — import-time only
-    pass
+from typing import Any
 
 from swarmq.exceptions import ConfigurationError
 from swarmq.logging import configure_logging, get_logger, shutdown_logging
@@ -51,7 +48,7 @@ def _unblock_inherited_signals() -> None:
     """
     try:
         _signal.pthread_sigmask(_signal.SIG_UNBLOCK, {_signal.SIGINT, _signal.SIGTERM, _signal.SIGHUP})
-    except (AttributeError, OSError):  # pragma: no cover - Nicht-POSIX
+    except AttributeError, OSError:  # pragma: no cover - Nicht-POSIX
         pass
 
 

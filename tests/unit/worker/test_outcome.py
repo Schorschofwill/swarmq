@@ -20,10 +20,13 @@ def test_named_terminal_constructors_match_the_three_variants() -> None:
 
 
 def test_continue_and_redelivered_are_singletons() -> None:
-    assert Continue is Continue
-    assert Redelivered is Redelivered
+    from swarmq import worker
+
+    assert worker.Continue is Continue
+    assert worker.Redelivered is Redelivered
     assert Continue != Redelivered
-    assert isinstance(Continue, DeliveryOutcome) and isinstance(Redelivered, DeliveryOutcome)
+    assert isinstance(Continue, DeliveryOutcome)
+    assert isinstance(Redelivered, DeliveryOutcome)
     assert isinstance(Terminal(True, True), DeliveryOutcome)
 
 

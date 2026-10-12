@@ -48,30 +48,19 @@ def parse_rate_limit(raw: str) -> RateLimitConfig:
       - count < 1 (``"0/m"``, ``"-5/m"``)
     """
     if "/" not in raw:
-        raise ValueError(
-            f"missing unit separator in rate limit {raw!r} — "
-            "use <count>/<unit>, e.g. '100/m'"
-        )
+        raise ValueError(f"missing unit separator in rate limit {raw!r} — use <count>/<unit>, e.g. '100/m'")
     match = _RATE_LIMIT_PATTERN.match(raw)
     if match is None:
-        raise ValueError(
-            f"invalid rate limit format {raw!r} — "
-            "expected <int>/<unit>, e.g. '100/m'"
-        )
+        raise ValueError(f"invalid rate limit format {raw!r} — expected <int>/<unit>, e.g. '100/m'")
     count_str, unit_str = match.groups()
     try:
         count = int(count_str)
     except ValueError as exc:
         raise ValueError(f"invalid count in rate limit {raw!r}") from exc
     if count < 1:
-        raise ValueError(
-            f"count must be >= 1 in rate limit {raw!r} (got {count})"
-        )
+        raise ValueError(f"count must be >= 1 in rate limit {raw!r} (got {count})")
     unit = unit_str.lower()
     if unit not in _UNIT_TO_MS:
         supported = ", ".join(sorted(set(_UNIT_TO_MS)))
-        raise ValueError(
-            f"unsupported unit {unit_str!r} in rate limit {raw!r} — "
-            f"supported: {supported}"
-        )
+        raise ValueError(f"unsupported unit {unit_str!r} in rate limit {raw!r} — supported: {supported}")
     return RateLimitConfig(max_requests=count, window_size_ms=_UNIT_TO_MS[unit])

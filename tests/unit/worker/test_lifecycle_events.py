@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -41,7 +41,7 @@ from swarmq.worker import Worker
 from swarmq.worker.execution import TaskExecutor
 from swarmq.worker.gates import GateContext, GateDeps
 from tests.support.messages import make_message
-from tests.unit.worker._helpers import AddTask, _default_payload
+from tests.unit.worker._helpers import AddTask, _default_payload, partial_message
 
 pytestmark = [pytest.mark.timeout(5)]
 
@@ -51,6 +51,7 @@ _LIFECYCLE = ("task_received", "task_started", "task_succeeded", "task_failed", 
 class Succeeds(Task):
     task_info = TaskInfo(name="lifecycle_succeeds", queues=["q"])
 
+    @override
     async def run(self) -> str:
         return "ok"
 
@@ -61,18 +62,29 @@ def _deps(backend: Any = None, **cfg: Any) -> GateDeps:
         backend = MagicMock()
         backend.is_cancelled = AsyncMock(return_value=False)
     return GateDeps(
-        broker=MagicMock(), backend=backend, config=config, signals=MagicMock(dispatch=AsyncMock()),
-        registry=MagicMock(), rate_limiter=lambda: None, lock_manager=lambda: None,
-        finalize_schedfire=AsyncMock(), maybe_release_unique=AsyncMock(),
+        broker=MagicMock(),
+        backend=backend,
+        config=config,
+        signals=MagicMock(dispatch=AsyncMock()),
+        registry=MagicMock(),
+        rate_limiter=lambda: None,
+        lock_manager=lambda: None,
+        finalize_schedfire=AsyncMock(),
+        maybe_release_unique=AsyncMock(),
         extract_valid_workflow_id=lambda _m: None,
         register_lock=lambda _h, _e: None,
     )
 
 
-def _ctx(task_class: type) -> GateContext:
+def _ctx(task_class: type[Task]) -> GateContext:
     return GateContext(
-        task_id="t1", task_name=task_class.task_info.name, queue="q", task_info=task_class.task_info,
-        task_class=task_class, args=[], kwargs={},
+        task_id="t1",
+        task_name=task_class.task_info.name,
+        queue="q",
+        task_info=task_class.task_info,
+        task_class=task_class,
+        args=[],
+        kwargs={},
     )
 
 
@@ -80,8 +92,8 @@ def _lifecycle(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [e for e in logs if e["event"] in _LIFECYCLE]
 
 
-async def _execute(task_class: type, deps: GateDeps | None = None) -> None:
-    await TaskExecutor(deps or _deps()).execute(_ctx(task_class), {"retry_count": 0}, MiddlewareChain([]))
+async def _execute(task_class: type[Task], deps: GateDeps | None = None) -> None:
+    await TaskExecutor(deps or _deps()).execute(_ctx(task_class), partial_message(retry_count=0), MiddlewareChain([]))
 
 
 async def test_successful_task_reports_started_then_succeeded_with_duration(swarmq_logs):
@@ -97,6 +109,7 @@ async def test_successful_task_reports_started_then_succeeded_with_duration(swar
 class Fails(Task):
     task_info = TaskInfo(name="lifecycle_fails", queues=["q"])
 
+    @override
     async def run(self) -> None:
         raise ValueError("boom")
 
@@ -114,6 +127,7 @@ async def test_failing_task_reports_failed_with_error_fields_and_duration(swarmq
 class WaitsForCancel(Task):
     task_info = TaskInfo(name="lifecycle_waits_for_cancel", queues=["q"])
 
+    @override
     async def run(self) -> None:
         await asyncio.Event().wait()  # endet nur durch den Cancel-Monitor
 
@@ -136,7 +150,7 @@ async def test_lifecycle_level_info_raises_task_started_to_info(swarmq_logs):
     assert started["log_level"] == "info"
 
 
-def _message(name: str = "add", *, task_id: str = "t-life", headers: dict | None = None) -> Any:
+def _message(name: str = "add", *, task_id: str = "t-life", headers: dict[str, Any] | None = None) -> Any:
     args = [1, 2] if name == "add" else []
     msg = make_message(_default_payload(task_id=task_id, name=name, args=args, kwargs={}), headers=headers)
     msg.queue = "default"
@@ -177,6 +191,7 @@ async def test_unknown_task_is_received_but_never_started(worker, swarmq_logs):
 class FailsWithRetry(Task):
     task_info = TaskInfo(name="lifecycle_fails_with_retry", queues=["default"], max_retries=3)
 
+    @override
     async def run(self) -> None:
         raise ValueError("boom")
 
@@ -193,11 +208,12 @@ async def test_failing_task_with_retry_reports_failed_then_retrying(worker, regi
 class FailsFireAndForget(Task):
     task_info = TaskInfo(name="lifecycle_faf_fails", queues=["q"], delivery=DeliveryMode.FIRE_AND_FORGET)
 
+    @override
     async def run(self) -> None:
         raise ValueError("boom")
 
 
-@pytest.fixture()
+@pytest.fixture
 def task_logger_at_warning():
     """``--logger-level swarmq.task=WARNING`` ueber ``configure_logging``;
     das Level von ``swarmq.task`` wird danach zurueckgesetzt."""
@@ -208,9 +224,7 @@ def task_logger_at_warning():
         logging.getLogger("swarmq.task").setLevel(logging.NOTSET)
 
 
-async def test_logger_level_warning_for_swarmq_task_silences_only_the_lifecycle(
-    task_logger_at_warning, swarmq_logs
-):
+async def test_logger_level_warning_for_swarmq_task_silences_only_the_lifecycle(task_logger_at_warning, swarmq_logs):
     await _execute(FailsFireAndForget)
 
     assert _lifecycle(swarmq_logs) == []

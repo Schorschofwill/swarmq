@@ -47,6 +47,9 @@ _RPC_TIMEOUT_S = 2.0
 # mitten im RPC abgebrochener Cancel oder Consume hinterließe einen Tag, von
 # dem niemand weiß, ob der Broker ihn noch kennt.
 _STOP_TIMEOUT_S = 5.0
+# Fehlt ein Tag auf geschlossenem oder ersetztem Channel so viele Takte, meldet
+# der Waechter ihn selbst neu an (aio-pikas Restore bekommt den ersten Takt).
+_REREGISTER_AFTER_MISSING_TICKS = 2
 
 
 @dataclass
@@ -141,7 +144,7 @@ class ConsumerWatch:
                 continue
             try:
                 await entry.queue.cancel(entry.tag)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - Fehler je Tag sammeln und zurueckgeben
                 errors.append((entry.tag, exc))
                 continue
             self._mark_cancelled(entry.tag)
@@ -158,10 +161,10 @@ class ConsumerWatch:
                 await asyncio.wait_for(self._wake.wait(), timeout=interval_s)
             self._wake.clear()
             if self._stopping:
-                return
+                return  # type: ignore[unreachable]  # stop() setzt _stopping waehrend des await
             try:
                 await self.tick()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - gescheiterter Takt darf Waechter nicht beenden
                 # Ein gescheiterter Takt darf den Wächter nicht beenden — sonst
                 # wäre der nächste Consumer-Verlust wieder ein stiller Stillstand.
                 logger.warning("consumer_watch_tick_failed", **_error_fields(exc))
@@ -206,9 +209,7 @@ class ConsumerWatch:
         """Ein Prüfdurchgang über alle angemeldeten Consumer."""
         for entry in self._entries:
             try:
-                underlay = await asyncio.wait_for(
-                    entry.queue.channel.get_underlay_channel(), timeout=self._timeout_s
-                )
+                underlay = await asyncio.wait_for(entry.queue.channel.get_underlay_channel(), timeout=self._timeout_s)
             except TimeoutError:
                 logger.warning(
                     "consumer_watch_channel_timeout",
@@ -234,14 +235,14 @@ class ConsumerWatch:
             # Channel geschlossen oder ersetzt (bis 4.2): aio-pikas Restore legt
             # den Tag meist selbst wieder an. Erst im zweiten Takt eingreifen.
             entry.missing_ticks += 1
-            if entry.missing_ticks >= 2:
+            if entry.missing_ticks >= _REREGISTER_AFTER_MISSING_TICKS:
                 await self._reregister(entry, underlay, "channel_replaced")
 
     async def _reregister(self, entry: _Watched, underlay: Any, reason: str) -> None:
         assert entry.tag is not None
         try:
             await asyncio.wait_for(entry.queue.cancel(entry.tag), timeout=self._timeout_s)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - geloggt, naechster Takt versucht erneut
             # Ohne erfolgreichen Cancel bliebe der tote Tag in
             # ``RobustQueue._consumers`` und ein Restore legte ihn
             # wieder an; der nächste Takt versucht es erneut.
@@ -261,7 +262,7 @@ class ConsumerWatch:
     async def _consume(self, entry: _Watched, underlay: Any) -> None:
         try:
             tag = await asyncio.wait_for(entry.queue.consume(entry.callback), timeout=self._timeout_s)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - geloggt, Waechter laeuft weiter
             logger.warning(
                 "consumer_reregister_failed",
                 queue=entry.queue_name,

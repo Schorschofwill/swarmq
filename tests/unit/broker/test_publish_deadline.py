@@ -112,9 +112,7 @@ class TestAllPublishPaths:
         broker = _broker()
         delivery = Mock(queue="tasks", body=b"{}")
         with hanging_publish(broker), pytest.raises(BrokerConnectionError):
-            await asyncio.wait_for(
-                getattr(broker, method)(delivery, **kwargs), timeout=2.0
-            )
+            await asyncio.wait_for(getattr(broker, method)(delivery, **kwargs), timeout=2.0)
 
     async def test_scheduler_and_workflow_use_the_same_seam(self):
         """Beide rufen ``broker.publish`` — derselbe gedeckelte Pfad wie der
@@ -141,9 +139,7 @@ class TestTerminalDlxPathIsUntouched:
         delivery = Mock(queue="tasks", body=b"{}")
         message = AsyncMock()
         with (
-            patch(
-                "swarmq.broker.rabbitmq.admin.message_of", return_value=message
-            ) as message_of,
+            patch("swarmq.broker.rabbitmq.admin.message_of", return_value=message) as message_of,
             hanging_publish(broker) as hanging,
         ):
             await broker.route_via_dlx(delivery)

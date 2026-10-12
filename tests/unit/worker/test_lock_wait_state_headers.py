@@ -22,7 +22,7 @@ Test-Liste:
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -39,7 +39,7 @@ from swarmq.registry import TaskRegistry
 from swarmq.task import Task, TaskInfo
 from swarmq.worker import Worker
 from tests.support.messages import make_message
-from tests.unit.worker._helpers import _default_payload
+from tests.unit.worker._helpers import _default_payload, as_mock
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -55,6 +55,7 @@ _STATE = {
 class FailsOnce(Task):
     task_info = TaskInfo(name="lockwait_fails_once", queues=["default"], max_retries=3)
 
+    @override
     async def run(self) -> None:
         raise ValueError("boom")
 
@@ -98,6 +99,7 @@ class LockedAndLimited(Task):
         name="lockwait_limited", queues=["default"], lock="resource", hard_timeout=60, rate_limit="1/m"
     )
 
+    @override
     async def run(self) -> None:
         raise AssertionError("darf nicht laufen")
 
@@ -113,7 +115,7 @@ async def test_rate_limit_copy_keeps_the_wait_and_the_limit_still_applies(broker
     worker._rate_limiter = MagicMock()
     worker._rate_limiter.check = AsyncMock(return_value=RateLimitDecision(False, 0, 5_000))
     worker._lock_manager = MagicMock()
-    worker._lock_manager.acquire = AsyncMock(return_value=None)
+    as_mock(worker._lock_manager).acquire = AsyncMock(return_value=None)
     over_limit = int(time.time() * 1000) - int(config.lock_wait_max_s * 1000) - 1_000
     message = make_message(
         _default_payload(task_id="rl-1", name="lockwait_limited", args=[], kwargs={}),
@@ -172,7 +174,7 @@ def _locked_worker(broker: Any, backend: Any, config: Any) -> Worker:
     worker = Worker(broker=broker, backend=backend, registry=registry, config=config)
     worker._rate_limiter = None
     worker._lock_manager = MagicMock()
-    worker._lock_manager.acquire = AsyncMock(return_value=None)
+    as_mock(worker._lock_manager).acquire = AsyncMock(return_value=None)
     return worker
 
 
@@ -190,7 +192,7 @@ async def test_backend_defer_copy_keeps_the_wait_and_the_limit_still_applies(bro
     from swarmq.exceptions import BackendConnectionError
 
     worker = _locked_worker(broker, backend, config)
-    worker._lock_manager.acquire = AsyncMock(side_effect=BackendConnectionError("valkey away"))
+    as_mock(worker._lock_manager).acquire = AsyncMock(side_effect=BackendConnectionError("valkey away"))
     state = _over_limit_state(config)
 
     await worker._handle_message(_locked_message("bd-1", state))  # Backend-Defer
@@ -199,7 +201,7 @@ async def test_backend_defer_copy_keeps_the_wait_and_the_limit_still_applies(bro
     assert {k: copy[k] for k in _STATE} == state
     broker.dead_letter.assert_not_awaited()
 
-    worker._lock_manager.acquire = AsyncMock(return_value=None)
+    as_mock(worker._lock_manager).acquire = AsyncMock(return_value=None)
     await worker._handle_message(_locked_message("bd-1", copy))  # Konflikt auf der Kopie
     assert broker.dead_letter.await_count == 1, "die Obergrenze gilt auch nach einer Backend-Defer-Kopie"
 

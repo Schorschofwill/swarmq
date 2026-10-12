@@ -108,7 +108,8 @@ import os
 import queue
 import sys
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
+from typing import override
 
 import pytest
 
@@ -140,6 +141,7 @@ class _Gate(logging.Handler):
         self.opened = threading.Event()
         self.messages: list[str] = []
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         self.entered.set()
         self.opened.wait()
@@ -164,7 +166,9 @@ def _returns_within(func: Callable[[], object], seconds: float = 2.0) -> bool:
 
 
 def _stuck_handler(
-    maxsize: int = 3, *, json: bool = False,
+    maxsize: int = 3,
+    *,
+    json: bool = False,
 ) -> tuple[_StructlogQueueHandler, _Gate]:
     """Listener haengt im ersten Record, die Queue dahinter ist voll."""
     gate = _Gate()
@@ -229,7 +233,9 @@ def test_in_json_mode_the_closing_line_is_valid_json(
     [line] = _notices(capfd.readouterr().err)
     notice = json.loads(line)
     assert (notice["event"], notice["count"], notice["level"]) == (
-        "log_drain_timeout_exceeded", 2, "warning",
+        "log_drain_timeout_exceeded",
+        2,
+        "warning",
     )
 
 
@@ -274,6 +280,7 @@ class _Collector(logging.Handler):
         super().__init__()
         self.messages: list[str] = []
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         self.messages.append(record.getMessage())
 
@@ -300,6 +307,7 @@ class _SignallingQueue(queue.Queue[logging.LogRecord]):
         super().__init__(maxsize)
         self.closing = threading.Event()
 
+    @override
     def shutdown(self, immediate: bool = False) -> None:
         super().shutdown(immediate)
         self.closing.set()
@@ -333,6 +341,7 @@ def test_records_logged_while_draining_land_in_a_fresh_queue() -> None:
 class _SlowGate(_Gate):
     """Wie ``_Gate``; ``late`` braucht danach noch 50 ms."""
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         if record.getMessage() == "late":
             threading.Event().wait(0.05)
@@ -428,17 +437,23 @@ def test_once_the_abandoned_thread_ends_the_next_record_starts_a_fresh_listener(
 
 
 class _BlockingStream(io.StringIO):
-    """stderr auf einer vollen Pipe: ``write`` blockiert bis ``opened``."""
+    """stderr auf einer vollen Pipe bzw. ``sys.stderr`` fuer den eingebauten
+    Handler: ``write`` blockiert, bis ``opened`` gesetzt ist."""
 
     def __init__(self) -> None:
         super().__init__()
         self.entered = threading.Event()
         self.opened = threading.Event()
 
-    def write(self, s: str) -> int:
+    @override
+    def write(self, text: str) -> int:
         self.entered.set()
         self.opened.wait()
-        return super().write(s)
+        return super().write(text)
+
+    @override
+    def isatty(self) -> bool:
+        return False
 
 
 def test_without_a_timeout_the_configured_drain_timeout_applies(
@@ -501,6 +516,7 @@ class FileModeGate(logging.Handler):
         super().__init__()
         self.state = FileModeGate.current
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         state = self.state
         state.entered.set()
@@ -537,10 +553,13 @@ def _configure_file_mode(drain_timeout: float = 5.0) -> logging.Logger:
         },
         "root": {"handlers": ["q"], "level": "INFO"},
     }
-    configure_logging(LoggingSettings(
-        log_config="logging.json", log_config_json=json.dumps(config),
-        drain_timeout=drain_timeout,
-    ))
+    configure_logging(
+        LoggingSettings(
+            log_config="logging.json",
+            log_config_json=json.dumps(config),
+            drain_timeout=drain_timeout,
+        )
+    )
     return logging.getLogger("swarmq.tests.drain")
 
 
@@ -591,12 +610,14 @@ class _ThreadRecorder(logging.Handler):
         super().__init__()
         self.seen: list[tuple[str, str]] = []
 
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         self.seen.append((record.getMessage(), threading.current_thread().name))
 
 
 def test_during_finalization_a_record_is_written_synchronously(
-    monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
 ) -> None:
     target = _ThreadRecorder()
     handler = _StructlogQueueHandler(queue.Queue(maxsize=10), target)
@@ -612,7 +633,8 @@ def test_during_finalization_a_record_is_written_synchronously(
 
 
 def test_a_thread_start_refused_at_shutdown_writes_the_record_synchronously(
-    monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
 ) -> None:
     target = _ThreadRecorder()
     handler = _StructlogQueueHandler(queue.Queue(maxsize=10), target)
@@ -647,7 +669,8 @@ def test_a_freed_file_mode_thread_ends_by_itself_without_a_sentinel(
 
 
 def test_file_mode_writes_synchronously_during_finalization(
-    file_mode_gate: _GateState, monkeypatch: pytest.MonkeyPatch,
+    file_mode_gate: _GateState,
+    monkeypatch: pytest.MonkeyPatch,
     capfd: pytest.CaptureFixture[str],
 ) -> None:
     file_mode_gate.opened.set()
@@ -665,7 +688,8 @@ def test_file_mode_writes_synchronously_during_finalization(
 
 
 def test_file_mode_writes_synchronously_when_the_thread_start_is_refused(
-    file_mode_gate: _GateState, monkeypatch: pytest.MonkeyPatch,
+    file_mode_gate: _GateState,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     file_mode_gate.opened.set()
     log = _configure_file_mode()
@@ -740,7 +764,8 @@ def test_a_process_exits_hard_with_its_code_while_an_abandoned_thread_hangs(
     ],
 )
 def test_the_hard_exit_keeps_the_exit_code_the_process_would_have_had(
-    exc: BaseException | None, code: int,
+    exc: BaseException | None,
+    code: int,
 ) -> None:
     from swarmq.logging_drain import exit_code_for
 
@@ -752,6 +777,7 @@ class _FlushRecorder(io.StringIO):
         super().__init__()
         self.flushed = 0
 
+    @override
     def flush(self) -> None:
         self.flushed += 1
 
@@ -820,8 +846,10 @@ def _raised(exc: BaseException) -> BaseException:
     ],
 )
 def test_the_hard_exit_first_reports_the_exception_on_fd_2(
-    monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str],
-    exc: BaseException, last_line: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+    exc: BaseException,
+    last_line: str,
 ) -> None:
     from swarmq.logging_drain import abandon, exit_if_log_thread_stuck
 
@@ -837,7 +865,8 @@ def test_the_hard_exit_first_reports_the_exception_on_fd_2(
 
 
 def test_a_long_exception_report_keeps_its_end_within_pipe_buf(
-    monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
 ) -> None:
     import select
 
@@ -888,9 +917,7 @@ def test_after_the_deadline_a_record_left_without_a_listener_counts_as_dropped()
 
 
 def _file_mode_queue_handler() -> logging.handlers.QueueHandler:
-    [handler] = [
-        h for h in logging.getLogger().handlers if isinstance(h, logging.handlers.QueueHandler)
-    ]
+    [handler] = [h for h in logging.getLogger().handlers if isinstance(h, logging.handlers.QueueHandler)]
     return handler
 
 
@@ -928,7 +955,9 @@ def test_file_mode_counts_a_record_left_behind_the_sentinel_after_the_deadline(
 
 @pytest.mark.parametrize("error", [EOFError, OSError])
 def test_file_mode_a_closed_queue_while_discarding_does_not_raise(
-    file_mode_gate: _GateState, monkeypatch: pytest.MonkeyPatch, error: type[Exception],
+    file_mode_gate: _GateState,
+    monkeypatch: pytest.MonkeyPatch,
+    error: type[Exception],
 ) -> None:
     file_mode_gate.opened.set()
     log = _configure_file_mode()
@@ -946,7 +975,8 @@ def test_file_mode_a_closed_queue_while_discarding_does_not_raise(
 
 
 def test_the_closing_line_counts_records_discarded_after_the_deadline(
-    file_mode_gate: _GateState, capfd: pytest.CaptureFixture[str],
+    file_mode_gate: _GateState,
+    capfd: pytest.CaptureFixture[str],
 ) -> None:
     file_mode_gate.opened.set()
     log = _configure_file_mode()
@@ -972,10 +1002,10 @@ def test_a_record_that_would_start_a_listener_after_the_deadline_counts_as_dropp
     healthy_target = _Gate()
     healthy_target.opened.set()
     healthy = _StructlogQueueHandler(queue.Queue(maxsize=10), healthy_target)
-    real_abandon = logging_queue.abandon
+    from swarmq.logging_drain import abandon as real_abandon
 
-    def abandon_then_log(*args: object) -> None:
-        real_abandon(*args)  # type: ignore[arg-type]
+    def abandon_then_log(thread: threading.Thread, handlers: Iterable[logging.Handler]) -> None:
+        real_abandon(thread, handlers)
         healthy.handle(_record("after-deadline"))  # ein anderer Thread loggt
 
     monkeypatch.setattr(logging_queue, "abandon", abandon_then_log)
@@ -990,7 +1020,8 @@ def test_a_record_that_would_start_a_listener_after_the_deadline_counts_as_dropp
 
 
 def test_file_mode_a_record_that_would_start_a_listener_after_the_deadline_counts_as_dropped(
-    file_mode_gate: _GateState, monkeypatch: pytest.MonkeyPatch,
+    file_mode_gate: _GateState,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from swarmq import logging_queue
 
@@ -999,10 +1030,10 @@ def test_file_mode_a_record_that_would_start_a_listener_after_the_deadline_count
     log.warning("first")
     assert _returns_within(lambda: shutdown_logging(timeout=2))
     _stuck, gate = _stuck_handler(maxsize=2)
-    real_abandon = logging_queue.abandon
+    from swarmq.logging_drain import abandon as real_abandon
 
-    def abandon_then_log(*args: object) -> None:
-        real_abandon(*args)  # type: ignore[arg-type]
+    def abandon_then_log(thread: threading.Thread, handlers: Iterable[logging.Handler]) -> None:
+        real_abandon(thread, handlers)
         log.warning("after-deadline")  # ein anderer Thread loggt
 
     monkeypatch.setattr(logging_queue, "abandon", abandon_then_log)
@@ -1035,26 +1066,9 @@ def test_a_child_forked_during_an_expired_drain_starts_its_listener() -> None:
         assert run_in_forked_child(child) == 0
 
 
-class _BlockingStream(io.StringIO):
-    """``sys.stderr`` fuer den eingebauten Handler: blockiert jedes
-    ``write``, bis ``opened`` gesetzt ist."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.entered = threading.Event()
-        self.opened = threading.Event()
-
-    def write(self, text: str) -> int:
-        self.entered.set()
-        self.opened.wait()
-        return super().write(text)
-
-    def isatty(self) -> bool:
-        return False
-
-
 def test_a_configured_json_setup_writes_a_json_closing_line_for_given_up_builtin_handlers(
-    capfd: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from swarmq.logging import configure_logging, get_logger
     from swarmq.logging_settings import LoggingSettings
@@ -1076,5 +1090,7 @@ def test_a_configured_json_setup_writes_a_json_closing_line_for_given_up_builtin
     [line] = _notices(capfd.readouterr().err)
     notice = json.loads(line)
     assert (notice["event"], notice["count"], notice["level"]) == (
-        "log_drain_timeout_exceeded", 2, "warning",
+        "log_drain_timeout_exceeded",
+        2,
+        "warning",
     )

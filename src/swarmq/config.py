@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import socket
 from dataclasses import dataclass, field
-from typing import ClassVar, cast
+from typing import ClassVar, cast, override
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from swarmq.config_validation import ConfigValidation
@@ -32,6 +32,25 @@ INJECTED_URL = "<injected>"
 # KTD1: Schreibweisen fuer UTC, die zu ``None`` normalisiert werden, damit
 # sich der Fingerabdruck gespeicherter Definitionen beim Upgrade nicht aendert.
 _UTC_ALIASES: frozenset[str] = frozenset({"UTC", "Etc/UTC"})
+_MAX_PORT = 65535
+
+# Ergebnis-TTL in Sekunden: Default von ``SwarmQConfig.result_ttl`` und
+# Fallback, wenn keine Ebene der Kaskade einen Wert liefert.
+DEFAULT_RESULT_TTL_S = 86400
+
+
+def resolve_result_ttl(task_ttl: int | None, config_ttl: int | None, *, fire_and_forget: bool) -> int:
+    """``result_ttl``-Kaskade in Sekunden: Task-Wert vor Konfiguration.
+
+    FIRE_AND_FORGET ohne Task-Wert ergibt 0 (nicht speichern). Ein (untypisiert
+    gesetztes) ``None`` der Konfiguration faellt auf ``DEFAULT_RESULT_TTL_S``.
+    0 bleibt 0; wie 0 zu deuten ist, entscheidet der Aufrufer.
+    """
+    if task_ttl is not None:
+        return task_ttl
+    if fire_and_forget:
+        return 0
+    return config_ttl if config_ttl is not None else DEFAULT_RESULT_TTL_S
 
 
 def normalize_timezone(value: str | None, field_name: str = "timezone") -> str | None:
@@ -62,13 +81,9 @@ def _parse_port(raw: str, env_var: str) -> int:
     try:
         port = int(raw)
     except ValueError as exc:
-        raise ConfigurationError(
-            f"{env_var} must be an integer, got {raw!r}"
-        ) from exc
-    if not 1 <= port <= 65535:
-        raise ConfigurationError(
-            f"{env_var} must be in 1..65535, got {port}"
-        )
+        raise ConfigurationError(f"{env_var} must be an integer, got {raw!r}") from exc
+    if not 1 <= port <= _MAX_PORT:
+        raise ConfigurationError(f"{env_var} must be in 1..65535, got {port}")
     return port
 
 
@@ -82,9 +97,7 @@ def _parse_int(raw: str, env_var: str) -> int:
     try:
         return int(raw)
     except ValueError as exc:
-        raise ConfigurationError(
-            f"{env_var} must be an integer, got {raw!r}"
-        ) from exc
+        raise ConfigurationError(f"{env_var} must be an integer, got {raw!r}") from exc
 
 
 def _parse_float(raw: str, env_var: str) -> float:
@@ -92,18 +105,14 @@ def _parse_float(raw: str, env_var: str) -> float:
     try:
         return float(raw)
     except ValueError as exc:
-        raise ConfigurationError(
-            f"{env_var} must be a number, got {raw!r}"
-        ) from exc
+        raise ConfigurationError(f"{env_var} must be a number, got {raw!r}") from exc
 
 
 def _parse_log_format(raw: str, env_var: str) -> bool:
     """``human``/``json`` als Wert fuer ``log_json`` (KTD8)."""
     log_format = raw.strip().lower()
     if log_format not in VALID_LOG_FORMATS:
-        raise ConfigurationError(
-            f"{env_var} must be one of {list(VALID_LOG_FORMATS)}, got {raw!r}"
-        )
+        raise ConfigurationError(f"{env_var} must be one of {list(VALID_LOG_FORMATS)}, got {raw!r}")
     return log_format == "json"
 
 
@@ -176,7 +185,7 @@ def observability_port_ranges(
 class SwarmQConfig(ConfigValidation):
     broker_url: str = ""
     backend_url: str = ""
-    result_ttl: int = 86400
+    result_ttl: int = DEFAULT_RESULT_TTL_S
     queues: list[str] = field(default_factory=lambda: ["default"])
     concurrency: int = 10
     # Eingebettet steuern ``log_level``/``log_json`` den Opt-in ``log_queue``
@@ -246,7 +255,7 @@ class SwarmQConfig(ConfigValidation):
     broker_publish_connection: str = "separate"
     cancel_poll_interval: float = 1.0
     # Upper bound for individual Valkey operations used by the cancel
-    # pipeline (is_cancelled / store_result / clear_cancel_flag). Slow
+    # pipeline, namely is_cancelled, store_result and clear_cancel_flag. Slow
     # Valkey would otherwise wedge the cancel monitor at TCP-default
     # latency. 5s is conservative for a local Valkey deployment.
     backend_op_timeout: float = 5.0
@@ -414,10 +423,18 @@ class SwarmQConfig(ConfigValidation):
     #: setzt. ``log_queue`` gehoert nicht dazu: ``LoggingSettings`` kennt den
     #: eingebetteten Opt-in nicht, ``SWARMQ_LOG_QUEUE`` bleibt also die einzige
     #: Quelle -- und als ``bool`` kann der Wert nicht ungueltig sein.
-    _SETTINGS_FIELDS: ClassVar[frozenset[str]] = frozenset({
-        "log_level", "log_json", "log_config", "configure_logging",
-        "logger_levels", "log_queue_size", "log_lifecycle_level", "log_drain_timeout",
-    })
+    _SETTINGS_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "log_level",
+            "log_json",
+            "log_config",
+            "configure_logging",
+            "logger_levels",
+            "log_queue_size",
+            "log_lifecycle_level",
+            "log_drain_timeout",
+        }
+    )
 
     _ENV_OVERRIDES: ClassVar[tuple[tuple[str, str, str], ...]] = (
         ("SWARMQ_BROKER_URL", "broker_url", "str"),
@@ -534,6 +551,7 @@ class SwarmQConfig(ConfigValidation):
     CPU_DEFAULT_RECYCLE_RSS_MB: ClassVar[int] = 250
     CPU_DEFAULT_RECYCLE_MAX_TASKS: ClassVar[int] = 1000
 
+    @override
     def _apply_pool_defaults(self) -> None:
         if self.pool != "cpu":
             return
@@ -636,7 +654,8 @@ class SwarmQConfig(ConfigValidation):
 
         if self.execution_guard_done_ttl_s is None:
             self.execution_guard_done_ttl_s = max(
-                max(self.retry_max_delay, self.consumer_timeout_s) + 300.0, self.execution_guard_ttl_s,
+                max(self.retry_max_delay, self.consumer_timeout_s) + 300.0,
+                self.execution_guard_ttl_s,
             )
 
         self._validate_core()
@@ -644,8 +663,6 @@ class SwarmQConfig(ConfigValidation):
         self._validate_scheduler_prune()
         self._validate_execution_guard()
         try:
-            self.scheduler_timezone = normalize_timezone(
-                self.scheduler_timezone, "scheduler_timezone"
-            )
+            self.scheduler_timezone = normalize_timezone(self.scheduler_timezone, "scheduler_timezone")
         except ValueError as exc:
             raise ConfigurationError(str(exc)) from exc

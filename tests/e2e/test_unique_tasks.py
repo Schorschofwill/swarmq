@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
-from typing import Any
+from typing import Any, override
 
 import pytest
 
@@ -72,8 +72,10 @@ async def _running_worker(rabbitmq_url: str, valkey_url: str, queue: str):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_submit_button_double_click_dedup(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
 ):
     """Rapid double-schedule with identical args within unique_for window:
     both calls return the same task_id, TASK_DUPLICATE_DETECTED fires
@@ -85,10 +87,12 @@ async def test_submit_button_double_click_dedup(
 
     class OrderTask(Task):
         task_info = TaskInfo(
-            name=task_name, queues=[queue],
+            name=task_name,
+            queues=[queue],
             unique_for=30,  # completion mode is default
         )
 
+        @override
         async def run(self, user_id: int, order_id: int) -> str:
             executions.append((user_id, order_id))
             return f"placed:{order_id}"
@@ -97,7 +101,7 @@ async def test_submit_button_double_click_dedup(
     client_backend = ValkeyBackend(valkey_url)
     client_app = SwarmQ(client_broker, client_backend, queues=[queue])
 
-    captured_dups: list[dict] = []
+    captured_dups: list[dict[str, Any]] = []
 
     @client_app.on_signal(Signal.TASK_DUPLICATE_DETECTED)
     async def _on_dup(**kwargs: Any) -> None:
@@ -109,10 +113,14 @@ async def test_submit_button_double_click_dedup(
         async with _running_worker(rabbitmq_url, valkey_url, queue):
             # Double-click — second schedule arrives before first finishes.
             tid_1 = await client_app.schedule(
-                task_name, user_id=7, order_id=42,
+                task_name,
+                user_id=7,
+                order_id=42,
             )
             tid_2 = await client_app.schedule(
-                task_name, user_id=7, order_id=42,
+                task_name,
+                user_id=7,
+                order_id=42,
             )
 
             assert tid_1 == tid_2, "dup should return the same task_id"
@@ -135,8 +143,10 @@ async def test_submit_button_double_click_dedup(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_webhook_idempotency_across_retry_window(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
 ):
     """unique_until=completion holds the flag across retry delays.
 
@@ -151,11 +161,14 @@ async def test_webhook_idempotency_across_retry_window(
 
     class WebhookTask(Task):
         task_info = TaskInfo(
-            name=task_name, queues=[queue],
-            unique_for=60, unique_until="completion",
+            name=task_name,
+            queues=[queue],
+            unique_for=60,
+            unique_until="completion",
         )
 
-        async def run(self, event_id: str) -> dict:
+        @override
+        async def run(self, event_id: str) -> dict[str, str]:
             executions.append(event_id)
             # Short sleep so the parallel schedule hits while we are
             # still owner of the flag.
@@ -186,9 +199,7 @@ async def test_webhook_idempotency_across_retry_window(
             result_2 = await client_app.get_result(tid_c, timeout=8)
             assert result_2 == {"processed": "e-1"}
 
-    assert len(executions) == 2, (
-        "Expected exactly one execution per completed-release cycle"
-    )
+    assert len(executions) == 2, "Expected exactly one execution per completed-release cycle"
 
 
 # ---------------------------------------------------------------------------
@@ -196,8 +207,10 @@ async def test_webhook_idempotency_across_retry_window(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_locking_and_unique_combined(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
 ):
     """A task guarded by BOTH a lock (R3.4) and unique_for (R3.5):
 
@@ -212,12 +225,16 @@ async def test_locking_and_unique_combined(
 
     class ReportTask(Task):
         task_info = TaskInfo(
-            name=task_name, queues=[queue],
-            unique_for=15, unique_until="completion",
-            lock="report:{user_id}", max_concurrency=1,
+            name=task_name,
+            queues=[queue],
+            unique_for=15,
+            unique_until="completion",
+            lock="report:{user_id}",
+            max_concurrency=1,
             hard_timeout=10,
         )
 
+        @override
         async def run(self, user_id: int, tag: str) -> str:
             run_markers.append(f"{user_id}:{tag}")
             await asyncio.sleep(0.15)
@@ -227,7 +244,7 @@ async def test_locking_and_unique_combined(
     client_backend = ValkeyBackend(valkey_url)
     client_app = SwarmQ(client_broker, client_backend, queues=[queue])
 
-    captured_dups: list[dict] = []
+    captured_dups: list[dict[str, Any]] = []
 
     @client_app.on_signal(Signal.TASK_DUPLICATE_DETECTED)
     async def _on_dup(**kwargs: Any) -> None:
@@ -265,8 +282,10 @@ async def test_locking_and_unique_combined(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_ttl_expiry_race_owner_check_protects_second_task(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
 ):
     """unique_for=1 + task that runs for ~1.5s: flag expires mid-run;
     a second schedule within the window SETNX-succeeds (fresh flag).
@@ -281,11 +300,13 @@ async def test_ttl_expiry_race_owner_check_protects_second_task(
 
     class RaceTask(Task):
         task_info = TaskInfo(
-            name=task_name, queues=[queue],
+            name=task_name,
+            queues=[queue],
             unique_for=1,  # 1-second TTL
             unique_until="completion",
         )
 
+        @override
         async def run(self, tag: str) -> str:
             marker_hits.append(tag)
             # Run longer than unique_for so the flag expires mid-run.

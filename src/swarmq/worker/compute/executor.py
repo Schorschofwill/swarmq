@@ -15,9 +15,10 @@ import asyncio
 import contextlib
 import time
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, override
 
 from swarmq.cancellation import CANCEL_REASON_CANCEL, CANCEL_REASON_TIMEOUT, CancelReason
+from swarmq.config import DEFAULT_RESULT_TTL_S, resolve_result_ttl
 from swarmq.exceptions import SoftTimeoutError
 from swarmq.logging import _error_fields, get_logger, load_log_config
 from swarmq.logging_settings import LoggingSettings
@@ -97,7 +98,7 @@ class ComputeExecutor(TaskExecutor):
             elif msg[0] == "publish":
                 _, task_id, payload = msg
                 await deps.backend.publish_progress(task_id, payload)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Fehler wird geloggt, Weiterleitung laeuft weiter
             logger.warning("compute_progress_forward_failed", **_error_fields(exc))
 
     # ------------------------------------------------------------------ execute
@@ -106,11 +107,16 @@ class ComputeExecutor(TaskExecutor):
         deps = self._deps
         task_info = ctx.task_info
         assert task_info is not None
-        ttl = task_info.result_ttl
-        if ttl is None:
-            ttl = 0 if task_info.delivery is DeliveryMode.FIRE_AND_FORGET else deps.config.result_ttl
-        if not ttl:
-            ttl = 86400
+        # Progress-TTL wie im Async-Pfad: 0 ("nicht speichern") faellt auf
+        # DEFAULT_RESULT_TTL_S, damit der Fortschritt lesbar bleibt.
+        ttl = (
+            resolve_result_ttl(
+                task_info.result_ttl,
+                deps.config.result_ttl,
+                fire_and_forget=task_info.delivery is DeliveryMode.FIRE_AND_FORGET,
+            )
+            or DEFAULT_RESULT_TTL_S
+        )
         return ComputeJob(
             task_id=ctx.task_id,
             task_name=ctx.task_name,
@@ -124,6 +130,7 @@ class ComputeExecutor(TaskExecutor):
             **self._log_fields,
         )
 
+    @override
     async def execute(self, ctx: GateContext, message_dict: Any, chain: Any) -> ExecutionResult:
         task_info = ctx.task_info
         assert task_info is not None
@@ -144,8 +151,10 @@ class ComputeExecutor(TaskExecutor):
                 # Bereits bestaetigt, kein Redelivery moeglich: Infrastrukturfehler,
                 # kein Task-Fehler — eigene Meldung, damit er nicht als solcher untergeht.
                 logger.error(
-                    "compute_slot_unavailable_fire_and_forget_dropped", task_id=ctx.task_id,
-                    **_error_fields(exc), hint="fire-and-forget messages are acked before dispatch; "
+                    "compute_slot_unavailable_fire_and_forget_dropped",
+                    task_id=ctx.task_id,
+                    **_error_fields(exc),
+                    hint="fire-and-forget messages are acked before dispatch; "
                     "the message is lost — check the forkserver and /ready",
                 )
             else:
@@ -211,7 +220,7 @@ class ComputeExecutor(TaskExecutor):
         except ChildDied as exc:
             fail(exc, str(exc))
             return
-        except Exception as exc:  # Pool-Fehler duerfen die Pipeline nicht verlassen
+        except Exception as exc:  # noqa: BLE001 - Pool-Fehler duerfen die Pipeline nicht verlassen
             fail(exc, f"compute pool failure: {exc}")
             return
         self._apply_envelope(envelope, result, fail)

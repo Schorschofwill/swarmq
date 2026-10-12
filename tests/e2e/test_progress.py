@@ -10,13 +10,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
-from typing import Any
+from typing import Any, override
 
 import pytest
 
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
+from swarmq.progress import ProgressInfo
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 
@@ -61,8 +62,10 @@ async def _running_worker(rabbitmq_url: str, valkey_url: str, queue: str):
         await worker_backend.close()
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_watch_progress_streams_updates(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
 ):
     """A 10-step task emits progress; watch_progress yields at least
     three events (throttling-bounded); the final event shows percent
@@ -73,6 +76,7 @@ async def test_watch_progress_streams_updates(
     class StepperTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self) -> int:
             # 10 steps × 120ms = 1.2s total. Throttling at 500ms
             # means the client should observe at least 3 events
@@ -87,7 +91,7 @@ async def test_watch_progress_streams_updates(
     client_backend = ValkeyBackend(valkey_url)
     client_app = SwarmQ(client_broker, client_backend, queues=[queue])
 
-    observed: list = []
+    observed: list[ProgressInfo] = []
 
     async with client_app:
         await client_broker.declare_queue(queue)
@@ -114,8 +118,7 @@ async def test_watch_progress_streams_updates(
     # Throttling means we get at most ~3 intermediate events across
     # a 1.2s task with a 500ms window, plus the final 100% flush.
     assert len(observed) >= 2, (
-        f"expected at least two progress events (mid-run + final); "
-        f"got {len(observed)}: {observed!r}"
+        f"expected at least two progress events (mid-run + final); got {len(observed)}: {observed!r}"
     )
     final = observed[-1]
     assert final.current == 10
@@ -124,8 +127,10 @@ async def test_watch_progress_streams_updates(
     assert "10" in final.message
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_get_progress_polling_sees_terminal_state(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
 ):
     """After the task completes, one-shot get_progress returns the
     final HASH state (until TTL expires)."""
@@ -135,6 +140,7 @@ async def test_get_progress_polling_sees_terminal_state(
     class QuickTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self) -> str:
             await self.update_progress(1, 2, "half")
             await asyncio.sleep(0.05)
@@ -160,22 +166,28 @@ async def test_get_progress_polling_sees_terminal_state(
             assert info.message == "done"
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_get_progress_none_for_unknown_task(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
 ):
     """Never-written task_id returns None (not an error)."""
     client_broker = RabbitMQBroker(rabbitmq_url)
     client_backend = ValkeyBackend(valkey_url)
     client_app = SwarmQ(
-        client_broker, client_backend, queues=["dummy"],
+        client_broker,
+        client_backend,
+        queues=["dummy"],
     )
     async with client_app:
         info = await client_app.client.get_progress("never-existed")
         assert info is None
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_final_flush_bypasses_throttle_for_fast_task(
-    rabbitmq_url: str, valkey_url: str, _cleanup_tasks,
+    rabbitmq_url: str,
+    valkey_url: str,
 ):
     """A task that finishes in <500ms still emits the final update,
     per the force-flush rule on current == total."""
@@ -185,6 +197,7 @@ async def test_final_flush_bypasses_throttle_for_fast_task(
     class BurstTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self) -> str:
             # Entire loop completes well inside 500ms.
             for i in range(1, 4):

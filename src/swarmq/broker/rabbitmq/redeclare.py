@@ -33,7 +33,6 @@ async def publish_redeclaring_once(broker: Any, queue: str, publish: Callable[[]
     ``UnroutableMessage`` geht unveraendert durch."""
     try:
         await publish()
-        return
     except UnroutableMessage as exc:
         logger.warning(
             "own_queue_unroutable_redeclaring",
@@ -41,6 +40,8 @@ async def publish_redeclaring_once(broker: Any, queue: str, publish: Callable[[]
             **_error_fields(exc),
             hint="a queue of this worker was deleted while it ran; declaring it again (a delay tier alone)",
         )
+    else:
+        return
     try:
         await redeclare_on_throwaway_channel(broker, queue)
     except Exception as exc:

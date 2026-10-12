@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -35,7 +36,7 @@ def _alive(pid: int) -> bool:
         return True
     # Zombie zaehlt als tot: der Supervisor ist weg, niemand sammelt ihn ein.
     try:
-        with open(f"/proc/{pid}/status", encoding="ascii") as fh:
+        with Path(f"/proc/{pid}/status").open(encoding="ascii") as fh:
             return "State:\tZ" not in fh.read()
     except OSError:
         return False
@@ -54,20 +55,39 @@ def _wait_until(predicate, timeout_s: float, what: str) -> None:
 def test_workers_die_with_a_sigkilled_supervisor():
     queue = f"cli-orphan-{uuid.uuid4().hex[:8]}"
     env = dict(
-        os.environ, SWARMQ_BROKER_URL=rabbitmq_amqp_url(), SWARMQ_BACKEND_URL=valkey_db_url(),
-        CLI_TEST_QUEUE=queue, PYTHONUNBUFFERED="1",
+        os.environ,
+        SWARMQ_BROKER_URL=rabbitmq_amqp_url(),
+        SWARMQ_BACKEND_URL=valkey_db_url(),
+        CLI_TEST_QUEUE=queue,
+        PYTHONUNBUFFERED="1",
     )
     proc = subprocess.Popen(
-        [sys.executable, "-m", "swarmq.cli", "worker", "--module", "tests.integration._cli_fixture_tasks",
-         "--queues", queue, "--processes", "2", "--log-format", "json"],
-        env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True,
+        [
+            sys.executable,
+            "-m",
+            "swarmq.cli",
+            "worker",
+            "--module",
+            "tests.integration._cli_fixture_tasks",
+            "--queues",
+            queue,
+            "--processes",
+            "2",
+            "--log-format",
+            "json",
+        ],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
     )
     lines: list[str] = []
 
     def _pump() -> None:
         assert proc.stdout is not None
         for line in proc.stdout:
-            lines.append(line)
+            lines.append(line)  # noqa: PERF402 - jede Zeile muss sofort sichtbar sein, waehrend der Test parallel auf sie wartet
 
     threading.Thread(target=_pump, daemon=True).start()
 
@@ -76,8 +96,8 @@ def test_workers_die_with_a_sigkilled_supervisor():
         for line in lines:
             if '"worker_spawned"' in line:
                 try:
-                    pids.append(int(json.loads(line[line.index("{"):])["pid"]))
-                except (ValueError, KeyError):
+                    pids.append(int(json.loads(line[line.index("{") :])["pid"]))
+                except ValueError, KeyError:
                     continue
         return pids
 
@@ -85,7 +105,8 @@ def test_workers_die_with_a_sigkilled_supervisor():
         _wait_until(lambda: len(_spawned_pids()) >= 2, 60.0, "two worker subprocesses to spawn")
         _wait_until(
             lambda: sum(1 for line in lines if '"worker_started"' in line) >= 2,
-            60.0, "both workers to start",
+            60.0,
+            "both workers to start",
         )
         loop_pids = _spawned_pids()[:2]
         assert all(_alive(pid) for pid in loop_pids)
@@ -95,7 +116,8 @@ def test_workers_die_with_a_sigkilled_supervisor():
 
         _wait_until(
             lambda: not any(_alive(pid) for pid in loop_pids),
-            20.0, f"the loop processes {loop_pids} to die with their supervisor",
+            20.0,
+            f"the loop processes {loop_pids} to die with their supervisor",
         )
     finally:
         terminate_worker_process(proc)

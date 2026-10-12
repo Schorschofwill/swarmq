@@ -22,7 +22,7 @@ import json
 import logging
 import sys
 import threading
-from typing import Any
+from typing import Any, override
 
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
@@ -44,6 +44,7 @@ class _AnnotateRecord(logging.Filter):
     Records ohne Task-Kontext bekommen ``task_id='-'`` -- sonst scheitert
     ``%(task_id)s`` an jeder Zeile ausserhalb eines Tasks."""
 
+    @override
     def filter(self, record: logging.LogRecord) -> bool:
         record.handler_thread = threading.current_thread().name
         if not hasattr(record, "task_id"):
@@ -71,6 +72,7 @@ async def _run(mode: str, queue: str, broker_url: str, backend_url: str) -> dict
     class _AddTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self, a: int, b: int) -> int:
             return a + b
 
@@ -82,8 +84,12 @@ async def _run(mode: str, queue: str, broker_url: str, backend_url: str) -> dict
         await client.broker.declare_queue(queue)
         task_ids = [await client.schedule(task_name, i, 1, queue=queue) for i in range(3)]
         worker = SwarmQ(
-            RabbitMQBroker(broker_url), ValkeyBackend(backend_url), queues=[queue],
-            burst_mode=True, burst_idle_timeout=0.5, **opt_in,
+            RabbitMQBroker(broker_url),
+            ValkeyBackend(backend_url),
+            queues=[queue],
+            burst_mode=True,
+            burst_idle_timeout=0.5,
+            **opt_in,
         )
         async with worker:
             await asyncio.wait_for(worker.start_worker(), timeout=30.0)

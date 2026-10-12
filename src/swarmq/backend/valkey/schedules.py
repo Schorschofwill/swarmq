@@ -8,8 +8,8 @@ in ``swarmq.scheduler`` (dort delegiert ``ScheduleStore`` hierher).
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Any
+from collections.abc import AsyncIterator, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, cast
 
 import valkey.asyncio as valkey_asyncio
 from valkey.exceptions import ValkeyError
@@ -158,7 +158,11 @@ class ValkeyScheduleStore:
         return {_decode(k): v for k, v in raw.items()}
 
     async def replan_if_unchanged(
-        self, name: str, expected: bytes, payload: bytes, fire_ts_ms: int,
+        self,
+        name: str,
+        expected: bytes,
+        payload: bytes,
+        fire_ts_ms: int,
     ) -> bool:
         """``sched_replan.lua``: HGET-Vergleich, Score-Prüfung, HSET + ZADD
         in einem EVAL (Review #4)."""
@@ -222,7 +226,11 @@ class ValkeyScheduleStore:
         return await self.set_schedfire_dedup(fire_key, ttl_ms)
 
     async def claim_fire(
-        self, fire_key: str, ttl_ms: int, *, owner: str | None = None,
+        self,
+        fire_key: str,
+        ttl_ms: int,
+        *,
+        owner: str | None = None,
         takeover: str | Sequence[str] | None = None,
     ) -> bool:
         """``sched_fire_claim.lua``: frei oder Wert in ``takeover`` -> Owner
@@ -231,7 +239,8 @@ class ValkeyScheduleStore:
         result = await self._run(
             "sched_fire_claim",
             self._fire_claim_script(
-                keys=[self._inflight(fire_key)], args=[owner or "1", ttl_ms, *(offered or [""])],
+                keys=[self._inflight(fire_key)],
+                args=[owner or "1", ttl_ms, *(offered or [""])],
             ),
         )
         return int(result) == 1
@@ -241,7 +250,8 @@ class ValkeyScheduleStore:
             await self.clear_schedfire_inflight(fire_key)
             return
         await self._run(
-            "release_fire_claim", self._owner_release_script(keys=[self._inflight(fire_key)], args=[owner]),
+            "release_fire_claim",
+            self._owner_release_script(keys=[self._inflight(fire_key)], args=[owner]),
         )
 
     async def is_fire_completed(self, fire_key: str) -> bool:
@@ -272,7 +282,12 @@ class ValkeyScheduleStore:
         return None if previous is None else _decode(previous)
 
     async def report_cron(
-        self, name: str, fingerprint: str, payload: bytes, *, live_window_ms: int,
+        self,
+        name: str,
+        fingerprint: str,
+        payload: bytes,
+        *,
+        live_window_ms: int,
     ) -> None:
         """``sched_report.lua``: Meldung mit Server-Zeit (``TIME``); danach der
         Name ins Set der je gemeldeten Crons (BZ-11, eigener Befehl: die
@@ -280,7 +295,8 @@ class ValkeyScheduleStore:
         await self._run(
             f"sched_report for {name!r}",
             self._report_script(
-                keys=self._report_keys, args=[f"{name}|{fingerprint}", payload, live_window_ms],
+                keys=self._report_keys,
+                args=[f"{name}|{fingerprint}", payload, live_window_ms],
             ),
         )
         await self._run(f"sched_report_known for {name!r}", self._client.sadd(self._report_known, name))
@@ -309,12 +325,18 @@ class ValkeyScheduleStore:
     async def prune_cron_reports(self, *, max_age_ms: int) -> int:
         """``sched_report_prune.lua``: Prüfen und Löschen in einem Schritt."""
         result = await self._run(
-            "sched_report_prune", self._report_prune_script(keys=self._report_keys, args=[max_age_ms]),
+            "sched_report_prune",
+            self._report_prune_script(keys=self._report_keys, args=[max_age_ms]),
         )
         return int(result)
 
     async def prune_cron(
-        self, name: str, expected: bytes, *, stale_after_ms: int | None, remember_disabled: bool,
+        self,
+        name: str,
+        expected: bytes,
+        *,
+        stale_after_ms: int | None,
+        remember_disabled: bool,
     ) -> bool:
         """``sched_prune.lua``: Prüfen und Entfernen in einem Schritt (KTD8)."""
         result = await self._run(
@@ -322,7 +344,9 @@ class ValkeyScheduleStore:
             self._prune_script(
                 keys=[self._defs, self._zset, self._report_last_seen, self._disabled],
                 args=[
-                    name, expected, "" if stale_after_ms is None else stale_after_ms,
+                    name,
+                    expected,
+                    "" if stale_after_ms is None else stale_after_ms,
                     "1" if remember_disabled else "0",
                 ],
             ),
@@ -380,7 +404,8 @@ class ValkeyScheduleStore:
         zwischendurch abgelaufene Keys fehlen im Ergebnis."""
         try:
             pattern = f"{self._keys.sched_worker_version_prefix}*"
-            keys = [key async for key in self._client.scan_iter(match=pattern, count=100)]
+            scan = cast("AsyncIterator[bytes]", self._client.scan_iter(match=pattern, count=100))
+            keys = [key async for key in scan]
         except (ValkeyError, OSError) as exc:
             raise as_backend_error(str(exc), exc) from exc
         if not keys:
@@ -394,7 +419,8 @@ class ValkeyScheduleStore:
 
     async def set_leader_version(self, owner: str, version: str, *, ttl_ms: int) -> None:
         await self._run(
-            "set_leader_version", self._client.set(self._leader_version, f"{owner}|{version}", px=ttl_ms),
+            "set_leader_version",
+            self._client.set(self._leader_version, f"{owner}|{version}", px=ttl_ms),
         )
 
     async def leader_info(self) -> LeaderInfo:
@@ -422,15 +448,16 @@ class ValkeyScheduleStore:
 
     async def zrangebyscore_schedules(self, max_score_ms: int, limit: int) -> list[bytes]:
         result: list[bytes] = await self._run(
-            "zrangebyscore_schedules", self._client.zrangebyscore(self._zset, "-inf", max_score_ms, start=0, num=limit)
+            "zrangebyscore_schedules",
+            self._client.zrangebyscore(self._zset, "-inf", max_score_ms, start=0, num=limit),
         )
         return result
 
     async def hset_schedule_def(self, schedule_name: str, def_json: bytes) -> None:
-        await self._run("hset_schedule_def", self._client.hset(self._defs, schedule_name, def_json))  # type: ignore[arg-type]
+        await self._run("hset_schedule_def", self._client.hset(self._defs, schedule_name, def_json))  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]  # bytes ist für str-Parameter gültig
 
     async def hsetnx_schedule_def(self, schedule_name: str, def_json: bytes) -> bool:
-        result = await self._run("hsetnx_schedule_def", self._client.hsetnx(self._defs, schedule_name, def_json))  # type: ignore[arg-type]
+        result = await self._run("hsetnx_schedule_def", self._client.hsetnx(self._defs, schedule_name, def_json))  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]  # valkey-Typen erlauben nur str; bytes ist zur Laufzeit gültig
         return int(result) == 1
 
     async def hget_schedule_def(self, schedule_name: str) -> bytes | None:

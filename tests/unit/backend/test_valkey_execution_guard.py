@@ -58,9 +58,9 @@ async def test_concurrent_claims_share_one_round_trip() -> None:
     client.register_script = _script
     store = ValkeyExecutionGuardStore(client)
 
-    claims = await asyncio.gather(*(
-        store.claim(f"t-{i}", owner="o", retry_count=0, ttl_ms=1, state_ttl_ms=1, max_orphans=3) for i in range(3)
-    ))
+    claims = await asyncio.gather(
+        *(store.claim(f"t-{i}", owner="o", retry_count=0, ttl_ms=1, state_ttl_ms=1, max_orphans=3) for i in range(3))
+    )
 
     assert [claim.status for claim in claims] == ["claimed"] * 3
     assert len(connection.sent) == 1

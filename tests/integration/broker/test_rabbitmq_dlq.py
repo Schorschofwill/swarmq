@@ -53,20 +53,26 @@ async def broker_and_queue(rabbitmq_url: str):
 
 async def _dlq_depth(broker: RabbitMQBroker, queue_name: str) -> int:
     """Return current message count in {queue}.XQ via declaration reply."""
+    assert broker._connection is not None
     ch = await broker._connection.channel()
     try:
         q = await ch.declare_queue(f"{queue_name}.XQ", passive=True)
-        return q.declaration_result.message_count
+        count = q.declaration_result.message_count
+        assert count is not None
+        return count
     finally:
         await ch.close()
 
 
 async def _main_depth(broker: RabbitMQBroker, queue_name: str) -> int:
     """Return current message count in the main queue."""
+    assert broker._connection is not None
     ch = await broker._connection.channel()
     try:
         q = await ch.declare_queue(queue_name, passive=True)
-        return q.declaration_result.message_count
+        count = q.declaration_result.message_count
+        assert count is not None
+        return count
     finally:
         await ch.close()
 
@@ -292,7 +298,8 @@ async def test_retry_and_retry_all_set_a_fresh_replay_id(broker_and_queue):
     finally:
         await ch.close()
     assert all(isinstance(r, str) and len(r) == 32 for r in replay_ids)
-    assert "old" not in replay_ids and len(set(replay_ids)) == 2
+    assert "old" not in replay_ids
+    assert len(set(replay_ids)) == 2
 
 
 # ---------------------------------------------------------------------------

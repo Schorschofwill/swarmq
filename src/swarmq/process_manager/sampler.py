@@ -5,12 +5,9 @@ keine Broker-Implementierung mehr (KTD6)."""
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Protocol
+from typing import Protocol
 
 from swarmq.ready_depth import ready_depth_or_none
-
-if TYPE_CHECKING:  # pragma: no cover — import-time only
-    pass
 
 SAMPLE_TIMEOUT_S = 5.0
 
@@ -43,7 +40,8 @@ async def _ready_depth(broker: SamplerBroker, queue: str) -> int:
 
 
 def _make_queue_depth_sampler(
-    admin_factory: AdminFactory, queues: list[str],
+    admin_factory: AdminFactory,
+    queues: list[str],
 ) -> Callable[[], int]:
     """Build a **synchronous** sampler the ProcessManager can call.
 
@@ -72,7 +70,7 @@ def _make_queue_depth_sampler(
                 try:
                     async with asyncio.timeout(1.0):
                         await broker.close()
-                except (TimeoutError, Exception):
+                except TimeoutError, Exception:  # noqa: BLE001, S110 - Close best effort unter Broker-Ausfall
                     pass
 
         return asyncio.run(_run())

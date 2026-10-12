@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from typing import override
 
 import pytest
 
@@ -36,8 +37,10 @@ def _cleanup_tasks():
     Task._clear_registered_tasks()
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_burst_exits_when_queue_empty(
-    rabbitmq_url, valkey_url, _cleanup_tasks,
+    rabbitmq_url,
+    valkey_url,
 ):
     """Worker started against an empty queue with --burst exits within
     the idle-timeout window."""
@@ -47,13 +50,15 @@ async def test_burst_exits_when_queue_empty(
     class NopTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue], max_retries=0)
 
+        @override
         async def run(self) -> str:
             return "ok"
 
     broker = RabbitMQBroker(rabbitmq_url)
     backend = ValkeyBackend(valkey_url)
     app = SwarmQ(
-        broker, backend,
+        broker,
+        backend,
         queues=[queue],
         burst_mode=True,
         burst_idle_timeout=1.0,
@@ -66,13 +71,13 @@ async def test_burst_exits_when_queue_empty(
         elapsed = time.monotonic() - t0
 
     # Should exit within burst_idle_timeout + start-up overhead.
-    assert 1.0 <= elapsed <= 5.0, (
-        f"burst exit took {elapsed:.2f}s; expected ~1s + startup"
-    )
+    assert 1.0 <= elapsed <= 5.0, f"burst exit took {elapsed:.2f}s; expected ~1s + startup"
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_burst_drains_queue_then_exits(
-    rabbitmq_url, valkey_url, _cleanup_tasks,
+    rabbitmq_url,
+    valkey_url,
 ):
     """Pre-populate a queue, start worker with --burst, verify all
     tasks completed and worker exited."""
@@ -84,6 +89,7 @@ async def test_burst_drains_queue_then_exits(
     class DrainTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue], max_retries=0)
 
+        @override
         async def run(self, n: int) -> int:
             completed.append(n)
             if len(completed) >= 5:
@@ -119,8 +125,10 @@ async def test_burst_drains_queue_then_exits(
     assert elapsed <= 10.0, f"burst-drain took {elapsed:.2f}s"
 
 
+@pytest.mark.usefixtures("_cleanup_tasks")
 async def test_burst_waits_for_inflight_before_exit(
-    rabbitmq_url, valkey_url, _cleanup_tasks,
+    rabbitmq_url,
+    valkey_url,
 ):
     """A slow task picked up just before the idle window must complete
     before the burst worker exits — graceful-drain semantics."""
@@ -132,6 +140,7 @@ async def test_burst_waits_for_inflight_before_exit(
     class SlowTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue], max_retries=0)
 
+        @override
         async def run(self) -> str:
             started.set()
             await asyncio.sleep(2.0)

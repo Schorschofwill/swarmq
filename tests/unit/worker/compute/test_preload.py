@@ -68,7 +68,12 @@ def fresh_modules(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[N
     monkeypatch.syspath_prepend(str(tmp_path))
     monkeypatch.setitem(sys.modules, "__main__", sys.modules["__main__"])
     stale = (
-        PRELOAD, FIXTURE_MAIN, FIXTURE_OPTIN_MAIN, FIXTURE_BASICCONFIG_MAIN, FIXTURE_PKG, f"{FIXTURE_PKG}.__main__",
+        PRELOAD,
+        FIXTURE_MAIN,
+        FIXTURE_OPTIN_MAIN,
+        FIXTURE_BASICCONFIG_MAIN,
+        FIXTURE_PKG,
+        f"{FIXTURE_PKG}.__main__",
     )
     for name in stale:
         sys.modules.pop(name, None)
@@ -84,7 +89,8 @@ def test_import_registers_named_main_module_as_dunder_main(fresh_modules, monkey
     importlib.import_module(PRELOAD)
     main = sys.modules["__main__"]
     assert main is sys.modules[FIXTURE_MAIN]
-    assert main.__spec__ is not None and main.__spec__.name == FIXTURE_MAIN  # so prueft spawn._fixup_main_from_name
+    assert main.__spec__ is not None
+    assert main.__spec__.name == FIXTURE_MAIN
     assert main.EXECUTIONS == 1
 
 

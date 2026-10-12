@@ -146,4 +146,5 @@ async def test_stub_admin_lists_dead_letters_with_reason_and_headers(clock: Fake
         "reason": "published",
     }
     assert summaries[1] == {"task_id": None, "headers": {"k": "v"}, "reason": "routed"}
-    assert await broker.dead_letter_depth("q") == 2 and await broker.queue_depth("q") == 0
+    assert await broker.dead_letter_depth("q") == 2
+    assert await broker.queue_depth("q") == 0

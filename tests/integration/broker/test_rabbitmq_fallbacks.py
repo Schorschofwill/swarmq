@@ -21,7 +21,7 @@ import contextlib
 import time
 import uuid
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock
 
 import aio_pika
@@ -45,6 +45,7 @@ from tests.support.rabbitmq_faults import publish_failure
 class _LockedTask(Task):
     name = "ctr-locked"
 
+    @override
     async def run(self, value: int) -> int:
         return value
 
@@ -92,7 +93,7 @@ async def _first_delivery(broker: RabbitMQBroker, queue: str, headers: dict[str,
 async def test_expiry_publish_failure_falls_back_to_redelivery(broker: RabbitMQBroker, queue: str) -> None:
     worker = _worker(broker)
     inbox, delivery = await _first_delivery(broker, queue, {HEADER_ENQUEUED_AT: int(time.time()) - 3600})
-    task_info = TaskInfo(name="ctr-locked", queues=(queue,), max_age=1)
+    task_info = TaskInfo(name="ctr-locked", queues=[queue], max_age=1)
 
     ctx = GateContext(task_id="t1", task_name="ctr-locked", queue=queue, task_info=task_info, task_class=_LockedTask)
     with publish_failure(broker):
@@ -107,7 +108,7 @@ async def test_expiry_publish_failure_falls_back_to_redelivery(broker: RabbitMQB
 async def test_retry_publish_failure_falls_back_to_redelivery(broker: RabbitMQBroker, queue: str) -> None:
     worker = _worker(broker)
     inbox, delivery = await _first_delivery(broker, queue, {})
-    task_info = TaskInfo(name="ctr-locked", queues=(queue,), max_retries=3)
+    task_info = TaskInfo(name="ctr-locked", queues=[queue], max_retries=3)
     context: MessageContext = {
         "task_id": "t1",
         "task_name": "ctr-locked",
@@ -135,7 +136,7 @@ async def test_lock_render_failure_with_publish_failure_routes_via_dlx(
 ) -> None:
     worker = _worker(broker)
     inbox, delivery = await _first_delivery(broker, queue, {"x-swarmq-enqueued-at": 5})
-    task_info = TaskInfo(name="ctr-locked", queues=(queue,), lock="user-{missing}", hard_timeout=5)
+    task_info = TaskInfo(name="ctr-locked", queues=[queue], lock="user-{missing}", hard_timeout=5)
 
     ctx = GateContext(
         task_id="t1",

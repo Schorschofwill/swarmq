@@ -62,7 +62,9 @@ class TestDefaults:
 class TestFormat:
     def test_env_log_format_json_applies_without_cli_option(self) -> None:
         settings = resolve_logging_settings(
-            _cli(log_format=None), env={"SWARMQ_LOG_FORMAT": "json"}, config=None,
+            _cli(log_format=None),
+            env={"SWARMQ_LOG_FORMAT": "json"},
+            config=None,
         )
 
         assert settings.format == "json"
@@ -70,14 +72,18 @@ class TestFormat:
     def test_cli_log_format_beats_env_log_format(self) -> None:
         """AE5: ``SWARMQ_LOG_FORMAT=json`` plus ``--log-format human`` ergibt human."""
         settings = resolve_logging_settings(
-            _cli(log_format="human"), env={"SWARMQ_LOG_FORMAT": "json"}, config=None,
+            _cli(log_format="human"),
+            env={"SWARMQ_LOG_FORMAT": "json"},
+            config=None,
         )
 
         assert settings.format == "human"
 
     def test_env_log_json_true_is_an_alias_for_json(self) -> None:
         settings = resolve_logging_settings(
-            _cli(), env={"SWARMQ_LOG_JSON": "true"}, config=None,
+            _cli(),
+            env={"SWARMQ_LOG_JSON": "true"},
+            config=None,
         )
 
         assert settings.format == "json"
@@ -92,12 +98,22 @@ class TestFormat:
         assert settings.format == "human"
 
     def test_config_log_json_is_used_below_env(self) -> None:
-        assert resolve_logging_settings(
-            _cli(), env={}, config={"log_json": True},
-        ).format == "json"
-        assert resolve_logging_settings(
-            _cli(), env={"SWARMQ_LOG_FORMAT": "human"}, config={"log_json": True},
-        ).format == "human"
+        assert (
+            resolve_logging_settings(
+                _cli(),
+                env={},
+                config={"log_json": True},
+            ).format
+            == "json"
+        )
+        assert (
+            resolve_logging_settings(
+                _cli(),
+                env={"SWARMQ_LOG_FORMAT": "human"},
+                config={"log_json": True},
+            ).format
+            == "human"
+        )
 
 
 class TestPriority:
@@ -130,9 +146,14 @@ class TestPriority:
         env = {"SWARMQ_LOG_DRAIN_TIMEOUT": "2.5"}
         config = {"log_drain_timeout": 3}
 
-        assert resolve_logging_settings(
-            _cli(log_drain_timeout="0.25"), env, config,
-        ).drain_timeout == 0.25
+        assert (
+            resolve_logging_settings(
+                _cli(log_drain_timeout="0.25"),
+                env,
+                config,
+            ).drain_timeout
+            == 0.25
+        )
         assert resolve_logging_settings(_cli(), env, config).drain_timeout == 2.5
         assert resolve_logging_settings(_cli(), {}, config).drain_timeout == 3.0
         assert resolve_logging_settings(_cli(), {}, None).drain_timeout == 5.0
@@ -141,9 +162,14 @@ class TestPriority:
         env = {"SWARMQ_LOG_LIFECYCLE_LEVEL": "WARNING"}
         config = {"log_lifecycle_level": "ERROR"}
 
-        assert resolve_logging_settings(
-            _cli(log_lifecycle_level="INFO"), env, config,
-        ).lifecycle_level == "INFO"
+        assert (
+            resolve_logging_settings(
+                _cli(log_lifecycle_level="INFO"),
+                env,
+                config,
+            ).lifecycle_level
+            == "INFO"
+        )
         assert resolve_logging_settings(_cli(), env, config).lifecycle_level == "WARNING"
         assert resolve_logging_settings(_cli(), {}, config).lifecycle_level == "ERROR"
 
@@ -151,43 +177,72 @@ class TestPriority:
         env = {"SWARMQ_LOG_CONFIG": "env.json"}
         config = {"log_config": "config.json"}
 
-        assert resolve_logging_settings(
-            _cli(log_config="cli.json"), env, config,
-        ).log_config == "cli.json"
+        assert (
+            resolve_logging_settings(
+                _cli(log_config="cli.json"),
+                env,
+                config,
+            ).log_config
+            == "cli.json"
+        )
         assert resolve_logging_settings(_cli(), env, config).log_config == "env.json"
         assert resolve_logging_settings(_cli(), {}, config).log_config == "config.json"
 
     def test_configure_switch_follows_cli_then_env_then_config(self) -> None:
-        assert resolve_logging_settings(
-            _cli(configure_logging=False), {"SWARMQ_CONFIGURE_LOGGING": "true"}, None,
-        ).configure is False
-        assert resolve_logging_settings(
-            _cli(configure_logging=None),
-            {"SWARMQ_CONFIGURE_LOGGING": "false"},
-            {"configure_logging": True},
-        ).configure is False
-        assert resolve_logging_settings(
-            _cli(), {}, {"configure_logging": False},
-        ).configure is False
-        assert resolve_logging_settings(
-            _cli(), {"SWARMQ_CONFIGURE_LOGGING": "true"}, {"configure_logging": False},
-        ).configure is True
+        assert (
+            resolve_logging_settings(
+                _cli(configure_logging=False),
+                {"SWARMQ_CONFIGURE_LOGGING": "true"},
+                None,
+            ).configure
+            is False
+        )
+        assert (
+            resolve_logging_settings(
+                _cli(configure_logging=None),
+                {"SWARMQ_CONFIGURE_LOGGING": "false"},
+                {"configure_logging": True},
+            ).configure
+            is False
+        )
+        assert (
+            resolve_logging_settings(
+                _cli(),
+                {},
+                {"configure_logging": False},
+            ).configure
+            is False
+        )
+        assert (
+            resolve_logging_settings(
+                _cli(),
+                {"SWARMQ_CONFIGURE_LOGGING": "true"},
+                {"configure_logging": False},
+            ).configure
+            is True
+        )
 
 
 class TestLoggerLevels:
     def test_repeated_cli_option_yields_pairs(self) -> None:
         settings = resolve_logging_settings(
-            _cli(logger_levels=["aio_pika=WARNING", "valkey=ERROR"]), {}, None,
+            _cli(logger_levels=["aio_pika=WARNING", "valkey=ERROR"]),
+            {},
+            None,
         )
 
         assert settings.logger_levels == (("aio_pika", "WARNING"), ("valkey", "ERROR"))
 
     def test_env_form_yields_the_same_pairs_as_the_cli_form(self) -> None:
         from_env = resolve_logging_settings(
-            _cli(), {"SWARMQ_LOGGER_LEVELS": "aio_pika=WARNING, valkey=ERROR"}, None,
+            _cli(),
+            {"SWARMQ_LOGGER_LEVELS": "aio_pika=WARNING, valkey=ERROR"},
+            None,
         )
         from_cli = resolve_logging_settings(
-            _cli(logger_levels=["aio_pika=WARNING", "valkey=ERROR"]), {}, None,
+            _cli(logger_levels=["aio_pika=WARNING", "valkey=ERROR"]),
+            {},
+            None,
         )
 
         assert from_env.logger_levels == from_cli.logger_levels
@@ -195,25 +250,29 @@ class TestLoggerLevels:
     def test_config_pairs_apply_below_env(self) -> None:
         config = {"logger_levels": (("aiormq", "error"),)}
 
-        assert resolve_logging_settings(_cli(), {}, config).logger_levels == (
-            ("aiormq", "ERROR"),
-        )
+        assert resolve_logging_settings(_cli(), {}, config).logger_levels == (("aiormq", "ERROR"),)
         assert resolve_logging_settings(
-            _cli(), {"SWARMQ_LOGGER_LEVELS": "valkey=INFO"}, config,
+            _cli(),
+            {"SWARMQ_LOGGER_LEVELS": "valkey=INFO"},
+            config,
         ).logger_levels == (("valkey", "INFO"),)
 
     def test_entry_without_equals_sign_is_a_configuration_error(self) -> None:
         with pytest.raises(
-            ConfigurationError, match=r"--logger-level expects NAME=LEVEL, got 'aio_pika'",
+            ConfigurationError,
+            match=r"--logger-level expects NAME=LEVEL, got 'aio_pika'",
         ):
             resolve_logging_settings(_cli(logger_levels=["aio_pika"]), {}, None)
 
     def test_unknown_level_in_entry_is_a_configuration_error(self) -> None:
         with pytest.raises(
-            ConfigurationError, match=r"SWARMQ_LOGGER_LEVELS.*aio_pika.*'LOUD'",
+            ConfigurationError,
+            match=r"SWARMQ_LOGGER_LEVELS.*aio_pika.*'LOUD'",
         ):
             resolve_logging_settings(
-                _cli(), {"SWARMQ_LOGGER_LEVELS": "aio_pika=LOUD"}, None,
+                _cli(),
+                {"SWARMQ_LOGGER_LEVELS": "aio_pika=LOUD"},
+                None,
             )
 
     def test_empty_logger_name_is_a_configuration_error(self) -> None:
@@ -237,14 +296,16 @@ class TestValidation:
 
     @pytest.mark.parametrize("raw", ["0", "-5", "abc", "1.5"])
     def test_non_positive_or_non_numeric_queue_size_is_a_configuration_error(
-        self, raw: str,
+        self,
+        raw: str,
     ) -> None:
         with pytest.raises(ConfigurationError, match=rf"SWARMQ_LOG_QUEUE_SIZE.*{raw!r}"):
             resolve_logging_settings(_cli(), {"SWARMQ_LOG_QUEUE_SIZE": raw}, None)
 
     @pytest.mark.parametrize("raw", ["0", "-1", "abc", "nan", "inf", "1e10"])
     def test_non_positive_non_numeric_or_infinite_drain_timeout_is_a_configuration_error(
-        self, raw: str,
+        self,
+        raw: str,
     ) -> None:
         with pytest.raises(ConfigurationError, match=rf"SWARMQ_LOG_DRAIN_TIMEOUT.*{raw!r}"):
             resolve_logging_settings(_cli(), {"SWARMQ_LOG_DRAIN_TIMEOUT": raw}, None)
@@ -254,15 +315,20 @@ class TestInvalidCombinations:
     def test_log_config_with_explicit_log_format_is_a_configuration_error(self) -> None:
         with pytest.raises(ConfigurationError, match=r"--log-config.*--log-format"):
             resolve_logging_settings(
-                _cli(log_config="x.json", log_format="json"), {}, None,
+                _cli(log_config="x.json", log_format="json"),
+                {},
+                None,
             )
 
     def test_no_configure_with_log_config_is_a_configuration_error(self) -> None:
         with pytest.raises(
-            ConfigurationError, match=r"--no-configure-logging.*--log-config",
+            ConfigurationError,
+            match=r"--no-configure-logging.*--log-config",
         ):
             resolve_logging_settings(
-                _cli(configure_logging=False, log_config="x.json"), {}, None,
+                _cli(configure_logging=False, log_config="x.json"),
+                {},
+                None,
             )
 
 

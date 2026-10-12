@@ -117,4 +117,5 @@ def test_completed_marker_of_a_fire_with_max_age_lives_max_age_plus_300(monkeypa
     assert completed_marker_ttl_ms(config, fresh, _DAY) == (_DAY + 300) * 1000
     assert completed_marker_ttl_ms(config, {}, _DAY) == (_DAY + 300) * 1000
     assert completed_marker_ttl_ms(config, fresh, 30 * _DAY) == 7 * _DAY * 1000
+    assert config.scheduler_dedup_ttl is not None
     assert completed_marker_ttl_ms(config, fresh, None) == int(config.scheduler_dedup_ttl * 1000)

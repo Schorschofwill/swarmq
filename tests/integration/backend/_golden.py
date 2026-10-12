@@ -156,14 +156,22 @@ async def snapshot_keys(backend: ValkeyBackend) -> dict[str, str]:
     # Cron-Aufraeumen (KTD8): ein deaktiviert entfernter Cron landet im Set.
     await backend.schedules.put("golden-pruned", value_fixtures()["schedule_definition.json"], None)
     await backend.schedules.prune_cron(
-        "golden-pruned", value_fixtures()["schedule_definition.json"], stale_after_ms=None, remember_disabled=True,
+        "golden-pruned",
+        value_fixtures()["schedule_definition.json"],
+        stale_after_ms=None,
+        remember_disabled=True,
     )
     await backend.schedules.set_leader_version("golden-owner", "0.10.0", ttl_ms=TTL_MS)
     # Epoch des Datenbestands (Plan 0.12.0, MR 14, BZ-04).
     await backend.schedules.ensure_epoch("golden-epoch")
     # Ausfuehrungsschutz (Plan 2026-10-08-1541, KTD5): Running-Marker und Zustand.
     await backend.execution_guard.claim(
-        TASK_ID, owner="golden-owner", retry_count=0, ttl_ms=TTL_MS, state_ttl_ms=TTL_MS, max_orphans=3,
+        TASK_ID,
+        owner="golden-owner",
+        retry_count=0,
+        ttl_ms=TTL_MS,
+        state_ttl_ms=TTL_MS,
+        max_orphans=3,
     )
     # Die Stores des Backends selbst (Review MR 15, Hinweis): mit Namensraum
     # belegt die Golden-Datei so auch die Verdrahtung von Locks, Rate-Limit
@@ -180,13 +188,13 @@ async def snapshot_keys(backend: ValkeyBackend) -> dict[str, str]:
     await control.write_setpoint("golden-group", Setpoint(low=1, high=2))
     await control.write_status("golden-group", "golden-sup", {"workers": 1}, ttl_s=TTL_MS / 1000)
 
-    keys: dict[str, str] = {}
+    found: dict[str, str] = {}
     for raw in await client.keys("*"):
         key = raw.decode() if isinstance(raw, bytes) else str(raw)
         type_ = await client.type(key)
-        keys[_normalise_key(key)] = type_.decode() if isinstance(type_, bytes) else str(type_)
+        found[_normalise_key(key)] = type_.decode() if isinstance(type_, bytes) else str(type_)
     await client.flushdb()
-    return dict(sorted(keys.items()))
+    return dict(sorted(found.items()))
 
 
 # ---------------------------------------------------------------------------

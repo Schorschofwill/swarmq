@@ -21,10 +21,16 @@ class TestWorkerConfig:
     def test_rejects_list_queues(self):
         with pytest.raises(TypeError, match="pickle-safe"):
             WorkerConfig(
-                module="x", queues=["a"], concurrency=1,
-                log_level="INFO", log_format="human",
-                burst=False, burst_idle_timeout=5.0, priorities=False,
-                metrics_port=None, health_port=None,
+                module="x",
+                queues=["a"],  # type: ignore[arg-type]  # absichtlich falscher Typ: Laufzeitpruefung
+                concurrency=1,
+                log_level="INFO",
+                log_format="human",
+                burst=False,
+                burst_idle_timeout=5.0,
+                priorities=False,
+                metrics_port=None,
+                health_port=None,
             )
 
     def test_rejects_invalid_log_level(self):
@@ -36,6 +42,7 @@ class TestWorkerConfig:
         boundary. A future non-primitive field would break this test
         before breaking production."""
         import pickle
+
         cfg = _make_test_cfg()
         restored = pickle.loads(pickle.dumps(cfg))
         assert restored == cfg
@@ -45,7 +52,7 @@ class TestWorkerConfig:
 
         cfg = _make_test_cfg()
         with pytest.raises(dataclasses.FrozenInstanceError):
-            cfg.module = "mutated"
+            cfg.module = "mutated"  # type: ignore[misc]  # absichtlich: frozen muss Zuweisung ablehnen
 
     def test_reload_defaults_to_false_and_empty_watch_dirs(self):
         """R5.3 Unit 2: new fields default to (False, ())."""
@@ -56,6 +63,7 @@ class TestWorkerConfig:
     def test_reload_fields_pickle_roundtrip(self):
         """R5.3 Unit 2: extended fields survive the spawn boundary."""
         import pickle
+
         cfg = _make_test_cfg(reload=True, watch_dirs=("/tmp/a", "/tmp/b"))
         restored = pickle.loads(pickle.dumps(cfg))
         assert restored.reload is True
@@ -73,9 +81,18 @@ def test_worker_config_pool_fields_default_and_pickle_roundtrip():
     import pickle
 
     cfg = WorkerConfig(
-        module="m", queues=("q",), concurrency=2, log_level="INFO", log_format="json",
-        burst=False, burst_idle_timeout=1.0, priorities=False, metrics_port=None,
-        health_port=None, pool="cpu", recycle_rss_mb=300,
+        module="m",
+        queues=("q",),
+        concurrency=2,
+        log_level="INFO",
+        log_format="json",
+        burst=False,
+        burst_idle_timeout=1.0,
+        priorities=False,
+        metrics_port=None,
+        health_port=None,
+        pool="cpu",
+        recycle_rss_mb=300,
     )
     assert cfg.pool == "cpu"
     assert cfg.recycle_max_tasks is None
@@ -135,8 +152,10 @@ class TestLoggingSettingsTransport:
         from swarmq.logging_settings import LoggingSettings
 
         settings = LoggingSettings(
-            level="CRITICAL", format="json",
-            logger_levels=(("aio_pika", "WARNING"),), queue_size=500,
+            level="CRITICAL",
+            format="json",
+            logger_levels=(("aio_pika", "WARNING"),),
+            queue_size=500,
         )
         cfg = _make_test_cfg(logging_settings=settings)
         restored = pickle.loads(pickle.dumps(cfg))

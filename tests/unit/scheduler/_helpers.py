@@ -17,12 +17,12 @@ from swarmq.scheduler import (
 pytestmark = [pytest.mark.timeout(5)]
 
 
-
 _LEADER_TOKEN = LockToken(name=SCHEDULER_LOCK_NAME, owner="test-owner", max_concurrency=1)
 
 
-def _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher,
-               owner_token="test-owner", version="0.10.0"):
+def _make_loop(
+    backend, broker, config, lock_manager, store, signal_dispatcher, owner_token="test-owner", version="0.10.0"
+):
     return SchedulerLoop(
         backend=backend,
         broker=broker,
@@ -36,8 +36,9 @@ def _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher,
     )
 
 
-def _def(name="cron_a", *, cron="*/5 * * * *", fire_ts_ms=1_700_000_000_000,
-         source="static", disabled=False) -> ScheduleDefinition:
+def _def(
+    name="cron_a", *, cron="*/5 * * * *", fire_ts_ms=1_700_000_000_000, source="static", disabled=False
+) -> ScheduleDefinition:
     return ScheduleDefinition(
         schedule_name=name,
         task_name="ping",
@@ -52,8 +53,14 @@ def _def(name="cron_a", *, cron="*/5 * * * *", fire_ts_ms=1_700_000_000_000,
 
 
 def _cron_def(
-    *, name="cron_unique", task_name="cron_task", fire_ts_ms=1_000,
-    args=(), kwargs=None, source="static", dedup_hash=None,
+    *,
+    name="cron_unique",
+    task_name="cron_task",
+    fire_ts_ms=1_000,
+    args=(),
+    kwargs=None,
+    source="static",
+    dedup_hash=None,
 ) -> ScheduleDefinition:
     return ScheduleDefinition(
         schedule_name=name,

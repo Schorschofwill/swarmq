@@ -8,6 +8,7 @@ import uuid
 import pytest
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
+from swarmq.contracts import Delivery
 from tests.support.queues import delete_queue_family
 
 
@@ -75,7 +76,7 @@ class TestPublishConsumeAck:
         payload = b'{"task": "hello"}'
         await broker.publish(qname, payload)
 
-        received: asyncio.Future = asyncio.get_event_loop().create_future()
+        received: asyncio.Future[Delivery] = asyncio.get_event_loop().create_future()
 
         async def _on_message(msg) -> None:
             if not received.done():
@@ -99,7 +100,7 @@ class TestNackRequeue:
 
         # Collect deliveries via a single consumer callback that nacks the
         # first delivery and acks the second.
-        deliveries: list[asyncio.Future] = [
+        deliveries: list[asyncio.Future[Delivery]] = [
             asyncio.get_event_loop().create_future(),
             asyncio.get_event_loop().create_future(),
         ]

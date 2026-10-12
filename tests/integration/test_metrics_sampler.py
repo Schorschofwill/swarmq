@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import socket
 import uuid
+from typing import Any
 
 import pytest
 
@@ -28,7 +29,8 @@ pytestmark = [pytest.mark.integration, pytest.mark.timeout(30)]
 def _free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+        port: int = s.getsockname()[1]
+        return port
 
 
 async def test_sampler_populates_gauges_from_real_broker(
@@ -36,13 +38,14 @@ async def test_sampler_populates_gauges_from_real_broker(
     valkey_url,
 ):
     pytest.importorskip("prometheus_client")
+    from prometheus_client import Gauge
 
     queue = f"int-sampler-{uuid.uuid4().hex[:10]}"
     broker = RabbitMQBroker(rabbitmq_url)
     backend = ValkeyBackend(valkey_url)
     app = SwarmQ(broker, backend, queues=[queue], concurrency=1)
 
-    heartbeats: list[dict] = []
+    heartbeats: list[dict[str, Any]] = []
     beat = asyncio.Event()
 
     @app.on_signal(Signal.WORKER_HEARTBEAT)
@@ -70,7 +73,11 @@ async def test_sampler_populates_gauges_from_real_broker(
             await asyncio.wait_for(beat.wait(), timeout=20)
             # One full sample completed → gauges carry real values.
             m = worker._metrics
-            assert m is not None and m.enabled
+            assert m is not None
+            assert m.enabled
+            assert isinstance(m.queue_depth, Gauge)
+            assert isinstance(m.dlq_messages, Gauge)
+            assert isinstance(m.worker_uptime_seconds, Gauge)
             assert m.queue_depth.labels(queue=queue, kind="pending")._value.get() == 0
             assert m.dlq_messages.labels(queue=queue)._value.get() == 1
             worker_id = heartbeats[0]["worker_id"]

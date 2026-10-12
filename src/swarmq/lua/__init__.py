@@ -27,7 +27,5 @@ def load_script(name: str) -> str:
     """
     file = resources.files("swarmq.lua").joinpath(f"{name}.lua")
     if not file.is_file():
-        raise FileNotFoundError(
-            f"unknown lua script: {name!r} — no file {name}.lua in swarmq.lua"
-        )
+        raise FileNotFoundError(f"unknown lua script: {name!r} — no file {name}.lua in swarmq.lua")
     return file.read_text(encoding="utf-8")

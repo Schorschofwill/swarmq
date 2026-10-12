@@ -23,6 +23,7 @@ import pytest
 from swarmq.config import SwarmQConfig
 from swarmq.metrics import Metrics
 from swarmq.worker import Worker
+from tests.unit.worker._helpers import gauge_value
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -43,8 +44,8 @@ async def test_delayed_depth_is_pending_minus_ready(worker, broker, metrics: Met
 
     await worker._sample_metrics_once()
 
-    assert metrics.queue_depth.labels(queue="default", kind="pending")._value.get() == 12
-    assert metrics.queue_depth.labels(queue="default", kind="delayed")._value.get() == 7
+    assert gauge_value(metrics.queue_depth.labels(queue="default", kind="pending")) == 12
+    assert gauge_value(metrics.queue_depth.labels(queue="default", kind="delayed")) == 7
 
 
 async def test_broker_without_usable_ready_depth_keeps_pending_and_dlq(worker, broker, metrics: Metrics) -> None:
@@ -55,8 +56,9 @@ async def test_broker_without_usable_ready_depth_keeps_pending_and_dlq(worker, b
 
     await worker._sample_metrics_once()
 
-    assert metrics.queue_depth.labels(queue="default", kind="pending")._value.get() == 12
-    assert metrics.dlq_messages.labels(queue="default")._value.get() == 3
+    assert gauge_value(metrics.queue_depth.labels(queue="default", kind="pending")) == 12
+    assert gauge_value(metrics.dlq_messages.labels(queue="default")) == 3
+    assert metrics.registry is not None
     sampled_kinds = {
         sample.labels["kind"]
         for family in metrics.registry.collect()
@@ -73,10 +75,11 @@ async def test_unavailable_delay_tiers_gauge_per_consumed_queue(worker, broker, 
 
     await worker._sample_metrics_once()
 
-    assert metrics.delay_tiers_unavailable.labels(queue="default")._value.get() == 2
+    assert gauge_value(metrics.delay_tiers_unavailable.labels(queue="default")) == 2
 
 
 def _label_values(metrics: Metrics, suffix: str, **where: str) -> set[str]:
+    assert metrics.registry is not None
     return {
         sample.labels["queue"]
         for family in metrics.registry.collect()
@@ -114,7 +117,7 @@ async def test_delayed_series_does_not_go_stale_when_ready_depth_fails(worker, b
     broker.ready_depth = AsyncMock(return_value=5)
     broker.dead_letter_depth = AsyncMock(return_value=0)
     await worker._sample_metrics_once()
-    assert metrics.queue_depth.labels(queue="default", kind="delayed")._value.get() == 7
+    assert gauge_value(metrics.queue_depth.labels(queue="default", kind="delayed")) == 7
     broker.ready_depth = AsyncMock(side_effect=RuntimeError("channel gone"))
 
     await worker._sample_metrics_once()

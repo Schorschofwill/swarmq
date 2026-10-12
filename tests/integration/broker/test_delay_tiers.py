@@ -139,7 +139,7 @@ async def test_queue_depth_on_a_family_without_tiers_leaves_no_channel_open(work
     ``channel_max``."""
     for name, arguments in _legacy(worker.queue).items():
         await _declare_raw(rabbitmq_url, name, arguments)
-    await worker.broker._ensure_publish_channel()
+    _ = await worker.broker._ensure_publish_channel()
     before = _open_channel_numbers(worker.broker)
 
     for published in range(3):

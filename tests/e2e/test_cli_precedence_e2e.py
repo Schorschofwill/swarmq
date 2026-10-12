@@ -70,13 +70,15 @@ def _env(rabbitmq_url: str, valkey_url: str, task_queue: str, **swarmq_env: str)
     """Env ohne geerbte ``SWARMQ_*`` -- sonst entscheidet die Shell des
     Entwicklers mit."""
     env = {k: v for k, v in os.environ.items() if not k.startswith("SWARMQ_")}
-    env.update({
-        "SWARMQ_BROKER_URL": rabbitmq_url,
-        "SWARMQ_BACKEND_URL": valkey_url,
-        "LOG_E2E_QUEUE": task_queue,
-        "PYTHONUNBUFFERED": "1",
-        "PYTHONPATH": os.pathsep.join(filter(None, [str(_REPO_ROOT), os.environ.get("PYTHONPATH")])),
-    })
+    env.update(
+        {
+            "SWARMQ_BROKER_URL": rabbitmq_url,
+            "SWARMQ_BACKEND_URL": valkey_url,
+            "LOG_E2E_QUEUE": task_queue,
+            "PYTHONUNBUFFERED": "1",
+            "PYTHONPATH": os.pathsep.join(filter(None, [str(_REPO_ROOT), os.environ.get("PYTHONPATH")])),
+        }
+    )
     env.update(swarmq_env)
     return env
 
@@ -85,11 +87,22 @@ def _run_worker(*flags: str, env: dict[str, str]) -> tuple[int, str]:
     """``swarmq worker`` bis zum Burst-Ende; eigene Sitzung fuer den Teardown."""
     proc = subprocess.Popen(
         [
-            sys.executable, "-m", "swarmq.cli", "worker", "--module", _TASKS_MODULE,
-            "--log-format", "json", *flags,
+            sys.executable,
+            "-m",
+            "swarmq.cli",
+            "worker",
+            "--module",
+            _TASKS_MODULE,
+            "--log-format",
+            "json",
+            *flags,
         ],
-        cwd=str(_REPO_ROOT), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, start_new_session=True,
+        cwd=str(_REPO_ROOT),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
     )
     try:
         stdout, stderr = proc.communicate(timeout=_RUN_TIMEOUT_S)
@@ -118,16 +131,28 @@ async def test_cli_flags_win_over_environment_in_the_worker(rabbitmq_url, valkey
     cli_queue, env_queue = _new_queue("cli"), _new_queue("env")
     tid = await _enqueue(rabbitmq_url, valkey_url, cli_queue)
     env = _env(
-        rabbitmq_url, valkey_url, cli_queue,
-        SWARMQ_QUEUES=env_queue, SWARMQ_CONCURRENCY="7", SWARMQ_POOL="cpu",
+        rabbitmq_url,
+        valkey_url,
+        cli_queue,
+        SWARMQ_QUEUES=env_queue,
+        SWARMQ_CONCURRENCY="7",
+        SWARMQ_POOL="cpu",
         # Gewaenne das Env, liefe der Worker in den Test-Timeout statt nach 3 s
         # Leerlauf zu enden.
         SWARMQ_BURST_IDLE_TIMEOUT="600",
     )
 
     rc, output = _run_worker(
-        "--queues", cli_queue, "--concurrency", "3", "--pool", "io",
-        "--burst", "--burst-idle-timeout", "3", env=env,
+        "--queues",
+        cli_queue,
+        "--concurrency",
+        "3",
+        "--pool",
+        "io",
+        "--burst",
+        "--burst-idle-timeout",
+        "3",
+        env=env,
     )
 
     assert rc == 0, output[-4000:]
@@ -143,9 +168,13 @@ async def test_environment_applies_without_flags(rabbitmq_url, valkey_url):
     env_queue = _new_queue("env")
     tid = await _enqueue(rabbitmq_url, valkey_url, env_queue)
     env = _env(
-        rabbitmq_url, valkey_url, env_queue,
-        SWARMQ_QUEUES=env_queue, SWARMQ_CONCURRENCY="4",
-        SWARMQ_BURST_MODE="true", SWARMQ_BURST_IDLE_TIMEOUT="3",
+        rabbitmq_url,
+        valkey_url,
+        env_queue,
+        SWARMQ_QUEUES=env_queue,
+        SWARMQ_CONCURRENCY="4",
+        SWARMQ_BURST_MODE="true",
+        SWARMQ_BURST_IDLE_TIMEOUT="3",
     )
 
     rc, output = _run_worker(env=env)

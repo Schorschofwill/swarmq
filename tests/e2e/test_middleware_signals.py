@@ -10,14 +10,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
-from typing import Any
+from typing import Any, override
 
 import pytest
 
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
-from swarmq.middleware import Middleware
+from swarmq.middleware import MessageContext, Middleware
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 
@@ -32,9 +32,7 @@ def _unique_queue() -> str:
 # ---------------------------------------------------------------------------
 
 
-async def test_middleware_pre_and_post_execute_fire(
-    rabbitmq_url: str, valkey_url: str
-) -> None:
+async def test_middleware_pre_and_post_execute_fire(rabbitmq_url: str, valkey_url: str) -> None:
     queue = _unique_queue()
     task_name = f"e2e_mw_ok_{uuid.uuid4().hex[:8]}"
 
@@ -44,14 +42,17 @@ async def test_middleware_pre_and_post_execute_fire(
     class EchoTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self, value: int) -> int:
             return value * 2
 
     class TrackingMiddleware(Middleware):
-        async def pre_execute(self, message: dict) -> None:
+        @override
+        async def pre_execute(self, message: MessageContext) -> None:
             events.append(("pre_execute", dict(message), None))
 
-        async def post_execute(self, message: dict, result: Any = None) -> None:
+        @override
+        async def post_execute(self, message: MessageContext, result: Any = None) -> None:
             events.append(("post_execute", dict(message), result))
             completed.set()
 
@@ -107,9 +108,7 @@ async def test_middleware_pre_and_post_execute_fire(
 # ---------------------------------------------------------------------------
 
 
-async def test_middleware_on_error_fires_for_failing_task(
-    rabbitmq_url: str, valkey_url: str
-) -> None:
+async def test_middleware_on_error_fires_for_failing_task(rabbitmq_url: str, valkey_url: str) -> None:
     queue = _unique_queue()
     task_name = f"e2e_mw_err_{uuid.uuid4().hex[:8]}"
 
@@ -119,13 +118,13 @@ async def test_middleware_on_error_fires_for_failing_task(
     class BoomTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self) -> None:
             raise ValueError("boom")
 
     class ErrorTrackingMiddleware(Middleware):
-        async def on_error(
-            self, message: dict, exception: BaseException
-        ) -> None:
+        @override
+        async def on_error(self, message: MessageContext, exception: BaseException) -> None:
             captured.append((dict(message), exception))
             on_error_called.set()
 
@@ -167,9 +166,7 @@ async def test_middleware_on_error_fires_for_failing_task(
 # ---------------------------------------------------------------------------
 
 
-async def test_signal_task_completed_handler_receives_kwargs(
-    rabbitmq_url: str, valkey_url: str
-) -> None:
+async def test_signal_task_completed_handler_receives_kwargs(rabbitmq_url: str, valkey_url: str) -> None:
     queue = _unique_queue()
     task_name = f"e2e_sig_ok_{uuid.uuid4().hex[:8]}"
 
@@ -179,6 +176,7 @@ async def test_signal_task_completed_handler_receives_kwargs(
     class PingTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self) -> str:
             return "pong"
 
@@ -227,9 +225,7 @@ async def test_signal_task_completed_handler_receives_kwargs(
 # ---------------------------------------------------------------------------
 
 
-async def test_pre_enqueue_exception_prevents_enqueue(
-    rabbitmq_url: str, valkey_url: str
-) -> None:
+async def test_pre_enqueue_exception_prevents_enqueue(rabbitmq_url: str, valkey_url: str) -> None:
     queue = _unique_queue()
     task_name = f"e2e_mw_block_{uuid.uuid4().hex[:8]}"
 
@@ -238,12 +234,14 @@ async def test_pre_enqueue_exception_prevents_enqueue(
     class NeverRunTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self) -> str:
             worker_received.set()
             return "should not happen"
 
     class BlockingMiddleware(Middleware):
-        async def pre_enqueue(self, message: dict) -> None:
+        @override
+        async def pre_enqueue(self, message: MessageContext) -> None:
             raise ValueError("enqueue blocked by middleware")
 
     broker = RabbitMQBroker(rabbitmq_url)
@@ -271,9 +269,7 @@ async def test_pre_enqueue_exception_prevents_enqueue(
             # If the enqueue was truly prevented, the worker never executes.
             # Wait a short moment and assert the run() method never fired.
             await asyncio.sleep(0.5)
-            assert not worker_received.is_set(), (
-                "Task was enqueued despite pre_enqueue raising"
-            )
+            assert not worker_received.is_set(), "Task was enqueued despite pre_enqueue raising"
         finally:
             worker_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

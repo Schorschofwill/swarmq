@@ -21,6 +21,7 @@ import asyncio
 import contextlib
 import time
 import uuid
+from typing import override
 
 import aio_pika
 import pytest
@@ -73,6 +74,7 @@ async def test_huge_error_text_does_not_requeue_neighbour_tasks(rabbitmq_url: st
             name=huge_name, queues=[queue], max_retries=1, retry_backoff="fixed", retry_base_delay=60.0
         )
 
+        @override
         async def run(self) -> None:
             huge_attempted.set()
             raise RuntimeError(_HUGE_ERROR)
@@ -80,6 +82,7 @@ async def test_huge_error_text_does_not_requeue_neighbour_tasks(rabbitmq_url: st
     class NeighbourTask(Task):
         task_info = TaskInfo(name=neighbour_name, queues=[queue])
 
+        @override
         async def run(self) -> str:
             neighbour_started.set()
             await neighbour_release.wait()

@@ -17,6 +17,7 @@ the future import is fine there.
 
 import dataclasses
 import sys
+from typing import override
 from unittest.mock import patch
 
 import pytest
@@ -47,9 +48,7 @@ def test_missing_is_singleton():
 
 def test_task_context_is_frozen_with_exact_fields():
     """R10/R14: TaskContext is a frozen dataclass with exactly four fields."""
-    ctx = di.TaskContext(
-        task_id="t1", task_name="job", queue="default", retry_count=2
-    )
+    ctx = di.TaskContext(task_id="t1", task_name="job", queue="default", retry_count=2)
     assert ctx.task_id == "t1"
     assert ctx.task_name == "job"
     assert ctx.queue == "default"
@@ -80,26 +79,25 @@ def test_request_container_contextvar_exists():
     assert isinstance(di.request_container, contextvars.ContextVar)
 
 
+class Svc:
+    def __init__(self, ctx: di.TaskContext) -> None:
+        self.tid = ctx.task_id
+
+
 def _make_container_with_svc():
     """Build a container whose REQUEST scope provides a Svc bound to TaskContext."""
     from collections.abc import AsyncIterable
 
-    from dishka import Provider, Scope, make_async_container, provide
-
-    class Svc:
-        def __init__(self, ctx: di.TaskContext) -> None:
-            self.tid = ctx.task_id
+    from dishka import Provider, Scope, from_context, make_async_container, provide
 
     class Prov(Provider):
-        from dishka import from_context
-
         tc = from_context(di.TaskContext, scope=Scope.REQUEST)
 
         @provide(scope=Scope.REQUEST)
         async def svc(self, ctx: di.TaskContext) -> AsyncIterable[Svc]:
             yield Svc(ctx)
 
-    return make_async_container(Prov()), Svc
+    return make_async_container(Prov())
 
 
 @pytest.mark.timeout(5)
@@ -111,12 +109,13 @@ async def test_lifecycle_injection_through_task_subclass():
 
     from swarmq.task import Task, TaskInfo
 
-    container, Svc = _make_container_with_svc()
+    container = _make_container_with_svc()
 
     class InjectTask(Task):
         task_info = TaskInfo(name="inject_task", queues=["q"])
 
-        async def run(self, x: int, svc: FromDishka[Svc]) -> str:  # type: ignore[valid-type]
+        @override
+        async def run(self, x: int, svc: FromDishka[Svc]) -> str:
             return f"{x}:{svc.tid}"
 
     # run was wrapped (FromDishka present).
@@ -124,13 +123,11 @@ async def test_lifecycle_injection_through_task_subclass():
 
     assert is_dishka_injected(InjectTask.run)
 
-    ctx = di.TaskContext(
-        task_id="abc", task_name="inject_task", queue="q", retry_count=0
-    )
+    ctx = di.TaskContext(task_id="abc", task_name="inject_task", queue="q", retry_count=0)
     req = await container(context={di.TaskContext: ctx}).__aenter__()
     token = di.request_container.set(req)
     try:
-        result = await InjectTask().run(5)  # svc injected, x positional
+        result = await InjectTask().run(5)  # type: ignore[call-arg]  # svc injected by dishka, x positional
     finally:
         await req.__aexit__(None, None, None)
         di.request_container.reset(token)
@@ -149,6 +146,7 @@ def test_no_fromdishka_means_no_wrapping():
     class PlainTask(Task):
         task_info = TaskInfo(name="plain_task", queues=["q"])
 
+        @override
         async def run(self, x: int) -> int:
             return x * 2
 
@@ -169,7 +167,8 @@ def test_injected_keys_recorded_for_resolvability_check():
     class KeyTask(Task):
         task_info = TaskInfo(name="key_task", queues=["q"])
 
-        async def run(self, dep: FromDishka[Dep]) -> None:  # type: ignore[valid-type]
+        @override
+        async def run(self, dep: FromDishka[Dep]) -> None:
             pass
 
     keys = KeyTask._dishka_injected_keys  # type: ignore[attr-defined]
@@ -193,7 +192,8 @@ def test_reserved_param_still_fails_with_fromdishka_annotation():
         class BadTask(Task):
             task_info = TaskInfo(name="bad_task", queues=["q"])
 
-            async def run(self, delay: FromDishka[Dep]) -> None:  # type: ignore[valid-type]
+            @override
+            async def run(self, delay: FromDishka[Dep]) -> None:
                 pass
 
 
@@ -212,7 +212,8 @@ def test_wrapped_run_preserves_return_annotation_for_registry():
     class RetTask(Task):
         task_info = TaskInfo(name="ret_task", queues=["q"])
 
-        async def run(self, dep: FromDishka[Dep]) -> str:  # type: ignore[valid-type]
+        @override
+        async def run(self, dep: FromDishka[Dep]) -> str:
             return "ok"
 
     ann = inspect.get_annotations(RetTask.run, eval_str=True)
@@ -242,7 +243,8 @@ def test_validate_di_task_without_container_raises():
     class VT1(Task):
         task_info = TaskInfo(name="vt1", queues=["q"])
 
-        async def run(self, d: FromDishka[Dep]) -> None:  # type: ignore[valid-type]
+        @override
+        async def run(self, d: FromDishka[Dep]) -> None:
             pass
 
     di._reset_container()
@@ -266,7 +268,8 @@ def test_validate_di_task_missing_provider_raises():
     class VT2(Task):
         task_info = TaskInfo(name="vt2", queues=["q"])
 
-        async def run(self, d: FromDishka[Dep]) -> None:  # type: ignore[valid-type]
+        @override
+        async def run(self, d: FromDishka[Dep]) -> None:
             pass
 
     di.setup_dishka(make_async_container())  # no provider for Dep
@@ -291,7 +294,8 @@ def test_validate_di_task_resolvable_passes():
     class VT3(Task):
         task_info = TaskInfo(name="vt3", queues=["q"])
 
-        async def run(self, d: FromDishka[Dep]) -> None:  # type: ignore[valid-type]
+        @override
+        async def run(self, d: FromDishka[Dep]) -> None:
             pass
 
     di.setup_dishka(make_async_container(DepProvider()))
@@ -310,17 +314,14 @@ def test_module_imports_without_dishka_and_core_symbols_usable():
     import importlib.util
     from pathlib import Path
 
-    spec = importlib.util.spec_from_file_location(
-        "swarmq._dishka_noimport_probe", Path(di.__file__)
-    )
-    assert spec is not None and spec.loader is not None
+    spec = importlib.util.spec_from_file_location("swarmq._dishka_noimport_probe", Path(di.__file__))
+    assert spec is not None
+    assert spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     # Block dishka AND register the probe module under its own name so the
     # frozen+slots dataclass can resolve cls.__module__ during creation
     # (CPython dataclasses does sys.modules[cls.__module__].__dict__).
-    with patch.dict(
-        sys.modules, {"dishka": None, "swarmq._dishka_noimport_probe": mod}
-    ):
+    with patch.dict(sys.modules, {"dishka": None, "swarmq._dishka_noimport_probe": mod}):
         spec.loader.exec_module(mod)
 
     assert mod._HAVE_DISHKA is False
@@ -391,7 +392,8 @@ def test_optional_fromdishka_annotation_is_recorded_and_rejected_at_start():
     class SilentTask(Task):
         task_info = TaskInfo(name="silent_task", queues=["q"])
 
-        async def run(self, db: FromDishka[Db] | None = None) -> None:  # type: ignore[valid-type]
+        @override
+        async def run(self, db: FromDishka[Db] | None = None) -> None:
             pass
 
     assert SilentTask._dishka_ineffective_fromdishka == ["run.db"]  # type: ignore[attr-defined]
@@ -413,7 +415,8 @@ def test_mixed_effective_and_ineffective_params_still_rejected():
     class MixedTask(Task):
         task_info = TaskInfo(name="mixed_task", queues=["q"])
 
-        async def pre_execution(self, dep: FromDishka[Dep], other: FromDishka[Dep] | None = None) -> None:  # type: ignore[valid-type]
+        @override
+        async def pre_execution(self, dep: FromDishka[Dep], other: FromDishka[Dep] | None = None) -> None:  # type: ignore[override]  # DI-Parameter erweitern die Signatur absichtlich
             pass
 
     assert MixedTask._dishka_ineffective_fromdishka == ["pre_execution.other"]  # type: ignore[attr-defined]
@@ -434,7 +437,8 @@ def test_correct_fromdishka_annotation_records_nothing_ineffective():
     class GoodTask(Task):
         task_info = TaskInfo(name="good_task", queues=["q"])
 
-        async def run(self, dep: FromDishka[Dep]) -> None:  # type: ignore[valid-type]
+        @override
+        async def run(self, dep: FromDishka[Dep]) -> None:
             pass
 
     assert not hasattr(GoodTask, "_dishka_ineffective_fromdishka")

@@ -38,9 +38,10 @@ def test_must_be_positive() -> None:
 def test_must_be_finite(monkeypatch: pytest.MonkeyPatch, value: object) -> None:
     """Review MR 13, P2-3: ``inf``/``nan`` bestehen die Pruefung ``<= 0``;
     ``int(inf * 1000)`` im Lock-Gate warf dann bei jedem Konflikt."""
+    kwargs: dict[str, object] = {}
+    if isinstance(value, str):
+        monkeypatch.setenv("SWARMQ_LOCK_WAIT_MAX_S", value)
+    else:
+        kwargs["lock_wait_max_s"] = value
     with pytest.raises(ConfigurationError, match="lock_wait_max_s must be a finite number"):
-        if isinstance(value, str):
-            monkeypatch.setenv("SWARMQ_LOCK_WAIT_MAX_S", value)
-            _cfg()
-        else:
-            _cfg(lock_wait_max_s=value)
+        _cfg(**kwargs)

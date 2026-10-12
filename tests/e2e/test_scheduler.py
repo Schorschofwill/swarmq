@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import override
 
 import pytest
 import valkey.asyncio as valkey_asyncio
@@ -65,11 +66,14 @@ def _leader_event(app: SwarmQ) -> asyncio.Event:
 def _due_now_ms() -> int:
     """A zset score 1s in the past → due on the scheduler's next poll."""
     import time
+
     return int(time.time() * 1000) - 1000
 
 
 async def _wait_zscore_present(
-    client: object, member: str, timeout: float = _EVENT_TIMEOUT,
+    client: object,
+    member: str,
+    timeout: float = _EVENT_TIMEOUT,
 ) -> None:
     """Block until the scheduler has written ``member`` into its due-zset.
 
@@ -80,6 +84,7 @@ async def _wait_zscore_present(
     for the entry to appear first makes the manual due-score the last writer.
     """
     import time
+
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if await client.zscore("sq:{sched}:zset", member) is not None:  # type: ignore[attr-defined]
@@ -128,8 +133,11 @@ async def _flush_valkey(valkey_url):
 
 
 class TestDelayAndEta:
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_delay_fires_task_after_interval(
-        self, rabbitmq_url, valkey_url, _cleanup_tasks,
+        self,
+        rabbitmq_url,
+        valkey_url,
     ):
         queue = _unique_queue()
         task_name = _task_name("ping")
@@ -139,6 +147,7 @@ class TestDelayAndEta:
         class PingTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self) -> str:
                 nonlocal call_count
                 call_count += 1
@@ -148,7 +157,8 @@ class TestDelayAndEta:
         broker = RabbitMQBroker(rabbitmq_url)
         backend = ValkeyBackend(valkey_url)
         async with SwarmQ(
-            broker, backend,
+            broker,
+            backend,
             queues=[queue],
             concurrency=1,
             scheduler_poll_interval=0.1,
@@ -167,7 +177,9 @@ class TestDelayAndEta:
                 # Client schedules a short-delay task; scheduler publishes,
                 # worker consumes, set event.
                 tid = await app.client.schedule(
-                    task_name, queue=queue, delay=0.3,
+                    task_name,
+                    queue=queue,
+                    delay=0.3,
                 )
                 assert tid  # returned task_id
 
@@ -178,8 +190,11 @@ class TestDelayAndEta:
                 with contextlib.suppress(asyncio.CancelledError):
                     await worker_task
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_eta_fires_at_timestamp(
-        self, rabbitmq_url, valkey_url, _cleanup_tasks,
+        self,
+        rabbitmq_url,
+        valkey_url,
     ):
         queue = _unique_queue()
         task_name = _task_name("at")
@@ -188,6 +203,7 @@ class TestDelayAndEta:
         class AtTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self) -> str:
                 done.set()
                 return "ok"
@@ -195,7 +211,8 @@ class TestDelayAndEta:
         broker = RabbitMQBroker(rabbitmq_url)
         backend = ValkeyBackend(valkey_url)
         async with SwarmQ(
-            broker, backend,
+            broker,
+            backend,
             queues=[queue],
             concurrency=1,
             scheduler_poll_interval=0.1,
@@ -222,8 +239,11 @@ class TestDelayAndEta:
 
 
 class TestCronSchedule:
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_cron_schedule_fires_on_leader(
-        self, rabbitmq_url, valkey_url, _cleanup_tasks,
+        self,
+        rabbitmq_url,
+        valkey_url,
     ):
         queue = _unique_queue()
         task_name = _task_name("cron")
@@ -232,10 +252,9 @@ class TestCronSchedule:
         class CronTask(Task):
             # Valid 5-field cron. The test injects a near-future fire-ts
             # directly to avoid waiting on the natural minute-boundary.
-            task_info = TaskInfo(
-                name=task_name, queues=[queue], cron="* * * * *"
-            )
+            task_info = TaskInfo(name=task_name, queues=[queue], cron="* * * * *")
 
+            @override
             async def run(self) -> str:
                 done.set()
                 return "ok"
@@ -243,7 +262,8 @@ class TestCronSchedule:
         broker = RabbitMQBroker(rabbitmq_url)
         backend = ValkeyBackend(valkey_url)
         async with SwarmQ(
-            broker, backend,
+            broker,
+            backend,
             queues=[queue],
             concurrency=1,
             scheduler_poll_interval=0.1,
@@ -266,9 +286,7 @@ class TestCronSchedule:
                 client = valkey_asyncio.Valkey.from_url(valkey_url)
                 try:
                     await _wait_zscore_present(client, task_name)
-                    await client.zadd(
-                        "sq:{sched}:zset", {task_name: _due_now_ms()}
-                    )
+                    await client.zadd("sq:{sched}:zset", {task_name: _due_now_ms()})
                 finally:
                     await client.aclose()
 
@@ -285,8 +303,11 @@ class TestCronSchedule:
 
 
 class TestConsumerDedup:
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_duplicate_schedfire_exec_once(
-        self, rabbitmq_url, valkey_url, _cleanup_tasks,
+        self,
+        rabbitmq_url,
+        valkey_url,
     ):
         queue = _unique_queue()
         task_name = _task_name("dedup")
@@ -296,6 +317,7 @@ class TestConsumerDedup:
         class DedupTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self) -> str:
                 nonlocal call_count
                 call_count += 1
@@ -307,7 +329,8 @@ class TestConsumerDedup:
         broker = RabbitMQBroker(rabbitmq_url)
         backend = ValkeyBackend(valkey_url)
         async with SwarmQ(
-            broker, backend,
+            broker,
+            backend,
             queues=[queue],
             concurrency=1,
         ) as app:
@@ -315,18 +338,21 @@ class TestConsumerDedup:
 
             # Publish two identical schedfire-headered messages directly.
             schedfire_key = f"{task_name}:1700000000000"
-            body = encode_json({
-                "task": {
-                    "id": uuid.uuid4().hex,
-                    "queue": queue,
-                    "name": task_name,
-                },
-                "args": [],
-                "kwargs": {},
-            })
+            body = encode_json(
+                {
+                    "task": {
+                        "id": uuid.uuid4().hex,
+                        "queue": queue,
+                        "name": task_name,
+                    },
+                    "args": [],
+                    "kwargs": {},
+                }
+            )
             for _ in range(2):
                 await app.broker.publish(
-                    queue, body,
+                    queue,
+                    body,
                     headers={"x-swarmq-schedfire": schedfire_key},
                 )
 
@@ -353,8 +379,11 @@ class TestConsumerDedup:
 
 
 class TestGracefulHandover:
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_handover_before_ttl_expiry(
-        self, rabbitmq_url, valkey_url, _cleanup_tasks,
+        self,
+        rabbitmq_url,
+        valkey_url,
     ):
         queue = _unique_queue()
         task_name = _task_name("ho")
@@ -362,6 +391,7 @@ class TestGracefulHandover:
         class NoopTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self) -> str:
                 return "ok"
 
@@ -372,24 +402,28 @@ class TestGracefulHandover:
 
         # Use a long TTL — if handover falls back to TTL-expiry, B won't
         # acquire within the test timeout.
-        cfg_kwargs = dict(
-            queues=[queue], concurrency=1,
-            scheduler_poll_interval=0.1,
-            scheduler_heartbeat_interval=0.2,
-            scheduler_lock_ttl=10.0,
-        )
+        cfg_kwargs = {
+            "queues": [queue],
+            "concurrency": 1,
+            "scheduler_poll_interval": 0.1,
+            "scheduler_heartbeat_interval": 0.2,
+            "scheduler_lock_ttl": 10.0,
+        }
 
-        async with SwarmQ(broker_a, backend_a, **cfg_kwargs) as app_a, \
-                   SwarmQ(broker_b, backend_b, **cfg_kwargs) as app_b:
-
+        async with (
+            SwarmQ(broker_a, backend_a, **cfg_kwargs) as app_a,
+            SwarmQ(broker_b, backend_b, **cfg_kwargs) as app_b,
+        ):
             b_leader: list[str] = []
             b_failover: list[str] = []
 
             @app_b.on_signal(Signal.SCHEDULER_LEADER)
-            async def _bl(**kw): b_leader.append("leader")
+            async def _bl(**kw):
+                b_leader.append("leader")
 
             @app_b.on_signal(Signal.SCHEDULER_LEADER_FAILOVER)
-            async def _bfo(**kw): b_failover.append("failover")
+            async def _bfo(**kw):
+                b_failover.append("failover")
 
             # Signal-driven event for A becoming leader (not sleep).
             a_leader_event = asyncio.Event()
@@ -423,7 +457,8 @@ class TestGracefulHandover:
                 # then cancelling A's tasks. B will see the marker on
                 # its next acquire.
                 await backend_a.schedules.set_handover_marker(
-                    "simulated-A-token", 5_000,
+                    "simulated-A-token",
+                    5_000,
                 )
                 # Now force A's lock to disappear without TTL wait by
                 # deleting it directly.
@@ -450,15 +485,14 @@ class TestGracefulHandover:
 
                 try:
                     await asyncio.wait_for(
-                        b_leader_event.wait(), timeout=_EVENT_TIMEOUT,
+                        b_leader_event.wait(),
+                        timeout=_EVENT_TIMEOUT,
                     )
                 except TimeoutError:
                     pass  # assertion below surfaces the failure
 
                 assert b_leader, "B never became leader after handover"
-                assert not b_failover, (
-                    "B emitted FAILOVER despite handover marker present"
-                )
+                assert not b_failover, "B emitted FAILOVER despite handover marker present"
             finally:
                 for t in (a_task, b_task):
                     t.cancel()
@@ -472,8 +506,12 @@ class TestGracefulHandover:
 
 
 class TestCliRoundtrip:
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_cli_add_then_scheduler_fires(
-        self, rabbitmq_url, valkey_url, _cleanup_tasks, monkeypatch,
+        self,
+        rabbitmq_url,
+        valkey_url,
+        monkeypatch,
     ):
         queue = _unique_queue()
         task_name = _task_name("clict")
@@ -482,6 +520,7 @@ class TestCliRoundtrip:
         class ClitTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self) -> str:
                 done.set()
                 return "ok"
@@ -493,12 +532,16 @@ class TestCliRoundtrip:
         import argparse
 
         from swarmq import cli
+
         soon = datetime.now(UTC) + timedelta(milliseconds=300)
         ns = argparse.Namespace(
             name=f"cli-{uuid.uuid4().hex[:8]}",
-            cron=None, at=soon.isoformat(),
+            cron=None,
+            at=soon.isoformat(),
             task=task_name,
-            args="[]", kwargs="{}", queue=queue,
+            args="[]",
+            kwargs="{}",
+            queue=queue,
             # The real CLI sets --format (resolved in cli.__init__); this test
             # calls the handler directly, so supply it explicitly to mirror the
             # parsed namespace the handler expects.
@@ -509,7 +552,8 @@ class TestCliRoundtrip:
         broker = RabbitMQBroker(rabbitmq_url)
         backend = ValkeyBackend(valkey_url)
         async with SwarmQ(
-            broker, backend,
+            broker,
+            backend,
             queues=[queue],
             concurrency=1,
             scheduler_poll_interval=0.1,
@@ -536,8 +580,11 @@ class TestRecurringAcrossLeaderChange:
     leader changes. Spin up A, fire once, kill A, let B take over,
     fire again. Verify exactly 2 executions — no skip, no duplicate."""
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_no_fires_missed_when_leader_changes(
-        self, rabbitmq_url, valkey_url, _cleanup_tasks,
+        self,
+        rabbitmq_url,
+        valkey_url,
     ):
         queue = _unique_queue()
         task_name = _task_name("recur")
@@ -547,9 +594,12 @@ class TestRecurringAcrossLeaderChange:
 
         class RecurringTask(Task):
             task_info = TaskInfo(
-                name=task_name, queues=[queue], cron="* * * * *",
+                name=task_name,
+                queues=[queue],
+                cron="* * * * *",
             )
 
+            @override
             async def run(self) -> str:
                 nonlocal call_count
                 call_count += 1
@@ -564,15 +614,15 @@ class TestRecurringAcrossLeaderChange:
         broker_b = RabbitMQBroker(rabbitmq_url)
         backend_b = ValkeyBackend(valkey_url)
 
-        cfg = dict(
-            queues=[queue], concurrency=1,
-            scheduler_poll_interval=0.1,
-            scheduler_heartbeat_interval=0.2,
-            scheduler_lock_ttl=1.0,
-        )
+        cfg = {
+            "queues": [queue],
+            "concurrency": 1,
+            "scheduler_poll_interval": 0.1,
+            "scheduler_heartbeat_interval": 0.2,
+            "scheduler_lock_ttl": 1.0,
+        }
 
-        async with SwarmQ(broker_a, backend_a, **cfg) as app_a, \
-                   SwarmQ(broker_b, backend_b, **cfg) as app_b:
+        async with SwarmQ(broker_a, backend_a, **cfg) as app_a, SwarmQ(broker_b, backend_b, **cfg) as app_b:
             await app_a.broker.declare_queue(queue)
             a_leader = asyncio.Event()
             b_active = asyncio.Event()  # B reached leader (LEADER or FAILOVER)
@@ -627,10 +677,7 @@ class TestRecurringAcrossLeaderChange:
                 await client.zadd("sq:{sched}:zset", {task_name: _due_now_ms()})
                 await asyncio.wait_for(second_fired.wait(), timeout=_EVENT_TIMEOUT)
 
-                assert call_count == 2, (
-                    f"expected exactly 2 fires across leader change, "
-                    f"got {call_count}"
-                )
+                assert call_count == 2, f"expected exactly 2 fires across leader change, got {call_count}"
             finally:
                 await client.aclose()
                 for t in (a_task, b_task):
@@ -646,8 +693,11 @@ class TestCrashFailover:
     the successor emits SCHEDULER_LEADER_FAILOVER — not LEADER — and
     takes over pending work."""
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_failover_signal_fires_on_crash_not_graceful(
-        self, rabbitmq_url, valkey_url, _cleanup_tasks,
+        self,
+        rabbitmq_url,
+        valkey_url,
     ):
         queue = _unique_queue()
         broker_a = RabbitMQBroker(rabbitmq_url)
@@ -655,15 +705,15 @@ class TestCrashFailover:
         broker_b = RabbitMQBroker(rabbitmq_url)
         backend_b = ValkeyBackend(valkey_url)
 
-        cfg = dict(
-            queues=[queue], concurrency=1,
-            scheduler_poll_interval=0.1,
-            scheduler_heartbeat_interval=0.2,
-            scheduler_lock_ttl=1.0,
-        )
+        cfg = {
+            "queues": [queue],
+            "concurrency": 1,
+            "scheduler_poll_interval": 0.1,
+            "scheduler_heartbeat_interval": 0.2,
+            "scheduler_lock_ttl": 1.0,
+        }
 
-        async with SwarmQ(broker_a, backend_a, **cfg) as app_a, \
-                   SwarmQ(broker_b, backend_b, **cfg) as app_b:
+        async with SwarmQ(broker_a, backend_a, **cfg) as app_a, SwarmQ(broker_b, backend_b, **cfg) as app_b:
             a_leader = asyncio.Event()
             b_failover = asyncio.Event()
             b_leader_observed: list[str] = []
@@ -702,8 +752,7 @@ class TestCrashFailover:
                 # B must emit FAILOVER (not LEADER) since no marker.
                 await asyncio.wait_for(b_failover.wait(), timeout=_EVENT_TIMEOUT)
                 assert not b_leader_observed, (
-                    "B emitted SCHEDULER_LEADER instead of FAILOVER — "
-                    "the 'graceful' path fired even though A crashed"
+                    "B emitted SCHEDULER_LEADER instead of FAILOVER — the 'graceful' path fired even though A crashed"
                 )
             finally:
                 b_task.cancel()
@@ -716,8 +765,11 @@ class TestCronWithRateLimit:
     fires the task. Force 3 fires within a 1s rate-limit window, expect
     1 execution (first fire is allowed, subsequent are throttled)."""
 
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_rate_limit_throttles_scheduler_fires(
-        self, rabbitmq_url, valkey_url, _cleanup_tasks,
+        self,
+        rabbitmq_url,
+        valkey_url,
     ):
         queue = _unique_queue()
         task_name = _task_name("ratecron")
@@ -732,10 +784,13 @@ class TestCronWithRateLimit:
             # A 60-second window dwarfs the injection span, so exactly
             # ONE fire may pass — deterministic on any runner.
             task_info = TaskInfo(
-                name=task_name, queues=[queue],
-                cron="* * * * *", rate_limit="1/m",
+                name=task_name,
+                queues=[queue],
+                cron="* * * * *",
+                rate_limit="1/m",
             )
 
+            @override
             async def run(self) -> str:
                 nonlocal call_count
                 call_count += 1
@@ -744,8 +799,10 @@ class TestCronWithRateLimit:
         broker = RabbitMQBroker(rabbitmq_url)
         backend = ValkeyBackend(valkey_url)
         async with SwarmQ(
-            broker, backend,
-            queues=[queue], concurrency=1,
+            broker,
+            backend,
+            queues=[queue],
+            concurrency=1,
             scheduler_poll_interval=0.1,
             scheduler_heartbeat_interval=0.2,
             scheduler_lock_ttl=1.0,
@@ -758,6 +815,7 @@ class TestCronWithRateLimit:
 
                 # Force 3 fires in quick succession via zset re-score.
                 import time
+
                 client = valkey_asyncio.Valkey.from_url(valkey_url)
                 try:
                     # Be the last writer vs the scheduler's initial cron-sync
@@ -777,7 +835,8 @@ class TestCronWithRateLimit:
                     for offset_ms in (200, 400, 600):
                         ts = int(time.time() * 1000) + offset_ms
                         await client.zadd(
-                            "sq:{sched}:zset", {task_name: ts},
+                            "sq:{sched}:zset",
+                            {task_name: ts},
                         )
                         # Wait past the forced fire before re-scoring —
                         # otherwise zadd just overwrites without firing.
@@ -808,12 +867,16 @@ class TestCronWithRateLimit:
 
 
 async def _wait_definition(
-    client: object, name: str, cron: str, timezone: str | None,
+    client: object,
+    name: str,
+    cron: str,
+    timezone: str | None,
     timeout: float = _EVENT_TIMEOUT,
 ) -> None:
     """Block until ``sq:{sched}:defs`` holds *name* with *cron*/*timezone*."""
     import json
     import time
+
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         raw = await client.hget("sq:{sched}:defs", name)  # type: ignore[attr-defined]
@@ -826,7 +889,9 @@ async def _wait_definition(
 
 
 async def _wait_adopt_ticks(
-    client: object, ticks: int = 2, timeout: float = _EVENT_TIMEOUT,
+    client: object,
+    ticks: int = 2,
+    timeout: float = _EVENT_TIMEOUT,
 ) -> None:
     """Block until the leader has finished *ticks* adoption ticks from now.
 
@@ -839,6 +904,7 @@ async def _wait_adopt_ticks(
     and are never adopted.
     """
     import time
+
     deadline = time.monotonic() + timeout
     for _ in range(ticks):
         field = f"probe_{uuid.uuid4().hex[:8]}|0"
@@ -854,8 +920,11 @@ async def _wait_adopt_ticks(
 
 
 class TestCronReportsAcrossApps:
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_change_in_never_leader_app_is_adopted(
-        self, rabbitmq_url, valkey_url, _cleanup_tasks,
+        self,
+        rabbitmq_url,
+        valkey_url,
     ):
         """AE8: App B (nie Leader) stellt ``0 1 * * *`` UTC auf ``0 3 * * *``
         Berlin um. Der Leader aus App A übernimmt die neue Definition; ein
@@ -864,21 +933,23 @@ class TestCronReportsAcrossApps:
         seen_interval = 0.3
         name = _task_name("nightly")
         queue_a, queue_b = _unique_queue(), _unique_queue()
-        cfg = dict(
-            concurrency=1,
-            scheduler_poll_interval=0.1,
-            scheduler_heartbeat_interval=0.2,
-            scheduler_lock_ttl=1.0,
-            scheduler_seen_interval_s=seen_interval,
-        )
+        cfg = {
+            "concurrency": 1,
+            "scheduler_poll_interval": 0.1,
+            "scheduler_heartbeat_interval": 0.2,
+            "scheduler_lock_ttl": 1.0,
+            "scheduler_seen_interval_s": seen_interval,
+        }
 
         def _app(queue: str) -> SwarmQ:
             # Jede App hält ihre eigene Registry (Momentaufnahme bei der
             # Konstruktion); danach wird die globale Liste geleert, damit
             # die nächste App nur ihre eigenen Tasks sieht.
             app = SwarmQ(
-                RabbitMQBroker(rabbitmq_url), ValkeyBackend(valkey_url),
-                queues=[queue], **cfg,
+                RabbitMQBroker(rabbitmq_url),
+                ValkeyBackend(valkey_url),
+                queues=[queue],
+                **cfg,
             )
             Task._clear_registered_tasks()
             return app
@@ -886,15 +957,19 @@ class TestCronReportsAcrossApps:
         def _app_b(cron: str, timezone: str | None) -> SwarmQ:
             class Nightly(Task):
                 task_info = TaskInfo(
-                    name=name, queues=[queue_b], cron=cron, timezone=timezone,
+                    name=name,
+                    queues=[queue_b],
+                    cron=cron,
+                    timezone=timezone,
                 )
 
+                @override
                 async def run(self) -> None:
                     return None
 
             return _app(queue_b)
 
-        async def _online(app: SwarmQ) -> asyncio.Task[None]:
+        async def _online(app: SwarmQ) -> None:
             online = asyncio.Event()
 
             @app.on_signal(Signal.WORKER_ONLINE)
@@ -904,7 +979,6 @@ class TestCronReportsAcrossApps:
             task = asyncio.create_task(app.start_worker())
             tasks.append(task)
             await asyncio.wait_for(online.wait(), timeout=_EVENT_TIMEOUT)
-            return task
 
         tasks: list[asyncio.Task[None]] = []
         app_a = _app(queue_a)
@@ -935,7 +1009,11 @@ class TestCronReportsAcrossApps:
                 await _online(b_old_again)
                 await _wait_adopt_ticks(client)
                 await _wait_definition(
-                    client, name, "0 3 * * *", "Europe/Berlin", timeout=0.1,
+                    client,
+                    name,
+                    "0 3 * * *",
+                    "Europe/Berlin",
+                    timeout=0.1,
                 )
             finally:
                 await client.aclose()
@@ -951,10 +1029,13 @@ class TestCronReportsAcrossApps:
 
 
 async def _wait_definition_gone(
-    client: object, name: str, timeout: float = _EVENT_TIMEOUT,
+    client: object,
+    name: str,
+    timeout: float = _EVENT_TIMEOUT,
 ) -> None:
     """Block until ``sq:{sched}:defs`` no longer holds *name*."""
     import time
+
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if not await client.hexists("sq:{sched}:defs", name):  # type: ignore[attr-defined]
@@ -964,8 +1045,11 @@ async def _wait_definition_gone(
 
 
 class TestCronPruneAcrossApps:
+    @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_silent_cron_of_another_app_is_pruned_legacy_stays(
-        self, rabbitmq_url, valkey_url, _cleanup_tasks,
+        self,
+        rabbitmq_url,
+        valkey_url,
     ):
         """AE6: App A und App B teilen ein Valkey, A stellt den Leader. Bs
         Cron bleibt, solange B meldet — auch über die Frist hinaus. Nach Bs
@@ -976,19 +1060,21 @@ class TestCronPruneAcrossApps:
         seen_interval, prune_after = 0.3, 1.2
         name, legacy = _task_name("nightly"), _task_name("legacy")
         queue_a, queue_b = _unique_queue(), _unique_queue()
-        cfg = dict(
-            concurrency=1,
-            scheduler_poll_interval=0.1,
-            scheduler_heartbeat_interval=0.2,
-            scheduler_lock_ttl=1.0,
-            scheduler_seen_interval_s=seen_interval,
-            scheduler_prune_after_s=prune_after,
-        )
+        cfg = {
+            "concurrency": 1,
+            "scheduler_poll_interval": 0.1,
+            "scheduler_heartbeat_interval": 0.2,
+            "scheduler_lock_ttl": 1.0,
+            "scheduler_seen_interval_s": seen_interval,
+            "scheduler_prune_after_s": prune_after,
+        }
 
         def _app(queue: str) -> SwarmQ:
             app = SwarmQ(
-                RabbitMQBroker(rabbitmq_url), ValkeyBackend(valkey_url),
-                queues=[queue], **cfg,
+                RabbitMQBroker(rabbitmq_url),
+                ValkeyBackend(valkey_url),
+                queues=[queue],
+                **cfg,
             )
             Task._clear_registered_tasks()
             return app
@@ -998,6 +1084,7 @@ class TestCronPruneAcrossApps:
         class Nightly(Task):
             task_info = TaskInfo(name=name, queues=[queue_b], cron="0 1 * * *")
 
+            @override
             async def run(self) -> None:
                 return None
 
@@ -1009,11 +1096,22 @@ class TestCronPruneAcrossApps:
                 await stack.enter_async_context(app)
             await app_a.broker.declare_queue(queue_a)
             await app_a.broker.declare_queue(queue_b)
-            await client.hset("sq:{sched}:defs", legacy, json.dumps({
-                "schedule_name": legacy, "task_name": legacy, "args": [],
-                "kwargs": {}, "queue": queue_a, "cron": "0 2 * * *",
-                "fire_ts_ms": 4_000_000_000_000, "source": "static",
-            }))
+            await client.hset(
+                "sq:{sched}:defs",
+                legacy,
+                json.dumps(
+                    {
+                        "schedule_name": legacy,
+                        "task_name": legacy,
+                        "args": [],
+                        "kwargs": {},
+                        "queue": queue_a,
+                        "cron": "0 2 * * *",
+                        "fire_ts_ms": 4_000_000_000_000,
+                        "source": "static",
+                    }
+                ),
+            )
             await client.zadd("sq:{sched}:zset", {legacy: 4_000_000_000_000})
             a_leader = _leader_event(app_a)
             b_online = asyncio.Event()

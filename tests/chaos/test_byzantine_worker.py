@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from typing import override
 
 import msgpack
 import pytest
@@ -65,7 +66,8 @@ class TestByzantineWorker:
     # Scenario 1 — old writer (missing fields), new reader.
     # ---------------------------------------------------------------------
     async def test_old_schema_writer_new_schema_reader(
-        self, chaos_stack: ChaosStack,
+        self,
+        chaos_stack: ChaosStack,
     ) -> None:
         """An old worker writes a blob without ``is_cancelled``.
 
@@ -81,7 +83,9 @@ class TestByzantineWorker:
         old_blob = msgpack.packb(
             {
                 "task": {
-                    "id": task_id, "queue": "q", "name": "legacy",
+                    "id": task_id,
+                    "queue": "q",
+                    "name": "legacy",
                 },
                 "is_error": False,
                 "error_message": "",
@@ -103,15 +107,14 @@ class TestByzantineWorker:
         async with app:
             value = await app.get_result(task_id, timeout=5)
 
-        assert value == {"legacy": True, "value": 42}, (
-            f"old-schema blob did not roundtrip: got {value!r}"
-        )
+        assert value == {"legacy": True, "value": 42}, f"old-schema blob did not roundtrip: got {value!r}"
 
     # ---------------------------------------------------------------------
     # Scenario 2 — new writer (extra fields), old reader.
     # ---------------------------------------------------------------------
     async def test_new_schema_writer_old_schema_reader(
-        self, chaos_stack: ChaosStack,
+        self,
+        chaos_stack: ChaosStack,
     ) -> None:
         """A newer worker writes extra top-level fields.
 
@@ -156,9 +159,7 @@ class TestByzantineWorker:
         async with app:
             value = await app.get_result(task_id, timeout=5)
 
-        assert value == "hello-from-the-future", (
-            f"future-schema blob did not decode cleanly: got {value!r}"
-        )
+        assert value == "hello-from-the-future", f"future-schema blob did not decode cleanly: got {value!r}"
 
         # Error flag from the future must still propagate. Second
         # blob exercises the is_error branch with future extras.
@@ -177,7 +178,9 @@ class TestByzantineWorker:
         client2 = valkey.asyncio.Valkey.from_url(chaos_stack.valkey_url)
         try:
             await client2.set(
-                _result_key(err_task_id), future_err_blob, px=60_000,
+                _result_key(err_task_id),
+                future_err_blob,
+                px=60_000,
             )
         finally:
             await client2.aclose()
@@ -193,7 +196,8 @@ class TestByzantineWorker:
     # Scenario 3 — divergent unique-hash → dedup silently no-ops.
     # ---------------------------------------------------------------------
     async def test_divergent_unique_hash_breaks_dedup_documented(
-        self, chaos_stack: ChaosStack,
+        self,
+        chaos_stack: ChaosStack,
     ) -> None:
         """Two producers normalise task_name differently → no dedup.
 
@@ -220,8 +224,7 @@ class TestByzantineWorker:
         hash_canonical = compute_dedup_hash(canonical_name, args, kwargs)
         hash_divergent = compute_dedup_hash(divergent_name, args, kwargs)
         assert hash_canonical != hash_divergent, (
-            "regression: task_name case normalisation now converges — "
-            "update this test's divergence example"
+            "regression: task_name case normalisation now converges — update this test's divergence example"
         )
 
         # End-to-end: both producers schedule with unique_for set, but
@@ -232,18 +235,24 @@ class TestByzantineWorker:
 
         class EchoCanonical(Task):
             task_info = TaskInfo(
-                name=canonical_name, queues=[queue], unique_for=60,
+                name=canonical_name,
+                queues=[queue],
+                unique_for=60,
             )
 
+            @override
             async def run(self, value: int, mode: str = "") -> str:
                 results.append(f"canonical:{value}:{mode}")
                 return f"canonical:{value}:{mode}"
 
         class EchoDivergent(Task):
             task_info = TaskInfo(
-                name=divergent_name, queues=[queue], unique_for=60,
+                name=divergent_name,
+                queues=[queue],
+                unique_for=60,
             )
 
+            @override
             async def run(self, value: int, mode: str = "") -> str:
                 results.append(f"divergent:{value}:{mode}")
                 return f"divergent:{value}:{mode}"
@@ -253,31 +262,37 @@ class TestByzantineWorker:
         client_broker = RabbitMQBroker(chaos_stack.rabbitmq_url)
         client_backend = ValkeyBackend(chaos_stack.valkey_url)
         client_app = SwarmQ(
-            client_broker, client_backend, queues=[queue],
+            client_broker,
+            client_backend,
+            queues=[queue],
         )
 
         worker_broker = RabbitMQBroker(chaos_stack.rabbitmq_url)
         worker_backend = ValkeyBackend(chaos_stack.valkey_url)
         worker_app = SwarmQ(
-            worker_broker, worker_backend, queues=[queue],
+            worker_broker,
+            worker_backend,
+            queues=[queue],
         )
 
-        worker_task: asyncio.Task | None = None
+        worker_task: asyncio.Task[None] | None = None
         async with client_app:
             try:
                 async with worker_app:
-                    worker_task = asyncio.create_task(
-                        worker_app.start_worker()
-                    )
+                    worker_task = asyncio.create_task(worker_app.start_worker())
                     await asyncio.sleep(0.8)  # consumer setup
 
                     # Two "logically identical" schedules with diverging
                     # name normalisation.
                     tid_canonical = await client_app.schedule(
-                        canonical_name, 42, mode="demo",
+                        canonical_name,
+                        42,
+                        mode="demo",
                     )
                     tid_divergent = await client_app.schedule(
-                        divergent_name, 42, mode="demo",
+                        divergent_name,
+                        42,
+                        mode="demo",
                     )
 
                     # Different task_ids: no silent dedup took place.
@@ -288,25 +303,25 @@ class TestByzantineWorker:
                     )
 
                     v1 = await client_app.get_result(
-                        tid_canonical, timeout=15,
+                        tid_canonical,
+                        timeout=15,
                     )
                     v2 = await client_app.get_result(
-                        tid_divergent, timeout=15,
+                        tid_divergent,
+                        timeout=15,
                     )
 
                     # Both executed — dedup bypass confirmed.
                     assert v1 == "canonical:42:demo"
                     assert v2 == "divergent:42:demo"
                     assert sorted(results) == [
-                        "canonical:42:demo", "divergent:42:demo",
-                    ], (
-                        f"expected both task variants to run exactly once, "
-                        f"got {results!r}"
-                    )
+                        "canonical:42:demo",
+                        "divergent:42:demo",
+                    ], f"expected both task variants to run exactly once, got {results!r}"
             finally:
                 if worker_task is not None:
                     worker_task.cancel()
                     try:
                         await worker_task
-                    except (asyncio.CancelledError, Exception):
+                    except asyncio.CancelledError, Exception:
                         pass

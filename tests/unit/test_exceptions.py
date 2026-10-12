@@ -110,9 +110,7 @@ def test_remaining_exceptions_are_exported_from_package_root():
     assert LoggingConfigError is exceptions.LoggingConfigError
     assert SoftTimeoutError is exceptions.SoftTimeoutError
     assert PublishIndeterminate is exceptions.PublishIndeterminate
-    assert {"LoggingConfigError", "SoftTimeoutError", "PublishIndeterminate"} <= set(
-        swarmq.__all__
-    )
+    assert {"LoggingConfigError", "SoftTimeoutError", "PublishIndeterminate"} <= set(swarmq.__all__)
 
 
 def test_backend_response_error_is_a_backend_connection_error_exported_from_the_root():

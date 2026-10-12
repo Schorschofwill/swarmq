@@ -51,10 +51,7 @@ pytestmark = [
     pytest.mark.integration,
     pytest.mark.timeout(120),
     pytest.mark.skipif(
-        not (
-            _port_open(RABBITMQ_HOST, RABBITMQ_PORT)
-            and _port_open(VALKEY_HOST, VALKEY_PORT)
-        ),
+        not (_port_open(RABBITMQ_HOST, RABBITMQ_PORT) and _port_open(VALKEY_HOST, VALKEY_PORT)),
         reason="Docker services (RabbitMQ + Valkey) not reachable on default ports",
     ),
     pytest.mark.skipif(
@@ -73,12 +70,17 @@ def _spawn_worker(queue_name: str):
     return subprocess.Popen(
         [
             sys.executable,
-            "-m", "swarmq.cli",
+            "-m",
+            "swarmq.cli",
             "worker",
-            "--module", "tests.integration._dishka_fixture_tasks",
-            "--queues", queue_name,
-            "--concurrency", "2",
-            "--log-format", "json",
+            "--module",
+            "tests.integration._dishka_fixture_tasks",
+            "--queues",
+            queue_name,
+            "--concurrency",
+            "2",
+            "--log-format",
+            "json",
         ],
         cwd=str(REPO_ROOT),
         env=env,
@@ -89,14 +91,12 @@ def _spawn_worker(queue_name: str):
     )
 
 
-def _wait_for_worker_started(proc: subprocess.Popen, deadline: float) -> None:
+def _wait_for_worker_started(proc: subprocess.Popen[str], deadline: float) -> None:
     while time.monotonic() < deadline:
         line = proc.stdout.readline() if proc.stdout else ""
         if not line:
             if proc.poll() is not None:
-                raise RuntimeError(
-                    f"worker exited before starting; rc={proc.returncode}"
-                )
+                raise RuntimeError(f"worker exited before starting; rc={proc.returncode}")
             continue
         if "worker_started" in line:
             return
@@ -112,7 +112,9 @@ async def _schedule_and_get_result(queue: str, value: str) -> str:
     app = SwarmQ(broker, backend, queues=[queue])
     async with app:
         task_id = await app.schedule("cli_di_echo", value, queue=queue)
-        return await app.get_result(task_id, timeout=15)
+        result = await app.get_result(task_id, timeout=15)
+        assert isinstance(result, str)
+        return result
 
 
 def test_cli_worker_dishka_injection_round_trip_then_clean_sigterm() -> None:

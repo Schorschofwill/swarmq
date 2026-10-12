@@ -176,7 +176,9 @@ class LockStoreContract:
         assert await impl.extend(token, ttl_ms=60_000) is False
 
     async def test_acquire_with_a_shorter_ttl_keeps_the_longer_semaphore_holder(
-        self, impl: LockStore, clock: Clock,
+        self,
+        impl: LockStore,
+        clock: Clock,
     ) -> None:
         """Rev. 3 F6 (MR 13): ein Erwerber mit kurzer TTL verkuerzt den Key
         nicht unter einem Langlaeufer weg."""
@@ -204,7 +206,8 @@ class LockStoreContract:
         name = _name("sem")
         t1 = await impl.acquire(name, owner="a", ttl_ms=60_000, max_concurrency=2)
         t2 = await impl.acquire(name, owner="b", ttl_ms=60_000, max_concurrency=2)
-        assert t1 is not None and t2 is not None
+        assert t1 is not None
+        assert t2 is not None
         assert await impl.acquire(name, owner="c", ttl_ms=60_000, max_concurrency=2) is None
         assert await impl.release(t1) is True
         assert await impl.acquire(name, owner="c", ttl_ms=60_000, max_concurrency=2) is not None
@@ -233,11 +236,14 @@ class LockStoreContract:
         await impl.acquire(sem, owner="b", ttl_ms=60_000, max_concurrency=3)
 
         seen = await impl.observe(mutex, max_concurrency=1)
-        assert seen.owners == frozenset({"a"}) and 0 < seen.pttl_ms <= 60_000
+        assert seen.owners == frozenset({"a"})
+        assert 0 < seen.pttl_ms <= 60_000
         seen = await impl.observe(sem, max_concurrency=3)
-        assert seen.owners == frozenset({"a", "b"}) and 0 < seen.pttl_ms <= 60_000
+        assert seen.owners == frozenset({"a", "b"})
+        assert 0 < seen.pttl_ms <= 60_000
         gone = await impl.observe(_name("lock"), max_concurrency=1)
-        assert gone.owners == frozenset() and gone.pttl_ms == -2
+        assert gone.owners == frozenset()
+        assert gone.pttl_ms == -2
 
 
 @pytest.mark.timeout(5)
@@ -308,7 +314,7 @@ class ScheduleStoreContract:
         await impl.add(name, b"v1", fire_ts_ms=1_000)
         await impl.put(name, b"v2", fire_ts_ms=2_000)
         assert await impl.get(name) == b"v2"
-        assert [n for n, _, _ in await impl.poll_due(2_000)] .count(name) == 1
+        assert [n for n, _, _ in await impl.poll_due(2_000)].count(name) == 1
 
     async def test_fire_ts_reports_index_score(self, impl: ScheduleStore) -> None:
         planned, disabled = _name("sched"), _name("sched")
@@ -332,7 +338,8 @@ class ScheduleStoreContract:
         await impl.add(a, b"A", fire_ts_ms=None)
         await impl.add(b, b"B", fire_ts_ms=5_000)
         listing = await impl.list_all()
-        assert listing[a] == b"A" and listing[b] == b"B"
+        assert listing[a] == b"A"
+        assert listing[b] == b"B"
 
     async def test_poll_due_returns_only_due_entries_with_fire_time(self, impl: ScheduleStore) -> None:
         early, late = _name("sched"), _name("sched")
@@ -397,7 +404,9 @@ class ScheduleStoreContract:
         assert await impl.fire_ts(name) is None
 
     async def test_prune_cron_removes_a_cron_whose_reports_are_all_stale(
-        self, impl: ScheduleStore, clock: Clock,
+        self,
+        impl: ScheduleStore,
+        clock: Clock,
     ) -> None:
         name = _name("cron")
         await impl.add(name, b"def", fire_ts_ms=1_000)
@@ -482,8 +491,7 @@ class ScheduleStoreContract:
         await leader("chief")
         await impl.disable(name, b"off")
         assert (
-            await impl.commit_fire(name, next_fire_ts_ms=2_000, payload=b"v2", owner="chief", fired_ts_ms=1_000)
-            is True
+            await impl.commit_fire(name, next_fire_ts_ms=2_000, payload=b"v2", owner="chief", fired_ts_ms=1_000) is True
         )
         assert await impl.get(name) == b"off"
         assert all(n != name for n, _, _ in await impl.poll_due(10_000))
@@ -494,8 +502,7 @@ class ScheduleStoreContract:
         await leader("chief")
         await impl.remove(name)
         assert (
-            await impl.commit_fire(name, next_fire_ts_ms=2_000, payload=b"v2", owner="chief", fired_ts_ms=1_000)
-            is True
+            await impl.commit_fire(name, next_fire_ts_ms=2_000, payload=b"v2", owner="chief", fired_ts_ms=1_000) is True
         )
         assert await impl.exists(name) is False
         assert all(n != name for n, _, _ in await impl.poll_due(10_000))
@@ -506,8 +513,7 @@ class ScheduleStoreContract:
         await leader("chief")
         await impl.put(name, b"replanned", fire_ts_ms=5_000)
         assert (
-            await impl.commit_fire(name, next_fire_ts_ms=2_000, payload=b"v2", owner="chief", fired_ts_ms=1_000)
-            is True
+            await impl.commit_fire(name, next_fire_ts_ms=2_000, payload=b"v2", owner="chief", fired_ts_ms=1_000) is True
         )
         assert await impl.get(name) == b"replanned"
         assert {n: ts for n, ts, _ in await impl.poll_due(10_000)}[name] == 5_000
@@ -517,14 +523,15 @@ class ScheduleStoreContract:
         await impl.add(name, b"v1", fire_ts_ms=1_000)
         await leader("chief")
         assert (
-            await impl.commit_fire(name, next_fire_ts_ms=2_000, payload=b"v2", owner="chief", fired_ts_ms=1_000)
-            is True
+            await impl.commit_fire(name, next_fire_ts_ms=2_000, payload=b"v2", owner="chief", fired_ts_ms=1_000) is True
         )
         assert await impl.get(name) == b"v2"
         assert {n: ts for n, ts, _ in await impl.poll_due(10_000)}[name] == 2_000
 
     async def test_commit_fire_keeps_definition_changed_since_poll(
-        self, impl: ScheduleStore, leader: Leader,
+        self,
+        impl: ScheduleStore,
+        leader: Leader,
     ) -> None:
         """Liste 12: eine Uebernahme zwischen Poll und Commit (Score blieb
         faellig) wird nicht zurueckgesetzt; der Score rueckt trotzdem vor,
@@ -535,8 +542,12 @@ class ScheduleStoreContract:
         await impl.put(name, b"taken-over", fire_ts_ms=None)
         assert (
             await impl.commit_fire(
-                name, next_fire_ts_ms=2_000, payload=b"v2", owner="chief",
-                fired_ts_ms=1_000, fired_payload=b"v1",
+                name,
+                next_fire_ts_ms=2_000,
+                payload=b"v2",
+                owner="chief",
+                fired_ts_ms=1_000,
+                fired_payload=b"v1",
             )
             is True
         )
@@ -544,15 +555,21 @@ class ScheduleStoreContract:
         assert await impl.fire_ts(name) == 2_000
 
     async def test_commit_fire_writes_back_unchanged_polled_definition(
-        self, impl: ScheduleStore, leader: Leader,
+        self,
+        impl: ScheduleStore,
+        leader: Leader,
     ) -> None:
         """Liste 13."""
         name = _name("sched")
         await impl.add(name, b"v1", fire_ts_ms=1_000)
         await leader("chief")
         await impl.commit_fire(
-            name, next_fire_ts_ms=2_000, payload=b"v2", owner="chief",
-            fired_ts_ms=1_000, fired_payload=b"v1",
+            name,
+            next_fire_ts_ms=2_000,
+            payload=b"v2",
+            owner="chief",
+            fired_ts_ms=1_000,
+            fired_payload=b"v1",
         )
         assert await impl.get(name) == b"v2"
         assert await impl.fire_ts(name) == 2_000
@@ -568,7 +585,9 @@ class ScheduleStoreContract:
         )
 
     async def test_commit_fire_cannot_tell_a_recreation_with_the_same_score(
-        self, impl: ScheduleStore, leader: Leader,
+        self,
+        impl: ScheduleStore,
+        leader: Leader,
     ) -> None:
         """Liste 4b: dokumentierte Grenze des Verwerf-Schutzes (ABA)."""
         name = _name("sched")
@@ -577,8 +596,7 @@ class ScheduleStoreContract:
         await impl.remove(name)
         await impl.add(name, b"recreated", fire_ts_ms=1_000)
         assert (
-            await impl.commit_fire(name, next_fire_ts_ms=2_000, payload=b"v2", owner="chief", fired_ts_ms=1_000)
-            is True
+            await impl.commit_fire(name, next_fire_ts_ms=2_000, payload=b"v2", owner="chief", fired_ts_ms=1_000) is True
         )
         assert await impl.get(name) == b"v2"
         assert {n: ts for n, ts, _ in await impl.poll_due(2_000)}[name] == 2_000
@@ -796,4 +814,5 @@ class ScheduleStoreContract:
         await impl.report_cron(other, "fp1", b"def", live_window_ms=60_000)
         await impl.forget_known_cron(name)
         known = await impl.known_cron_names()
-        assert name not in known and other in known
+        assert name not in known
+        assert other in known

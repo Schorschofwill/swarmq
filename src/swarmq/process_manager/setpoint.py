@@ -158,7 +158,8 @@ def _heading_slots(pm: Any) -> set[int]:
 def _drain_one(pm: Any) -> bool:
     """Juengsten Worker sanft beenden (Weg des Autoskalierers, ohne Mindestalter, R12)."""
     eligible = {
-        pid: w for pid, w in pm.workers.items()
+        pid: w
+        for pid, w in pm.workers.items()
         if not w.expected_shutdown and pm._slots.state(w.worker_id) is not SlotState.TRANSITION
     }
     if not eligible:

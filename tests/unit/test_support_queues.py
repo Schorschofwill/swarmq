@@ -33,7 +33,7 @@ def connection(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     channel.is_closed = False
     conn.channel = AsyncMock(return_value=channel)
     conn.test_channel = channel
-    monkeypatch.setattr(queues.aio_pika, "connect", AsyncMock(return_value=conn))
+    monkeypatch.setattr("tests.support.queues.aio_pika.connect", AsyncMock(return_value=conn))
     return conn
 
 
@@ -63,7 +63,8 @@ async def test_deletes_several_families(connection: MagicMock) -> None:
 
     deleted = _deleted(connection)
     assert deleted[:3] == ["a", "a.DQ", "a.XQ"]
-    assert "b" in deleted and deleted.index("b") > deleted.index("a.XQ")
+    assert "b" in deleted
+    assert deleted.index("b") > deleted.index("a.XQ")
 
 
 async def test_failing_delete_does_not_stop_the_others(connection: MagicMock) -> None:

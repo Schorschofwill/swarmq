@@ -10,6 +10,8 @@ Test-Liste:
 
 from __future__ import annotations
 
+from typing import override
+
 import pytest
 
 from swarmq.registry import TaskRegistry
@@ -22,6 +24,7 @@ pytestmark = [pytest.mark.timeout(5)]
 class HighTask(Task):
     task_info = TaskInfo(name="prio-high", queues=["default"], priority="high")
 
+    @override
     async def run(self) -> None:
         return None
 

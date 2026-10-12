@@ -68,7 +68,6 @@ _SHUTDOWN_PUBLISH_RESERVE_S = CLEANUP_RESERVE_S
 _SHUTDOWN_STEP_MIN_S = 1.0
 
 
-
 class WorkerState(enum.Enum):
     STARTING = "STARTING"
     RUNNING = "RUNNING"
@@ -111,9 +110,7 @@ class WorkerLifecycle:
 
         async def _on_message(self, message: Any) -> None: ...
 
-        async def _publish_workflow_step(
-            self, queue: str, body: bytes, headers: dict[str, Any]
-        ) -> Any: ...
+        async def _publish_workflow_step(self, queue: str, body: bytes, headers: dict[str, Any]) -> Any: ...
 
         def _resolve_workflow_queue(self, task_name: str) -> str: ...
 
@@ -207,9 +204,11 @@ class WorkerLifecycle:
                     MetricsServer,
                     install_signal_collectors,
                 )
+
                 self._metrics = Metrics()
                 install_signal_collectors(
-                    self._signal_dispatcher, self._metrics,
+                    self._signal_dispatcher,
+                    self._metrics,
                 )
                 self._metrics_server = MetricsServer(
                     self._metrics,
@@ -219,8 +218,11 @@ class WorkerLifecycle:
                 await self._start_with_bind_retry(self._metrics_server.start)
             if self._config.health_port is not None:
                 from swarmq.health import HealthChecker, HealthServer
+
                 checker = HealthChecker(
-                    self._broker, self._backend, checks=self._readiness_checks(),
+                    self._broker,
+                    self._backend,
+                    checks=self._readiness_checks(),
                 )
                 self._health_server = HealthServer(
                     checker,
@@ -304,9 +306,7 @@ class WorkerLifecycle:
         # KTD4: das Budget kommt aus der Konfiguration — das Entry leitet es
         # aus beiden Freigabefristen ab, damit ein Ersatz nicht in einen
         # Bind-Fehler und damit ins Neustart-Budget laeuft.
-        await recycling.start_with_bind_retry(
-            start, budget_s=self._config.bind_retry_budget_s
-        )
+        await recycling.start_with_bind_retry(start, budget_s=self._config.bind_retry_budget_s)
 
     def _warn_without_delivery_limit(self) -> None:
         """R21: ohne Quorum-Queue gibt es kein Delivery-Limit — eine Giftnachricht
@@ -332,7 +332,7 @@ class WorkerLifecycle:
             for task_name in self._registry.get_all():
                 try:
                     ti = self._registry.get(task_name).task_info
-                except Exception:
+                except Exception:  # noqa: BLE001, S112 - nicht ladbarer Task wird bei der Warnung uebersprungen
                     continue
                 if getattr(ti, "priority", "normal") != "normal":
                     priority_tasks.append(f"{task_name}({ti.priority})")
@@ -368,7 +368,7 @@ class WorkerLifecycle:
             return
         try:
             await report()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Bericht best effort, Worker startet trotzdem
             logger.debug("queue_declaration_report_failed", **_error_fields(exc))
 
     def _start_consumer_watch(self) -> None:
@@ -387,18 +387,14 @@ class WorkerLifecycle:
         # await below and triggering the same graceful path SIGTERM uses.
         if self._config.burst_mode:
             self._last_message_received_at = time.monotonic()
-            self._burst_monitor_task = asyncio.create_task(
-                self._burst_monitor()
-            )
+            self._burst_monitor_task = asyncio.create_task(self._burst_monitor())
 
         # Start the metrics sampler when metrics are
         # enabled so the queue_depth / dlq_messages / uptime gauges are
         # actually populated and WORKER_HEARTBEAT is emitted.
         if self._metrics is not None and self._metrics.enabled:
             self._worker_started_at = time.monotonic()
-            self._metrics_sampler_task = asyncio.create_task(
-                self._metrics_sampler()
-            )
+            self._metrics_sampler_task = asyncio.create_task(self._metrics_sampler())
 
     async def start(self) -> None:
         """Connect broker + backend, declare queues, start consuming, block until shutdown."""
@@ -516,7 +512,7 @@ class WorkerLifecycle:
                 # instrumented but isn't" trap again).
                 try:
                     await self._sample_metrics_once()
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - Fehler wird geloggt, Schleife laeuft weiter
                     logger.warning(
                         "metrics_sampler_iteration_failed",
                         **_error_fields(exc),
@@ -543,7 +539,8 @@ class WorkerLifecycle:
             try:
                 depth = await self._broker.queue_depth(queue)
                 self._metrics.queue_depth.labels(
-                    queue=queue, kind="pending",
+                    queue=queue,
+                    kind="pending",
                 ).set(depth)
                 # Plan 0.12.0, MR 10: nur die Delay-Queues (Q15: ohne
                 # ``ready_depth`` bleibt die Serie aus).
@@ -557,7 +554,7 @@ class WorkerLifecycle:
                     self._metrics.queue_depth.remove(queue, "delayed")
                 dlq = await self._broker.dead_letter_depth(queue)
                 self._metrics.dlq_messages.labels(queue=queue).set(dlq)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - bewusst breit, Sampler darf nicht sterben
                 # Broad on purpose. Catching only
                 # BrokerConnectionError let any other error (Timeout,
                 # ChannelInvalidStateError, decode glitch) propagate and
@@ -599,7 +596,7 @@ class WorkerLifecycle:
         for queue in self._config.consumed_queues:
             try:
                 value = count(queue)
-            except Exception:
+            except Exception:  # noqa: BLE001 - Fremd-Broker, Metrik best effort
                 return
             if isinstance(value, int) and not isinstance(value, bool):
                 self._metrics.delay_tiers_unavailable.labels(queue=queue).set(value)

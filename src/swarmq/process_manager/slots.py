@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import enum
 import math
-import multiprocessing
+import multiprocessing.process
 import time
 from dataclasses import dataclass, field
 

@@ -10,6 +10,7 @@ Testprozess beim Einreihen keinen Opt-in einschaltet.
 from __future__ import annotations
 
 import os
+from typing import override
 
 from swarmq.logging import get_logger
 from swarmq.task import Task, TaskInfo
@@ -32,5 +33,6 @@ if os.environ.get("CPU_OPTIN_FIXTURE_APP") == "1":
 class CpuOptinEcho(Task):
     task_info = TaskInfo(name="cpu_optin_echo", queues=[QUEUE], max_retries=0)
 
+    @override
     async def run(self, x: int) -> int:
         return x * 2

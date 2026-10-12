@@ -48,12 +48,13 @@ def tick(pm: Any) -> None:
 
     try:
         depth = pm._queue_depth_fn()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - Fehler wird geloggt, Autoscale läuft weiter
         # sanitize_url strips embedded AMQP
         # credentials before the exception text reaches the log.
         fields = _error_fields(exc)
         logger.warning(
-            "autoscale_sample_failed", **fields | {"error": sanitize_url(fields["error"])},
+            "autoscale_sample_failed",
+            **fields | {"error": sanitize_url(fields["error"])},
         )
         return
 
@@ -66,7 +67,10 @@ def tick(pm: Any) -> None:
     if active < max_w and slot is not None and depth > active * pm.SCALE_UP_THRESHOLD:
         logger.info(
             "autoscale_up",
-            depth=depth, active=active, max_workers=max_w, slot=slot,
+            depth=depth,
+            active=active,
+            max_workers=max_w,
+            slot=slot,
         )
         pm._start_worker(slot)
         pm._last_scale_decision = now
@@ -85,6 +89,7 @@ def tick(pm: Any) -> None:
     else:
         pm._idle_since = None
 
+
 def scale_down_one(pm: Any) -> None:
     """Tell the youngest eligible worker to drain + exit (SIGTERM).
 
@@ -100,9 +105,9 @@ def scale_down_one(pm: Any) -> None:
     # KTD1: Slots im Uebergang (Alt- und Ersatzprozess) sind tabu — der
     # Ersatz waere sonst als juengster Prozess der erste Kandidat.
     eligible = {
-        pid: w for pid, w in pm.workers.items()
-        if (now - w.spawned_at) >= pm.SCALE_MIN_AGE_S
-        and pm._slots.state(w.worker_id) is not SlotState.TRANSITION
+        pid: w
+        for pid, w in pm.workers.items()
+        if (now - w.spawned_at) >= pm.SCALE_MIN_AGE_S and pm._slots.state(w.worker_id) is not SlotState.TRANSITION
     }
     if not eligible:
         logger.debug(
@@ -116,11 +121,13 @@ def scale_down_one(pm: Any) -> None:
     # process after a replacement, so the slot number is no proxy;
     # on equal age the highest slot goes (R1).
     target_pid, info = max(
-        eligible.items(), key=lambda kv: (kv[1].spawned_at, kv[1].worker_id),
+        eligible.items(),
+        key=lambda kv: (kv[1].spawned_at, kv[1].worker_id),
     )
     logger.info(
         "autoscale_down",
-        worker_id=info.worker_id, pid=target_pid,
+        worker_id=info.worker_id,
+        pid=target_pid,
     )
     info.expected_shutdown = True
     try:

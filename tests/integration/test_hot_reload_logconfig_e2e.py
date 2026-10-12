@@ -81,23 +81,26 @@ class _Supervisor:
 
     def children(self, marker: str) -> list[int]:
         # psutil statt pgrep: das CI-Image hat kein procps.
-        return [
-            child.pid
-            for child in _live_children(self.proc.pid)
-            if marker in _cmdline(child)
-        ]
+        return [child.pid for child in _live_children(self.proc.pid) if marker in _cmdline(child)]
 
 
 def _log_config(path: Path) -> None:
-    path.write_text(json.dumps({
-        "version": 1,
-        "formatters": {"plain": {"format": "RLC|%(name)s|%(message)s"}},
-        "handlers": {"out": {
-            "class": "tests.integration._slow_log_handler.SlowHandler",
-            "stream": "ext://sys.stdout", "formatter": "plain",
-        }},
-        "root": {"level": "INFO", "handlers": ["out"]},
-    }))
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "formatters": {"plain": {"format": "RLC|%(name)s|%(message)s"}},
+                "handlers": {
+                    "out": {
+                        "class": "tests.integration._slow_log_handler.SlowHandler",
+                        "stream": "ext://sys.stdout",
+                        "formatter": "plain",
+                    }
+                },
+                "root": {"level": "INFO", "handlers": ["out"]},
+            }
+        )
+    )
 
 
 @pytest.fixture
@@ -110,15 +113,39 @@ def supervisor(tmp_path: Path) -> Iterator[_Supervisor]:
     _log_config(cfg)
     flag = tmp_path / "slow"
     env = dict(
-        os.environ, SWARMQ_BROKER_URL=rabbitmq_amqp_url(), SWARMQ_BACKEND_URL=valkey_db_url(),
-        CLI_TEST_QUEUE=queue, PYTHONUNBUFFERED="1", PYTHONPATH=str(REPO_ROOT), SLOW_LOG_FLAG=str(flag),
+        os.environ,
+        SWARMQ_BROKER_URL=rabbitmq_amqp_url(),
+        SWARMQ_BACKEND_URL=valkey_db_url(),
+        CLI_TEST_QUEUE=queue,
+        PYTHONUNBUFFERED="1",
+        PYTHONPATH=str(REPO_ROOT),
+        SLOW_LOG_FLAG=str(flag),
         SWARMQ_LOG_LIFECYCLE_LEVEL="INFO",  # ``task_started`` als Marke
     )
     proc = subprocess.Popen(
-        [sys.executable, "-m", "swarmq.cli", "worker", "--module", _TASKS, "--queues", queue,
-         "--processes", "1", "--reload", "--watch-dir", str(watch), "--log-config", str(cfg)],
-        cwd=str(REPO_ROOT), env=env,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True,
+        [
+            sys.executable,
+            "-m",
+            "swarmq.cli",
+            "worker",
+            "--module",
+            _TASKS,
+            "--queues",
+            queue,
+            "--processes",
+            "1",
+            "--reload",
+            "--watch-dir",
+            str(watch),
+            "--log-config",
+            str(cfg),
+        ],
+        cwd=str(REPO_ROOT),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
     )
     sup = _Supervisor(proc=proc, flag=flag, queue=queue)
 
@@ -134,7 +161,8 @@ def supervisor(tmp_path: Path) -> Iterator[_Supervisor]:
         # SIGHUP-Handler installiert.
         sup.wait_for(
             lambda: sup.count("worker_started") >= 1 and sup.count("hot_reload_enabled") >= 1,
-            60.0, "first worker start with armed reload",
+            60.0,
+            "first worker start with armed reload",
         )
         yield sup
     finally:
@@ -170,7 +198,7 @@ def _live_children(pid: int) -> list[psutil.Process]:
 def _cmdline(proc: psutil.Process) -> str:
     try:
         return " ".join(proc.cmdline())
-    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+    except psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess:
         return ""
 
 
@@ -258,11 +286,15 @@ def test_the_real_probe_reports_a_handler_typo() -> None:
     """AE4 beim Reload: Der Tippfehler faellt erst in ``dictConfig`` auf."""
     from swarmq.logging_file import DictConfigProbe
 
-    probe = DictConfigProbe(json.dumps({
-        "version": 1,
-        "handlers": {"err": {"class": "logging.StreamHandlr"}},
-        "root": {"handlers": ["err"]},
-    }))
+    probe = DictConfigProbe(
+        json.dumps(
+            {
+                "version": 1,
+                "handlers": {"err": {"class": "logging.StreamHandlr"}},
+                "root": {"handlers": ["err"]},
+            }
+        )
+    )
     assert probe.wait(timeout=5) == 1
     assert probe.poll() == 1
     assert "StreamHandlr" in probe.error()
@@ -277,5 +309,6 @@ def test_by_default_the_real_probe_checks_the_file(tmp_path: Path) -> None:
     ctl.request()
     deadline = time.monotonic() + 5
     while not ctl.step():
-        assert ctl.busy and time.monotonic() < deadline
+        assert ctl.busy
+        assert time.monotonic() < deadline
         time.sleep(0.01)

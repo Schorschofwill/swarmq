@@ -60,7 +60,9 @@ async def depth(connection: AbstractConnection, queue: str) -> int:
     channel = await connection.channel()
     try:
         declared = await channel.declare_queue(queue, passive=True)
-        return int(declared.declaration_result.message_count)
+        count = declared.declaration_result.message_count
+        assert count is not None
+        return int(count)
     finally:
         await channel.close()
 

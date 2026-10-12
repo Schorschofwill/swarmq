@@ -110,12 +110,8 @@ class WorkflowStepEnqueuer:
             self._contexts[(step.workflow_id, step.step_path)] = ctx
 
     async def publish(self, step: WorkflowStep) -> PublishReceipt:
-        ctx = self._contexts.pop(
-            (step.workflow_id, step.step_path), None
-        ) or self._context(step)
-        receipt = await self._publish(
-            step.queue, encode_json(step.to_message()), step.headers
-        )
+        ctx = self._contexts.pop((step.workflow_id, step.step_path), None) or self._context(step)
+        receipt = await self._publish(step.queue, encode_json(step.to_message()), step.headers)
         chain = self._get_chain()
         await chain.run_post_enqueue(ctx)
         await self._dispatch(

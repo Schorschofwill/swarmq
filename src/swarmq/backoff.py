@@ -29,11 +29,11 @@ def calculate_backoff(
         return base_delay
 
     if strategy == "exponential":
-        jitter = random.uniform(1.0, 2.0)
+        jitter = random.uniform(1.0, 2.0)  # noqa: S311 - Jitter, keine Kryptografie
         return _jittered_cap(base_delay * (2 ** min(attempt, _MAX_DEFER_EXPONENT)) * jitter, jitter, max_delay)
 
     if strategy == "linear":
-        jitter = random.uniform(1.0, 2.0)
+        jitter = random.uniform(1.0, 2.0)  # noqa: S311 - Jitter, keine Kryptografie
         return _jittered_cap(base_delay * (attempt + 1) * jitter, jitter, max_delay)
 
     raise ValueError(f"Unknown backoff strategy: {strategy!r}")

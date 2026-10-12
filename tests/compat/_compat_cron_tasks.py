@@ -8,6 +8,8 @@ Echtheitsprüfung und Aufzeichnung wie in ``_compat_tasks``.
 
 from __future__ import annotations
 
+from typing import override
+
 from swarmq.task import Task, TaskInfo
 from tests.compat._compat_tasks import _QUEUE, RUNTIME, _record
 
@@ -17,6 +19,8 @@ CRON_NAME = "compat_cron"
 class CompatCronTask(Task):
     task_info = TaskInfo(name=CRON_NAME, queues=[_QUEUE], cron="0 0 1 1 *")
 
+    @override
     async def run(self) -> str:
+        assert self._task_id is not None
         await _record(CRON_NAME, self._task_id)
         return RUNTIME

@@ -38,7 +38,7 @@ pytestmark = [pytest.mark.timeout(60)]
 
 @pytest.fixture(scope="module")
 def evicting_valkey() -> Iterator[str]:
-    if subprocess.run(["docker", "info"], capture_output=True).returncode != 0:
+    if subprocess.run(["docker", "info"], capture_output=True, check=False).returncode != 0:
         pytest.skip("docker not available")
     container = f"swarmq-evict-vkey-{uuid.uuid4().hex[:8]}"
     port = _free_port()
@@ -66,6 +66,7 @@ def evicting_valkey() -> Iterator[str]:
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
     if run.returncode != 0:
         pytest.skip(f"could not start valkey container: {run.stderr[-300:] if run.stderr else 'no stderr'}")
@@ -74,7 +75,7 @@ def evicting_valkey() -> Iterator[str]:
         time.sleep(0.3)
         yield f"valkey://127.0.0.1:{port}/0"
     finally:
-        subprocess.run(["docker", "rm", "-f", container], capture_output=True, timeout=15)
+        subprocess.run(["docker", "rm", "-f", container], capture_output=True, timeout=15, check=False)
 
 
 async def test_connect_reads_the_evicting_policy_and_warns(evicting_valkey: str) -> None:

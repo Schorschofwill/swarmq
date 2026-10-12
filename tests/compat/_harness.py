@@ -176,7 +176,9 @@ async def consumer_count(rabbitmq_url: str, queue: str) -> int:
     try:
         channel = await connection.channel()
         declared = await channel.declare_queue(queue, passive=True)
-        return int(declared.declaration_result.consumer_count)
+        count = declared.declaration_result.consumer_count
+        assert count is not None
+        return count
     finally:
         await connection.close()
 
@@ -186,7 +188,9 @@ async def message_count(rabbitmq_url: str, queue: str) -> int:
     try:
         channel = await connection.channel()
         declared = await channel.declare_queue(queue, passive=True)
-        return int(declared.declaration_result.message_count)
+        count = declared.declaration_result.message_count
+        assert count is not None
+        return count
     finally:
         await connection.close()
 

@@ -18,7 +18,7 @@ def block_signals() -> None:
     """Block ``_HANDLED_SIGNALS`` on the current thread."""
     try:
         signal.pthread_sigmask(signal.SIG_BLOCK, _HANDLED_SIGNALS)
-    except (AttributeError, OSError):
+    except AttributeError, OSError:
         # Non-POSIX platforms: best effort; supervisor still works.
         pass
 
@@ -27,7 +27,7 @@ def unblock_signals() -> None:
     """Unblock ``_HANDLED_SIGNALS`` on the current thread."""
     try:
         signal.pthread_sigmask(signal.SIG_UNBLOCK, _HANDLED_SIGNALS)
-    except (AttributeError, OSError):
+    except AttributeError, OSError:
         pass
 
 
@@ -57,7 +57,7 @@ def _bind_to_supervisor() -> bool:
 
         libc = ctypes.CDLL(None, use_errno=True)
         armed = int(libc.prctl(_PR_SET_PDEATHSIG, int(signal.SIGTERM), 0, 0, 0)) == 0
-    except (AttributeError, OSError):
+    except AttributeError, OSError:
         return False
     parent = multiprocessing.parent_process()
     if parent is not None and os.getppid() != parent.pid:

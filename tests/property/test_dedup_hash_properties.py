@@ -20,6 +20,7 @@ from __future__ import annotations
 import itertools
 import math
 import unicodedata
+from typing import Any
 
 import pytest
 from hypothesis import assume, given, settings
@@ -59,9 +60,7 @@ kwargs_strategy = st.dictionaries(st.text(max_size=10), json_value, max_size=5)
 
 
 @given(args=args_strategy, kwargs=kwargs_strategy)
-def test_determinism_same_args_same_hash(
-    args: list, kwargs: dict
-) -> None:
+def test_determinism_same_args_same_hash(args: list[Any], kwargs: dict[str, Any]) -> None:
     """Same inputs → same hash, every invocation.
 
     This is the bedrock of SETNX-based dedup: if hash(x) is not stable,
@@ -87,7 +86,7 @@ def test_determinism_same_args_same_hash(
         max_size=5,
     )
 )
-def test_permutation_invariance_for_dict_kwargs(kwargs: dict) -> None:
+def test_permutation_invariance_for_dict_kwargs(kwargs: dict[str, Any]) -> None:
     """Callsite kwarg-insertion-order must not change the hash.
 
     Python dicts preserve insertion order; we iterate a few
@@ -98,13 +97,8 @@ def test_permutation_invariance_for_dict_kwargs(kwargs: dict) -> None:
     keys = list(kwargs.keys())
     # Try up to 6 permutations (keeps runtime bounded for size-5 dicts).
     perms = list(itertools.islice(itertools.permutations(keys), 6))
-    hashes = {
-        compute_dedup_hash("t", (), {k: kwargs[k] for k in perm})
-        for perm in perms
-    }
-    assert len(hashes) == 1, (
-        f"Hash changed across kwarg permutations: {hashes}"
-    )
+    hashes = {compute_dedup_hash("t", (), {k: kwargs[k] for k in perm}) for perm in perms}
+    assert len(hashes) == 1, f"Hash changed across kwarg permutations: {hashes}"
 
 
 # ---------------------------------------------------------------------------
@@ -121,9 +115,7 @@ def test_collision_rate_below_threshold() -> None:
     in practice — the 0.5% threshold is generous for CI-flake tolerance.
     """
     inputs = []
-    for i, (a, b, c) in enumerate(
-        itertools.product(range(10), range(10), range(10))
-    ):
+    for i, (a, b, c) in enumerate(itertools.product(range(10), range(10), range(10))):
         inputs.append(((a, b, c), {"idx": i}))
     assert len(inputs) == 1000
 
@@ -131,10 +123,7 @@ def test_collision_rate_below_threshold() -> None:
     unique = len(hashes)
     collisions = len(inputs) - unique
     rate = collisions / len(inputs)
-    assert rate < 0.005, (
-        f"Collision rate {rate:.4f} exceeds 0.5% "
-        f"({collisions} collisions in {len(inputs)} inputs)"
-    )
+    assert rate < 0.005, f"Collision rate {rate:.4f} exceeds 0.5% ({collisions} collisions in {len(inputs)} inputs)"
 
 
 # ---------------------------------------------------------------------------
@@ -142,9 +131,7 @@ def test_collision_rate_below_threshold() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _inject_bad_float(
-    container: list | dict, bad: float, depth: int = 0
-) -> list | dict:
+def _inject_bad_float(container: object, bad: float, depth: int = 0) -> object:
     """Return a new structure with `bad` spliced into a nested position.
 
     Rebuilds dict/list containers recursively so the injected value
@@ -153,7 +140,7 @@ def _inject_bad_float(
     if depth >= 3:
         return bad  # bottomed out — caller wraps this
     if isinstance(container, dict):
-        new: dict = {str(k): v for k, v in container.items()}
+        new: dict[str, Any] = {str(k): v for k, v in container.items()}
         new["__injected__"] = bad
         return new
     if isinstance(container, list):
@@ -162,9 +149,9 @@ def _inject_bad_float(
 
 
 nested_container = st.recursive(
-    st.one_of(st.lists(json_atoms, max_size=3), st.dictionaries(
-        st.text(min_size=1, max_size=5), json_atoms, max_size=3
-    )),
+    st.one_of(
+        st.lists(json_atoms, max_size=3), st.dictionaries(st.text(min_size=1, max_size=5), json_atoms, max_size=3)
+    ),
     lambda children: st.one_of(
         st.lists(children, max_size=3),
         st.dictionaries(st.text(min_size=1, max_size=5), children, max_size=3),
@@ -178,9 +165,7 @@ nested_container = st.recursive(
     bad=st.sampled_from([math.nan, math.inf, -math.inf]),
 )
 @settings(max_examples=200)
-def test_nan_inf_rejection_in_nested_position(
-    container: list | dict, bad: float
-) -> None:
+def test_nan_inf_rejection_in_nested_position(container: list[Any] | dict[str, Any], bad: float) -> None:
     """NaN / ±Inf buried in any nested position must raise TypeError.
 
     Guards ADV-003: msgspec encodes NaN→null and Inf→Infinity,

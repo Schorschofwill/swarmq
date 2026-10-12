@@ -29,7 +29,7 @@ import asyncio
 import json
 import re
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, NotRequired, TypedDict, cast
 
@@ -39,6 +39,9 @@ if TYPE_CHECKING:
     from swarmq.contracts import Publisher, ResultBackend
 
 logger = get_logger(__name__)
+
+#: Laengere Fehlertexte werden auf den Klassennamen reduziert.
+_MAX_ERROR_TAG_LEN = 120
 
 #: Zusatz-Check fuer ``/ready``: (ok, Fehlertext oder ``None``).
 ReadinessCheck = Callable[[], Awaitable[tuple[bool, str | None]]]
@@ -106,7 +109,7 @@ class HealthChecker:
         msg = str(exc)
         if not msg:
             return cls
-        if len(msg) > 120 or "://" in msg or "@" in msg:
+        if len(msg) > _MAX_ERROR_TAG_LEN or "://" in msg or "@" in msg:
             return cls
         # Strip host:port fragments. Two patterns:
         #  (a) '[::1]:6379' — IPv6 bracket notation
@@ -120,20 +123,22 @@ class HealthChecker:
         ``connect()`` und bei Störung ``BackendConnectionError``."""
         try:
             await asyncio.wait_for(self._backend.ping(), timeout=self._timeout)
-            return True, None
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Fehler wird geloggt, Check meldet nicht bereit
             logger.warning("check_backend_failed", **_error_fields(exc))
             return False, self._sanitise_error(exc)
+        else:
+            return True, None
 
     async def check_broker(self) -> tuple[bool, str | None]:
         """``Publisher.ping`` wirft, wenn nicht verbunden oder die Verbindung
         nicht bereit ist (transportnah, keine Queue-Deklarationen)."""
         try:
             await asyncio.wait_for(self._broker.ping(), timeout=self._timeout)
-            return True, None
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Fehler wird geloggt, Check meldet nicht bereit
             logger.warning("check_broker_failed", **_error_fields(exc))
             return False, self._sanitise_error(exc)
+        else:
+            return True, None
 
     async def check_all(self) -> ReadinessSnapshot:
         """Return a structured snapshot suitable for JSON serialisation."""
@@ -147,7 +152,7 @@ class HealthChecker:
         for name, check in self._checks.items():
             try:
                 ok, err = await asyncio.wait_for(check(), timeout=self._timeout)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - Nutzer-Check darf Readiness-Abfrage nicht abbrechen
                 ok, err = False, self._sanitise_error(exc)
             cast("dict[str, object]", snapshot)[name] = _DependencyState(ok=ok, error=err)
             snapshot["ready"] = snapshot["ready"] and ok
@@ -213,11 +218,14 @@ class HealthServer:
         liveness_started: float | None = None,
     ) -> None:
         from swarmq._http import AsyncHttpServer
+
         self._checker = checker
         self._started_at = liveness_started or time.monotonic()
         self._server = AsyncHttpServer(
             self._handle_request,
-            host=host, port=port, label="health_server",
+            host=host,
+            port=port,
+            label="health_server",
         )
 
     async def start(self) -> None:
@@ -228,17 +236,20 @@ class HealthServer:
 
     async def _handle_request(
         self,
-        method: str,
+        method: str,  # noqa: ARG002 - Handler-Signatur des HTTP-Servers vorgegeben
         path: str,
         writer: asyncio.StreamWriter,
     ) -> None:
         from swarmq._http import write_http_response
-        base_path = path.split("?")[0]
+
+        base_path = path.split("?", maxsplit=1)[0]
         if base_path == "/health":
-            body = json.dumps({
-                "status": "ok",
-                "uptime_s": round(time.monotonic() - self._started_at, 3),
-            }).encode()
+            body = json.dumps(
+                {
+                    "status": "ok",
+                    "uptime_s": round(time.monotonic() - self._started_at, 3),
+                }
+            ).encode()
             await write_http_response(writer, 200, body, "application/json")
         elif base_path == "/ready":
             snapshot = await self._checker.check_all()
@@ -255,7 +266,7 @@ async def serve_health(
     *,
     host: str = "127.0.0.1",
     port: int = 8080,
-) -> AsyncIterator[HealthServer]:
+) -> AsyncGenerator[HealthServer]:
     """Async context manager: start HealthServer on enter, stop on exit."""
     server = HealthServer(checker, host=host, port=port)
     await server.start()

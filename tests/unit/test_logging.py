@@ -17,6 +17,7 @@ import io
 import json
 import logging
 import logging.handlers
+from typing import override
 
 import structlog
 
@@ -47,6 +48,7 @@ def test_log_output_is_json_when_log_json_true():
         # Replace the listener's handler stream with a StringIO to capture output
         stream = io.StringIO()
         handler = listener.handlers[0]
+        assert isinstance(handler, logging.StreamHandler)
         handler.stream = stream
 
         logger = structlog.get_logger()
@@ -70,6 +72,7 @@ def test_log_level_filtering_debug_not_output_at_info():
     try:
         stream = io.StringIO()
         handler = listener.handlers[0]
+        assert isinstance(handler, logging.StreamHandler)
         handler.stream = stream
 
         logger = structlog.get_logger()
@@ -91,6 +94,7 @@ def test_contextvars_binding_appears_in_log_output():
     try:
         stream = io.StringIO()
         handler = listener.handlers[0]
+        assert isinstance(handler, logging.StreamHandler)
         handler.stream = stream
 
         structlog.contextvars.clear_contextvars()
@@ -123,16 +127,22 @@ class TestQueueDropVisibility:
 
         from swarmq.logging_queue import _StructlogQueueHandler
 
-        q: _queue.Queue = _queue.Queue(maxsize=1)
+        q: _queue.Queue[logging.LogRecord] = _queue.Queue(maxsize=1)
         handler = _StructlogQueueHandler(q)
         rec = _logging.LogRecord(
-            "test", _logging.INFO, __file__, 1, "msg", None, None,
+            "test",
+            _logging.INFO,
+            __file__,
+            1,
+            "msg",
+            None,
+            None,
         )
 
-        handler.enqueue(rec)          # fills the queue
+        handler.enqueue(rec)  # fills the queue
         assert handler.dropped == 0
-        handler.enqueue(rec)          # queue full → dropped
-        handler.enqueue(rec)          # dropped again
+        handler.enqueue(rec)  # queue full → dropped
+        handler.enqueue(rec)  # dropped again
         assert handler.dropped == 2
 
         # Seit Plan 2026-10-06-1811, U3 meldet der Listener die Drops,
@@ -145,10 +155,16 @@ class TestQueueDropVisibility:
 
         from swarmq.logging_queue import _StructlogQueueHandler
 
-        q: _queue.Queue = _queue.Queue(maxsize=10)
+        q: _queue.Queue[logging.LogRecord] = _queue.Queue(maxsize=10)
         handler = _StructlogQueueHandler(q)
         rec = _logging.LogRecord(
-            "test", _logging.INFO, __file__, 1, "msg", None, None,
+            "test",
+            _logging.INFO,
+            __file__,
+            1,
+            "msg",
+            None,
+            None,
         )
         handler.enqueue(rec)
         assert handler.dropped == 0
@@ -160,6 +176,7 @@ class _RaisingRepr:
     dessen ``__repr__`` wirft — ein fremder Record mit diesem Objekt in
     ``args`` liess den Formatter scheitern."""
 
+    @override
     def __repr__(self) -> str:
         raise RuntimeError("repr exploded")
 
@@ -177,14 +194,12 @@ class TestUnformattableRecord:
     """
 
     @staticmethod
-    def _emit_foreign(*, log_json: bool, args: tuple) -> str:
+    def _emit_foreign(*, log_json: bool, args: tuple[object, ...]) -> str:
         listener = setup_logging(log_level="INFO", log_json=log_json)
         try:
             stream = io.StringIO()
             listener.handlers[0].stream = stream  # type: ignore[attr-defined]
-            logging.getLogger("aio_pika.robust_connection").warning(
-                "callback %r failed", *args
-            )
+            logging.getLogger("aio_pika.robust_connection").warning("callback %r failed", *args)
             listener.stop()
             return stream.getvalue().strip().split("\n")[-1]
         finally:
@@ -227,6 +242,8 @@ class TestUnformattableRecord:
         assert data["event"] == "callback 'fine' failed"
         assert data["level"] == "warning"
         assert "log_record_unformattable" not in line
+
+
 class TestSingleListenerPerProcess:
     """U4/KTD8 (R21): genau ein ``QueueListener`` je Prozess.
 
@@ -249,4 +266,3 @@ class TestSingleListenerPerProcess:
             assert len(stdlib_logging.getLogger().handlers) == 1
         finally:
             second.stop()
-

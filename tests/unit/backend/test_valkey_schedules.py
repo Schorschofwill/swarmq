@@ -24,6 +24,8 @@ Test-Liste Plan 0.12.0, MR 4 (BZ-07, Handover ohne SCAN):
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -34,6 +36,13 @@ from swarmq.exceptions import BackendConnectionError, BackendResponseError
 from swarmq.locking import SCHEDULER_LOCK_KEY
 
 pytestmark = pytest.mark.timeout(5)
+
+
+def _await_kwargs(mock: AsyncMock) -> Mapping[str, Any]:
+    """Keyword-Argumente des letzten ``await`` auf ``mock``."""
+    call = mock.await_args
+    assert call is not None
+    return call.kwargs
 
 
 def _store(*, hexists: int = 1, hsetnx: int = 1) -> tuple[ValkeyScheduleStore, MagicMock, dict[str, AsyncMock]]:
@@ -104,35 +113,36 @@ class TestScripts:
     async def test_disable_calls_script_with_defs_and_zset(self) -> None:
         store, _, scripts = _store()
         assert await store.disable("s", b"disabled") is True
-        call = scripts["disable"].await_args
-        assert call.kwargs["keys"] == [DEFS_KEY, ZSET_KEY]
-        assert call.kwargs["args"] == ["s", b"disabled"]
+        call_kwargs = _await_kwargs(scripts["disable"])
+        assert call_kwargs["keys"] == [DEFS_KEY, ZSET_KEY]
+        assert call_kwargs["args"] == ["s", b"disabled"]
 
     async def test_replan_if_unchanged_calls_script_with_defs_and_zset(self) -> None:
         store, _, scripts = _store()
         scripts["replan"].return_value = 0
         assert await store.replan_if_unchanged("s", b"read", b"healed", 4_000) is False
         scripts["replan"].assert_awaited_once_with(
-            keys=[DEFS_KEY, ZSET_KEY], args=["s", b"read", b"healed", 4_000],
+            keys=[DEFS_KEY, ZSET_KEY],
+            args=["s", b"read", b"healed", 4_000],
         )
 
     async def test_poll_due_decodes_rows(self) -> None:
         store, _, scripts = _store()
         scripts["poll"].return_value = [(b"s", b"1700", b"payload")]
         assert await store.poll_due(2_000, limit=5) == [("s", 1700, b"payload")]
-        assert scripts["poll"].await_args.kwargs == {"keys": [ZSET_KEY, DEFS_KEY], "args": [2_000, 5]}
+        assert _await_kwargs(scripts["poll"]) == {"keys": [ZSET_KEY, DEFS_KEY], "args": [2_000, 5]}
 
     async def test_commit_fire_passes_leader_key_and_owner(self) -> None:
         store, _, scripts = _store()
         assert await store.commit_fire("s", next_fire_ts_ms=1_900, payload=b"next", owner="chief") is True
-        call = scripts["commit"].await_args
-        assert call.kwargs["keys"] == [ZSET_KEY, DEFS_KEY, SCHEDULER_LOCK_KEY]
-        assert call.kwargs["args"] == ["s", 1_900, b"next", "chief"]
+        call_kwargs = _await_kwargs(scripts["commit"])
+        assert call_kwargs["keys"] == [ZSET_KEY, DEFS_KEY, SCHEDULER_LOCK_KEY]
+        assert call_kwargs["args"] == ["s", 1_900, b"next", "chief"]
 
     async def test_commit_fire_one_shot_encodes_removal(self) -> None:
         store, _, scripts = _store()
         await store.commit_fire("once", next_fire_ts_ms=None, payload=None, owner="chief")
-        assert scripts["commit"].await_args.kwargs["args"] == ["once", -1, b"", "chief"]
+        assert _await_kwargs(scripts["commit"])["args"] == ["once", -1, b"", "chief"]
 
     async def test_commit_fire_superseded_result_counts_as_committed(self) -> None:
         """Liste 2: verworfen (Ergebnis 2) ist kein Owner-Konflikt."""
@@ -146,20 +156,24 @@ class TestScripts:
         bedient (ohne Verwerf-Pruefung); mit ``fired_ts_ms`` fuenf."""
         store, _, scripts = _store()
         await store.commit_fire("s", next_fire_ts_ms=1_900, payload=b"next", owner="chief")
-        assert scripts["commit"].await_args.kwargs["args"] == ["s", 1_900, b"next", "chief"]
+        assert _await_kwargs(scripts["commit"])["args"] == ["s", 1_900, b"next", "chief"]
         await store.commit_fire("s", next_fire_ts_ms=1_900, payload=b"next", owner="chief", fired_ts_ms=1_000)
-        assert scripts["commit"].await_args.kwargs["args"] == ["s", 1_900, b"next", "chief", 1_000]
+        assert _await_kwargs(scripts["commit"])["args"] == ["s", 1_900, b"next", "chief", 1_000]
 
     async def test_commit_fire_sends_fired_payload_as_sixth_argv(self) -> None:
         """Liste 4."""
         store, _, scripts = _store()
         await store.commit_fire(
-            "s", next_fire_ts_ms=1_900, payload=b"next", owner="chief",
-            fired_ts_ms=1_000, fired_payload=b"polled",
+            "s",
+            next_fire_ts_ms=1_900,
+            payload=b"next",
+            owner="chief",
+            fired_ts_ms=1_000,
+            fired_payload=b"polled",
         )
-        assert scripts["commit"].await_args.kwargs["args"] == ["s", 1_900, b"next", "chief", 1_000, b"polled"]
+        assert _await_kwargs(scripts["commit"])["args"] == ["s", 1_900, b"next", "chief", 1_000, b"polled"]
         await store.commit_fire("s", next_fire_ts_ms=1_900, payload=b"next", owner="chief", fired_payload=b"polled")
-        assert scripts["commit"].await_args.kwargs["args"] == ["s", 1_900, b"next", "chief", "", b"polled"]
+        assert _await_kwargs(scripts["commit"])["args"] == ["s", 1_900, b"next", "chief", "", b"polled"]
 
     async def test_commit_fire_rejected_by_owner_check(self) -> None:
         store, _, scripts = _store()

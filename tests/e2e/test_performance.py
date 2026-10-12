@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import time
 import uuid
+from typing import Any, override
 
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
@@ -30,6 +31,7 @@ async def test_pubsub_get_result_fast(rabbitmq_url: str, valkey_url: str) -> Non
     class NoopTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self) -> str:
             return "done"
 
@@ -81,6 +83,7 @@ async def test_get_result_works_end_to_end(rabbitmq_url: str, valkey_url: str) -
     class EchoTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self, msg: str) -> str:
             return msg
 
@@ -123,6 +126,7 @@ async def test_schedule_many_get_results(rabbitmq_url: str, valkey_url: str) -> 
     class AddTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self, a: int, b: int) -> int:
             return a + b
 
@@ -141,10 +145,7 @@ async def test_schedule_many_get_results(rabbitmq_url: str, valkey_url: str) -> 
         try:
             await asyncio.sleep(0.5)
 
-            tasks = [
-                (task_name, (i, i * 10), {})
-                for i in range(10)
-            ]
+            tasks: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = [(task_name, (i, i * 10), {}) for i in range(10)]
             task_ids = await app.schedule_many(tasks, queue=queue)
             assert len(task_ids) == 10
 
@@ -174,6 +175,7 @@ async def test_classic_queue_roundtrip(rabbitmq_url: str, valkey_url: str) -> No
     class ClassicTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
+        @override
         async def run(self, x: int) -> int:
             return x * 2
 
@@ -187,7 +189,10 @@ async def test_classic_queue_roundtrip(rabbitmq_url: str, valkey_url: str) -> No
         worker_broker = RabbitMQBroker(rabbitmq_url)
         worker_backend = ValkeyBackend(valkey_url)
         worker_app = SwarmQ(
-            worker_broker, worker_backend, queues=[queue], queue_type="classic",
+            worker_broker,
+            worker_backend,
+            queues=[queue],
+            queue_type="classic",
         )
         worker_task = asyncio.create_task(worker_app.start_worker())
 

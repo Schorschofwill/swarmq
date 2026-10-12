@@ -53,7 +53,8 @@ def _replay_headers(headers: dict[str, Any], body: bytes, now_s: int) -> dict[st
         and not headers.get(HEADER_X_DEATH)
     )
     out = {
-        k: v for k, v in copy_headers(headers).items()
+        k: v
+        for k, v in copy_headers(headers).items()
         if k not in (HEADER_RETRY_COUNT, HEADER_DEAD_LETTERED_AT, HEADER_DLQ_GENERATION)
     }
     if not fresh:
@@ -284,7 +285,7 @@ def _task_id(body: bytes) -> str | None:
     try:
         payload = json.loads(body)
         task_id = payload["task"]["id"]
-    except (ValueError, KeyError, TypeError):
+    except ValueError, KeyError, TypeError:
         return None
     return str(task_id)
 

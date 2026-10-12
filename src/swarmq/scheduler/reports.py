@@ -5,6 +5,7 @@ aus dem Code stammenden Felder; der Leader übernimmt pro Name die jüngste
 lebende Meldung. Dieses Modul hält die reinen Bausteine (Fingerabdruck,
 Auswahl); Melden und Übernehmen leben im ``SchedulerLoop``.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -56,7 +57,8 @@ def cron_fingerprint(definition: ScheduleDefinition) -> str:
 
 
 def static_definitions(
-    task_classes: Iterable[type[Task]], default_timezone: str | None,
+    task_classes: Iterable[type[Task]],
+    default_timezone: str | None,
 ) -> list[ScheduleDefinition]:
     """Die gewünschten statischen Definitionen der Tasks mit ``cron`` — so,
     wie ein Worker sie meldet. Die Zone ist bereits aufgelöst (KTD1): die
@@ -68,26 +70,24 @@ def static_definitions(
         task_info = task_class.task_info
         if not task_info.cron:
             continue
-        timezone = normalize_timezone(
-            task_info.timezone
-            if task_info.timezone is not None
-            else default_timezone
+        timezone = normalize_timezone(task_info.timezone if task_info.timezone is not None else default_timezone)
+        result.append(
+            ScheduleDefinition(
+                schedule_name=task_info.name,
+                task_name=task_info.name,
+                args=(),
+                kwargs={},
+                queue=task_info.queues[0],
+                cron=task_info.cron,
+                fire_ts_ms=None,
+                source="static",
+                timezone=timezone,
+                unique_for=task_info.unique_for,
+                # Ohne ``unique_for`` wirkt ``unique_until`` nicht; der Default
+                # hält Payload und Abdruck wie vor 0.12 (BZ-09).
+                unique_until=(task_info.unique_until if task_info.unique_for is not None else "completion"),
+            )
         )
-        result.append(ScheduleDefinition(
-            schedule_name=task_info.name,
-            task_name=task_info.name,
-            args=(),
-            kwargs={},
-            queue=task_info.queues[0],
-            cron=task_info.cron,
-            fire_ts_ms=None,
-            source="static",
-            timezone=timezone,
-            unique_for=task_info.unique_for,
-            # Ohne ``unique_for`` wirkt ``unique_until`` nicht; der Default
-            # hält Payload und Abdruck wie vor 0.12 (BZ-09).
-            unique_until=(task_info.unique_until if task_info.unique_for is not None else "completion"),
-        ))
     return result
 
 
@@ -108,7 +108,9 @@ def _rank(report: CronReport) -> tuple[int, str]:
 
 
 def choose_reports(
-    snapshot: CronReports, *, live_window_ms: int,
+    snapshot: CronReports,
+    *,
+    live_window_ms: int,
 ) -> list[CronChoice]:
     """Pro Name die lebende Meldung mit dem jüngsten ``first_seen`` (KTD10).
     Lebendig ist eine Meldung, deren ``last_seen`` höchstens
@@ -125,9 +127,7 @@ def choose_reports(
         # Alle lebenden Abdrücke leben gemeinsam seit dem jüngsten first_seen.
         overlap_ms = snapshot.now_ms - winner.first_seen_ms
         conflict = (
-            tuple(sorted(r.fingerprint for r in reports))
-            if len(reports) > 1 and overlap_ms > CONFLICT_AFTER_MS
-            else ()
+            tuple(sorted(r.fingerprint for r in reports)) if len(reports) > 1 and overlap_ms > CONFLICT_AFTER_MS else ()
         )
         choices.append(CronChoice(winner, conflict))
     return choices

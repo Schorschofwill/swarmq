@@ -55,7 +55,7 @@ Test-Liste:
 from __future__ import annotations
 
 import dataclasses
-from typing import Any
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -74,7 +74,7 @@ from swarmq.task import Task, TaskInfo
 from swarmq.worker import Worker
 from swarmq.worker.gates.lock import holder_fingerprint, lock_conflict_delay_ms
 from tests.support.messages import make_message
-from tests.unit.worker._helpers import _default_payload
+from tests.unit.worker._helpers import _default_payload, as_mock
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -86,6 +86,7 @@ _LEGACY = "x-swarmq-lock-conflict-count"
 class Locked(Task):
     task_info = TaskInfo(name="bz05_locked", queues=["default"], lock="resource", hard_timeout=60)
 
+    @override
     async def run(self) -> None:
         raise AssertionError("darf bei Lock-Konflikt nicht laufen")
 
@@ -119,7 +120,8 @@ def _message(**headers: Any) -> Any:
 
 
 def _copy(broker: Any) -> dict[str, Any]:
-    return broker.retry_later.await_args.kwargs["headers"]
+    headers: dict[str, Any] = broker.retry_later.await_args.kwargs["headers"]
+    return headers
 
 
 async def test_first_conflict_copy_carries_the_wait_state(broker, backend, config, clock) -> None:
@@ -189,13 +191,15 @@ async def test_same_holder_keeps_since_new_holder_resets(broker, backend, config
     worker = _worker(broker, backend, config, observation=LockObservation(frozenset({"h1"}), 20_000))
     await worker._handle_message(_message(**held))
     same = _copy(broker)
-    assert same[HEADER_LOCK_HOLDER_SINCE] == _NOW_MS - 30_000 and same[HEADER_LOCK_HOLDER_TTL_MS] == 90_000
+    assert same[HEADER_LOCK_HOLDER_SINCE] == _NOW_MS - 30_000
+    assert same[HEADER_LOCK_HOLDER_TTL_MS] == 90_000
 
     worker = _worker(broker, backend, config, observation=LockObservation(frozenset({"h2"}), 70_000))
     await worker._handle_message(_message(**held))
     changed = _copy(broker)
     assert changed[HEADER_LOCK_HOLDER] == holder_fingerprint(frozenset({"h2"}))
-    assert changed[HEADER_LOCK_HOLDER_SINCE] == _NOW_MS and changed[HEADER_LOCK_HOLDER_TTL_MS] == 70_000
+    assert changed[HEADER_LOCK_HOLDER_SINCE] == _NOW_MS
+    assert changed[HEADER_LOCK_HOLDER_TTL_MS] == 70_000
 
 
 def _stalled(held_ms: int, ttl_ms: int = 90_000, waited_ms: int | None = None) -> dict[str, Any]:
@@ -284,7 +288,8 @@ async def test_store_without_observe_waits_until_the_limit_and_warns_once(
     broker.dead_letter.assert_not_awaited()  # kein Deckel, kein Stillstand
     assert broker.retry_later.await_count == 2
     warned = [e for e in swarmq_logs if e["event"] == "lock_observe_unsupported"]
-    assert len(warned) == 1 and warned[0]["log_level"] == "warning"
+    assert len(warned) == 1
+    assert warned[0]["log_level"] == "warning"
 
     await worker._handle_message(_message(**{HEADER_LOCK_WAIT_SINCE: _NOW_MS - 21_600_000}))
     assert broker.dead_letter.await_count == 1
@@ -300,7 +305,8 @@ async def test_magicmock_store_is_treated_as_not_measurable(broker, backend, con
     broker.dead_letter.assert_not_awaited()
     broker.retry_later.assert_awaited_once()
     events = {e["event"] for e in swarmq_logs}
-    assert "lock_observe_unsupported" in events and "lock_observe_failed" not in events
+    assert "lock_observe_unsupported" in events
+    assert "lock_observe_failed" not in events
 
 
 async def test_asyncmock_store_is_treated_as_not_measurable(broker, backend, config, clock, swarmq_logs) -> None:
@@ -317,7 +323,8 @@ async def test_asyncmock_store_is_treated_as_not_measurable(broker, backend, con
     broker.dead_letter.assert_not_awaited()
     broker.retry_later.assert_awaited_once()
     events = {e["event"] for e in swarmq_logs}
-    assert "lock_observe_unsupported" in events and "lock_observe_failed" not in events
+    assert "lock_observe_unsupported" in events
+    assert "lock_observe_failed" not in events
 
 
 async def test_protocol_subclass_without_observe_warns_unsupported(broker, backend, config, clock, swarmq_logs) -> None:
@@ -327,11 +334,12 @@ async def test_protocol_subclass_without_observe_warns_unsupported(broker, backe
     from swarmq.contracts.coordination import LockStore
 
     class _SubclassStore(LockStore):
+        @override
         async def acquire(self, name: str, *, owner: str, ttl_ms: int, max_concurrency: int) -> None:
             return None
 
     worker = _worker(broker, backend, config)
-    worker._lock_manager = _SubclassStore()  # type: ignore[assignment]
+    worker._lock_manager = _SubclassStore()  # type: ignore[abstract]  # absichtlich unvollstaendige Protocol-Subklasse
 
     for _ in range(2):
         await worker._handle_message(_message(**_stalled(10 * 3_600_000 - 1, ttl_ms=1)))
@@ -339,19 +347,21 @@ async def test_protocol_subclass_without_observe_warns_unsupported(broker, backe
     broker.dead_letter.assert_not_awaited()
     assert broker.retry_later.await_count == 2
     warned = [e for e in swarmq_logs if e["event"] == "lock_observe_unsupported"]
-    assert len(warned) == 1 and warned[0]["log_level"] == "warning"
+    assert len(warned) == 1
+    assert warned[0]["log_level"] == "warning"
 
 
 async def test_observe_failure_keeps_waiting(broker, backend, config, clock, swarmq_logs) -> None:
     worker = _worker(broker, backend, config)
-    worker._lock_manager.observe = AsyncMock(side_effect=ConnectionError("valkey away"))
+    as_mock(worker._lock_manager).observe = AsyncMock(side_effect=ConnectionError("valkey away"))
 
     await worker._handle_message(_message(**_stalled(10 * 3_600_000 - 1, ttl_ms=1)))
 
     broker.dead_letter.assert_not_awaited()
     broker.retry_later.assert_awaited_once()
     [failed] = [e for e in swarmq_logs if e["event"] == "lock_observe_failed"]
-    assert failed["log_level"] == "warning" and failed["lock_name"] == "resource"
+    assert failed["log_level"] == "warning"
+    assert failed["lock_name"] == "resource"
 
 
 @pytest.mark.parametrize(("prior", "logged"), [(0, True), (1, False), (10, False), (11, True), (30, True)])
@@ -377,7 +387,7 @@ async def test_gate_tracks_waiting_messages_until_acquired(broker, backend, conf
     await worker._handle_message(_message(**{HEADER_LOCK_WAIT_SINCE: _NOW_MS - 20_000}))
     assert worker._lock_gate.waits.snapshot(now_ms=_NOW_MS) == (1, 20.0)
 
-    worker._lock_manager.acquire = AsyncMock(
+    as_mock(worker._lock_manager).acquire = AsyncMock(
         side_effect=lambda name, *, owner, ttl_ms, max_concurrency: LockToken(name, owner, max_concurrency)
     )
     with patch.object(Locked, "run", AsyncMock(return_value=None)):

@@ -13,7 +13,7 @@ from swarmq.exceptions import ConfigurationError
 @pytest.fixture
 def affinity(monkeypatch):
     def _set(n: int) -> None:
-        monkeypatch.setattr(slots.os, "sched_getaffinity", lambda _pid: set(range(n)), raising=False)
+        monkeypatch.setattr("swarmq.slots.os.sched_getaffinity", lambda _pid: set(range(n)), raising=False)
 
     return _set
 
@@ -87,6 +87,6 @@ def test_validate_pool_mode_rejects_cpu_with_autoscale():
 
 
 def test_validate_pool_mode_rejects_cpu_on_non_posix(monkeypatch):
-    monkeypatch.setattr(slots.os, "name", "nt")
+    monkeypatch.setattr("swarmq.slots.os.name", "nt")
     with pytest.raises(ConfigurationError, match="POSIX"):
         slots.validate_pool_mode(pool="cpu", autoscale=None)

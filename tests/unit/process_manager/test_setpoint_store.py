@@ -16,6 +16,7 @@ Test-Liste (U2):
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from swarmq.contracts.control import Setpoint
 from swarmq.process_manager.setpoint_store import SetpointUnread, read_setpoint_sync, write_status_sync
@@ -28,7 +29,7 @@ class FakeStore:
         self.connect_error = connect_error
         self.close_error = close_error
         self.closed = False
-        self.status_writes: list[tuple] = []
+        self.status_writes: list[tuple[str, str, dict[str, Any], float]] = []
 
     async def connect(self):
         if self.connect_error is not None:
@@ -67,8 +68,10 @@ class TestReadSetpointSync:
         assert isinstance(result, SetpointUnread)
         assert "no route" in result.reason
         [entry] = [e for e in swarmq_logs if e["log_level"] == "warning"]
-        assert entry["event"] == "setpoint_read_failed" and entry["group"] == "orders"
-        assert entry["error_type"] == "ConnectionRefusedError" and entry["error"] == "no route"
+        assert entry["event"] == "setpoint_read_failed"
+        assert entry["group"] == "orders"
+        assert entry["error_type"] == "ConnectionRefusedError"
+        assert entry["error"] == "no route"
 
     def test_read_failure_logs_sanitized_error(self, swarmq_logs):
         store = FakeStore(connect_error=ConnectionError("valkey://:s3cret@cache:6379"))
@@ -110,8 +113,10 @@ class TestWriteStatusSync:
         ok = write_status_sync(lambda: store, "orders", "host:p1", {}, ttl_s=40.0)
         assert ok is False
         [entry] = [e for e in swarmq_logs if e["log_level"] == "warning"]
-        assert entry["event"] == "setpoint_status_write_failed" and entry["group"] == "orders"
-        assert entry["error_type"] == "OSError" and entry["error"] == "valkey://:***@cache:6379"
+        assert entry["event"] == "setpoint_status_write_failed"
+        assert entry["group"] == "orders"
+        assert entry["error_type"] == "OSError"
+        assert entry["error"] == "valkey://:***@cache:6379"
         assert store.closed is True
 
 

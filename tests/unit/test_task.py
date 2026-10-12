@@ -1,5 +1,8 @@
 """Tests for swarmq.task — Task base class and TaskInfo."""
 
+from collections.abc import Awaitable
+from typing import override
+
 import pytest
 
 from swarmq.task import DeliveryMode, Task, TaskInfo
@@ -60,13 +63,14 @@ def test_taskinfo_hard_timeout_less_than_soft_raises():
 def test_taskinfo_is_frozen():
     info = TaskInfo(name="task", queues=["q"])
     with pytest.raises(AttributeError):
-        info.name = "other"
+        info.name = "other"  # type: ignore[misc]  # Test prueft gerade die Unveraenderlichkeit
 
 
 async def test_task_subclass_with_run():
     class AddTask(Task):
         task_info = TaskInfo(name="add", queues=["math"])
 
+        @override
         async def run(self, a, b):
             return a + b
 
@@ -84,16 +88,22 @@ async def test_base_task_run_raises_not_implemented():
         await t.run()
 
 
+async def _result_of(awaitable: Awaitable[object]) -> object:
+    """Liefert das Ergebnis eines Hooks, um ``is None`` pruefen zu koennen."""
+    return await awaitable
+
+
 async def test_pre_and_post_execution_are_async_nops():
     class SimpleTask(Task):
         task_info = TaskInfo(name="simple", queues=["q"])
 
+        @override
         async def run(self):
             pass
 
     t = SimpleTask()
-    result_pre = await t.pre_execution()
-    result_post = await t.post_execution()
+    result_pre = await _result_of(t.pre_execution())
+    result_post = await _result_of(t.post_execution())
     assert result_pre is None
     assert result_post is None
 
@@ -104,6 +114,7 @@ def test_auto_registration_of_task_subclass():
     class RegTask(Task):
         task_info = TaskInfo(name="reg", queues=["q"])
 
+        @override
         async def run(self):
             pass
 
@@ -117,12 +128,14 @@ def test_multiple_subclasses_all_registered():
     class TaskA(Task):
         task_info = TaskInfo(name="a", queues=["q"])
 
+        @override
         async def run(self):
             pass
 
     class TaskB(Task):
         task_info = TaskInfo(name="b", queues=["q"])
 
+        @override
         async def run(self):
             pass
 
@@ -137,6 +150,7 @@ def test_abstract_intermediate_not_registered():
     class BaseWorker(Task):
         """Intermediate class without task_info — should NOT register."""
 
+        @override
         async def run(self):
             pass
 
@@ -153,6 +167,7 @@ def test_clear_registered_tasks_resets():
     class TempTask(Task):
         task_info = TaskInfo(name="temp", queues=["q"])
 
+        @override
         async def run(self):
             pass
 
@@ -243,9 +258,7 @@ def test_taskinfo_lock_with_hard_timeout_accepted():
 
 
 def test_taskinfo_lock_semaphore_with_hard_timeout_accepted():
-    info = TaskInfo(
-        name="task", queues=["q"], lock="resource", max_concurrency=3, hard_timeout=60
-    )
+    info = TaskInfo(name="task", queues=["q"], lock="resource", max_concurrency=3, hard_timeout=60)
     assert info.lock == "resource"
     assert info.max_concurrency == 3
 
@@ -263,7 +276,10 @@ def test_taskinfo_max_concurrency_without_lock_raises():
 def test_taskinfo_max_concurrency_zero_raises():
     with pytest.raises(ValueError, match="max_concurrency must be >= 1"):
         TaskInfo(
-            name="task", queues=["q"], lock="resource", max_concurrency=0,
+            name="task",
+            queues=["q"],
+            lock="resource",
+            max_concurrency=0,
             hard_timeout=60,
         )
 
@@ -271,7 +287,10 @@ def test_taskinfo_max_concurrency_zero_raises():
 def test_taskinfo_max_concurrency_negative_raises():
     with pytest.raises(ValueError, match="max_concurrency must be >= 1"):
         TaskInfo(
-            name="task", queues=["q"], lock="resource", max_concurrency=-1,
+            name="task",
+            queues=["q"],
+            lock="resource",
+            max_concurrency=-1,
             hard_timeout=60,
         )
 
@@ -280,9 +299,7 @@ def test_taskinfo_format_string_lock_accepted_without_warning():
     """Format-string locks are rendered at acquire-time via inspect.signature.
     No warning at TaskInfo construction — render-failures surface in the
     worker as DLQ entries with a clear error header."""
-    info = TaskInfo(
-        name="task", queues=["q"], lock="user-{user_id}", hard_timeout=60
-    )
+    info = TaskInfo(name="task", queues=["q"], lock="user-{user_id}", hard_timeout=60)
     assert info.lock == "user-{user_id}"
 
 
@@ -398,17 +415,13 @@ def test_taskinfo_dead_letter_defaults_to_none_and_keeps_explicit_value():
 
 
 def test_taskinfo_cron_with_timezone_accepted():
-    info = TaskInfo(
-        name="task", queues=["q"], cron="0 3 * * *", timezone="Europe/Berlin"
-    )
+    info = TaskInfo(name="task", queues=["q"], cron="0 3 * * *", timezone="Europe/Berlin")
     assert info.timezone == "Europe/Berlin"
 
 
 def test_taskinfo_unknown_timezone_raises_with_name():
     with pytest.raises(ValueError, match="Europe/Atlantis"):
-        TaskInfo(
-            name="task", queues=["q"], cron="0 3 * * *", timezone="Europe/Atlantis"
-        )
+        TaskInfo(name="task", queues=["q"], cron="0 3 * * *", timezone="Europe/Atlantis")
 
 
 def test_taskinfo_malformed_timezone_key_raises():
@@ -443,9 +456,11 @@ def test_task_subclass_with_delay_parameter_raises():
     payload once Client.schedule(delay=) is called. Guard at registration."""
     Task._clear_registered_tasks()
     with pytest.raises(ValueError, match="delay"):
+
         class BadTask(Task):
             task_info = TaskInfo(name="bad", queues=["q"])
 
+            @override
             async def run(self, delay):  # reserved name
                 return delay
 
@@ -453,9 +468,11 @@ def test_task_subclass_with_delay_parameter_raises():
 def test_task_subclass_with_eta_parameter_raises():
     Task._clear_registered_tasks()
     with pytest.raises(ValueError, match="eta"):
+
         class BadTask(Task):
             task_info = TaskInfo(name="bad", queues=["q"])
 
+            @override
             async def run(self, eta):
                 return eta
 
@@ -464,9 +481,11 @@ def test_task_subclass_with_delay_in_kwargs_raises():
     """Keyword-only delay parameter is equally a conflict."""
     Task._clear_registered_tasks()
     with pytest.raises(ValueError, match="delay"):
+
         class BadTask(Task):
             task_info = TaskInfo(name="bad", queues=["q"])
 
+            @override
             async def run(self, *, delay=None):
                 return delay
 
@@ -478,6 +497,7 @@ def test_task_subclass_with_non_reserved_params_still_registers():
     class OkTask(Task):
         task_info = TaskInfo(name="ok", queues=["q"])
 
+        @override
         async def run(self, a, b, c):
             return a + b + c
 
@@ -550,9 +570,11 @@ def test_task_subclass_reserved_unique_for_raises():
     Task._clear_registered_tasks()
 
     with pytest.raises(ValueError, match="unique_for"):
+
         class BadTask(Task):
             task_info = TaskInfo(name="bad", queues=["q"])
 
+            @override
             async def run(self, *, unique_for=None):
                 return unique_for
 
@@ -561,9 +583,11 @@ def test_task_subclass_reserved_unique_until_raises():
     Task._clear_registered_tasks()
 
     with pytest.raises(ValueError, match="unique_until"):
+
         class BadTask(Task):
             task_info = TaskInfo(name="bad", queues=["q"])
 
+            @override
             async def run(self, *, unique_until=None):
                 return unique_until
 
@@ -573,10 +597,12 @@ def test_task_subclass_reserved_param_error_mentions_all_reserved():
     so users who hit delay/eta today still see the full picture."""
     Task._clear_registered_tasks()
 
-    with pytest.raises(ValueError) as excinfo:
+    with pytest.raises(ValueError, match="reserved parameter name") as excinfo:
+
         class BadTask(Task):
             task_info = TaskInfo(name="bad", queues=["q"])
 
+            @override
             async def run(self, *, delay=None):
                 return delay
 
@@ -605,6 +631,7 @@ class TestUpdateProgress:
     async def test_writes_hash_and_publishes_on_first_call(self):
         import time as _time
         from unittest.mock import AsyncMock
+
         t = Task()
         t._task_id = "abc-1"
         t._backend = AsyncMock()
@@ -629,6 +656,7 @@ class TestUpdateProgress:
     async def test_throttles_second_call_within_window(self):
         import time as _time
         from unittest.mock import AsyncMock
+
         t = Task()
         t._task_id = "abc-1"
         t._backend = AsyncMock()
@@ -644,6 +672,7 @@ class TestUpdateProgress:
         """current == total bypasses throttling (R3.7 R4 — force-flush)."""
         import time as _time
         from unittest.mock import AsyncMock
+
         t = Task()
         t._task_id = "abc-1"
         t._backend = AsyncMock()
@@ -660,6 +689,7 @@ class TestUpdateProgress:
     @pytest.mark.timeout(5)
     async def test_zero_total_noop(self):
         from unittest.mock import AsyncMock
+
         t = Task()
         t._task_id = "x"
         t._backend = AsyncMock()
@@ -669,6 +699,7 @@ class TestUpdateProgress:
     @pytest.mark.timeout(5)
     async def test_negative_current_noop(self):
         from unittest.mock import AsyncMock
+
         t = Task()
         t._task_id = "x"
         t._backend = AsyncMock()
@@ -679,6 +710,7 @@ class TestUpdateProgress:
     async def test_first_update_eta_is_empty_when_current_zero(self):
         import time as _time
         from unittest.mock import AsyncMock
+
         t = Task()
         t._task_id = "x"
         t._backend = AsyncMock()
@@ -696,6 +728,7 @@ class TestUpdateProgress:
         ``error_type``/``error`` (R17)."""
         import time as _time
         from unittest.mock import AsyncMock
+
         t = Task()
         t._task_id = "x"
         t._backend = AsyncMock()
@@ -706,8 +739,7 @@ class TestUpdateProgress:
         # Publish is skipped when HSET failed.
         t._backend.publish_progress.assert_not_awaited()
         [entry] = [
-            e for e in swarmq_logs
-            if e["event"] == "update_progress_hset_failed" and e["logger"] == "swarmq.task"
+            e for e in swarmq_logs if e["event"] == "update_progress_hset_failed" and e["logger"] == "swarmq.task"
         ]
         assert entry["log_level"] == "warning"
         assert entry["task_id"] == "x"
@@ -718,19 +750,17 @@ class TestUpdateProgress:
     async def test_publish_failure_swallowed(self, swarmq_logs):
         import time as _time
         from unittest.mock import AsyncMock
+
         t = Task()
         t._task_id = "x"
         t._backend = AsyncMock()
-        t._backend.publish_progress = AsyncMock(
-            side_effect=RuntimeError("pubsub down")
-        )
+        t._backend.publish_progress = AsyncMock(side_effect=RuntimeError("pubsub down"))
         t._task_start_time = _time.monotonic()
         # Should not raise.
         await t.update_progress(1, 10)
         t._backend.set_progress.assert_awaited_once()
         [entry] = [
-            e for e in swarmq_logs
-            if e["event"] == "update_progress_publish_failed" and e["logger"] == "swarmq.task"
+            e for e in swarmq_logs if e["event"] == "update_progress_publish_failed" and e["logger"] == "swarmq.task"
         ]
         assert entry["log_level"] == "warning"
         assert entry["error_type"] == "RuntimeError"
@@ -742,6 +772,7 @@ class TestUpdateProgress:
         the throttle forever (ADV-002 regression guard)."""
         import time as _time
         from unittest.mock import AsyncMock
+
         t = Task()
         t._task_id = "x"
         t._backend = AsyncMock()
@@ -759,6 +790,7 @@ class TestUpdateProgress:
         resets _last_progress_update is caught (KP-TG-03)."""
         import time as _time
         from unittest.mock import AsyncMock
+
         t = Task()
         t._task_id = "x"
         t._backend = AsyncMock()

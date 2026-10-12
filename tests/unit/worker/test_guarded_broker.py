@@ -104,13 +104,21 @@ async def _claimed(guard: ExecutionGuard, headers: dict[str, object] | None = No
 
 async def _status(backend: InMemoryBackend, retry_count: int = 0) -> str:
     claim = await backend.execution_guard.claim(
-        "t-1", owner="probe", retry_count=retry_count, ttl_ms=60_000, state_ttl_ms=600_000, max_orphans=99,
+        "t-1",
+        owner="probe",
+        retry_count=retry_count,
+        ttl_ms=60_000,
+        state_ttl_ms=600_000,
+        max_orphans=99,
     )
     return claim.status
 
 
 async def test_ack_after_claim_marks_done(
-    broker: GuardedBroker, guard: ExecutionGuard, inner: MagicMock, backend: InMemoryBackend,
+    broker: GuardedBroker,
+    guard: ExecutionGuard,
+    inner: MagicMock,
+    backend: InMemoryBackend,
 ) -> None:
     delivery = await _claimed(guard)
 
@@ -121,7 +129,10 @@ async def test_ack_after_claim_marks_done(
 
 
 async def test_failed_ack_after_execution_still_marks_done(
-    broker: GuardedBroker, guard: ExecutionGuard, inner: MagicMock, backend: InMemoryBackend,
+    broker: GuardedBroker,
+    guard: ExecutionGuard,
+    inner: MagicMock,
+    backend: InMemoryBackend,
 ) -> None:
     """Bis RabbitMQ 4.2 schließt der Consumer-Timeout den Channel: das späte
     Ack scheitert, der Broker hat die Nachricht längst neu zugestellt. Die
@@ -138,7 +149,10 @@ async def test_failed_ack_after_execution_still_marks_done(
 
 
 async def test_dead_letter_marks_done(
-    broker: GuardedBroker, guard: ExecutionGuard, inner: MagicMock, backend: InMemoryBackend,
+    broker: GuardedBroker,
+    guard: ExecutionGuard,
+    inner: MagicMock,
+    backend: InMemoryBackend,
 ) -> None:
     delivery = await _claimed(guard)
 
@@ -149,7 +163,10 @@ async def test_dead_letter_marks_done(
 
 
 async def test_dead_letter_copy_published_but_ack_failed_marks_done(
-    broker: GuardedBroker, guard: ExecutionGuard, inner: MagicMock, backend: InMemoryBackend,
+    broker: GuardedBroker,
+    guard: ExecutionGuard,
+    inner: MagicMock,
+    backend: InMemoryBackend,
 ) -> None:
     delivery = await _claimed(guard)
     inner.dead_letter.side_effect = SettleFailedAfterPublish("ack failed")
@@ -161,7 +178,10 @@ async def test_dead_letter_copy_published_but_ack_failed_marks_done(
 
 
 async def test_failed_dead_letter_publish_leaves_the_lease_for_the_fallback(
-    broker: GuardedBroker, guard: ExecutionGuard, inner: MagicMock, backend: InMemoryBackend,
+    broker: GuardedBroker,
+    guard: ExecutionGuard,
+    inner: MagicMock,
+    backend: InMemoryBackend,
 ) -> None:
     """Der Publish scheiterte, das Original bleibt unbestätigt; der Aufrufer
     stellt per ``redeliver`` zurück -- das gibt den Running-Marker frei."""
@@ -178,7 +198,10 @@ async def test_failed_dead_letter_publish_leaves_the_lease_for_the_fallback(
 
 
 async def test_redeliver_frees_the_running_marker_before_the_nack(
-    broker: GuardedBroker, guard: ExecutionGuard, inner: MagicMock, backend: InMemoryBackend,
+    broker: GuardedBroker,
+    guard: ExecutionGuard,
+    inner: MagicMock,
+    backend: InMemoryBackend,
 ) -> None:
     """Shutdown-``nack`` u. ä.: die sofortige Neuzustellung läuft, statt sich
     am eigenen Marker zurückzustellen."""
@@ -195,7 +218,10 @@ async def test_redeliver_frees_the_running_marker_before_the_nack(
 
 
 async def test_retry_with_higher_retry_count_marks_superseded(
-    broker: GuardedBroker, guard: ExecutionGuard, inner: MagicMock, backend: InMemoryBackend,
+    broker: GuardedBroker,
+    guard: ExecutionGuard,
+    inner: MagicMock,
+    backend: InMemoryBackend,
 ) -> None:
     delivery = await _claimed(guard, {"x-swarmq-retry-count": 1})
 
@@ -208,7 +234,10 @@ async def test_retry_with_higher_retry_count_marks_superseded(
 
 @pytest.mark.parametrize("copy_headers", [{"x-swarmq-retry-count": 1}, {}])
 async def test_requeue_copy_frees_the_running_marker_before_the_publish(
-    broker: GuardedBroker, guard: ExecutionGuard, inner: MagicMock, backend: InMemoryBackend,
+    broker: GuardedBroker,
+    guard: ExecutionGuard,
+    inner: MagicMock,
+    backend: InMemoryBackend,
     copy_headers: dict[str, object],
 ) -> None:
     """Rate-Limit-/Lock-Requeue, Zurückstellung bei Backend-Ausfall: dieselbe
@@ -226,7 +255,10 @@ async def test_requeue_copy_frees_the_running_marker_before_the_publish(
 
 
 async def test_retry_copy_published_but_ack_failed_still_marks_superseded(
-    broker: GuardedBroker, guard: ExecutionGuard, inner: MagicMock, backend: InMemoryBackend,
+    broker: GuardedBroker,
+    guard: ExecutionGuard,
+    inner: MagicMock,
+    backend: InMemoryBackend,
 ) -> None:
     """``retry_later`` publiziert, das Ack scheitert: der Broker stellt das
     Original neu zu -- es muss übersprungen werden, nur die Retry-Kopie läuft."""
@@ -240,7 +272,10 @@ async def test_retry_copy_published_but_ack_failed_still_marks_superseded(
 
 
 async def test_too_large_dead_letter_headers_leave_the_lease_for_the_fallback(
-    broker: GuardedBroker, guard: ExecutionGuard, inner: MagicMock, backend: InMemoryBackend,
+    broker: GuardedBroker,
+    guard: ExecutionGuard,
+    inner: MagicMock,
+    backend: InMemoryBackend,
 ) -> None:
     """Q14 (Plan 0.12.0, MR 2): ``MessageHeadersTooLarge`` ist ein
     gescheiterter Publish, kein ``SettleFailedAfterPublish`` -- kein Done."""
@@ -254,7 +289,10 @@ async def test_too_large_dead_letter_headers_leave_the_lease_for_the_fallback(
 
 
 async def test_failed_retry_publish_leaves_the_lease_for_the_fallback(
-    broker: GuardedBroker, guard: ExecutionGuard, inner: MagicMock, backend: InMemoryBackend,
+    broker: GuardedBroker,
+    guard: ExecutionGuard,
+    inner: MagicMock,
+    backend: InMemoryBackend,
 ) -> None:
     delivery = await _claimed(guard)
     inner.retry_later.side_effect = BrokerConnectionError("publish failed")
@@ -269,7 +307,10 @@ async def test_failed_retry_publish_leaves_the_lease_for_the_fallback(
 
 
 async def test_route_via_dlx_marks_done(
-    broker: GuardedBroker, guard: ExecutionGuard, inner: MagicMock, backend: InMemoryBackend,
+    broker: GuardedBroker,
+    guard: ExecutionGuard,
+    inner: MagicMock,
+    backend: InMemoryBackend,
 ) -> None:
     delivery = await _claimed(guard)
 
@@ -280,7 +321,10 @@ async def test_route_via_dlx_marks_done(
 
 
 async def test_withheld_route_via_dlx_releases_without_done(
-    broker: GuardedBroker, guard: ExecutionGuard, inner: MagicMock, backend: InMemoryBackend,
+    broker: GuardedBroker,
+    guard: ExecutionGuard,
+    inner: MagicMock,
+    backend: InMemoryBackend,
 ) -> None:
     """Review Phase 2: ein zurückgehaltener ``nack`` (4.3, ``BrokerConnectionError``)
     setzt keinen Done-Marker; der ``finally`` gibt nur frei, die
@@ -301,7 +345,6 @@ def test_other_attributes_go_to_the_inner_broker(inner: MagicMock, guard: Execut
     assert broker.queue_depth is inner.queue_depth
 
 
-
 def test_route_via_dlx_is_absent_when_the_inner_broker_lacks_it(guard: ExecutionGuard) -> None:
     """``route_via_dlx`` (gates) fällt dann auf ``dead_letter`` zurück."""
     inner = MagicMock(spec=["ack", "redeliver", "retry_later", "dead_letter"])
@@ -309,7 +352,9 @@ def test_route_via_dlx_is_absent_when_the_inner_broker_lacks_it(guard: Execution
 
 
 async def test_verbs_without_lease_only_pass_through(
-    broker: GuardedBroker, inner: MagicMock, backend: InMemoryBackend,
+    broker: GuardedBroker,
+    inner: MagicMock,
+    backend: InMemoryBackend,
 ) -> None:
     delivery = make_message(headers={})
     await broker.retry_later(delivery, delay_ms=1, headers={"x-swarmq-retry-count": 1})
@@ -320,14 +365,19 @@ async def test_verbs_without_lease_only_pass_through(
 
 
 async def test_marker_failure_does_not_block_the_verb(
-    broker: GuardedBroker, guard: ExecutionGuard, inner: MagicMock, backend: InMemoryBackend,
+    broker: GuardedBroker,
+    guard: ExecutionGuard,
+    inner: MagicMock,
+    backend: InMemoryBackend,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Valkey weg beim Freigeben: das ``nack`` geht trotzdem raus (der
     Running-Marker läuft nach seiner TTL ab); WARNING statt Ausnahme."""
     delivery = await _claimed(guard)
     monkeypatch.setattr(
-        backend.execution_guard, "release", AsyncMock(side_effect=BackendConnectionError("down")),
+        backend.execution_guard,
+        "release",
+        AsyncMock(side_effect=BackendConnectionError("down")),
     )
 
     with capture_swarmq_logs() as logs:
@@ -335,11 +385,14 @@ async def test_marker_failure_does_not_block_the_verb(
 
     inner.redeliver.assert_awaited_once_with(delivery)
     [failed] = [e for e in logs if e["event"] == "execution_guard_finish_failed"]
-    assert failed["log_level"] == "warning" and failed["marker"] == "release"
+    assert failed["log_level"] == "warning"
+    assert failed["marker"] == "release"
 
 
 async def test_orphan_limit_dead_letter_marks_done(
-    inner: MagicMock, backend: InMemoryBackend, clock: FakeClock,
+    inner: MagicMock,
+    backend: InMemoryBackend,
+    clock: FakeClock,
 ) -> None:
     """Die Zustellung an der Waisen-Grenze hält den Marker: ihr Dead-Letter
     schließt ihn ab, liegengebliebene Kopien werden übersprungen."""
@@ -347,14 +400,19 @@ async def test_orphan_limit_dead_letter_marks_done(
     deps.config = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x")
 
     async def _dead_letter(delivery: object, *_args: object) -> None:
-        await broker.dead_letter(delivery, headers={})
+        await guarded.dead_letter(delivery, headers={})
 
     guard = ExecutionGuard(deps, store=lambda: backend.execution_guard, dead_letter=_dead_letter)
-    broker = GuardedBroker(inner, guard)
-    deps.broker = broker
+    guarded = GuardedBroker(inner, guard)
+    deps.broker = guarded
     for owner in ("a", "b", "c"):
         await backend.execution_guard.claim(
-            "t-1", owner=owner, retry_count=0, ttl_ms=1_000, state_ttl_ms=600_000, max_orphans=3,
+            "t-1",
+            owner=owner,
+            retry_count=0,
+            ttl_ms=1_000,
+            state_ttl_ms=600_000,
+            max_orphans=3,
         )
         await clock.advance(2)
 
@@ -365,7 +423,11 @@ async def test_orphan_limit_dead_letter_marks_done(
 
 
 async def test_failed_ack_marks_done_for_the_backlog(
-    broker: GuardedBroker, guard: ExecutionGuard, inner: MagicMock, backend: InMemoryBackend, clock: FakeClock,
+    broker: GuardedBroker,
+    guard: ExecutionGuard,
+    inner: MagicMock,
+    backend: InMemoryBackend,
+    clock: FakeClock,
 ) -> None:
     delivery = await _claimed(guard)
     inner.ack.side_effect = BrokerConnectionError("channel closed")
@@ -377,7 +439,11 @@ async def test_failed_ack_marks_done_for_the_backlog(
 
 
 async def test_settle_failed_after_publish_marks_for_the_backlog(
-    broker: GuardedBroker, guard: ExecutionGuard, inner: MagicMock, backend: InMemoryBackend, clock: FakeClock,
+    broker: GuardedBroker,
+    guard: ExecutionGuard,
+    inner: MagicMock,
+    backend: InMemoryBackend,
+    clock: FakeClock,
 ) -> None:
     """Die Kopie liegt, das Ack scheiterte: das Original kommt wieder -- auch
     hinter einem Rueckstand. Done (Dead-Letter) und Superseded (Retry) leben
@@ -397,6 +463,11 @@ async def test_settle_failed_after_publish_marks_for_the_backlog(
         await broker.retry_later(retried, delay_ms=5, headers={"x-swarmq-retry-count": 1})
     await clock.advance(2 * 3600)
     claim = await backend.execution_guard.claim(
-        "t-2", owner="probe", retry_count=0, ttl_ms=60_000, state_ttl_ms=600_000, max_orphans=99,
+        "t-2",
+        owner="probe",
+        retry_count=0,
+        ttl_ms=60_000,
+        state_ttl_ms=600_000,
+        max_orphans=99,
     )
     assert claim.status == "superseded"

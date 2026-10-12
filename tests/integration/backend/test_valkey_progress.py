@@ -51,7 +51,8 @@ async def test_get_progress_missing_returns_none(backend):
 async def test_set_progress_refreshes_ttl(backend):
     task_id = _uniq()
     await backend.set_progress(
-        task_id, {"current": "1", "total": "10", "percent": "10.0"},
+        task_id,
+        {"current": "1", "total": "10", "percent": "10.0"},
         ttl_ms=200,
     )
     # Before expiry: present.
@@ -61,7 +62,8 @@ async def test_set_progress_refreshes_ttl(backend):
     # window.
     await asyncio.sleep(0.15)
     await backend.set_progress(
-        task_id, {"current": "2", "total": "10", "percent": "20.0"},
+        task_id,
+        {"current": "2", "total": "10", "percent": "20.0"},
         ttl_ms=200,
     )
     await asyncio.sleep(0.15)
@@ -76,7 +78,8 @@ async def test_set_progress_refreshes_ttl(backend):
 async def test_set_progress_ttl_expiry(backend):
     task_id = _uniq()
     await backend.set_progress(
-        task_id, {"current": "1", "total": "10", "percent": "10.0"},
+        task_id,
+        {"current": "1", "total": "10", "percent": "10.0"},
         ttl_ms=100,
     )
     await asyncio.sleep(0.25)
@@ -92,7 +95,8 @@ async def test_publish_progress_reaches_subscriber(backend):
     try:
         # Consume the subscribe-confirmation.
         await pubsub.get_message(
-            ignore_subscribe_messages=True, timeout=0.5,
+            ignore_subscribe_messages=True,
+            timeout=0.5,
         )
         await backend.publish_progress(task_id, b'{"current": 7, "total": 10}')
 
@@ -101,7 +105,8 @@ async def test_publish_progress_reaches_subscriber(backend):
         deadline = asyncio.get_event_loop().time() + 1.0
         while asyncio.get_event_loop().time() < deadline:
             m = await pubsub.get_message(
-                ignore_subscribe_messages=True, timeout=0.1,
+                ignore_subscribe_messages=True,
+                timeout=0.1,
             )
             if m is not None:
                 msg = m
@@ -117,7 +122,8 @@ async def test_publish_progress_reaches_subscriber(backend):
 async def test_last_write_wins(backend):
     task_id = _uniq()
     await backend.set_progress(
-        task_id, {"current": "1", "total": "10", "percent": "10.0"},
+        task_id,
+        {"current": "1", "total": "10", "percent": "10.0"},
         ttl_ms=60_000,
     )
     await backend.set_progress(

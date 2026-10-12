@@ -490,7 +490,11 @@ class InMemoryScheduleStore:
         return dict(self._defs)
 
     async def replan_if_unchanged(
-        self, name: str, expected: bytes, payload: bytes, fire_ts_ms: int,
+        self,
+        name: str,
+        expected: bytes,
+        payload: bytes,
+        fire_ts_ms: int,
     ) -> bool:
         if self._defs.get(name) != expected or name in self._fires:
             return False
@@ -541,7 +545,11 @@ class InMemoryScheduleStore:
         return self._completed.set_if_absent(fire_key, "1", ttl_ms)
 
     async def claim_fire(
-        self, fire_key: str, ttl_ms: int, *, owner: str | None = None,
+        self,
+        fire_key: str,
+        ttl_ms: int,
+        *,
+        owner: str | None = None,
         takeover: str | Sequence[str] | None = None,
     ) -> bool:
         current = self._inflight.get(fire_key)
@@ -572,7 +580,12 @@ class InMemoryScheduleStore:
         return previous_owner is not None and self._handover.pop(previous_owner) is not None
 
     async def report_cron(
-        self, name: str, fingerprint: str, payload: bytes, *, live_window_ms: int,
+        self,
+        name: str,
+        fingerprint: str,
+        payload: bytes,
+        *,
+        live_window_ms: int,
     ) -> None:
         now = self._clock.now_ms()
         previous = self._reports.get((name, fingerprint))
@@ -594,13 +607,17 @@ class InMemoryScheduleStore:
 
     async def cron_reports(self) -> CronReports:
         reports = tuple(
-            CronReport(name, fp, first, last, payload)
-            for (name, fp), (first, last, payload) in self._reports.items()
+            CronReport(name, fp, first, last, payload) for (name, fp), (first, last, payload) in self._reports.items()
         )
         return CronReports(now_ms=self._clock.now_ms(), reports=reports)
 
     async def prune_cron(
-        self, name: str, expected: bytes, *, stale_after_ms: int | None, remember_disabled: bool,
+        self,
+        name: str,
+        expected: bytes,
+        *,
+        stale_after_ms: int | None,
+        remember_disabled: bool,
     ) -> bool:
         if self._defs.get(name) != expected:
             return False
@@ -679,7 +696,14 @@ class InMemoryExecutionGuardStore:
         self._store(identity, {k: v for k, v in state.items() if v is not None}, state_ttl_ms)
 
     async def claim(
-        self, identity: str, *, owner: str, retry_count: int, ttl_ms: int, state_ttl_ms: int, max_orphans: int,
+        self,
+        identity: str,
+        *,
+        owner: str,
+        retry_count: int,
+        ttl_ms: int,
+        state_ttl_ms: int,
+        max_orphans: int,
         backlog_ttl_ms: int | None = None,
     ) -> GuardClaim:
         state = self._state.get(identity) or {}

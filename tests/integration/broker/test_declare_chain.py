@@ -144,7 +144,8 @@ async def test_strict_mode_refuses_a_0_11_queue(rabbitmq_url: str, broker: Rabbi
 
 def _open_channel_numbers(broker: RabbitMQBroker) -> set[int]:
     assert broker._connection is not None
-    underlay = broker._connection.transport.connection  # type: ignore[attr-defined]
+    assert broker._connection.transport is not None
+    underlay = broker._connection.transport.connection
     return {number for number, channel in underlay.channels.items() if channel is not None and not channel.is_closed}
 
 
@@ -152,7 +153,7 @@ async def test_no_probe_channel_stays_open_after_not_found(broker: RabbitMQBroke
     """Review MR 8, H5b: der Broker schliesst den Channel nach NOT_FOUND; die
     Kette schliesst ihn auch auf ihrer Seite, sonst oeffnete ein
     RobustChannel ihn selbst wieder."""
-    await broker._ensure_publish_channel()
+    _ = await broker._ensure_publish_channel()
     before = _open_channel_numbers(broker)
 
     await broker.declare_queue(queue)

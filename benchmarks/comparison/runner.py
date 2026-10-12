@@ -93,15 +93,9 @@ async def main(args: argparse.Namespace) -> None:
 
     # Resolve "all"
     selected_scenarios = (
-        list(scenarios.keys())
-        if args.scenario == "all"
-        else [s.strip() for s in args.scenario.split(",")]
+        list(scenarios.keys()) if args.scenario == "all" else [s.strip() for s in args.scenario.split(",")]
     )
-    selected_systems = (
-        list(systems.keys())
-        if args.systems == "all"
-        else [s.strip() for s in args.systems.split(",")]
-    )
+    selected_systems = list(systems.keys()) if args.systems == "all" else [s.strip() for s in args.systems.split(",")]
 
     print(f"Benchmark: {selected_scenarios} × {selected_systems} ({args.runs} runs each)")
     print(f"Results → {RESULTS_DIR}")
@@ -160,6 +154,7 @@ def parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     try:
         import uvloop
+
         uvloop.install()
     except ImportError:
         pass

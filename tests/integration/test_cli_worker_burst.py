@@ -37,12 +37,33 @@ async def _enqueue(queue: str, n: int) -> list[str]:
 def test_burst_worker_under_default_supervisor_drains_and_exits_zero():
     queue = f"cli-burst-{uuid.uuid4().hex[:8]}"
     asyncio.run(_enqueue(queue, 5))
-    env = dict(os.environ, SWARMQ_BROKER_URL=rabbitmq_amqp_url(), SWARMQ_BACKEND_URL=valkey_db_url(),
-               CLI_TEST_QUEUE=queue, PYTHONUNBUFFERED="1")
+    env = dict(
+        os.environ,
+        SWARMQ_BROKER_URL=rabbitmq_amqp_url(),
+        SWARMQ_BACKEND_URL=valkey_db_url(),
+        CLI_TEST_QUEUE=queue,
+        PYTHONUNBUFFERED="1",
+    )
     proc = subprocess.Popen(
-        [sys.executable, "-m", "swarmq.cli", "worker", "--module", "tests.integration._cli_fixture_tasks",
-         "--queues", queue, "--burst", "--burst-idle-timeout", "2", "--log-format", "json"],
-        env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        [
+            sys.executable,
+            "-m",
+            "swarmq.cli",
+            "worker",
+            "--module",
+            "tests.integration._cli_fixture_tasks",
+            "--queues",
+            queue,
+            "--burst",
+            "--burst-idle-timeout",
+            "2",
+            "--log-format",
+            "json",
+        ],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
         start_new_session=True,
     )
     deadline = time.monotonic() + 60

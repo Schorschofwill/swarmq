@@ -63,9 +63,22 @@ def test_schedule_definition_is_field_equal() -> None:
     assert g.value_fixtures()["schedule_definition.json"] == fixture
     assert msgspec.json.decode(fixture, type=ScheduleDefinition) == g.golden_schedule_definition()
     assert list(json.loads(fixture)) == [
-        "schedule_name", "task_name", "args", "kwargs", "queue", "cron", "fire_ts_ms", "source",
-        "disabled", "last_fire_at", "dedup_hash", "unique_until", "timezone", "task_id",
-        "unroutable_since", "unique_for",
+        "schedule_name",
+        "task_name",
+        "args",
+        "kwargs",
+        "queue",
+        "cron",
+        "fire_ts_ms",
+        "source",
+        "disabled",
+        "last_fire_at",
+        "dedup_hash",
+        "unique_until",
+        "timezone",
+        "task_id",
+        "unroutable_since",
+        "unique_for",
     ]
 
 

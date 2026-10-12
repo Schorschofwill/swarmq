@@ -16,7 +16,7 @@ from swarmq.worker import Worker
 from tests.unit.worker._helpers import AddTask
 
 
-@pytest.fixture()
+@pytest.fixture
 def broker():
     b = MagicMock(spec=RabbitMQBroker)
     b.connect = AsyncMock()
@@ -33,7 +33,7 @@ def broker():
     return b
 
 
-@pytest.fixture()
+@pytest.fixture
 def backend():
     be = MagicMock(spec=ValkeyBackend)
     be.connect = AsyncMock()
@@ -62,7 +62,7 @@ def backend():
     return be
 
 
-@pytest.fixture()
+@pytest.fixture
 def config():
     return SwarmQConfig(
         broker_url="amqp://localhost",
@@ -72,18 +72,18 @@ def config():
     )
 
 
-@pytest.fixture()
+@pytest.fixture
 def registry():
     return TaskRegistry()
 
 
-@pytest.fixture()
+@pytest.fixture
 def worker(broker, backend, registry, config):
     registry.register(AddTask)
     return Worker(broker=broker, backend=backend, registry=registry, config=config)
 
 
-@pytest.fixture()
+@pytest.fixture
 def app_log_context():
     """Von der App gebundene Kontextvariable ``request_id`` (Plan
     2026-10-06-0831, U10); nach dem Test wieder entfernt."""

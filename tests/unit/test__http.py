@@ -25,12 +25,12 @@ from swarmq._http import (
 def _free_port() -> int:
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
+    port: int = s.getsockname()[1]
     s.close()
     return port
 
 
-async def _http_get(host: str, port: int, path: str) -> tuple[int, dict, bytes]:
+async def _http_get(host: str, port: int, path: str) -> tuple[int, dict[str, str], bytes]:
     reader, writer = await asyncio.open_connection(host, port)
     writer.write(f"GET {path} HTTP/1.1\r\nHost: x\r\n\r\n".encode())
     await writer.drain()
@@ -132,10 +132,16 @@ class TestAsyncHttpServer:
             await write_http_response(writer, 200, b"")
 
         a = AsyncHttpServer(
-            _noop_handler, host="127.0.0.1", port=port, label="test_a",
+            _noop_handler,
+            host="127.0.0.1",
+            port=port,
+            label="test_a",
         )
         b = AsyncHttpServer(
-            _noop_handler, host="127.0.0.1", port=port, label="test_b",
+            _noop_handler,
+            host="127.0.0.1",
+            port=port,
+            label="test_b",
         )
         await a.start()
         try:
@@ -204,7 +210,8 @@ class TestAsyncHttpServer:
             await writer.wait_closed()
             # Server should still be responsive on the next request.
             reader2, writer2 = await asyncio.open_connection(
-                "127.0.0.1", port,
+                "127.0.0.1",
+                port,
             )
             writer2.write(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
             await writer2.drain()
@@ -219,7 +226,10 @@ class TestAsyncHttpServerLogging:
     async def test_start_logs_server_host_and_port(self, swarmq_logs):
         port = _free_port()
         server = AsyncHttpServer(
-            AsyncMock(), host="127.0.0.1", port=port, label="metrics_server",
+            AsyncMock(),
+            host="127.0.0.1",
+            port=port,
+            label="metrics_server",
         )
         await server.start()
         await server.stop()
@@ -231,7 +241,10 @@ class TestAsyncHttpServerLogging:
 
     async def test_stop_logs_server(self, swarmq_logs):
         server = AsyncHttpServer(
-            AsyncMock(), host="127.0.0.1", port=_free_port(), label="health_server",
+            AsyncMock(),
+            host="127.0.0.1",
+            port=_free_port(),
+            label="health_server",
         )
         await server.start()
         await server.stop()
@@ -243,7 +256,9 @@ class TestAsyncHttpServerLogging:
         port = _free_port()
         server = AsyncHttpServer(
             AsyncMock(side_effect=RuntimeError("boom")),
-            host="127.0.0.1", port=port, label="metrics_server",
+            host="127.0.0.1",
+            port=port,
+            label="metrics_server",
         )
         await server.start()
         try:

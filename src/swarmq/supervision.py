@@ -107,7 +107,7 @@ _current: SupervisorChannel | None = None
 
 def set_current_channel(channel: SupervisorChannel | None) -> None:
     """Vom Worker-Entry gesetzt; ohne Supervisor bleibt es ``None`` (R31)."""
-    global _current
+    global _current  # noqa: PLW0603 - Modul-Singleton
     _current = channel
 
 

@@ -37,7 +37,7 @@ niemand für eine Zusicherung hält.
 
 | Job | Was |
 |---|---|
-| `lint-and-types` | `ruff check src/ tests/`, `mypy src/swarmq tests/support tests/contracts` |
+| `lint-and-types` | `ruff format --check .`, `ruff check src/ tests/ typings/`, `mypy src/swarmq tests`, `basedpyright`, `stubtest` (siehe „Lint, Format und Typen“) |
 | `lock-check` | `uv.lock` ist zum `pyproject.toml` synchron |
 | `unit-tests` | `tests/unit`, dazu `tests/property` und `tests/fuzz/test_parser_fuzz.py` |
 | `integration-tests` | `tests/integration` gegen RabbitMQ und Valkey |
@@ -92,17 +92,17 @@ Backend-/Broker-Ausfälle über Toxiproxy) sowie Stress- und Property-Tests.
 Die Kombinationen brauchen einen Toxiproxy neben dem Teststack: Ohne ihn
 überspringen sie die zwölf Toxiproxy-Tests, und das Gate ist nicht
 vollständig. `docker-compose.chaos.yml` startet den Haupt-Stack auf
-5672/6379 mit; ist das belegt, einen eigenen Toxiproxy im Host-Netz starten
-und Proxy-Ports sowie Upstreams per Env setzen:
+5672/6379 mit; ist das belegt, einen eigenen Toxiproxy im Host-Netz starten.
+Für ihn leiten die Fixtures Proxy-Ports und Upstreams aus den Testports ab:
+Jeder Proxy lauscht einen Port unter seinem Dienst (5698, 6398) und leitet
+an `SWARMQ_TEST_*_HOST:PORT` weiter. Die Compose-Werte (5673/6380,
+Upstreams `rabbitmq`/`valkey`) gelten nur, wenn die Testports 5672/6379
+sind. Jeder Wert lässt sich per `SWARMQ_TEST_TOXIPROXY_*` überschreiben:
 
 ```bash
 docker run -d --name swarmq-test-toxiproxy --network host \
   ghcr.io/shopify/toxiproxy:2.9.0 -host 127.0.0.1 -port 8474
 SWARMQ_TEST_RABBITMQ_PORT=5699 SWARMQ_TEST_VALKEY_PORT=6399 \
-SWARMQ_TEST_TOXIPROXY_HOST=127.0.0.1 SWARMQ_TEST_TOXIPROXY_PORT=8474 \
-SWARMQ_TEST_TOXIPROXY_RMQ_PORT=5698 SWARMQ_TEST_TOXIPROXY_VALKEY_PORT=6398 \
-SWARMQ_TEST_TOXIPROXY_RMQ_UPSTREAM=127.0.0.1:5699 \
-SWARMQ_TEST_TOXIPROXY_VALKEY_UPSTREAM=127.0.0.1:6399 \
   uv run --extra test --extra reload pytest tests -q \
   -m "chaos or stress or property or fuzz"
 ```
@@ -119,7 +119,7 @@ Einzeln, etwa zum Nachfahren eines roten Teils:
 ```bash
 uv run --extra test --extra reload pytest -m chaos tests/chaos -q        # 41 Tests, 37 passed + 4 skipped
 uv run --extra test --extra reload pytest -m fuzz tests/fuzz/test_external_publish_fuzz.py -q  # 2 passed
-# Chaos-Kombinationen, mit den Toxiproxy-Variablen von oben: 28 passed
+# Chaos-Kombinationen gegen den Toxiproxy von oben: 28 passed
 SWARMQ_TEST_RABBITMQ_PORT=5699 SWARMQ_TEST_VALKEY_PORT=6399 \
   uv run --extra test pytest -m chaos tests/e2e/combinations -q
 ```
@@ -188,6 +188,36 @@ SWARMQ_TEST_VALKEY_PORT=6379 SWARMQ_TEST_ALLOW_DEFAULT_PORTS=1 \
 Nur der Wert `1` gibt frei. Die CI ist nicht betroffen: Sie erreicht die
 Dienste über die Service-Hosts `rabbitmq` und `valkey` auf den
 Standardports, und diese Hosts sind nicht lokal.
+
+## Lint, Format und Typen
+
+Plan `docs/plans/2026-10-11-1200-chore-ruff-mypy-ausbau-plan.md`. Die Werkzeuge
+stehen in den Dependency-Groups `lint` (ruff, prek) und `typing` (mypy,
+basedpyright, Stubs); `uv sync` und `uv run` ziehen beide über
+`default-groups` mit.
+
+| Prüfung | Befehl | Umfang |
+|---|---|---|
+| Format | `uv run ruff format --check .` | alle Python-Dateien |
+| Lint | `uv run ruff check src tests typings` | `select = ["ALL"]`, Ausnahmekatalog in `pyproject.toml` |
+| mypy | `uv run --extra test --extra reload mypy src/swarmq tests` | strict plus Zusatzcodes; Tests ohne Annotationspflicht |
+| basedpyright | `uv run --extra test --extra reload basedpyright` | strict, nur `src/swarmq` |
+| Stubs | `uv run python -m mypy.stubtest msgpack croniter --mypy-config-file pyproject.toml --ignore-missing-stub` | `typings/` gegen die installierten Pakete; Drift nach einem Upgrade wird rot |
+
+**Hooks einrichten** (einmal je Klon):
+
+```bash
+uv sync --extra test --extra reload
+uv run prek install --hook-type pre-commit --hook-type pre-push --allow-missing-config
+git config blame.ignoreRevsFile .git-blame-ignore-revs
+```
+
+Beim Commit prüfen die Hooks Format und Lint der geänderten Dateien, vor dem
+Push beide Typprüfer. Die Hooks liegen im gemeinsamen `.git/hooks` und gelten
+damit für alle Worktrees des Klons; `--allow-missing-config` lässt sie in
+einem Worktree ohne `.pre-commit-config.yaml` (älterer Branch) nichts tun,
+statt jeden Commit dort abzulehnen. Die Versionen kommen aus `uv.lock`. Reine
+Formatierungs-Commits stehen in `.git-blame-ignore-revs`.
 
 ## Lokale Ausführung
 

@@ -74,10 +74,7 @@ _BACKEND_URL = valkey_db_url()
 pytestmark = [
     pytest.mark.timeout(60),
     pytest.mark.skipif(
-        not (
-            _port_open(_RABBITMQ_HOST, _RABBITMQ_PORT)
-            and _port_open(_VALKEY_HOST, _VALKEY_PORT)
-        ),
+        not (_port_open(_RABBITMQ_HOST, _RABBITMQ_PORT) and _port_open(_VALKEY_HOST, _VALKEY_PORT)),
         reason="Docker services (RabbitMQ + Valkey) not reachable",
     ),
 ]
@@ -142,7 +139,9 @@ async def _dlq_count(queue: str) -> int:
     try:
         ch = await conn.channel()
         decl = await ch.declare_queue(f"{queue}.XQ", passive=True)
-        return decl.declaration_result.message_count
+        count = decl.declaration_result.message_count
+        assert count is not None
+        return count
     finally:
         await conn.close()
 
@@ -153,6 +152,7 @@ async def _read_exec_counts(task_ids: list[str]) -> dict[str, int]:
     backend = ValkeyBackend(_BACKEND_URL)
     await backend.connect()
     try:
+        assert backend._client is not None
         out: dict[str, int] = {}
         for tid in task_ids:
             raw = await backend._client.get(f"exec_count:{tid}")
@@ -165,6 +165,7 @@ async def _read_exec_counts(task_ids: list[str]) -> dict[str, int]:
 async def _wait_all_started(task_ids: list[str], *, timeout: float = 10.0) -> None:
     """Block until every task has recorded its first execution."""
     deadline = time.monotonic() + timeout
+    counts: dict[str, int] = {}
     while time.monotonic() < deadline:
         counts = await _read_exec_counts(task_ids)
         if all(c >= 1 for c in counts.values()):
@@ -178,7 +179,8 @@ async def _wait_all_started(task_ids: list[str], *, timeout: float = 10.0) -> No
 # ---------------------------------------------------------------------------
 
 
-async def test_sigterm_with_inflight_completes_gracefully(_cleanup_tasks) -> None:
+@pytest.mark.usefixtures("_cleanup_tasks")
+async def test_sigterm_with_inflight_completes_gracefully() -> None:
     """Start a worker, pump 10 × 2s-sleep tasks, SIGTERM once they're
     in flight, expect:
       * worker exits cleanly (rc == 0)
@@ -224,17 +226,13 @@ async def test_sigterm_with_inflight_completes_gracefully(_cleanup_tasks) -> Non
             # either there or they aren't.
             results = await app.get_results(task_ids, timeout=5)
             assert len(results) == N
-            assert all(r == "slept:2.0" for r in results), (
-                f"unexpected results: {results}"
-            )
+            assert all(r == "slept:2.0" for r in results), f"unexpected results: {results}"
 
         # Each task_id should have exactly one execution — no
         # redelivery happened because SIGTERM gives each task a chance
         # to finish + ack.
         counts = await _read_exec_counts(task_ids)
-        assert all(c == 1 for c in counts.values()), (
-            f"expected exec_count=1 for every task, got {counts}"
-        )
+        assert all(c == 1 for c in counts.values()), f"expected exec_count=1 for every task, got {counts}"
 
         # DLQ must be empty.
         assert await _dlq_count(queue) == 0
@@ -247,7 +245,8 @@ async def test_sigterm_with_inflight_completes_gracefully(_cleanup_tasks) -> Non
 # ---------------------------------------------------------------------------
 
 
-async def test_sigkill_with_inflight_redelivers_no_loss_no_dup(_cleanup_tasks) -> None:
+@pytest.mark.usefixtures("_cleanup_tasks")
+async def test_sigkill_with_inflight_redelivers_no_loss_no_dup() -> None:
     """Start worker A, schedule 10 × 3s sleeps, SIGKILL once all are running,
     spin up worker B, expect:
       * all 10 results eventually stored (no loss)
@@ -295,9 +294,7 @@ async def test_sigkill_with_inflight_redelivers_no_loss_no_dup(_cleanup_tasks) -
             # redelivers to whichever consumer subscribes next.
             _crash_worker(proc_a)
             # SIGKILL produces rc = -SIGKILL (-9) on POSIX.
-            assert proc_a.returncode == -signal.SIGKILL, (
-                f"expected -SIGKILL, got rc={proc_a.returncode}"
-            )
+            assert proc_a.returncode == -signal.SIGKILL, f"expected -SIGKILL, got rc={proc_a.returncode}"
 
             # Start worker B — it subscribes to the same queue and
             # will receive the redelivered messages.
@@ -307,12 +304,8 @@ async def test_sigkill_with_inflight_redelivers_no_loss_no_dup(_cleanup_tasks) -
             # Each task sleeps 3s. After SIGKILL and restart, worker B
             # runs each to completion. Allow generous polling.
             results = await app.get_results(task_ids, timeout=30)
-            assert len(results) == N, (
-                f"expected {N} results, got {len(results)}"
-            )
-            assert all(r == "slept:3.0" for r in results), (
-                f"unexpected results: {results}"
-            )
+            assert len(results) == N, f"expected {N} results, got {len(results)}"
+            assert all(r == "slept:3.0" for r in results), f"unexpected results: {results}"
 
             # Clean shutdown of worker B.
             proc_b.send_signal(signal.SIGTERM)
@@ -336,7 +329,8 @@ async def test_sigkill_with_inflight_redelivers_no_loss_no_dup(_cleanup_tasks) -
 # ---------------------------------------------------------------------------
 
 
-async def test_shutdown_during_retry_delay_lands_on_successor(_cleanup_tasks) -> None:
+@pytest.mark.usefixtures("_cleanup_tasks")
+async def test_shutdown_during_retry_delay_lands_on_successor() -> None:
     """Start worker A, schedule an always-fail task with
     ``max_retries=2`` + ``retry_base_delay=1.5``. Wait until the first
     failure has pushed the task into ``{queue}.DQ``. SIGTERM worker A
@@ -387,14 +381,12 @@ async def test_shutdown_during_retry_delay_lands_on_successor(_cleanup_tasks) ->
                 if final_count >= 1:
                     break
                 await asyncio.sleep(0.3)
-            assert final_count == 1, (
-                f"expected 1 DLQ message after retry exhaustion, "
-                f"got {final_count}"
-            )
+            assert final_count == 1, f"expected 1 DLQ message after retry exhaustion, got {final_count}"
 
             # Verify the result is the expected error — confirms the
             # retry landed on worker B and eventually exhausted.
             from swarmq.exceptions import TaskError
+
             with pytest.raises(TaskError, match="always fails"):
                 await app.get_result(task_id, timeout=0)
 

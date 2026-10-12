@@ -17,7 +17,7 @@ import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from swarmq.exceptions import ConfigurationError
 from swarmq.logging import LISTENER_THREAD_NAME, get_logger
@@ -100,9 +100,7 @@ class ForkserverHandle:
         current = forkserver_pid()
         if current is None or current == self.pid:
             return False
-        logger.warning(
-            "forkserver_restarted", previous_pid=self.pid, current_pid=current
-        )
+        logger.warning("forkserver_restarted", previous_pid=self.pid, current_pid=current)
         self.pid = current
         self.threads = threads = check_forkserver_threads(current, proc_root=self.proc_root)
         if threads is not None and threads != 1:
@@ -110,11 +108,13 @@ class ForkserverHandle:
             hint = _thread_hint(names)
             logger.error(
                 "forkserver_restarted_multithreaded",
-                pid=current, threads=threads, thread_names=names, hint=hint,
+                pid=current,
+                threads=threads,
+                thread_names=names,
+                hint=hint,
             )
             raise ForkSourceUnsafe(
-                f"restarted forkserver has {threads} threads {names!r} after "
-                f"preloading {list(self.preload)!r}; {hint}"
+                f"restarted forkserver has {threads} threads {names!r} after preloading {list(self.preload)!r}; {hint}"
             )
         return True
 
@@ -154,8 +154,8 @@ def forkserver_pid() -> int | None:
     try:
         from multiprocessing import forkserver as _fs
 
-        pid = _fs._forkserver._forkserver_pid  # type: ignore[attr-defined]
-    except (ImportError, AttributeError):
+        pid = cast("int | None", _fs._forkserver._forkserver_pid)  # type: ignore[attr-defined]  # pyright: ignore[reportAttributeAccessIssue]  # privates stdlib-Detail (KTD14)
+    except ImportError, AttributeError:
         return None
     return int(pid) if pid is not None else None
 
@@ -164,13 +164,13 @@ def check_forkserver_threads(pid: int, *, proc_root: Path = _PROC_ROOT) -> int |
     """``Threads:`` aus ``/proc/<pid>/status``; ``None`` ohne ``/proc``."""
     try:
         text = (proc_root / str(pid) / "status").read_text(encoding="ascii")
-    except (OSError, UnicodeDecodeError):
+    except OSError, UnicodeDecodeError:
         return None
     for line in text.splitlines():
         if line.startswith("Threads:"):
             try:
                 return int(line.split()[1])
-            except (IndexError, ValueError):
+            except IndexError, ValueError:
                 return None
     return None
 
@@ -186,7 +186,7 @@ def forkserver_thread_names(pid: int, *, proc_root: Path = _PROC_ROOT) -> list[s
     for task in tasks:
         try:
             names.append((task / "comm").read_text(encoding="utf-8").strip())
-        except (OSError, UnicodeDecodeError):
+        except OSError, UnicodeDecodeError:
             continue
     return names
 
@@ -256,11 +256,7 @@ def start_forkserver(
     mit ``ConfigurationError`` ab (Exit 78 ueber U2); ohne ``/proc`` wird
     die Pruefung mit Warnung uebersprungen (KTD14).
     """
-    methods = (
-        list(available_methods)
-        if available_methods is not None
-        else multiprocessing.get_all_start_methods()
-    )
+    methods = list(available_methods) if available_methods is not None else multiprocessing.get_all_start_methods()
     _require_forkserver_support(methods)
     env = configure_compute_environment(
         thread_limit=thread_limit,
@@ -294,8 +290,7 @@ def start_forkserver(
         assert pid is not None
         names = forkserver_thread_names(pid, proc_root=proc_root)
         raise ConfigurationError(
-            f"forkserver has {threads} threads {names!r} after preloading "
-            f"{list(preload)!r}; {_thread_hint(names)}"
+            f"forkserver has {threads} threads {names!r} after preloading {list(preload)!r}; {_thread_hint(names)}"
         )
     logger.info(
         "forkserver_started",
@@ -306,6 +301,10 @@ def start_forkserver(
         env_from_operator=env.kept_from_operator,
     )
     return ForkserverHandle(
-        context=ctx, preload=tuple(preload), pid=pid, threads=threads, proc_root=proc_root,
+        context=ctx,
+        preload=tuple(preload),
+        pid=pid,
+        threads=threads,
+        proc_root=proc_root,
         ensure_running=ensure_running,
     )

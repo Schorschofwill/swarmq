@@ -9,7 +9,8 @@ which needs the names in scope (module-level here, mirroring real usage).
 """
 
 import asyncio
-from collections.abc import AsyncIterable
+from collections.abc import AsyncGenerator
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -48,7 +49,7 @@ class _SvcProvider(Provider):
     tc = from_context(di.TaskContext, scope=Scope.REQUEST)
 
     @provide(scope=Scope.REQUEST)
-    async def svc(self, ctx: di.TaskContext) -> AsyncIterable[_Svc]:
+    async def svc(self, ctx: di.TaskContext) -> AsyncGenerator[_Svc, BaseException | None]:
         s = _Svc(ctx)
         exc = yield s
         FINALIZED.append(type(exc).__name__ if exc is not None else "OK")
@@ -57,6 +58,7 @@ class _SvcProvider(Provider):
 class DiTask(Task):
     task_info = TaskInfo(name="di_task", queues=["default"])
 
+    @override
     async def run(self, x: int, svc: FromDishka[_Svc]) -> int:
         CAPTURED.append(svc.tid)
         return x * 10
@@ -65,13 +67,12 @@ class DiTask(Task):
 class DiFailTask(Task):
     task_info = TaskInfo(name="di_fail", queues=["default"])
 
+    @override
     async def run(self, svc: FromDishka[_Svc]) -> None:
         raise ValueError("boom")
 
 
-
-
-def _payload(task_id: str, name: str, args: list) -> dict:
+def _payload(task_id: str, name: str, args: list[Any]) -> dict[str, Any]:
     return {
         "task": {"id": task_id, "queue": "default", "name": name},
         "args": args,
@@ -88,23 +89,28 @@ def _clear_buffers():
     FINALIZED.clear()
 
 
-@pytest.fixture()
+@pytest.fixture
 def broker():
     b = MagicMock(spec=RabbitMQBroker)
     for m in (
-        "connect", "declare_queue", "consume", "ack", "nack", "close",
-        "cancel_consume", "retry_later",
+        "connect",
+        "declare_queue",
+        "consume",
+        "ack",
+        "nack",
+        "close",
+        "cancel_consume",
+        "retry_later",
         "dead_letter",
     ):
         setattr(b, m, AsyncMock())
     return b
 
 
-@pytest.fixture()
+@pytest.fixture
 def backend():
     be = MagicMock(spec=ValkeyBackend)
-    for m in ("connect", "store_result", "notify_result", "close",
-              "clear_cancel_flag"):
+    for m in ("connect", "store_result", "notify_result", "close", "clear_cancel_flag"):
         setattr(be, m, AsyncMock())
     be.is_cancelled = AsyncMock(return_value=False)
     be.set_cancel_flag = AsyncMock(return_value=True)
@@ -116,11 +122,13 @@ def backend():
     return be
 
 
-@pytest.fixture()
+@pytest.fixture
 def config():
     return SwarmQConfig(
-        broker_url="amqp://localhost", backend_url="valkey://localhost",
-        concurrency=10, queues=["default"],
+        broker_url="amqp://localhost",
+        backend_url="valkey://localhost",
+        concurrency=10,
+        queues=["default"],
     )
 
 
@@ -190,6 +198,7 @@ async def test_no_container_registered_skips_di_path(broker, backend, config):
     class PlainTask(Task):
         task_info = TaskInfo(name="plain_w", queues=["default"])
 
+        @override
         async def run(self, x: int) -> int:
             return x + 1
 

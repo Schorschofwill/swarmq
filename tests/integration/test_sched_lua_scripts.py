@@ -47,14 +47,10 @@ def sched_name() -> str:
 
 class TestSchedPoll:
     async def test_empty_zset_returns_empty_list(self, poll_script):
-        result = await poll_script(
-            keys=[ZSET_KEY, DEFS_KEY], args=[1_700_000_000_000, 100]
-        )
+        result = await poll_script(keys=[ZSET_KEY, DEFS_KEY], args=[1_700_000_000_000, 100])
         assert result == []
 
-    async def test_returns_due_schedules_with_score_and_def(
-        self, valkey_client, poll_script, sched_name
-    ):
+    async def test_returns_due_schedules_with_score_and_def(self, valkey_client, poll_script, sched_name):
         await valkey_client.zadd(ZSET_KEY, {sched_name: 1_000})
         await valkey_client.hset(DEFS_KEY, sched_name, b'{"task":"ping"}')
 
@@ -66,18 +62,14 @@ class TestSchedPoll:
         assert score == b"1000"
         assert def_json == b'{"task":"ping"}'
 
-    async def test_skips_future_schedules(
-        self, valkey_client, poll_script, sched_name
-    ):
+    async def test_skips_future_schedules(self, valkey_client, poll_script, sched_name):
         await valkey_client.zadd(ZSET_KEY, {sched_name: 5_000})
         await valkey_client.hset(DEFS_KEY, sched_name, b'{"task":"ping"}')
 
         result = await poll_script(keys=[ZSET_KEY, DEFS_KEY], args=[1_000, 100])
         assert result == []
 
-    async def test_skips_orphan_zset_entries(
-        self, valkey_client, poll_script, sched_name
-    ):
+    async def test_skips_orphan_zset_entries(self, valkey_client, poll_script, sched_name):
         """Member in zset but no matching def → silently skipped."""
         await valkey_client.zadd(ZSET_KEY, {sched_name: 1_000})
         # intentionally no HSET
@@ -99,9 +91,7 @@ class TestSchedCommitOwnerCheck:
     """Owner-check is the P1-2 guard: a paused leader must not be able
     to overwrite the new leader's state after its lock expired."""
 
-    async def test_owner_match_applies_mutations(
-        self, valkey_client, commit_script, sched_name
-    ):
+    async def test_owner_match_applies_mutations(self, valkey_client, commit_script, sched_name):
         owner = uuid.uuid4().hex
         await valkey_client.set(LOCK_KEY, owner)
         await valkey_client.zadd(ZSET_KEY, {sched_name: 1_000})
@@ -120,9 +110,7 @@ class TestSchedCommitOwnerCheck:
 
         await valkey_client.delete(LOCK_KEY)
 
-    async def test_owner_mismatch_returns_zero_and_no_mutation(
-        self, valkey_client, commit_script, sched_name
-    ):
+    async def test_owner_mismatch_returns_zero_and_no_mutation(self, valkey_client, commit_script, sched_name):
         real_owner = uuid.uuid4().hex
         stale_owner = uuid.uuid4().hex
         await valkey_client.set(LOCK_KEY, real_owner)
@@ -142,9 +130,7 @@ class TestSchedCommitOwnerCheck:
 
         await valkey_client.delete(LOCK_KEY)
 
-    async def test_owner_absent_returns_zero(
-        self, valkey_client, commit_script, sched_name
-    ):
+    async def test_owner_absent_returns_zero(self, valkey_client, commit_script, sched_name):
         # No lock at all — GET returns nil, nil ~= owner
         await valkey_client.zadd(ZSET_KEY, {sched_name: 1_000})
         await valkey_client.hset(DEFS_KEY, sched_name, b'{"orig":1}')
@@ -159,9 +145,7 @@ class TestSchedCommitOwnerCheck:
 
 
 class TestSchedCommitOneShot:
-    async def test_one_shot_removes_without_readd(
-        self, valkey_client, commit_script, sched_name
-    ):
+    async def test_one_shot_removes_without_readd(self, valkey_client, commit_script, sched_name):
         owner = uuid.uuid4().hex
         await valkey_client.set(LOCK_KEY, owner)
         await valkey_client.zadd(ZSET_KEY, {sched_name: 1_000})
@@ -181,9 +165,7 @@ class TestSchedCommitOneShot:
 
         await valkey_client.delete(LOCK_KEY)
 
-    async def test_empty_def_json_triggers_hdel(
-        self, valkey_client, commit_script, sched_name
-    ):
+    async def test_empty_def_json_triggers_hdel(self, valkey_client, commit_script, sched_name):
         owner = uuid.uuid4().hex
         await valkey_client.set(LOCK_KEY, owner)
         await valkey_client.hset(DEFS_KEY, sched_name, b'{"some":"def"}')
@@ -213,9 +195,7 @@ class TestSchedCommitTakeoverGuard:
         finally:
             await valkey_client.delete(LOCK_KEY)
 
-    async def test_changed_def_is_kept_and_score_advances(
-        self, valkey_client, commit_script, sched_name
-    ):
+    async def test_changed_def_is_kept_and_score_advances(self, valkey_client, commit_script, sched_name):
         await valkey_client.zadd(ZSET_KEY, {sched_name: 1_000})
         await valkey_client.hset(DEFS_KEY, sched_name, b'{"taken":"over"}')
 
@@ -225,9 +205,7 @@ class TestSchedCommitTakeoverGuard:
         assert await valkey_client.hget(DEFS_KEY, sched_name) == b'{"taken":"over"}'
         assert float(await valkey_client.zscore(ZSET_KEY, sched_name)) == 2_000.0
 
-    async def test_unchanged_def_is_written_back(
-        self, valkey_client, commit_script, sched_name
-    ):
+    async def test_unchanged_def_is_written_back(self, valkey_client, commit_script, sched_name):
         await valkey_client.zadd(ZSET_KEY, {sched_name: 1_000})
         await valkey_client.hset(DEFS_KEY, sched_name, b'{"polled":1}')
 
@@ -235,7 +213,6 @@ class TestSchedCommitTakeoverGuard:
 
         assert int(result) == 1
         assert await valkey_client.hget(DEFS_KEY, sched_name) == b'{"next":1}'
-
 
 
 class TestSchedReplan:
@@ -252,27 +229,21 @@ class TestSchedReplan:
             args=[sched_name, b'{"read":1}', b'{"healed":1}', 4_000],
         )
 
-    async def test_unchanged_unscored_def_is_planned(
-        self, valkey_client, replan_script, sched_name
-    ):
+    async def test_unchanged_unscored_def_is_planned(self, valkey_client, replan_script, sched_name):
         await valkey_client.hset(DEFS_KEY, sched_name, b'{"read":1}')
 
         assert int(await self._replan(replan_script, sched_name)) == 1
         assert await valkey_client.hget(DEFS_KEY, sched_name) == b'{"healed":1}'
         assert float(await valkey_client.zscore(ZSET_KEY, sched_name)) == 4_000.0
 
-    async def test_disabled_since_read_stays_disabled(
-        self, valkey_client, replan_script, sched_name
-    ):
+    async def test_disabled_since_read_stays_disabled(self, valkey_client, replan_script, sched_name):
         await valkey_client.hset(DEFS_KEY, sched_name, b'{"disabled":true}')
 
         assert int(await self._replan(replan_script, sched_name)) == 0
         assert await valkey_client.hget(DEFS_KEY, sched_name) == b'{"disabled":true}'
         assert await valkey_client.zscore(ZSET_KEY, sched_name) is None
 
-    async def test_scored_since_read_keeps_its_score(
-        self, valkey_client, replan_script, sched_name
-    ):
+    async def test_scored_since_read_keeps_its_score(self, valkey_client, replan_script, sched_name):
         await valkey_client.hset(DEFS_KEY, sched_name, b'{"read":1}')
         await valkey_client.zadd(ZSET_KEY, {sched_name: 2_000})
 
@@ -280,9 +251,7 @@ class TestSchedReplan:
         assert await valkey_client.hget(DEFS_KEY, sched_name) == b'{"read":1}'
         assert float(await valkey_client.zscore(ZSET_KEY, sched_name)) == 2_000.0
 
-    async def test_removed_since_read_is_not_recreated(
-        self, valkey_client, replan_script, sched_name
-    ):
+    async def test_removed_since_read_is_not_recreated(self, valkey_client, replan_script, sched_name):
         assert int(await self._replan(replan_script, sched_name)) == 0
         assert await valkey_client.hexists(DEFS_KEY, sched_name) == 0
         assert await valkey_client.zscore(ZSET_KEY, sched_name) is None

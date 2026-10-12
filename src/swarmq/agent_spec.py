@@ -71,172 +71,269 @@ def _spec_version() -> str:
 # subclass MUST appear; ``build_error_catalog`` raises otherwise, so adding an
 # exception without classifying it fails generation (and the sync test) loudly.
 #
-# Fields: origin ("library"|"task_code"), when (lifecycle stages),
-# retriable ("yes"|"no"|"controlled"|"n/a"), dlq_on_uncaught ("yes"|"no"|"n/a"),
-# exit_code_on_cli (int|None), transport_field (str|None).
+# Fields: origin is library or task_code, when lists lifecycle stages,
+# retriable is yes, no, controlled or n/a, dlq_on_uncaught is yes, no or n/a,
+# exit_code_on_cli is an int or None, transport_field is a str or None.
 _ERROR_SEMANTICS: dict[str, dict[str, Any]] = {
-    "SwarmQError": dict(
-        origin="library", when=["any"], retriable="controlled",
-        dlq_on_uncaught="yes", exit_code_on_cli=1, transport_field="error_class",
-    ),
-    "ConfigurationError": dict(
+    "SwarmQError": {
+        "origin": "library",
+        "when": ["any"],
+        "retriable": "controlled",
+        "dlq_on_uncaught": "yes",
+        "exit_code_on_cli": 1,
+        "transport_field": "error_class",
+    },
+    "ConfigurationError": {
         # `swarmq worker` endet mit EX_CONFIG (78); schedule/dlq/inspect mit 1
         # (siehe CLI-Exit-Codes).
-        origin="library", when=["startup", "cli"], retriable="no",
-        dlq_on_uncaught="n/a", exit_code_on_cli=CONFIG_ERROR_EXIT_CODE,
-        transport_field="stderr line",
-    ),
-    "QueueArgumentsMismatch": dict(
+        "origin": "library",
+        "when": ["startup", "cli"],
+        "retriable": "no",
+        "dlq_on_uncaught": "n/a",
+        "exit_code_on_cli": CONFIG_ERROR_EXIT_CODE,
+        "transport_field": "stderr line",
+    },
+    "QueueArgumentsMismatch": {
         # Eine vorhandene Queue hat andere, nicht uebernehmbare Argumente
         # (BZ-15, Plan 0.12.0, MR 8); ein Neustart aendert nichts.
-        origin="library", when=["startup"], retriable="no",
-        dlq_on_uncaught="n/a", exit_code_on_cli=CONFIG_ERROR_EXIT_CODE,
-        transport_field="stderr line",
-    ),
-    "LoggingConfigError": dict(
+        "origin": "library",
+        "when": ["startup"],
+        "retriable": "no",
+        "dlq_on_uncaught": "n/a",
+        "exit_code_on_cli": CONFIG_ERROR_EXIT_CODE,
+        "transport_field": "stderr line",
+    },
+    "LoggingConfigError": {
         # Ungueltige Logging-Einstellungen enden im Worker mit Exit 78
         # (Plan 2026-10-06-0831, R14).
-        origin="library", when=["startup", "cli"], retriable="no",
-        dlq_on_uncaught="n/a", exit_code_on_cli=78, transport_field="stderr line",
-    ),
-    "BrokerConnectionError": dict(
-        origin="library", when=["startup", "schedule", "run"], retriable="no",
-        dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",
-    ),
-    "PublishIndeterminate": dict(
+        "origin": "library",
+        "when": ["startup", "cli"],
+        "retriable": "no",
+        "dlq_on_uncaught": "n/a",
+        "exit_code_on_cli": 78,
+        "transport_field": "stderr line",
+    },
+    "BrokerConnectionError": {
+        "origin": "library",
+        "when": ["startup", "schedule", "run"],
+        "retriable": "no",
+        "dlq_on_uncaught": "n/a",
+        "exit_code_on_cli": 1,
+        "transport_field": "stderr line",
+    },
+    "PublishIndeterminate": {
         # Absichtlich NICHT retriable: Die Frist riss oder die Verbindung
         # brach (B24) beim Warten auf das Publisher-Confirm, der Broker kann
         # die Nachricht also bereits haben. Ein blindes Wiederholen fuehrt den Task moeglicherweise
         # ein zweites Mal aus (Plan 2026-08-28-001, R11).
-        origin="library", when=["schedule", "run"], retriable="no",
-        dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",
-    ),
-    "SettleFailedAfterPublish": dict(
+        "origin": "library",
+        "when": ["schedule", "run"],
+        "retriable": "no",
+        "dlq_on_uncaught": "n/a",
+        "exit_code_on_cli": 1,
+        "transport_field": "stderr line",
+    },
+    "SettleFailedAfterPublish": {
         # Nur im Worker: die Kopie (Retry/DLQ) ist veroeffentlicht, das Ack
         # des Originals scheiterte; der Broker stellt es neu zu, der
         # Ausfuehrungsschutz ueberspringt es (Plan 2026-10-08-1541, KTD5).
-        origin="library", when=["run"], retriable="no",
-        dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",
-    ),
-    "UnroutableMessage": dict(
+        "origin": "library",
+        "when": ["run"],
+        "retriable": "no",
+        "dlq_on_uncaught": "n/a",
+        "exit_code_on_cli": 1,
+        "transport_field": "stderr line",
+    },
+    "UnroutableMessage": {
         # Die Queue fehlt; dieselbe Nachricht scheitert wieder, bis ein
         # Worker sie deklariert hat. Nichts wurde zugestellt (Plan 0.12.0,
         # MR 6, BZ-03).
-        origin="library", when=["schedule", "run"], retriable="no",
-        dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",
-    ),
-    "MessageHeadersTooLarge": dict(
+        "origin": "library",
+        "when": ["schedule", "run"],
+        "retriable": "no",
+        "dlq_on_uncaught": "n/a",
+        "exit_code_on_cli": 1,
+        "transport_field": "stderr line",
+    },
+    "MessageHeadersTooLarge": {
         # Dieselben Header scheitern wieder; nichts wurde gesendet
         # (Plan 0.12.0, MR 2, BZ-17).
-        origin="library", when=["schedule", "run"], retriable="no",
-        dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",
-    ),
-    "BrokerPublishBlocked": dict(
+        "origin": "library",
+        "when": ["schedule", "run"],
+        "retriable": "no",
+        "dlq_on_uncaught": "n/a",
+        "exit_code_on_cli": 1,
+        "transport_field": "stderr line",
+    },
+    "BrokerPublishBlocked": {
         # Der Broker blockierte die Publish-Verbindung (Ressourcenalarm) bis
         # zur Publish-Frist; nichts wurde gesendet, ein spaeterer Versuch ist
         # sicher (Plan 0.12.0, MR 16, BZ-16).
-        origin="library", when=["schedule", "run"], retriable="yes",
-        dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",
-    ),
-    "PublishRejected": dict(
+        "origin": "library",
+        "when": ["schedule", "run"],
+        "retriable": "yes",
+        "dlq_on_uncaught": "n/a",
+        "exit_code_on_cli": 1,
+        "transport_field": "stderr line",
+    },
+    "PublishRejected": {
         # Der Broker lehnte den Publish fuer diese Queue ueber alle Versuche
         # ab (negatives Confirm, etwa reject-publish); die Verbindung ist
         # gesund (Review MR 15, P2-2).
-        origin="library", when=["schedule", "run"], retriable="yes",
-        dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",
-    ),
-    "BackendConnectionError": dict(
-        origin="library", when=["startup", "schedule", "run"], retriable="no",
-        dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",
-    ),
-    "BackendResponseError": dict(
+        "origin": "library",
+        "when": ["schedule", "run"],
+        "retriable": "yes",
+        "dlq_on_uncaught": "n/a",
+        "exit_code_on_cli": 1,
+        "transport_field": "stderr line",
+    },
+    "BackendConnectionError": {
+        "origin": "library",
+        "when": ["startup", "schedule", "run"],
+        "retriable": "no",
+        "dlq_on_uncaught": "n/a",
+        "exit_code_on_cli": 1,
+        "transport_field": "stderr line",
+    },
+    "BackendResponseError": {
         # Unterklasse von BackendConnectionError: das Backend antwortete mit
         # einem Fehler (WRONGTYPE, Skriptfehler) -- kein Ausfall, kein Backoff.
         # Selbstheilende Antworten (OOM, READONLY, ...) sind kein
         # BackendResponseError, sondern ein Ausfall.
-        origin="library", when=["startup", "schedule", "run"], retriable="no",
-        dlq_on_uncaught="n/a", exit_code_on_cli=1, transport_field="stderr line",
-    ),
-    "TaskNotFoundError": dict(
-        origin="library", when=["schedule"], retriable="no",
-        dlq_on_uncaught="n/a", exit_code_on_cli=None,
-        transport_field="raised to caller",
-    ),
-    "RedeliveryLimitError": dict(
+        "origin": "library",
+        "when": ["startup", "schedule", "run"],
+        "retriable": "no",
+        "dlq_on_uncaught": "n/a",
+        "exit_code_on_cli": 1,
+        "transport_field": "stderr line",
+    },
+    "TaskNotFoundError": {
+        "origin": "library",
+        "when": ["schedule"],
+        "retriable": "no",
+        "dlq_on_uncaught": "n/a",
+        "exit_code_on_cli": None,
+        "transport_field": "raised to caller",
+    },
+    "RedeliveryLimitError": {
         # Nie geworfen: Fehlertyp der DLQ-Kopie, wenn nur ``x-acquired-count``
         # (RabbitMQ 4.3) das Zustelllimit erreicht (Plan 0.12.0, MR 3, BZ-29).
-        origin="library", when=["run"], retriable="no",
-        dlq_on_uncaught="yes", exit_code_on_cli=None,
-        transport_field="error_message, is_error=true",
-    ),
-    "LockWaitExceeded": dict(
+        "origin": "library",
+        "when": ["run"],
+        "retriable": "no",
+        "dlq_on_uncaught": "yes",
+        "exit_code_on_cli": None,
+        "transport_field": "error_message, is_error=true",
+    },
+    "LockWaitExceeded": {
         # Nie geworfen: Fehlertyp der DLQ-Kopie, wenn die Wartezeit auf einen
         # Lock endet (Stillstand des Halters oder SWARMQ_LOCK_WAIT_MAX_S;
         # Plan 0.12.0, MR 13, BZ-05).
-        origin="library", when=["run"], retriable="no",
-        dlq_on_uncaught="yes", exit_code_on_cli=None,
-        transport_field="error_message, is_error=true",
-    ),
-    "TaskError": dict(
-        origin="library", when=["result"], retriable="n/a",
-        dlq_on_uncaught="n/a", exit_code_on_cli=None,
-        transport_field="error_message, is_error=true",
-    ),
-    "TaskCancelledError": dict(
-        origin="library", when=["run", "result"], retriable="no",
-        dlq_on_uncaught="no", exit_code_on_cli=None,
-        transport_field="is_cancelled=true",
-    ),
-    "ResultNotReadyError": dict(
-        origin="library", when=["result"], retriable="no",
-        dlq_on_uncaught="n/a", exit_code_on_cli=None,
-        transport_field="raised to caller",
-    ),
-    "ResultExpiredError": dict(
-        origin="library", when=["result"], retriable="no",
-        dlq_on_uncaught="n/a", exit_code_on_cli=None,
-        transport_field="raised to caller",
-    ),
-    "ResultSerializationError": dict(
-        origin="library", when=["run"], retriable="no",
-        dlq_on_uncaught="yes", exit_code_on_cli=None,
-        transport_field="error_message, is_error=true",
-    ),
-    "Retry": dict(
-        origin="task_code", when=["run"], retriable="yes",
-        dlq_on_uncaught="no", exit_code_on_cli=None, transport_field="control flow",
-    ),
-    "NoRetry": dict(
-        origin="task_code", when=["run"], retriable="no",
-        dlq_on_uncaught="yes", exit_code_on_cli=None, transport_field="control flow",
-    ),
-    "SoftTimeoutError": dict(
-        origin="library", when=["run"], retriable="controlled",
-        dlq_on_uncaught="yes", exit_code_on_cli=None,
-        transport_field="error_message, is_error=true",
-    ),
+        "origin": "library",
+        "when": ["run"],
+        "retriable": "no",
+        "dlq_on_uncaught": "yes",
+        "exit_code_on_cli": None,
+        "transport_field": "error_message, is_error=true",
+    },
+    "TaskError": {
+        "origin": "library",
+        "when": ["result"],
+        "retriable": "n/a",
+        "dlq_on_uncaught": "n/a",
+        "exit_code_on_cli": None,
+        "transport_field": "error_message, is_error=true",
+    },
+    "TaskCancelledError": {
+        "origin": "library",
+        "when": ["run", "result"],
+        "retriable": "no",
+        "dlq_on_uncaught": "no",
+        "exit_code_on_cli": None,
+        "transport_field": "is_cancelled=true",
+    },
+    "ResultNotReadyError": {
+        "origin": "library",
+        "when": ["result"],
+        "retriable": "no",
+        "dlq_on_uncaught": "n/a",
+        "exit_code_on_cli": None,
+        "transport_field": "raised to caller",
+    },
+    "ResultExpiredError": {
+        "origin": "library",
+        "when": ["result"],
+        "retriable": "no",
+        "dlq_on_uncaught": "n/a",
+        "exit_code_on_cli": None,
+        "transport_field": "raised to caller",
+    },
+    "ResultSerializationError": {
+        "origin": "library",
+        "when": ["run"],
+        "retriable": "no",
+        "dlq_on_uncaught": "yes",
+        "exit_code_on_cli": None,
+        "transport_field": "error_message, is_error=true",
+    },
+    "Retry": {
+        "origin": "task_code",
+        "when": ["run"],
+        "retriable": "yes",
+        "dlq_on_uncaught": "no",
+        "exit_code_on_cli": None,
+        "transport_field": "control flow",
+    },
+    "NoRetry": {
+        "origin": "task_code",
+        "when": ["run"],
+        "retriable": "no",
+        "dlq_on_uncaught": "yes",
+        "exit_code_on_cli": None,
+        "transport_field": "control flow",
+    },
+    "SoftTimeoutError": {
+        "origin": "library",
+        "when": ["run"],
+        "retriable": "controlled",
+        "dlq_on_uncaught": "yes",
+        "exit_code_on_cli": None,
+        "transport_field": "error_message, is_error=true",
+    },
     # Workflow primitives (R4.1) — absent from the original markdown table;
     # surfaced + classified by the R5.5 sync test.
-    "WorkflowValidationError": dict(
-        origin="library", when=["schedule", "run"], retriable="no",
-        dlq_on_uncaught="n/a", exit_code_on_cli=None,
-        transport_field="raised to caller",
-    ),
-    "WorkflowNotFound": dict(
-        origin="library", when=["result"], retriable="no",
-        dlq_on_uncaught="n/a", exit_code_on_cli=None,
-        transport_field="raised to caller",
-    ),
-    "WorkflowResultExpired": dict(
-        origin="library", when=["result"], retriable="no",
-        dlq_on_uncaught="n/a", exit_code_on_cli=None,
-        transport_field="raised to caller",
-    ),
-    "WorkflowStateConflict": dict(
-        origin="library", when=["run"], retriable="yes",
-        dlq_on_uncaught="no", exit_code_on_cli=None,
-        transport_field="redelivery of the step message",
-    ),
+    "WorkflowValidationError": {
+        "origin": "library",
+        "when": ["schedule", "run"],
+        "retriable": "no",
+        "dlq_on_uncaught": "n/a",
+        "exit_code_on_cli": None,
+        "transport_field": "raised to caller",
+    },
+    "WorkflowNotFound": {
+        "origin": "library",
+        "when": ["result"],
+        "retriable": "no",
+        "dlq_on_uncaught": "n/a",
+        "exit_code_on_cli": None,
+        "transport_field": "raised to caller",
+    },
+    "WorkflowResultExpired": {
+        "origin": "library",
+        "when": ["result"],
+        "retriable": "no",
+        "dlq_on_uncaught": "n/a",
+        "exit_code_on_cli": None,
+        "transport_field": "raised to caller",
+    },
+    "WorkflowStateConflict": {
+        "origin": "library",
+        "when": ["run"],
+        "retriable": "yes",
+        "dlq_on_uncaught": "no",
+        "exit_code_on_cli": None,
+        "transport_field": "redelivery of the step message",
+    },
 }
 
 
@@ -245,6 +342,7 @@ def _iter_exception_classes() -> list[type]:
     seen: dict[str, type] = {SwarmQError.__name__: SwarmQError}
 
     def walk(cls: type) -> None:
+        sub: type
         for sub in cls.__subclasses__():
             seen.setdefault(sub.__name__, sub)
             walk(sub)
@@ -261,13 +359,9 @@ def _init_params(cls: type) -> list[str]:
     """
     try:
         sig = inspect.signature(cls)
-    except (TypeError, ValueError):  # pragma: no cover - builtins without sig
+    except TypeError, ValueError:  # pragma: no cover - builtins without sig
         return []
-    return [
-        name
-        for name, p in sig.parameters.items()
-        if p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)
-    ]
+    return [name for name, p in sig.parameters.items() if p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)]
 
 
 def build_error_catalog() -> dict[str, Any]:
@@ -285,15 +379,17 @@ def build_error_catalog() -> dict[str, Any]:
                 f"agent error catalog stays complete."
             )
         own_doc = cls.__dict__.get("__doc__")
-        errors.append({
-            "exception_class": f"{cls.__module__}.{name}",
-            "name": name,
-            "parent": cls.__bases__[0].__name__,
-            "module": cls.__module__,
-            "doc": inspect.cleandoc(own_doc) if own_doc else None,
-            "init_params": _init_params(cls),
-            **semantics,
-        })
+        errors.append(
+            {
+                "exception_class": f"{cls.__module__}.{name}",
+                "name": name,
+                "parent": cls.__bases__[0].__name__,
+                "module": cls.__module__,
+                "doc": inspect.cleandoc(own_doc) if own_doc else None,
+                "init_params": _init_params(cls),
+                **semantics,
+            }
+        )
     return {
         "$comment": (
             "Generated by `python -m swarmq.agent_spec`. Do not edit by hand; "
@@ -354,8 +450,7 @@ def build_config_spec() -> dict[str, Any]:
         options.append(entry)
     return {
         "$comment": (
-            "Generated by `python -m swarmq.agent_spec`. Do not edit by hand; "
-            "see tests/unit/test_agent_spec.py."
+            "Generated by `python -m swarmq.agent_spec`. Do not edit by hand; see tests/unit/test_agent_spec.py."
         ),
         "options": options,
     }
@@ -365,31 +460,36 @@ def build_config_spec() -> dict[str, Any]:
 # U3 — CLI spec
 # ---------------------------------------------------------------------------
 
+
 # The `swarmq` binary's exit-code contract. Code 3 is anchored to the real
 # module constant (not a copied literal) so a change there flows through here.
 def _cli_exit_codes() -> list[dict[str, Any]]:
     return [
         {"code": 0, "meaning": "Success or graceful shutdown"},
-        {"code": 1, "meaning": (
-            "Runtime error (ConfigurationError, Broker/BackendConnectionError, "
-            "ModuleNotFoundError)"
-        )},
+        {
+            "code": 1,
+            "meaning": ("Runtime error (ConfigurationError, Broker/BackendConnectionError, ModuleNotFoundError)"),
+        },
         {"code": 2, "meaning": "Bad arguments (argparse usage error)"},
-        {"code": _DLQ_NOT_FOUND_EXIT_CODE, "meaning": (
-            "`dlq inspect` / `dlq retry <task_id>` target not found in the DLQ"
-        )},
-        {"code": CONFIG_ERROR_EXIT_CODE, "meaning": (
-            "Configuration error of `swarmq worker` (EX_CONFIG): "
-            "ConfigurationError, task module not importable, `--configure` "
-            "hook failed, invalid logging settings (LoggingConfigError); "
-            "retrying without a change is pointless. `swarmq check`: a worker "
-            "would refuse to start in this environment (evicting Valkey "
-            "maxmemory-policy under SWARMQ_VALKEY_EVICTION_CHECK=strict)"
-        )},
-        {"code": exit_code_for(KeyboardInterrupt()), "meaning": (
-            "Interrupted by Ctrl-C (KeyboardInterrupt, 128 + SIGINT) outside "
-            "the command's own handling"
-        )},
+        {
+            "code": _DLQ_NOT_FOUND_EXIT_CODE,
+            "meaning": ("`dlq inspect` / `dlq retry <task_id>` target not found in the DLQ"),
+        },
+        {
+            "code": CONFIG_ERROR_EXIT_CODE,
+            "meaning": (
+                "Configuration error of `swarmq worker` (EX_CONFIG): "
+                "ConfigurationError, task module not importable, `--configure` "
+                "hook failed, invalid logging settings (LoggingConfigError); "
+                "retrying without a change is pointless. `swarmq check`: a worker "
+                "would refuse to start in this environment (evicting Valkey "
+                "maxmemory-policy under SWARMQ_VALKEY_EVICTION_CHECK=strict)"
+            ),
+        },
+        {
+            "code": exit_code_for(KeyboardInterrupt()),
+            "meaning": ("Interrupted by Ctrl-C (KeyboardInterrupt, 128 + SIGINT) outside the command's own handling"),
+        },
     ]
 
 
@@ -407,9 +507,7 @@ def _arg_type(action: argparse.Action) -> str:
 def _arg_entry(action: argparse.Action) -> dict[str, Any]:
     positional = not action.option_strings
     name = action.option_strings[0] if action.option_strings else action.dest
-    required = (
-        action.nargs not in ("?", "*") if positional else bool(action.required)
-    )
+    required = action.nargs not in ("?", "*") if positional else bool(action.required)
     entry: dict[str, Any] = {
         "name": name,
         "flags": list(action.option_strings),
@@ -426,10 +524,8 @@ def _arg_entry(action: argparse.Action) -> dict[str, Any]:
     return entry
 
 
-def _walk_commands(
-    parser: argparse.ArgumentParser, prefix: str, out: list[dict[str, Any]]
-) -> None:
-    subactions = [
+def _walk_commands(parser: argparse.ArgumentParser, prefix: str, out: list[dict[str, Any]]) -> None:
+    subactions: list[argparse._SubParsersAction[argparse.ArgumentParser]] = [
         a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
     ]
     if not subactions:
@@ -438,11 +534,13 @@ def _walk_commands(
             for a in parser._actions
             if not isinstance(a, (argparse._HelpAction, argparse._SubParsersAction))
         ]
-        out.append({
-            "path": prefix.strip(),
-            "help": parser.description,
-            "arguments": sorted(args, key=lambda a: a["name"]),
-        })
+        out.append(
+            {
+                "path": prefix.strip(),
+                "help": parser.description,
+                "arguments": sorted(args, key=lambda a: a["name"]),
+            }
+        )
         return
     for sub in subactions:
         for name, subparser in sub.choices.items():
@@ -507,9 +605,7 @@ _MESSAGE_SCHEMAS: dict[str, Callable[[], dict[str, Any]]] = {
     # ProgressInfo (frozen dataclass) and ScheduleDefinition (msgspec.Struct)
     # are real typed sources — schema generated straight off them.
     "messages/progress.schema.json": lambda: msgspec.json.schema(ProgressInfo),
-    "messages/schedule-definition.schema.json": (
-        lambda: msgspec.json.schema(ScheduleDefinition)
-    ),
+    "messages/schedule-definition.schema.json": (lambda: msgspec.json.schema(ScheduleDefinition)),
 }
 
 
@@ -536,8 +632,7 @@ def build_index() -> dict[str, Any]:
     """Manifest of the spec: version + the content parts it ships."""
     return {
         "$comment": (
-            "Generated by `python -m swarmq.agent_spec`. Do not edit by hand; "
-            "see tests/unit/test_agent_spec.py."
+            "Generated by `python -m swarmq.agent_spec`. Do not edit by hand; see tests/unit/test_agent_spec.py."
         ),
         "generated_by": "python -m swarmq.agent_spec",
         "swarmq_version": _spec_version(),
@@ -549,19 +644,17 @@ def build_index() -> dict[str, Any]:
 # the curated entry points; the machine-readable spec links below are derived
 # from _DATA_PARTS so a new spec part cannot be omitted.
 _LLMS_DOC_LINKS: list[tuple[str, str, str]] = [
-    ("Agent reference", "reference/agent/index.md",
-     "rules + entry point for automation"),
-    ("Message formats", "reference/agent/message-formats.md",
-     "wire schemas (prose form of messages/*.schema.json)"),
-    ("Decision trees", "reference/agent/decision-trees.md",
-     "which feature to use when"),
-    ("Error catalog", "reference/agent/error-catalog-machine.md",
-     "exceptions, retriable, dlq_on_uncaught (prose form of errors.json)"),
+    ("Agent reference", "reference/agent/index.md", "rules + entry point for automation"),
+    ("Message formats", "reference/agent/message-formats.md", "wire schemas (prose form of messages/*.schema.json)"),
+    ("Decision trees", "reference/agent/decision-trees.md", "which feature to use when"),
+    (
+        "Error catalog",
+        "reference/agent/error-catalog-machine.md",
+        "exceptions, retriable, dlq_on_uncaught (prose form of errors.json)",
+    ),
     ("CLI reference", "reference/cli.md", "commands and flags"),
-    ("Configuration", "reference/configuration.md",
-     "options, defaults, env vars"),
-    ("Logging", "reference/logging.md",
-     "log events, fields, formats, levels"),
+    ("Configuration", "reference/configuration.md", "options, defaults, env vars"),
+    ("Logging", "reference/logging.md", "log events, fields, formats, levels"),
     ("API reference", "reference/api.md", "public classes and methods"),
 ]
 
@@ -574,25 +667,24 @@ def build_llms_txt() -> str:
     lines = [
         "# SwarmQ",
         "",
-        "> Python task queue on RabbitMQ + Valkey — at-least-once delivery, "
-        "retries, scheduling, workflows, and a machine-readable agent spec.",
+        (
+            "> Python task queue on RabbitMQ + Valkey — at-least-once delivery, "
+            "retries, scheduling, workflows, and a machine-readable agent spec."
+        ),
         "",
-        "The spec files under `reference/agent/spec/` are generated from the "
-        "code and kept in sync by tests, so an agent can consume them without "
-        "reading the source.",
+        (
+            "The spec files under `reference/agent/spec/` are generated from the "
+            "code and kept in sync by tests, so an agent can consume them without "
+            "reading the source."
+        ),
         "",
         "## Documentation",
         "",
     ]
     lines += [f"- [{t}]({u}): {d}" for t, u, d in _LLMS_DOC_LINKS]
     lines += ["", "## Machine-readable spec (generated)", ""]
-    lines.append(
-        "- [Spec index](reference/agent/spec/index.json): version + manifest"
-    )
-    lines += [
-        f"- [{path}](reference/agent/spec/{path})"
-        for path in sorted(_DATA_PARTS)
-    ]
+    lines.append("- [Spec index](reference/agent/spec/index.json): version + manifest")
+    lines += [f"- [{path}](reference/agent/spec/{path})" for path in sorted(_DATA_PARTS)]
     return "\n".join(lines) + "\n"
 
 
@@ -642,7 +734,7 @@ def _main(argv: list[str] | None = None) -> int:
     written = write_spec(spec_dir)
     written.append(write_llms_txt(llms_path))
     for path in written:
-        print(path)
+        print(path)  # noqa: T201 - CLI-Ausgabe der erzeugten Pfade
     return 0
 
 

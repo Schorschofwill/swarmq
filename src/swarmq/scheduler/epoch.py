@@ -33,7 +33,7 @@ class SchedulerEpoch:
         candidate = uuid.uuid4().hex
         try:
             previous = await self._backend.schedules.ensure_epoch(candidate)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Store ohne ensure_epoch lässt Prüfung aus
             logger.debug("valkey_epoch_unavailable", error_type=type(exc).__name__, error=str(exc))
             return
         if previous is not None and not isinstance(previous, str):

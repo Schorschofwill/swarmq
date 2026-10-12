@@ -6,7 +6,7 @@ import hashlib
 import math
 from datetime import date, datetime, time
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any, TypedDict, cast
 from uuid import UUID
 
 import msgpack
@@ -23,9 +23,7 @@ def encode_json(obj: Any) -> bytes:
     try:
         return _json_encoder.encode(obj)
     except (TypeError, msgspec.EncodeError) as exc:
-        raise ResultSerializationError(
-            f"Failed to JSON-encode object of type {type(obj).__name__}: {exc}"
-        ) from exc
+        raise ResultSerializationError(f"Failed to JSON-encode object of type {type(obj).__name__}: {exc}") from exc
 
 
 def decode_json(data: bytes, type_hint: type | None = None) -> Any:
@@ -36,9 +34,7 @@ def decode_json(data: bytes, type_hint: type | None = None) -> Any:
             return decoder.decode(data)
         return _json_decoder.decode(data)
     except (msgspec.DecodeError, msgspec.ValidationError) as exc:
-        raise ResultSerializationError(
-            f"Failed to JSON-decode data: {exc}"
-        ) from exc
+        raise ResultSerializationError(f"Failed to JSON-decode data: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -60,13 +56,10 @@ def _canonical_float(obj: float) -> float:
 
 def _canonical_dict(obj: dict[Any, Any]) -> dict[str, Any]:
     """Sort keys; reject non-str keys (JSON constraint, makes sort stable)."""
-    result = {}
+    result: dict[str, Any] = {}
     for key in sorted(obj.keys()):
         if not isinstance(key, str):
-            raise TypeError(
-                "canonical_encode requires str dict keys; "
-                f"got {type(key).__name__!r}"
-            )
+            raise TypeError(f"canonical_encode requires str dict keys; got {type(key).__name__!r}")
         result[key] = _canonicalize(obj[key])
     return result
 
@@ -76,10 +69,7 @@ def _canonical_set(obj: set[Any] | frozenset[Any]) -> list[Any]:
     try:
         items = sorted(obj)
     except TypeError as exc:
-        raise TypeError(
-            f"canonical_encode cannot sort {type(obj).__name__} "
-            f"with mixed element types: {exc}"
-        ) from exc
+        raise TypeError(f"canonical_encode cannot sort {type(obj).__name__} with mixed element types: {exc}") from exc
     return [_canonicalize(item) for item in items]
 
 
@@ -103,11 +93,11 @@ def _canonicalize(obj: Any) -> Any:
     if isinstance(obj, (datetime, date, time)):
         return obj.isoformat()
     if isinstance(obj, dict):
-        return _canonical_dict(obj)
+        return _canonical_dict(cast("dict[object, object]", obj))
     if isinstance(obj, (list, tuple)):
-        return [_canonicalize(item) for item in obj]
+        return [_canonicalize(item) for item in cast("list[object] | tuple[object, ...]", obj)]
     if isinstance(obj, (set, frozenset)):
-        return _canonical_set(obj)
+        return _canonical_set(cast("set[object] | frozenset[object]", obj))
     if isinstance(obj, (bytes, bytearray, memoryview)):
         raise TypeError(
             "canonical_encode does not support bytes; "
@@ -178,12 +168,10 @@ def _msgpack_default(obj: Any) -> msgpack.ExtType:
     if isinstance(obj, UUID):
         return msgpack.ExtType(_EXT_UUID, str(obj).encode())
     if isinstance(obj, set):
-        return msgpack.ExtType(
-            _EXT_SET, msgpack.packb(list(obj), default=_msgpack_default)
-        )
+        return msgpack.ExtType(_EXT_SET, msgpack.packb(list(cast("set[object]", obj)), default=_msgpack_default))
     if isinstance(obj, frozenset):
         return msgpack.ExtType(
-            _EXT_FROZENSET, msgpack.packb(list(obj), default=_msgpack_default)
+            _EXT_FROZENSET, msgpack.packb(list(cast("frozenset[object]", obj)), default=_msgpack_default)
         )
     raise TypeError(f"Unknown type: {type(obj)}")
 
@@ -195,7 +183,19 @@ def _msgpack_default(obj: Any) -> msgpack.ExtType:
 # default drift and bounds the recursive set/frozenset ext hook with
 # the same numbers. Far above any sane task result; not configurable on
 # purpose — a result this large is a bug, not a tuning knob.
-_UNPACK_LIMITS: dict[str, int] = {
+if TYPE_CHECKING:
+
+    class _UnpackLimits(TypedDict):
+        """Schluessel von ``_UNPACK_LIMITS`` als Keyword-Argumente von ``unpackb``."""
+
+        max_array_len: int
+        max_map_len: int
+        max_str_len: int
+        max_bin_len: int
+        max_ext_len: int
+
+
+_UNPACK_LIMITS: _UnpackLimits = {
     "max_array_len": 1_000_000,
     "max_map_len": 1_000_000,
     "max_str_len": 64 * 1024 * 1024,
@@ -217,17 +217,9 @@ def _msgpack_ext_hook(code: int, data: bytes) -> Any:
     if code == _EXT_UUID:
         return UUID(data.decode())
     if code == _EXT_SET:
-        return set(
-            msgpack.unpackb(
-                data, raw=False, ext_hook=_msgpack_ext_hook, **_UNPACK_LIMITS
-            )
-        )
+        return set(msgpack.unpackb(data, raw=False, ext_hook=_msgpack_ext_hook, **_UNPACK_LIMITS))
     if code == _EXT_FROZENSET:
-        return frozenset(
-            msgpack.unpackb(
-                data, raw=False, ext_hook=_msgpack_ext_hook, **_UNPACK_LIMITS
-            )
-        )
+        return frozenset(msgpack.unpackb(data, raw=False, ext_hook=_msgpack_ext_hook, **_UNPACK_LIMITS))
     # Fail loud on an unknown ext code instead of
     # returning a raw, inert ExtType. An unknown code almost always means
     # schema drift -- a result written by a newer SwarmQ version with an
@@ -244,20 +236,14 @@ def _msgpack_ext_hook(code: int, data: bytes) -> Any:
 def encode_result(obj: Any) -> bytes:
     """Serialize obj to msgpack bytes."""
     try:
-        return msgpack.packb(obj, default=_msgpack_default)  # type: ignore[no-any-return]  # msgpack ist untypisiert
+        return msgpack.packb(obj, default=_msgpack_default)
     except (TypeError, ValueError) as exc:
-        raise ResultSerializationError(
-            f"Failed to msgpack-encode object of type {type(obj).__name__}: {exc}"
-        ) from exc
+        raise ResultSerializationError(f"Failed to msgpack-encode object of type {type(obj).__name__}: {exc}") from exc
 
 
 def decode_result(data: bytes) -> Any:
     """Deserialize msgpack bytes (bounded — see ``_UNPACK_LIMITS``)."""
     try:
-        return msgpack.unpackb(
-            data, raw=False, ext_hook=_msgpack_ext_hook, **_UNPACK_LIMITS
-        )
+        return msgpack.unpackb(data, raw=False, ext_hook=_msgpack_ext_hook, **_UNPACK_LIMITS)
     except Exception as exc:
-        raise ResultSerializationError(
-            f"Failed to msgpack-decode data: {exc}"
-        ) from exc
+        raise ResultSerializationError(f"Failed to msgpack-decode data: {exc}") from exc

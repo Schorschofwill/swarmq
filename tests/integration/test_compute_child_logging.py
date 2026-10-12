@@ -56,7 +56,7 @@ pytestmark = pytest.mark.timeout(60)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
-_TASK_MODULE = '''
+_TASK_MODULE = """
 import logging
 import logging.config
 
@@ -73,11 +73,14 @@ class ChildLoggingTask(Task):
         logging.getLogger("app.task").warning("task_line_%s", tag)
         logging.getLogger("app.task").info("info_line_%s", tag)
         return tag
-'''
+"""
 
 
 def _run(
-    tmp_path: Path, spec: dict[str, Any], app_setup: str = "", extra_env: dict[str, str] | None = None,
+    tmp_path: Path,
+    spec: dict[str, Any],
+    app_setup: str = "",
+    extra_env: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any], str]:
     """Treiber starten; liefert die Ergebniszeile und das stderr aller Prozesse."""
     module = f"child_logging_app_{os.getpid()}_{tmp_path.name}".replace("-", "_")
@@ -85,23 +88,25 @@ def _run(
     env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(tmp_path), str(_REPO_ROOT)]), **(extra_env or {}))
     proc = subprocess.run(
         [sys.executable, "-m", "tests.integration._compute_logging_driver", module, json.dumps(spec)],
-        cwd=_REPO_ROOT, env=env, capture_output=True, text=True, timeout=50,
+        cwd=_REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=50,
+        check=False,
     )
     assert proc.returncode == 0, proc.stderr[-4000:]
     return json.loads(proc.stdout.strip().splitlines()[-1]), proc.stderr
 
 
 def _json_events(stderr: str) -> list[str]:
-    events = []
-    for line in stderr.splitlines():
-        if line.startswith("{"):
-            events.append(json.loads(line)["event"])
-    return events
+    return [json.loads(line)["event"] for line in stderr.splitlines() if line.startswith("{")]
 
 
 def test_builtin_children_follow_the_job_and_the_preload_keeps_one_thread(tmp_path: Path) -> None:
     out, stderr = _run(
-        tmp_path, {"use_di": [False, False, True, True], "job": {"log_json": True, "log_level": "WARNING"}},
+        tmp_path,
+        {"use_di": [False, False, True, True], "job": {"log_json": True, "log_level": "WARNING"}},
     )
 
     assert out["threads"] in (1, None)  # None: kein /proc
@@ -128,9 +133,7 @@ def test_file_mode_children_write_through_the_job_dictconfig(tmp_path: Path) -> 
 
     assert out["results"] == ["j0", "j1", "j2"]
     lines = [line for line in log_file.read_text().splitlines() if "_line_" in line]
-    assert sorted(lines) == sorted(
-        f"{kind}_line_j{i}" for i in range(3) for kind in ("task", "info")
-    )
+    assert sorted(lines) == sorted(f"{kind}_line_j{i}" for i in range(3) for kind in ("task", "info"))
 
 
 def test_app_root_handlers_from_the_preload_win_and_are_reported_once_per_pool(tmp_path: Path) -> None:
@@ -148,7 +151,9 @@ def test_app_root_handlers_from_the_preload_win_and_are_reported_once_per_pool(t
     """
 
     out, stderr = _run(
-        tmp_path, {"use_di": [False, False, True, True], "job": {"log_json": True}}, app_setup,
+        tmp_path,
+        {"use_di": [False, False, True, True], "job": {"log_json": True}},
+        app_setup,
     )
 
     assert out["threads"] in (1, None)
@@ -173,7 +178,8 @@ def test_preloaded_swarmq_with_log_queue_keeps_the_forkserver_single_threaded(tm
     """
 
     out, stderr = _run(
-        tmp_path, {"use_di": [False, False, True], "job": {"log_json": True, "log_level": "WARNING"}},
+        tmp_path,
+        {"use_di": [False, False, True], "job": {"log_json": True, "log_level": "WARNING"}},
         app_setup,
     )
 
@@ -238,11 +244,13 @@ def _assert_single_thread_and_each_line_once(out: dict[str, Any], stderr: str) -
 
 def test_log_after_the_opt_in_at_import_starts_no_thread_in_the_forkserver(tmp_path: Path) -> None:
     app_setup = _OPTIN_APP.format(
-        kwargs="log_queue=True,", after=_LOG_AFTER_OPTIN,
+        kwargs="log_queue=True,",
+        after=_LOG_AFTER_OPTIN,
     )
 
     out, stderr = _run(
-        tmp_path, {"use_di": [False, False, True], "job": {"log_json": True, "log_level": "WARNING"}},
+        tmp_path,
+        {"use_di": [False, False, True], "job": {"log_json": True, "log_level": "WARNING"}},
         app_setup,
     )
 
@@ -252,8 +260,10 @@ def test_log_after_the_opt_in_at_import_starts_no_thread_in_the_forkserver(tmp_p
 
 def test_opt_in_from_the_environment_starts_no_thread_in_the_forkserver(tmp_path: Path) -> None:
     out, stderr = _run(
-        tmp_path, {"use_di": [False, False, True], "job": {"log_json": True, "log_level": "WARNING"}},
-        _OPTIN_APP.format(kwargs="", after=_LOG_AFTER_OPTIN), extra_env={"SWARMQ_LOG_QUEUE": "1"},
+        tmp_path,
+        {"use_di": [False, False, True], "job": {"log_json": True, "log_level": "WARNING"}},
+        _OPTIN_APP.format(kwargs="", after=_LOG_AFTER_OPTIN),
+        extra_env={"SWARMQ_LOG_QUEUE": "1"},
     )
 
     _assert_single_thread_and_each_line_once(out, stderr)
@@ -270,7 +280,8 @@ def test_replacing_the_dishka_container_at_import_starts_no_thread_in_the_forkse
     """
 
     out, stderr = _run(
-        tmp_path, {"use_di": [False, False, True], "job": {"log_json": True, "log_level": "WARNING"}},
+        tmp_path,
+        {"use_di": [False, False, True], "job": {"log_json": True, "log_level": "WARNING"}},
         _OPTIN_APP.format(kwargs="log_queue=True,", after=textwrap.dedent(after)),
     )
 
@@ -283,7 +294,9 @@ def test_a_basicconfig_in_the_preloaded_app_has_no_effect_in_the_children(tmp_pa
     """
 
     out, stderr = _run(
-        tmp_path, {"use_di": [False, False, True], "job": {"log_json": True, "log_level": "INFO"}}, app_setup,
+        tmp_path,
+        {"use_di": [False, False, True], "job": {"log_json": True, "log_level": "INFO"}},
+        app_setup,
     )
 
     assert out["threads"] in (1, None)

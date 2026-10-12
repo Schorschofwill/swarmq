@@ -74,8 +74,8 @@ class SchedulerUnowned:
         """Nach gelesenen Meldungen: die je gemeldeten Namen dazu (Q15: ein
         Store ohne ``known_cron_names`` haelt nichts zurueck)."""
         try:
-            known = frozenset(await schedules.known_cron_names())
-        except Exception as exc:
+            known: frozenset[str] = frozenset(await schedules.known_cron_names())
+        except Exception as exc:  # noqa: BLE001 - Store ohne known_cron_names hält nichts zurück
             self._log.warning("scheduler_known_crons_unavailable", error_type=type(exc).__name__, error=str(exc))
             known = frozenset()
         self._known_names = known

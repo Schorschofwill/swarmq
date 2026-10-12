@@ -12,10 +12,19 @@ Testliste:
 # [x] sehr hoher Versuch (2000) wirft nicht, sondern bleibt beim Deckel
 """
 
+from typing import TypedDict, Unpack
+
 import pytest
 
-from swarmq import backoff
 from swarmq.backoff import calculate_backoff
+
+
+class _BackoffArgs(TypedDict):
+    attempt: int
+    strategy: str
+    base_delay: float
+    max_delay: float
+
 
 _REASON_CAP = (
     "BZ-26: Jitter wird vor dem Deckel angewendet, am Deckel liefern alle "
@@ -23,15 +32,19 @@ _REASON_CAP = (
 )
 
 
-def _backoff_with_uniform(monkeypatch: pytest.MonkeyPatch, value: float, **kwargs: float | int | str) -> float:
+def _backoff_with_uniform(
+    monkeypatch: pytest.MonkeyPatch,
+    value: float,
+    **kwargs: Unpack[_BackoffArgs],
+) -> float:
     """Wartezeit mit fester Zufallsquelle (Grenze ``random.uniform`` gemockt)."""
-    monkeypatch.setattr(backoff.random, "uniform", lambda _lo, _hi: value)
-    return calculate_backoff(**kwargs)  # type: ignore[arg-type]
+    monkeypatch.setattr("swarmq.backoff.random.uniform", lambda _lo, _hi: value)
+    return calculate_backoff(**kwargs)
 
 
 @pytest.mark.befund("BZ-26")
 def test_exponential_backoff_keeps_jitter_at_the_cap(monkeypatch: pytest.MonkeyPatch) -> None:
-    args = {"attempt": 20, "strategy": "exponential", "base_delay": 1.0, "max_delay": 3600.0}
+    args: _BackoffArgs = {"attempt": 20, "strategy": "exponential", "base_delay": 1.0, "max_delay": 3600.0}
 
     low = _backoff_with_uniform(monkeypatch, 1.0, **args)
     high = _backoff_with_uniform(monkeypatch, 2.0, **args)
@@ -41,7 +54,7 @@ def test_exponential_backoff_keeps_jitter_at_the_cap(monkeypatch: pytest.MonkeyP
 
 @pytest.mark.befund("BZ-26")
 def test_linear_backoff_keeps_jitter_at_the_cap(monkeypatch: pytest.MonkeyPatch) -> None:
-    args = {"attempt": 5000, "strategy": "linear", "base_delay": 1.0, "max_delay": 3600.0}
+    args: _BackoffArgs = {"attempt": 5000, "strategy": "linear", "base_delay": 1.0, "max_delay": 3600.0}
 
     low = _backoff_with_uniform(monkeypatch, 1.0, **args)
     high = _backoff_with_uniform(monkeypatch, 2.0, **args)

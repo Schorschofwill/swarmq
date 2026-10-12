@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -15,8 +16,27 @@ from swarmq.metrics import (
 )
 from swarmq.signals import Signal, SignalDispatcher
 
+if TYPE_CHECKING:
+    from prometheus_client import CollectorRegistry
+
+
+def _registry(m: Metrics) -> CollectorRegistry:
+    """Registry einer aktiven ``Metrics``-Instanz (ohne prometheus_client None)."""
+    assert m.registry is not None
+    return m.registry
+
+
+def _child_value(child: object) -> float:
+    """Aktueller Wert eines gelabelten Counter-/Gauge-Kindes."""
+    from prometheus_client import Counter, Gauge
+
+    assert isinstance(child, Counter | Gauge), child
+    value: float = child._value.get()
+    return value
+
+
 # ---------------------------------------------------------------------------
-# Metrics (registry + render)
+# Metrics: Registry und Rendern
 # ---------------------------------------------------------------------------
 
 
@@ -45,7 +65,9 @@ class TestMetrics:
             # Real registry emits a newline-terminated text-exposition
             # frame; the label set we populated must appear.
             m.tasks_total.labels(
-                task_name="t1", queue="q1", outcome="completed",
+                task_name="t1",
+                queue="q1",
+                outcome="completed",
             ).inc()
             body = m.render()
             assert b"swarmq_tasks_total" in body
@@ -76,11 +98,17 @@ class TestInstallSignalCollectors:
             pytest.skip("prometheus_client missing")
 
         await disp.dispatch(
-            Signal.TASK_STARTED, queue="q1", task_name="t1", task_id="x",
+            Signal.TASK_STARTED,
+            queue="q1",
+            task_name="t1",
+            task_id="x",
         )
         await disp.dispatch(
             Signal.TASK_COMPLETED,
-            queue="q1", task_name="t1", task_id="x", duration_ms=125.0,
+            queue="q1",
+            task_name="t1",
+            task_id="x",
+            duration_ms=125.0,
         )
         body = m.render().decode()
         assert 'outcome="completed"' in body
@@ -95,10 +123,16 @@ class TestInstallSignalCollectors:
             pytest.skip("prometheus_client missing")
 
         await disp.dispatch(
-            Signal.TASK_STARTED, queue="q1", task_name="t1", task_id="x",
+            Signal.TASK_STARTED,
+            queue="q1",
+            task_name="t1",
+            task_id="x",
         )
         await disp.dispatch(
-            Signal.TASK_STARTED, queue="q1", task_name="t2", task_id="y",
+            Signal.TASK_STARTED,
+            queue="q1",
+            task_name="t2",
+            task_id="y",
         )
         # Two active.
         body = m.render().decode()
@@ -106,7 +140,9 @@ class TestInstallSignalCollectors:
 
         await disp.dispatch(
             Signal.TASK_FAILED,
-            queue="q1", task_name="t2", task_id="y",
+            queue="q1",
+            task_name="t2",
+            task_id="y",
         )
         body = m.render().decode()
         assert 'swarmq_tasks_active{queue="q1"} 1.0' in body
@@ -120,12 +156,17 @@ class TestInstallSignalCollectors:
 
         await disp.dispatch(
             Signal.TASK_RETRYING,
-            queue="q", task_name="t", task_id="x",
-            retry_count=1, delay=0.5,
+            queue="q",
+            task_name="t",
+            task_id="x",
+            retry_count=1,
+            delay=0.5,
         )
         await disp.dispatch(
             Signal.TASK_RATE_LIMITED,
-            queue="q", task_name="t", task_id="x",
+            queue="q",
+            task_name="t",
+            task_id="x",
         )
         body = m.render().decode()
         assert "swarmq_retries_total" in body
@@ -142,7 +183,10 @@ class TestInstallSignalCollectors:
 
         await disp.dispatch(
             Signal.TASK_DLQ,
-            queue="q", task_name="t", task_id="x", error="boom",
+            queue="q",
+            task_name="t",
+            task_id="x",
+            error="boom",
         )
         body = m.render().decode()
         assert 'outcome="dlq"' in body
@@ -156,22 +200,22 @@ class TestInstallSignalCollectors:
             pytest.skip("prometheus_client missing")
 
         await disp.dispatch(Signal.SCHEDULER_LEADER, worker_id="w1")
-        assert m.scheduler_leader.labels(worker_id="w1")._value.get() == 1
+        assert _child_value(m.scheduler_leader.labels(worker_id="w1")) == 1
 
         # Graceful handover / standby / shutdown all drop it to 0.
         await disp.dispatch(Signal.SCHEDULER_LEADER_HANDOVER, worker_id="w1")
-        assert m.scheduler_leader.labels(worker_id="w1")._value.get() == 0
+        assert _child_value(m.scheduler_leader.labels(worker_id="w1")) == 0
 
         # Failover re-acquire sets it back to 1.
         await disp.dispatch(Signal.SCHEDULER_LEADER_FAILOVER, worker_id="w1")
-        assert m.scheduler_leader.labels(worker_id="w1")._value.get() == 1
+        assert _child_value(m.scheduler_leader.labels(worker_id="w1")) == 1
 
         await disp.dispatch(Signal.WORKER_SHUTDOWN, worker_id="w1")
-        assert m.scheduler_leader.labels(worker_id="w1")._value.get() == 0
+        assert _child_value(m.scheduler_leader.labels(worker_id="w1")) == 0
 
 
 # ---------------------------------------------------------------------------
-# MetricsServer (HTTP)
+# MetricsServer über HTTP
 # ---------------------------------------------------------------------------
 
 
@@ -284,24 +328,32 @@ class TestRejectedCounter:
         install_signal_collectors(dispatcher, m)
 
         await dispatcher.dispatch(
-            Signal.TASK_REJECTED, queue="tasks.high", reason="body_too_large",
-            task_id=None, task_name=None, error="too big",
+            Signal.TASK_REJECTED,
+            queue="tasks.high",
+            reason="body_too_large",
+            task_id=None,
+            task_name=None,
+            error="too big",
         )
         await dispatcher.dispatch(
-            Signal.TASK_REJECTED, queue="tasks.high", reason="body_too_large",
-            task_id=None, task_name=None, error="too big",
+            Signal.TASK_REJECTED,
+            queue="tasks.high",
+            reason="body_too_large",
+            task_id=None,
+            task_name=None,
+            error="too big",
         )
         await dispatcher.dispatch(
-            Signal.TASK_REJECTED, queue="tasks.high", reason="undecodable",
-            task_id=None, task_name=None, error="bad json",
+            Signal.TASK_REJECTED,
+            queue="tasks.high",
+            reason="undecodable",
+            task_id=None,
+            task_name=None,
+            error="bad json",
         )
 
-        assert m.tasks_rejected_total.labels(
-            queue="tasks.high", reason="body_too_large"
-        )._value.get() == 2
-        assert m.tasks_rejected_total.labels(
-            queue="tasks.high", reason="undecodable"
-        )._value.get() == 1
+        assert _child_value(m.tasks_rejected_total.labels(queue="tasks.high", reason="body_too_large")) == 2
+        assert _child_value(m.tasks_rejected_total.labels(queue="tasks.high", reason="undecodable")) == 1
 
     async def test_dlq_outcome_stays_separate(self):
         """R13: ``TASK_DLQ`` zaehlt weiter nur sich selbst."""
@@ -315,10 +367,14 @@ class TestRejectedCounter:
         install_signal_collectors(dispatcher, m)
 
         await dispatcher.dispatch(
-            Signal.TASK_REJECTED, queue="q", reason="undecodable",
-            task_id=None, task_name=None, error="x",
+            Signal.TASK_REJECTED,
+            queue="q",
+            reason="undecodable",
+            task_id=None,
+            task_name=None,
+            error="x",
         )
-        assert m.tasks_total.labels(task_name="", queue="q", outcome="dlq")._value.get() == 0
+        assert _child_value(m.tasks_total.labels(task_name="", queue="q", outcome="dlq")) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -349,7 +405,7 @@ class TestLogRecordsDroppedCounter:
         for _ in range(3):
             handler.enqueue(record)
 
-        assert m.registry.get_sample_value(name) == before + 2
+        assert _registry(m).get_sample_value(name) == before + 2
 
 
 async def test_cron_conflict_signal_increments_conflict_counter():
@@ -364,8 +420,10 @@ async def test_cron_conflict_signal_increments_conflict_counter():
     install_signal_collectors(disp, m)
     for _ in range(2):
         await disp.dispatch(
-            Signal.SCHEDULER_CRON_CONFLICT, worker_id="w",
-            schedule_name="nightly", fingerprints=["a", "b"],
+            Signal.SCHEDULER_CRON_CONFLICT,
+            worker_id="w",
+            schedule_name="nightly",
+            fingerprints=["a", "b"],
         )
     body = m.render().decode()
     assert 'swarmq_scheduler_cron_conflicts_total{schedule_name="nightly"} 2.0' in body
@@ -385,16 +443,22 @@ async def test_leader_outdated_signal_sets_and_clears_gauge():
     sample = "swarmq_scheduler_leader_outdated"
 
     await disp.dispatch(
-        Signal.SCHEDULER_LEADER_OUTDATED, worker_id="w",
-        leader="old:1:aa", leader_version=None, outdated=True,
+        Signal.SCHEDULER_LEADER_OUTDATED,
+        worker_id="w",
+        leader="old:1:aa",
+        leader_version=None,
+        outdated=True,
     )
-    assert m.registry.get_sample_value(sample, {"worker_id": "w"}) == 1.0
+    assert _registry(m).get_sample_value(sample, {"worker_id": "w"}) == 1.0
 
     await disp.dispatch(
-        Signal.SCHEDULER_LEADER_OUTDATED, worker_id="w",
-        leader="new:1:bb", leader_version="0.10.0", outdated=False,
+        Signal.SCHEDULER_LEADER_OUTDATED,
+        worker_id="w",
+        leader="new:1:bb",
+        leader_version="0.10.0",
+        outdated=False,
     )
-    assert m.registry.get_sample_value(sample, {"worker_id": "w"}) == 0.0
+    assert _registry(m).get_sample_value(sample, {"worker_id": "w"}) == 0.0
 
 
 def test_leader_outdated_help_names_the_minimum_version():
@@ -406,7 +470,8 @@ def test_leader_outdated_help_names_the_minimum_version():
     [help_line] = [
         line for line in m.render().decode().splitlines() if line.startswith("# HELP swarmq_scheduler_leader_outdated ")
     ]
-    assert "before 0.12" in help_line and "timezone" not in help_line
+    assert "before 0.12" in help_line
+    assert "timezone" not in help_line
 
 
 def test_consumer_reregistrations_are_counted_per_queue():
@@ -419,7 +484,7 @@ def test_consumer_reregistrations_are_counted_per_queue():
     m.count_consumer_reregistration("q1", "channel_replaced")
 
     sample = "swarmq_consumer_reregistrations_total"
-    assert m.registry.get_sample_value(sample, {"queue": "q1"}) == 2.0
+    assert _registry(m).get_sample_value(sample, {"queue": "q1"}) == 2.0
 
 
 def test_execution_guard_events_are_counted_per_event():
@@ -434,8 +499,8 @@ def test_execution_guard_events_are_counted_per_event():
     m.count_execution_guard_event("lease_lost")
 
     sample = "swarmq_execution_guard_events_total"
-    assert m.registry.get_sample_value(sample, {"event": "duplicate_skipped"}) == 2.0
-    assert m.registry.get_sample_value(sample, {"event": "lease_lost"}) == 1.0
+    assert _registry(m).get_sample_value(sample, {"event": "duplicate_skipped"}) == 2.0
+    assert _registry(m).get_sample_value(sample, {"event": "lease_lost"}) == 1.0
 
 
 async def test_fire_unroutable_signal_increments_unroutable_counter():
@@ -469,11 +534,15 @@ async def test_unknown_task_deferrals_are_counted_per_queue():
 
     for _ in range(2):
         await disp.dispatch(
-            Signal.TASK_UNKNOWN_DEFERRED, task_id="t", task_name="new_task", queue="q1",
-            delay=1.0, unknown_since=0,
+            Signal.TASK_UNKNOWN_DEFERRED,
+            task_id="t",
+            task_name="new_task",
+            queue="q1",
+            delay=1.0,
+            unknown_since=0,
         )
 
-    assert m.registry.get_sample_value("swarmq_tasks_unknown_deferred_total", {"queue": "q1"}) == 2.0
+    assert _registry(m).get_sample_value("swarmq_tasks_unknown_deferred_total", {"queue": "q1"}) == 2.0
 
 
 async def test_scheduler_crons_held_gauge_follows_the_unowned_signal():
@@ -487,8 +556,13 @@ async def test_scheduler_crons_held_gauge_follows_the_unowned_signal():
     sample = "swarmq_scheduler_crons_held"
 
     await disp.dispatch(
-        Signal.SCHEDULER_CRON_UNOWNED, worker_id="w", schedule_name="ghost", task_name="t", held=True, held_count=2,
+        Signal.SCHEDULER_CRON_UNOWNED,
+        worker_id="w",
+        schedule_name="ghost",
+        task_name="t",
+        held=True,
+        held_count=2,
     )
-    assert m.registry.get_sample_value(sample, {"worker_id": "w"}) == 2.0
+    assert _registry(m).get_sample_value(sample, {"worker_id": "w"}) == 2.0
     await disp.dispatch(Signal.SCHEDULER_STANDBY, worker_id="w")
-    assert m.registry.get_sample_value(sample, {"worker_id": "w"}) == 0.0
+    assert _registry(m).get_sample_value(sample, {"worker_id": "w"}) == 0.0

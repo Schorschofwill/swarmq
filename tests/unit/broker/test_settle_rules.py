@@ -37,6 +37,7 @@ Review Phase 2 (2026-10-09):
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -108,9 +109,8 @@ class TestBrokerCancelledTag:
 
         assert setup.message.settled == [("ack", ["tag-1"])]
 
-
     async def test_ack_is_withheld_when_the_own_cancel_does_not_come_in_time(
-        self, setup: Setup, swarmq_logs: list[dict]
+        self, setup: Setup, swarmq_logs: list[dict[str, Any]]
     ) -> None:
         await setup.broker_cancels()  # Wächter läuft nicht: niemand meldet ab
         setup.broker.settle_cancel_wait_s = 0.05
@@ -125,7 +125,7 @@ class TestBrokerCancelledTag:
         assert withheld["wait_s"] == 0.05
         assert "redelivers" in withheld["hint"]
 
-    async def test_deferred_ack_is_logged(self, setup: Setup, swarmq_logs: list[dict]) -> None:
+    async def test_deferred_ack_is_logged(self, setup: Setup, swarmq_logs: list[dict[str, Any]]) -> None:
         await setup.broker_cancels()
         setup.broker.start_consumer_watch(interval_s=3600.0)
 
@@ -180,7 +180,6 @@ class TestClosedChannel:
         with pytest.raises(BrokerConnectionError):
             await setup.broker.ack(setup.delivery)
 
-
     async def test_retry_later_reports_a_failed_ack_after_publish(self, setup: Setup) -> None:
         await setup.broker.consumer_watch.tick()
         setup.underlay.is_closed = True
@@ -190,7 +189,6 @@ class TestClosedChannel:
             await setup.broker.retry_later(setup.delivery, delay_ms=1000, headers={})
 
         setup.broker._publish_with_retry.assert_awaited_once()
-
 
     async def test_dead_letter_reports_a_failed_ack_after_publish(self, setup: Setup) -> None:
         await setup.broker.consumer_watch.tick()

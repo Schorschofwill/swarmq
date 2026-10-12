@@ -92,7 +92,11 @@ async def request_recycle(worker: Any, reason: str, value: float) -> None:
     await worker._signal_dispatcher.dispatch(
         Signal.WORKER_RECYCLING,
         handler_timeout=_DISPATCH_TIMEOUT_S,
-        worker_id=worker._config.worker_identity, kind="worker", slot=None, reason=reason, value=value,
+        worker_id=worker._config.worker_identity,
+        kind="worker",
+        slot=None,
+        reason=reason,
+        value=value,
     )
     channel = current_channel()
     if channel is None:
@@ -116,11 +120,12 @@ async def start_with_bind_retry(start: Callable[[], Awaitable[None]], *, budget_
     while True:
         try:
             await start()
-            return
         except RuntimeError as exc:
             if "bind failed" not in str(exc) or time.monotonic() >= deadline:
                 raise
             await asyncio.sleep(0.25)
+        else:
+            return
 
 
 __all__ = [

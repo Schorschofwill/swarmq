@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -11,6 +12,7 @@ from swarmq.signals import Signal, SignalDispatcher
 # ---------------------------------------------------------------------------
 # 1. Signal Enum has all 14 expected values
 # ---------------------------------------------------------------------------
+
 
 def test_signal_enum_has_task_enqueued():
     assert Signal.TASK_ENQUEUED.value == "task_enqueued"
@@ -90,12 +92,23 @@ def test_signal_enum_contains_all_required_values():
     break this test. Count-based coupling was brittle — api-contract
     AC-07."""
     required = {
-        "TASK_ENQUEUED", "TASK_STARTED", "TASK_COMPLETED", "TASK_FAILED",
-        "TASK_RETRYING", "TASK_CANCELLED", "TASK_EXPIRED", "TASK_LOCKED",
+        "TASK_ENQUEUED",
+        "TASK_STARTED",
+        "TASK_COMPLETED",
+        "TASK_FAILED",
+        "TASK_RETRYING",
+        "TASK_CANCELLED",
+        "TASK_EXPIRED",
+        "TASK_LOCKED",
         "TASK_RATE_LIMITED",
-        "WORKER_ONLINE", "WORKER_SHUTDOWN", "WORKER_HEARTBEAT",
-        "SCHEDULER_LEADER", "SCHEDULER_STANDBY", "SCHEDULER_HEARTBEAT",
-        "SCHEDULER_LEADER_HANDOVER", "SCHEDULER_LEADER_FAILOVER",
+        "WORKER_ONLINE",
+        "WORKER_SHUTDOWN",
+        "WORKER_HEARTBEAT",
+        "SCHEDULER_LEADER",
+        "SCHEDULER_STANDBY",
+        "SCHEDULER_HEARTBEAT",
+        "SCHEDULER_LEADER_HANDOVER",
+        "SCHEDULER_LEADER_FAILOVER",
     }
     existing = {s.name for s in Signal}
     missing = required - existing
@@ -105,6 +118,7 @@ def test_signal_enum_contains_all_required_values():
 # ---------------------------------------------------------------------------
 # 2. SignalDispatcher.connect registers handler
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_connect_registers_handler():
@@ -120,6 +134,7 @@ async def test_connect_registers_handler():
 # ---------------------------------------------------------------------------
 # 3. @on_signal decorator registers handler
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_on_signal_decorator_registers_handler():
@@ -152,6 +167,7 @@ async def test_on_signal_decorator_returns_original_handler():
 # 4. dispatch calls all registered handlers for the signal
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_dispatch_calls_registered_handler():
     dispatcher = SignalDispatcher()
@@ -183,15 +199,14 @@ async def test_dispatch_only_calls_handlers_for_that_signal():
 # 5. dispatch with kwargs → handlers receive kwargs
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_dispatch_passes_kwargs_to_handler():
     dispatcher = SignalDispatcher()
     handler = AsyncMock()
     dispatcher.connect(Signal.TASK_COMPLETED, handler)
 
-    await dispatcher.dispatch(
-        Signal.TASK_COMPLETED, task_id="abc-123", duration_ms=42.5
-    )
+    await dispatcher.dispatch(Signal.TASK_COMPLETED, task_id="abc-123", duration_ms=42.5)
 
     handler.assert_awaited_once_with(task_id="abc-123", duration_ms=42.5)
 
@@ -199,6 +214,7 @@ async def test_dispatch_passes_kwargs_to_handler():
 # ---------------------------------------------------------------------------
 # 6. Multiple handlers for same signal → all called in registration order
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_multiple_handlers_called_in_registration_order():
@@ -227,6 +243,7 @@ async def test_multiple_handlers_called_in_registration_order():
 # 7. Handler raises exception → logged, next handler still runs
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_handler_exception_is_logged_and_next_runs(swarmq_logs):
     dispatcher = SignalDispatcher()
@@ -249,9 +266,7 @@ async def test_handler_exception_is_logged_and_next_runs(swarmq_logs):
     assert calls == ["failing", "succeeding"]
 
     # A warning was logged; the failing handler's error must be captured
-    warning_entries = [
-        entry for entry in logs if entry.get("log_level") == "warning"
-    ]
+    warning_entries = [entry for entry in logs if entry.get("log_level") == "warning"]
     assert warning_entries, "expected a WARNING log entry for handler exception"
     # The failing handler's exception details must be present
     entry = warning_entries[0]
@@ -280,6 +295,7 @@ async def test_handler_exception_does_not_propagate():
 # 8. dispatch for signal with no handlers → no-op (no error)
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_dispatch_with_no_handlers_is_noop():
     dispatcher = SignalDispatcher()
@@ -306,7 +322,7 @@ async def test_task_duplicate_detected_dispatches_with_payload():
     """Signal fires with expected payload keys (existing_task_id,
     task_name, dedup_hash, source)."""
     dispatcher = SignalDispatcher()
-    received: list[dict] = []
+    received: list[dict[str, Any]] = []
 
     @dispatcher.on_signal(Signal.TASK_DUPLICATE_DETECTED)
     async def handler(**kwargs):
@@ -363,7 +379,9 @@ async def test_dispatch_handler_timeout_bounds_hanging_handler():
     started = loop.time()
     await asyncio.wait_for(
         dispatcher.dispatch(
-            Signal.WORKER_SHUTDOWN, handler_timeout=0.1, worker_id="w",
+            Signal.WORKER_SHUTDOWN,
+            handler_timeout=0.1,
+            worker_id="w",
         ),
         timeout=5,
     )
@@ -376,7 +394,7 @@ async def test_dispatch_handler_timeout_bounds_hanging_handler():
 @pytest.mark.asyncio
 async def test_dispatch_without_timeout_keeps_legacy_behaviour():
     dispatcher = SignalDispatcher()
-    received: list[dict] = []
+    received: list[dict[str, Any]] = []
 
     @dispatcher.on_signal(Signal.WORKER_ONLINE)
     async def handler(**kwargs):
@@ -398,7 +416,7 @@ async def test_dispatch_reraises_cancelled_error():
 
     @dispatcher.on_signal(Signal.TASK_COMPLETED)
     async def handler(**kwargs):
-        raise asyncio.CancelledError()
+        raise asyncio.CancelledError
 
     with pytest.raises(asyncio.CancelledError):
         await dispatcher.dispatch(Signal.TASK_COMPLETED, task_id="t")

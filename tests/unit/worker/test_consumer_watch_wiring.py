@@ -88,8 +88,11 @@ async def _stop(worker: Worker, task: asyncio.Task[None]) -> None:
 async def test_ready_reports_every_consumed_queue_including_priorities():
     port = _free_port()
     config = SwarmQConfig(
-        broker_url="amqp://x", backend_url="valkey://x",
-        queues=["default"], priorities=True, health_port=port,
+        broker_url="amqp://x",
+        backend_url="valkey://x",
+        queues=["default"],
+        priorities=True,
+        health_port=port,
     )
     broker = _broker()
     broker.consumer_gaps.return_value = {"default.high": 0.0, "default": 0.0}
@@ -106,8 +109,10 @@ async def test_ready_reports_every_consumed_queue_including_priorities():
 
 async def test_watch_starts_with_the_configured_interval_and_counts_into_the_metric():
     config = SwarmQConfig(
-        broker_url="amqp://x", backend_url="valkey://x",
-        consumer_watch_interval_s=2.0, metrics_port=_free_port(),
+        broker_url="amqp://x",
+        backend_url="valkey://x",
+        consumer_watch_interval_s=2.0,
+        metrics_port=_free_port(),
     )
     broker = _broker()
     worker = Worker(broker=broker, backend=_backend(), registry=TaskRegistry(), config=config)

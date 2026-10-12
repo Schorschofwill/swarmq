@@ -9,23 +9,25 @@ Bewusst ohne swarmq-Importe, damit die Probe nur diese Datei laedt.
 
 from __future__ import annotations
 
-import glob
 import logging
 import os
 import time
+from pathlib import Path
 
 
 class SlowHandler(logging.StreamHandler):  # type: ignore[type-arg]
     def __init__(self, *args, **kwargs) -> None:
         base = os.environ.get("SLOW_LOG_FLAG", "")
-        for flag in sorted(glob.glob(base + ".*")) if base else []:
-            if flag.endswith(".used"):
+        flags = sorted(Path(base).parent.glob(Path(base).name + ".*")) if base else []
+        for flag in flags:
+            if flag.name.endswith(".used"):
                 continue
+            used = flag.with_name(flag.name + ".used")
             try:
-                os.rename(flag, flag + ".used")
+                flag.rename(used)
             except OSError:
                 continue  # ein anderer Prozess war schneller
-            with open(flag + ".used") as fh:
+            with used.open() as fh:
                 time.sleep(float(fh.read() or "5"))
             break
         super().__init__(*args, **kwargs)

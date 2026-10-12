@@ -36,13 +36,13 @@ class ExpiryGate:
         assert task_info is not None
         if task_info.max_age is None:
             return Continue
-        headers = delivery.headers or {}
+        headers: dict[str, Any] = delivery.headers or {}
         enqueued_at = headers.get(HEADER_ENQUEUED_AT)
         if enqueued_at is None:
             return Continue
         try:
             enqueued_ts = int(enqueued_at)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             # Malformed header — treat as non-expiring rather than DLQ
             # on a header-shape bug. An expired task with a corrupt
             # header still gets MAX_RETRIES redeliveries + x-delivery-
@@ -67,7 +67,7 @@ class ExpiryGate:
         # als fehlgeschlagen. Scheitert das voruebergehend, ist die Zustellung
         # neu zugestellt (nicht terminal) -- vor dem Signal, damit es je
         # Ablauf einmal feuert.
-        if deps.fail_workflow is not None and not await deps.fail_workflow(delivery, ctx, error_message, True):
+        if deps.fail_workflow is not None and not await deps.fail_workflow(delivery, ctx, error_message, True):  # noqa: FBT003 - Callable-Feld ohne Parameternamen
             return Redelivered
         await deps.signals.dispatch(
             Signal.TASK_EXPIRED,
@@ -86,14 +86,16 @@ class ExpiryGate:
             try:
                 await deps.backend.store_result(
                     ctx.task_id,
-                    encode_result(build_result_dict(
-                        task_id=ctx.task_id,
-                        queue=ctx.queue,
-                        task_name=ctx.task_name,
-                        is_error=True,
-                        is_cancelled=False,
-                        error_message=error_message,
-                    )),
+                    encode_result(
+                        build_result_dict(
+                            task_id=ctx.task_id,
+                            queue=ctx.queue,
+                            task_name=ctx.task_name,
+                            is_error=True,
+                            is_cancelled=False,
+                            error_message=error_message,
+                        )
+                    ),
                     ttl_ms=ttl_ms,
                     op_timeout=deps.config.backend_op_timeout,
                 )

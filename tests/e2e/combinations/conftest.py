@@ -15,11 +15,20 @@ from __future__ import annotations
 import contextlib
 import os
 import uuid
+from collections.abc import AsyncIterator
 
 import pytest
 
 from swarmq.task import Task
-from tests.support.services import flush_valkey_db, require_safe_valkey_url, valkey_db_url
+from tests.support.services import (
+    RABBITMQ_HOST,
+    RABBITMQ_PORT,
+    VALKEY_HOST,
+    VALKEY_PORT,
+    flush_valkey_db,
+    require_safe_valkey_url,
+    valkey_db_url,
+)
 from tests.support.worker_subprocess import port_open
 
 from ._toxiproxy import (
@@ -30,26 +39,55 @@ from ._toxiproxy import (
 )
 
 _TOXIPROXY_HOST = os.environ.get(
-    "SWARMQ_TEST_TOXIPROXY_HOST", DEFAULT_ADMIN_HOST,
+    "SWARMQ_TEST_TOXIPROXY_HOST",
+    DEFAULT_ADMIN_HOST,
 )
 _TOXIPROXY_PORT = int(
     os.environ.get("SWARMQ_TEST_TOXIPROXY_PORT", str(DEFAULT_ADMIN_PORT)),
 )
 
-# Proxy listen ports — defaults match docker-compose.chaos.yml. The env
-# override lets a standalone Toxiproxy (``--network host``) listen next to
-# the test containers on 5699/6399 when 5673/6380 are taken on the host.
-_RMQ_PROXY_PORT = int(os.environ.get("SWARMQ_TEST_TOXIPROXY_RMQ_PORT", "5673"))
-_VALKEY_PROXY_PORT = int(os.environ.get("SWARMQ_TEST_TOXIPROXY_VALKEY_PORT", "6380"))
+# Proxy listen ports and upstreams. Two layouts:
+# - docker-compose.chaos.yml: the tests point at the compose stack on
+#   5672/6379, Toxiproxy runs in the compose network and listens on
+#   5673/6380 with the service names as upstreams.
+# - Standalone Toxiproxy (``--network host``, docs/testing/test-strategy.md)
+#   next to the test containers (default 5699/6399): it listens one port
+#   below each service (5698/6398) and forwards to the service port. Without
+#   this default a reachable host Toxiproxy got the compose values, whose
+#   upstreams do not resolve in the host network.
+# Every value stays overridable via its SWARMQ_TEST_TOXIPROXY_* variable.
+_COMPOSE_RMQ_PORT = 5672
+_COMPOSE_VALKEY_PORT = 6379
 
-# Upstream service names — must match the docker network. The values default
-# to docker-compose service names; env override lets a non-compose harness
-# (CI service containers without DNS) override to e.g. ``localhost:5672``.
-_RMQ_UPSTREAM = os.environ.get(
-    "SWARMQ_TEST_TOXIPROXY_RMQ_UPSTREAM", "rabbitmq:5672",
+
+def _proxy_defaults(
+    service: str,
+    host: str,
+    port: int,
+    compose_port: int,
+    compose_proxy_port: int,
+) -> tuple[int, str]:
+    if port == compose_port:
+        return compose_proxy_port, f"{service}:{compose_port}"
+    return port - 1, f"{host}:{port}"
+
+
+_RMQ_DEFAULT_PROXY_PORT, _RMQ_DEFAULT_UPSTREAM = _proxy_defaults(
+    "rabbitmq", RABBITMQ_HOST, RABBITMQ_PORT, _COMPOSE_RMQ_PORT, 5673
 )
+_VALKEY_DEFAULT_PROXY_PORT, _VALKEY_DEFAULT_UPSTREAM = _proxy_defaults(
+    "valkey", VALKEY_HOST, VALKEY_PORT, _COMPOSE_VALKEY_PORT, 6380
+)
+_RMQ_PROXY_PORT = int(
+    os.environ.get("SWARMQ_TEST_TOXIPROXY_RMQ_PORT", str(_RMQ_DEFAULT_PROXY_PORT)),
+)
+_VALKEY_PROXY_PORT = int(
+    os.environ.get("SWARMQ_TEST_TOXIPROXY_VALKEY_PORT", str(_VALKEY_DEFAULT_PROXY_PORT)),
+)
+_RMQ_UPSTREAM = os.environ.get("SWARMQ_TEST_TOXIPROXY_RMQ_UPSTREAM", _RMQ_DEFAULT_UPSTREAM)
 _VALKEY_UPSTREAM = os.environ.get(
-    "SWARMQ_TEST_TOXIPROXY_VALKEY_UPSTREAM", "valkey:6379",
+    "SWARMQ_TEST_TOXIPROXY_VALKEY_UPSTREAM",
+    _VALKEY_DEFAULT_UPSTREAM,
 )
 
 
@@ -71,7 +109,7 @@ def toxiproxy_available() -> bool:
 @pytest.fixture
 async def toxiproxy(
     toxiproxy_available: bool,
-) -> ToxiproxyClient:
+) -> AsyncIterator[ToxiproxyClient]:
     """Async ToxiproxyClient — context-managed so any leaked toxics are reset
     on test exit. Skips the test when Toxiproxy is not reachable."""
     if not toxiproxy_available:
@@ -81,7 +119,8 @@ async def toxiproxy(
             "-f docker-compose.chaos.yml up -d`.",
         )
     async with ToxiproxyClient(
-        host=_TOXIPROXY_HOST, port=_TOXIPROXY_PORT,
+        host=_TOXIPROXY_HOST,
+        port=_TOXIPROXY_PORT,
     ) as tp:
         yield tp
 

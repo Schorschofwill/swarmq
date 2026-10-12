@@ -56,6 +56,7 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
+from typing import override
 
 import aio_pika
 import aiormq.abc
@@ -71,6 +72,7 @@ from swarmq.contracts import Delivery
 from swarmq.task import Task, TaskInfo
 from swarmq.worker.settle import contain_delivery_errors
 from tests.support.services import RABBITMQ_42, RABBITMQ_MAIN, RabbitMQNode, require_rabbitmq
+from tests.support.wait import wait_until as poll_until
 from tests.unit._log_capture import capture_swarmq_logs
 
 pytestmark = [pytest.mark.integration]
@@ -333,7 +335,9 @@ async def _consumer_count(node: RabbitMQNode, queue: str) -> int:
     async with connection:
         channel = await connection.channel()
         declared = await channel.declare_queue(queue, passive=True)
-        return int(declared.declaration_result.consumer_count)
+        count = declared.declaration_result.consumer_count
+        assert count is not None
+        return int(count)
 
 
 def _management_consumer_tags(node: RabbitMQNode, queue: str) -> set[str]:
@@ -354,21 +358,19 @@ async def test_43_worker_keeps_consuming_after_timeout_without_zombie(rabbitmq43
 
         task_info = TaskInfo(name="ct_outlives_timeout", queues=[queue])
 
+        @override
         async def run(self) -> str:
-            deadline = time.monotonic() + TIMEOUT_DEADLINE_S
-            while not broker.consumer_watch.self_cancelled_tags and time.monotonic() < deadline:
-                await asyncio.sleep(0.05)
+            await poll_until(lambda: bool(broker.consumer_watch.self_cancelled_tags), TIMEOUT_DEADLINE_S)
             return "slow"
 
     class Quick(Task):
         task_info = TaskInfo(name="ct_quick", queues=[queue])
 
+        @override
         async def run(self) -> str:
             return "quick"
 
-    app = SwarmQ(
-        broker, ValkeyBackend(valkey_url), queues=[queue], concurrency=2, consumer_watch_interval_s=0.5
-    )
+    app = SwarmQ(broker, ValkeyBackend(valkey_url), queues=[queue], concurrency=2, consumer_watch_interval_s=0.5)
     try:
         async with rabbitmq43.consumer_timeout_policy(queue, CONSUMER_TIMEOUT_MS), app:
             await app.broker.declare_queue(queue)  # sonst geht der Publish ins Leere
@@ -466,9 +468,7 @@ async def test_43_late_ack_waits_for_own_cancel_and_wakes_no_zombie(rabbitmq43, 
 
 
 @pytest.mark.timeout(30)
-async def test_42_late_ack_after_channel_close_is_contained_and_new_channel_stays_open(
-    rabbitmq42, broker_consumer_on
-):
+async def test_42_late_ack_after_channel_close_is_contained_and_new_channel_stays_open(rabbitmq42, broker_consumer_on):
     c = await broker_consumer_on(rabbitmq42)
     await c.broker.publish(c.queue, b"A")
     first = await c.next_delivery()
@@ -517,22 +517,26 @@ async def test_long_task_runs_exactly_once_across_the_consumer_timeout(any_rabbi
         class OutlivesTimeout(Task):
             task_info = TaskInfo(name="ct_guard_once", queues=[queue])
 
+            @override
             async def run(self) -> str:
                 runs.append(time.monotonic())
-                deadline = time.monotonic() + TIMEOUT_DEADLINE_S
-                while not _seen("execution_guard_deferred") and time.monotonic() < deadline:
-                    await asyncio.sleep(0.05)
+                await poll_until(lambda: _seen("execution_guard_deferred"), TIMEOUT_DEADLINE_S)
                 return "once"
 
         class Quick(Task):
             task_info = TaskInfo(name="ct_guard_quick", queues=[queue])
 
+            @override
             async def run(self) -> str:
                 return "quick"
 
         app = SwarmQ(
-            broker, ValkeyBackend(valkey_url), queues=[queue], concurrency=2,
-            consumer_watch_interval_s=0.5, execution_guard_ttl_s=2.0,
+            broker,
+            ValkeyBackend(valkey_url),
+            queues=[queue],
+            concurrency=2,
+            consumer_watch_interval_s=0.5,
+            execution_guard_ttl_s=2.0,
         )
         try:
             async with node.consumer_timeout_policy(queue, CONSUMER_TIMEOUT_MS), app:

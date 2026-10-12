@@ -55,7 +55,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
-from typing import Any
+from typing import Any, override
 
 import pytest
 
@@ -140,10 +140,13 @@ async def _running_worker(
         online.set()
 
     if mirror_to is not None:
+
         def _make_forwarder(sig: Signal):
             async def _forward(**payload: Any) -> None:
                 await mirror_to.dispatch(sig, **payload)
+
             return _forward
+
         for _sig in Signal:
             worker_app._signal_dispatcher.connect(_sig, _make_forwarder(_sig))
 
@@ -192,6 +195,7 @@ class TestDLQUniqueForCombo:
                 unique_until="completion",
             )
 
+            @override
             async def run(self, val: int) -> int:
                 completed.set()
                 return val * 2
@@ -203,7 +207,9 @@ class TestDLQUniqueForCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, 5)
@@ -217,14 +223,9 @@ class TestDLQUniqueForCombo:
         app2 = SwarmQ(broker2, backend2, queues=[queue])
         async with app2:
             tid2 = await app2.schedule(task_name, 5)
-        assert tid2 != tid, (
-            "unique flag must be released after task completes; "
-            "re-enqueue must produce a new task_id"
-        )
+        assert tid2 != tid, "unique flag must be released after task completes; re-enqueue must produce a new task_id"
 
-    async def test_unique_released_after_noretry_dlq(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_unique_released_after_noretry_dlq(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Task fails immediately (NoRetry) → lands in DLQ. With
         unique_until="completion", reaching this terminal state releases the
         unique flag (the worker calls _maybe_release_unique on the terminal/DLQ
@@ -245,6 +246,7 @@ class TestDLQUniqueForCombo:
                 unique_until="completion",
             )
 
+            @override
             async def run(self, val: int) -> int:
                 raise NoRetry("always fails")
 
@@ -263,7 +265,9 @@ class TestDLQUniqueForCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, 1)
@@ -280,13 +284,9 @@ class TestDLQUniqueForCombo:
             "unique_until=completion releases the unique flag on the terminal "
             "DLQ move; a subsequent identical enqueue must get a new task_id"
         )
-        assert not dup_signals, (
-            "no duplicate must be detected once the unique flag is released"
-        )
+        assert not dup_signals, "no duplicate must be detected once the unique flag is released"
 
-    async def test_unique_released_after_manual_dlq_clear(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_unique_released_after_manual_dlq_clear(self, rabbitmq_url: str, valkey_url: str) -> None:
         """After the task_id is removed from the backend (simulating operator
         purge), the unique flag is gone and a fresh identical enqueue succeeds
         with a new task_id.
@@ -310,6 +310,7 @@ class TestDLQUniqueForCombo:
                 unique_until="completion",
             )
 
+            @override
             async def run(self, val: int) -> int:
                 raise NoRetry("always fails")
 
@@ -324,7 +325,9 @@ class TestDLQUniqueForCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, 7)
@@ -348,8 +351,7 @@ class TestDLQUniqueForCombo:
             tid_fresh = await app2.schedule(task_name, 7)
 
         assert tid_fresh != tid, (
-            "unique flag must be released after manual DLQ clear; "
-            "re-enqueue must produce a new task_id"
+            "unique flag must be released after manual DLQ clear; re-enqueue must produce a new task_id"
         )
 
 
@@ -382,6 +384,7 @@ class TestDLQRetryResultTTLCombo:
                 result_ttl=60,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 nonlocal attempts
                 attempts += 1
@@ -397,7 +400,9 @@ class TestDLQRetryResultTTLCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, 41)
@@ -406,9 +411,7 @@ class TestDLQRetryResultTTLCombo:
                 assert result == 42
         assert_at_least_once_held(attempts, expected_min=2)
 
-    async def test_result_stored_when_retries_exhausted(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_result_stored_when_retries_exhausted(self, rabbitmq_url: str, valkey_url: str) -> None:
         """After max_retries are exhausted the task is moved to DLQ.
         The backend must have stored a failure result so callers can detect
         the terminal state (TASK_FAILED signal + result lookup)."""
@@ -426,6 +429,7 @@ class TestDLQRetryResultTTLCombo:
                 result_ttl=60,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 nonlocal attempts
                 attempts += 1
@@ -447,7 +451,9 @@ class TestDLQRetryResultTTLCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 await app.schedule(task_name, 0)
@@ -457,13 +463,9 @@ class TestDLQRetryResultTTLCombo:
 
         assert_at_least_once_held(attempts, expected_min=2)  # retried once
         # TASK_FAILED must have been emitted.
-        assert Signal.TASK_FAILED in recorder.emitted_signals, (
-            "TASK_FAILED must be emitted after retry exhaustion"
-        )
+        assert Signal.TASK_FAILED in recorder.emitted_signals, "TASK_FAILED must be emitted after retry exhaustion"
 
-    async def test_get_result_returns_expected_after_dlq_move(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_get_result_returns_expected_after_dlq_move(self, rabbitmq_url: str, valkey_url: str) -> None:
         """get_result on a task that ended in DLQ must raise TaskError or
         return the stored failure indicator — it must NOT hang indefinitely.
 
@@ -484,6 +486,7 @@ class TestDLQRetryResultTTLCombo:
                 result_ttl=60,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 raise NoRetry("immediate fail")
 
@@ -498,7 +501,9 @@ class TestDLQRetryResultTTLCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, 1)
@@ -509,9 +514,7 @@ class TestDLQRetryResultTTLCombo:
                 with pytest.raises((TaskError, Exception)):
                     await app.get_result(tid, timeout=5)
 
-    async def test_result_ttl_applies_to_dlq_result(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_result_ttl_applies_to_dlq_result(self, rabbitmq_url: str, valkey_url: str) -> None:
         """A very short result_ttl causes the stored failure result to expire.
         get_result after TTL expiry must raise ResultExpiredError or similar.
 
@@ -532,6 +535,7 @@ class TestDLQRetryResultTTLCombo:
                 result_ttl=1,  # 1 second TTL
             )
 
+            @override
             async def run(self, val: int) -> int:
                 raise NoRetry("short-ttl fail")
 
@@ -546,7 +550,9 @@ class TestDLQRetryResultTTLCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, 1)
@@ -590,16 +596,17 @@ class TestPreExecuteRaiseSignalCombo:
         class SimpleTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self, val: int) -> int:
                 return val + 1
 
         class TrackingMiddleware(Middleware):
+            @override
             async def pre_execute(self, message: MessageContext) -> None:
                 hooks.append("pre_execute")
 
-            async def post_execute(
-                self, message: MessageContext, result: Any = None
-            ) -> None:
+            @override
+            async def post_execute(self, message: MessageContext, result: Any = None) -> None:
                 hooks.append("post_execute")
                 done.set()
 
@@ -615,7 +622,10 @@ class TestPreExecuteRaiseSignalCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue, middlewares=[TrackingMiddleware()],
+                rabbitmq_url,
+                valkey_url,
+                queue,
+                middlewares=[TrackingMiddleware()],
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, 9)
@@ -630,9 +640,7 @@ class TestPreExecuteRaiseSignalCombo:
             timeout_s=2.0,
         )
 
-    async def test_pre_execute_throw_does_not_abort_task(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_pre_execute_throw_does_not_abort_task(self, rabbitmq_url: str, valkey_url: str) -> None:
         """pre_execute raises — the exception is swallowed by MiddlewareChain.
         Task execution proceeds, TASK_COMPLETED fires (not TASK_FAILED)."""
         queue = _uq("mw-pre-throw")
@@ -643,17 +651,18 @@ class TestPreExecuteRaiseSignalCombo:
         class SimpleTask2(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self, val: int) -> int:
                 return val * 3
 
         class ThrowingPreMiddleware(Middleware):
+            @override
             async def pre_execute(self, message: MessageContext) -> None:
                 hooks.append("pre_execute_raised")
                 raise RuntimeError("pre_execute intentional fail")
 
-            async def post_execute(
-                self, message: MessageContext, result: Any = None
-            ) -> None:
+            @override
+            async def post_execute(self, message: MessageContext, result: Any = None) -> None:
                 hooks.append("post_execute_ran")
                 done.set()
 
@@ -669,29 +678,26 @@ class TestPreExecuteRaiseSignalCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 middlewares=[ThrowingPreMiddleware()],
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, 4)
                 await asyncio.wait_for(done.wait(), timeout=8.0)
                 result = await app.get_result(tid, timeout=5)
-                assert result == 12, (
-                    "task run() must proceed despite pre_execute raise"
-                )
+                assert result == 12, "task run() must proceed despite pre_execute raise"
 
         assert "pre_execute_raised" in hooks
         assert "post_execute_ran" in hooks
         # TASK_FAILED must NOT have fired — only TASK_COMPLETED.
         assert Signal.TASK_FAILED not in recorder.emitted_signals, (
-            "pre_execute raise must NOT emit TASK_FAILED "
-            "(exception is swallowed by MiddlewareChain)"
+            "pre_execute raise must NOT emit TASK_FAILED (exception is swallowed by MiddlewareChain)"
         )
         assert Signal.TASK_COMPLETED in recorder.emitted_signals
 
-    async def test_post_execute_still_runs_when_pre_throws(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_post_execute_still_runs_when_pre_throws(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Even when pre_execute raises, post_execute is called (swallow means
         the exception doesn't abort the chain — the rest of the hooks fire)."""
         queue = _uq("mw-pre-post")
@@ -701,16 +707,17 @@ class TestPreExecuteRaiseSignalCombo:
         class OkTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self, val: int) -> int:
                 return val
 
         class PreThrowPostTrackMiddleware(Middleware):
+            @override
             async def pre_execute(self, message: MessageContext) -> None:
                 raise ValueError("pre_execute bombs")
 
-            async def post_execute(
-                self, message: MessageContext, result: Any = None
-            ) -> None:
+            @override
+            async def post_execute(self, message: MessageContext, result: Any = None) -> None:
                 post_ran.set()
 
         broker = RabbitMQBroker(rabbitmq_url)
@@ -720,7 +727,9 @@ class TestPreExecuteRaiseSignalCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 middlewares=[PreThrowPostTrackMiddleware()],
                 mirror_to=app._signal_dispatcher,
             ):
@@ -728,9 +737,7 @@ class TestPreExecuteRaiseSignalCombo:
                 # post_execute must have run despite pre_execute raising.
                 await asyncio.wait_for(post_ran.wait(), timeout=8.0)
 
-    async def test_task_retried_after_run_raise_not_pre_raise(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_task_retried_after_run_raise_not_pre_raise(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Retry is triggered by run() raising, not by pre_execute raising.
         A pre_execute raise + run() succeeding must NOT trigger retry."""
         queue = _uq("mw-pre-retry")
@@ -740,9 +747,13 @@ class TestPreExecuteRaiseSignalCombo:
 
         class RetryableTask(Task):
             task_info = TaskInfo(
-                name=task_name, queues=[queue], max_retries=3, retry_base_delay=0.1,
+                name=task_name,
+                queues=[queue],
+                max_retries=3,
+                retry_base_delay=0.1,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 nonlocal run_count
                 run_count += 1
@@ -750,6 +761,7 @@ class TestPreExecuteRaiseSignalCombo:
                 return val
 
         class PreThrowMiddleware(Middleware):
+            @override
             async def pre_execute(self, message: MessageContext) -> None:
                 raise RuntimeError("pre_execute always raises")
 
@@ -760,7 +772,9 @@ class TestPreExecuteRaiseSignalCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 middlewares=[PreThrowMiddleware()],
                 mirror_to=app._signal_dispatcher,
             ):
@@ -771,13 +785,10 @@ class TestPreExecuteRaiseSignalCombo:
 
         # run() was called exactly once — pre_execute raise did not cause retry.
         assert run_count == 1, (
-            f"run() must be called once; pre_execute raise must not trigger "
-            f"retry (got run_count={run_count})"
+            f"run() must be called once; pre_execute raise must not trigger retry (got run_count={run_count})"
         )
 
-    async def test_signal_sequence_includes_completion_not_failure(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_signal_sequence_includes_completion_not_failure(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Full signal sequence: TASK_STARTED → TASK_COMPLETED (no TASK_FAILED)
         even when pre_execute raises."""
         queue = _uq("mw-pre-sig")
@@ -787,16 +798,17 @@ class TestPreExecuteRaiseSignalCombo:
         class SigTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self, val: int) -> int:
                 return val
 
         class PreRaiseMW(Middleware):
+            @override
             async def pre_execute(self, message: MessageContext) -> None:
                 raise RuntimeError("signal-sequence pre_execute")
 
-            async def post_execute(
-                self, message: MessageContext, result: Any = None
-            ) -> None:
+            @override
+            async def post_execute(self, message: MessageContext, result: Any = None) -> None:
                 done.set()
 
         broker = RabbitMQBroker(rabbitmq_url)
@@ -811,7 +823,10 @@ class TestPreExecuteRaiseSignalCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue, middlewares=[PreRaiseMW()],
+                rabbitmq_url,
+                valkey_url,
+                queue,
+                middlewares=[PreRaiseMW()],
                 mirror_to=app._signal_dispatcher,
             ):
                 await app.schedule(task_name, 1)
@@ -852,13 +867,13 @@ class TestPostExecuteRaiseRetryCombo:
         class TaskForPost(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self, val: int) -> int:
                 return val + 10
 
         class TrackPostMW(Middleware):
-            async def post_execute(
-                self, message: MessageContext, result: Any = None
-            ) -> None:
+            @override
+            async def post_execute(self, message: MessageContext, result: Any = None) -> None:
                 post_called.set()
 
         broker = RabbitMQBroker(rabbitmq_url)
@@ -868,7 +883,10 @@ class TestPostExecuteRaiseRetryCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue, middlewares=[TrackPostMW()],
+                rabbitmq_url,
+                valkey_url,
+                queue,
+                middlewares=[TrackPostMW()],
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, 32)
@@ -876,9 +894,7 @@ class TestPostExecuteRaiseRetryCombo:
                 result = await app.get_result(tid, timeout=5)
                 assert result == 42
 
-    async def test_post_execute_throw_after_successful_run(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_post_execute_throw_after_successful_run(self, rabbitmq_url: str, valkey_url: str) -> None:
         """post_execute raises after run() succeeds — result is stored,
         get_result returns the correct value, TASK_COMPLETED fires."""
         queue = _uq("mw-post-throw")
@@ -888,13 +904,13 @@ class TestPostExecuteRaiseRetryCombo:
         class SuccessTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self, val: int) -> int:
                 return val * 2
 
         class ThrowingPostMW(Middleware):
-            async def post_execute(
-                self, message: MessageContext, result: Any = None
-            ) -> None:
+            @override
+            async def post_execute(self, message: MessageContext, result: Any = None) -> None:
                 raise RuntimeError("post_execute intentional fail")
 
         broker = RabbitMQBroker(rabbitmq_url)
@@ -913,24 +929,20 @@ class TestPostExecuteRaiseRetryCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 middlewares=[ThrowingPostMW()],
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await app.schedule(task_name, 6)
                 await asyncio.wait_for(completed_event.wait(), timeout=8.0)
                 result = await app.get_result(tid, timeout=5)
-                assert result == 12, (
-                    "result must be stored despite post_execute raise"
-                )
+                assert result == 12, "result must be stored despite post_execute raise"
 
-        assert Signal.TASK_FAILED not in recorder.emitted_signals, (
-            "post_execute raise must NOT emit TASK_FAILED"
-        )
+        assert Signal.TASK_FAILED not in recorder.emitted_signals, "post_execute raise must NOT emit TASK_FAILED"
 
-    async def test_retry_not_triggered_by_post_execute_throw(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_retry_not_triggered_by_post_execute_throw(self, rabbitmq_url: str, valkey_url: str) -> None:
         """post_execute raise must NOT trigger retry (run() succeeded).
         run_count must be 1 even when max_retries > 0."""
         queue = _uq("mw-post-retry")
@@ -940,18 +952,21 @@ class TestPostExecuteRaiseRetryCombo:
 
         class CountedTask(Task):
             task_info = TaskInfo(
-                name=task_name, queues=[queue], max_retries=3, retry_base_delay=0.1,
+                name=task_name,
+                queues=[queue],
+                max_retries=3,
+                retry_base_delay=0.1,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 nonlocal run_count
                 run_count += 1
                 return val
 
         class AlwaysThrowPostMW(Middleware):
-            async def post_execute(
-                self, message: MessageContext, result: Any = None
-            ) -> None:
+            @override
+            async def post_execute(self, message: MessageContext, result: Any = None) -> None:
                 raise RuntimeError("post always raises")
 
         broker = RabbitMQBroker(rabbitmq_url)
@@ -965,7 +980,9 @@ class TestPostExecuteRaiseRetryCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue,
+                rabbitmq_url,
+                valkey_url,
+                queue,
                 middlewares=[AlwaysThrowPostMW()],
                 mirror_to=app._signal_dispatcher,
             ):
@@ -975,13 +992,10 @@ class TestPostExecuteRaiseRetryCombo:
                 await asyncio.sleep(0.5)
 
         assert run_count == 1, (
-            f"run() must be called exactly once; post_execute raise must not "
-            f"trigger retry (got run_count={run_count})"
+            f"run() must be called exactly once; post_execute raise must not trigger retry (got run_count={run_count})"
         )
 
-    async def test_signal_sequence_for_post_execute_failure(
-        self, rabbitmq_url: str, valkey_url: str
-    ) -> None:
+    async def test_signal_sequence_for_post_execute_failure(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Full signal sequence when post_execute raises:
         TASK_STARTED → TASK_COMPLETED (no TASK_FAILED)."""
         queue = _uq("mw-post-sig")
@@ -991,13 +1005,13 @@ class TestPostExecuteRaiseRetryCombo:
         class SigTask2(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self, val: int) -> int:
                 return val
 
         class PostRaiseMW(Middleware):
-            async def post_execute(
-                self, message: MessageContext, result: Any = None
-            ) -> None:
+            @override
+            async def post_execute(self, message: MessageContext, result: Any = None) -> None:
                 done.set()
                 raise RuntimeError("post_execute signal-sequence test")
 
@@ -1013,7 +1027,10 @@ class TestPostExecuteRaiseRetryCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_url, queue, middlewares=[PostRaiseMW()],
+                rabbitmq_url,
+                valkey_url,
+                queue,
+                middlewares=[PostRaiseMW()],
                 mirror_to=app._signal_dispatcher,
             ):
                 await app.schedule(task_name, 2)
@@ -1059,6 +1076,7 @@ class TestBrokerReconnectAtMostOnceCombo:
         class SimpleProxiedTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self, val: int) -> int:
                 done.set()
                 return val
@@ -1108,6 +1126,7 @@ class TestBrokerReconnectAtMostOnceCombo:
         class AtMostOnceTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self, val: int) -> int:
                 nonlocal run_count
                 run_count += 1
@@ -1116,6 +1135,7 @@ class TestBrokerReconnectAtMostOnceCombo:
         class SentinelTask(Task):
             task_info = TaskInfo(name=sentinel_name, queues=[queue])
 
+            @override
             async def run(self) -> None:
                 sentinel_done.set()
 
@@ -1175,6 +1195,7 @@ class TestBrokerReconnectAtMostOnceCombo:
                 retry_base_delay=0.1,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 nonlocal run_count
                 run_count += 1
@@ -1243,6 +1264,7 @@ class TestBrokerReconnectAtMostOnceCombo:
                 retry_base_delay=0.2,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 nonlocal run_count
                 run_count += 1
@@ -1329,6 +1351,7 @@ class TestBackendDownResultStoreCombo:
         class BackendProxiedTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self, val: int) -> int:
                 done.set()
                 return val + 5
@@ -1378,7 +1401,9 @@ class TestBackendDownResultStoreCombo:
 
     @staticmethod
     async def _assert_settled_on_the_broker(
-        broker: RabbitMQBroker, queue: str, gates: _BackendDropGates,
+        broker: RabbitMQBroker,
+        queue: str,
+        gates: _BackendDropGates,
     ) -> None:
         """FAF-4 from the real broker state instead of values derived from
         ``run_count`` (that observation was circular).  Called after the
@@ -1390,7 +1415,8 @@ class TestBackendDownResultStoreCombo:
            queue and its ``.DQ``;
         3. no silent dead-lettering -- ``.XQ`` is empty.
         """
-        assert gates.store_failed.is_set() and gates.rerun_stored.is_set()
+        assert gates.store_failed.is_set()
+        assert gates.rerun_stored.is_set()
         assert await broker.queue_depth(queue) == 0
         assert await broker.dead_letter_depth(queue) == 0
 
@@ -1418,6 +1444,7 @@ class TestBackendDownResultStoreCombo:
                 max_retries=0,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 await gates.enter_run()
                 return val
@@ -1429,19 +1456,28 @@ class TestBackendDownResultStoreCombo:
         recorder = SignalRecorder.attach(
             app._signal_dispatcher,
             signals=[
-                Signal.TASK_STARTED, Signal.TASK_FAILED, Signal.TASK_COMPLETED,
-                Signal.TASK_RETRYING, Signal.TASK_DLQ,
+                Signal.TASK_STARTED,
+                Signal.TASK_FAILED,
+                Signal.TASK_COMPLETED,
+                Signal.TASK_RETRYING,
+                Signal.TASK_DLQ,
             ],
         )
 
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_proxied_url, queue,
+                rabbitmq_url,
+                valkey_proxied_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await self._drop_backend_during_first_store(
-                    toxiproxy, app, task_name, 1, gates,
+                    toxiproxy,
+                    app,
+                    task_name,
+                    1,
+                    gates,
                 )
                 result = await app.get_result(tid, timeout=15)
 
@@ -1449,8 +1485,7 @@ class TestBackendDownResultStoreCombo:
         assert gates.run_count >= 2
         emitted = recorder.emitted_signals
         assert Signal.TASK_FAILED not in emitted, (
-            "a failed result store after a successful run() is not a task "
-            f"failure; signals: {emitted}"
+            f"a failed result store after a successful run() is not a task failure; signals: {emitted}"
         )
         assert Signal.TASK_RETRYING not in emitted
         assert Signal.TASK_DLQ not in emitted
@@ -1482,6 +1517,7 @@ class TestBackendDownResultStoreCombo:
                 retry_base_delay=0.5,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 await gates.enter_run()
                 return val * 2
@@ -1493,11 +1529,17 @@ class TestBackendDownResultStoreCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_proxied_url, queue,
+                rabbitmq_url,
+                valkey_proxied_url,
+                queue,
                 mirror_to=app._signal_dispatcher,
             ):
                 tid = await self._drop_backend_during_first_store(
-                    toxiproxy, app, task_name, 6, gates,
+                    toxiproxy,
+                    app,
+                    task_name,
+                    6,
+                    gates,
                 )
                 result = await app.get_result(tid, timeout=15)
                 assert result == 12
@@ -1534,6 +1576,7 @@ class TestBackendDownResultStoreCombo:
                 retry_base_delay=0.3,
             )
 
+            @override
             async def run(self, val: int) -> int:
                 await gates.enter_run()
                 return val
@@ -1546,7 +1589,11 @@ class TestBackendDownResultStoreCombo:
             await broker.declare_queue(queue)
             async with _running_worker(rabbitmq_url, valkey_proxied_url, queue):
                 tid = await self._drop_backend_during_first_store(
-                    toxiproxy, app, task_name, 1, gates,
+                    toxiproxy,
+                    app,
+                    task_name,
+                    1,
+                    gates,
                 )
                 # The redelivered run completes — the result is durable.
                 assert await app.get_result(tid, timeout=15) == 1
@@ -1578,15 +1625,14 @@ class _BackendDropGates:
         original = ValkeyBackend.store_result
         gates = self
 
-        async def _spy(backend: ValkeyBackend, *args: Any, **kwargs: Any) -> Any:
+        async def _spy(backend: ValkeyBackend, *args: Any, **kwargs: Any) -> None:
             try:
-                stored = await original(backend, *args, **kwargs)
+                await original(backend, *args, **kwargs)
             except BackendConnectionError:
                 gates.store_failed.set()
                 raise
             if gates.redelivered.is_set():
                 gates.rerun_stored.set()
-            return stored
 
         monkeypatch.setattr(ValkeyBackend, "store_result", _spy)
 
@@ -1643,6 +1689,7 @@ class TestLongBackendOutageBeforeStartCombo:
         class OutageTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self, val: int) -> int:
                 runs[val] = runs.get(val, 0) + 1
                 if len(runs) == TestLongBackendOutageBeforeStartCombo.TASKS:
@@ -1657,7 +1704,10 @@ class TestLongBackendOutageBeforeStartCombo:
             async with app:
                 await broker.declare_queue(queue)
                 async with _running_worker(
-                    rabbitmq_url, valkey_proxied_url, queue, backend_defer_max_delay=8.0,
+                    rabbitmq_url,
+                    valkey_proxied_url,
+                    queue,
+                    backend_defer_max_delay=8.0,
                 ):
                     # Abgewiesene Verbindung: Proxy aus, bestehende
                     # Verbindungen fallen, neue werden abgewiesen.
@@ -1679,7 +1729,7 @@ class TestLongBackendOutageBeforeStartCombo:
                     xq_depth = await broker.dead_letter_depth(queue)
 
         assert results == [i * 10 for i in range(self.TASKS)]
-        assert runs == {i: 1 for i in range(self.TASKS)}, f"jeder Task genau einmal: {runs}"
+        assert runs == dict.fromkeys(range(self.TASKS), 1), f"jeder Task genau einmal: {runs}"
         assert xq_depth == 0
         deferred = [e for e in logs if e["event"] == "task_deferred_backend_unavailable"]
         assert deferred, "keine Zurueckstellungs-Warnung geloggt"
@@ -1733,6 +1783,7 @@ class TestSchedfireClaimAcrossBackendOutageCombo:
         class FireTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self) -> str:
                 runs.append("run")
                 return "ok"
@@ -1773,14 +1824,20 @@ class TestSchedfireClaimAcrossBackendOutageCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_proxied_url, queue,
-                backend_defer_base_delay=0.5, backend_defer_max_delay=2.0,
+                rabbitmq_url,
+                valkey_proxied_url,
+                queue,
+                backend_defer_base_delay=0.5,
+                backend_defer_max_delay=2.0,
                 scheduler_inflight_ttl=600,
             ):
-                body = encode_json({
-                    "task": {"id": str(uuid.uuid4()), "queue": queue, "name": task_name},
-                    "args": [], "kwargs": {},
-                })
+                body = encode_json(
+                    {
+                        "task": {"id": str(uuid.uuid4()), "queue": queue, "name": task_name},
+                        "args": [],
+                        "kwargs": {},
+                    }
+                )
                 try:
                     await broker.publish(queue, body, headers={"x-swarmq-schedfire": fire_key})
                     await asyncio.wait_for(cut.wait(), timeout=15.0)
@@ -1843,6 +1900,7 @@ class TestSchedfireRequeueInPlaceAcrossBackendOutageCombo:
         class FireTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue])
 
+            @override
             async def run(self) -> str:
                 runs.append("run")
                 if len(runs) == 1:
@@ -1883,14 +1941,21 @@ class TestSchedfireRequeueInPlaceAcrossBackendOutageCombo:
         async with app:
             await broker.declare_queue(queue)
             async with _running_worker(
-                rabbitmq_url, valkey_proxied_url, queue,
-                backend_defer_base_delay=0.5, backend_defer_max_delay=2.0,
-                backend_op_timeout=1.0, scheduler_inflight_ttl=600,
+                rabbitmq_url,
+                valkey_proxied_url,
+                queue,
+                backend_defer_base_delay=0.5,
+                backend_defer_max_delay=2.0,
+                backend_op_timeout=1.0,
+                scheduler_inflight_ttl=600,
             ):
-                body = encode_json({
-                    "task": {"id": str(uuid.uuid4()), "queue": queue, "name": task_name},
-                    "args": [], "kwargs": {},
-                })
+                body = encode_json(
+                    {
+                        "task": {"id": str(uuid.uuid4()), "queue": queue, "name": task_name},
+                        "args": [],
+                        "kwargs": {},
+                    }
+                )
                 try:
                     await broker.publish(queue, body, headers={"x-swarmq-schedfire": fire_key})
                     # Lauf vorbei, Ergebnis nicht geschrieben, Freigabe
@@ -1928,15 +1993,18 @@ class _RateLimitViaProxyBackend(ValkeyBackend):
         super().__init__(url)
         self._rate_limit_backend = ValkeyBackend(rate_limit_url)
 
+    @override
     async def connect(self) -> None:
         await super().connect()
         await self._rate_limit_backend.connect()
 
+    @override
     async def close(self) -> None:
         await self._rate_limit_backend.close()
         await super().close()
 
     @property
+    @override
     def rate_limit(self) -> Any:
         return self._rate_limit_backend.rate_limit
 
@@ -1977,6 +2045,7 @@ class TestRateLimitBlackholeCombo:
         class LimitedTask(Task):
             task_info = TaskInfo(name=task_name, queues=[queue], rate_limit="100/s")
 
+            @override
             async def run(self, val: int) -> int:
                 runs.append(val)
                 done.set()
@@ -1984,8 +2053,7 @@ class TestRateLimitBlackholeCombo:
 
         def _rl_deferrals(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
             return [
-                e for e in logs
-                if e["event"] == "task_deferred_backend_unavailable" and e.get("gate") == "rate_limit"
+                e for e in logs if e["event"] == "task_deferred_backend_unavailable" and e.get("gate") == "rate_limit"
             ]
 
         broker = RabbitMQBroker(rabbitmq_url)
@@ -1997,12 +2065,19 @@ class TestRateLimitBlackholeCombo:
             async with app:
                 await broker.declare_queue(queue)
                 async with _running_worker(
-                    rabbitmq_url, valkey_url, queue, backend=worker_backend,
+                    rabbitmq_url,
+                    valkey_url,
+                    queue,
+                    backend=worker_backend,
                     backend_op_timeout=self.OP_TIMEOUT_S,
-                    backend_defer_base_delay=0.5, backend_defer_max_delay=1.0,
+                    backend_defer_base_delay=0.5,
+                    backend_defer_max_delay=1.0,
                 ):
                     toxic = await toxiproxy.add_toxic(
-                        "valkey", "timeout", attributes={"timeout": 0}, stream="downstream",
+                        "valkey",
+                        "timeout",
+                        attributes={"timeout": 0},
+                        stream="downstream",
                     )
                     try:
                         started = time.monotonic()

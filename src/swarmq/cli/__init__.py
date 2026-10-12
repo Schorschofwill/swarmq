@@ -26,15 +26,16 @@ import argparse
 # dotted-path lookup still needs this name bound at the facade level.
 import asyncio
 import importlib
-import json  # noqa: F401
+import json as json
 import os
-import re  # noqa: F401
+import re as re
 import sys
-import time  # noqa: F401
+import time as time
 import traceback
 from collections.abc import Sequence
-from datetime import UTC, datetime  # noqa: F401
-from pathlib import Path  # noqa: F401
+from datetime import UTC as UTC
+from datetime import datetime as datetime
+from pathlib import Path as Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -42,7 +43,7 @@ if TYPE_CHECKING:
     from swarmq.broker.rabbitmq import RabbitMQBroker
     from swarmq.logging_settings import LoggingSettings
 
-import msgspec  # noqa: F401
+import msgspec as msgspec
 
 from swarmq.cli import env_check_cmd
 from swarmq.cli._shared import (
@@ -97,13 +98,11 @@ from swarmq.exceptions import (
     BrokerConnectionError,
     ConfigurationError,
 )
-from swarmq.locking import SCHEDULER_LOCK_KEY  # noqa: F401
+from swarmq.locking import SCHEDULER_LOCK_KEY as SCHEDULER_LOCK_KEY
 from swarmq.logging import get_logger
-from swarmq.scheduler import (
-    ScheduleDefinition,  # noqa: F401
-    ScheduleStore,  # noqa: F401
-)
-from swarmq.serialization import compute_dedup_hash  # noqa: F401
+from swarmq.scheduler import ScheduleDefinition as ScheduleDefinition
+from swarmq.scheduler import ScheduleStore as ScheduleStore
+from swarmq.serialization import compute_dedup_hash as compute_dedup_hash
 
 # Submodule imports — the symbols they define become swarmq.cli.* attributes.
 # ``SwarmQ`` is served via the lazy ``__getattr__`` below to avoid pulling
@@ -111,7 +110,7 @@ from swarmq.serialization import compute_dedup_hash  # noqa: F401
 # / structlog / asyncio.base_events) on every ``swarmq --help``. The
 # subcommand handlers that actually need ``SwarmQ`` import it locally.
 from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
-from swarmq.task import Task  # noqa: F401
+from swarmq.task import Task as Task
 
 logger = get_logger(__name__)
 
@@ -157,6 +156,7 @@ def __dir__() -> list[str]:
     re-eagerifying the imports.
     """
     return [*globals(), *_LAZY_SURFACE]
+
 
 # ``__all__`` controls two contracts at once:
 #
@@ -262,9 +262,11 @@ def _setup_worker_logging(args: argparse.Namespace) -> LoggingSettings:
         # KTD9: einmal hier absolut aufloesen und pruefen; die Kinder bekommen
         # die gepruefte Konfiguration und lesen die Datei nie -- weder ein
         # anderes Arbeitsverzeichnis noch eine spaetere Aenderung wirkt dort.
-        path = os.path.abspath(settings.log_config)
+        path = os.path.abspath(settings.log_config)  # noqa: PTH100 - abspath normalisiert ohne Symlinks aufzulösen
         settings = dataclasses.replace(
-            settings, log_config=path, log_config_json=load_log_config(path),
+            settings,
+            log_config=path,
+            log_config_json=load_log_config(path),
         )
     configure_logging(settings)
     return settings
@@ -362,7 +364,9 @@ def _run_worker_command(args: argparse.Namespace) -> int:
 
     try:
         return run_multi_process_worker(
-            args, admin_factory=_admin_factory, setpoint_store_factory=_setpoint_store_factory,
+            args,
+            admin_factory=_admin_factory,
+            setpoint_store_factory=_setpoint_store_factory,
             logging_settings=logging_settings,
         )
     except KeyboardInterrupt:
@@ -406,7 +410,8 @@ def _startup_error_classes() -> tuple[type[BaseException], ...]:
         from valkey.exceptions import TimeoutError as _ValkeyTimeoutError
 
         _valkey_errs: tuple[type[BaseException], ...] = (
-            _ValkeyConnError, _ValkeyTimeoutError,
+            _ValkeyConnError,
+            _ValkeyTimeoutError,
         )
     except ImportError:  # pragma: no cover — valkey is a hard dep, defensive only
         _valkey_errs = ()

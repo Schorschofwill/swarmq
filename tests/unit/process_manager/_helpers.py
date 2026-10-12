@@ -3,32 +3,47 @@
 from __future__ import annotations
 
 import os
+from typing import Any
 from unittest.mock import MagicMock
 
 from swarmq.process_manager import (
     WorkerConfig,
 )
+from swarmq.process_manager.slots import WorkerInfo
+from swarmq.supervision import SupervisorChannel
 
 
-def _make_test_cfg(**overrides) -> WorkerConfig:
+def as_mock(obj: object) -> MagicMock:
+    """Gibt ``obj`` als MagicMock zurueck; Tests ersetzen ``_ctx``/Prozesse durch Mocks."""
+    assert isinstance(obj, MagicMock)
+    return obj
+
+
+def channel_of(info: WorkerInfo) -> SupervisorChannel:
+    """Kontrollkanal eines gestarteten Workers (nach ``_start_worker`` immer gesetzt)."""
+    assert info.channel is not None
+    return info.channel
+
+
+def _make_test_cfg(**overrides: Any) -> WorkerConfig:
     """Return a minimal WorkerConfig for unit tests (pickle-safe)."""
-    defaults = dict(
-        module="dummy.module",
-        queues=("default",),
-        concurrency=1,
-        log_level="ERROR",
-        log_format="human",
-        burst=False,
-        burst_idle_timeout=5.0,
-        priorities=False,
-        metrics_port=None,
-        health_port=None,
-    )
+    defaults: dict[str, Any] = {
+        "module": "dummy.module",
+        "queues": ("default",),
+        "concurrency": 1,
+        "log_level": "ERROR",
+        "log_format": "human",
+        "burst": False,
+        "burst_idle_timeout": 5.0,
+        "priorities": False,
+        "metrics_port": None,
+        "health_port": None,
+    }
     defaults.update(overrides)
     return WorkerConfig(**defaults)
 
 
-def _fake_process(alive: bool = True, exitcode: int | None = None, pid: int = 1234):
+def _fake_process(alive: bool = True, exitcode: int | None = None, pid: int = 1234) -> MagicMock:
     p = MagicMock()
     p.is_alive.return_value = alive
     p.exitcode = exitcode
@@ -38,7 +53,7 @@ def _fake_process(alive: bool = True, exitcode: int | None = None, pid: int = 12
 
 def _entry_stub(worker_id, shutdown_event, *args):
     """No-op entry — never actually invoked in these unit tests."""
-    return None
+    return
 
 
 def _instant_crash_entry(worker_id, shutdown_event, *args):

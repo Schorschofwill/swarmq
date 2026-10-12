@@ -259,7 +259,6 @@ class RabbitMQDelivery(RabbitMQDeclarations):
             in_flight.append(pub)
             try:
                 await pub.default_exchange.publish(msg, routing_key=routing_key)
-                return
             except PublishError as exc:
                 # basic.return: keine Queue mit diesem Namen. Eine Wiederholung
                 # aendert daran nichts; vor DeliveryError fangen (Unterklasse).
@@ -305,6 +304,8 @@ class RabbitMQDelivery(RabbitMQDeclarations):
                 # dem aiormqs Reader endete): nach dem Senden ebenso unbestimmt.
                 _raise_if_sent(routing_key, exc)
                 raise
+            else:
+                return
         # Review MR 15, P2-2: ein negatives Confirm haengt an der Queue, nicht
         # an der Verbindung (der Scheduler zaehlt es nicht fuer den Ruecktritt).
         error = PublishRejected if isinstance(last_exc, DeliveryError) else BrokerConnectionError
