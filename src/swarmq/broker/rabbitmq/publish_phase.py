@@ -24,9 +24,22 @@ falsch, ein erneutes Senden koennte doppelt ausfuehren.
 from __future__ import annotations
 
 import asyncio
+from types import FrameType
 
 _PUBLISH_FUNCTION = "basic_publish"
 _DRAIN_LOCAL = "drain_future"
+_CONFIRM_LOCAL = "confirmation"
+
+
+def _publish_frame(exc: BaseException) -> FrameType | None:
+    """Der Rahmen von aiormqs ``basic_publish`` im Traceback von *exc*."""
+    tb = exc.__traceback__
+    while tb is not None:
+        frame = tb.tb_frame
+        if frame.f_code.co_name == _PUBLISH_FUNCTION and str(frame.f_globals.get("__name__", "")).startswith("aiormq"):
+            return frame
+        tb = tb.tb_next
+    return None
 
 
 def sent_before_failure(exc: BaseException) -> bool:
@@ -34,13 +47,35 @@ def sent_before_failure(exc: BaseException) -> bool:
     geschrieben hatte; ``False``, wenn die Ausnahme vor dem Schreiben kam
     (auch ausserhalb von ``basic_publish``, etwa ``ChannelInvalidStateError``
     aus aio-pika)."""
-    tb = exc.__traceback__
-    while tb is not None:
-        frame = tb.tb_frame
-        if frame.f_code.co_name == _PUBLISH_FUNCTION and str(frame.f_globals.get("__name__", "")).startswith("aiormq"):
-            drain = frame.f_locals.get(_DRAIN_LOCAL)
-            if not isinstance(drain, asyncio.Future):
-                return True
-            return drain.done() and not drain.cancelled() and drain.exception() is None
-        tb = tb.tb_next
-    return False
+    frame = _publish_frame(exc)
+    if frame is None:
+        return False
+    drain = frame.f_locals.get(_DRAIN_LOCAL)
+    if not isinstance(drain, asyncio.Future):
+        return True
+    return drain.done() and not drain.cancelled() and drain.exception() is None
+
+
+def collect_orphaned_confirm(exc: BaseException) -> None:
+    """Holt die Ausnahme des Confirm-Futures ab, auf das nach *exc* niemand
+    mehr wartet.
+
+    aiormq legt das Future vor dem Schreiben an. Endet ``basic_publish``
+    schon davor (gescheiterter Drain), lehnt der Verbindungsabriss es spaeter
+    oder gleichzeitig ab, und asyncio meldet beim Einsammeln "Future
+    exception was never retrieved". Die Ausnahme hat der Publish bereits
+    selbst gemeldet; abgeholt wird nur dieses eine Future."""
+    frame = _publish_frame(exc)
+    if frame is None:
+        return
+    confirmation = frame.f_locals.get(_CONFIRM_LOCAL)
+    if isinstance(confirmation, asyncio.Future):
+        if confirmation.done():
+            _collect(confirmation)
+        else:
+            confirmation.add_done_callback(_collect)
+
+
+def _collect(future: asyncio.Future[object]) -> None:
+    if not future.cancelled():
+        future.exception()

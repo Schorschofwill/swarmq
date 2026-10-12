@@ -25,11 +25,19 @@ Test-Liste:
       AMQPConnectionError -> SettleFailedAfterPublish statt roh
 - [x] dead_letter: Abriss beim Confirm der Kopie -> PublishIndeterminate,
       Original unbestaetigt
+- [x] pamqp-Framefehler, bevor der Frame geschrieben ist -> Wiederholung wie
+      bei AMQPConnectionError (nichts gesendet), nicht roh
+- [x] Abriss vor dem Schreiben: das verwaiste Confirm-Future wird abgeholt,
+      asyncio meldet kein "Future exception was never retrieved"
+- [x] Aufrufer bricht ab, bevor der Frame geschrieben ist (``wait_for``), der
+      Abriss kommt danach: auch dieses Confirm wird abgeholt
 """
 
 from __future__ import annotations
 
 import asyncio
+import gc
+from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
@@ -188,3 +196,87 @@ async def test_dead_letter_losing_the_copy_confirm_is_indeterminate_and_keeps_th
     with pytest.raises(PublishIndeterminate):
         await dead_letter
     delivery.handle.ack.assert_not_awaited()
+
+
+async def test_a_reader_failure_before_the_frame_was_written_retries_on_a_new_channel() -> None:
+    """Endet aiormqs Reader an einem kaputten Frame, ist die Verbindung tot
+    wie bei ``AMQPConnectionError``; gesendet wurde nichts."""
+    first, second = FakeTransport(), FakeTransport()
+    broker = _broker(first, second)
+    publish = asyncio.create_task(broker.publish("tasks", b"{}"))
+
+    await first.next_frame()
+    first.lose_connection(pamqp.exceptions.AMQPFrameError(b"\x00"))
+    frame = await _frame_or_outcome(second, publish)
+    frame.drain()
+    second.confirm_all()
+
+    receipt = await publish
+    assert receipt.queue == "tasks"
+
+
+async def _callbacks_ran() -> None:
+    """Wartet, bis die bis jetzt eingeplanten Loop-Callbacks gelaufen sind
+    (etwa Done-Callbacks eines eben abgelehnten Futures); FIFO-Reihenfolge."""
+    ran = asyncio.Event()
+    asyncio.get_running_loop().call_soon(ran.set)
+    await ran.wait()
+
+
+@pytest.fixture
+async def unretrieved() -> AsyncIterator[list[str]]:
+    """Meldungen "Future exception was never retrieved" des Loops. asyncio
+    meldet sie, wenn ein Future mit unabgeholter Ausnahme eingesammelt wird."""
+    loop = asyncio.get_running_loop()
+    previous = loop.get_exception_handler()
+    messages: list[str] = []
+
+    def handler(_loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
+        if "never retrieved" in str(context.get("message", "")):
+            messages.append(repr(context.get("exception")))
+
+    loop.set_exception_handler(handler)
+    try:
+        yield messages
+    finally:
+        loop.set_exception_handler(previous)
+
+
+async def test_the_orphaned_confirm_of_a_failed_drain_is_retrieved(unretrieved: list[str]) -> None:
+    """aiormq legt das Confirm-Future vor dem Schreiben an. Scheitert schon
+    das Schreiben, wartet niemand mehr darauf; seine Ausnahme aus dem
+    Verbindungsabriss blieb unabgeholt (Loadsuite v0.12.0rc1)."""
+    first, second = FakeTransport(retrieve_rejected=False), FakeTransport()
+    broker = _broker(first, second)
+    publish = asyncio.create_task(broker.publish("tasks", b"{}"))
+
+    await first.next_frame()
+    first.lose_connection(AMQPConnectionError(_LOST))
+    frame = await _frame_or_outcome(second, publish)
+    frame.drain()
+    second.confirm_all()
+    await publish
+    await _callbacks_ran()
+    first.forget_futures()
+    gc.collect()
+
+    assert unretrieved == []
+
+
+async def test_the_orphaned_confirm_of_a_cancelled_publish_is_retrieved(unretrieved: list[str]) -> None:
+    """Die Loadsuite brach einen Dispatch per ``wait_for`` ab, waehrend der
+    Publish noch schrieb; der spaetere Abriss lehnte das Confirm ab."""
+    transport = FakeTransport(retrieve_rejected=False)
+    broker = _broker(transport)
+    publish = asyncio.create_task(broker.publish("tasks", b"{}"))
+
+    await transport.next_frame()
+    publish.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await publish
+    transport.lose_connection(AMQPConnectionError(_LOST))
+    await _callbacks_ran()
+    transport.forget_futures()
+    gc.collect()
+
+    assert unretrieved == []

@@ -33,7 +33,10 @@ class FakeTransport:
     publisher_confirms = True
     max_content_size = 131072
 
-    def __init__(self) -> None:
+    def __init__(self, *, retrieve_rejected: bool = True) -> None:
+        # ``False``: abgelehnte Futures bleiben unabgeholt wie in aiormq, damit
+        # ein Test asyncios "Future exception was never retrieved" sieht.
+        self._retrieve_rejected = retrieve_rejected
         self.lock = asyncio.Lock()
         self.delivery_tag = 0
         self.confirmations: OrderedDict[int, Any] = OrderedDict()
@@ -65,9 +68,16 @@ class FakeTransport:
         for future in self._futures:
             if not future.done():
                 future.set_exception(exc)
-                # Ein Confirm, auf das nach einem gescheiterten Drain niemand
-                # mehr wartet, meldete asyncio sonst als "never retrieved".
-                future.add_done_callback(_retrieve)
+                if self._retrieve_rejected:
+                    # Ein Confirm, auf das nach einem gescheiterten Drain niemand
+                    # mehr wartet, meldete asyncio sonst als "never retrieved".
+                    future.add_done_callback(_retrieve)
+
+    def forget_futures(self) -> None:
+        """Gibt die Futures frei (wie aiormq nach dem Ablehnen), damit die
+        Garbage Collection sie einsammelt."""
+        self._futures.clear()
+        self.confirmations.clear()
 
 
 def _retrieve(future: asyncio.Future[Any]) -> None:

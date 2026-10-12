@@ -14,6 +14,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import aio_pika
+import pamqp.exceptions
 from aio_pika.exceptions import (
     AMQPChannelError,
     AMQPConnectionError,
@@ -50,12 +51,17 @@ _PING_TIMEOUT_S = 2.0
 # der Basisklasse von ``ConnectionClosed`` ("Server connection unexpectedly
 # closed"). Ob ein Publish damit wiederholt werden darf, entscheidet
 # ``_publish_attempts`` nach der Phase, nicht nach dem Typ.
+# ``PAMQPException``: Endet aiormqs Reader an einem kaputten oder
+# unlesbaren Frame, lehnt er die offenen Futures mit dem pamqp-Fehler ab; die
+# Verbindung ist dann tot wie bei ``AMQPConnectionError``. Das Schreiben
+# (Marshalling) wirft keine pamqp-Fehler, nur ``TypeError``/``ValueError``.
 _CHANNEL_TRANSIENT_ERRORS: tuple[type[BaseException], ...] = (
     ChannelInvalidStateError,
     ChannelClosed,
     AMQPChannelError,
     ConnectionClosed,
     AMQPConnectionError,
+    pamqp.exceptions.PAMQPException,
     asyncio.CancelledError,
 )
 _PUBLISH_MAX_ATTEMPTS = 5

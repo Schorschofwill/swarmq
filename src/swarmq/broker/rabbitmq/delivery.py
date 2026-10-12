@@ -29,7 +29,7 @@ from swarmq.broker.rabbitmq.connection import (
 from swarmq.broker.rabbitmq.consumer_watch import ConsumerWatch, ReregisteredHook
 from swarmq.broker.rabbitmq.declarations import RabbitMQDeclarations
 from swarmq.broker.rabbitmq.header_guard import guard_headers, negotiated_frame_max
-from swarmq.broker.rabbitmq.publish_phase import sent_before_failure
+from swarmq.broker.rabbitmq.publish_phase import collect_orphaned_confirm, sent_before_failure
 from swarmq.broker.rabbitmq.redeclare import publish_redeclaring_once
 from swarmq.contracts import Delivery, DeliveryCallback, PublishReceipt
 from swarmq.exceptions import (
@@ -280,6 +280,7 @@ class RabbitMQDelivery(RabbitMQDeclarations):
                 if attempt < _PUBLISH_MAX_ATTEMPTS - 1:
                     await asyncio.sleep(0.05 * (2**attempt))
             except _CHANNEL_TRANSIENT_ERRORS as exc:
+                collect_orphaned_confirm(exc)
                 # Distinguish task-level cancellation from aio_pika's
                 # internal drain cancellation. If our own task is being
                 # cancelled, propagate.
