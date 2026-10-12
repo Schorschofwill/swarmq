@@ -24,7 +24,7 @@ except SwarmQError as exc:
 | `LoggingConfigError` | `ConfigurationError` | Logging-Konfigurationsdatei (`--log-config`) nicht ladbar oder ungültig |
 | `QueueArgumentsMismatch` | `ConfigurationError` | Eine vorhandene Queue hat andere Argumente als die Konfiguration, die swarmq nicht übernehmen kann (etwa ein geänderter `SWARMQ_QUEUE_TYPE`) |
 | `BrokerConnectionError` | `SwarmQError` | RabbitMQ nicht erreichbar |
-| `PublishIndeterminate` | `BrokerConnectionError` | Ein Publish hat seine Frist gerissen; ob er ankam, ist unbekannt |
+| `PublishIndeterminate` | `BrokerConnectionError` | Ein Publish ist gesendet, hat aber vor dem Confirm seine Frist gerissen oder die Verbindung verloren; ob er ankam, ist unbekannt |
 | `SettleFailedAfterPublish` | `BrokerConnectionError` | Worker-intern: Eine Retry- oder Dead-Letter-Kopie ist veröffentlicht, nur das Ack des Originals scheiterte |
 | `MessageHeadersTooLarge` | `BrokerConnectionError` | Die Nachrichten-Header passen auch mit gekürzten Texten nicht in die Hälfte von `frame_max`; nichts wurde gesendet |
 | `UnroutableMessage` | `BrokerConnectionError` | Der Broker hat einen Publish zurückgegeben: Es gibt keine Queue mit diesem Namen; nichts wurde zugestellt |
@@ -157,12 +157,17 @@ die unbestätigte Nachricht neu zu.
 
 !!! warning "Ein Deadline-Fehler heißt nicht, dass nichts gesendet wurde"
 
-    Lautet die Meldung `exceeded the publish deadline`, ist die Zustellung
-    **unbestimmt**: Die Frist reißt beim Warten auf die Bestätigung des
-    Brokers, er kann die Nachricht also bereits haben. Ein Wiederholversuch
-    kann den Task ein zweites Mal ausführen. Das unterscheidet diesen Fall
-    von allen anderen hier genannten Ursachen, bei denen nichts gesendet
-    wurde.
+    Lautet die Meldung `exceeded the publish deadline` oder `lost the
+    connection while waiting for the broker's confirm`, ist die Zustellung
+    **unbestimmt**: Die Nachricht ist gesendet, und beim Warten auf die
+    Bestätigung des Brokers ist die Frist gerissen oder die Verbindung
+    abgebrochen; er kann die Nachricht also bereits haben. Ein
+    Wiederholversuch kann den Task ein zweites Mal ausführen. Das
+    unterscheidet diesen Fall von allen anderen hier genannten Ursachen,
+    bei denen nichts gesendet wurde. swarmq sendet eine solche Nachricht nie
+    selbst erneut; reißt die Verbindung, bevor die Nachricht auf den Socket
+    geschrieben ist, wiederholt swarmq intern und meldet, wenn das nicht
+    hilft, ein einfaches `BrokerConnectionError`.
 
     Ein mit `unique_for` eingereihter Task **ist** geschützt: swarmq lässt
     die Dedup-Sperre in genau diesem Fall stehen, statt sie freizugeben. Ein
@@ -440,11 +445,14 @@ class LongJob(Task):
 
 **Wann geraist.** Von `schedule()`, `schedule_many()`, `run()` und
 `apply()`, wenn ein Publish beim Warten auf das Publisher-Confirm des
-Brokers `SWARMQ_PUBLISH_TIMEOUT_S` überschreitet. Subklasse von
+Brokers `SWARMQ_PUBLISH_TIMEOUT_S` überschreitet oder Verbindung oder
+Kanal in dieser Phase abbrechen (etwa ein Broker-Neustart oder eine
+Netztrennung direkt nach dem Senden). Subklasse von
 `BrokerConnectionError`.
 
 **Ursache.** Broker oder Netz sind nach dem Senden der Nachricht
-hängen geblieben; der Broker hat sie vielleicht, vielleicht nicht.
+hängen geblieben oder abgebrochen; der Broker hat sie vielleicht,
+vielleicht nicht.
 
 **Recovery.** Die Zustellung als unbekannt behandeln. Nur wiederholen,
 wenn der Task idempotent ist oder mit `unique_for` eingereiht wurde
@@ -453,7 +461,9 @@ Fenster wird also abgewiesen statt doppelt zu laufen). Siehe die Warnung
 unter [`BrokerConnectionError`](#brokerconnectionerror). Ein
 Scheduler-Leader zählt den Fehler nicht für den Rücktritt: Ausbleibende
 Confirms hängen meist an einer Queue (etwa einer Quorum-Queue ohne
-Quorum), nicht an der Verbindung des Leaders.
+Quorum), nicht an der Verbindung des Leaders. Nach einem
+Verbindungsabbruch scheitern die folgenden Publishes, die nichts senden,
+als `BrokerConnectionError` und zählen.
 
 ```python
 from swarmq import BrokerConnectionError, PublishIndeterminate

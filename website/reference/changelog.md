@@ -4,6 +4,29 @@ All notable changes to SwarmQ. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **B24: a connection loss while waiting for the publisher confirm is
+  `PublishIndeterminate`, no longer a raw `AMQPConnectionError`.** When
+  the broker connection broke after a message was sent but before the
+  broker confirmed it (broker restart, network cut), `schedule()` and
+  the other publish paths ended with `aiormq.exceptions.AMQPConnectionError`.
+  The message had usually arrived and ran; a producer that retried, as
+  documented for `BrokerConnectionError`, ran the task twice, and
+  `schedule()` released the `unique_for` claim. swarmq now tells the
+  phases apart: if the message was written to the socket, the publish
+  ends as `PublishIndeterminate` and swarmq does not resend it (this
+  also applies to a closed channel and to aio-pika's internal
+  cancellation, which swarmq used to resend); if the connection broke
+  before that, swarmq retries as before and ends with
+  `BrokerConnectionError` if that fails. The worker's retry and
+  dead-letter copies, workflow steps, scheduler fires and `swarmq dlq
+  retry` get the same distinction. An ack that fails with
+  `AMQPConnectionError` is now a `BrokerConnectionError`
+  ([`PublishIndeterminate`](errors.md#publishindeterminate)).
+
 ## [0.12.0rc1] — 2026-10-11
 
 Release candidate for 0.12.0 (install with `pip install --pre`). It fixes the findings of the review
