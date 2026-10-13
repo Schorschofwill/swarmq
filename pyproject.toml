@@ -58,7 +58,14 @@ test = [
     "pytest",
     "pytest-asyncio",
     "pytest-timeout",
-    "pytest-cov",
+    # Reihenfolge in jedem Lauf gemischt (Plan 2026-10-13-0902, KTD3). Im
+    # Extra statt ``uv run --with``: dort zeigt sys.prefix auf ein Overlay.
+    "pytest-randomly>=5.0",
+    # Gemessen wird mit ``coverage run -m pytest`` (KTD5), nicht pytest-cov:
+    # dessen eigene Unterprozess-Messung ist seit 7.0 entfallen, und
+    # ``[tool.coverage.run] patch`` deckt Eltern und Kinder einheitlich ab.
+    # 7.16.2: Korrekturen der Zweig-Messung unter 3.14.
+    "coverage>=7.16.2",
     # E2E-Hardening Phase 2+ — toxiproxy REST + property-based + fuzz
     "httpx",
     "hypothesis",
@@ -98,8 +105,17 @@ typing = [
     "types-psutil",
 ]
 
+# just als Einstiegspunkt für lokal und CI (KTD9); ``uv run just …``.
+tasks = [
+    "rust-just>=1.58",
+]
+# Nur der Combine-Job der CI braucht diff-cover (KTD8).
+coverage = [
+    "diff-cover>=10.6",
+]
+
 [tool.uv]
-default-groups = ["lint", "typing"]
+default-groups = ["lint", "typing", "tasks"]
 
 [project.scripts]
 swarmq = "swarmq.cli:console_main"

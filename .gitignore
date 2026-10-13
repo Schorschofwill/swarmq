@@ -25,6 +25,12 @@ Thumbs.db
 
 # Testing
 .coverage
+.coverage.*
+coverage.xml
+coverage.json
+junit*.xml
+slow-unit-tests.json
+.hypothesis/
 htmlcov/
 .pytest_cache/
 .mypy_cache/
