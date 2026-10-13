@@ -144,8 +144,9 @@ lock-check:
   script:
     - uv lock --check
 
-# --reruns 1 absorbs the rare timing flake on the small shared runner without
-# hiding deterministic failures (a real break fails both attempts).
+# No reruns: the order is shuffled on every run (pytest-randomly, seed in the
+# job log), and a failure is a bug to fix, not to retry (Plan 2026-10-13-0902,
+# U4). Reproduce locally with --randomly-seed=<seed from the log>.
 # Härtung R2 B1: the pure parser-fuzz suite joins the blocking gate — it is
 # deterministic (seeded corpus), service-free and sub-second; previously NO
 # CI job ever executed tests/fuzz, so the suite was rotting unnoticed.
@@ -153,7 +154,7 @@ unit-tests:
   extends: .uv
   stage: test
   script:
-    - $UV_RUN pytest tests/unit -q --reruns 1 --reruns-delay 1
+    - $UV_RUN pytest tests/unit -q
     - $UV_RUN pytest tests/property -m property -q
     - $UV_RUN pytest tests/fuzz/test_parser_fuzz.py -m fuzz -q
 

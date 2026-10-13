@@ -16,11 +16,11 @@ Auto-marker `chaos` ensures these tests stay opt-in.
 from __future__ import annotations
 
 import os
-import random
 import re
 import socket
 import subprocess
 import time
+import uuid
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -121,7 +121,9 @@ def chaos_stack() -> Iterator[ChaosStack]:
     ):
         _unavailable("docker not available — chaos tests need a daemon")
 
-    project = f"swarmq-chaos-{random.randint(0, 1_000_000):06d}"
+    # uuid4 statt random: pytest-randomly setzt random je Test auf den Seed,
+    # gleiche Seeds ergaeben sonst gleiche Projektnamen (fremde Stacks).
+    project = f"swarmq-chaos-{uuid.uuid4().hex[:8]}"
     admin_port = _free_port()
     rmq_port = _free_port()
     vkey_port = _free_port()

@@ -126,6 +126,21 @@ def _reset_dishka_container():
     _di._container = snapshot
 
 
+@pytest.fixture(autouse=True)
+def _reset_supervisor_channel():
+    """Save and restore the process-wide supervisor channel between tests.
+
+    The worker entry sets it (``set_current_channel``); a test that runs the
+    entry in-process left it set, and every later test saw a supervisor that
+    does not exist (recycling then waited for an acknowledgement forever).
+    """
+    from swarmq import supervision as _sv
+
+    snapshot = _sv.current_channel()
+    yield
+    _sv.set_current_channel(snapshot)
+
+
 # ---------------------------------------------------------------------------
 # Auto-marker: tag every test with unit / integration / e2e based on its path
 # ---------------------------------------------------------------------------

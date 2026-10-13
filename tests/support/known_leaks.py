@@ -24,9 +24,10 @@ _STREAMWRITER = (
     "ignore:loop is closed:ResourceWarning",
 )
 
-# TS-01, TS-02: aiormq lässt den ``StreamWriter`` einer Verbindung offen, wenn
-# ihr Aufbau abgebrochen wird (TS-01) oder Server bzw. Proxy sie schließen
-# (TS-02). Nur diese Warnungen; der Valkey-Client nutzt ebenfalls
+# TS-01, TS-02, TS-03: aiormq lässt den ``StreamWriter`` einer Verbindung
+# offen, wenn ihr Aufbau abgebrochen wird (TS-01), Server bzw. Proxy sie
+# schließen (TS-02) oder aio-pika sie beim Wiederverbinden nach dem Schließen
+# noch anlegt (TS-03). Nur diese Warnungen; der Valkey-Client nutzt ebenfalls
 # StreamWriter, deshalb keine globale Ausnahme.
 aiormq_streamwriter_leak = pytest.mark.filterwarnings(*_STREAMWRITER)
 

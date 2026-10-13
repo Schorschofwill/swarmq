@@ -69,7 +69,6 @@ test = [
     # E2E-Hardening Phase 2+ — toxiproxy REST + property-based + fuzz
     "httpx",
     "hypothesis",
-    "pytest-rerunfailures",
     "freezegun",
     # U2.1 chaos: RSS-polling for the OOM-simulation test.
     "psutil",
