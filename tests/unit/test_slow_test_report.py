@@ -20,6 +20,8 @@ import json
 
 import pytest
 
+from tests.support.slow_tests import SlowPhase
+
 pytestmark = pytest.mark.timeout(10)
 
 # Der innere Lauf teilt den Prozess und damit ``filterwarnings = error``;
@@ -34,8 +36,9 @@ def _without_coverage(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("COVERAGE_RUN", raising=False)
 
 
-def _report(pytester: pytest.Pytester) -> list[dict[str, object]]:
-    return json.loads((pytester.path / "slow-unit-tests.json").read_text(encoding="utf-8"))
+def _report(pytester: pytest.Pytester) -> list[SlowPhase]:
+    entries: list[SlowPhase] = json.loads((pytester.path / "slow-unit-tests.json").read_text(encoding="utf-8"))
+    return entries
 
 
 def test_a_slow_call_is_reported_without_changing_the_exit_code(pytester: pytest.Pytester) -> None:

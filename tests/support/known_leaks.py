@@ -56,7 +56,7 @@ def close_orphaned_streams() -> None:
         if not isinstance(obj, asyncio.StreamWriter):
             continue
         transport = obj.transport
-        loop = obj._loop  # asyncio bietet keinen öffentlichen Zugriff auf die Loop des Writers
+        loop = obj._loop  # type: ignore[attr-defined]  # asyncio bietet keinen öffentlichen Zugriff auf die Loop des Writers
         if transport.is_closing() or not loop.is_closed():
             continue
         # transport.close() bräuchte die geschlossene Loop; deshalb direkt

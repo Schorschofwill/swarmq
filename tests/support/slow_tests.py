@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import TypedDict
 
 import pytest
 
@@ -23,15 +24,23 @@ THRESHOLD_S = 0.1
 REPORT_FILE = "slow-unit-tests.json"
 
 
+class SlowPhase(TypedDict):
+    """Ein Eintrag des Berichts."""
+
+    nodeid: str
+    phase: str
+    duration_s: float
+
+
 class SlowTestReport:
     """Sammelt die Phasen über ``THRESHOLD_S`` einer Sitzung."""
 
     def __init__(self) -> None:
-        self.slow: list[dict[str, object]] = []
+        self.slow: list[SlowPhase] = []
 
     def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
         if report.when in {"setup", "call"} and report.duration > THRESHOLD_S:
-            self.slow.append({"nodeid": report.nodeid, "phase": report.when, "duration_s": report.duration})
+            self.slow.append(SlowPhase(nodeid=report.nodeid, phase=report.when, duration_s=report.duration))
 
     def pytest_terminal_summary(self, terminalreporter: pytest.TerminalReporter) -> None:
         Path(REPORT_FILE).write_text(json.dumps(self.slow, indent=2), encoding="utf-8")

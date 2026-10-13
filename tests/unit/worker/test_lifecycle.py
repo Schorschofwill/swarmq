@@ -1005,7 +1005,7 @@ class TestAbortTeardownDrainsExecutionGuard:
     Backend weiter, bis der Event-Loop schliesst (Plan 2026-10-13-0902, U3)."""
 
     async def test_abort_teardown_drains_the_execution_guard(self, worker):
-        worker._execution_guard.drain = AsyncMock()  # type: ignore[method-assign]
+        worker._execution_guard.drain = AsyncMock()
         await worker._abort_teardown()
         worker._execution_guard.drain.assert_awaited_once()
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import uuid
 
 import pytest
@@ -93,7 +94,12 @@ class TestConnectDisconnect:
                 listed = await observer.client_list()
                 return any(c.get("name") == name and c.get("cmd") == "blpop" for c in listed)
 
-            in_flight = asyncio.create_task(backend.client.blpop([f"{name}-key"], timeout=1))
+            async def blpop() -> object:
+                pending = backend.client.blpop([f"{name}-key"], timeout=1)
+                assert inspect.isawaitable(pending)  # asyncio-Client; die Stubs tippen auch den sync-Fall
+                return await pending
+
+            in_flight = asyncio.create_task(blpop())
             assert await wait_until(blocked, timeout=5.0)
 
             await backend.close()
