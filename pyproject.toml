@@ -124,7 +124,15 @@ swarmq = "swarmq.cli:console_main"
 packages = ["src/swarmq"]
 
 [tool.pytest.ini_options]
+# strict bündelt strict_config, strict_markers, strict_xfail und
+# strict_parametrization_ids (Plan 2026-10-13-0902, KTD1). pytest ist über
+# uv.lock gepinnt; künftige Strict-Optionen kommen nur mit einem Upgrade.
+strict = true
 asyncio_mode = "auto"
+# Ausdrücklich gesetzt, bevor pytest-asyncio den Standard ändert. Es gibt
+# keine asynchronen Session- oder Modul-Fixtures.
+asyncio_default_fixture_loop_scope = "function"
+asyncio_default_test_loop_scope = "function"
 testpaths = ["tests"]
 timeout = 30
 # Default-Ausschluss der opt-in-Suiten (E2E-Hardening U1.2). Chaos,
