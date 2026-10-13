@@ -23,6 +23,7 @@ pytestmark = pytest.mark.timeout(5)
 _WF_ID = "01890a5d-ac96-774b-bcce-b302099a8057"
 
 
+@pytest.mark.entscheidung("E-040")
 async def test_unknown_workflow_step_is_routed_and_fails_its_workflow(broker, backend, config) -> None:
     # Gnadenfrist 0 (Plan 0.12.0, MR 11, BZ-06): wie bei ``test_befund_bz13
     # _workflow_hang.py`` Test 1 prueft dieser Test den DLQ-Zweig; mit der

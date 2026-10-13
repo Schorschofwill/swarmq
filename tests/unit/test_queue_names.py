@@ -47,6 +47,7 @@ def test_delay_queue_for_is_the_family_delay_queue(delay_ms: int) -> None:
     assert delay_queue_for("orders", delay_ms) == "orders.DQ"
 
 
+@pytest.mark.entscheidung("E-026")
 @pytest.mark.parametrize(
     ("delay_ms", "expected"),
     [
@@ -64,6 +65,7 @@ def test_delay_tier_for_picks_the_smallest_tier_reaching_the_delay(delay_ms: int
     assert delay_tier_for("orders", delay_ms) == expected
 
 
+@pytest.mark.entscheidung("E-026")
 def test_seven_delay_tiers_from_one_second_to_one_hour_at_most_factor_four_apart() -> None:
     assert delay_tiers("orders") == tuple(
         f"orders.DQ.{label}" for label in ("1s", "4s", "15s", "1m", "4m", "15m", "1h")

@@ -475,6 +475,7 @@ async def test_handshake_timeout_is_slot_unavailable_not_child_death(ctx, signal
 
 
 @pytest.mark.timeout(5)
+@pytest.mark.entscheidung("E-036")
 async def test_kill_slot_is_two_stage_and_waits_for_death(ctx, signals):
     p = await _make_pool(ctx, slots=1)
     t1 = asyncio.create_task(p.run(_job("a"), use_di=False))
@@ -504,6 +505,7 @@ async def test_cooperative_child_needs_only_sigterm(ctx, signals):
 
 
 @pytest.mark.timeout(5)
+@pytest.mark.entscheidung("E-035")
 async def test_immortal_child_blocks_the_slot(ctx, signals):
     p = await _make_pool(ctx, slots=1)
     t1 = asyncio.create_task(p.run(_job("a"), use_di=False))

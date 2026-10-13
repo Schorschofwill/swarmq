@@ -134,6 +134,7 @@ def _spy_signals(worker: Worker) -> list[dict[str, Any]]:
     return events
 
 
+@pytest.mark.entscheidung("E-008")
 async def test_expired_grace_dead_letters_with_result_and_rejected_signal(
     broker,
     backend,
@@ -163,6 +164,7 @@ async def test_expired_grace_dead_letters_with_result_and_rejected_signal(
     assert not_found["log_level"] == "error"
 
 
+@pytest.mark.entscheidung("E-008")
 async def test_grace_zero_dead_letters_at_first_contact(broker, backend, config, clock) -> None:
     worker = _worker(broker, backend, config, unknown_task_grace_s=0)
 
@@ -182,6 +184,7 @@ async def test_failed_copy_publish_redelivers_the_original(broker, backend, conf
     broker.dead_letter.assert_not_awaited()
 
 
+@pytest.mark.entscheidung("E-008")
 async def test_deferred_cron_fire_keeps_claim_open_and_unique_flag_held(broker, backend, config, clock) -> None:
     backend.release_unique = AsyncMock(return_value=True)
     worker = _worker(broker, backend, config)

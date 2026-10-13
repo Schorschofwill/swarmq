@@ -429,6 +429,7 @@ async def test_cron_conflict_signal_increments_conflict_counter():
     assert 'swarmq_scheduler_cron_conflicts_total{schedule_name="nightly"} 2.0' in body
 
 
+@pytest.mark.entscheidung("E-029")
 async def test_leader_outdated_signal_sets_and_clears_gauge():
     """Plan 2026-10-08-1541 (U13, KTD11): ein veralteter Leader ist alertbar,
     solange er Leader ist; ein aktueller Nachfolger setzt die Gauge zurück."""
@@ -503,6 +504,7 @@ def test_execution_guard_events_are_counted_per_event():
     assert _registry(m).get_sample_value(sample, {"event": "lease_lost"}) == 1.0
 
 
+@pytest.mark.entscheidung("E-003")
 async def test_fire_unroutable_signal_increments_unroutable_counter():
     """Plan 0.12.0 (MR 6, BZ-03): verlorene Cron-Fires und verworfene Oneshots
     sind zaehlbar."""
@@ -545,6 +547,7 @@ async def test_unknown_task_deferrals_are_counted_per_queue():
     assert _registry(m).get_sample_value("swarmq_tasks_unknown_deferred_total", {"queue": "q1"}) == 2.0
 
 
+@pytest.mark.entscheidung("E-014")
 async def test_scheduler_crons_held_gauge_follows_the_unowned_signal():
     """Plan 0.12.0, MR 11 (BZ-11): Zahl der zurueckgehaltenen Crons des Leaders,
     0 sobald der Worker die Fuehrung abgibt."""

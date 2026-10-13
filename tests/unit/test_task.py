@@ -682,6 +682,7 @@ class TestUpdateProgress:
         t._backend.publish_progress.assert_awaited_once()
 
     @pytest.mark.timeout(5)
+    @pytest.mark.entscheidung("E-044")
     async def test_throttles_second_call_within_window(self):
         import time as _time
         from unittest.mock import AsyncMock
@@ -697,6 +698,7 @@ class TestUpdateProgress:
         assert t._backend.set_progress.await_count == 1
 
     @pytest.mark.timeout(5)
+    @pytest.mark.entscheidung("E-044")
     async def test_final_update_always_flushes(self):
         """current == total bypasses throttling (R3.7 R4 — force-flush)."""
         import time as _time
@@ -750,6 +752,7 @@ class TestUpdateProgress:
         assert fields["eta_seconds"] == ""
 
     @pytest.mark.timeout(5)
+    @pytest.mark.entscheidung("E-044")
     async def test_backend_hset_failure_swallowed(self, swarmq_logs):
         """Valkey blip must NOT crash the task body (R3.7 best-effort contract).
 
@@ -776,6 +779,7 @@ class TestUpdateProgress:
         assert entry["error"] == "valkey down"
 
     @pytest.mark.timeout(5)
+    @pytest.mark.entscheidung("E-044")
     async def test_publish_failure_swallowed(self, swarmq_logs):
         import time as _time
         from unittest.mock import AsyncMock

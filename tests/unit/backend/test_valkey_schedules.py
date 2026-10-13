@@ -175,6 +175,7 @@ class TestScripts:
         await store.commit_fire("s", next_fire_ts_ms=1_900, payload=b"next", owner="chief", fired_payload=b"polled")
         assert _await_kwargs(scripts["commit"])["args"] == ["s", 1_900, b"next", "chief", "", b"polled"]
 
+    @pytest.mark.entscheidung("E-047")
     async def test_commit_fire_rejected_by_owner_check(self) -> None:
         store, _, scripts = _store()
         scripts["commit"].return_value = 0

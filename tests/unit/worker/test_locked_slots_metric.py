@@ -29,6 +29,7 @@ def metrics(worker, broker) -> Metrics:
     return m
 
 
+@pytest.mark.entscheidung("E-024")
 async def test_sampler_reports_the_locked_slots_of_the_supervisor(worker, metrics) -> None:
     ctx = multiprocessing.get_context("spawn")
     shared = ctx.Value("i", 2)

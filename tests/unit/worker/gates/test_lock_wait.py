@@ -137,6 +137,7 @@ async def test_first_conflict_copy_carries_the_wait_state(broker, backend, confi
     broker.dead_letter.assert_not_awaited()
 
 
+@pytest.mark.entscheidung("E-007")
 async def test_later_copy_counts_up_and_keeps_the_first_conflict(broker, backend, config, clock) -> None:
     worker = _worker(broker, backend, config, observation=LockObservation(frozenset({"h1"}), 50_000))
 
@@ -177,6 +178,7 @@ async def test_first_observation_records_the_holder(broker, backend, config, clo
     assert headers[HEADER_LOCK_HOLDER_TTL_MS] == 42_000
 
 
+@pytest.mark.entscheidung("E-007")
 def test_fingerprint_is_the_owner_set_only() -> None:
     assert holder_fingerprint(frozenset({"a", "b"})) == holder_fingerprint(frozenset({"b", "a"}))
     assert holder_fingerprint(frozenset({"a"})) != holder_fingerprint(frozenset({"a", "b"}))
@@ -214,6 +216,7 @@ def _stalled(held_ms: int, ttl_ms: int = 90_000, waited_ms: int | None = None) -
     }
 
 
+@pytest.mark.entscheidung("E-007")
 async def test_stalled_holder_dead_letters_with_lock_wait_exceeded(broker, backend, config, clock) -> None:
     worker = _worker(broker, backend, config, observation=LockObservation(frozenset({"h1"}), 85_000))
     dlq: list[dict[str, Any]] = []
@@ -232,6 +235,7 @@ async def test_stalled_holder_dead_letters_with_lock_wait_exceeded(broker, backe
     assert [d["task_id"] for d in dlq] == ["bz05-1"]
 
 
+@pytest.mark.entscheidung("E-007")
 async def test_just_below_the_stall_limit_keeps_waiting(broker, backend, config, clock) -> None:
     worker = _worker(broker, backend, config, observation=LockObservation(frozenset({"h1"}), 85_000))
 
@@ -272,6 +276,7 @@ async def test_wait_limit_dead_letters(broker, backend, config, clock) -> None:
     )
 
 
+@pytest.mark.entscheidung("E-007")
 async def test_store_without_observe_waits_until_the_limit_and_warns_once(
     broker, backend, config, clock, swarmq_logs
 ) -> None:

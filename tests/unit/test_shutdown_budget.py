@@ -15,6 +15,7 @@ import pytest
 from swarmq.shutdown_budget import shutdown_budget
 
 
+@pytest.mark.entscheidung("E-018")
 def test_supervised_default_budget() -> None:
     b = shutdown_budget(30, supervised=True)
     assert (b.sigterm_at, b.sigkill_at, b.finish_by, b.drain_until) == (23.0, 28.0, 28.0, 23.0)

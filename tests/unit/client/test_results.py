@@ -459,6 +459,7 @@ async def _memory_backend():
     return memory
 
 
+@pytest.mark.entscheidung("E-020")
 @pytest.mark.timeout(5)
 async def test_cancel_of_deferred_task_outlives_its_fire_time():
     memory = await _memory_backend()
@@ -472,6 +473,7 @@ async def test_cancel_of_deferred_task_outlives_its_fire_time():
     assert 48 * 3_600_000 + 50_000 <= ttl_ms <= 48 * 3_600_000 + 60_000
 
 
+@pytest.mark.entscheidung("E-020")
 @pytest.mark.timeout(5)
 async def test_cancel_of_deferred_task_adds_known_max_age_plus_buffer():
     from swarmq.registry import TaskRegistry

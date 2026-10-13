@@ -258,6 +258,7 @@ async def test_a3_legacy_dlq_without_generation_replays_once_per_generation() ->
     assert await w.run_ok(await w.cli_retry(_legacy_dlq())) is False
 
 
+@pytest.mark.entscheidung("E-009")
 async def test_publish_indeterminate_double_copy_replays_once() -> None:
     w = World()
     assert await w.deliver({}) is True
@@ -281,6 +282,7 @@ async def test_dlq_list_in_between_keeps_the_generation_fresh() -> None:
     assert w.runs == [TASK, f"{TASK}|{generation_id(TASK)}"]
 
 
+@pytest.mark.entscheidung("E-009")
 async def test_at_least_once_duplicate_is_skipped_also_for_a_replay() -> None:
     w = World()
     assert await w.deliver({}) is True

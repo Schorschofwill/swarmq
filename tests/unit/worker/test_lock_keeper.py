@@ -123,6 +123,7 @@ async def test_extend_by_a_window_once_less_than_a_window_remains() -> None:
     keeper.close()
 
 
+@pytest.mark.entscheidung("E-022")
 async def test_lost_while_running_is_reported_once_and_the_lease_dropped(swarmq_logs) -> None:
     store, clock = _Store(result=False), _Clock()
     keeper = _keeper(store, clock)
@@ -159,6 +160,7 @@ async def test_extend_failure_is_retried_next_tick(swarmq_logs) -> None:
     keeper.close()
 
 
+@pytest.mark.entscheidung("E-022")
 async def test_holding_past_the_original_ttl_warns_once(swarmq_logs) -> None:
     store, clock = _Store(), _Clock()
     keeper = _keeper(store, clock)
@@ -175,6 +177,7 @@ async def test_holding_past_the_original_ttl_warns_once(swarmq_logs) -> None:
     keeper.close()
 
 
+@pytest.mark.entscheidung("E-022")
 async def test_drop_removes_the_lease_and_ends_the_keeper() -> None:
     store, clock = _Store(), _Clock()
     keeper = _keeper(store, clock)
@@ -358,6 +361,7 @@ async def test_at_most_32_extensions_run_at_once() -> None:
     keeper.close()
 
 
+@pytest.mark.entscheidung("E-022")
 async def test_surely_expired_lock_is_reported_without_a_round_trip(swarmq_logs) -> None:
     store, clock = _Store(), _Clock()
     keeper = _keeper(store, clock)

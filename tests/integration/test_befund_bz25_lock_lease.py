@@ -89,6 +89,7 @@ async def _worker(rabbitmq_url: str, valkey_url: str, queue: str) -> AsyncIterat
                 await worker
 
 
+@pytest.mark.entscheidung("E-022")
 @pytest.mark.befund("BZ-25")
 async def test_mutex_stays_held_while_the_holder_runs_past_the_lock_ttl(
     rabbitmq_url,

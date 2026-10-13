@@ -24,6 +24,7 @@ def _no_jitter(_lo: float, _hi: float) -> float:
     return 1.0
 
 
+@pytest.mark.entscheidung("E-023")
 def test_fixed_strategy_returns_base_delay():
     """Fixed strategy always returns base_delay, no jitter, no scaling."""
     result = calculate_backoff(attempt=0, strategy="fixed", base_delay=5.0, max_delay=3600.0)

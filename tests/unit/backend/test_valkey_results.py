@@ -56,6 +56,7 @@ class TestWaitForResult:
         assert await backend.wait_for_result("task-fast", timeout=5) == b"fast"
         client.get.assert_awaited_once()
 
+    @pytest.mark.entscheidung("E-030")
     async def test_pubsub_miss_falls_back_to_polling(self) -> None:
         backend, client, _ = _backend([None] * 50 + [b"polled"])
         assert await backend.wait_for_result("task-poll", timeout=5) == b"polled"

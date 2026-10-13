@@ -67,6 +67,7 @@ def _ctx(max_age: int | None) -> GateContext:
     )
 
 
+@pytest.mark.entscheidung("E-010")
 async def test_done_marker_of_a_task_with_max_age_outlives_a_backlog(guard: ExecutionGuard, clock: FakeClock) -> None:
     delivery = make_message(headers={})
     assert await guard.apply(delivery, _ctx(_DAY)) is Continue
@@ -78,6 +79,7 @@ async def test_done_marker_of_a_task_with_max_age_outlives_a_backlog(guard: Exec
     assert await guard.apply(make_message(headers={}), _ctx(_DAY)) == Terminal.never_release()
 
 
+@pytest.mark.entscheidung("E-010")
 async def test_superseded_marker_of_a_task_with_max_age_outlives_a_backlog(
     guard: ExecutionGuard,
     clock: FakeClock,
@@ -94,6 +96,7 @@ async def test_superseded_marker_of_a_task_with_max_age_outlives_a_backlog(
     assert await guard.apply(make_message(headers={HEADER_RETRY_COUNT: 1}), _ctx(_DAY)) is Continue
 
 
+@pytest.mark.entscheidung("E-010")
 async def test_without_max_age_the_done_marker_keeps_the_done_ttl(guard: ExecutionGuard, clock: FakeClock) -> None:
     """Dokumentierte Grenze (Abschnitt 7): ohne ``max_age`` deckt der Marker
     keinen Rueckstand ab, der erst nach dem Lauf entsteht."""
@@ -107,6 +110,7 @@ async def test_without_max_age_the_done_marker_keeps_the_done_ttl(guard: Executi
     assert await guard.apply(make_message(headers={}), _ctx(None)) is Continue
 
 
+@pytest.mark.entscheidung("E-010")
 def test_completed_marker_of_a_fire_with_max_age_lives_max_age_plus_300(monkeypatch: pytest.MonkeyPatch) -> None:
     """Das Fire lief sofort (keine Wartezeit): ein Duplikat desselben Fires
     kann trotzdem bis ``max_age`` warten. Der Deckel

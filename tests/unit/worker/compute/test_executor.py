@@ -201,6 +201,7 @@ async def test_outer_cancel_during_drain_kills_child_and_returns_error_result(se
 
 
 @pytest.mark.timeout(5)
+@pytest.mark.entscheidung("E-037")
 async def test_child_death_is_an_error_result(setup):
     _, pool, ex = setup
     pool.behaviour = ChildDied("pid 7 exited without result")

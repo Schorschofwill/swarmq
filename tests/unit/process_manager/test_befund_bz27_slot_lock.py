@@ -26,6 +26,7 @@ from swarmq.process_manager.slots import SlotState
 from tests.unit.process_manager._helpers import FakeClock, _entry_stub, _fake_process, _register
 
 
+@pytest.mark.entscheidung("E-024")
 def test_locked_slot_is_refilled_after_the_restart_window(monkeypatch: pytest.MonkeyPatch) -> None:
     clock = FakeClock()
     pm = ProcessManager(num_workers=2, worker_entry=_entry_stub)

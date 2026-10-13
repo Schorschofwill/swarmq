@@ -97,6 +97,7 @@ def test_soft_timeout_error_is_swarmq_error_subclass():
 
 
 @pytest.mark.asyncio
+@pytest.mark.entscheidung("E-045")
 async def test_soft_timeout_fires_when_run_exceeds_limit(broker, backend, config):
     """Task with soft_timeout=0.05s, run() sleeps 1s -> error result with SoftTimeoutError."""
 
@@ -127,6 +128,7 @@ async def test_soft_timeout_fires_when_run_exceeds_limit(broker, backend, config
 
 
 @pytest.mark.asyncio
+@pytest.mark.entscheidung("E-045")
 async def test_soft_timeout_triggers_retry(broker, backend, config):
     """SoftTimeoutError with max_retries > 0 -> message published to delay queue."""
 
@@ -170,6 +172,7 @@ async def test_soft_timeout_triggers_retry(broker, backend, config):
 
 
 @pytest.mark.asyncio
+@pytest.mark.entscheidung("E-037")
 async def test_hard_timeout_fires_and_retries(broker, backend, config):
     """Task with hard_timeout=0.05s, run() sleeps 1s -> retried via delay queue."""
 
@@ -242,6 +245,7 @@ async def test_no_timeouts_normal_behavior(broker, backend, config):
 
 
 @pytest.mark.asyncio
+@pytest.mark.entscheidung("E-045")
 async def test_soft_timeout_skips_post_execution(broker, backend, config):
     """When soft timeout fires, post_execution must NOT be called."""
     post_called = False
@@ -275,6 +279,7 @@ async def test_soft_timeout_skips_post_execution(broker, backend, config):
 
 
 @pytest.mark.asyncio
+@pytest.mark.entscheidung("E-037")
 async def test_hard_timeout_exhausted_retries_sends_to_dlq(broker, backend, config):
     """Hard timeout on final retry -> message sent to DLQ."""
 
@@ -360,6 +365,7 @@ async def test_only_hard_timeout_no_soft(broker, backend, config):
 
 
 @pytest.mark.asyncio
+@pytest.mark.entscheidung("E-037")
 async def test_fire_and_forget_hard_timeout_logged_no_nack(broker, backend, config):
     """FIRE_AND_FORGET + hard_timeout -> task cancelled, error logged, no nack or retry."""
 

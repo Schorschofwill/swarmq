@@ -18,6 +18,7 @@ def _cfg(**kwargs: object) -> SwarmQConfig:
     return SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x", **kwargs)  # type: ignore[arg-type]
 
 
+@pytest.mark.entscheidung("E-025")
 def test_default_is_separate() -> None:
     assert _cfg().broker_publish_connection == "separate"
 

@@ -91,6 +91,7 @@ async def test_unroutable_tier_is_declared_again_and_published_to_once_more() ->
     cast("AsyncMock", delivery.handle).ack.assert_awaited_once()
 
 
+@pytest.mark.entscheidung("E-026")
 async def test_tier_that_cannot_be_declared_falls_back_to_the_delay_queue_with_one_warning(swarmq_logs) -> None:
     # Eine fremde Queue gleichen Namens mit anderem Typ: erkannter Konflikt (406).
     rabbit = FakeRabbit({"tasks.DQ.4s": {"x-queue-type": "classic"}})
@@ -166,6 +167,7 @@ async def test_family_not_declared_by_this_process_uses_the_delay_queue() -> Non
     assert rabbit.channels == []
 
 
+@pytest.mark.entscheidung("E-026")
 async def test_delay_over_one_hour_stays_in_the_delay_queue() -> None:
     rabbit = FakeRabbit()
     broker = make_broker(rabbit)

@@ -476,6 +476,7 @@ async def test_global_switch_applies_unless_the_task_field_is_set(broker, backen
 
 
 @pytest.mark.timeout(5)
+@pytest.mark.entscheidung("E-031")
 async def test_dead_letter_stores_error_result_with_task_result_ttl(broker, backend, config):
     """Liste 19: das Fehlerergebnis im Dead-Letter-Pfad lebt so lange wie
     jedes andere Ergebnis des Tasks (``task_info.result_ttl``)."""
@@ -515,6 +516,7 @@ async def test_delivery_count_gate_and_undecodable_messages_still_reach_the_dlq(
     broker.route_via_dlx.assert_not_awaited()
 
 
+@pytest.mark.entscheidung("E-043")
 async def test_dead_letter_with_failed_ack_after_publish_is_terminal(broker, backend, config, swarmq_logs):
     """Die Kopie liegt in der XQ; die Neuzustellung des Originals ueberspringt
     der Ausfuehrungsschutz als ``done`` -- also gibt dieser Pfad frei."""

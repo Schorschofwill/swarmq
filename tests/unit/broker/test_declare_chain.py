@@ -165,6 +165,7 @@ async def test_queue_created_by_0_11_after_the_passive_declare_is_adopted() -> N
     assert rabbit.queues == with_tiers(legacy("tasks"))
 
 
+@pytest.mark.entscheidung("E-017")
 async def test_legacy_mode_creates_queues_with_0_11_arguments() -> None:
     rabbit = FakeRabbit()
     broker = make_broker(rabbit, dead_letter_strategy="legacy")
@@ -174,6 +175,7 @@ async def test_legacy_mode_creates_queues_with_0_11_arguments() -> None:
     assert rabbit.queues == with_tiers(legacy("tasks"), at_least_once=False)
 
 
+@pytest.mark.entscheidung("E-016")
 async def test_changed_queue_type_raises_queue_arguments_mismatch() -> None:
     family = legacy("tasks")
     rabbit = FakeRabbit({"tasks": {**family["tasks"], "x-queue-type": "classic"}})
@@ -190,6 +192,7 @@ async def test_changed_queue_type_raises_queue_arguments_mismatch() -> None:
     assert "'classic'" in message
 
 
+@pytest.mark.entscheidung("E-017")
 async def test_strict_mode_refuses_an_existing_at_most_once_queue() -> None:
     rabbit = FakeRabbit(legacy("tasks"))
     broker = make_broker(rabbit, dead_letter_strategy="at-least-once")
@@ -333,6 +336,7 @@ async def test_at_most_once_queues_are_reported_once_with_a_list(swarmq_logs: li
     assert "SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=legacy" in warning["hint"]
 
 
+@pytest.mark.entscheidung("E-017")
 async def test_legacy_mode_does_not_warn_about_at_most_once_queues(swarmq_logs: list[dict[str, Any]]) -> None:
     broker = make_broker(FakeRabbit(legacy("tasks")), dead_letter_strategy="legacy")
     await broker.declare_queue("tasks")
@@ -421,6 +425,7 @@ async def test_adopted_overflow_is_kept_in_either_refusal_order(first: str, swar
     assert warning["queues"] == ["tasks"]
 
 
+@pytest.mark.entscheidung("E-016")
 async def test_unrecognized_refusal_reports_the_broker_message_without_advising_deletion() -> None:
     """Review MR 8, P2-5: ein unerkannter 406 (S8, z. B. Queue-Limit) wird
     ``BrokerConnectionError`` mit der Broker-Meldung; kein Rat zum Loeschen,

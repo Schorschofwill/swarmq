@@ -136,6 +136,7 @@ async def test_expired_step_marks_the_workflow_failed(broker, backend, config) -
     assert _failed_workflows(worker) == [_WF_ID], "Schritt abgelaufen, Workflow nicht fehlmarkiert"
 
 
+@pytest.mark.entscheidung("E-007")
 @pytest.mark.befund("BZ-13")
 async def test_stalled_lock_holder_step_marks_the_workflow_failed(broker, backend, config) -> None:
     """MR 13 (Abschnitt 6): Stillstand -- derselbe Halter haelt laenger als

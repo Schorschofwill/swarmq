@@ -76,6 +76,7 @@ def test_a_successful_publish_resets_the_series() -> None:
     assert tracker.failure(BrokerConnectionError("down")) is False
 
 
+@pytest.mark.entscheidung("E-013")
 @pytest.mark.parametrize("name", ["UnroutableMessage", "MessageHeadersTooLarge"])
 def test_errors_that_hit_every_candidate_are_not_counted(name: str) -> None:
     from swarmq import exceptions
@@ -107,6 +108,7 @@ def test_other_errors_are_not_counted() -> None:
     assert tracker.failure(RuntimeError("bug")) is False
 
 
+@pytest.mark.entscheidung("E-013")
 def test_window_zero_disables_the_stepdown() -> None:
     tracker, clock = _tracker(0.0)
     for _ in range(5):
@@ -164,6 +166,7 @@ def _recorded(signal_dispatcher, signal: Signal) -> list[dict[str, object]]:
     return seen
 
 
+@pytest.mark.entscheidung("E-013")
 async def test_leader_steps_down_after_repeated_publish_failures(
     leader, clock, lock_manager, backend, signal_dispatcher, swarmq_logs
 ) -> None:
@@ -193,6 +196,7 @@ async def test_a_successful_fire_in_between_keeps_the_leader(leader, clock, brok
     assert leader.state == "leader"
 
 
+@pytest.mark.entscheidung("E-013")
 async def test_no_candidacy_during_the_cooldown(leader, clock, lock_manager) -> None:
     await leader._fire_one("cron_a", 1_700_000_000_000, _def())
     clock.now += 1.0

@@ -2487,6 +2487,7 @@ class TestWorkerUniqueRelease:
         await worker._handle_message(msg)
         release_backend.release_unique.assert_not_awaited()
 
+    @pytest.mark.entscheidung("E-034")
     async def test_start_mode_releases_at_pickup(
         self,
         worker,
@@ -2936,6 +2937,7 @@ class TestWorkerUniqueRelease:
         backend.clear_cancel_flag.assert_awaited()
         backend.release_unique.assert_awaited_once()
 
+    @pytest.mark.entscheidung("E-034")
     async def test_start_mode_rate_limited_keeps_flag_for_redelivery(
         self,
         broker,

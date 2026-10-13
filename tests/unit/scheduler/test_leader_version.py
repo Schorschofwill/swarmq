@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import importlib.metadata
 
+import pytest
+
 from swarmq.scheduler.leader_version import LeaderVersionWatch, is_outdated, swarmq_version
 
 
@@ -34,6 +36,7 @@ class TestIsOutdated:
     def test_missing_leader_version_is_outdated(self) -> None:
         assert is_outdated(None) is True
 
+    @pytest.mark.entscheidung("E-029")
     def test_floor_version_is_current(self) -> None:
         assert is_outdated("0.12.0") is False
 
@@ -71,6 +74,7 @@ class TestLeaderVersionWatch:
         observed = [watch.observe("new:1:aa", "0.12.0") for _ in range(3)]
         assert observed == [None, None, None]
 
+    @pytest.mark.entscheidung("E-029")
     def test_leader_below_minimum_version_is_reported_once(self) -> None:
         """KTD11 (Plan 2026-10-09-2314, MR 5): ein 0.11-Leader kennt die
         Korrekturen ab 0.12 nicht und wird gemeldet, einmal pro Wechsel."""

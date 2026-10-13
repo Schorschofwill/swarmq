@@ -78,6 +78,7 @@ def test_the_namespace_is_readable() -> None:
     assert ValkeyBackend("valkey://x").namespace is None
 
 
+@pytest.mark.entscheidung("E-012")
 def test_the_control_channel_uses_the_namespace(monkeypatch: pytest.MonkeyPatch) -> None:
     from swarmq.backend.valkey.control import ValkeySetpointStore
 

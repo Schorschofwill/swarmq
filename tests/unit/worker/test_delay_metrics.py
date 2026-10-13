@@ -37,6 +37,7 @@ def metrics(worker) -> Metrics:
     return m
 
 
+@pytest.mark.entscheidung("E-027")
 async def test_delayed_depth_is_pending_minus_ready(worker, broker, metrics: Metrics) -> None:
     broker.queue_depth = AsyncMock(return_value=12)
     broker.ready_depth = AsyncMock(return_value=5)
@@ -68,6 +69,7 @@ async def test_broker_without_usable_ready_depth_keeps_pending_and_dlq(worker, b
     assert sampled_kinds == {"pending"}
 
 
+@pytest.mark.entscheidung("E-026")
 async def test_unavailable_delay_tiers_gauge_per_consumed_queue(worker, broker, metrics: Metrics) -> None:
     broker.queue_depth = AsyncMock(return_value=0)
     broker.dead_letter_depth = AsyncMock(return_value=0)

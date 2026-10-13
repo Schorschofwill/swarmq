@@ -96,6 +96,7 @@ def test_check_reports_orphaned_queues_and_missing_dead_letter_queues(
     assert codes == ["dead_letter_queue_missing", "orphaned_queue"]
 
 
+@pytest.mark.entscheidung("E-006")
 def test_unreachable_broker_exits_1(
     valkey_url: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

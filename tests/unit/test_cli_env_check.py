@@ -113,6 +113,7 @@ def _evicting(fake: _FakeValkey) -> None:
     fake.config = {b"maxmemory-policy": b"volatile-lru", b"maxmemory": b"1048576"}
 
 
+@pytest.mark.entscheidung("E-006")
 def test_evicting_policy_under_strict_fails_like_the_worker(
     fake: _FakeValkey, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -126,6 +127,7 @@ def test_evicting_policy_under_strict_fails_like_the_worker(
     assert _codes(report, "error") == ["eviction_policy"]
 
 
+@pytest.mark.entscheidung("E-006")
 @pytest.mark.parametrize("mode", ["warn", "off"])
 def test_evicting_policy_without_strict_only_warns(
     fake: _FakeValkey, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, mode: str
@@ -153,6 +155,7 @@ def test_forbidden_queries_warn_and_leave_values_unknown(fake: _FakeValkey, caps
     assert "eviction_policy_unknown" in _codes(report, "warning")
 
 
+@pytest.mark.entscheidung("E-006")
 def test_without_aof_warns(fake: _FakeValkey, capsys: pytest.CaptureFixture[str]) -> None:
     fake.sections["persistence"]["aof_enabled"] = 0
 
@@ -163,6 +166,7 @@ def test_without_aof_warns(fake: _FakeValkey, capsys: pytest.CaptureFixture[str]
     assert _codes(report, "warning") == ["aof_disabled"]
 
 
+@pytest.mark.entscheidung("E-006")
 @pytest.mark.parametrize(
     ("server", "version"),
     [({"redis_version": "7.2.4"}, "7.2.4"), ({"valkey_version": "7.2.11", "redis_version": "7.2.4"}, "7.2.11")],
@@ -180,6 +184,7 @@ def test_valkey_before_8_warns(
     assert _codes(report, "warning") == ["version"]
 
 
+@pytest.mark.entscheidung("E-006")
 def test_cluster_mode_warns(fake: _FakeValkey, capsys: pytest.CaptureFixture[str]) -> None:
     fake.sections["cluster"]["cluster_enabled"] = 1
 
