@@ -28,9 +28,6 @@ SWARMQ_SHUTDOWN_TIMEOUT=30 \
   /tmp/swarmq-check/bin/swarmq check --format table
 ```
 
-While only a release candidate of 0.12 exists, `pip` needs `--pre`
-(`pip install --pre 'swarmq==0.12.*'`).
-
 Set the same `SWARMQ_*` variables as your workers (above all
 `SWARMQ_NAMESPACE` and `SWARMQ_VALKEY_EVICTION_CHECK`). The check only
 reads: `CONFIG GET`, `INFO`, `SCAN` and reads on Valkey, passive

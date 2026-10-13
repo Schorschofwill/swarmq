@@ -4,6 +4,24 @@ All notable changes to SwarmQ. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [0.12.0] — 2026-10-13
+
+0.12.0 is 0.12.0rc2 plus the fix below. The two release candidates
+describe all changes since 0.11.1: read
+[0.12.0rc1](#0120rc1-2026-10-11) (upgrade notes, roll out 0.11.1
+first) and [0.12.0rc2](#0120rc2-2026-10-12). Install with
+`pip install 'swarmq==0.12.*'`; `--pre` is no longer needed. Accepted
+by the load-test suite at 0.12.0rc2 (conformance, smokes, 1 h and 6 h
+runs, no loss).
+
+### Fixed
+
+- **B25: `swarmq inspect` names `--app-dir` and the directory searched
+  first when `--module` cannot be found**, as `swarmq worker` and
+  `swarmq worker --check` already did. A missing dependency of a module
+  that was found keeps the plain message
+  ([finding the task module](cli.md#finding-the-task-module)).
+
 ## [0.12.0rc2] — 2026-10-12
 
 Second release candidate for 0.12.0 (install with `pip install --pre`).

@@ -29,9 +29,6 @@ SWARMQ_SHUTDOWN_TIMEOUT=30 \
   /tmp/swarmq-check/bin/swarmq check --format table
 ```
 
-Solange von 0.12 nur ein Release Candidate existiert, braucht `pip`
-`--pre` (`pip install --pre 'swarmq==0.12.*'`).
-
 Setze dieselben `SWARMQ_*`-Variablen wie bei deinen Workern (vor allem
 `SWARMQ_NAMESPACE` und `SWARMQ_VALKEY_EVICTION_CHECK`). Die Prüfung
 liest nur: `CONFIG GET`, `INFO`, `SCAN` und Lesezugriffe auf Valkey,

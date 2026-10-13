@@ -20,6 +20,8 @@ Test-Liste:
 5. ``worker --check`` findet ein Modul im Arbeitsverzeichnis
 6. ``inspect`` findet ein Modul im Arbeitsverzeichnis
 7. ImportError von ``--module`` nennt ``--app-dir`` und das Verzeichnis
+7a. dasselbe fuer ``inspect`` (B25)
+7b. fehlt nur eine Abhaengigkeit des gefundenen Moduls, kein Hinweis (wie worker)
 8. ``--reload``-Neustart: ``main`` mit dem Start-argv setzt den Pfad erneut
 """
 
@@ -183,6 +185,29 @@ def test_worker_check_import_error_names_app_dir(app_cwd: Path, capsys: pytest.C
     assert code == 1
     assert "--app-dir" in payload["error"]
     assert str(app_cwd) in payload["error"]
+
+
+def test_inspect_missing_module_names_app_dir(app_cwd: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """B25: ``inspect`` nennt wie ``worker --check`` ``--app-dir`` und das
+    zuerst durchsuchte Verzeichnis."""
+    code = main(["inspect", "--module", "appmod_missing_inspect"])
+
+    err = capsys.readouterr().err
+    assert code != 0
+    assert "--app-dir" in err
+    assert str(app_cwd) in err
+
+
+def test_inspect_missing_dependency_gets_no_app_dir_hint(app_cwd: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Das Modul wurde gefunden; ``--app-dir`` wuerde nicht helfen."""
+    (app_cwd / "appmod_dep_inspect.py").write_text("import appmod_dep_fehlt_inspect\n")
+
+    code = main(["inspect", "--module", "appmod_dep_inspect"])
+
+    err = capsys.readouterr().err
+    assert code != 0
+    assert "appmod_dep_fehlt_inspect" in err
+    assert "--app-dir" not in err
 
 
 @pytest.mark.timeout(5)
