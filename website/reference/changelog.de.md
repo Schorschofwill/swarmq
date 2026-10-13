@@ -4,7 +4,15 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 [Keep a Changelog](https://keepachangelog.com/) und
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.12.0] — 2026-10-13
+
+0.12.0 ist 0.12.0rc2 plus die Korrektur unten. Die beiden
+Release-Candidates beschreiben alle Änderungen seit 0.11.1: siehe
+[0.12.0rc1](#0120rc1-2026-10-11) (Upgrade-Hinweise, zuerst 0.11.1
+ausrollen) und [0.12.0rc2](#0120rc2-2026-10-12). Installation mit
+`pip install 'swarmq==0.12.*'`; `--pre` ist nicht mehr nötig. Von der
+Lasttest-Suite an 0.12.0rc2 abgenommen (Konformität, Smokes, Läufe über
+1 h und 6 h, kein Verlust).
 
 ### Behoben
 

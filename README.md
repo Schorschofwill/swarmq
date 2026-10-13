@@ -2,7 +2,7 @@
 
 Async-first Python task queue on RabbitMQ + Valkey.
 
-> **Status:** 0.11.x on PyPI. Core, workflow primitives, optional
+> **Status:** 0.12.x on PyPI. Core, workflow primitives, optional
 > dependency injection (Dishka), operator features (priorities, expiry,
 > burst, supervisor, autoscaling, control channel), CPU worker mode,
 > structured non-blocking logging, metrics, health, hot reload and the
