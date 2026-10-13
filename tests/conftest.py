@@ -13,6 +13,9 @@ import pytest
 
 from swarmq.task import Task
 
+# pytester prueft Test-Plugins wie den Laufzeitbericht (tests/support/slow_tests.py).
+pytest_plugins = ["pytester"]
+
 # ---------------------------------------------------------------------------
 # Leaks dem verursachenden Test zuordnen (Plan 2026-10-13-0902, KTD2)
 # ---------------------------------------------------------------------------
