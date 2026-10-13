@@ -34,6 +34,7 @@ import pytest
 from pamqp import commands as spec
 
 from tests.integration.spikes._broker import AUTH
+from tests.support.known_leaks import aiormq_streamwriter_leak
 from tests.support.services import RabbitMQNode
 from tests.support.wait import wait_until
 
@@ -61,6 +62,8 @@ async def test_blocked_state_is_readable_synchronously_without_network() -> None
     assert unblocked.is_set() is True
 
 
+# TS-02: der Server schliesst die Verbindung (tests/support/known_leaks.py).
+@aiormq_streamwriter_leak
 @pytest.mark.timeout(60)
 async def test_access_path_after_robust_reconnect(node: RabbitMQNode) -> None:
     name = f"swarmq-spike-s6-{uuid.uuid4().hex[:8]}"

@@ -17,11 +17,13 @@ Flush), außer ``SWARMQ_TEST_ALLOW_DEFAULT_PORTS=1`` ist gesetzt.
 
 from __future__ import annotations
 
+import contextlib
 import ipaddress
 import os
 import re
 import socket
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from urllib.parse import quote, urlsplit
@@ -233,3 +235,40 @@ def check_docker() -> None:
     missing = missing_services()
     if missing:
         pytest.skip(f"Docker services not available: {', '.join(missing)}")
+
+
+def _queue_names(client: httpx.Client) -> set[str] | None:
+    """Namen aller Queues im Vhost ``/``; None ohne Management-API."""
+    try:
+        response = client.get("/queues/%2F", params={"columns": "name"})
+        response.raise_for_status()
+    except httpx.HTTPError:
+        return None
+    return {entry["name"] for entry in response.json()}
+
+
+@pytest.fixture(autouse=True, scope="session")
+def delete_session_queues() -> Iterator[None]:
+    """Löscht am Sitzungsende die Queues, die in dieser Sitzung entstanden sind.
+
+    Die Tests löschen ihre Queues nicht; ein voller Lauf über Integration und
+    e2e hinterlässt rund 5700 Quorum-Queues. Am 2026-10-13 lief der
+    Test-Broker so erst in den Kernel-OOM, mit Limit danach in den
+    Speicheralarm, der jeden Verleger blockiert. Queues, die vor der Sitzung
+    schon bestanden, bleiben stehen. Ohne erreichbares Management-API (etwa
+    ein Broker ohne Plugin) entfällt das Aufräumen; die CI startet je Job
+    einen frischen Broker.
+    """
+    with httpx.Client(base_url=RABBITMQ_MAIN.management_url, auth=("guest", "guest"), timeout=10.0) as client:
+        before = _queue_names(client)
+        yield
+        after = _queue_names(client)
+        if before is None or after is None:
+            return
+
+        def delete(name: str) -> None:
+            with contextlib.suppress(httpx.HTTPError):  # Aufräumen ist best effort
+                client.delete(f"/queues/%2F/{quote(name, safe='')}")
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(delete, sorted(after - before)))

@@ -27,6 +27,7 @@ Test-Liste:
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -55,6 +56,8 @@ class _FakeValkey:
         self.sections = info if info is not None else {k: dict(v) for k, v in _SAFE_INFO.items()}
         self.forbidden = False
         self.closed = False
+        # Pool, den ValkeyBackend.close() vor dem Trennen sperrt.
+        self.connection_pool = SimpleNamespace(get_connection=None, release=None)
 
     async def ping(self) -> bool:
         return True

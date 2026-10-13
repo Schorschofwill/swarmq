@@ -133,6 +133,12 @@ asyncio_mode = "auto"
 # keine asynchronen Session- oder Modul-Fixtures.
 asyncio_default_fixture_loop_scope = "function"
 asyncio_default_test_loop_scope = "function"
+# Jede Warnung ist ein Fehler (KTD2), auch unraisable Warnungen aus __del__
+# (PytestUnraisableExceptionWarning). Ausnahmen nur eng nach Kategorie und
+# Modul oder Meldung, jeweils mit Grund.
+filterwarnings = [
+    "error",
+]
 testpaths = ["tests"]
 timeout = 30
 # Default-Ausschluss der opt-in-Suiten (E2E-Hardening U1.2). Chaos,

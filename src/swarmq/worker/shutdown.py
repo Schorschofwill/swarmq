@@ -361,6 +361,13 @@ class WorkerShutdown:
             with contextlib.suppress(Exception):
                 await self._scheduler.abort()
 
+        # Nachholversuche des Ausfuehrungsschutzes: ein letzter, begrenzter
+        # Versuch, danach keine weiteren. Ohne das liefen sie (auch die von
+        # Handlern, die erst nach dem Abbruch abschliessen) gegen das
+        # geschlossene Backend weiter, bis der Event-Loop schliesst.
+        with contextlib.suppress(Exception):
+            await self._bounded_step("execution_guard_drain", self._execution_guard.drain())
+
         # Drop the process-wide signal handlers this worker installed.
         with contextlib.suppress(Exception):
             loop = asyncio.get_running_loop()

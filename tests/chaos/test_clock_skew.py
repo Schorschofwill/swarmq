@@ -19,7 +19,10 @@ Note on freezegun vs aio-pika: ``freezegun.freeze_time`` patches
 ``time.monotonic`` globally, which breaks the aiormq heartbeat
 accounting. We therefore keep freeze_time blocks OFF the live broker
 path — rate-limit and unique-flag tests run the freeze purely around
-Valkey-level primitives.
+Valkey-level primitives — and pass ``real_asyncio=True``: otherwise the
+event loop's clock froze too, aiormq took its open connections for dead
+and dropped them without closing their transport (ResourceWarning under
+``filterwarnings = error``).
 
 The libfaketime ``LD_PRELOAD`` approach for subprocess workers
 sketched in plan §U2.6 is deferred to U3.x stress.
@@ -105,7 +108,7 @@ class TestClockSkew:
             # Freeze + jump Python wall-clock BACK 60s. Server-side
             # TIME is untouched, so the third check in the same
             # server-window must still be denied.
-            with freezegun.freeze_time("2020-01-01 12:00:00"):
+            with freezegun.freeze_time("2020-01-01 12:00:00", real_asyncio=True):
                 import time as _time
 
                 wall = _time.time()
@@ -252,7 +255,7 @@ class TestClockSkew:
 
             dedup_hash = compute_dedup_hash(task_name, (42,), {})
 
-            with freezegun.freeze_time("2099-06-15 14:00:00"):
+            with freezegun.freeze_time("2099-06-15 14:00:00", real_asyncio=True):
                 existing = await client_backend.claim_unique(
                     dedup_hash,
                     "second-candidate",

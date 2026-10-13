@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import uuid
 
 import pytest
+import valkey.asyncio as aio_valkey
 
 from swarmq.backend.valkey import ValkeyBackend
+from swarmq.exceptions import BackendConnectionError
 from tests.support.services import require_safe_valkey_url
+from tests.support.wait import wait_until
 
 
 def _task_id() -> str:
@@ -35,6 +40,69 @@ class TestConnectDisconnect:
         assert pong is True
         await backend.close()
         assert backend._client is None
+
+    async def test_a_store_held_past_close_fails_instead_of_reconnecting(self, backend: ValkeyBackend) -> None:
+        """Ein Worker hält ``backend.locks`` über ``close()`` hinaus; ein
+        Handler gibt seinen Lock erst nach dem Abbruch frei. Statt über den
+        geschlossenen Pool eine Verbindung zu öffnen, die niemand mehr
+        schließt (ResourceWarning beim Abräumen), scheitert er wie jede
+        Operation nach ``close()`` (Plan 2026-10-13-0902, U3)."""
+        locks = backend.locks
+        token = await locks.acquire("close-test", owner="o", ttl_ms=60_000, max_concurrency=1)
+        assert token is not None
+
+        await backend.close()
+
+        with pytest.raises(BackendConnectionError, match="closed"):
+            await locks.release(token)
+
+    async def test_a_store_call_scheduled_before_close_fails_instead_of_reconnecting(
+        self, backend: ValkeyBackend
+    ) -> None:
+        """Ein Handler startet seine Lock-Freigabe, bevor ``close()`` läuft,
+        kommt aber erst danach zum Zug (bz20: Ergebnisse nach dem
+        Worker-Abbruch). Er wartete auf die Pool-Sperre, die ``close()``
+        hält, und verband danach die gerade getrennte Verbindung neu."""
+        locks = backend.locks
+        token = await locks.acquire("close-race", owner="o", ttl_ms=60_000, max_concurrency=1)
+        assert token is not None
+
+        release = asyncio.create_task(locks.release(token))
+        await backend.close()
+
+        with pytest.raises(BackendConnectionError, match="closed"):
+            await release
+
+    async def test_a_command_in_flight_during_close_leaves_no_connection_open(
+        self, backend: ValkeyBackend, valkey_url: str
+    ) -> None:
+        """Ein Befehl hält beim ``close()`` eine Verbindung. ``close()`` trennt
+        sie, die Retry-Politik verbindet sie für den nächsten Versuch neu, und
+        der Befehl gibt sie danach an den getrennten Pool zurück (bz20). Nach
+        seinem Ende darf keine Verbindung des Backends mehr offen sein."""
+        name = f"close-inflight-{uuid.uuid4().hex[:8]}"
+        await backend.client.client_setname(name)
+        observer = aio_valkey.Valkey.from_url(valkey_url)
+        try:
+
+            async def clients_named() -> int:
+                listed = await observer.client_list()
+                return sum(1 for client in listed if client.get("name") == name)
+
+            async def blocked() -> bool:
+                listed = await observer.client_list()
+                return any(c.get("name") == name and c.get("cmd") == "blpop" for c in listed)
+
+            in_flight = asyncio.create_task(backend.client.blpop([f"{name}-key"], timeout=1))
+            assert await wait_until(blocked, timeout=5.0)
+
+            await backend.close()
+            with contextlib.suppress(Exception):
+                await in_flight
+
+            assert await clients_named() == 0
+        finally:
+            await observer.aclose()
 
 
 class TestStoreAndGetResult:

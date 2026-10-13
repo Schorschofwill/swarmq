@@ -22,6 +22,7 @@ import contextlib
 import subprocess
 import time
 import uuid
+from collections.abc import Iterator
 from typing import override
 
 import pytest
@@ -31,6 +32,7 @@ from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.task import Task, TaskInfo
 from tests.chaos.conftest import ChaosStack
+from tests.support.known_leaks import aiormq_restart_leak, close_orphaned_streams
 
 pytestmark = [pytest.mark.timeout(180)]
 
@@ -129,6 +131,16 @@ class _App:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(scope="class")
+def _close_orphaned_streams() -> Iterator[None]:
+    yield
+    close_orphaned_streams()
+
+
+# TS-02: der Broker-Neustart schliesst Verbindungen, Wiederverbindungsversuche
+# scheitern waehrenddessen (tests/support/known_leaks.py).
+@aiormq_restart_leak
+@pytest.mark.usefixtures("_close_orphaned_streams")
 class TestBrokerRestart:
     async def test_inflight_tasks_complete_after_restart(
         self,

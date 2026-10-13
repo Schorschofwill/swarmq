@@ -10,6 +10,7 @@ from tests.compat._harness import (  # noqa: F401 — Fixtures in den Namensraum
 )
 from tests.support.services import (  # noqa: F401 — Fixtures in den Namensraum (Plan U4)
     check_docker,
+    delete_session_queues,
     rabbitmq_url,
     valkey_url,
 )

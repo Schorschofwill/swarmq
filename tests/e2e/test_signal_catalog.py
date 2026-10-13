@@ -32,6 +32,7 @@ from swarmq.serialization import encode_json
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 from swarmq.workflow import chain
+from tests.support.known_leaks import aiormq_streamwriter_leak
 from tests.support.services import flush_valkey_db
 
 # Liveness safety-net for "wait for an async signal/event" below — generous so
@@ -856,6 +857,8 @@ async def test_signal_task_expired(
 
 
 @pytest.mark.usefixtures("_cleanup_tasks")
+# TS-01: Abbruch mitten im Aufbau der Consume-Verbindung (tests/support/known_leaks.py).
+@aiormq_streamwriter_leak
 async def test_signal_scheduler_leader(
     rabbitmq_url: str,
     valkey_url: str,

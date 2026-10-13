@@ -36,6 +36,7 @@ from ._toxiproxy import (
     DEFAULT_ADMIN_PORT,
     ProxyConfig,
     ToxiproxyClient,
+    proxy_defaults,
 )
 
 _TOXIPROXY_HOST = os.environ.get(
@@ -60,22 +61,10 @@ _COMPOSE_RMQ_PORT = 5672
 _COMPOSE_VALKEY_PORT = 6379
 
 
-def _proxy_defaults(
-    service: str,
-    host: str,
-    port: int,
-    compose_port: int,
-    compose_proxy_port: int,
-) -> tuple[int, str]:
-    if port == compose_port:
-        return compose_proxy_port, f"{service}:{compose_port}"
-    return port - 1, f"{host}:{port}"
-
-
-_RMQ_DEFAULT_PROXY_PORT, _RMQ_DEFAULT_UPSTREAM = _proxy_defaults(
+_RMQ_DEFAULT_PROXY_PORT, _RMQ_DEFAULT_UPSTREAM = proxy_defaults(
     "rabbitmq", RABBITMQ_HOST, RABBITMQ_PORT, _COMPOSE_RMQ_PORT, 5673
 )
-_VALKEY_DEFAULT_PROXY_PORT, _VALKEY_DEFAULT_UPSTREAM = _proxy_defaults(
+_VALKEY_DEFAULT_PROXY_PORT, _VALKEY_DEFAULT_UPSTREAM = proxy_defaults(
     "valkey", VALKEY_HOST, VALKEY_PORT, _COMPOSE_VALKEY_PORT, 6380
 )
 _RMQ_PROXY_PORT = int(
