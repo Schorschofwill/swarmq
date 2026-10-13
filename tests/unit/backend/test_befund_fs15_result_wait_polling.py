@@ -1,26 +1,22 @@
-"""Nachweis FS-15: ``get_result()`` liest Pub/Sub nur in der ersten Sekunde und
-pollt danach per GET alle 5 ms; ``polling`` wird ignoriert, ``subscribe()``
-hat keine Frist.
+"""Nachweis FS-15: ``pubsub.subscribe()`` in ``get_result()`` hat keine Frist.
 
 Register: docs/befunde/fehlersuche-runde-2-2026-10.md (FS-15; Quelle MC-2,
 Skript ``mc/mc_wait_poll.py``).
 
-``ValkeyResults.wait_for_result`` (``backend/valkey/results.py``) wertet
-Pub/Sub nur im Fenster ``_PUBSUB_WINDOW_S = 1.0`` aus und pollt danach mit
-``_FALLBACK_POLL_S = 0.005``: rund 200 GET/s je Wartendem, bei 100 parallel
-wartenden Clients etwa 20 000 GET/s Dauerlast. ``Client.get_result`` nimmt
-``polling`` nur noch aus API-Kompatibilitaet an. ``pubsub.subscribe()``
-laeuft ohne Deadline; ein haengendes Valkey haelt den Aufrufer ueber
-``timeout`` hinaus fest.
+``ValkeyResults.wait_for_result`` (``backend/valkey/results.py``) ruft
+``pubsub.subscribe()`` ohne Deadline auf. Der Docstring sagt zu, dass ein
+haengendes Valkey den Aufrufer nicht ueber ``timeout`` hinaus festhaelt; mit
+den Wiederholungen von valkey-py dauert es real 30 s und mehr laenger.
 
-Die Wartezeiten laufen auf einer virtuellen Uhr (eigene Event-Loop, deren
-``time()`` beim Warten vorspringt): Sekunden Wartezeit kosten so nur
-Millisekunden, ohne Schlafen in Echtzeit. Gemockt sind nur der valkey-Client
-und die Zeit.
+Das Polling alle 5 ms nach dem 1-s-Pub/Sub-Fenster und das ignorierte
+``polling`` sind dagegen entschieden (Anforderung R3, Plan 2026-04-15-005,
+Commit c18a144, ``api.md``) und hier nicht Gegenstand (Gegenpruefung C).
+
+Die Wartezeit laeuft auf einer virtuellen Uhr (eigene Event-Loop, deren
+``time()`` beim Warten vorspringt). Gemockt sind nur der valkey-Client und
+die Zeit.
 
 Testliste:
-# [x] 10 s Warten ohne Ergebnis: hoechstens ein GET je 0,1 s (plus Erst-GET)
-# [x] Client.get_result(polling=1.0): hoechstens ein GET je Sekunde
 # [x] haengendes subscribe(): wait_for_result endet spaetestens kurz nach timeout
 """
 
@@ -35,8 +31,6 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from swarmq.backend.valkey import ValkeyBackend
-from swarmq.client import Client
-from swarmq.exceptions import ResultNotReadyError
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -103,34 +97,6 @@ def _backend(pubsub: _SilentPubSub) -> tuple[ValkeyBackend, AsyncMock]:
     client.get = AsyncMock(return_value=None)
     client.pubsub = Mock(return_value=pubsub)
     return ValkeyBackend(client=client), client.get
-
-
-@pytest.mark.befund("FS-15")
-@pytest.mark.xfail(strict=True, reason="FS-15: offen - nach 1 s Pub/Sub-Fenster GET alle 5 ms")
-def test_waiting_ten_seconds_polls_at_most_every_100ms() -> None:
-    backend, get = _backend(_SilentPubSub())
-
-    async def _main() -> bytes | None:
-        return await backend.wait_for_result("fs15-task", timeout=10.0)
-
-    assert _run_virtual(_main) is None
-    assert get.await_count <= 1 + 10.0 / 0.1, (
-        f"{get.await_count} GETs in 10 s Wartezeit (~{get.await_count / 9:.0f}/s nach dem Pub/Sub-Fenster)"
-    )
-
-
-@pytest.mark.befund("FS-15")
-@pytest.mark.xfail(strict=True, reason="FS-15: offen - Client.get_result ignoriert polling")
-def test_client_get_result_honours_the_polling_interval() -> None:
-    backend, get = _backend(_SilentPubSub())
-    client = Client(broker=AsyncMock(), backend=backend)
-
-    async def _main() -> None:
-        with pytest.raises(ResultNotReadyError):
-            await client.get_result("fs15-task", timeout=10.0, polling=1.0)
-
-    _run_virtual(_main)
-    assert get.await_count <= 1 + 10, f"polling=1.0 wirkungslos: {get.await_count} GETs in 10 s"
 
 
 @pytest.mark.befund("FS-15")

@@ -1,7 +1,7 @@
-"""Nachweis FS-06 (Teil 2): Der Leader-Renew laeuft ohne ``op_timeout``; der
+"""Nachweis FS-31: Der Leader-Renew laeuft ohne ``op_timeout``; der
 Ruecktritt nach Renew-Fehlern greift erst lange nach Ablauf des Leader-Locks.
 
-Register: docs/befunde/fehlersuche-runde-2-2026-10.md (FS-06; Quellen K-3, MC-4).
+Register: docs/befunde/fehlersuche-runde-2-2026-10.md (FS-31, abgetrennt von FS-06; Quellen K-3, MC-4).
 Teil 1 (Wiederholung nicht idempotenter Befehle) steht in
 ``tests/integration/backend/test_befund_fs06_retry_after_lost_reply.py``.
 
@@ -83,8 +83,8 @@ def _run_virtual[T](main: Callable[[], Coroutine[Any, Any, T]]) -> T:
         loop.close()
 
 
-@pytest.mark.befund("FS-06")
-@pytest.mark.xfail(strict=True, reason="FS-06: offen - Leader-Renew ohne op_timeout, Ruecktritt erst nach ~150 s")
+@pytest.mark.befund("FS-31")
+@pytest.mark.xfail(strict=True, reason="FS-31: offen - Leader-Renew ohne op_timeout, Ruecktritt erst nach ~150 s")
 def test_leader_steps_down_before_the_lock_ttl_when_renew_hangs(
     backend: MagicMock,
     broker: MagicMock,

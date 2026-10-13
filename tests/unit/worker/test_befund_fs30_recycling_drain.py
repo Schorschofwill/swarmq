@@ -1,12 +1,12 @@
-"""Nachweis FS-01 (Recycling-Teil): Ein Recycling-Drain ohne registrierten
+"""Nachweis FS-30: Ein Recycling-Drain ohne registrierten
 ``hard_timeout`` faellt auf ``shutdown_timeout`` zurueck und bricht laufende
 Langlaeufer ab.
 
-Register: docs/befunde/fehlersuche-runde-2-2026-10.md (FS-01; Quellen MB-2, N-5).
+Register: docs/befunde/fehlersuche-runde-2-2026-10.md (FS-30, abgetrennt von FS-01; Quellen MB-2, N-5).
 
 ``recycle_drain_timeout`` (``worker/recycling.py``) liefert ohne einen Task mit
 ``hard_timeout`` (Default ``None``) nur ``shutdown_timeout``. ``_drain_in_flight``
-bricht danach jeden noch laufenden Handler ab – ueber FS-01 (IO/CPU) wird daraus
+bricht danach jeden noch laufenden Handler ab – nach E-001 (KTD2) wird daraus
 ein Fehler mit Retry-Verbrauch bzw. DLQ. R22/KTD11 (Plan 2026-09-03-001) und
 ``website/explanation/delivery-semantics.md`` versprechen dagegen: Das Recycling
 drainiert "ohne erzwungenen Abbruch", "verbraucht keinen Retry eines laufenden
@@ -82,9 +82,9 @@ class Fs01RecyclingLongRunner(Task):
         return "fertig"
 
 
-@pytest.mark.befund("FS-01")
+@pytest.mark.befund("FS-30")
 @pytest.mark.xfail(
-    strict=True, reason="FS-01: offen - Recycling-Drain ohne hard_timeout bricht nach shutdown_timeout ab"
+    strict=True, reason="FS-30: offen - Recycling-Drain ohne hard_timeout bricht nach shutdown_timeout ab"
 )
 async def test_recycling_drain_does_not_abort_a_long_runner_without_hard_timeout(broker: Any, backend: Any) -> None:
     probe = _Fs01RecyclingProbe()
