@@ -191,6 +191,22 @@ async def test_hold_logs_and_signals_only_on_the_transition(leader, store, signa
     assert seen == [{"worker_id": "w-1", "schedule_name": "ghost", "task_name": "ping", "held": True, "held_count": 1}]
 
 
+async def test_the_hold_is_committed_before_it_is_signalled(leader, store, signal_dispatcher) -> None:
+    """Wer auf das Signal hin den Termin liest, sieht schon den verschobenen
+    (bz11-e2e unter Coverage: der Commit kam nach dem Signal)."""
+    committed_at_signal: list[int] = []
+
+    async def _handler(**_kw: object) -> None:
+        committed_at_signal.append(store.commit_fire.await_count)
+
+    signal_dispatcher.connect(Signal.SCHEDULER_CRON_UNOWNED, _handler)
+    await leader.adopt_reported_crons()
+
+    await _poll(leader, store, _ghost())
+
+    assert committed_at_signal == [1]
+
+
 async def test_reported_again_releases_the_hold(leader, known, store, broker, signal_dispatcher, swarmq_logs) -> None:
     seen = _recorded(signal_dispatcher, Signal.SCHEDULER_CRON_UNOWNED)
     await leader.adopt_reported_crons()
