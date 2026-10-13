@@ -73,6 +73,8 @@ test = [
     "prometheus_client",
     # Dishka DI integration tests exercise the with-installed path.
     "dishka>=1.10.1",
+    # Entscheidungsregister: Frontmatter der Pack-Regeln (tests/unit/test_entscheidungsregister.py).
+    "pyyaml",
 ]
 docs = [
     "mkdocs-material>=9.5",
@@ -96,6 +98,7 @@ typing = [
     "basedpyright>=1.40",
     # Typen für psutil (tests/support, Chaos-Tests).
     "types-psutil",
+    "types-PyYAML",
 ]
 
 [tool.uv]
@@ -127,6 +130,7 @@ markers = [
     "property: hypothesis property-based tests (opt-in, nightly thorough)",
     "fuzz: byte/json fuzzing tests (opt-in, nightly)",
     "mutation: marker for mutmut configuration (not invoked directly)",
+    "entscheidung(id): schreibt eine Entscheidung aus compound-packs/swarmq-entscheidungen/ fest (ID E-nnn)",
     "befund(id): Nachweis eines offenen Befunds aus docs/befunde/ (immer mit xfail strict=True)",
     "compat: Mischbetrieb mit swarmq 0.11.x aus PyPI (tests/compat, opt-in, braucht Netz zu PyPI)",
     "spike: Charakterisierung des Broker-Verhaltens (tests/integration/spikes, RabbitMQ 4.3 und 4.2)",
