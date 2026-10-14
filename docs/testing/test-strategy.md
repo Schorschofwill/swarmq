@@ -269,7 +269,8 @@ die Ports selbst.
 # aendert die Zahl, SWARMQ_TEST_WORKERS=0 laesst sie in einem Prozess laufen)
 uv run just unit
 
-# Integration und e2e gegen die Testcontainer (mit Sperre)
+# Integration und e2e gegen die Testcontainer (mit Sperre), ebenfalls auf
+# SWARMQ_TEST_WORKERS Prozessen; danach die exclusive-Tests allein
 uv run just integration
 uv run just e2e
 
@@ -293,6 +294,35 @@ SWARMQ_SOAK_HOURS=1 uv run --extra test pytest tests/soak -m soak
 # ohne eigenes Rezept, Sperre per Hand
 scripts/with-test-lock.sh uv run --extra test --extra reload pytest tests/compat -m compat -q
 ```
+
+### Parallele Dienst-Suiten
+
+Integration und e2e laufen per pytest-xdist auf mehreren Prozessen
+(`scripts/run-tests.sh --parallel N`, Standard 8, höchstens 15). Jeder Prozess
+`gwN` arbeitet in einem eigenen Namensraum (`tests/support/services.py`):
+
+- RabbitMQ-vhost `swarmq-test-gwN` auf dem Haupt- und dem 4.2-Broker, zu
+  Sitzungsbeginn über die Management-API angelegt und am Ende samt allen
+  Queues gelöscht;
+- Valkey-Datenbank N+1 (`FLUSHDB` trifft nur sie; ohne xdist bleibt es DB 0
+  und vhost `/`).
+
+Unterprozesse erben `PYTEST_XDIST_WORKER` und landen im selben Namensraum.
+Was der Namensraum nicht trennt, regelt `tests/support/xdist_isolation.py`:
+
+- Tests mit Fixture `toxiproxy` (feste Proxy-Namen und -Ports) bekommen die
+  xdist-Gruppe `toxiproxy` und laufen unter `--dist loadgroup` nacheinander
+  auf einem Prozess; feste Ports anderer Art tragen eine eigene Gruppe
+  (`metrics-ports` in `test_cli_worker_recycle.py`).
+- Tests, die einen Dienst als Ganzes verändern (Speicheralarm des Brokers,
+  `SCRIPT FLUSH` in Valkey), tragen `@pytest.mark.exclusive`. Der parallele
+  Durchgang wählt sie ab (`SWARMQ_TEST_EXCLUSIVE=skip`), ein zweiter,
+  serieller Durchgang führt nur sie aus (`only`); seine JUnit-Datei endet auf
+  `-serial.xml`. Ein leerer Durchgang (Exit 5) zählt nicht als Fehler.
+
+Wer einen neuen Service-Test schreibt, nimmt URLs aus `rabbitmq_url` /
+`valkey_url` bzw. `rabbitmq_amqp_url()` / `valkey_db_url()` (auch über einen
+Proxy: `rabbitmq_amqp_url(host, port)`), nie fest verdrahtet `/` oder `/0`.
 
 ## RabbitMQ-Versionen
 

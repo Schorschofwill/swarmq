@@ -90,7 +90,7 @@ async def get_message(connection: AbstractConnection, queue: str, timeout: float
 async def queue_policy(node: RabbitMQNode, queue: str, definition: dict[str, Any]) -> AsyncIterator[None]:
     """Policy nur für ``queue``. Vor dem Declare setzen: dann gilt sie ab der Anlage.
     Wird im ``finally`` entfernt."""
-    url = f"{node.management_url}/policies/%2F/spike-{queue}"
+    url = f"{node.management_url}/policies/{node.vhost_api}/spike-{queue}"
     body = {"pattern": f"^{re.escape(queue)}$", "definition": definition, "apply-to": "queues", "priority": 1000}
     async with httpx.AsyncClient(auth=AUTH, timeout=5.0) as client:
         (await client.put(url, json=body)).raise_for_status()

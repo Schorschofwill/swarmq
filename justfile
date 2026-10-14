@@ -16,8 +16,9 @@ export SWARMQ_TEST_VALKEY_PORT := env("SWARMQ_TEST_VALKEY_PORT", "6399")
 
 uv_run := "uv run --extra test --extra reload"
 
-# Prozesse fuer die Unit-Suite (pytest-xdist): 8 war auf 24 Kernen das
-# Optimum (15 s statt 50 s), mehr brachte nichts.
+# Prozesse (pytest-xdist) fuer Unit, Integration und e2e: 8 war fuer Unit
+# auf 24 Kernen das Optimum (15 s statt 50 s), mehr brachte nichts. Fuer die
+# Dienst-Suiten hoechstens 15 (eine Valkey-Datenbank je Prozess).
 workers := env("SWARMQ_TEST_WORKERS", "8")
 
 # Rezepte auflisten
@@ -47,13 +48,15 @@ property *args:
 fuzz *args:
     scripts/run-tests.sh --no-services tests/fuzz/test_parser_fuzz.py -m fuzz "$@"
 
-# Integration gegen RabbitMQ und Valkey
+# Integration gegen RabbitMQ und Valkey: parallel auf SWARMQ_TEST_WORKERS Prozessen,
+# je in eigener vhost und Valkey-Datenbank (tests/support/services.py), danach
+# die exclusive-Tests allein (scripts/run-tests.sh --parallel)
 integration *args:
-    scripts/run-tests.sh tests/integration "$@"
+    scripts/run-tests.sh --parallel {{workers}} tests/integration "$@"
 
 # e2e-Suite gegen RabbitMQ und Valkey
 e2e *args:
-    scripts/run-tests.sh tests/e2e "$@"
+    scripts/run-tests.sh --parallel {{workers}} tests/e2e "$@"
 
 # Chaos-Suiten (eigene Compose-Stacks, Toxiproxy; docs/testing/test-strategy.md).
 # Ohne Pfad gilt testpaths; ``uv run just chaos tests/chaos`` grenzt ein.
@@ -76,9 +79,9 @@ coverage:
 
 _coverage:
     {{uv_run}} coverage erase
-    SWARMQ_TEST_COVERAGE=1 scripts/run-tests.sh --no-services tests/unit
-    SWARMQ_TEST_COVERAGE=1 scripts/run-tests.sh tests/integration
-    SWARMQ_TEST_COVERAGE=1 scripts/run-tests.sh tests/e2e
+    SWARMQ_TEST_COVERAGE=1 scripts/run-tests.sh --no-services tests/unit -n {{workers}}
+    SWARMQ_TEST_COVERAGE=1 scripts/run-tests.sh --parallel {{workers}} tests/integration
+    SWARMQ_TEST_COVERAGE=1 scripts/run-tests.sh --parallel {{workers}} tests/e2e
     {{uv_run}} coverage combine
     {{uv_run}} coverage report
 

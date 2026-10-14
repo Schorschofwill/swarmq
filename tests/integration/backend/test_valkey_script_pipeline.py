@@ -59,6 +59,8 @@ async def test_concurrent_claims_and_finishes_get_their_own_status(backend: Valk
     assert await asyncio.gather(*(_claim(backend, i) for i in identities)) == ["done"] * 200
 
 
+# exclusive: SCRIPT FLUSH leert den Skript-Cache aller Datenbanken.
+@pytest.mark.exclusive
 async def test_claim_succeeds_after_the_script_cache_was_flushed(backend: ValkeyBackend) -> None:
     assert await _claim(backend, f"pipe-{uuid.uuid4().hex}") == "claimed"
     await backend.client.script_flush()

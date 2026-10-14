@@ -90,8 +90,11 @@ variables:
     SWARMQ_TEST_RABBITMQ_PORT: "5672"
     SWARMQ_TEST_VALKEY_HOST: valkey
     SWARMQ_TEST_VALKEY_PORT: "6379"
+    # Management API: each xdist worker creates its own vhost through it
+    # (tests/support/services.py), so the gate waits for it as well.
+    SWARMQ_TEST_RABBITMQ_MGMT_PORT: "15672"
     # host:port pairs the readiness gate waits for (space separated).
-    SWARMQ_CI_WAIT_FOR: "rabbitmq:5672 valkey:6379"
+    SWARMQ_CI_WAIT_FOR: "rabbitmq:5672 rabbitmq:15672 valkey:6379"
   before_script:
     # Block until both services accept connections. check_docker SKIPS (not
     # fails) when a service is unreachable, so without this gate a slow broker
@@ -198,7 +201,6 @@ integration-tests:
     - name: valkey/valkey:8
       alias: valkey
   variables:
-    SWARMQ_TEST_RABBITMQ_MGMT_PORT: "15672"
     SWARMQ_TEST_RABBITMQ42_HOST: rabbitmq42
     SWARMQ_TEST_RABBITMQ42_PORT: "5672"
     SWARMQ_TEST_RABBITMQ42_MGMT_PORT: "15672"
