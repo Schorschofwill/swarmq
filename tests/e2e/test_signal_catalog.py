@@ -207,7 +207,15 @@ async def test_signal_worker_shutdown(
         )
         task = asyncio.create_task(worker.start())
         try:
-            await asyncio.sleep(0.5)
+            # _request_shutdown wirkt erst im Zustand RUNNING; auf langsamen
+            # Runnern dauert der Start laenger als eine feste Pause.
+            from swarmq.worker.lifecycle import WorkerState
+
+            deadline = time.monotonic() + _EVENT_TIMEOUT
+            while worker._state is not WorkerState.RUNNING:
+                assert not task.done(), "worker.start() endete vor RUNNING"
+                assert time.monotonic() < deadline, "worker did not reach RUNNING"
+                await asyncio.sleep(0.05)
             worker._request_shutdown()
             await asyncio.wait_for(shutdown_event.wait(), timeout=_EVENT_TIMEOUT)
             await asyncio.wait_for(task, timeout=_EVENT_TIMEOUT)

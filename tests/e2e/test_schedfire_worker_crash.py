@@ -130,7 +130,13 @@ async def test_sigkill_mid_cron_fire_runs_the_fire_exactly_once_after_the_claim_
 
             [result] = await app.get_results([task_id], timeout=30)
             assert result == "slept:3.0"
-            assert await backend.schedules.is_fire_completed(fire_key) is True
+
+            # Der Completed-Marker folgt dem Ergebnis erst im Abschluss der
+            # Zustellung; auf langsamen Runnern liegt er noch nicht an.
+            async def _fire_completed() -> bool:
+                return await backend.schedules.is_fire_completed(fire_key)
+
+            assert await wait_until(_fire_completed, timeout=10), f"fire {fire_key} not completed within 10s"
             # Ein Lauf auf A (abgebrochen), genau einer auf B.
             assert await _exec_count(backend, task_id) == 2
 
