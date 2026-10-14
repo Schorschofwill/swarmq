@@ -74,7 +74,8 @@ class _FakePipeEnd:
         if self.child_side or self.closed:
             return
         self.closed = True
-        self._q.put(_EOF)
+        if not FakeCtx.grandchild_holds_channel:
+            self._q.put(_EOF)
 
 
 class FakeProcess:
@@ -124,13 +125,16 @@ class FakeProcess:
         if self._alive:
             self._alive = False
             os.close(self._w)
-            if eof:
+            if eof and not FakeCtx.grandchild_holds_channel:
                 self.channel.eof()
 
 
 class FakeCtx:
     started: ClassVar[list[FakeProcess]] = []
     fail_next_start: ClassVar[bool] = False
+    # Ein Enkel haelt das Schreibende des Rueckkanals offen: Weder der Tod des
+    # Kindes noch das Schliessen der Elternseite bringt dem Leser ein EOF.
+    grandchild_holds_channel: ClassVar[bool] = False
 
     def Pipe(self, duplex: bool = True) -> tuple[_FakePipeEnd, _FakePipeEnd]:
         q: _queue.Queue[Any] = _queue.Queue()
@@ -144,6 +148,7 @@ class FakeCtx:
 def ctx() -> FakeCtx:
     FakeCtx.started = []
     FakeCtx.fail_next_start = False
+    FakeCtx.grandchild_holds_channel = False
     return FakeCtx()
 
 
@@ -994,3 +999,33 @@ async def test_a_rejected_fork_source_is_reported_once(ctx, signals):
             await p.run(_job(tid), use_di=False)
     assert reported == ["restarted forkserver has 2 threads"]
     await p.aclose()
+
+
+@pytest.mark.timeout(5)
+def test_a_channel_eof_after_the_event_loop_ended_stays_silent(ctx, signals):
+    """Ein Enkel haelt das Kanal-fd offen; das EOF erreicht den Leser-Thread
+    erst nach dem Ende des Event-Loops. Der Thread darf daran nicht mit
+    ``RuntimeError: Event loop is closed`` scheitern (CI-Pipeline 2947339525).
+
+    Bewusst synchron mit ``asyncio.run``: Der Loop muss vor dem EOF
+    geschlossen sein, was pytest-asyncio innerhalb des Tests nicht zulaesst.
+    """
+    FakeCtx.grandchild_holds_channel = True
+
+    async def main() -> FakeProcess:
+        p = await _make_pool(ctx, slots=1)
+        task = asyncio.create_task(p.run(_job("a"), use_di=False))
+        proc = await _started(1)
+        await _ready(p, proc, 0)
+        proc.channel.send(("result", _result("a", 0)))
+        await task
+        proc.die()
+        await _settle(lambda: proc.pid not in p._children)
+        await p.aclose()
+        return proc
+
+    proc = asyncio.run(main())
+    [reader] = [t for t in threading.enumerate() if t.name == f"swarmq-compute-reader-{proc.pid}"]
+    proc.channel.eof()  # der Enkel endet
+    reader.join(timeout=2)
+    assert not reader.is_alive()

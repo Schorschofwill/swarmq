@@ -461,7 +461,10 @@ class TestLockCancelCombo:
                 await app.schedule(task_name, "second")
                 await asyncio.wait_for(all_done.wait(), timeout=12.0)
 
-        assert results == ["first", "second"], "both tasks must complete in order under mutex"
+        # Beide laufen genau einmal. Eine Reihenfolge sagt der Mutex nicht
+        # zu: Mit concurrency > 1 holen beide Zustellungen das Lock im
+        # Wettlauf, der Verlierer wird zurückgestellt (E-007).
+        assert sorted(results) == ["first", "second"], "both tasks must run once under the mutex"
 
     async def test_cancel_before_lock_acquired(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Task cancelled before the lock is acquired: lock must never be
@@ -917,7 +920,9 @@ class TestLockHardTimeoutCombo:
                 await app.schedule(task_name, "b")
                 await asyncio.wait_for(second_done.wait(), timeout=12.0)
 
-        assert results == ["a", "b"]
+        # Beide laufen genau einmal; die Reihenfolge entscheidet der
+        # Wettlauf ums Lock (concurrency=2, E-007), nicht die Einreihung.
+        assert sorted(results) == ["a", "b"]
 
     async def test_hard_timeout_releases_lock_via_finally(self, rabbitmq_url: str, valkey_url: str) -> None:
         """Task exceeds hard_timeout → worker hard-kills the coroutine →

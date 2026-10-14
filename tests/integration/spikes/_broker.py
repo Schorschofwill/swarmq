@@ -18,6 +18,13 @@ AUTH = ("guest", "guest")
 QUORUM: dict[str, Any] = {"x-queue-type": "quorum"}
 
 
+def reply_text(text: str) -> str:
+    """``text`` so, wie der Broker es als AMQP-Reply-Text sendet: ein
+    ``shortstr`` hat höchstens 255 Byte, längere Texte kürzt RabbitMQ auf
+    252 Zeichen plus ``...`` (lange vhost-Namen der xdist-Läufe)."""
+    return text if len(text) <= 255 else f"{text[:252]}..."
+
+
 async def delete_queues(url: str, *names: str) -> None:
     """Löscht beliebige Queues (keine Familien) je auf eigenem Channel; best effort."""
     connection = await aio_pika.connect(url)

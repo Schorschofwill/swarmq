@@ -412,7 +412,6 @@ class SlotPool:
 
     def _reader(self, child: _Child) -> None:
         """Leser-Thread je Kind: Nachrichten und danach das EOF in den Loop reichen."""
-        assert self._loop is not None
         conn = child.conn
         while True:
             try:
@@ -422,10 +421,18 @@ class SlotPool:
             try:
                 msg = pickle.loads(raw)  # noqa: S301 - Daten aus dem eigenen Kindprozess
             except Exception as exc:  # noqa: BLE001 - Dekodierfehler trifft nur dieses Kind
-                self._loop.call_soon_threadsafe(self._on_decode_error, child, exc)
+                self._post(self._on_decode_error, child, exc)
                 continue
-            self._loop.call_soon_threadsafe(self._on_message, child, msg)
-        self._loop.call_soon_threadsafe(self._on_eof, child)
+            self._post(self._on_message, child, msg)
+        self._post(self._on_eof, child)
+
+    def _post(self, callback: Callable[..., object], *args: object) -> None:
+        """``callback`` aus dem Leser-Thread in den Loop reichen. Haelt ein Enkel
+        das Kanal-fd offen, kommt das EOF womoeglich erst nach dem Ende des
+        Loops; dann wartet niemand mehr, und die Zustellung entfaellt still."""
+        assert self._loop is not None
+        with contextlib.suppress(RuntimeError):  # Loop geschlossen
+            self._loop.call_soon_threadsafe(callback, *args)
 
     def _on_message(self, child: _Child, msg: Any) -> None:
         kind = msg[0]

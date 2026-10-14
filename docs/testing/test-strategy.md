@@ -301,9 +301,12 @@ Integration und e2e laufen per pytest-xdist auf mehreren Prozessen
 (`scripts/run-tests.sh --parallel N`, Standard 8, höchstens 15). Jeder Prozess
 `gwN` arbeitet in einem eigenen Namensraum (`tests/support/services.py`):
 
-- RabbitMQ-vhost `swarmq-test-gwN` auf dem Haupt- und dem 4.2-Broker, zu
-  Sitzungsbeginn über die Management-API angelegt und am Ende samt allen
-  Queues gelöscht;
+- RabbitMQ-vhost `swarmq-test-gwN-<lauf>` auf dem Haupt- und dem 4.2-Broker,
+  zu Sitzungsbeginn über die Management-API angelegt und am Ende samt allen
+  Queues gelöscht. `<lauf>` sind die ersten 8 Zeichen der xdist-Laufkennung
+  (`PYTEST_XDIST_TESTRUNUID`): RabbitMQ löscht vhosts asynchron, ein
+  folgender Lauf mit demselben Namen geriete sonst in die noch laufende
+  Löschung;
 - Valkey-Datenbank N+1 (`FLUSHDB` trifft nur sie; ohne xdist bleibt es DB 0
   und vhost `/`).
 
