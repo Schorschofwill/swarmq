@@ -39,6 +39,20 @@ if TYPE_CHECKING:
     from swarmq.worker.lock_keeper import LockKeeper
 
 
+#: ``cancel_consume``-Aufrufe, deren Warten der Drain aufgegeben hat (FS-09):
+#: die Referenz haelt sie bis zum Ende am Leben, ihr Ausgang wird geloggt.
+_LATE_CONSUME_CANCELS: set[asyncio.Future[None]] = set()
+
+
+def _collect_late_consume_cancel(cancelling: asyncio.Future[None]) -> None:
+    _LATE_CONSUME_CANCELS.discard(cancelling)
+    if cancelling.cancelled():
+        return
+    exc = cancelling.exception()
+    if isinstance(exc, Exception):
+        _lc.logger.warning("cancel_consume_partial_failure", late=True, **_error_fields(exc))
+
+
 class WorkerShutdown:
     # Mixin über dem Worker-Zustand; die Attribute setzt ``Worker.__init__``
     # (pipeline.py), die Methoden-Stubs zeigen auf ``WorkerLifecycle``.
@@ -84,24 +98,16 @@ class WorkerShutdown:
                 _lc.logger.exception("health_server_stop_failed")
 
     async def _drain_in_flight(self, drain_until: float | None = None) -> None:
-        # 1. DRAINING: stop accepting new messages. cancel_consume now
-        # isolates per-consumer failures and raises only after attempting
-        # every consumer + clearing its registry; guard it so a partial
-        # cancel cannot abort the rest of the graceful-shutdown sequence
-        # (in-flight drain, lock release, scheduler stop). 2026-06-02 audit.
-        try:
-            await self._broker.cancel_consume()
-        except Exception as exc:  # noqa: BLE001 - Teilfehler darf Shutdown nicht abbrechen
-            _lc.logger.warning("cancel_consume_partial_failure", **_error_fields(exc))
+        # ``drain_until`` ist das Drain-Ende aus ``_drain_end`` (Loop-Zeit,
+        # FS-02 Teil b): beim Recycling die eigene Frist, sonst das Budget.
+        if drain_until is None:
+            drain_until = asyncio.get_running_loop().time() + float(self._config.shutdown_timeout)
+        # 1. DRAINING: stop accepting new messages.
+        await self._cancel_consume(drain_until)
 
         # 2. Wait for in-flight tasks to complete
         tasks_snapshot = set(self._active_tasks)
         if tasks_snapshot:
-            # ``drain_until`` ist das Drain-Ende aus ``_drain_end`` (Loop-Zeit,
-            # FS-02 Teil b): beim Recycling die eigene Frist, sonst das Budget.
-            loop = asyncio.get_running_loop()
-            if drain_until is None:
-                drain_until = loop.time() + float(self._config.shutdown_timeout)
             pending = await self._wait_for_drain(tasks_snapshot, drain_until)
 
             # 3. SHUTTING_DOWN: cancel remaining tasks if drain timeout exceeded
@@ -110,6 +116,33 @@ class WorkerShutdown:
                 for task in pending:
                     task.cancel()
                 await asyncio.wait(pending, timeout=min(1.0, self._step_timeout()))
+
+    async def _cancel_consume(self, drain_until: float) -> None:
+        """Consumer abmelden, begrenzt bis zum Drain-Ende (FS-09, KTD16).
+
+        Das Warten endet spaetestens bei *drain_until* (mindestens
+        ``_SHUTDOWN_STEP_MIN_S``), das Abmelden selbst wird dabei nicht
+        abgebrochen: Ein abgebrochenes ``basic.cancel`` schloesse in aiormq den
+        Consume-Kanal, und alle laufenden Handler kaemen als Neuzustellung
+        zurueck. Es laeuft weiter, bis der Broker antwortet, die Notbremse des
+        Waechters greift oder ``broker.close()`` den Kanal schliesst.
+
+        ``cancel_consume`` isoliert Fehler je Consumer und wirft erst danach;
+        ein Teilfehler darf den Rest der Sequenz (Drain, Sperrenfreigabe,
+        Scheduler-Stopp) nicht abbrechen (Audit 2026-06-02).
+        """
+        cancelling = asyncio.ensure_future(self._broker.cancel_consume())
+        timeout = max(drain_until - asyncio.get_running_loop().time(), _lc._SHUTDOWN_STEP_MIN_S)
+        await asyncio.wait({cancelling}, timeout=timeout)
+        if not cancelling.done():
+            _lc.logger.warning("shutdown_step_timeout", step="cancel_consume", timeout_s=round(timeout, 3))
+            _LATE_CONSUME_CANCELS.add(cancelling)
+            cancelling.add_done_callback(_collect_late_consume_cancel)
+            return
+        try:
+            cancelling.result()
+        except Exception as exc:  # noqa: BLE001 - Teilfehler darf Shutdown nicht abbrechen
+            _lc.logger.warning("cancel_consume_partial_failure", **_error_fields(exc))
 
     async def _wait_for_drain(self, tasks: set[asyncio.Task[None]], drain_until: float) -> set[asyncio.Task[None]]:
         """Bis *drain_until* auf *tasks* warten; liefert die noch laufenden.

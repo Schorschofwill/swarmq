@@ -19,6 +19,9 @@ Test-Liste:
 - [x] Recycling-Drain ist ausgenommen: er wartet seine eigene Frist ab, ohne Abbruch
 - [x] ausgeschoepftes Budget: jeder Schritt bekommt trotzdem die Untergrenze
 - [x] ... und die Unteraufgaben des Schedulers werden abgebrochen (``abort``), keine Waisen
+- [x] haengendes ``cancel_consume`` (FS-09, KTD16): begrenzt bis zum Drain-Ende, das RPC
+      wird nicht abgebrochen (sonst schloesse aiormq den Consume-Kanal)
+- [x] ... scheitert es erst danach, wird der Fehler trotzdem geloggt
 """
 
 from __future__ import annotations
@@ -251,3 +254,60 @@ async def test_exhausted_budget_still_gives_each_step_the_floor(worker: Any, mon
     await _shutdown_within(worker, 2.0)
 
     assert stopped.is_set()
+
+
+async def test_hanging_cancel_consume_is_bounded_without_aborting_it(
+    worker: Any, broker: Any, short_steps: None, swarmq_logs: list[dict[str, Any]]
+) -> None:
+    worker._config.shutdown_timeout = 0.04
+    answer, ended = asyncio.Event(), asyncio.Event()
+    aborted: list[bool] = []
+    finished: list[bool] = []
+
+    async def _slow_cancel_consume() -> None:
+        try:
+            await answer.wait()
+        except asyncio.CancelledError:
+            aborted.append(True)
+            raise
+        finally:
+            ended.set()
+        finished.append(True)
+
+    broker.cancel_consume.side_effect = _slow_cancel_consume
+
+    await _shutdown_within(worker, 1.0)
+
+    broker.close.assert_awaited()
+    [event] = [e for e in swarmq_logs if e["event"] == "shutdown_step_timeout" and e["step"] == "cancel_consume"]
+    assert event["timeout_s"] <= 0.04
+    assert not ended.is_set()
+    answer.set()
+    await asyncio.wait_for(ended.wait(), 1.0)
+    assert aborted == []
+    assert finished == [True]
+
+
+async def test_cancel_consume_failing_after_the_drain_gave_up_is_still_logged(
+    worker: Any, broker: Any, short_steps: None, swarmq_logs: list[dict[str, Any]]
+) -> None:
+    worker._config.shutdown_timeout = 0.04
+    answer = asyncio.Event()
+
+    async def _late_failure() -> None:
+        await answer.wait()
+        raise RuntimeError("cancel failed late")
+
+    broker.cancel_consume.side_effect = _late_failure
+    before = asyncio.all_tasks()
+    await _shutdown_within(worker, 1.0)
+    late = asyncio.all_tasks() - before
+    assert late, "das Abmelden laeuft nach dem Herunterfahren weiter"
+
+    answer.set()
+    # Der Log-Rueckruf ist vor dem von ``asyncio.wait`` angemeldet und laeuft zuerst.
+    await asyncio.wait(late, timeout=1.0)
+
+    [event] = [e for e in swarmq_logs if e["event"] == "cancel_consume_partial_failure"]
+    assert event["error_type"] == "RuntimeError"
+    assert event["late"] is True

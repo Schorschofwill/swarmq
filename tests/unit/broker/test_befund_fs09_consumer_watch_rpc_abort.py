@@ -76,11 +76,13 @@ class Fs09Queue:
     async def get_underlay_channel(self) -> Channel:
         return self.underlay
 
-    async def cancel(self, tag: str) -> None:
-        await self.underlay.basic_cancel(tag)
+    # ``timeout`` wie bei aio-pika: reicht der Waechter eine aiormq-eigene
+    # Frist durch, darf der Fake nicht mit ``TypeError`` (ohne Close) enden.
+    async def cancel(self, tag: str, timeout: float | None = None) -> None:
+        await self.underlay.basic_cancel(tag, timeout=timeout)
 
-    async def consume(self, callback: Any) -> str:
-        ok = await self.underlay.basic_consume("tasks", callback)
+    async def consume(self, callback: Any, timeout: float | None = None) -> str:
+        ok = await self.underlay.basic_consume("tasks", callback, timeout=timeout)
         return str(ok.consumer_tag)
 
 
@@ -127,10 +129,6 @@ async def _fs09_callback(_message: Any) -> None:
 
 
 @pytest.mark.befund("FS-09")
-@pytest.mark.xfail(
-    strict=True,
-    reason="FS-09: offen - Waechter bricht langsames basic.cancel ab, aiormq schliesst den Consume-Channel",
-)
 async def test_fs09_slow_basic_cancel_does_not_close_the_consume_channel(
     fs09_channel: tuple[Fs09Connector, Channel],
 ) -> None:
@@ -150,10 +148,6 @@ async def test_fs09_slow_basic_cancel_does_not_close_the_consume_channel(
 
 
 @pytest.mark.befund("FS-09")
-@pytest.mark.xfail(
-    strict=True,
-    reason="FS-09: offen - Waechter bricht langsames basic.consume ab, aiormq schliesst den Consume-Channel",
-)
 async def test_fs09_slow_basic_consume_does_not_close_the_consume_channel(
     fs09_channel: tuple[Fs09Connector, Channel],
 ) -> None:
