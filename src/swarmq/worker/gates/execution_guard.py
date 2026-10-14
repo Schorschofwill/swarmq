@@ -57,7 +57,8 @@ class GuardLease:
 def retry_count_of(headers: Mapping[str, Any] | None) -> int:
     """Retry-Zaehler aus den Headern; ein kaputter Header zaehlt wie keiner."""
     raw = (headers or {}).get(HEADER_RETRY_COUNT, 0)
-    return raw if isinstance(raw, int) and raw > 0 else 0
+    # ``bool`` ist eine ``int``-Unterklasse, aber kein Zaehler (Review U17).
+    return raw if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0 else 0
 
 
 def execution_identity(delivery: Any, task_id: str) -> str:

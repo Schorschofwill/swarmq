@@ -94,3 +94,9 @@ async def test_worker_pause_ends_at_shutdown(worker, monkeypatch) -> None:
 
     assert worker._gate_deps.redeliver_pause is not None
     await worker._gate_deps.redeliver_pause(5.0)
+
+
+def test_infinite_counter_pauses_like_no_counter() -> None:
+    """Review U17: ``int(float("inf"))`` wirft ``OverflowError`` -- ein solcher
+    Zaehler zaehlt wie keiner, statt den Redeliver-Pfad abzubrechen."""
+    assert redeliver_pause_s({"x-delivery-count": float("inf")}) == pytest.approx(0.1)

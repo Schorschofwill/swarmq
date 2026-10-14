@@ -119,7 +119,7 @@ def _as_int(raw: Any, default: int) -> int:
     """Nicht-negativer Header-Wert; ein kaputter Header zaehlt wie keiner."""
     try:
         value = int(raw)
-    except TypeError, ValueError:
+    except TypeError, ValueError, OverflowError:
         return default
     return value if value >= 0 else default
 

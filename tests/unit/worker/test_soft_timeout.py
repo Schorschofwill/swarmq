@@ -13,6 +13,8 @@ Testliste:
 # [x] die durchgereichte TimeoutError traegt keine Huelle im Kontext
 # [x] soft_timeout=0 -> SoftTimeoutError ohne "never awaited"-Warnung
 # [x] Abbruch von aussen waehrend der Frist bleibt CancelledError
+# [x] Grenzfall E-045: Task faengt den Abbruch und wirft eigene TimeoutError
+#     -> genau diese TimeoutError, kein SoftTimeoutError
 """
 
 from __future__ import annotations
@@ -134,3 +136,22 @@ async def test_outer_cancel_during_the_soft_timeout_stays_a_cancel() -> None:
 
     with pytest.raises(asyncio.CancelledError):
         await outer
+
+
+@pytest.mark.entscheidung("E-045")
+async def test_task_raising_its_own_timeout_error_after_the_cancel_keeps_it() -> None:
+    """Grenzfall E-045: Faengt ``run()`` die ``CancelledError`` des Soft-Timeouts
+    und wirft selbst ``TimeoutError``, zaehlt das als Task-Timeout."""
+    raised = TimeoutError("own after cancel")
+
+    async def run() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            raise raised from None
+
+    with pytest.raises(TimeoutError) as info:
+        await run_with_soft_timeout(run(), _FAST_S)
+
+    assert info.value is raised
+    assert not isinstance(info.value, SoftTimeoutError)

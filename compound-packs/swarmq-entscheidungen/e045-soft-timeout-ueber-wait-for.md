@@ -17,6 +17,7 @@ tests:
   - tests/unit/worker/test_worker_timeouts.py::test_soft_timeout_triggers_retry
   - tests/unit/worker/test_worker_timeouts.py::test_soft_timeout_skips_post_execution
   - tests/unit/worker/test_worker_timeouts.py::test_task_that_swallows_the_soft_timeout_cancel_stores_a_success_result
+  - tests/unit/worker/test_soft_timeout.py::test_task_raising_its_own_timeout_error_after_the_cancel_keeps_it
 ---
 
 **Entscheidung.** Ist `soft_timeout` gesetzt, läuft `run()` unter `asyncio.wait_for`. Läuft die Zeit ab, wird `run()` abgebrochen (im Task-Körper als `CancelledError`), der Worker wertet das als `SoftTimeoutError`: Fehlerergebnis, retry-fähig, `post_execution` entfällt. Die Umwandlung gilt nur für den Soft-Timeout selbst.

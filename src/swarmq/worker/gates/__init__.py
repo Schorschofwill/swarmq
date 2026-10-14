@@ -224,7 +224,7 @@ def _as_count(raw: Any) -> int:
     """Nicht-negativer Zaehler; ein kaputter Header zaehlt wie keiner."""
     try:
         count = int(raw)
-    except TypeError, ValueError:
+    except TypeError, ValueError, OverflowError:
         return 0
     return max(count, 0)
 

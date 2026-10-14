@@ -24,6 +24,11 @@ Testliste:
 # [x] CPU-Executor mit nicht numerischem Retry-Header: Job wird gebaut, Zaehler 0
 # [x] Middleware und ``TaskContext.retry_count`` sehen ein ``int`` (0)
 # [x] Ganzzahliger Header bleibt: Middleware sieht 2, Retry-Kopie traegt 3
+# [x] Review U17: Rate-Limit-Zaehler ``float("inf")`` (OverflowError) -> Zaehler 1
+# [x] Review U17: Broker-Zaehler ``float("inf")`` -> Pause wie ohne Zaehler
+# [x] Review U17: Retry-Zaehler ``float("inf")`` -> Lock-Generation ``"0:"``
+# [x] Review U17: Retry-Zaehler ``True`` (bool) zaehlt wie kein Header
+# [x] Review U17: negativer Retry-Zaehler (-2) -> Retry-Kopie traegt 1
 """
 
 from __future__ import annotations
@@ -44,6 +49,7 @@ from swarmq.worker import Worker
 from swarmq.worker.compute.envelope import ComputeJob, ResultEnvelope, success_envelope
 from swarmq.worker.compute.executor import ComputeExecutor
 from swarmq.worker.compute.pool import SlotPool
+from swarmq.worker.gates.lock import wait_generation
 from tests.support.messages import make_message
 from tests.unit.worker._helpers import _default_payload
 
@@ -216,3 +222,44 @@ async def test_fs19_integer_retry_count_keeps_counting(broker: Any, backend: Any
 
     assert middleware.seen == [2]
     assert broker.retry_later.await_args.kwargs["headers"][HEADER_RETRY_COUNT] == 3
+
+
+async def test_fs19_infinite_rate_limit_count_counts_like_no_header(
+    broker: Any, backend: Any, config: Any, swarmq_logs: list[dict[str, Any]]
+) -> None:
+    """Review U17: ``int(float("inf"))`` wirft ``OverflowError`` -- zaehlt wie kein Header."""
+    worker = _fs19_rate_limited_worker(broker, backend, config)
+
+    await worker._handle_message(_fs19_message("fs19_rate_limited", **{"x-swarmq-rate-limit-count": float("inf")}))
+
+    assert _fs19_handler_failures(swarmq_logs) == []
+    assert broker.retry_later.await_args.kwargs["headers"]["x-swarmq-rate-limit-count"] == 1
+
+
+def test_fs19_infinite_retry_count_gives_the_first_lock_generation() -> None:
+    """Review U17: die Lock-Wartegeneration liest ``float("inf")`` wie keinen Header."""
+    assert wait_generation({HEADER_RETRY_COUNT: float("inf")}) == "0:"
+
+
+async def test_fs19_bool_retry_count_counts_like_no_header(broker: Any, backend: Any, config: Any) -> None:
+    """Review U17: ``bool`` ist eine ``int``-Unterklasse; ``True`` ist trotzdem
+    kein Zaehler -- Middleware sieht 0, die Kopie ist Versuch 1."""
+    middleware = Fs19RecordingMiddleware()
+    worker = _fs19_worker(broker, backend, config, Fs19Fails, middleware=middleware)
+
+    await worker._handle_message(_fs19_message("fs19_fails", **{HEADER_RETRY_COUNT: True}))
+
+    assert middleware.seen == [0]
+    assert type(middleware.seen[0]) is int
+    assert broker.retry_later.await_args.kwargs["headers"][HEADER_RETRY_COUNT] == 1
+
+
+async def test_fs19_negative_retry_count_is_clamped_to_the_first_attempt(
+    broker: Any, backend: Any, config: Any
+) -> None:
+    """Review U17: ein negativer Zaehler zaehlt wie keiner -- die Kopie traegt 1."""
+    worker = _fs19_worker(broker, backend, config, Fs19Fails)
+
+    await worker._handle_message(_fs19_message("fs19_fails", **{HEADER_RETRY_COUNT: -2}))
+
+    assert broker.retry_later.await_args.kwargs["headers"][HEADER_RETRY_COUNT] == 1

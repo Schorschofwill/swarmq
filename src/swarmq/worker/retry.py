@@ -30,7 +30,7 @@ from swarmq.exceptions import (
     TaskNotFoundError,
 )
 from swarmq.header_text import bounded_header_text
-from swarmq.headers import HEADER_RETRY_COUNT, LOOP_STATE_HEADERS
+from swarmq.headers import HEADER_RETRY_COUNT, HEADER_SCHEDFIRE_DEFER_COUNT, LOOP_STATE_HEADERS
 from swarmq.logging import _error_fields, get_logger
 from swarmq.serialization import encode_result
 from swarmq.signals import Signal
@@ -154,6 +154,10 @@ class RetryHandler:
         # frischer Frist.
         for state_header in LOOP_STATE_HEADERS:
             headers.pop(state_header, None)
+        # Review U5: die Retry-Kopie ist keine Neuzustellung des Fires; mit
+        # dem Defer-Zaehler wuerde sie bei fremdem Claim zurueckgestellt statt
+        # als Duplikat bestaetigt, der Deckel startete mit altem Stand.
+        headers.pop(HEADER_SCHEDFIRE_DEFER_COUNT, None)
         headers[HEADER_RETRY_COUNT] = retry_count + 1
         headers["x-swarmq-traceback"] = bounded_header_text(error_message)
         try:

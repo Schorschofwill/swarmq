@@ -639,6 +639,10 @@ async def test_soft_timeout_and_drain_cancel_in_the_same_pass_give_the_drain_res
     assert stored["is_error"] is True
     assert "soft timeout" not in stored["error_message"].lower()
     assert stored.get("error_class") is None
+    # Positiv (E-001): der Drain-Abbruch wird wie ein Timeout als Fehlerergebnis
+    # abgebildet, nicht als Storno.
+    assert stored["error_message"] == "hard timeout after Nones"
+    assert stored["is_cancelled"] is False
 
 
 @pytest.mark.asyncio
