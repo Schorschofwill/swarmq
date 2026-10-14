@@ -113,6 +113,69 @@ def _raise_if_sent(routing_key: str, exc: BaseException) -> None:
         ) from exc
 
 
+async def _closing_of(pub: aio_pika.abc.AbstractChannel) -> asyncio.Future[object] | None:
+    """``closing`` des aiormq-Kanals unter *pub*, ``None`` wenn nicht lesbar.
+
+    aio-pika holt den Kanal ohne Suspendieren, solange die Verbindung steht
+    (Basis synchron, Robust ``connected.wait()`` auf gesetztem Event); das Kind
+    publiziert darum auf demselben Kanal."""
+    getter = getattr(pub, "get_underlay_channel", None)
+    if getter is None:
+        return None
+    closing = getattr(await getter(), "closing", None)
+    return cast("asyncio.Future[object]", closing) if isinstance(closing, asyncio.Future) else None
+
+
+async def _publish_against_closing(
+    pub: aio_pika.abc.AbstractChannel, msg: aio_pika.Message, routing_key: str, maybe_sent: list[bool]
+) -> None:
+    """Ein Publish-Versuch gegen ``closing`` seines aiormq-Kanals (FS-08, KTD9).
+
+    aiormqs Kanal-Sperre prueft ``is_closed`` nur beim Zugriff: Wer beim
+    Abriss in ihrer Warteschlange steht, reiht seine Frames danach in die
+    ``write_queue`` der toten Verbindung und wartet ewig auf ``drain_future``.
+    Darum laeuft der Versuch als Kind-Task gegen ``closing``. Wird der Kanal
+    zuerst geschlossen, wird das Kind abgebrochen; seine Ausnahme geht wie
+    jede andere an die Phasen-Auswertung (``drain_future`` erfuellt heisst
+    gesendet, E-042, sonst naechster Versuch).
+
+    Ohne lesbares ``closing``-Future (aiormq geaendert, Test-Doubles) bleibt
+    es beim direkten Publish wie vor FS-08. ``maybe_sent`` wird unmittelbar
+    vor dem Senden gesetzt (a3)."""
+    closing = await _closing_of(pub)
+    if closing is None:
+        maybe_sent[:] = [True]
+        await pub.default_exchange.publish(msg, routing_key=routing_key)
+        return
+    if closing.done():
+        raise ChannelInvalidStateError(f"{pub!r} closed")
+    maybe_sent[:] = [True]
+    child = asyncio.create_task(pub.default_exchange.publish(msg, routing_key=routing_key))
+    try:
+        first: set[asyncio.Future[Any]] = {child, closing}
+        await asyncio.wait(first, return_when=asyncio.FIRST_COMPLETED)
+        if not child.done():
+            child.cancel()
+            await asyncio.wait({child})
+    except BaseException:
+        # Eigener Abbruch oder Frist: Das Kind endet mit dem Vorgang. Seinen
+        # Ausgang wertet niemand mehr aus; abgeholt wird er trotzdem, samt
+        # verwaistem Confirm (sonst "never retrieved" beim spaeteren Abriss).
+        child.cancel()
+        child.add_done_callback(_collect_child)
+        await asyncio.wait({child})
+        raise
+    await child
+
+
+def _collect_child(child: asyncio.Task[Any]) -> None:
+    """Holt den Ausgang eines Publish-Kinds ab, auf das niemand mehr wartet."""
+    try:
+        child.result()
+    except BaseException as exc:  # noqa: BLE001  # nur abholen, gemeldet hat der Vorgang selbst
+        collect_orphaned_confirm(exc)
+
+
 class RabbitMQDelivery(RabbitMQDeclarations):
     #: Höchstens so lange wartet ein Settle auf einen vom Broker beendeten
     #: Consumer auf den eigenen Cancel des Wächters (U7, KTD4). Deckt einen
@@ -199,6 +262,9 @@ class RabbitMQDelivery(RabbitMQDeclarations):
         # dieser Vorgang haengen blieb.
         in_flight: list[aio_pika.abc.AbstractChannel] = []
         blocked: list[bool] = []
+        # a3 (KTD9): gesetzt unmittelbar vor dem Senden, geleert nach einem
+        # als "nicht gesendet" erkannten Versuch.
+        maybe_sent: list[bool] = []
         try:
             async with asyncio.timeout(timeout_s) as timeout_cm:
                 # Registrieren, damit ein beginnendes Herunterfahren diesen
@@ -206,7 +272,7 @@ class RabbitMQDelivery(RabbitMQDeclarations):
                 self._active_publish_timeouts.add(timeout_cm)
                 try:
                     await self._wait_while_blocked(routing_key, blocked)
-                    return await self._publish_attempts(routing_key, msg, in_flight, cancelling_at_entry)
+                    return await self._publish_attempts(routing_key, msg, in_flight, maybe_sent, cancelling_at_entry)
                 finally:
                     self._active_publish_timeouts.discard(timeout_cm)
         except TimeoutError as exc:
@@ -221,6 +287,20 @@ class RabbitMQDelivery(RabbitMQDeclarations):
             # Verbindung stehen und jeder Folge-Publish verbrennte erneut
             # die volle Frist (R10).
             await self._discard_publish_channel(in_flight[-1] if in_flight else None)
+            if not maybe_sent:
+                # a3 (KTD9, E-042): Die Frist riss vor dem Senden, etwa beim
+                # Warten auf die Verbindung oder im Backoff nach einem nicht
+                # gesendeten Versuch. Sicher wiederholbar, nicht unbestimmt.
+                logger.warning(
+                    "publish_deadline_exceeded",
+                    routing_key=routing_key,
+                    timeout_s=timeout_s,
+                    sent=False,
+                    hint="publish was not sent within the configured budget; it is safe to retry",
+                )
+                raise BrokerConnectionError(
+                    f"publish to {routing_key!r} not sent within the publish deadline of {timeout_s}s"
+                ) from exc
             logger.warning(
                 "publish_deadline_exceeded",
                 routing_key=routing_key,
@@ -288,19 +368,21 @@ class RabbitMQDelivery(RabbitMQDeclarations):
         routing_key: str,
         msg: aio_pika.Message,
         in_flight: list[aio_pika.abc.AbstractChannel],
+        maybe_sent: list[bool],
         cancelling_at_entry: int,
     ) -> None:
         """Die bounded-retry-Schleife. Der Zeitdeckel liegt beim Aufrufer,
         damit er den gesamten Vorgang umspannt und nicht den Einzelversuch
         (KTD1). ``in_flight`` traegt den zuletzt benutzten Kanal nach oben,
-        damit der Verwurf genau ihn trifft. ``cancelling_at_entry`` ist der
-        Stand beim Eintritt in ``_publish_with_retry`` (KTD9)."""
+        damit der Verwurf genau ihn trifft, ``maybe_sent``, ob ein Versuch
+        womoeglich gesendet hat (a3). ``cancelling_at_entry`` ist der Stand
+        beim Eintritt in ``_publish_with_retry`` (KTD9)."""
         last_exc: BaseException | None = None
         for attempt in range(_PUBLISH_MAX_ATTEMPTS):
             pub = await self._ensure_publish_channel()
             in_flight.append(pub)
             try:
-                await pub.default_exchange.publish(msg, routing_key=routing_key)
+                await _publish_against_closing(pub, msg, routing_key, maybe_sent)
             except PublishError as exc:
                 # basic.return: keine Queue mit diesem Namen. Eine Wiederholung
                 # aendert daran nichts; vor DeliveryError fangen (Unterklasse).
@@ -328,6 +410,7 @@ class RabbitMQDelivery(RabbitMQDeclarations):
                 if _is_own_cancel(exc, cancelling_at_entry):
                     raise
                 _raise_if_sent(routing_key, exc)
+                maybe_sent.clear()
                 last_exc = exc
                 # Den womoeglich kaputten Kanal verwerfen, damit der
                 # naechste _ensure_publish_channel neu oeffnet. Derselbe

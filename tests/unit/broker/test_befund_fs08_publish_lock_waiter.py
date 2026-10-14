@@ -22,9 +22,10 @@ das ein Timing-Glueck; hier laeuft der echte aiormq-Code
 Channel unterscheidet sich in einem Punkt: Seine Sperre meldet, wenn ein
 Wartender ankommt (Synchronisation ohne ``sleep``).
 
-``publish_timeout_s`` steht im Test auf 0,3 s statt 120 s. Heute dauert der
-Test deshalb rund 0,3 s (> 100 ms): Er wartet auf den Haenger, den er
-nachweist; nach einem Fix endet er sofort.
+``publish_timeout_s`` steht im Test auf 0,3 s statt 120 s. Vor dem Fix
+dauerte der Test deshalb rund 0,3 s: Er wartete auf den Haenger, den er
+nachweist. Seit dem Fix (Publish gegen ``closing``, Plan 2026-10-14-0748, U8)
+endet er sofort.
 
 Offene Produktfrage 5 (FS-02/FS-08): akzeptiert werden Erfolg auf einem
 neuen Channel (empfohlen: es wurde nachweislich nichts gesendet, also
@@ -158,10 +159,6 @@ def _fs08_no_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.befund("FS-08")
-@pytest.mark.xfail(
-    strict=True,
-    reason="FS-08: offen - Publish in aiormqs Sperren-Warteschlange haengt nach Abriss bis publish_timeout_s",
-)
 async def test_fs08_publish_waiting_for_the_channel_lock_survives_a_connection_cut(
     fs08_writers: list[asyncio.Task[None]],
 ) -> None:

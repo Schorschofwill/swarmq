@@ -18,7 +18,10 @@ aiormq bietet dafuer keine API. Gelesen wird darum ``drain_future`` aus dem
 ``basic_publish``-Rahmen im Traceback der Ausnahme (wie ``blocked.py`` liest
 das nur, nichts wird veraendert). Ist der Rahmen da, das Future aber nicht
 lesbar (aiormq geaendert), gilt der Publish als gesendet: Unbestimmt ist nie
-falsch, ein erneutes Senden koennte doppelt ausfuehren.
+falsch, ein erneutes Senden koennte doppelt ausfuehren. Ausnahme (FS-08): Kennt
+der Rahmen ``drain_future``, hat es aber noch nicht gebunden, endete der
+Publish vor dem Einreihen der Frames, etwa in der Warteschlange der
+Kanal-Sperre; das heisst "nicht gesendet".
 """
 
 from __future__ import annotations
@@ -50,6 +53,11 @@ def sent_before_failure(exc: BaseException) -> bool:
     aus aio-pika)."""
     frame = _publish_frame(exc)
     if frame is None:
+        return False
+    if _DRAIN_LOCAL in frame.f_code.co_varnames and _DRAIN_LOCAL not in frame.f_locals:
+        # FS-08: Abbruch vor ``drain_future = self.create_future()``, etwa in
+        # der Warteschlange der Kanal-Sperre. Erst danach legt aiormq die
+        # Frames in die ``write_queue``.
         return False
     drain = frame.f_locals.get(_DRAIN_LOCAL)
     if not isinstance(drain, asyncio.Future):

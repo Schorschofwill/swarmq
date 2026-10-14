@@ -11,6 +11,12 @@ spielt den Writer und den Broker:
 * ``lose_connection(exc)`` -- die Verbindung reisst; wie aiormqs
   ``FutureStore.reject_all`` scheitern alle offenen Futures mit ``exc``.
 
+Mit ``closing=True`` traegt der Kanal wie ein echter aiormq-Kanal ein
+``closing``-Future (FS-08): ``lose_connection`` schliesst es mit,
+``close_channel(exc)`` schliesst nur den Kanal. Ohne bleibt der Publish im
+Pfad vor FS-08 (Test-Doubles ohne ``closing``). ``lock.waiter_arrived`` meldet,
+wenn ein zweiter Publish in der Warteschlange der Kanal-Sperre ankommt.
+
 ``FakePublishChannel`` ist die aio-pika-Seite: ein echtes
 ``aio_pika.Exchange`` als ``default_exchange`` ueber diesem Transport.
 """
@@ -19,11 +25,25 @@ from __future__ import annotations
 
 import asyncio
 from collections import OrderedDict
-from typing import Any, cast
+from typing import Any, Literal, cast, override
 
 import aio_pika
 import aiormq
 from aiormq.abc import ChannelFrame
+
+
+class ObservableLock(asyncio.Lock):
+    """Meldet, wenn ein Wartender ankommt (die Sperre ist schon belegt)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.waiter_arrived = asyncio.Event()
+
+    @override
+    async def acquire(self) -> Literal[True]:
+        if self.locked():
+            self.waiter_arrived.set()
+        return await super().acquire()
 
 
 class FakeTransport:
@@ -33,11 +53,15 @@ class FakeTransport:
     publisher_confirms = True
     max_content_size = 131072
 
-    def __init__(self, *, retrieve_rejected: bool = True) -> None:
+    def __init__(self, *, retrieve_rejected: bool = True, closing: bool = False) -> None:
         # ``False``: abgelehnte Futures bleiben unabgeholt wie in aiormq, damit
         # ein Test asyncios "Future exception was never retrieved" sieht.
         self._retrieve_rejected = retrieve_rejected
-        self.lock = asyncio.Lock()
+        if closing:
+            self.closing: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+            # Wie aiormq: die Ausnahme des Schliessens holt ein Callback ab.
+            self.closing.add_done_callback(_retrieve)
+        self.lock = ObservableLock()
         self.delivery_tag = 0
         self.confirmations: OrderedDict[int, Any] = OrderedDict()
         self.message_id_delivery_tag: dict[str, int] = {}
@@ -65,6 +89,12 @@ class FakeTransport:
                 future.set_result(aiormq.spec.Basic.Ack())
 
     def lose_connection(self, exc: BaseException) -> None:
+        self.reject_pending(exc)
+        self.close_channel(exc)
+
+    def reject_pending(self, exc: BaseException) -> None:
+        """Lehnt die offenen Futures ab, ``closing`` bleibt offen (die
+        Reihenfolge in aiormqs ``reject_all`` ist nicht festgelegt)."""
         for future in self._futures:
             if not future.done():
                 future.set_exception(exc)
@@ -72,6 +102,13 @@ class FakeTransport:
                     # Ein Confirm, auf das nach einem gescheiterten Drain niemand
                     # mehr wartet, meldete asyncio sonst als "never retrieved".
                     future.add_done_callback(_retrieve)
+
+    def close_channel(self, exc: BaseException) -> None:
+        """Schliesst nur ``closing`` (falls vorhanden), etwa wenn der Kanal
+        schon zu ist, bevor aiormq die offenen Futures ablehnt."""
+        closing: asyncio.Future[Any] | None = getattr(self, "closing", None)
+        if closing is not None and not closing.done():
+            closing.set_exception(exc)
 
     def forget_futures(self) -> None:
         """Gibt die Futures frei (wie aiormq nach dem Ablehnen), damit die
@@ -81,7 +118,8 @@ class FakeTransport:
 
 
 def _retrieve(future: asyncio.Future[Any]) -> None:
-    future.exception()
+    if not future.cancelled():
+        future.exception()
 
 
 class FakePublishChannel:
