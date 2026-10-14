@@ -7,6 +7,8 @@ waeren zwei getrennte Apps, die sich nur in der Schreibweise unterscheiden.
 Test-Liste:
 - [x] Grossbuchstaben -> ``ValueError`` mit Hinweis auf Kleinschreibung
 - [x] ``SWARMQ_NAMESPACE=App1`` -> ``ConfigurationError`` (Exit 78)
+- [x] FS-27: ``SQ``/``Sq``/``sQ`` -> ``ValueError`` ohne Vorschlag ``'sq'``
+  (der Vorschlag waere selbst verboten)
 """
 
 from __future__ import annotations
@@ -33,3 +35,14 @@ def test_uppercase_environment_namespace_is_a_configuration_error(monkeypatch: p
 
     with pytest.raises(ConfigurationError, match="lowercase: 'app1'"):
         SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x")
+
+
+@pytest.mark.befund("FS-27")
+@pytest.mark.parametrize("value", ["SQ", "Sq", "sQ"])
+def test_reserved_name_in_uppercase_gets_no_lowercase_suggestion(value: str) -> None:
+    from swarmq.keyspace import validate_namespace
+
+    with pytest.raises(ValueError, match="not 'sq'") as raised:
+        validate_namespace(value)
+
+    assert "write it in lowercase" not in str(raised.value)

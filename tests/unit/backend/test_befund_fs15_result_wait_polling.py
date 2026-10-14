@@ -18,6 +18,14 @@ die Zeit.
 
 Testliste:
 # [x] haengendes subscribe(): wait_for_result endet spaetestens kurz nach timeout
+# [x] haengendes subscribe() bei vorhandenem Ergebnis: Ergebnis kommt nach dem
+#     Pub/Sub-Fenster (1 s), nicht erst nach Ablauf von timeout als None
+# [x] haengendes unsubscribe() im Teardown: Rueckkehr <= timeout + epsilon
+# [x] verworfener PubSub (subscribe zu langsam) wird im Hintergrund geschlossen,
+#     ohne dass eine Task haengen bleibt ("Task was destroyed")
+# [x] wait_for_workflow mit haengendem subscribe(): False spaetestens nach timeout
+# [x] wait_for_workflow mit haengendem unsubscribe(): Rueckkehr <= timeout + epsilon
+# [x] Abbruch des Aufrufers waehrend subscribe(): PubSub wird trotzdem geschlossen
 """
 
 from __future__ import annotations
@@ -75,8 +83,14 @@ def _run_virtual[T](main: Callable[[], Coroutine[Any, Any, T]]) -> T:
 class _SilentPubSub:
     """Pub/Sub ohne Benachrichtigung; ``get_message`` wartet seine Frist ab."""
 
-    def __init__(self, subscribe: Callable[[str], Awaitable[None]] | None = None) -> None:
+    def __init__(
+        self,
+        subscribe: Callable[[str], Awaitable[None]] | None = None,
+        unsubscribe: Callable[[str], Awaitable[None]] | None = None,
+    ) -> None:
         self._subscribe = subscribe
+        self._unsubscribe = unsubscribe
+        self.closed = False
 
     async def subscribe(self, channel: str) -> None:
         if self._subscribe is not None:
@@ -86,10 +100,11 @@ class _SilentPubSub:
         await asyncio.sleep(timeout)
 
     async def unsubscribe(self, channel: str) -> None:
-        return None
+        if self._unsubscribe is not None:
+            await self._unsubscribe(channel)
 
     async def aclose(self) -> None:
-        return None
+        self.closed = True
 
 
 def _backend(pubsub: _SilentPubSub) -> tuple[ValkeyBackend, AsyncMock]:
@@ -100,7 +115,6 @@ def _backend(pubsub: _SilentPubSub) -> tuple[ValkeyBackend, AsyncMock]:
 
 
 @pytest.mark.befund("FS-15")
-@pytest.mark.xfail(strict=True, reason="FS-15: offen - pubsub.subscribe() ohne Frist")
 def test_hanging_subscribe_does_not_outlast_the_timeout() -> None:
     async def _hang(_channel: str) -> None:
         await asyncio.Event().wait()
@@ -120,3 +134,141 @@ def test_hanging_subscribe_does_not_outlast_the_timeout() -> None:
     finished, elapsed = _run_virtual(_main)
     assert finished, f"wait_for_result(timeout=2.0) haengt im subscribe(): nach {elapsed:.0f} s nicht beendet"
     assert elapsed <= 2.5
+
+
+def _hang_forever() -> Callable[[str], Awaitable[None]]:
+    async def _hang(_channel: str) -> None:
+        await asyncio.Event().wait()
+
+    return _hang
+
+
+def test_hanging_subscribe_still_finds_an_existing_result_within_the_pubsub_window() -> None:
+    backend, get = _backend(_SilentPubSub(subscribe=_hang_forever()))
+    get.return_value = b"ready"
+
+    async def _main() -> tuple[bytes | None, float]:
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        raw = await asyncio.wait_for(backend.wait_for_result("fs15-ready", timeout=30.0), timeout=60.0)
+        return raw, loop.time() - started
+
+    raw, elapsed = _run_virtual(_main)
+    assert raw == b"ready"
+    assert elapsed <= 1.5
+
+
+def test_hanging_unsubscribe_in_teardown_does_not_outlast_the_timeout() -> None:
+    pubsub = _SilentPubSub(unsubscribe=_hang_forever())
+    backend, _ = _backend(pubsub)
+
+    async def _main() -> tuple[bytes | None, float, set[asyncio.Task[Any]]]:
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        raw = await asyncio.wait_for(backend.wait_for_result("fs15-teardown", timeout=2.0), timeout=60.0)
+        elapsed = loop.time() - started
+        return raw, elapsed, await _settle_background_tasks()
+
+    raw, elapsed, pending = _run_virtual(_main)
+    assert raw is None
+    assert elapsed <= 2.5
+    # Der Teardown laeuft im Hintergrund zu Ende und trennt die Verbindung.
+    assert pending == set()
+    assert pubsub.closed
+
+
+async def _settle_background_tasks() -> set[asyncio.Task[Any]]:
+    """Wartet (virtuell) auf alle anderen Tasks der Loop; liefert die nach
+    einer Minute noch haengenden. Leer heisst: beim Schliessen der Loop
+    bleibt keine Task zurueck ("Task was destroyed but it is pending")."""
+    others = asyncio.all_tasks() - {asyncio.current_task()}
+    if not others:
+        return set()
+    _, pending = await asyncio.wait(others, timeout=60.0)
+    return pending
+
+
+def test_pubsub_discarded_after_a_slow_subscribe_is_closed_in_the_background() -> None:
+    pubsub = _SilentPubSub(subscribe=_hang_forever())
+    backend, _ = _backend(pubsub)
+
+    async def _main() -> tuple[bytes | None, set[asyncio.Task[Any]]]:
+        raw = await asyncio.wait_for(backend.wait_for_result("fs15-discard", timeout=2.0), timeout=60.0)
+        return raw, await _settle_background_tasks()
+
+    raw, pending = _run_virtual(_main)
+    assert raw is None
+    assert pending == set()
+    assert pubsub.closed
+
+
+def test_wait_for_workflow_with_hanging_subscribe_ends_at_the_timeout() -> None:
+    pubsub = _SilentPubSub(subscribe=_hang_forever())
+    backend, _ = _backend(pubsub)
+
+    async def _main() -> tuple[bool | None, float, set[asyncio.Task[Any]]]:
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        try:
+            notified = await asyncio.wait_for(backend.wait_for_workflow("fs15-wf", timeout=2.0), timeout=60.0)
+        except TimeoutError:
+            return None, loop.time() - started, set()
+        elapsed = loop.time() - started
+        return notified, elapsed, await _settle_background_tasks()
+
+    notified, elapsed, pending = _run_virtual(_main)
+    assert notified is False, f"wait_for_workflow(timeout=2.0) haengt im subscribe(): nach {elapsed:.0f} s"
+    assert elapsed <= 2.5
+    assert pending == set()
+    assert pubsub.closed
+
+
+def test_wait_for_workflow_with_hanging_unsubscribe_ends_at_the_timeout() -> None:
+    pubsub = _SilentPubSub(unsubscribe=_hang_forever())
+    backend, _ = _backend(pubsub)
+
+    async def _main() -> tuple[bool | None, float, set[asyncio.Task[Any]]]:
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        try:
+            notified = await asyncio.wait_for(backend.wait_for_workflow("fs15-wf", timeout=2.0), timeout=60.0)
+        except TimeoutError:
+            return None, loop.time() - started, set()
+        elapsed = loop.time() - started
+        return notified, elapsed, await _settle_background_tasks()
+
+    notified, elapsed, pending = _run_virtual(_main)
+    assert notified is False, f"wait_for_workflow(timeout=2.0) haengt im unsubscribe(): nach {elapsed:.0f} s"
+    assert elapsed <= 2.5
+    assert pending == set()
+    assert pubsub.closed
+
+
+@pytest.mark.parametrize("waiter", ["wait_for_result", "wait_for_workflow"])
+def test_caller_cancelled_during_subscribe_still_closes_the_pubsub(waiter: str) -> None:
+    subscribing = asyncio.Event()
+
+    async def _hang(_channel: str) -> None:
+        subscribing.set()
+        await asyncio.Event().wait()
+
+    pubsub = _SilentPubSub(subscribe=_hang)
+    backend, _ = _backend(pubsub)
+
+    async def _main() -> tuple[bool, set[asyncio.Task[Any]]]:
+        wait = getattr(backend, waiter)
+        task = asyncio.create_task(wait("fs15-cancel", timeout=30.0))
+        await subscribing.wait()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            cancelled = True
+        else:
+            cancelled = False
+        return cancelled, await _settle_background_tasks()
+
+    cancelled, pending = _run_virtual(_main)
+    assert cancelled
+    assert pending == set()
+    assert pubsub.closed
