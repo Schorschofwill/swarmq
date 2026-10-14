@@ -19,10 +19,8 @@ Test-Liste:
 
 from __future__ import annotations
 
-import asyncio
 import signal
 import subprocess
-import time
 import uuid
 
 import pytest
@@ -40,6 +38,7 @@ from tests.support.services import (
     rabbitmq_amqp_url,
     valkey_db_url,
 )
+from tests.support.wait import wait_until
 from tests.support.worker_subprocess import (
     crash_worker,
     ensure_fixture_registered,
@@ -93,14 +92,6 @@ async def _exec_count(backend: ValkeyBackend, task_id: str) -> int:
     return int(raw) if raw is not None else 0
 
 
-async def _wait_exec_count(backend: ValkeyBackend, task_id: str, count: int, *, timeout: float) -> None:
-    deadline = time.monotonic() + timeout
-    while await _exec_count(backend, task_id) < count:
-        if time.monotonic() > deadline:
-            raise TimeoutError(f"exec_count:{task_id} did not reach {count} within {timeout}s")
-        await asyncio.sleep(0.05)
-
-
 @pytest.mark.entscheidung("E-046")
 @pytest.mark.usefixtures("_cleanup_tasks")
 async def test_sigkill_mid_cron_fire_runs_the_fire_exactly_once_after_the_claim_expired() -> None:
@@ -124,7 +115,11 @@ async def test_sigkill_mid_cron_fire_runs_the_fire_exactly_once_after_the_claim_
                 }
             )
             await app.broker.publish(queue, body, headers={"x-swarmq-schedfire": fire_key})
-            await _wait_exec_count(backend, task_id, 1, timeout=10)
+
+            async def _started() -> bool:
+                return await _exec_count(backend, task_id) >= 1
+
+            assert await wait_until(_started, timeout=10), f"exec_count:{task_id} did not reach 1 within 10s"
 
             # Harter Absturz mitten im Lauf: kein Ack, keine Claim-Freigabe.
             crash_worker(proc_a)

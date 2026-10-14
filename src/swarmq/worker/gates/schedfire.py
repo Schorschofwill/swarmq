@@ -18,7 +18,8 @@ nicht bestaetigt, sondern mit wachsender Wartezeit zurueckgestellt, bis der
 Completed-Marker steht (Ack) oder der Claim ablaeuft (Lauf). Ein frisches
 Doppel-Fire des Leaders traegt beides nicht und bleibt ein Duplikat (E-047).
 Gedeckelt auf ``max(completed_ttl, inflight_ttl + backend_defer_max_delay)``
-ueber die Summe der Wartezeiten aus dem Defer-Zaehler (untere Jitter-Grenze);
+(``completed_ttl`` ohne das Alter der Kopie: ``scheduler_dedup_ttl`` bzw.
+``max_age + 300``) ueber die Summe der Wartezeiten aus dem Defer-Zaehler (untere Jitter-Grenze);
 danach Stall-Log und Ack. Klassische Queues fuehren keine Broker-Zaehler --
 dort ist die erste Neuzustellung nicht erkennbar und wird wie bisher
 bestaetigt.
@@ -57,10 +58,10 @@ from swarmq.worker.gates import (
     GateContext,
     GateDeps,
     SchedfireClaim,
-    broker_redelivered,
     prior_deferrals,
     redeliver_in_place,
     republish_headers,
+    schedfire_redelivery,
 )
 from swarmq.worker.gates.backend_defer import bounded_backend_call, defer_backend_unavailable
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered, Terminal
@@ -77,13 +78,6 @@ def _claim_tokens(raw: Any) -> tuple[str, ...]:
         return ()
     tokens = (token for token in (part.strip() for part in raw.split(",")) if token)
     return tuple(islice(tokens, MAX_SCHEDFIRE_CLAIM_TOKENS))
-
-
-def _is_redelivery(headers: dict[str, Any]) -> bool:
-    """Neuzustellung (FS-03, E-046): vom Broker zurueckgegeben (Zustell-
-    zaehler) oder eine schon zurueckgestellte Kopie (Defer-Header). Ein
-    frisches Doppel-Fire des Leaders traegt beides nicht (E-047)."""
-    return broker_redelivered(headers) or prior_deferrals(headers, HEADER_SCHEDFIRE_DEFER_COUNT) > 0
 
 
 def schedfire_key(fire_key: str, headers: Any) -> str:
@@ -230,12 +224,16 @@ class SchedfireGate:
 
         # Another worker is running it right now.
         ctx.schedfire_claim = None
-        if _is_redelivery(claim_headers):
+        if schedfire_redelivery(claim_headers):
             # Deckel (F5): bis dahin ist der fremde Claim sicher abgelaufen
             # (oder die Kopie hat ihn spaetestens ``backend_defer_max_delay``
             # danach geprueft), und der Completed-Marker eines inzwischen
-            # gelaufenen Fires steht noch.
-            cap_s = max(completed_ttl_ms / 1000, inflight_ttl_s + deps.config.backend_defer_max_delay)
+            # gelaufenen Fires steht noch. Die Marker-TTL ohne Alter der
+            # Kopie (Review U5, P2): jede Kopie traegt das ``enqueued-at``
+            # des Fires, die altersabhaengige TTL wuechse mit jeder
+            # Zurueckstellung mit -- der Deckel griffe nie.
+            stable_completed_s = completed_marker_ttl_ms(deps.config, None, max_age) / 1000
+            cap_s = max(stable_completed_s, inflight_ttl_s + deps.config.backend_defer_max_delay)
             return await self._defer(delivery, ctx, header_value, cap_s)
         logger.info("schedfire_inflight_duplicate_acked", schedfire_key=header_value)
         await deps.broker.ack(delivery)

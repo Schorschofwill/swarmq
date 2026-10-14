@@ -191,10 +191,14 @@ the copy with `x-swarmq-schedfire-defer-count`. The copy is acked once
 the fire has completed, and it runs once the claim has expired
 (`SWARMQ_SCHEDULER_INFLIGHT_TTL`, or `hard_timeout + 30` s if larger). If
 the original is still running (only its channel was lost), the copy
-waits instead of running alongside. A second publish of the same fire by
+waits instead of running alongside; once the claim has expired during a
+long run, the execution guard (on by default) holds the copy back. A copy
+that the worker defers because the backend is unreachable keeps the
+defer counter (0 on the first redelivery). A second publish of the same fire by
 the leader carries neither marker and is still acked as a duplicate. The
 deferral is capped at
-`max(completed marker TTL, in-flight TTL + SWARMQ_BACKEND_DEFER_MAX_DELAY)`,
+`max(SWARMQ_SCHEDULER_DEDUP_TTL, in-flight TTL + SWARMQ_BACKEND_DEFER_MAX_DELAY)`
+(with `max_age`, `max_age + 300` replaces the dedup TTL if larger),
 summed over the waits the defer counter implies; past it the worker logs
 `schedfire_defer_stalled` and acks the copy. `swarmq dlq retry` drops the
 defer counter.

@@ -6,7 +6,7 @@ Eine Neuzustellung -- vom Broker (``x-delivery-count``/``x-acquired-count``
 ueber die Delay-Queue zurueckgestellt, bis der Completed-Marker steht oder der
 Claim ablaeuft. Ein frisches Doppel-Fire des Leaders bleibt ein Duplikat
 (E-047). Gedeckelt auf ``max(completed_ttl, inflight_ttl +
-backend_defer_max_delay)``, gemessen an der Summe der Wartezeiten aus dem
+backend_defer_max_delay)`` (``completed_ttl`` ohne Alter der Kopie), gemessen an der Summe der Wartezeiten aus dem
 Defer-Zaehler; danach Stall-Log statt Lauf.
 
 Test-Liste:
@@ -32,17 +32,31 @@ Test-Liste:
 12. [x] Die Kopie traegt die Claim-Tokens des Originals unveraendert und
         bietet kein eigenes an
 13. [x] Jede Zurueckstellung loggt eine INFO-Zeile mit Zaehler und Wartezeit
+14. [x] Erste Broker-Neuzustellung trifft im Completed-Check bzw. beim Claim
+        auf Backend-Ausfall: die Kopie bleibt als Neuzustellung erkennbar
+        (Defer-Header 0) und wird bei fremdem Claim zurueckgestellt, nicht
+        bestaetigt (Review U5, P1)
+15. [x] Deckel haengt nicht am Alter der Kopie (``x-swarmq-enqueued-at``):
+        an der Kante greift er auch bei einer alten Kopie (Review U5, P2)
+16. [x] Broker-Neuzustellung einer zurueckgestellten Kopie trifft auf
+        Backend-Ausfall: die Kopie beginnt die Zaehlung neu (wie Liste 4)
 """
 
 from __future__ import annotations
 
+import time
 from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from swarmq.exceptions import BackendConnectionError
-from swarmq.headers import HEADER_BACKEND_DEFER_COUNT, HEADER_SCHEDFIRE_CLAIM, HEADER_SCHEDFIRE_DEFER_COUNT
+from swarmq.headers import (
+    HEADER_BACKEND_DEFER_COUNT,
+    HEADER_ENQUEUED_AT,
+    HEADER_SCHEDFIRE_CLAIM,
+    HEADER_SCHEDFIRE_DEFER_COUNT,
+)
 from swarmq.task import Task, TaskInfo
 from swarmq.worker.gates import GateContext
 from swarmq.worker.outcome import Continue, Redelivered, Terminal
@@ -237,3 +251,56 @@ async def test_each_deferral_logs_one_info_line(worker, broker, foreign_claim, s
     assert entry["defer_count"] == 3
     assert entry["delay_ms"] == broker.retry_later.await_args.kwargs["delay_ms"]
     assert entry["task_id"] == "abc-123"
+
+
+@pytest.mark.parametrize("stage", ["is_fire_completed", "claim_fire"])
+async def test_backend_outage_copy_of_a_first_redelivery_stays_a_redelivery(worker, broker, backend, stage):
+    """Liste 14: die Backend-Ausfall-Kopie verliert die Broker-Zaehler; ohne
+    Defer-Header kaeme sie als frisches Duplikat zurueck und wuerde bei noch
+    fremdem Claim (dem des Toten) bestaetigt -- das Fire waere verloren."""
+    backend.schedules.is_fire_completed = AsyncMock(return_value=False)
+    backend.schedules.claim_fire = AsyncMock(return_value=False)
+    setattr(backend.schedules, stage, AsyncMock(side_effect=BackendConnectionError("valkey down")))
+    await worker._schedfire_gate.apply(_fire({"x-delivery-count": 1}), _ctx())
+    copy_headers = _copy_headers(broker)
+    assert "x-delivery-count" not in copy_headers
+    assert copy_headers[HEADER_SCHEDFIRE_DEFER_COUNT] == 0
+
+    backend.schedules.is_fire_completed = AsyncMock(return_value=False)
+    backend.schedules.claim_fire = AsyncMock(return_value=False)
+    broker.retry_later.reset_mock()
+    copy = make_message(_default_payload(name="add"), headers=copy_headers)
+
+    assert await worker._schedfire_gate.apply(copy, _ctx()) is Redelivered
+    broker.ack.assert_not_awaited()
+    assert _copy_headers(broker)[HEADER_SCHEDFIRE_DEFER_COUNT] == 1
+
+
+async def test_backend_outage_copy_of_a_redelivered_deferred_copy_restarts_the_count(worker, broker, backend):
+    """Liste 16: wie Liste 4 -- der Broker hat die Folge unterbrochen; der
+    alte Zaehler zaehlte sonst gegen den Deckel der neuen Folge."""
+    backend.schedules.claim_fire = AsyncMock(side_effect=BackendConnectionError("valkey down"))
+
+    await worker._schedfire_gate.apply(_fire({HEADER_SCHEDFIRE_DEFER_COUNT: 7, "x-acquired-count": 1}), _ctx())
+
+    assert _copy_headers(broker)[HEADER_SCHEDFIRE_DEFER_COUNT] == 0
+
+
+@pytest.mark.parametrize(("defer_count", "stalled"), [(86, False), (87, True)])
+async def test_cap_does_not_grow_with_the_age_of_the_copy(worker, broker, foreign_claim, defer_count, stalled):
+    """Liste 15: jede Kopie traegt das ``x-swarmq-enqueued-at`` des Fires; der
+    Completed-Marker-TTL waechst mit diesem Alter (2 x Alter + 300). Der
+    Deckel bleibt trotzdem bei 3.900 s (Default): 86 Zurueckstellungen sind
+    mindestens 0,8 x 4.863 s = 3.890 s (darunter), 87 mindestens 0,8 x
+    4.923 s = 3.938 s (darueber)."""
+    old = int(time.time()) - 10_000
+    msg = _fire({HEADER_SCHEDFIRE_DEFER_COUNT: defer_count, HEADER_ENQUEUED_AT: old})
+
+    outcome = await worker._schedfire_gate.apply(msg, _ctx())
+
+    if stalled:
+        assert outcome == Terminal.never_release()
+        broker.ack.assert_awaited_once_with(msg)
+    else:
+        assert outcome is Redelivered
+        broker.ack.assert_not_awaited()

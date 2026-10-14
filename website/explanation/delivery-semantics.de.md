@@ -206,10 +206,15 @@ wachsendem Backoff in die Delay-Queue zurück
 Fire abgeschlossen ist, und läuft, sobald der Claim abgelaufen ist
 (`SWARMQ_SCHEDULER_INFLIGHT_TTL` bzw. `hard_timeout + 30` s, wenn das
 größer ist). Läuft das Original noch (nur sein Kanal ist weg), wartet
-die Kopie, statt parallel zu laufen. Ein zweites Publish desselben Fires
+die Kopie, statt parallel zu laufen; ist der Claim während eines langen
+Laufs abgelaufen, hält der Ausführungsschutz (Default an) die Kopie
+zurück. Eine Kopie, die der Worker wegen eines unerreichbaren Backends
+zurückstellt, behält den Defer-Zähler (bei der ersten Redelivery 0). Ein zweites Publish desselben Fires
 durch den Leader trägt keine der beiden Markierungen und bleibt ein
 Duplikat. Die Zurückstellung ist gedeckelt auf
-`max(TTL des Completed-Markers, In-Flight-TTL + SWARMQ_BACKEND_DEFER_MAX_DELAY)`,
+`max(SWARMQ_SCHEDULER_DEDUP_TTL, In-Flight-TTL + SWARMQ_BACKEND_DEFER_MAX_DELAY)`
+(mit `max_age` tritt `max_age + 300` an die Stelle der Dedup-TTL, wenn
+das größer ist),
 gemessen an der Summe der Wartezeiten aus dem Defer-Zähler; danach loggt
 der Worker `schedfire_defer_stalled` und bestätigt die Kopie.
 `swarmq dlq retry` entfernt den Defer-Zähler.

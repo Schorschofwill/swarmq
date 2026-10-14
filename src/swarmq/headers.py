@@ -45,9 +45,11 @@ HEADER_SCHEDFIRE_CLAIM = "x-swarmq-schedfire-claim"
 # Zurueckstellungen eines Schedfires mit fremdem Claim (FS-03, E-046): wie oft
 # diese Nachricht schon zurueckgestellt wurde, weil ihre Broker-Neuzustellung
 # (oder eine schon zurueckgestellte Kopie) einen fremden In-Flight-Claim traf.
-# Bestimmt Wartezeit und Deckel; kein Retry-Zaehler. Jede Kopie traegt ihn
-# weiter (eine Backend-Ausfall-Kopie ohne ihn kaeme ohne Broker-Zaehler
-# zurueck und wuerde bei fremdem Claim bestaetigt); ``dlq retry`` entfernt ihn.
+# Bestimmt Wartezeit und Deckel; kein Retry-Zaehler. Schon sein Vorhandensein
+# (auch mit 0) kennzeichnet eine Neuzustellung. Jede Kopie traegt ihn weiter;
+# die Backend-Ausfall-Kopie einer Broker-Neuzustellung bekommt ihn mit 0
+# (ohne ihn kaeme sie ohne Broker-Zaehler zurueck und wuerde bei fremdem
+# Claim bestaetigt); ``dlq retry`` entfernt ihn.
 HEADER_SCHEDFIRE_DEFER_COUNT = "x-swarmq-schedfire-defer-count"
 
 # Wiederholungs-Kennung (Plan 2026-10-08-1541, KTD5): ``dlq retry`` und

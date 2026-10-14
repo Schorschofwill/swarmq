@@ -4,7 +4,9 @@ Stirbt der Worker mit gewonnenem In-Flight-Claim, stellt der Broker die
 Nachricht neu zu (``x-delivery-count`` > 0). Das Gate stellt sie zurueck,
 statt sie als Duplikat zu bestaetigen; nach Ablauf des Claims laeuft sie genau
 einmal, und weitere Kopien treffen den Completed-Marker. Laeuft das Original
-noch (nur sein Kanal ist weg), laeuft die Neuzustellung nicht parallel.
+noch (nur sein Kanal ist weg), laeuft die Neuzustellung nicht parallel: solange
+der Claim lebt, stellt das Schedfire-Gate zurueck; ist er abgelaufen, haelt
+der Ausfuehrungsschutz die Kopie zurueck (zweite Linie).
 
 Broker ist ein Mock (Kopien werden aus den ``retry_later``-Headern gebaut),
 Backend ist das echte ``ValkeyBackend``. Den Ablauf der Claim-TTL ersetzt das
@@ -15,9 +17,14 @@ Test-Liste:
       kein Lauf; nach Claim-Ablauf laeuft die Kopie genau einmal, eine
       zweite Kopie (Doppelkopie nach ``PublishIndeterminate``) trifft den
       Completed-Marker und wird bestaetigt
-- [x] Original laeuft (Claim und Guard-Marker leben), Neuzustellung mit
-      Zaehler -> kein Parallellauf; nach Abschluss des Originals wird die
-      zurueckgestellte Kopie bestaetigt
+- [x] Original laeuft, sein Claim lebt; Neuzustellung mit Zaehler -> das
+      Schedfire-Gate stellt zurueck, kein Parallellauf; nach Abschluss des
+      Originals wird die zurueckgestellte Kopie bestaetigt (der
+      Ausfuehrungsschutz wird hier nicht erreicht)
+- [x] Original laeuft, sein Claim ist abgelaufen (geloescht); Kopie mit
+      Defer-Header gewinnt den Claim -> der Ausfuehrungsschutz stellt sie
+      zurueck (``x-swarmq-guard-defer-count``), kein Parallellauf; nach
+      Abschluss des Originals wird sie bestaetigt, ohne zu laufen
 """
 
 from __future__ import annotations
@@ -33,7 +40,7 @@ import pytest
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.config import SwarmQConfig
-from swarmq.headers import HEADER_SCHEDFIRE_DEFER_COUNT
+from swarmq.headers import HEADER_GUARD_DEFER_COUNT, HEADER_SCHEDFIRE_DEFER_COUNT
 from swarmq.registry import TaskRegistry
 from swarmq.task import Task, TaskInfo
 from swarmq.worker import Worker
@@ -153,6 +160,37 @@ async def test_redelivery_while_the_original_runs_does_not_run_in_parallel(
     release.set()
     await original
     copy = make_message(body=redelivered.body, headers=headers)
+    await worker._handle_message(copy)
+    assert RUNS == ["run"]
+    broker.ack.assert_any_await(copy)
+
+
+async def test_copy_winning_an_expired_claim_is_held_back_by_the_execution_guard(
+    worker: Worker, broker: MagicMock, backend: ValkeyBackend
+) -> None:
+    """Task ohne ``hard_timeout``, Lauf laenger als ``scheduler_inflight_ttl``:
+    die zurueckgestellte Kopie gewinnt den abgelaufenen Claim. Den zweiten
+    Lauf verhindert dann nur der Ausfuehrungsschutz (Default an)."""
+    # Den Store setzt sonst ``start()``; ohne ihn ist der Schutz aus.
+    worker._guard_store = backend.execution_guard
+    fire_key = _fire_key()
+    task_id = uuid.uuid4().hex
+    started, release = asyncio.Event(), asyncio.Event()
+    HOLD.update(started=started, release=release)
+    original = asyncio.create_task(worker._handle_message(_message(fire_key, task_id)))
+    await asyncio.wait_for(started.wait(), timeout=5)
+
+    await backend.schedules.clear_schedfire_inflight(fire_key)  # Claim-TTL abgelaufen, Original laeuft
+    deferred_copy = _message(fire_key, task_id, {HEADER_SCHEDFIRE_DEFER_COUNT: 3})
+    await worker._handle_message(deferred_copy)
+    assert RUNS == ["run"]
+    broker.ack.assert_not_awaited()
+    headers = _take_copy_headers(broker)
+    assert headers[HEADER_GUARD_DEFER_COUNT] == 1
+
+    release.set()
+    await original
+    copy = make_message(body=deferred_copy.body, headers=headers)
     await worker._handle_message(copy)
     assert RUNS == ["run"]
     broker.ack.assert_any_await(copy)
