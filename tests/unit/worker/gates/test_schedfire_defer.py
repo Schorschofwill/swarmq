@@ -40,6 +40,13 @@ Test-Liste:
         an der Kante greift er auch bei einer alten Kopie (Review U5, P2)
 16. [x] Broker-Neuzustellung einer zurueckgestellten Kopie trifft auf
         Backend-Ausfall: die Kopie beginnt die Zaehlung neu (wie Liste 4)
+17. [x] Gegentest zu Liste 14: die Backend-Ausfall-Kopie eines FRISCHEN
+        Schedfires (keine Broker-Zaehler, kein Defer-Header) traegt keinen
+        Defer-Header -- sonst wuerde ein Leader-Doppel (E-047) zur
+        Neuzustellung und liefe nach Claim-Ablauf erneut
+18. [x] Neuzustellung hat den Claim gewonnen, die Freigabe in
+        ``redeliver_in_place`` scheitert: die Kopie ueber ``retry_later``
+        bleibt als Neuzustellung erkennbar (Defer-Header 0)
 """
 
 from __future__ import annotations
@@ -58,7 +65,7 @@ from swarmq.headers import (
     HEADER_SCHEDFIRE_DEFER_COUNT,
 )
 from swarmq.task import Task, TaskInfo
-from swarmq.worker.gates import GateContext
+from swarmq.worker.gates import GateContext, SchedfireClaim, redeliver_in_place
 from swarmq.worker.outcome import Continue, Redelivered, Terminal
 from tests.support.messages import make_message
 from tests.unit.worker._helpers import _default_payload
@@ -304,3 +311,34 @@ async def test_cap_does_not_grow_with_the_age_of_the_copy(worker, broker, foreig
     else:
         assert outcome is Redelivered
         broker.ack.assert_not_awaited()
+
+
+@pytest.mark.parametrize("stage", ["is_fire_completed", "claim_fire"])
+async def test_backend_outage_copy_of_a_fresh_fire_carries_no_defer_header(worker, broker, backend, stage):
+    """Liste 17: Gegentest zu Liste 14 -- ein frisches Fire bleibt frisch;
+    mit Defer-Header wuerde ein Leader-Doppel (E-047) bei fremdem Claim
+    zurueckgestellt statt bestaetigt."""
+    backend.schedules.is_fire_completed = AsyncMock(return_value=False)
+    setattr(backend.schedules, stage, AsyncMock(side_effect=BackendConnectionError("valkey down")))
+
+    await worker._schedfire_gate.apply(_fire(), _ctx())
+
+    copy_headers = _copy_headers(broker)
+    assert HEADER_SCHEDFIRE_DEFER_COUNT not in copy_headers
+    assert copy_headers[HEADER_BACKEND_DEFER_COUNT] == 1
+
+
+async def test_copy_after_failed_release_of_a_won_redelivery_stays_a_redelivery(worker, broker, backend):
+    """Liste 18: die Neuzustellung hielt den Claim; die Kopie verliert die
+    Broker-Zaehler und kaeme ohne Defer-Header als frisches Duplikat zurueck."""
+    backend.schedules.release_fire_claim.side_effect = BackendConnectionError("valkey down")
+    ctx = _ctx()
+    ctx.schedfire_claim = SchedfireClaim(key="cron:s:1", owner="own-1")
+
+    await redeliver_in_place(worker._gate_deps, _fire({"x-delivery-count": 1}), ctx)
+
+    copy_headers = _copy_headers(broker)
+    assert "x-delivery-count" not in copy_headers
+    assert copy_headers[HEADER_SCHEDFIRE_DEFER_COUNT] == 0
+    assert copy_headers[HEADER_SCHEDFIRE_CLAIM] == "own-1"
+    broker.redeliver.assert_not_awaited()

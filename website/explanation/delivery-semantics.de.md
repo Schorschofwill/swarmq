@@ -208,7 +208,8 @@ Fire abgeschlossen ist, und läuft, sobald der Claim abgelaufen ist
 größer ist). Läuft das Original noch (nur sein Kanal ist weg), wartet
 die Kopie, statt parallel zu laufen; ist der Claim während eines langen
 Laufs abgelaufen, hält der Ausführungsschutz (Default an) die Kopie
-zurück. Eine Kopie, die der Worker wegen eines unerreichbaren Backends
+zurück. Der Ausführungsschutz greift nur für Kopien derselben Nachricht
+(gleiche `task_id`, dieselbe Ausführung). Eine Kopie, die der Worker wegen eines unerreichbaren Backends
 zurückstellt, behält den Defer-Zähler (bei der ersten Redelivery 0). Ein zweites Publish desselben Fires
 durch den Leader trägt keine der beiden Markierungen und bleibt ein
 Duplikat. Die Zurückstellung ist gedeckelt auf
@@ -226,7 +227,17 @@ erste Redelivery nach einem Absturz weiter den fremden Claim und wird
 als Duplikat bestätigt; dieser Fire geht wie bisher verloren. Ein
 0.12.0-Worker bestätigt eine zurückgestellte Kopie als Duplikat, solange
 der Claim steht. 0.12.1 deshalb per Surge-Deploy ausrollen, damit
-Redeliveries neue Worker erreichen.
+Redeliveries neue Worker erreichen. Ein Fall bleibt, in dem ein Fire
+zweimal gleichzeitig laufen kann. Dafür müssen ein Absturz, ein
+verspätetes zweites Publish des Leaders und ein langer Lauf ohne
+`hard_timeout` zusammenkommen. Das zweite Publish
+(eine neue Nachricht mit eigener `task_id`) hält den Claim
+und läuft länger als `SWARMQ_SCHEDULER_INFLIGHT_TTL`. Nach Ablauf des
+Claims gewinnt ihn eine zurückgestellte Redelivery des abgestürzten
+Fires und läuft neben dem zweiten Publish; der Ausführungsschutz hält sie
+nicht auf, denn beide haben verschiedene `task_id`s. Cron-Tasks deshalb
+mit `hard_timeout` versehen: Der Claim lebt dann `hard_timeout + 30` s
+und überdauert jeden Lauf.
 
 ## Redelivery-Szenarien
 

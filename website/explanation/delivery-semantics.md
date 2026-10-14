@@ -192,7 +192,9 @@ the fire has completed, and it runs once the claim has expired
 (`SWARMQ_SCHEDULER_INFLIGHT_TTL`, or `hard_timeout + 30` s if larger). If
 the original is still running (only its channel was lost), the copy
 waits instead of running alongside; once the claim has expired during a
-long run, the execution guard (on by default) holds the copy back. A copy
+long run, the execution guard (on by default) holds the copy back. The
+guard only covers copies of the same message (same `task_id`, the same
+execution). A copy
 that the worker defers because the backend is unreachable keeps the
 defer counter (0 on the first redelivery). A second publish of the same fire by
 the leader carries neither marker and is still acked as a duplicate. The
@@ -209,7 +211,15 @@ queues carry (the default). On a classic queue the first redelivery after
 a crash still finds the foreign claim and is acked as a duplicate, so
 that fire is lost as before. A 0.12.0 worker acks a deferred copy as a
 duplicate while the claim is held; roll out 0.12.1 with a surge deploy
-so that redeliveries reach new workers.
+so that redeliveries reach new workers. One case remains in which a fire
+can run twice at the same time. It needs a crash, a late second publish
+by the leader and a long run without `hard_timeout`, all at once. The
+second publish (a new message with its own `task_id`) holds the claim and runs longer than
+`SWARMQ_SCHEDULER_INFLIGHT_TTL`. Once the claim has expired, a deferred
+redelivery of the crashed fire wins it and runs next to the second
+publish; the execution guard does not stop it, because the two have
+different `task_id`s. Give cron tasks a `hard_timeout`: the claim then
+lives for `hard_timeout + 30` s and outlasts every run.
 
 ## Redelivery scenarios
 
