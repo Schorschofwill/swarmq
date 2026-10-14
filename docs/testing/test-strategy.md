@@ -265,7 +265,8 @@ Die Testcontainer `swarmq-test-rabbit` (5699, Management 15699) und
 die Ports selbst.
 
 ```bash
-# Dev-Loop
+# Dev-Loop (Unit-Suite auf 8 Prozessen per pytest-xdist; SWARMQ_TEST_WORKERS
+# aendert die Zahl, SWARMQ_TEST_WORKERS=0 laesst sie in einem Prozess laufen)
 uv run just unit
 
 # Integration und e2e gegen die Testcontainer (mit Sperre)

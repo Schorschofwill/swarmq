@@ -16,6 +16,10 @@ export SWARMQ_TEST_VALKEY_PORT := env("SWARMQ_TEST_VALKEY_PORT", "6399")
 
 uv_run := "uv run --extra test --extra reload"
 
+# Prozesse fuer die Unit-Suite (pytest-xdist): 8 war auf 24 Kernen das
+# Optimum (15 s statt 50 s), mehr brachte nichts.
+workers := env("SWARMQ_TEST_WORKERS", "8")
+
 # Rezepte auflisten
 _default:
     @{{just_executable()}} --justfile {{justfile()}} --list
@@ -33,7 +37,7 @@ types:
 
 # Unit-Suite (ohne Dienste)
 unit *args:
-    scripts/run-tests.sh --no-services tests/unit "$@"
+    scripts/run-tests.sh --no-services tests/unit -n {{workers}} "$@"
 
 # Property-Tests (ohne Dienste)
 property *args:

@@ -19,6 +19,7 @@ Test-Liste:
 - [x] mit ``CI=true`` sperrt kein Rezept
 - [x] ein verwaister Kindprozess hält die Sperre nicht
 - [x] ``just unit`` sperrt nicht (keine Dienste)
+- [x] ``just unit`` verteilt auf 8 Prozesse (pytest-xdist), ``SWARMQ_TEST_WORKERS`` ändert die Zahl
 - [x] ``just coverage`` misst Unit, Integration und e2e unter einer Sperre
 - [x] ``lint``, ``types``, ``chaos``, ``stress``, ``coverage-report``, ``coverage-gate``, ``ratchet`` rufen die CI-Befehle
 """
@@ -233,3 +234,19 @@ def test_recipes_run_the_ci_commands(stub: dict[str, str], recipe: str, expected
     commands = [call.split("reload ")[-1].split(" rmq=")[0].split(" --randomly-seed")[0] for call in calls]
     assert commands == expected
     assert all(("lock=held" in call) is locked for call in calls)
+
+
+def test_unit_runs_on_eight_workers_by_default(stub: dict[str, str]) -> None:
+    _just(stub, "unit")
+
+    [call] = _calls(stub)
+    assert "pytest tests/unit -n 8" in call
+
+
+def test_swarmq_test_workers_sets_the_worker_count(stub: dict[str, str]) -> None:
+    stub["SWARMQ_TEST_WORKERS"] = "3"
+
+    _just(stub, "unit")
+
+    [call] = _calls(stub)
+    assert "pytest tests/unit -n 3" in call
