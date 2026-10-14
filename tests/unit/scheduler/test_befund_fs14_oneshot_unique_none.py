@@ -19,6 +19,10 @@ dedupliziert werden. Dieser Nachweis prueft nur den ausdruecklichen Opt-out
 (``unique_for=None``), der laut ``_resolve_unique`` und den
 Unique-Anforderungen nie dedupliziert werden darf.
 
+Behoben (Plan 2026-10-14-0748, U13, KTD10): Der Client speichert den Opt-out
+als ``source="cli_unique"`` ohne ``dedup_hash``; der Leader faellt bei
+``cli_unique`` nie auf seine Registry zurueck.
+
 Testliste:
 # [x] schedule(delay=60, unique_for=None) bei TaskInfo(unique_for=3600), Flag
 #     haelt ein anderer Lauf -> der Leader publiziert unter der gelieferten
@@ -69,7 +73,6 @@ async def _deferred_definition(
 
 
 @pytest.mark.befund("FS-14")
-@pytest.mark.xfail(strict=True, reason="FS-14: offen - Leader dedupliziert Oneshot trotz unique_for=None")
 @pytest.mark.usefixtures("_cleanup_tasks")
 async def test_oneshot_with_unique_for_none_is_published_despite_a_held_flag(
     monkeypatch: pytest.MonkeyPatch,

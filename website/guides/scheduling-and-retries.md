@@ -46,6 +46,17 @@ field and fires under a new ID: while such a leader holds the role,
 `get_result()` on the returned ID times out and `cancel()` has no
 effect. Each cron fire gets a new ID.
 
+Dedup of a deferred task is settled when you call `schedule()`. With
+`unique_for=` the producer claims the flag right away. With
+`unique_for=None` dedup is off for this call: the one-shot entry
+records the opt-out, and the leader fires without a dedup claim. If you
+leave out `unique_for`, the leader resolves it from its own `TaskInfo`
+at fire time and skips the task if another run with the same arguments
+holds the flag. The opt-out needs a producer and a leader after 0.12.1.
+A producer up to 0.12.1 does not record it, and a leader up to 0.12.1
+falls back to its own `TaskInfo`; producers often live in other
+services, so update them too.
+
 ## Cron scheduling
 
 For recurring work, set `cron` on `TaskInfo`:

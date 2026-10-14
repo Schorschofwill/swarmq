@@ -37,6 +37,11 @@ class ScheduleDefinition(msgspec.Struct, kw_only=True, frozen=True):
       ``dedup_hash`` directly as the message header, partitioning
       SETNX responsibility between client (deferred) and scheduler
       (static cron). Origin plan Unit 7 / Risks "Double-SETNX-Race".
+      Without ``dedup_hash`` it is the producer's explicit opt-out
+      (``unique_for=None``, E-033, FS-14): no claim, no unique headers,
+      and the leader never falls back to its own ``TaskInfo`` (E-032
+      applies to ``source="cli"`` only). Leaders up to 0.12.1 ignore
+      the opt-out and fall back to the registry.
     * One-shot entries (delay/eta) — ``cron=None``, ``schedule_name``
       is ``"oneshot:<uuid>"``, ``source="cli"`` or ``"cli_unique"``.
       Discriminated by ``cron is None`` at commit-time: next_fire_ts =

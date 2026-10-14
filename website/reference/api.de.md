@@ -129,6 +129,17 @@ Enqueuet einen Task und gibt seine `task_id` zurück.
 die *bestehende* Owner-`task_id` still zurückgegeben; ein
 `TASK_DUPLICATE_DETECTED`-Signal feuert zur Observability.
 
+**`unique_for=None` mit `delay`/`eta`.** Der Opt-out wird im
+Oneshot-Eintrag gespeichert (`source="cli_unique"` ohne Dedup-Hash), und
+der Leader feuert den Task ohne Dedup-Claim, auch wenn seine eigene
+`TaskInfo` `unique_for` setzt. Dafür müssen Producer und Leader neuer
+als 0.12.1 sein: Ein Producer bis 0.12.1 speichert den Opt-out nicht,
+und ein Leader bis 0.12.1 fällt auf seine eigene `TaskInfo` zurück. In
+beiden Fällen kann der Leader den Task beim Fire als Duplikat verwerfen,
+solange ein anderer Lauf mit denselben Argumenten das Flag hält. Fehlt
+`unique_for`, wendet der Leader beim Fire weiter seine eigene `TaskInfo`
+an ([Scheduling und Retries](../guides/scheduling-and-retries.de.md#immediate-vs-deferred)).
+
 **Client-Only-Modus (ohne Registry).** Ohne Registry kennt der Client
 die `TaskInfo` des Tasks nicht: `unique_for`, `priority` und der
 Liefermodus des Worker-Tasks werden nicht angewendet. Dedup gibt es nur

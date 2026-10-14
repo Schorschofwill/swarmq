@@ -35,6 +35,10 @@ Claim-Freigabe nach Timeout (Plan 2026-10-14-0748, U12, KTD8, FS-07):
 - [x] Freigabe nach Timeout wirft unerwartet → ``scheduler_unique_release_failed``
 - [x] Fehlerantwort beim Claim (``BackendResponseError``, kein Ausfall) →
       keine Freigabe, wie im Lock-Gate (Review U12)
+
+Unique-Opt-out (Plan 2026-10-14-0748, U13, KTD10, FS-14):
+- [x] ``cli_unique`` ohne Hash, Registry mit ``unique_for`` → kein Claim, keine
+      Unique-Header, Publish (Nachweis ``test_befund_fs14_oneshot_unique_none.py``)
 """
 
 from __future__ import annotations
@@ -388,3 +392,21 @@ async def test_cron_claim_error_reply_releases_nothing(loop, backend, broker, st
     store.commit_fire.assert_not_awaited()
     [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_unique_setnx_failed"]
     assert entry["error_type"] == "BackendResponseError"
+
+
+@pytest.mark.usefixtures("_cleanup_tasks")
+async def test_cli_unique_oneshot_without_hash_publishes_without_unique_claim(loop, backend, broker, store):
+    """FS-14: ``cli_unique`` ohne Hash ist der ausdrueckliche Opt-out des
+    Producers (E-033); der Leader faellt nicht auf seine TaskInfo zurueck."""
+    _register_ping(unique_for=3600)
+    backend.claim_unique = AsyncMock(return_value="other-run")
+    definition = _definition("oneshot:abc", cron=None, source="cli_unique")
+
+    await loop._fire_one("oneshot:abc", 1_700_000_000_000, definition)
+
+    backend.claim_unique.assert_not_awaited()
+    assert _published_task_ids(broker) == ["abc"]
+    headers = broker.publish.await_args.kwargs["headers"]
+    assert "x-swarmq-unique-hash" not in headers
+    assert "x-swarmq-unique-until" not in headers
+    store.commit_fire.assert_awaited_once()

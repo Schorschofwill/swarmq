@@ -115,3 +115,16 @@ class CompatEmptyErrorTask(Task):
     @override
     async def run(self) -> str:
         raise ValueError
+
+
+class CompatUniqueTask(Task):
+    """Mit ``unique_for`` in der TaskInfo (U13, FS-14): Der Leader dedupliziert
+    Oneshots ohne Opt-out nach dieser TaskInfo (E-032)."""
+
+    task_info = TaskInfo(name="compat_unique", queues=[_QUEUE], unique_for=3600)
+
+    @override
+    async def run(self) -> str:
+        assert self._task_id is not None
+        await _record("compat_unique", self._task_id)
+        return RUNTIME

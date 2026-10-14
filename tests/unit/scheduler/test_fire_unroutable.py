@@ -19,6 +19,7 @@ Test-Liste:
 - [x] Oneshot ueber der Frist: entfernt, ERROR-Event, Signal ``oneshot_dropped``
 - [x] verworfener Oneshot: Fehlerergebnis unter ``task_id``
 - [x] verworfener ``cli_unique``-Oneshot: Unique-Freigabe mit ``task_id`` als Owner
+- [x] verworfener ``cli_unique``-Oneshot ohne Hash (Opt-out, FS-14): keine Freigabe
 - [x] Backend ohne ``store_result`` (MagicMock, Q15): Verwerfen laeuft trotzdem
 - [x] Owner-Check lehnt das Verwerfen ab: kein Ergebnis, Standby
 - [x] zurueckgestellter Oneshot: WARNING ``scheduler_oneshot_unroutable``, gedrosselt wie beim Cron
@@ -265,6 +266,15 @@ async def test_dropped_plain_oneshot_releases_nothing(loop, backend, config):
     backend.release_unique = AsyncMock(return_value=True)
 
     await loop._fire_one("oneshot:t-1", _SCORE_MS, _expired(config))
+
+    backend.release_unique.assert_not_awaited()
+
+
+async def test_dropped_cli_unique_oneshot_without_hash_releases_nothing(loop, backend, config):
+    """FS-14 (U13): ``cli_unique`` ohne Hash ist der Opt-out; es gibt kein Flag."""
+    backend.release_unique = AsyncMock(return_value=True)
+
+    await loop._fire_one("oneshot:t-1", _SCORE_MS, _expired(config, source="cli_unique"))
 
     backend.release_unique.assert_not_awaited()
 

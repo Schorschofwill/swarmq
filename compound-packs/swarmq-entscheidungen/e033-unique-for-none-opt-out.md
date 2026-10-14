@@ -24,4 +24,6 @@ tests:
 
 **Bewusste Folgen.** Zwei Läufe mit gleichen Argumenten trotz `unique_for` in der `TaskInfo` sind kein Fehler, wenn der Aufrufer `unique_for=None` übergeben hat.
 
-**Überdenken nur mit neuem Argument.** Heute verletzt für verzögerte Aufrufe: FS-14 (Fehlersuche Runde 2, xfail-Nachweis im Branch `test/fehlersuche-runde-2`). `schedule(delay=…, unique_for=None)` speichert den Opt-out nicht in der Definition, der Leader fällt beim Fire nach E-032 auf seine TaskInfo zurück, und der erzwungene Lauf verschwindet still, sobald ein anderer Lauf das Flag hält. Die markierten Tests decken nur den sofortigen Pfad ab.
+**Nachtrag 2026-10-14 (FS-14, U13, KTD10):** Behoben. `schedule(delay=/eta=, unique_for=None)` speichert den Opt-out als `source="cli_unique"` ohne `dedup_hash`; der Leader fällt dann nicht auf seine TaskInfo zurück und publiziert ohne Unique-Claim. Wirkt erst, wenn Producer und Leader neuer als 0.12.1 sind (compat-Matrix in `tests/compat/test_mixed_operation_0_12.py`). Nachweis `tests/unit/scheduler/test_befund_fs14_oneshot_unique_none.py`.
+
+**Überdenken nur mit neuem Argument.** Bis U13 verletzt für verzögerte Aufrufe: FS-14 (Fehlersuche Runde 2, xfail-Nachweis im Branch `test/fehlersuche-runde-2`). `schedule(delay=…, unique_for=None)` speichert den Opt-out nicht in der Definition, der Leader fällt beim Fire nach E-032 auf seine TaskInfo zurück, und der erzwungene Lauf verschwindet still, sobald ein anderer Lauf das Flag hält. Die markierten Tests decken nur den sofortigen Pfad ab.

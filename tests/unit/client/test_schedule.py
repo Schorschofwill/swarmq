@@ -1021,6 +1021,43 @@ class TestClientUniqueDeferred:
         assert definition.source == "cli"
         assert definition.dedup_hash is None
 
+    # FS-14 (U13, KTD10): Testliste
+    # [x] explizites None mit Registry ohne unique_for -> cli_unique ohne Hash, ohne Claim
+    # [x] _MISSING ohne Registry -> cli (Rueckfall E-032 bleibt)
+    # [x] unique_for=60 -> unveraendert cli_unique mit Hash (siehe naechster Test)
+
+    async def test_deferred_explicit_none_persists_the_opt_out_as_cli_unique_without_hash(
+        self,
+        client_setnx,
+        backend_setnx,
+        patched_schedule_store,
+    ):
+        """FS-14: Der ausdrueckliche Opt-out (E-033) landet in der Definition,
+        damit der Leader beim Fire nicht auf seine TaskInfo zurueckfaellt."""
+        await client_setnx.schedule("add", 1, queue="math", delay=60.0, unique_for=None)
+
+        backend_setnx.claim_unique.assert_not_awaited()
+        definition = patched_schedule_store.add_schedule.await_args.args[0]
+        assert definition.source == "cli_unique"
+        assert definition.dedup_hash is None
+
+    async def test_deferred_without_registry_and_unique_for_stays_cli(
+        self,
+        broker,
+        backend_setnx,
+        patched_schedule_store,
+    ):
+        """FS-14: Ohne Angabe und ohne Registry bleibt ``source="cli"``;
+        der Leader loest unique_for weiter aus seiner TaskInfo auf (E-032)."""
+        client = Client(broker=broker, backend=backend_setnx, registry=None)
+
+        await client.schedule("add", 1, queue="math", delay=60.0)
+
+        backend_setnx.claim_unique.assert_not_awaited()
+        definition = patched_schedule_store.add_schedule.await_args.args[0]
+        assert definition.source == "cli"
+        assert definition.dedup_hash is None
+
     async def test_deferred_with_unique_for_sets_flag_and_persists_hash(
         self,
         client_setnx,

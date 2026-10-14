@@ -127,6 +127,17 @@ Enqueue a task and return its `task_id`.
 *existing* owner's `task_id` is returned silently; a
 `TASK_DUPLICATE_DETECTED` signal fires for observability.
 
+**`unique_for=None` with `delay`/`eta`.** The opt-out is stored in the
+one-shot entry (`source="cli_unique"` without a dedup hash), and the
+leader fires the task without a dedup claim, even if its own `TaskInfo`
+sets `unique_for`. This needs both a producer and a leader after
+0.12.1: a producer up to 0.12.1 does not store the opt-out, and a
+leader up to 0.12.1 falls back to its own `TaskInfo`. In both cases the
+leader may drop the task as a duplicate at fire time while another run
+with the same arguments holds the flag. If you leave out `unique_for`,
+the leader still applies its own `TaskInfo` at fire time
+([Scheduling and retries](../guides/scheduling-and-retries.md#immediate-vs-deferred-execution)).
+
 **Client-only mode (no registry).** Without a registry the client does
 not know the task's `TaskInfo`: `unique_for`, `priority` and the
 delivery mode of the worker's task are not applied. Dedup only happens

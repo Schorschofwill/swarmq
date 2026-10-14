@@ -1,7 +1,7 @@
 <!-- Befundregister. IDs FS-nn sind die Ticketnummern fuer xfail-Marker (AGENTS.md: kein Skip ohne Ticket). -->
 # Befundregister „Fehlersuche Runde 2“ – swarmq v0.12.0 (ac989a3), 2026-10-13
 
-Status (2026-10-13): Gegenprüfung abgeschlossen. 23 Befunde stehen als FEHLER fest: 3 × P1, 10 × P2, 10 × P3. P1 und P2 haben alle einen Nachweis-Test, P3 teilweise. 6 Verdachte sind bewusste ENTSCHEIDUNGEN und keine Befunde mehr, 4 sind LÜCKEN (Produktfragen). Stand 2026-10-14: FS-02, FS-03, FS-04, FS-06 (Fire-Claim) in 0.12.1rc1; auf `fix/fehlersuche-runde-2-p2` behoben: FS-05, FS-06 (Rest), FS-07, FS-08, FS-09, FS-10, FS-12, FS-13, FS-15, FS-16, FS-17, FS-19, FS-20, FS-23, FS-24, FS-27, FS-28, FS-30, FS-31; FS-14 in Arbeit (U13).
+Status (2026-10-13): Gegenprüfung abgeschlossen. 23 Befunde stehen als FEHLER fest: 3 × P1, 10 × P2, 10 × P3. P1 und P2 haben alle einen Nachweis-Test, P3 teilweise. 6 Verdachte sind bewusste ENTSCHEIDUNGEN und keine Befunde mehr, 4 sind LÜCKEN (Produktfragen). Stand 2026-10-14: FS-02, FS-03, FS-04, FS-06 (Fire-Claim) in 0.12.1rc1; auf `fix/fehlersuche-runde-2-p2` behoben: FS-05, FS-06 (Rest), FS-07, FS-08, FS-09, FS-10, FS-12, FS-13, FS-15, FS-16, FS-17, FS-19, FS-20, FS-23, FS-24, FS-27, FS-28, FS-14, FS-30, FS-31 – damit alle 23 FEHLER behoben (Sammelrelease offen).
 
 Nachweis-Tests tragen `@pytest.mark.befund("FS-nn")` und `xfail(strict=True)`. Wird ein Befund behoben, wird sein Test XPASS (rot), und die Markierung muss entfernt werden. Alle Nachweise: `pytest -m befund --runxfail` (Integration nur über die Testports).
 
@@ -103,7 +103,7 @@ Cron bei Zeitumstellung (Berlin, New York, Lord Howe), sieben Workflow-Kombinati
 | FS-10 | `tests/integration/broker/test_befund_fs10_dlq_replay_counters.py` (maßgeblich), `tests/unit/worker/test_befund_fs10_dlq_copy_counters.py` | behoben für Worker-Kopien (U16, b69dd89; Review 7a50258); Grenze: Broker-DLX-Kopien behalten den Zähler (xfail) |
 | FS-12 | `tests/unit/worker/test_befund_fs12_cancel_before_start.py` | behoben (U15, 4956358; Review 546cd08) |
 | FS-13 | `tests/unit/worker/test_befund_fs13_unique_until_start.py` | behoben (U15, 4956358, 58f069b) |
-| FS-14 | `tests/unit/scheduler/test_befund_fs14_oneshot_unique_none.py` | offen |
+| FS-14 | `tests/unit/scheduler/test_befund_fs14_oneshot_unique_none.py` | behoben (U13) |
 | FS-15 | `tests/unit/backend/test_befund_fs15_result_wait_polling.py` (nur `subscribe()`-Frist) | behoben (U20, 1b05cd9; Review d2aa879) |
 | FS-16 | `tests/unit/worker/compute/test_befund_fs16_kill_group.py` | behoben (U19, 13472d9; Review 30e536c) |
 | FS-30 | `tests/unit/worker/test_befund_fs30_recycling_drain.py` | behoben (U9, 177b954; Review 38634cf) |

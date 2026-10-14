@@ -232,6 +232,7 @@ class ClientScheduling(ClientScheduleResolve):
                 eta=eta,
                 unique_for=resolved_unique_for,
                 unique_until=resolved_unique_until,
+                dedup_opt_out=unique_for is None,
             )
 
         # --- build and publish message ---
@@ -582,6 +583,7 @@ class ClientScheduling(ClientScheduleResolve):
         eta: datetime | None,
         unique_for: int | None = None,
         unique_until: UniqueUntil = "completion",
+        dedup_opt_out: bool = False,
     ) -> str:
         """Write a one-shot entry to the ScheduleStore and return task_id.
 
@@ -597,6 +599,11 @@ class ClientScheduling(ClientScheduleResolve):
         its own SETNX, avoiding the double-claim race. On duplicate we
         emit ``TASK_DUPLICATE_DETECTED`` and return the existing task_id
         silently, same API shape as the immediate path.
+
+        FS-14 (KTD10): ``dedup_opt_out`` (ausdrueckliches ``unique_for=None``,
+        E-033) wird als ``source="cli_unique"`` ohne ``dedup_hash`` gespeichert:
+        Der Producer hat ueber die Dedup entschieden, der Leader faellt nicht
+        auf seine TaskInfo zurueck (E-032 gilt nur fuer ``source="cli"``).
         """
         now_ms = int(time.time() * 1000)
         if eta is not None:
@@ -641,7 +648,7 @@ class ClientScheduling(ClientScheduleResolve):
             queue=resolved_queue,
             cron=None,
             fire_ts_ms=fire_ts_ms,
-            source="cli_unique" if dedup_hash is not None else "cli",
+            source="cli_unique" if dedup_hash is not None or dedup_opt_out else "cli",
             dedup_hash=dedup_hash,
             unique_until=unique_until,
             task_id=task_id,
