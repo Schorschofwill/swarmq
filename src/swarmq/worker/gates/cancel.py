@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import Any
 
 from swarmq.cancellation import build_cancel_result_dict
-from swarmq.exceptions import BackendConnectionError, TaskNotFoundError
+from swarmq.exceptions import BackendConnectionError, TaskNotFoundError, WorkflowStateConflict
 from swarmq.logging import _error_fields, get_logger
 from swarmq.serialization import encode_result
 from swarmq.signals import Signal
@@ -40,6 +40,25 @@ def _task_info_and_result_ttl(deps: GateDeps, task_name: str) -> tuple[TaskInfo 
     if result_ttl is None:
         result_ttl = 0 if task_info.delivery is DeliveryMode.FIRE_AND_FORGET else deps.config.result_ttl
     return task_info, result_ttl
+
+
+async def _defer_fail_mark(deps: GateDeps, delivery: Any, ctx: GateContext, exc: BaseException) -> None:
+    """Zurueckstellung nach voruebergehend gescheiterter Fehlmarkierung (FS-12).
+    Verlorene CAS-Runden (``WorkflowStateConflict``) heilen mit Wartezeit wie
+    ein Ausfall und gehen ebenfalls ueber die Delay-Queue."""
+    if isinstance(exc, WorkflowStateConflict):
+        outage = BackendConnectionError(f"workflow state conflict: {exc}")
+        outage.__cause__ = exc
+        exc = outage
+    await defer_backend_unavailable(
+        deps,
+        delivery,
+        ctx,
+        exc,
+        gate="cancel",
+        stage="cancel_fail_workflow",
+        workflow_id=deps.extract_valid_workflow_id(delivery),
+    )
 
 
 class CancelGate:
@@ -100,13 +119,21 @@ class CancelGate:
         # fehlgeschlagen, wie der Abbruch waehrend des Laufs. Vor dem
         # Cancel-Ergebnis: die Markierung prueft, ob der Schritt schon
         # erfolgreich erledigt ist, und saehe sonst das eigene Ergebnis.
-        # Scheitert sie voruebergehend, ist die Zustellung neu zugestellt;
-        # das Cancel-Flag bleibt stehen, die Kopie sieht diesen Zweig wieder.
+        # Scheitert sie voruebergehend, wird zurueckgestellt wie an den
+        # anderen Backend-Fehlerstellen (kein Requeue an derselben Stelle,
+        # dieses Gate laeuft vor dem Delivery-Count-Gate); das Cancel-Flag
+        # bleibt stehen, die Kopie sieht diesen Zweig wieder.
         # Der Workflow-Cancel-Zweig bleibt unveraendert (FS-32).
         if (
             not workflow_cancel
             and deps.fail_workflow is not None
-            and not await deps.fail_workflow(delivery, ctx, "task was cancelled", True)  # noqa: FBT003 - Callable-Feld ohne Parameternamen
+            and not await deps.fail_workflow(
+                delivery,
+                ctx,
+                "task was cancelled",
+                True,  # noqa: FBT003 - Callable-Feld ohne Parameternamen
+                redeliver_with=lambda exc: _defer_fail_mark(deps, delivery, ctx, exc),
+            )
         ):
             return Redelivered
 

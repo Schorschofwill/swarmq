@@ -133,6 +133,23 @@ class GateContext:
     start_release_reached: bool = False
 
 
+class FailWorkflow(Protocol):
+    """``GateDeps.fail_workflow`` (``RetryHandler.fail_workflow``).
+    *redeliver_with* ersetzt den Requeue an derselben Stelle, wenn die
+    Markierung voruebergehend scheitert (Cancel-Gate, FS-12)."""
+
+    def __call__(
+        self,
+        delivery: Any,
+        ctx: GateContext,
+        error_message: str,
+        may_redeliver: bool,
+        /,
+        *,
+        redeliver_with: Callable[[BaseException], Awaitable[None]] | None = None,
+    ) -> Awaitable[bool]: ...
+
+
 @dataclass
 class GateDeps:
     """Kollaborateure, die der Worker an die Gates reicht.
@@ -162,7 +179,7 @@ class GateDeps:
     # (delivery, ctx, error_message, may_redeliver) -> ``False``, wenn die
     # Zustellung deshalb neu zugestellt wurde. Der Worker setzt es
     # (``RetryHandler.fail_workflow``); ``None`` = keine Markierung.
-    fail_workflow: Callable[[Any, GateContext, str, bool], Awaitable[bool]] | None = None
+    fail_workflow: FailWorkflow | None = None
     # BZ-25 (MR 13): erworbenen Lock dem Keeper uebergeben (token, ttl_ms, ctx);
     # der Worker setzt es (``LockKeeper.keep``); ``None`` = keine Verlaengerung.
     keep_lock: Callable[[LockToken, int, GateContext], None] | None = None
@@ -395,6 +412,7 @@ async def fail_workflow_best_effort(
 
 
 __all__ = [
+    "FailWorkflow",
     "Gate",
     "GateContext",
     "GateDeps",

@@ -199,10 +199,12 @@ class RetryHandler:
         may_redeliver: bool = True,
         *,
         error_class: str | None = None,
+        redeliver_with: Callable[[BaseException], Awaitable[None]] | None = None,
     ) -> bool:
         """Workflow der Zustellung fehlmarkieren (BZ-13, ``GateDeps.fail_workflow``).
         ``False``: voruebergehend gescheitert und neu zugestellt -- nur bei
-        *may_redeliver* und AT_LEAST_ONCE (bzw. unregistriertem Task)."""
+        *may_redeliver* und AT_LEAST_ONCE (bzw. unregistriertem Task);
+        *redeliver_with* siehe ``fail_workflow_step``."""
         try:
             task_info = self._deps.registry.get(ctx.task_name).task_info
         except TaskNotFoundError:
@@ -217,6 +219,7 @@ class RetryHandler:
             redeliver=may_redeliver and at_least_once,
             log=logger,
             error_class=error_class,
+            redeliver_with=redeliver_with,
         )
 
     async def dead_letter(
