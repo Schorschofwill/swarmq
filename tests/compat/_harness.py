@@ -1,4 +1,4 @@
-"""Mischbetrieb-Suite (Q2): Fixtures und Helfer für Worker aus swarmq 0.11.x und dem Arbeitsstand.
+"""Mischbetrieb-Suite (Q2): Fixtures und Helfer für Worker aus swarmq 0.11.x, 0.12.0 und dem Arbeitsstand.
 
 Umgebung: ein isoliertes venv mit ``swarmq==0.11.1`` von PyPI, Abhängigkeiten
 exakt wie im Lockfile des Tags (``constraints-0.11.1.txt``). Seit MR 8 ist
@@ -11,6 +11,10 @@ von 0.12 angelegten Queues deklarieren (Plan Abschnitt 1, Nachtrag
 Aufruf weg. Deshalb ``uv venv`` + ``uv pip install -c`` in ein Sitzungs-
 Verzeichnis; dessen ``sys.executable`` startet die Worker direkt (kein
 verschachteltes ``uv run``, das PDEATHSIG und ``crash_worker`` stören würde).
+
+Zweite Basis seit der Fehlersuche Runde 2 (Plan 2026-10-14-0748, KTD19): ein
+venv mit ``swarmq==0.12.0`` (``constraints-0.12.0.txt``); die 0.12.x-Fixes
+laufen in beiden Richtungen neben 0.12.0 (R27).
 
 Opt-in über den Marker ``compat`` (braucht Netz zu PyPI beim ersten Lauf).
 """
@@ -39,6 +43,9 @@ OLD_VERSION = "0.11.1"
 #: Rollback-Grenze (MR 8): 0.11.0 kann von 0.12 angelegte Queues nicht deklarieren.
 ROLLBACK_LIMIT_VERSION = "0.11.0"
 ROLLBACK_LIMIT_CONSTRAINTS = Path(__file__).with_name("constraints-0.11.0.txt")
+#: Basis der 0.12.x-Reihe (KTD19): Rolling Deploy und Rollback neben 0.12.0.
+BASE_012_VERSION = "0.12.0"
+BASE_012_CONSTRAINTS = Path(__file__).with_name("constraints-0.12.0.txt")
 
 # Schnelle Leader-Übergabe, damit ein Wechsel Sekunden statt der Standard-TTL dauert.
 SCHEDULER_ENV = {
@@ -93,6 +100,12 @@ def python_011(tmp_path_factory: pytest.TempPathFactory) -> str:
 def python_0110(tmp_path_factory: pytest.TempPathFactory) -> str:
     """Interpreter eines venv mit swarmq 0.11.0 von PyPI (Rollback-Grenze, MR 8)."""
     return _pypi_python(tmp_path_factory, ROLLBACK_LIMIT_VERSION, ROLLBACK_LIMIT_CONSTRAINTS)
+
+
+@pytest.fixture(scope="session")
+def python_0120(tmp_path_factory: pytest.TempPathFactory) -> str:
+    """Interpreter eines venv mit swarmq 0.12.0 von PyPI (Basis der 0.12.x-Reihe, KTD19)."""
+    return _pypi_python(tmp_path_factory, BASE_012_VERSION, BASE_012_CONSTRAINTS)
 
 
 @pytest.fixture(scope="session")
