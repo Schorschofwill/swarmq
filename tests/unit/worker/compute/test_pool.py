@@ -140,15 +140,15 @@ class FakeCtx:
         return FakeProcess(target, args, name)
 
 
-@pytest.fixture
-def ctx() -> FakeCtx:
+def fresh_fake_ctx() -> FakeCtx:
+    """Neuer Fake-Kontext mit geleertem Startprotokoll (auch fuer die Nachweisdateien)."""
     FakeCtx.started = []
     FakeCtx.fail_next_start = False
     return FakeCtx()
 
 
-@pytest.fixture
-def signals(monkeypatch) -> list[tuple[str, int, int]]:
+def install_fake_signals(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, int, int]]:
+    """``os.kill``/``os.killpg`` durch Zustellung an die Fake-Kinder ersetzen; liefert das Signalprotokoll."""
     sent: list[tuple[str, int, int]] = []
 
     def _find(pid: int) -> FakeProcess | None:
@@ -165,6 +165,16 @@ def signals(monkeypatch) -> list[tuple[str, int, int]]:
     monkeypatch.setattr(os, "killpg", lambda pid, sig: _deliver("killpg", pid, sig))
     monkeypatch.setattr(os, "kill", lambda pid, sig: _deliver("kill", pid, sig))
     return sent
+
+
+@pytest.fixture
+def ctx() -> FakeCtx:
+    return fresh_fake_ctx()
+
+
+@pytest.fixture
+def signals(monkeypatch) -> list[tuple[str, int, int]]:
+    return install_fake_signals(monkeypatch)
 
 
 def _free(p: SlotPool) -> asyncio.Queue[int]:
@@ -467,6 +477,7 @@ async def test_handshake_timeout_is_slot_unavailable_not_child_death(ctx, signal
     p = await _make_pool(ctx, slots=1, handshake_timeout_s=0.05)
     with pytest.raises(SlotUnavailable):
         await p.run(_job("a"), use_di=False)
+    await _settle(lambda: not p._children)  # FS-24: erst nach _finalize zaehlt "kein Kindtod"
     assert p.stats.unavailable == 1
     assert p.stats.died == 0
     assert signals
@@ -492,15 +503,98 @@ async def test_kill_slot_is_two_stage_and_waits_for_death(ctx, signals):
 
 
 @pytest.mark.timeout(5)
-async def test_cooperative_child_needs_only_sigterm(ctx, signals):
-    p = await _make_pool(ctx, slots=1)
+async def test_cooperative_child_skips_the_kill_grace_and_its_group_is_swept_after_death(ctx, signals):
+    """Ein kooperatives Kind endet auf SIGTERM ohne ``kill_grace_s`` abzuwarten; das
+    SIGKILL danach trifft nur noch die Gruppe (Enkel, FS-16), genau einmal."""
+    p = await _make_pool(ctx, slots=1, kill_grace_s=1.0)
     t1 = asyncio.create_task(p.run(_job("a"), use_di=False))
     proc = await _started(1)
     await _ready(p, proc, 0)
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
     await p._kill_child(_active(p), reason="cancel")
-    assert [s[2] for s in signals] == [signal.SIGTERM]
+    assert loop.time() - t0 < 0.5  # keine Gnadenfrist abgewartet
     with pytest.raises(ChildDied):
         await t1
+    await _settle(lambda: not p._children)
+    assert signals == [("killpg", proc.pid, signal.SIGTERM), ("killpg", proc.pid, signal.SIGKILL)]
+    await p.aclose()
+
+
+@pytest.mark.timeout(5)
+async def test_child_death_without_result_sweeps_its_group_exactly_once(ctx, signals):
+    """FS-16 (R9): stirbt das Kind von selbst (OOM, Segfault), bekommt seine Gruppe ein SIGKILL."""
+    p = await _make_pool(ctx, slots=1)
+    t1 = asyncio.create_task(p.run(_job("a"), use_di=True))
+    proc = await _started(1)
+    await _ready(p, proc, 0)
+    proc.die()
+    with pytest.raises(ChildDied):
+        await t1
+    await _settle(lambda: not p._children)
+    assert signals == [("killpg", proc.pid, signal.SIGKILL)]
+    await p.aclose()
+
+
+@pytest.mark.timeout(5)
+async def test_failed_handshake_without_own_group_sends_no_killpg(ctx, signals):
+    """Ohne Ready ist die eigene Gruppe nicht bestaetigt: nur die PID wird signalisiert."""
+    p = await _make_pool(ctx, slots=1, handshake_timeout_s=0.05)
+    with pytest.raises(SlotUnavailable):
+        await p.run(_job("a"), use_di=False)
+    await _settle(lambda: not p._children)
+    assert signals
+    assert all(s[0] == "kill" for s in signals)
+    await p.aclose()
+
+
+@pytest.mark.timeout(5)
+async def test_finalize_sends_no_second_sigkill_after_the_second_kill_stage(ctx, signals):
+    """Regressionsschutz fuer E-036: das SIGKILL der zweiten Stufe ist zugleich der Sweep."""
+    p = await _make_pool(ctx, slots=1)
+    t1 = asyncio.create_task(p.run(_job("a"), use_di=False))
+    proc = await _started(1)
+    proc.behaviour = "stubborn"
+    await _ready(p, proc, 0)
+    await p._kill_child(_active(p), reason="hard_timeout")
+    with pytest.raises(ChildDied):
+        await t1
+    await _settle(lambda: not p._children)
+    assert signals == [("killpg", proc.pid, signal.SIGTERM), ("killpg", proc.pid, signal.SIGKILL)]
+    await p.aclose()
+
+
+@pytest.mark.timeout(5)
+async def test_idle_death_of_the_warm_di_child_sweeps_its_group(ctx, signals):
+    p = await _make_pool(ctx, slots=1)
+    t1 = asyncio.create_task(p.run(_job("a"), use_di=True))
+    proc = await _started(1)
+    await _ready(p, proc, 0)
+    proc.channel.send(("result", _result("a", 0)))
+    await t1
+    proc.die()  # zwischen zwei Jobs, ohne Ende-Signal
+    await _settle(lambda: not p._children)
+    assert signals == [("killpg", proc.pid, signal.SIGKILL)]
+    await p.aclose()
+
+
+@pytest.mark.timeout(5)
+async def test_recycled_child_ending_on_its_end_signal_is_not_swept(ctx, signals):
+    """Regulaeres Ende (Recycling mit Ende-Signal): E-036 verlangt keinen Sweep."""
+    p = await _make_pool(ctx, slots=1, recycle_max_tasks=1, end_grace_s=1.0)
+    t1 = asyncio.create_task(p.run(_job("a"), use_di=True))
+    old = await _started(1)
+    await _ready(p, old, 0)
+    assert (await _next_job(old)).task_id == "a"
+    old.channel.send(("result", _result("a", 0)))
+    await t1
+    new = await _started(2)
+    await _ready(p, new, 0)
+    assert (await _next_job(old)) is None  # Ende-Signal
+    old.die()
+    await _settle(lambda: old.pid not in p._children and not p._background)
+    assert signals == []
+    new.die()
     await p.aclose()
 
 

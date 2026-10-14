@@ -54,19 +54,22 @@ pytestmark = [
     pytest.mark.filterwarnings("ignore:This process .* is multi-threaded:DeprecationWarning"),
 ]
 
-_REASON = "FS-16: offen - Prozessgruppe bekommt kein SIGKILL, wenn das Kind schon tot ist"
 _GC_SELF_EXIT_S = 10.0
 
 
-def _fs16_grandchild(report_fd: int) -> None:
+def _fs16_grandchild(report_fd: int, started_fd: int) -> None:
     """Enkel: ignoriert SIGTERM, meldet seine PID, beendet sich spaetestens nach 10 s."""
     try:
         # Wie ``subprocess.Popen(close_fds=True)``: der Enkel haelt den Rueckkanal
         # des Kindes nicht offen (sonst kaeme dessen EOF nie).
-        os.closerange(3, report_fd)
-        os.closerange(report_fd + 1, os.sysconf("SC_OPEN_MAX"))
+        low, high = sorted((report_fd, started_fd))
+        os.closerange(3, low)
+        os.closerange(low + 1, high)
+        os.closerange(high + 1, os.sysconf("SC_OPEN_MAX"))
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         os.write(report_fd, f"{os.getpid()}\n".encode())
+        os.write(started_fd, b"x")  # erst jetzt meldet sich das Kind bereit
+        os.close(started_fd)
         deadline = time.monotonic() + _GC_SELF_EXIT_S
         while time.monotonic() < deadline:
             time.sleep(0.05)
@@ -81,8 +84,15 @@ def _fs16_exit_on_term(_signum: int, _frame: object) -> None:
 def _fs16_child(mode: str, report_fd: int, channel: Any, slot: int) -> None:
     """Ersatz fuer ``child_once``: eigene Gruppe, SIGTERM-fester Enkel, Ready."""
     os.setpgid(0, 0)
+    started_r, started_w = os.pipe()
     if os.fork() == 0:
-        _fs16_grandchild(report_fd)
+        os.close(started_r)
+        _fs16_grandchild(report_fd, started_w)
+    os.close(started_w)
+    # Ready erst, wenn der Enkel SIGTERM ignoriert und seine PID gemeldet hat:
+    # sonst trifft ein (korrekter) Gruppen-Kill ihn, bevor der Test ihn kennt.
+    os.read(started_r, 1)
+    os.close(started_r)
     channel.send(("ready", slot, os.getpid(), True))
     if mode == "die":
         os._exit(1)  # stirbt von selbst (wie OOM-Kill/Segfault), ohne Ergebnis
@@ -150,6 +160,14 @@ async def _read_grandchild_pid(report_r: int) -> int:
     return await fut
 
 
+async def _handshake_done(pool: SlotPool) -> None:
+    """Warten, bis ``run`` das Kind nach dem Ready-Handshake fuehrt (eigene Gruppe bestaetigt)."""
+    deadline = time.monotonic() + 2.0
+    while pool._slots[0].active is None:
+        assert time.monotonic() < deadline, "Ready-Handshake blieb aus"
+        await asyncio.sleep(0.005)
+
+
 class _Fs16Setup:
     def __init__(self, mode: str) -> None:
         self.report_r, self.report_w = os.pipe()
@@ -177,7 +195,6 @@ def _job() -> ComputeJob:
 
 
 @pytest.mark.befund("FS-16")
-@pytest.mark.xfail(strict=True, reason=_REASON)
 async def test_cancelled_run_leaves_no_member_of_the_child_process_group() -> None:
     setup = _Fs16Setup("term")
     try:
@@ -186,6 +203,7 @@ async def test_cancelled_run_leaves_no_member_of_the_child_process_group() -> No
         setup.grandchild = await _read_grandchild_pid(setup.report_r)
         pgid = setup.ctx.processes[0].pid
         assert os.getpgid(setup.grandchild) == pgid, "Voraussetzung: Enkel liegt in der Gruppe des Kindes"
+        await _handshake_done(setup.pool)
 
         run.cancel()  # Watchdog, Cancel-Monitor oder Drain-Ende
         with pytest.raises(asyncio.CancelledError):
@@ -200,7 +218,6 @@ async def test_cancelled_run_leaves_no_member_of_the_child_process_group() -> No
 
 
 @pytest.mark.befund("FS-16")
-@pytest.mark.xfail(strict=True, reason=_REASON)
 async def test_child_death_leaves_no_member_of_the_child_process_group() -> None:
     setup = _Fs16Setup("die")
     try:
