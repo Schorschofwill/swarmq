@@ -23,9 +23,23 @@ from swarmq.signals import Signal
 from swarmq.task import DeliveryMode, TaskInfo
 from swarmq.worker.gates import GateContext, GateDeps
 from swarmq.worker.gates.backend_defer import bounded_backend_call, defer_backend_unavailable
-from swarmq.worker.outcome import Continue, DeliveryOutcome, Terminal
+from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered, Terminal
 
 logger = get_logger(__name__)
+
+
+def _task_info_and_result_ttl(deps: GateDeps, task_name: str) -> tuple[TaskInfo | None, int]:
+    """``TaskInfo`` und Ergebnis-TTL des Cancel-Ergebnisses; ein unbekannter
+    Task faellt auf ``config.result_ttl`` zurueck (AT_LEAST_ONCE-Semantik)."""
+    try:
+        task_info = deps.registry.get(task_name).task_info
+    except TaskNotFoundError:
+        return None, deps.config.result_ttl
+    # result_ttl falls through: task → config.result_ttl (Default DEFAULT_RESULT_TTL_S).
+    result_ttl = task_info.result_ttl
+    if result_ttl is None:
+        result_ttl = 0 if task_info.delivery is DeliveryMode.FIRE_AND_FORGET else deps.config.result_ttl
+    return task_info, result_ttl
 
 
 class CancelGate:
@@ -79,17 +93,22 @@ class CancelGate:
         # registry (unknown tasks fall back to AT_LEAST_ONCE semantics so
         # the client's get_result does not hang forever waiting for a
         # result that will never arrive).
-        task_info: TaskInfo | None = None
-        try:
-            task_class = deps.registry.get(task_name)
-            task_info = task_class.task_info
-            delivery_mode = task_info.delivery
-            # result_ttl falls through: task → config.result_ttl (Default DEFAULT_RESULT_TTL_S).
-            result_ttl = task_info.result_ttl
-            if result_ttl is None:
-                result_ttl = 0 if delivery_mode is DeliveryMode.FIRE_AND_FORGET else deps.config.result_ttl
-        except TaskNotFoundError:
-            result_ttl = deps.config.result_ttl
+        task_info, result_ttl = _task_info_and_result_ttl(deps, task_name)
+
+        # FS-12 (E-040): ein per ``cancel(task_id)`` vor dem Start
+        # abgebrochener Workflow-Schritt markiert den Workflow als
+        # fehlgeschlagen, wie der Abbruch waehrend des Laufs. Vor dem
+        # Cancel-Ergebnis: die Markierung prueft, ob der Schritt schon
+        # erfolgreich erledigt ist, und saehe sonst das eigene Ergebnis.
+        # Scheitert sie voruebergehend, ist die Zustellung neu zugestellt;
+        # das Cancel-Flag bleibt stehen, die Kopie sieht diesen Zweig wieder.
+        # Der Workflow-Cancel-Zweig bleibt unveraendert (FS-32).
+        if (
+            not workflow_cancel
+            and deps.fail_workflow is not None
+            and not await deps.fail_workflow(delivery, ctx, "task was cancelled", True)  # noqa: FBT003 - Callable-Feld ohne Parameternamen
+        ):
+            return Redelivered
 
         try:
             # On the WORKFLOW-cancel path a redelivery of an
@@ -135,7 +154,7 @@ class CancelGate:
             # R3.5 Unit 11: pre-start cancel is a terminal path — the task
             # never ran; release the dedup flag so a future legitimate
             # schedule() can enqueue again.
-            await deps.maybe_release_unique(delivery, task_id, task_info)
+            await deps.maybe_release_unique(delivery, ctx, task_info)
 
             await deps.broker.ack(delivery)
 

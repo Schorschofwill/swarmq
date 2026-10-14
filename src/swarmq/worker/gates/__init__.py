@@ -127,6 +127,10 @@ class GateContext:
     # Schedfire-Claim, den diese Zustellung gewonnen hat; jede Kopie traegt
     # sein Owner-Token als ``x-swarmq-schedfire-claim`` weiter.
     schedfire_claim: SchedfireClaim | None = None
+    # FS-13 (KTD12): die Zustellung hat den Startpunkt erreicht (Freigabe des
+    # Unique-Flags im start-Modus ist gelaufen, unabhaengig vom Modus und vom
+    # Erfolg). Erst dann ist die terminale Freigabe im start-Modus ein No-op.
+    start_release_reached: bool = False
 
 
 @dataclass
@@ -147,7 +151,8 @@ class GateDeps:
     # (ctx, terminal) -> ``True``, wenn kein Claim gehalten wurde oder die
     # Finalisierung gelang; ``False``, wenn der Claim stehen blieb.
     finalize_schedfire: Callable[[GateContext, bool], Awaitable[bool]]
-    maybe_release_unique: Callable[[Any, str, TaskInfo | None], Awaitable[None]]
+    # (delivery, ctx, task_info): Unique-Flag an einem terminalen Pfad freigeben (FS-13).
+    maybe_release_unique: Callable[[Any, GateContext, TaskInfo | None], Awaitable[None]]
     extract_valid_workflow_id: Callable[[Any], str | None]
     register_lock: Callable[[uuid.UUID, LockEntry], None]
     # BZ-29: Pause vor jedem ``redeliver`` (Sekunden -> Warten). Der Worker

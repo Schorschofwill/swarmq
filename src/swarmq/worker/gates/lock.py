@@ -507,7 +507,7 @@ class LockGate:
             task_name=ctx.task_name,
             error=str(exc),
         )
-        await self._deps.maybe_release_unique(delivery, ctx.task_id, ctx.task_info)
+        await self._deps.maybe_release_unique(delivery, ctx, ctx.task_info)
 
     async def _render_dlx_fallback(self, delivery: Any, ctx: GateContext, exc: Exception, *, empty: bool) -> None:
         """Render-Fehler/leerer Render, DLQ-Publish gescheitert: der terminale
@@ -534,7 +534,7 @@ class LockGate:
             task_name=ctx.task_name,
             error=str(exc),
         )
-        await deps.maybe_release_unique(delivery, ctx.task_id, ctx.task_info)
+        await deps.maybe_release_unique(delivery, ctx, ctx.task_info)
 
     async def _acquire_and_register(
         self, lock_manager: Any, ctx: GateContext, lock_name: str, owner_token: str, ttl_ms: int, max_concurrency: int

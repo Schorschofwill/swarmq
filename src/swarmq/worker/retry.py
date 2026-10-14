@@ -315,7 +315,7 @@ class RetryHandler:
             # Original). If it raises, the except branch redelivers and
             # the redelivery's terminal path must still be able to
             # release the flag.
-            await deps.maybe_release_unique(delivery, task_id, task_info_for_release)
+            await deps.maybe_release_unique(delivery, ctx, task_info_for_release)
             # Emit the terminal dead-letter signal
             # AFTER a successful publish+ack so operators get a metric
             # (outcome="dlq") and any custom handler fires exactly once

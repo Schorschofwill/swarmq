@@ -237,6 +237,7 @@ workflows.
 | The queue of the next step does not exist (no worker has declared it yet) | The worker marks the workflow `failed` at once (recorded error type `UnroutableMessage`, log `workflow_advance_unroutable`) instead of redelivering the step up to the delivery limit; `get()` raises `TaskError`. Start workers before producers ([missing queues](scheduling-and-retries.md#missing-queues)). |
 | A step built with `sig()` turns out to be `FIRE_AND_FORGET` (or stores no result, `result_ttl=0`) | Caught at run time: the workflow is `failed` (recorded error type `WorkflowValidationError`); `get()` raises `TaskError`. |
 | The workflow is cancelled | `get()` raises `TaskCancelledError`. |
+| A single step is cancelled with `cancel(task_id)`, before or while it runs | The workflow is `failed`; `get()` raises `TaskError` with the message `task was cancelled`. No further steps run. A step that already succeeded does not mark the workflow failed. If both the step and its workflow are cancelled, the step's cancel wins (`failed`). |
 | `get()` times out while the workflow is still running | `ResultNotReadyError`; the workflow keeps running, call `get()` again. |
 | The workflow completed but its final result expired | `WorkflowResultExpired`; raise `result_ttl`. |
 | A member result needed for fan-in expired, or a member result is missing | The workflow is `failed` (recorded error type `WorkflowResultExpired` or `WorkflowValidationError`) instead of passing an incomplete list on; `get()` raises `TaskError`. |

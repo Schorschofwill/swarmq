@@ -16,20 +16,29 @@ Test-Liste 0.9.0 (Zeitlimit):
 Test-Liste 0.9.0 (drittes Review):
 - [x] Fehlerantwort beim Cancel-Check (``BackendResponseError``) -> kein
       Ausfall: Requeue an derselben Stelle, keine Zurueckstellung
+
+Test-Liste FS-12 (Pre-Start-Cancel eines Workflow-Schritts, E-040):
+- [x] Markierung scheitert voruebergehend -> ``Redelivered``, kein Ack, kein
+      Cancel-Ergebnis, Flag nicht verkuerzt
+- [x] Workflow-Cancel-Pfad ruft ``fail`` nicht (FS-32)
+- [x] Schritt schon erfolgreich -> keine Markierung
+- [x] unbekannter Task als Schritt -> Markierung ohne Neuzustellung
+- [x] mit FS-13 im start-Modus: Reihenfolge ``fail -> store -> clear ->
+      finalize -> release -> ack``; scheiterndes Ack -> Neuzustellung idempotent
 """
 
 from __future__ import annotations
 
 import asyncio
 from typing import Any, override
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import structlog
 
-from swarmq.exceptions import BackendConnectionError
+from swarmq.exceptions import BackendConnectionError, BrokerConnectionError
 from swarmq.registry import TaskRegistry
-from swarmq.serialization import decode_result
+from swarmq.serialization import decode_result, encode_result
 from swarmq.signals import Signal
 from swarmq.task import DeliveryMode, Task, TaskInfo
 from swarmq.worker import Worker
@@ -679,3 +688,130 @@ class TestCancelGateLogContext:
         await worker._handle_message(make_message(_default_payload()))
 
         assert structlog.contextvars.get_contextvars() == app_log_context
+
+
+class TestPreStartCancelFailsWorkflow:
+    """FS-12 (E-040): ``cancel(task_id)`` vor dem Start eines Workflow-Schritts
+    markiert den Workflow als fehlgeschlagen, vor dem Cancel-Ergebnis. Der
+    Nachweis liegt in ``test_befund_fs12_cancel_before_start.py``."""
+
+    WF_ID = "0190b6f2-1234-7abc-8def-0123456789ab"
+    HASH = "9" * 64
+
+    def _advancer(self, worker: Any, fail: AsyncMock | None = None) -> Any:
+        advancer = MagicMock()
+        advancer.advance = AsyncMock()
+        advancer.fail = fail if fail is not None else AsyncMock()
+        worker._workflow_advancer = advancer
+        return advancer
+
+    def _step_message(self, name: str = "add", **extra_headers: Any) -> Any:
+        return make_message(
+            _default_payload(task_id="step-1", name=name, args=[1, 2], kwargs={}),
+            headers={"x-swarmq-workflow-id": self.WF_ID, **extra_headers},
+        )
+
+    async def test_transient_fail_mark_redelivers_without_ack_result_or_flag_shortening(self, worker, broker, backend):
+        backend.is_cancelled = AsyncMock(return_value=True)
+        backend.get_result = AsyncMock(return_value=None)
+        self._advancer(worker, fail=AsyncMock(side_effect=BackendConnectionError("valkey down")))
+        msg = self._step_message()
+
+        outcome = await worker._cancel_gate.apply(msg, GateContext(task_id="step-1", task_name="add", queue="default"))
+
+        assert outcome is Redelivered
+        broker.redeliver.assert_awaited_once_with(msg)
+        broker.ack.assert_not_awaited()
+        backend.store_result.assert_not_awaited()
+        backend.clear_cancel_flag.assert_not_awaited()  # E-020: die Kopie sieht den Zweig wieder
+
+    async def test_workflow_cancel_path_does_not_fail_the_workflow(self, worker, broker, backend):
+        backend.is_cancelled = AsyncMock(return_value=False)
+        backend.is_workflow_cancelled = AsyncMock(return_value=True)
+        backend.get_result = AsyncMock(return_value=None)
+        advancer = self._advancer(worker)
+        msg = self._step_message()
+
+        await worker._handle_message(msg)
+
+        broker.ack.assert_awaited_once_with(msg)
+        advancer.fail.assert_not_awaited()  # FS-32: dort waere ``cancelled`` erwartet, nicht ``failed``
+
+    async def test_step_that_already_succeeded_is_not_marked(self, worker, broker, backend, swarmq_logs):
+        backend.is_cancelled = AsyncMock(return_value=True)
+        backend.get_result = AsyncMock(
+            return_value=encode_result(
+                {"task_id": "step-1", "status": "success", "result": 3, "is_error": False, "is_cancelled": False}
+            )
+        )
+        advancer = self._advancer(worker)
+        msg = self._step_message()
+
+        await worker._handle_message(msg)
+
+        broker.ack.assert_awaited_once_with(msg)
+        advancer.fail.assert_not_awaited()
+        assert [e for e in swarmq_logs if e["event"] == "workflow_fail_skipped_step_done"]
+
+    async def test_unknown_task_step_is_marked_without_redelivery(self, worker, broker, backend):
+        backend.is_cancelled = AsyncMock(return_value=True)
+        backend.get_result = AsyncMock(return_value=None)
+        advancer = self._advancer(worker)
+        msg = self._step_message(name="renamed_away")
+
+        await worker._handle_message(msg)
+
+        assert [c.args[0] for c in advancer.fail.await_args_list] == [self.WF_ID]
+        broker.ack.assert_awaited_once_with(msg)
+        broker.redeliver.assert_not_awaited()
+        broker.retry_later.assert_not_awaited()
+
+    async def test_start_mode_order_and_idempotent_redelivery_after_failed_ack(self, worker, broker, backend):
+        """FS-12 + FS-13: ``fail -> store -> clear -> finalize -> release -> ack``.
+        Scheitert das Ack, durchlaeuft die Neuzustellung denselben Zweig: die
+        Markierung wiederholt sich mit gleichen Argumenten (``WorkflowFailure.fail``
+        ist bei terminalem Zustand ein No-op), die Freigabe owner-geprueft ins Leere."""
+        calls: list[str] = []
+
+        def record(name: str, result: Any = None) -> AsyncMock:
+            async def _record(*_a: Any, **_kw: Any) -> Any:
+                calls.append(name)
+                return result
+
+            return AsyncMock(side_effect=_record)
+
+        backend.is_cancelled = AsyncMock(return_value=True)
+        backend.get_result = AsyncMock(return_value=None)
+        advancer = self._advancer(worker, fail=record("fail"))
+        backend.store_result = record("store")
+        backend.clear_cancel_flag = record("clear")
+        backend.release_unique = record("release", result=True)
+        finalize = worker._gate_deps.finalize_schedfire
+
+        async def _finalize(ctx: GateContext, terminal: bool) -> bool:
+            calls.append("finalize")
+            return bool(await finalize(ctx, terminal))
+
+        worker._gate_deps.finalize_schedfire = _finalize
+        acks = iter([BrokerConnectionError("channel closed"), None])
+
+        async def _ack(*_a: Any, **_kw: Any) -> None:
+            calls.append("ack")
+            outcome = next(acks)
+            if outcome is not None:
+                raise outcome
+
+        broker.ack = AsyncMock(side_effect=_ack)
+        msg = self._step_message(**{"x-swarmq-unique-hash": self.HASH, "x-swarmq-unique-until": "start"})
+
+        await worker._handle_message(msg)
+        assert calls == ["fail", "store", "clear", "finalize", "release", "ack"]
+
+        backend.release_unique = record("release", result=False)  # Flag schon frei: Owner-Check
+        calls.clear()
+        await worker._handle_message(msg)
+
+        assert calls == ["fail", "store", "clear", "finalize", "release", "ack"]
+        assert [c.args[0] for c in advancer.fail.await_args_list] == [self.WF_ID, self.WF_ID]
+        assert {c.args[2] for c in advancer.fail.await_args_list} == {"task was cancelled"}
+        broker.redeliver.assert_not_awaited()

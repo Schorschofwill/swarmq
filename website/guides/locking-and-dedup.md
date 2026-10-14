@@ -213,8 +213,12 @@ first task's task_id without enqueueing.
 - `"completion"` (default) — the flag lives until the task reaches
   a terminal state (success, DLQ, cancel, or expiry through `max_age`).
   This blocks repeat schedules for the entire execution window.
-- `"start"` — the flag releases the instant a worker picks up the
-  message. A follow-up `schedule()` while the task is running will
+- `"start"` — the flag releases once, right before the task starts
+  running: after the rate-limit and lock checks. A message that is
+  requeued before that (rate limit, lock wait) keeps the flag. If the
+  message ends before it starts (cancel, `max_age` expiry, end of a
+  lock wait, delivery limit, task not registered), the flag is released
+  as well. A follow-up `schedule()` while the task is running will
   enqueue a new one.
 
 Pick `"completion"` for idempotent work ("send welcome email to

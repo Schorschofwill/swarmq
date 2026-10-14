@@ -105,7 +105,7 @@ async def _give_up(
             task_name=ctx.task_name,
             error=str(exc),
         )
-        await deps.maybe_release_unique(delivery, ctx.task_id, None)
+        await deps.maybe_release_unique(delivery, ctx, None)
 
     if await dead_letter(delivery, ctx, error, TaskNotFoundError.__name__, {}, _fallback):
         # Das Signal folgt der liegenden DLQ-Kopie (wie am DLX-Fallback).

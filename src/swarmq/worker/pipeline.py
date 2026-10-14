@@ -270,13 +270,13 @@ class Worker(WorkerLifecycle, WorkerShutdown):
     async def _maybe_release_unique(
         self,
         message: Any,
-        task_id: str,
+        ctx: GateContext,
         task_info: TaskInfo | None = None,
     ) -> None:
         """Siehe ``finalize.maybe_release_unique``."""
         unique_hash = self._extract_valid_unique_hash(message)
         await maybe_release_unique(
-            message, task_id, task_info, unique_hash=unique_hash, backend=self._backend, config=self._config
+            message, ctx, task_info, unique_hash=unique_hash, backend=self._backend, config=self._config
         )
 
     @override
@@ -494,15 +494,16 @@ class Worker(WorkerLifecycle, WorkerShutdown):
         laufen mit ``release_unique=True`` hier durch; nicht-terminale
         Pfade (Requeues) erhalten den ``x-swarmq-unique-hash``-Header in
         der Kopie und melden ``Redelivered`` — die nächste Zustellung
-        durchläuft die Owner-Check-Pipeline erneut. Start-mode ist beim
-        Pickup bereits freigegeben (No-op), ebenso Nachrichten ohne Header."""
+        durchläuft die Owner-Check-Pipeline erneut. Start-mode ist nach dem
+        Startpunkt bereits freigegeben (No-op, FS-13: ``ctx.start_release_reached``),
+        ebenso Nachrichten ohne Header."""
         terminal = outcome if isinstance(outcome, Terminal) else None
         await self._finalize_schedfire(
             ctx,
             terminal=terminal is not None and terminal.finalize_schedfire,
         )
         if terminal is not None and terminal.release_unique:
-            await self._maybe_release_unique(message, ctx.task_id, task_info)
+            await self._maybe_release_unique(message, ctx, task_info)
 
     async def _resolve_error_path(
         self,
@@ -651,6 +652,9 @@ class Worker(WorkerLifecycle, WorkerShutdown):
                 outcome = Terminal.release_in_finally()
 
             await self._release_unique_on_start(message, task_id, task_info)
+            # FS-13 (KTD12): ab hier gibt kein terminaler Pfad im start-Modus
+            # ein zweites Mal frei.
+            ctx.start_release_reached = True
 
             # 5d. FIRE_AND_FORGET: ack immediately before execution — ab hier
             # ist kein Broker-Verb mehr zulässig (acked_before_execute).

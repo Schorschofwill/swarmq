@@ -14,6 +14,7 @@ quelle:
   - docs/plans/2026-04-17-004-feat-phase3-5-unique-tasks-plan.md (Unit 10)
   - src/swarmq/worker/pipeline.py:355-362 (Docstring)
   - website/guides/locking-and-dedup.md:212-217
+  - docs/plans/2026-10-14-0748-fix-fehlersuche-runde-2-plan.md (KTD12, Nachtrag FS-13, 2026-10-14)
 tests:
   - tests/unit/worker/test_worker.py::TestWorkerUniqueRelease::test_start_mode_releases_at_pickup
   - tests/unit/worker/test_worker.py::TestWorkerUniqueRelease::test_start_mode_rate_limited_keeps_flag_for_redelivery
@@ -25,4 +26,6 @@ tests:
 
 **Bewusste Folgen.** Während des Retry-Backoffs eines `start`-Tasks gibt es keinen Dedup-Schutz (dokumentierte Einschränkung). Ein rate-limitiertes oder auf einen Lock wartendes Duplikat bleibt abgewiesen, solange die Nachricht nicht läuft.
 
-**Überdenken nur mit neuem Argument.** Offen: FS-13. Endet eine Nachricht terminal **vor** der Freigabe (Expiry, Pre-Start-Cancel, Ende der Lock-Wartezeit, Delivery-Limit, unbekannter Task), bleibt das Flag bis `unique_for` stehen, weil die terminalen Pfade im start-Modus annehmen, die Freigabe sei schon beim Abholen geschehen. Das ist ein Fehler, keine Folge dieser Entscheidung. Ein Fix muss die Einmal-Freigabe dieses Tests einhalten.
+**Nachtrag 2026-10-14 (FS-13, KTD12).** Endet eine Nachricht terminal **vor** dem Startpunkt (Expiry, Pre-Start-Cancel, Ende der Lock-Wartezeit bzw. Lock-Render-Fehler samt DLX-Rückfall, Delivery-Limit, unbekannter Task), gibt der Worker das Flag owner-geprüft frei wie im completion-Modus. Der Zustellkontext trägt dazu den Merker `start_release_reached`, den der Runner nach der Freigabe beim Start setzt (unabhängig vom Erfolg der Freigabe); erst mit gesetztem Merker ist die terminale Freigabe im start-Modus ein No-op. Damit bleibt es bei genau einer Freigabe nach dem Start, und Zurückstellungen (`Redelivered`) geben weiter nicht frei. Restfenster wie im completion-Modus: Liegen zwei Kopien derselben `task_id` vor, kann das terminale Ende der einen das Flag freigeben, während die andere noch zurückgestellt wartet. Festgehalten in `tests/unit/worker/test_befund_fs13_unique_until_start.py` und `tests/unit/worker/test_finalize.py` (ohne `entscheidung`-Marker, außer dem E-008-Test).
+
+**Überdenken nur mit neuem Argument.** Keine offenen Einwände bekannt (FS-13 ist mit dem Nachtrag behoben).
