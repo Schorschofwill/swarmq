@@ -16,6 +16,8 @@ Testliste:
 - [x] ebenso dead_letter: BrokerConnectionError, Original unbestaetigt
 - [x] einmalige interne CancelledError: der naechste Versuch geht raus
 - [x] zweiter, echter Abbruch waehrend des Publish -> CancelledError geht durch
+- [x] haengender Publish ueber die Publish-Frist -> PublishIndeterminate
+      (die TimeoutError-Umwandlung bleibt trotz cancelling() == 1 erhalten)
 """
 
 from __future__ import annotations
@@ -149,3 +151,21 @@ async def test_a_second_real_cancel_during_publish_propagates() -> None:
     outcome = await handler
 
     assert isinstance(outcome, asyncio.CancelledError)
+
+
+async def test_a_hanging_publish_after_a_drain_cancel_ends_indeterminate_at_the_deadline() -> None:
+    # Der Zeitdeckel bricht per cancel() ab und hebt cancelling() auf 2; der
+    # Publish-Pfad muss das als eigenen Abbruch durchreichen, damit
+    # asyncio.timeout ihn in TimeoutError -> PublishIndeterminate umwandelt.
+    async def _hanging(*_args: Any, **_kwargs: Any) -> None:
+        await asyncio.Event().wait()
+
+    broker = _broker(AsyncMock(side_effect=_hanging))
+    broker.publish_timeout_s = 0.01
+
+    async def _work() -> None:
+        await broker.publish("tasks", b"{}")
+
+    outcome = await _run_drain_cancelled(_work)
+
+    assert isinstance(outcome, PublishIndeterminate)
