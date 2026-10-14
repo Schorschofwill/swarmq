@@ -316,9 +316,24 @@ Drain zählt ab `SIGTERM`, ein langsamer `WORKER_SHUTDOWN`-Handler
 (höchstens 10 s) verkürzt ihn also. Jeder Aufräumschritt hat ein
 Zeitlimit (der Rest des Budgets, mindestens 1 s); ein Schritt darüber
 wird geloggt (`shutdown_step_timeout`) und übersprungen, Lock-TTL und
-Leader-Lock-TTL heilen, was er hinterlässt. Ein recycelnder Worker
-(`SWARMQ_RECYCLE_*`) behält seinen eigenen Drain (größter
-`hard_timeout`).
+Leader-Lock-TTL heilen, was er hinterlässt.
+
+**Recycling.** Ein recycelnder Worker (`SWARMQ_RECYCLE_*`) behält seinen
+eigenen Drain ohne erzwungenen Abbruch: größter `hard_timeout` plus 30 s
+der Tasks auf den Queues, die er konsumiert. Hat einer dieser Tasks
+keinen `hard_timeout`, wartet er mindestens `SWARMQ_CONSUMER_TIMEOUT_S`
+(Default 30 min): Bis dahin hat RabbitMQ jede Zustellung des Workers
+zurückgenommen, längeres Warten könnte nichts mehr bestätigen. Ein Task,
+der über diese Grenze hinaus läuft, wird abgebrochen wie beim Drain im
+Shutdown. `SWARMQ_CONSUMER_TIMEOUT_S` gleich dem `consumer_timeout` des
+Brokers halten; bei einem Broker ohne Consumer-Timeout wird auch ein
+gesunder Langläufer nach `SWARMQ_CONSUMER_TIMEOUT_S` abgebrochen. Ein
+`SIGTERM` während eines Recycling-Drains (Deploy, Abbau durch den
+Supervisor) setzt ab diesem Signal das Shutdown-Budget in Kraft: Der
+Drain endet spätestens zum Drain-Ende der Tabelle oben, gezählt ab dem
+`SIGTERM`, und Sperren, Leader-Übergabe und Verbindungen sind im Budget
+erledigt. Ein zweites `SIGTERM` (Eskalation des Supervisors) startet
+diese Uhr nicht neu.
 
 **Die Frist der Orchestrierung auf mindestens
 `SWARMQ_SHUTDOWN_TIMEOUT + 15 s` setzen**: Kubernetes

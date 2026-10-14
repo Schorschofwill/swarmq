@@ -75,15 +75,27 @@ async def recycle_monitor(worker: Any) -> None:
 
 
 def recycle_drain_timeout(worker: Any) -> float:
-    """Groesster registrierter ``hard_timeout`` plus Puffer, sonst ``shutdown_timeout``."""
-    hard_timeouts = [
-        ti.hard_timeout
+    """Frist des Recycling-Drains (R22, FS-30, KTD4 Plan 2026-10-14-0748).
+
+    Gezaehlt werden nur Tasks auf ``consumed_queues``: groesster
+    ``hard_timeout`` plus Puffer. Hat einer davon keinen ``hard_timeout``,
+    wartet der Drain mindestens ``consumer_timeout_s`` -- danach hat RabbitMQ
+    jede vor dem Recycling zugestellte Nachricht ohnehin zurueckgenommen.
+    Ohne konsumierten Task bleibt es bei ``shutdown_timeout``.
+    """
+    consumed = set(worker._config.consumed_queues)
+    infos = [
+        ti
         for cls in worker._registry.get_all().values()
-        if (ti := getattr(cls, "task_info", None)) is not None and ti.hard_timeout is not None
+        if (ti := getattr(cls, "task_info", None)) is not None and consumed.intersection(ti.queues)
     ]
-    if not hard_timeouts:
+    if not infos:
         return float(worker._config.shutdown_timeout)
-    return float(max(hard_timeouts)) + RECYCLE_DRAIN_BUFFER_S
+    hard_timeouts = [ti.hard_timeout for ti in infos if ti.hard_timeout is not None]
+    timeout = float(max(hard_timeouts)) + RECYCLE_DRAIN_BUFFER_S if hard_timeouts else 0.0
+    if len(hard_timeouts) < len(infos):
+        timeout = max(timeout, float(worker._config.consumer_timeout_s))
+    return timeout
 
 
 async def request_recycle(worker: Any, reason: str, value: float) -> None:
@@ -110,6 +122,11 @@ async def request_recycle(worker: Any, reason: str, value: float) -> None:
                 logger.error("recycle_ack_missing", timeout_s=RECYCLE_ACK_TIMEOUT_S)
                 break
             await asyncio.sleep(0.1)
+    if worker._shutdown_event.is_set():
+        # SIGTERM kam waehrend der Bestaetigung: es gilt das Shutdown-Budget,
+        # kein Recycling-Drain (FS-30, KTD4).
+        logger.info("worker_recycling_superseded_by_shutdown", reason=reason)
+        return
     worker._drain_timeout_override = recycle_drain_timeout(worker)
     worker._request_shutdown()
 

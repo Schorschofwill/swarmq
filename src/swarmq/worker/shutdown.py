@@ -17,7 +17,7 @@ import contextlib
 import signal
 import uuid
 from collections.abc import Awaitable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from swarmq.dishka import _Missing, get_registered_container
 from swarmq.logging import _error_fields
@@ -46,6 +46,9 @@ class WorkerShutdown:
         _state: WorkerState
         _torn_down: bool
         _shutdown_end: float | None  # BZ-18: gesetzt in ``_execute_shutdown``
+        _drain_timeout_override: float | None
+        _recycle_sigterm_at: float | None  # FS-30: erstes SIGTERM im Recycling-Drain
+        _recycle_interrupt: asyncio.Event | None  # FS-30: weckt den laufenden Drain
         _broker: WorkerBroker
         _backend: WorkerBackend
         _config: SwarmQConfig
@@ -96,13 +99,10 @@ class WorkerShutdown:
         if tasks_snapshot:
             # ``drain_until`` ist das Drain-Ende aus ``_drain_end`` (Loop-Zeit,
             # FS-02 Teil b): beim Recycling die eigene Frist, sonst das Budget.
-            drain_timeout = float(self._config.shutdown_timeout)
-            if drain_until is not None:
-                drain_timeout = max(0.0, drain_until - asyncio.get_running_loop().time())
-            _done, pending = await asyncio.wait(
-                tasks_snapshot,
-                timeout=drain_timeout,
-            )
+            loop = asyncio.get_running_loop()
+            if drain_until is None:
+                drain_until = loop.time() + float(self._config.shutdown_timeout)
+            pending = await self._wait_for_drain(tasks_snapshot, drain_until)
 
             # 3. SHUTTING_DOWN: cancel remaining tasks if drain timeout exceeded
             if pending:
@@ -110,6 +110,53 @@ class WorkerShutdown:
                 for task in pending:
                     task.cancel()
                 await asyncio.wait(pending, timeout=min(1.0, self._step_timeout()))
+
+    async def _wait_for_drain(self, tasks: set[asyncio.Task[None]], drain_until: float) -> set[asyncio.Task[None]]:
+        """Bis *drain_until* auf *tasks* warten; liefert die noch laufenden.
+
+        FS-30 (KTD4): Ein SIGTERM im Recycling-Drain weckt das Warten
+        (``_recycle_interrupt``) und zieht das Drain-Ende samt Publish-Endfrist
+        nach vorn. Der Weck-Task wird im ``finally`` gestrichen (kein Task-Leck).
+        """
+        loop = asyncio.get_running_loop()
+        interrupt = asyncio.Event()
+        self._recycle_interrupt = interrupt
+        if getattr(self, "_recycle_sigterm_at", None) is not None:
+            interrupt.set()
+        waiter: asyncio.Task[bool] | None = asyncio.create_task(interrupt.wait())
+        pending = set(tasks)
+        try:
+            while pending:
+                watched: set[asyncio.Future[Any]] = set(pending)
+                if waiter is not None:
+                    watched.add(waiter)
+                done, _ = await asyncio.wait(
+                    watched, timeout=max(0.0, drain_until - loop.time()), return_when=asyncio.FIRST_COMPLETED
+                )
+                if not done:
+                    break
+                pending.difference_update(done)
+                if waiter is not None and waiter in done:
+                    waiter = None
+                    anchored = self._anchored_drain_end(drain_until)
+                    if anchored < drain_until:
+                        drain_until = anchored
+                        self._set_publish_deadline(drain_until)
+        finally:
+            self._recycle_interrupt = None
+            if waiter is not None:
+                waiter.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await waiter
+        return pending
+
+    def _anchored_drain_end(self, drain_end: float) -> float:
+        """KTD4: nach einem SIGTERM im Recycling-Drain endet der Drain
+        spaetestens ``drain_until`` nach diesem Signal; nur nach vorn."""
+        anchor: float | None = getattr(self, "_recycle_sigterm_at", None)
+        if anchor is None:
+            return drain_end
+        return min(drain_end, anchor + self._shutdown_budget().drain_until)
 
     async def _release_leftover_locks(self) -> None:
         # 3b. Await detached lock-release tasks (Phase 3b.3). When a
@@ -244,7 +291,7 @@ class WorkerShutdown:
         """
         override: float | None = getattr(self, "_drain_timeout_override", None)
         if override:
-            return started_at + override
+            return self._anchored_drain_end(started_at + override)
         return started_at + budget.drain_until
 
     def _set_publish_deadline(self, at: float | None) -> None:
@@ -284,6 +331,7 @@ class WorkerShutdown:
             drain_end = self._drain_end(started_at, budget)
             self._set_publish_deadline(drain_end)
             await self._drain_in_flight(drain_end)
+            drain_end = self._drain_end(started_at, budget)  # ein SIGTERM kann es vorgezogen haben
             if drain_end > started_at + budget.drain_until:
                 # Nur ein Recycling-Drain darf ueber das Budget hinaus warten.
                 # Danach bekaemen die Aufraeumschritte sonst nur noch die
@@ -294,6 +342,11 @@ class WorkerShutdown:
                     self._shutdown_end,
                     asyncio.get_running_loop().time() + (budget.finish_by - budget.drain_until),
                 )
+            anchor: float | None = getattr(self, "_recycle_sigterm_at", None)
+            if anchor is not None:
+                # FS-30 (KTD4): nach einem SIGTERM im Recycling endet auch das
+                # Aufraeumen im Budget ab diesem Signal (E-018, SIGKILL).
+                self._shutdown_end = min(self._shutdown_end, anchor + budget.finish_by)
             await self._bounded_step("executor_close", self._close_executor())
             await self._release_leftover_locks()
             await self._stop_scheduler_and_di()
@@ -392,11 +445,31 @@ class WorkerShutdown:
                 loop.remove_signal_handler(sig)
 
     def _request_shutdown(self) -> None:
-        """Request a graceful shutdown. Idempotent — safe to call multiple times."""
+        """Request a graceful shutdown. Idempotent — safe to call multiple times.
+
+        Im laufenden Recycling-Drain ist der Aufruf ein SIGTERM: Er setzt das
+        Shutdown-Budget ab diesem Signal in Kraft (FS-30, KTD4).
+        """
         if self._state is not WorkerState.RUNNING:
+            if getattr(self, "_drain_timeout_override", None):
+                self._interrupt_recycling_drain()
             return
         self._state = WorkerState.DRAINING
         channel = current_channel()
         if channel is not None:
             channel.mark_draining()  # R21/KTD10: laengere Lebenszeichen-Frist im Drain
         self._shutdown_event.set()
+
+    def _interrupt_recycling_drain(self) -> None:
+        """Erstes SIGTERM im Recycling-Drain: Anker setzen und den Drain wecken.
+
+        Ein zweites SIGTERM (Eskalation des Supervisors) ankert nicht neu,
+        sonst laege das Drain-Ende hinter dessen SIGKILL (``fix-r-flow.md``
+        Kritisch 3).
+        """
+        if getattr(self, "_recycle_sigterm_at", None) is not None:
+            return
+        self._recycle_sigterm_at = asyncio.get_running_loop().time()
+        interrupt: asyncio.Event | None = getattr(self, "_recycle_interrupt", None)
+        if interrupt is not None:
+            interrupt.set()

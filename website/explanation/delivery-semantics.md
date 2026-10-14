@@ -295,8 +295,23 @@ from `SIGTERM`, so a slow `WORKER_SHUTDOWN` handler (at most 10 s)
 shortens it. Every cleanup step has a time limit (the rest of the budget,
 at least 1 s); a step that exceeds it is logged
 (`shutdown_step_timeout`) and skipped, the lock TTL and the leader-lock
-TTL heal what it left. A recycling worker (`SWARMQ_RECYCLE_*`) keeps its
-own drain (largest `hard_timeout`).
+TTL heal what it left.
+
+**Recycling.** A recycling worker (`SWARMQ_RECYCLE_*`) keeps its own
+drain without forced cancellation: the largest `hard_timeout` plus 30 s
+of the tasks on the queues it consumes. If one of those tasks has no
+`hard_timeout`, it waits at least `SWARMQ_CONSUMER_TIMEOUT_S` (default
+30 min): by then RabbitMQ has taken back every delivery the worker held,
+so waiting longer could not ack anything. A task that runs past that
+limit is cancelled like a drain cancellation on shutdown. Keep
+`SWARMQ_CONSUMER_TIMEOUT_S` equal to the broker's `consumer_timeout`;
+on a broker without a consumer timeout a healthy long runner is still
+cancelled after `SWARMQ_CONSUMER_TIMEOUT_S`. A `SIGTERM` during a
+recycling drain (deploy, supervisor shutdown) puts the shutdown budget
+into force from that signal: the drain ends at the latest at the drain
+deadline of the table above, counted from the `SIGTERM`, and locks,
+leader handover and connections are done within the budget. A second
+`SIGTERM` (the supervisor's escalation) does not restart that clock.
 
 **Set the orchestrator's grace period to at least
 `SWARMQ_SHUTDOWN_TIMEOUT + 15 s`**: Kubernetes
