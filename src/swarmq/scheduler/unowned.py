@@ -123,7 +123,11 @@ class SchedulerUnowned:
         self, schedule_name: str, score_ms: int, definition: ScheduleDefinition, now_ms: int
     ) -> None:
         """Commit auf ``now + seen_interval`` ohne Publish; Log und Signal nur
-        beim Uebergang in den Zustand "zurueckgehalten"."""
+        beim Uebergang in den Zustand "zurueckgehalten". Erst der Commit, dann
+        das Signal: Wer darauf den Termin liest, sieht schon den verschobenen."""
+        next_ms = now_ms + int(self._config.scheduler_seen_interval_s * 1000)
+        updated = msgspec.structs.replace(definition, fire_ts_ms=next_ms)
+        await self._commit_unroutable(schedule_name, score_ms, next_ms, updated)
         if schedule_name not in self._held_crons:
             self._held_crons |= {schedule_name}
             self._log.warning(
@@ -137,9 +141,6 @@ class SchedulerUnowned:
                 ),
             )
             await self._emit_unowned(schedule_name, definition.task_name, held=True)
-        next_ms = now_ms + int(self._config.scheduler_seen_interval_s * 1000)
-        updated = msgspec.structs.replace(definition, fire_ts_ms=next_ms)
-        await self._commit_unroutable(schedule_name, score_ms, next_ms, updated)
 
     async def _release_unowned(self, schedule_name: str, *, task_name: str | None) -> None:
         """Uebergang aus "zurueckgehalten" (wieder gemeldet oder entfernt)."""

@@ -11,7 +11,7 @@ only-include = ["src"]
 
 [project]
 name = "swarmq"
-version = "0.12.0"
+version = "0.12.1rc1"
 description = "Async task manager for Python 3.14+ using RabbitMQ and Valkey"
 readme = "README.md"
 license = "MIT"
@@ -58,11 +58,17 @@ test = [
     "pytest",
     "pytest-asyncio",
     "pytest-timeout",
-    "pytest-cov",
+    # Reihenfolge in jedem Lauf gemischt (Plan 2026-10-13-0902, KTD3). Im
+    # Extra statt ``uv run --with``: dort zeigt sys.prefix auf ein Overlay.
+    "pytest-randomly>=5.0",
+    # Gemessen wird mit ``coverage run -m pytest`` (KTD5), nicht pytest-cov:
+    # dessen eigene Unterprozess-Messung ist seit 7.0 entfallen, und
+    # ``[tool.coverage.run] patch`` deckt Eltern und Kinder einheitlich ab.
+    # 7.16.2: Korrekturen der Zweig-Messung unter 3.14.
+    "coverage>=7.16.2",
     # E2E-Hardening Phase 2+ — toxiproxy REST + property-based + fuzz
     "httpx",
     "hypothesis",
-    "pytest-rerunfailures",
     "freezegun",
     # U2.1 chaos: RSS-polling for the OOM-simulation test.
     "psutil",
@@ -101,8 +107,17 @@ typing = [
     "types-PyYAML",
 ]
 
+# just als Einstiegspunkt für lokal und CI (KTD9); ``uv run just …``.
+tasks = [
+    "rust-just>=1.58",
+]
+# Nur der Combine-Job der CI braucht diff-cover (KTD8).
+coverage = [
+    "diff-cover>=10.6",
+]
+
 [tool.uv]
-default-groups = ["lint", "typing"]
+default-groups = ["lint", "typing", "tasks"]
 
 [project.scripts]
 swarmq = "swarmq.cli:console_main"
@@ -111,7 +126,21 @@ swarmq = "swarmq.cli:console_main"
 packages = ["src/swarmq"]
 
 [tool.pytest.ini_options]
+# strict bündelt strict_config, strict_markers, strict_xfail und
+# strict_parametrization_ids (Plan 2026-10-13-0902, KTD1). pytest ist über
+# uv.lock gepinnt; künftige Strict-Optionen kommen nur mit einem Upgrade.
+strict = true
 asyncio_mode = "auto"
+# Ausdrücklich gesetzt, bevor pytest-asyncio den Standard ändert. Es gibt
+# keine asynchronen Session- oder Modul-Fixtures.
+asyncio_default_fixture_loop_scope = "function"
+asyncio_default_test_loop_scope = "function"
+# Jede Warnung ist ein Fehler (KTD2), auch unraisable Warnungen aus __del__
+# (PytestUnraisableExceptionWarning). Ausnahmen nur eng nach Kategorie und
+# Modul oder Meldung, jeweils mit Grund.
+filterwarnings = [
+    "error",
+]
 testpaths = ["tests"]
 timeout = 30
 # Default-Ausschluss der opt-in-Suiten (E2E-Hardening U1.2). Chaos,
@@ -135,6 +164,33 @@ markers = [
     "compat: Mischbetrieb mit swarmq 0.11.x und 0.12.0 aus PyPI (tests/compat, opt-in, braucht Netz zu PyPI)",
     "spike: Charakterisierung des Broker-Verhaltens (tests/integration/spikes, RabbitMQ 4.3 und 4.2)",
 ]
+
+[tool.coverage.run]
+# Plan 2026-10-13-0902, KTD5/KTD6: gemessen mit ``coverage run -m pytest``.
+# ``patch`` deckt alle Prozessmodelle ab: Supervisor-Kinder (spawn), CPU-Pool
+# (forkserver), rohe Forks in logging_fork/logging_file, ``os._exit`` und den
+# Reload per ``execvpe``. Mit SIGKILL beendete Kinder schreiben keine Daten.
+# Keine dynamischen Kontexte: Sie erzwingen den langsamen ctrace-Kern.
+# Ohne ``concurrency = multiprocessing``: ``patch = subprocess`` misst
+# spawn-Kinder schon ab Interpreterstart; die zweite, spaetere Messung meldete
+# ``module-not-measured`` auf stderr und brach JSON-Logausgaben von Workern.
+# Ohne ``sigterm``: swarmq setzt eigene SIGTERM-Handler, und die Exit-Pfade
+# (``os._exit``, ``execv``) sind gepatcht.
+branch = true
+parallel = true
+relative_files = true
+source = ["swarmq"]
+patch = ["subprocess", "_exit", "execv", "fork"]
+concurrency = ["thread"]
+
+[tool.coverage.paths]
+# Absicherung, falls Kinddaten mit installiertem statt Quellpfad entstehen.
+source = ["src/swarmq", "*/site-packages/swarmq"]
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
+skip_covered = true
 
 [tool.mypy]
 # Projektweit strict seit Plan U12 (R7/AE4): keine Override-Blöcke mehr —

@@ -131,6 +131,14 @@ class _DiTask(Task):
         return None
 
 
+# Auf Modulebene wegen FromDishka, aber nicht in der globalen Liste: Die
+# Tests bauen ihre eigene TaskRegistry. Global registriert liessen sie jeden
+# eingebetteten Worker-Start eines Laufs ueber alle Module an der
+# DI-Pruefung scheitern (Waechter in tests/conftest.py).
+Task._registered_tasks.remove(_LockedDiTask)
+Task._registered_tasks.remove(_DiTask)
+
+
 class _LockedTask(Task):
     task_info = TaskInfo(name="finally_locked", queues=["default"], lock=_LOCK, hard_timeout=60)
 

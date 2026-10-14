@@ -228,18 +228,20 @@ class DictConfigProbe:
         """Hart beenden und einsammeln; kein Zombie im Supervisor."""
         self._proc.kill()
         self._proc.wait()
-        self._close()
+        self.close()
 
     def error(self) -> str:
-        """Fehlertext der beendeten Probe (stderr)."""
+        """Fehlertext der beendeten Probe (stderr); schliesst die Pipe."""
         assert self._proc.stderr is not None
         try:
             text: str = self._proc.stderr.read()
             return text.strip()
         finally:
-            self._close()
+            self.close()
 
-    def _close(self) -> None:
+    def close(self) -> None:
+        """stderr-Pipe einer beendeten Probe schliessen, deren Fehlertext
+        niemand braucht (gueltige Konfiguration)."""
         if self._proc.stderr is not None:
             self._proc.stderr.close()
 
@@ -270,7 +272,7 @@ def probe_dict_config(path: str, raw: str) -> None:
     if returncode != 0:
         cause = ValueError(probe.error() or f"dictConfig exited {returncode}")
         raise LoggingConfigError(path, cause) from cause
-    probe.error()  # Pipe schliessen
+    probe.close()
 
 
 def _parse_log_config(path: str, text: str) -> Any:

@@ -37,6 +37,7 @@ workflow:
 
 stages:
   - test
+  - coverage
   - secret-detection
 
 variables:
@@ -49,6 +50,10 @@ variables:
   # ([tool.uv] default-groups): ruff, mypy, basedpyright, prek. The unit job
   # needs `typing` too -- tests/unit/typing/test_contract_shapes.py runs mypy.
   UV_RUN: "uv run --extra test --extra reload"
+  # Ein Seed je Pipeline fuer pytest-randomly (Plan 2026-10-13-0902, U8):
+  # ein roter Job laesst sich lokal mit SWARMQ_TEST_SEED=<Pipeline-ID>
+  # uv run just <rezept> nachstellen. scripts/run-tests.sh gibt ihn aus.
+  SWARMQ_TEST_SEED: "$CI_PIPELINE_ID"
 
 # Shared uv setup: pinned-Python image, build toolchain for the libvalkey C
 # extension, and a lockfile-keyed dependency cache.
@@ -61,7 +66,9 @@ variables:
     paths:
       - .uv-cache
   before_script:
-    - apt-get update && apt-get install -y --no-install-recommends build-essential
+    # git: tests/unit/test_coverage_ratchet.py prueft das Ratchet-Skript gegen
+    # ein echtes Git-Repository (Arbeitsbaum-Pruefung); das slim-Image hat keins.
+    - apt-get update && apt-get install -y --no-install-recommends build-essential git
 
 # Real RabbitMQ + Valkey services + a readiness gate. Reused by the
 # integration and e2e jobs. RabbitMQ is pinned exactly (Plan 2026-10-08-1541,
@@ -120,11 +127,9 @@ lint-and-types:
   stage: test
   before_script: []
   script:
-    - $UV_RUN ruff format --check .
-    - $UV_RUN ruff check src/ tests/ typings/
-    - $UV_RUN mypy src/swarmq tests
-    - $UV_RUN basedpyright
-    - $UV_RUN python -m mypy.stubtest msgpack croniter --mypy-config-file pyproject.toml --ignore-missing-stub
+    # Die Befehle stehen im justfile (lint, types) und laufen lokal gleich.
+    - $UV_RUN just lint
+    - $UV_RUN just types
 
 # Tier 1 — unit + property. No external services; the fast regression gate.
 # Guards against uv.lock drifting from pyproject.toml — including optional
@@ -144,18 +149,32 @@ lock-check:
   script:
     - uv lock --check
 
-# --reruns 1 absorbs the rare timing flake on the small shared runner without
-# hiding deterministic failures (a real break fails both attempts).
+# Rohdaten der Messung und JUnit-Berichte eines Test-Jobs, auch bei Rot.
+.coverage-data:
+  artifacts:
+    when: always
+    expire_in: 1 day
+    paths:
+      - .coverage.*
+    reports:
+      junit: junit-*.xml
+
+# No reruns: the order is shuffled on every run (pytest-randomly, seed in the
+# job log), and a failure is a bug to fix, not to retry (Plan 2026-10-13-0902,
+# U4). Reproduce locally with --randomly-seed=<seed from the log>.
 # Härtung R2 B1: the pure parser-fuzz suite joins the blocking gate — it is
 # deterministic (seeded corpus), service-free and sub-second; previously NO
 # CI job ever executed tests/fuzz, so the suite was rotting unnoticed.
 unit-tests:
   extends: .uv
   stage: test
+  variables:
+    SWARMQ_TEST_COVERAGE: "1"
   script:
-    - $UV_RUN pytest tests/unit -q --reruns 1 --reruns-delay 1
-    - $UV_RUN pytest tests/property -m property -q
-    - $UV_RUN pytest tests/fuzz/test_parser_fuzz.py -m fuzz -q
+    - $UV_RUN just unit -q --junitxml=junit-unit.xml
+    - $UV_RUN just property -q --junitxml=junit-property.xml
+    - $UV_RUN just fuzz -q --junitxml=junit-fuzz.xml
+  artifacts: !reference [.coverage-data, artifacts]
 
 # Tier 2a — integration against real RabbitMQ + Valkey (deterministic).
 # Second broker 4.2.9 only here, for tests/integration/broker/
@@ -182,8 +201,10 @@ integration-tests:
     SWARMQ_TEST_RABBITMQ42_PORT: "5672"
     SWARMQ_TEST_RABBITMQ42_MGMT_PORT: "15672"
     SWARMQ_CI_WAIT_FOR: "rabbitmq:5672 rabbitmq:15672 rabbitmq42:5672 rabbitmq42:15672 valkey:6379"
+    SWARMQ_TEST_COVERAGE: "1"
   script:
-    - $UV_RUN pytest tests/integration -q
+    - $UV_RUN just integration -q --junitxml=junit-integration.xml
+  artifacts: !reference [.coverage-data, artifacts]
 
 # Tier 2b — full e2e. BLOCKING, no reruns. The two confirmed flakiness causes
 # (cron-sync clobber; orphaned scheduler tasks on cancel) are fixed and the
@@ -191,8 +212,44 @@ integration-tests:
 e2e-tests:
   extends: .with-services
   stage: test
+  variables:
+    SWARMQ_TEST_COVERAGE: "1"
   script:
-    - $UV_RUN pytest tests/e2e -q
+    - $UV_RUN just e2e -q --junitxml=junit-e2e.xml
+  artifacts: !reference [.coverage-data, artifacts]
+
+# Coverage (Plan 2026-10-13-0902, U8, KTD5-KTD8, KTD11): Die drei Test-Jobs
+# messen unter ``coverage run`` (SWARMQ_TEST_COVERAGE) und laden Rohdaten und
+# JUnit auch bei Rot hoch. Der Combine-Job laeuft nur, wenn alle drei gruen
+# sind (ein Teilbericht waere irrefuehrend), fuehrt zusammen, schreibt
+# coverage.xml fuer die MR-Anzeige und prueft das Gate:
+#   * ``coverage report`` scheitert unter ``fail_under`` (Untergrenze).
+#   * scripts/coverage_gate.py holt main ausdruecklich (Branch-Pipelines
+#     laden nur ihren Ref) und vergleicht gegen den Merge-Base: fail_under
+#     darf nicht sinken, neue Zeilen muessen 100 % abgedeckt sein. Auf main
+#     und Tags entfaellt der Vergleich.
+coverage-combine:
+  extends: .uv
+  stage: coverage
+  needs: [unit-tests, integration-tests, e2e-tests]
+  variables:
+    GIT_DEPTH: "0"
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends build-essential git
+    - git config --global --add safe.directory "$CI_PROJECT_DIR"
+  script:
+    - $UV_RUN just coverage-report
+    - $UV_RUN just coverage-gate
+  coverage: '/^TOTAL.+?(\d+(?:\.\d+)?)%$/'
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths:
+      - coverage.xml
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
 
 # Tier 2c — stress against real services. Härtung R2 B1: previously never
 # executed by any CI job. Scheduled (nightly) + manual; honest gate on the
@@ -205,7 +262,7 @@ stress-tests:
     - when: manual
       allow_failure: true
   script:
-    - $UV_RUN pytest tests/stress -m stress -q
+    - $UV_RUN just stress -q
 
 # Tier 3b — soak (1h sustained load). Deliberately manual-only: too long for
 # every schedule; run before releases. Documented here so the exclusion is

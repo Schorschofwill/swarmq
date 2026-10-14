@@ -116,6 +116,13 @@ default of 30 s the drain is shorter than before 0.12 (25 s embedded,
 raise `SWARMQ_SHUTDOWN_TIMEOUT` and the grace period together
 ([shutdown budget](../explanation/delivery-semantics.md#shutdown-budget)).
 
+**Roll out with surge, not by stopping first.** Start the new workers
+before the old ones get `SIGTERM` (Kubernetes `maxSurge` ≥ 1 with
+`maxUnavailable: 0`, Compose `update_config.order: start-first`). A
+worker that crashes while a schedule fire runs leaves a claim behind;
+the redelivery waits for it and runs only on workers from 0.12.1 on
+([schedule fires after a crash](../explanation/delivery-semantics.md#what-aborts-the-ack)).
+
 Further container hints:
 
 - **Probes:** use `/health` for liveness and `/ready` for readiness,

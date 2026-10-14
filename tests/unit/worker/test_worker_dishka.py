@@ -72,6 +72,15 @@ class DiFailTask(Task):
         raise ValueError("boom")
 
 
+# Auf Modulebene wegen FromDishka (siehe Moduldocstring), aber nicht in der
+# globalen Liste: Die Tests bauen ihre eigene TaskRegistry. Sammelt ein Lauf
+# Unit- und e2e-Module zusammen, setzt test_cpu_mode beim Import einen
+# Container ohne _Svc, und jeder eingebettete Worker-Start scheiterte dann an
+# der DI-Pruefung dieser beiden Tasks.
+Task._registered_tasks.remove(DiTask)
+Task._registered_tasks.remove(DiFailTask)
+
+
 def _payload(task_id: str, name: str, args: list[Any]) -> dict[str, Any]:
     return {
         "task": {"id": task_id, "queue": "default", "name": name},

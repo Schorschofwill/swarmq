@@ -166,6 +166,33 @@ Entscheidung vom 2026-10-11: Begonnen wird mit ruff und mypy
 Ausnahmekatalog, `ruff format` über den Bestand (`.git-blame-ignore-revs`),
 mypy 2.4 strict mit Zusatzcodes über `src/` und ganz `tests/`, basedpyright
 strict über `src/`, prek-Hooks (Commit: Format/Lint, Push: Typen),
-Dependency-Groups `lint`/`typing`. Offen bleiben die übrigen Lücken dieses
-Dokuments (Coverage, pytest-Strenge und Reihenfolge, CI-Sicherheit, Matrix,
-Supply Chain, Docstrings).
+Dependency-Groups `lint`/`typing`.
+
+**Teststrenge, Coverage und Einstiegspunkt — umgesetzt** (Branch
+`chore/teststrenge-coverage-just`, Plan 2026-10-13-0902, Stufe A):
+
+- pytest `strict = true` und `filterwarnings = error`. Der GC-Lauf nach jedem
+  Test, jeder Klasse und jedem Modul mit Diensten ordnet Lecks dem Test zu,
+  der sie erzeugt. Dabei behoben: zwei Valkey-Lecks in swarmq
+  (`ValkeyBackend.close()` mit laufenden Befehlen, Nachholversuche des
+  Ausführungsschutzes nach Worker-Abbruch). Drei Lecks in aiormq/aio-pika
+  sind eng ausgenommen (`docs/befunde/teststrenge-2026-10.md`, TS-01 bis
+  TS-03).
+- pytest-randomly in jedem Lauf, keine Reruns (pytest-rerunfailures
+  entfernt). Gefundene Reihenfolge-Abhängigkeiten an der Ursache behoben
+  (Supervisor-Kanal, Logging-Fork-Liste, Leader-Sperre aus e2e vor bz14,
+  `sys.prefix` im Hot-Reload-Test, globale Dishka-Test-Tasks).
+- Bericht über langsame Unit-Tests (> 100 ms), ohne Exit-Code-Wirkung.
+- Coverage über alle Prozessmodelle (`patch = subprocess, _exit, execv,
+  fork`), 96,5 % Zeilen und Zweige, Schwankung 0,01 Prozentpunkte über sechs
+  Läufe. Gefunden: Scheduler meldete einen gehaltenen Cron vor dem Commit
+  des Termins (behoben).
+- CI: Combine-Job mit Cobertura-Bericht, Ratchet gegen den Merge-Base mit
+  `main` und diff-cover 100 % für neue Zeilen; `fail_under` wird nach drei
+  `main`-Läufen mit `uv run just ratchet` gesetzt.
+- `justfile` als Einstiegspunkt für Lint, Typen und alle Suiten; feste
+  Testports 5699/6399, gemeinsame Sperre, Seed immer ausgegeben.
+
+Offen bleiben die übrigen Lücken dieses Dokuments (CI-Sharding, CI-Sicherheit,
+Matrix, Supply Chain, Docstrings) und eine ungeklärte Häufung von fünf
+Fehlern in einem von sechs Coverage-Läufen.

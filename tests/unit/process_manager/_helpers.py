@@ -86,6 +86,7 @@ class FakeProbe:
         self.rc = rc
         self.err = error
         self.killed = False
+        self.closed = False
 
     def poll(self) -> int | None:
         return self.rc
@@ -95,6 +96,9 @@ class FakeProbe:
 
     def kill(self) -> None:
         self.killed = True
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class FakeProbeFactory:
