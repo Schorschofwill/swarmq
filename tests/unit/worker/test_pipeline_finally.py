@@ -30,6 +30,9 @@ Testliste:
 #     scheiterndem Finalizer bei concurrency=1 -> eine dritte laeuft durch
 # [x] Lock-Freigabe des Handlers und _release_leftover_locks gleichzeitig ->
 #     kein task_lock_lost
+# [x] Nachlauf nach Abbruch im DI-Teardown endet, waehrend die
+#     Abraeumschleife des Shutdowns in der Freigabe haengt -> genau eine
+#     Freigabe je Token, kein task_lock_lost
 #
 # ``execution_guard.settle`` faengt ``Exception`` selbst (``_mark``); nur ein
 # Abbruch kaeme dort durch -- derselbe Pfad wie der Abbruch im DI-Teardown.
@@ -428,6 +431,59 @@ async def test_cancel_during_di_teardown_racing_shutdown_cleanup_releases_once(
         await asyncio.gather(*worker._detached_releases)
 
     assert releases == [_LOCK]
+    assert not [e for e in swarmq_logs if e["event"] == "task_lock_lost"]
+    assert await store.current_owner(_LOCK) is None
+    assert not worker._semaphore.locked()
+
+
+class _CountingGatedReleaseStore(_GatedReleaseStore):
+    """Zaehlt jede Freigabe; die erste haelt an wie bei ``_GatedReleaseStore``."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.releases: list[str] = []
+
+    @override
+    async def release(self, token: LockToken) -> bool:
+        self.releases.append(token.owner)
+        return await super().release(token)
+
+
+async def test_teardown_follow_up_ending_during_shutdown_cleanup_releases_once(
+    broker: MagicMock, backend: MagicMock, swarmq_logs: list[dict[str, Any]]
+) -> None:
+    """Die Abraeumschleife des Shutdowns haengt in der Freigabe, als der
+    Finalizer endet und der Nachlauf des abgebrochenen DI-Teardowns laeuft.
+    Der Nachlauf darf den Registry-Eintrag nicht mehr vorfinden -- sonst gibt
+    er denselben Token ein zweites Mal frei und der Shutdown meldet
+    faelschlich ``task_lock_lost``."""
+    entered, proceed = asyncio.Event(), asyncio.Event()
+    di.setup_dishka(make_async_container(_BlockingFinalizerProvider(entered, proceed)))
+    store = _CountingGatedReleaseStore()
+    worker = _worker(broker, backend, _LockedDiTask, store=store)
+    worker._config.shutdown_timeout = 0
+
+    handler = asyncio.ensure_future(worker._handle_message(_message("fin-c5", "finally_locked_di")))
+    await entered.wait()
+    handler.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await handler
+    # Steht fuer das abgelaufene Warten des Shutdowns auf den Nachlauf: der
+    # Test haelt ihn selbst, der Shutdown geht direkt zum Abraeumen.
+    follow_ups = set(worker._detached_releases)
+    worker._detached_releases.clear()
+    worker._request_shutdown()
+    shutdown = asyncio.ensure_future(worker._execute_shutdown())
+    try:
+        await store.first_release_started.wait()  # Abraeumschleife haengt in release
+        proceed.set()  # Finalizer endet, der Nachlauf laeuft
+        await asyncio.gather(*follow_ups)
+    finally:
+        proceed.set()
+        store.proceed.set()
+        await shutdown
+
+    assert len(store.releases) == 1, f"Token mehrfach freigegeben: {store.releases}"
     assert not [e for e in swarmq_logs if e["event"] == "task_lock_lost"]
     assert await store.current_owner(_LOCK) is None
     assert not worker._semaphore.locked()

@@ -132,9 +132,14 @@ class WorkerShutdown:
         # working Valkey client). Whatever's still in the registry
         # corresponds to a handler whose finally never ran (typically
         # because the task was cancel()ed before reaching it).
+        # Den Eintrag je Handler VOR der Freigabe entnehmen (wie
+        # ``release_acquired_locks``): endet ein Nachlauf
+        # (``_release_after_teardown``), waehrend diese Schleife noch
+        # freigibt, faende er ihn sonst vor und gaebe denselben Token ein
+        # zweites Mal frei -- Fehlalarm ``task_lock_lost``.
         if self._lock_manager is not None and self._active_handler_locks:
-            for locks in list(self._active_handler_locks.values()):
-                for token in locks:
+            for handler_id in list(self._active_handler_locks):
+                for token in self._active_handler_locks.pop(handler_id, []):
                     kept = self._lock_keeper.drop(token)
                     task_fields = {} if kept is None else {"task_id": kept.task_id, "task_name": kept.task_name}
                     try:
@@ -157,7 +162,6 @@ class WorkerShutdown:
                             hint="the lock was gone or held by another owner at release; "
                             "a second holder may have run in parallel",
                         )
-            self._active_handler_locks.clear()
         # BZ-25: der Keeper endet, bevor das Backend schliesst.
         self._lock_keeper.close()
 
