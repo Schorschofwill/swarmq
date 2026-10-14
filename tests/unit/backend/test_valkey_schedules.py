@@ -20,6 +20,10 @@ Test-Liste Plan 0.12.0, MR 4 (BZ-07, Handover ohne SCAN):
 6. ``take_handover_marker`` liest den festen Key per ``GETDEL``, ohne SCAN,
    und löscht den Legacy-Key des gefundenen Owners.
 7. Mit ``previous_owner`` erkennt es auch den Legacy-Key eines 0.11-Leaders.
+
+Test-Liste Plan 2026-10-14-0748 (U6, KTD7, FS-06a):
+8. ``claim_fire`` mit ``owner`` haengt den eigenen Owner an die
+   Uebernahme-Tokens; ohne ``owner`` nichts (Argumente ``["1", ttl, ""]``).
 """
 
 from __future__ import annotations
@@ -221,12 +225,19 @@ class TestSchedfireClaims:
         store, _, scripts = _store()
         scripts["fire_claim"].return_value = 0
         assert await store.claim_fire("k", 5_000, owner="b", takeover="a") is False
-        scripts["fire_claim"].assert_awaited_once_with(keys=["sq:sched:inflight:k"], args=["b", 5_000, "a"])
+        scripts["fire_claim"].assert_awaited_once_with(keys=["sq:sched:inflight:k"], args=["b", 5_000, "a", "b"])
 
     async def test_claim_fire_passes_every_takeover_token(self) -> None:
         store, _, scripts = _store()
         await store.claim_fire("k", 5_000, owner="c", takeover=("b", "a"))
-        scripts["fire_claim"].assert_awaited_once_with(keys=["sq:sched:inflight:k"], args=["c", 5_000, "b", "a"])
+        scripts["fire_claim"].assert_awaited_once_with(keys=["sq:sched:inflight:k"], args=["c", 5_000, "b", "a", "c"])
+
+    async def test_claim_fire_offers_own_owner_as_takeover_token(self) -> None:
+        """FS-06a: der eigene Owner steht unter den Uebernahme-Tokens, damit
+        die Wiederholung nach verlorener Antwort den eigenen Claim trifft."""
+        store, _, scripts = _store()
+        await store.claim_fire("k", 5_000, owner="b")
+        scripts["fire_claim"].assert_awaited_once_with(keys=["sq:sched:inflight:k"], args=["b", 5_000, "b"])
 
     async def test_release_fire_claim_with_owner_uses_compare_and_delete(self) -> None:
         store, client, scripts = _store()
