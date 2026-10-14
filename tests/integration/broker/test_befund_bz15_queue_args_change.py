@@ -42,6 +42,7 @@ async def _declare(rabbitmq_url: str, queue: str, *, queue_type: str = "quorum",
         await broker.close()
 
 
+@pytest.mark.entscheidung("E-016")
 @pytest.mark.befund("BZ-15")
 async def test_raising_delivery_limit_keeps_existing_queue_declarable(rabbitmq_url: str, queue_name: str) -> None:
     await _declare(rabbitmq_url, queue_name, delivery_limit=20)
@@ -50,6 +51,7 @@ async def test_raising_delivery_limit_keeps_existing_queue_declarable(rabbitmq_u
     await _declare(rabbitmq_url, queue_name, delivery_limit=40)
 
 
+@pytest.mark.entscheidung("E-016")
 @pytest.mark.befund("BZ-15")
 async def test_changed_queue_type_is_reported_as_configuration_error(rabbitmq_url: str, queue_name: str) -> None:
     await _declare(rabbitmq_url, queue_name, queue_type="quorum")

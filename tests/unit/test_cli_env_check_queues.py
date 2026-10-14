@@ -42,6 +42,7 @@ def _report(queues: QueueState | None) -> dict[str, Any]:
     return build_report("valkey://fake:6399/0", dict(_DESCRIBED), "strict", queues=queues)
 
 
+@pytest.mark.entscheidung("E-006")
 def test_without_broker_url_queues_stay_unchecked() -> None:
     report = _report(None)
 
@@ -66,6 +67,7 @@ def _codes(report: dict[str, Any]) -> list[str]:
     return [f["code"] for f in report["findings"]]
 
 
+@pytest.mark.entscheidung("E-015")
 def test_unreported_queue_with_backlog_and_no_consumer_is_orphaned() -> None:
     report = _report(
         _state(
@@ -115,6 +117,7 @@ def test_missing_main_queue_needs_no_dead_letter_queue() -> None:
     assert report["findings"] == []
 
 
+@pytest.mark.entscheidung("E-006")
 def test_unreadable_queues_warn_without_failing() -> None:
     report = _report(QueueState(error="broker unreachable: connection refused"))
 

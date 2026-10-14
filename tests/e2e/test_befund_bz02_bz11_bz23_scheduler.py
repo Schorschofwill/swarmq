@@ -243,6 +243,7 @@ def _removed_cron(name: str, queue: str, due_ms: int) -> ScheduleDefinition:
     )
 
 
+@pytest.mark.entscheidung("E-014")
 @pytest.mark.befund("BZ-11")
 async def test_bz11_fire_of_removed_cron_task_dead_letters_with_ttl(rabbitmq_url, valkey_url):
     queue, removed = _queue(), _name("removed_cron")
@@ -273,6 +274,7 @@ async def test_bz11_fire_of_removed_cron_task_dead_letters_with_ttl(rabbitmq_url
     assert message.expiration is not None or HEADER_DEAD_LETTER_TTL_MS in headers
 
 
+@pytest.mark.entscheidung("E-014")
 @pytest.mark.befund("BZ-11")
 async def test_bz11_removed_cron_once_reported_is_held_by_the_leader(rabbitmq_url, valkey_url):
     queue, removed = _queue(), _name("removed_cron")
@@ -338,6 +340,7 @@ async def _xq_has_message(rabbitmq_url: str, queue: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.entscheidung("E-020")
 @pytest.mark.befund("BZ-23")
 async def test_bz23_cancelled_task_waiting_longer_than_result_ttl_does_not_run(
     rabbitmq_url,

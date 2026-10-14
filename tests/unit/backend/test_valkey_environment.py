@@ -137,6 +137,7 @@ async def test_hanging_policy_query_ends_after_the_time_limit(monkeypatch: pytes
     assert backend.eviction_check.status == "unknown"
 
 
+@pytest.mark.entscheidung("E-006")
 async def test_check_off_queries_nothing_and_stays_silent(
     monkeypatch: pytest.MonkeyPatch, swarmq_logs: list[dict[str, Any]]
 ) -> None:

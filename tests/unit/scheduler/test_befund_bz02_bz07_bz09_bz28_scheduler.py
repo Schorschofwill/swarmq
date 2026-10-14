@@ -114,6 +114,7 @@ async def test_bz07_slow_handover_scan_does_not_cost_the_new_leader_its_lock(
     assert await locks.current_owner(SCHEDULER_LOCK_NAME) == loop.owner_token
 
 
+@pytest.mark.entscheidung("E-011")
 @pytest.mark.befund("BZ-09")
 async def test_bz09_cron_unique_for_holds_on_leader_without_task_in_registry(
     broker,

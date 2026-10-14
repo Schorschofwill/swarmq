@@ -46,6 +46,7 @@ def _hang(worker: Any) -> asyncio.Task[bool]:
     return task
 
 
+@pytest.mark.entscheidung("E-018")
 async def test_supervised_drain_ends_before_the_supervisor_kills(worker: Any) -> None:
     loop = asyncio.get_running_loop()
     worker._config.shutdown_timeout = 0.2  # SIGKILL des Supervisors bei 0.1 s, Drain bis 0.05 s
@@ -147,6 +148,7 @@ async def test_waiting_for_detached_releases_is_bounded_by_the_budget(worker: An
         detached.cancel()
 
 
+@pytest.mark.entscheidung("E-018")
 async def test_hanging_broker_close_is_bounded_and_the_backend_still_closes(
     worker: Any, broker: Any, backend: Any, short_steps: None
 ) -> None:
@@ -214,6 +216,7 @@ async def test_waiting_for_a_task_that_ignores_cancellation_is_bounded(worker: A
         await task
 
 
+@pytest.mark.entscheidung("E-018")
 async def test_recycling_drain_is_exempt_from_the_budget(worker: Any) -> None:
     worker._config.shutdown_timeout = 0.01
     worker._drain_timeout_override = 2.0

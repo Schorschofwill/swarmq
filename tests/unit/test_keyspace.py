@@ -159,6 +159,7 @@ def _all_keys(ks: KeySpace) -> list[str]:
     ]
 
 
+@pytest.mark.entscheidung("E-012")
 def test_namespace_prefixes_every_key_and_keeps_the_hash_tags() -> None:
     plain = _all_keys(_KS)
     assert set(plain) == _golden_keys()
@@ -187,6 +188,7 @@ def test_namespaced_golden_is_the_golden_with_the_prefix() -> None:
     assert namespaced == {f"golden-ns:{key}": type_ for key, type_ in plain.items()}
 
 
+@pytest.mark.entscheidung("E-012")
 @pytest.mark.parametrize(
     "value",
     ["a:b", "app*", "app?", "a[b]", "a{b}", "a b", "-app", ".app", "x" * 65, "sq", "SQ", "ä"],

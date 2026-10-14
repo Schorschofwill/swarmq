@@ -187,6 +187,7 @@ async def test_cancel_flag_kills_child_and_takes_cancel_path(setup):
 
 
 @pytest.mark.timeout(5)
+@pytest.mark.entscheidung("E-001")
 async def test_outer_cancel_during_drain_kills_child_and_returns_error_result(setup):
     _, pool, ex = setup
     pool.behaviour = "hang"
@@ -200,6 +201,7 @@ async def test_outer_cancel_during_drain_kills_child_and_returns_error_result(se
 
 
 @pytest.mark.timeout(5)
+@pytest.mark.entscheidung("E-037")
 async def test_child_death_is_an_error_result(setup):
     _, pool, ex = setup
     pool.behaviour = ChildDied("pid 7 exited without result")
@@ -476,6 +478,7 @@ class _SignallingPool(FakePool):
 
 
 @pytest.mark.timeout(5)
+@pytest.mark.entscheidung("E-001")
 async def test_hard_timeout_and_drain_errors_have_no_error_class():
     pool = _SignallingPool()
     ex = ComputeExecutor(_deps(), pool, worker_id="w1")  # type: ignore[arg-type]  # Fake-Pool

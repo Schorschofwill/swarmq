@@ -52,6 +52,7 @@ def _worker(backend: MagicMock, mode: str) -> Worker:
     return Worker(broker=_broker(), backend=backend, registry=TaskRegistry(), config=config)
 
 
+@pytest.mark.entscheidung("E-005")
 async def test_strict_refuses_to_start_under_an_evicting_policy() -> None:
     worker = _worker(_backend(EvictionCheck(status="unsafe", policy="volatile-lru", maxmemory=1024)), "strict")
 
@@ -64,6 +65,7 @@ async def test_strict_refuses_to_start_under_an_evicting_policy() -> None:
 _UNSAFE = EvictionCheck(status="unsafe", policy="allkeys-lru", maxmemory=None)
 
 
+@pytest.mark.entscheidung("E-005")
 @pytest.mark.parametrize(
     ("check", "mode"),
     [

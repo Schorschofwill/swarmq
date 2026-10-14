@@ -181,6 +181,7 @@ class _ExportB(Task):
         type(self).runs.append("b")
 
 
+@pytest.mark.entscheidung("E-012")
 async def test_same_lock_name_in_two_apps_does_not_block_the_other_app(valkey_url: str) -> None:
     _ExportA.started, _ExportA.finish = asyncio.Event(), asyncio.Event()
     _ExportB.runs = []

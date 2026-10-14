@@ -56,6 +56,7 @@ async def _start(broker: Any, backend: Any, config: SwarmQConfig) -> None:
     await worker.start()
 
 
+@pytest.mark.entscheidung("E-019")
 async def test_queues_times_hard_timeout_over_consumer_timeout_warns_once(
     broker: Any, backend: Any, swarmq_logs: list[dict[str, Any]]
 ) -> None:
@@ -70,6 +71,7 @@ async def test_queues_times_hard_timeout_over_consumer_timeout_warns_once(
     assert entry["consumer_timeout_s"] == 1800
 
 
+@pytest.mark.entscheidung("E-019")
 @pytest.mark.parametrize(
     ("queues", "consumer_timeout_s"),
     [(["a", "b"], 2000), (["a"], 900)],
@@ -85,6 +87,7 @@ async def test_no_warning_within_the_timeout_or_with_one_queue(
     assert [e for e in swarmq_logs if e["event"] == "prefetch_exceeds_consumer_timeout"] == []
 
 
+@pytest.mark.entscheidung("E-019")
 async def test_sampler_reports_the_prefetch_limit(broker: Any, backend: Any) -> None:
     from unittest.mock import AsyncMock
 

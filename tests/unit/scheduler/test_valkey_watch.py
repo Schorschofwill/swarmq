@@ -76,6 +76,7 @@ async def test_first_adopt_rechecks_and_reports(memory: InMemoryBackend) -> None
     ]
 
 
+@pytest.mark.entscheidung("E-005")
 async def test_recheck_at_most_once_per_hour(memory: InMemoryBackend, monkeypatch: pytest.MonkeyPatch) -> None:
     now = [1000.0]
     monkeypatch.setattr("swarmq.scheduler.valkey_watch.time", SimpleNamespace(monotonic=lambda: now[0]))

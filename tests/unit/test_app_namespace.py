@@ -54,6 +54,7 @@ def test_explicit_backend_namespace_fills_the_config() -> None:
     assert app.config.namespace == "app1"
 
 
+@pytest.mark.entscheidung("E-012")
 @pytest.mark.parametrize("source", ["code", "environment"])
 def test_different_backend_and_config_namespace_is_a_configuration_error(
     monkeypatch: pytest.MonkeyPatch, source: str

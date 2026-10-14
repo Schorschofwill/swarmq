@@ -45,6 +45,8 @@ from __future__ import annotations
 from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from swarmq.exceptions import (
     BackendConnectionError,
     BrokerConnectionError,
@@ -145,6 +147,7 @@ async def test_happy_path_stores_notifies_and_acks(broker, backend, config):
     broker.ack.assert_awaited_once_with(msg)
 
 
+@pytest.mark.entscheidung("E-039")
 async def test_result_ttl_zero_stores_nothing_and_fails_faf_workflow_step(broker, backend, config):
     tail, worker = _tail(broker, backend, config, TailFafTask)
     msg = make_message(
@@ -452,6 +455,7 @@ async def test_advance_broker_error_fire_and_forget_logs_error(broker, backend, 
     assert entry["error"] == "publish nacked"
 
 
+@pytest.mark.entscheidung("E-002")
 async def test_unroutable_advance_fail_marks_workflow_and_acks_without_redeliver(broker, backend, config):
     tail, worker = _tail(broker, backend, config)
     worker._workflow_advancer.advance = AsyncMock(side_effect=UnroutableMessage("no queue 'next-step'"))

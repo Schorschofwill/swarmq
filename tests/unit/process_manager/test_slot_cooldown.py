@@ -52,6 +52,7 @@ def _pm(clock: FakeClock, monkeypatch: pytest.MonkeyPatch, **kw) -> ProcessManag
     return pm
 
 
+@pytest.mark.entscheidung("E-024")
 def test_crash_budget_locks_for_the_cooldown(monkeypatch: pytest.MonkeyPatch) -> None:
     clock = FakeClock()
     pm = _pm(clock, monkeypatch, num_workers=1)
@@ -74,6 +75,7 @@ def test_crash_budget_locks_for_the_cooldown(monkeypatch: pytest.MonkeyPatch) ->
     assert pm._current_target() == 1
 
 
+@pytest.mark.entscheidung("E-024")
 def test_hang_budget_locks_for_the_cooldown_and_the_predecessor_keeps_the_slot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -91,6 +93,7 @@ def test_hang_budget_locks_for_the_cooldown_and_the_predecessor_keeps_the_slot(
     assert pm.slot_state(0) is SlotState.ACTIVE
 
 
+@pytest.mark.entscheidung("E-024")
 def test_unlock_and_lock_events_name_the_cooldown(monkeypatch: pytest.MonkeyPatch, swarmq_logs) -> None:
     clock = FakeClock()
     pm = _pm(clock, monkeypatch, num_workers=2)
@@ -112,6 +115,7 @@ def test_unlock_and_lock_events_name_the_cooldown(monkeypatch: pytest.MonkeyPatc
     assert unlocked["locked_slots"] == 0
 
 
+@pytest.mark.entscheidung("E-024")
 def test_channels_report_the_locked_slots(monkeypatch: pytest.MonkeyPatch) -> None:
     clock = FakeClock()
     pm = _pm(clock, monkeypatch, num_workers=2)

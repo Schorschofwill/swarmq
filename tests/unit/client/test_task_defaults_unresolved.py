@@ -45,6 +45,7 @@ async def test_second_schedule_of_the_same_task_does_not_warn_again(broker, back
     assert entry["task_name"] == "billing.send_invoice"
 
 
+@pytest.mark.entscheidung("E-021")
 async def test_each_task_name_and_each_client_instance_warns_once(broker, backend) -> None:
     first = Client(broker=broker, backend=backend)
     second = Client(broker=broker, backend=backend)
@@ -61,6 +62,7 @@ async def test_each_task_name_and_each_client_instance_warns_once(broker, backen
     ]
 
 
+@pytest.mark.entscheidung("E-021")
 async def test_client_with_registry_does_not_warn(client) -> None:
     with capture_swarmq_logs() as logs:
         await client.schedule("add", 1, 2)
@@ -68,6 +70,7 @@ async def test_client_with_registry_does_not_warn(client) -> None:
     assert _warnings(logs) == []
 
 
+@pytest.mark.entscheidung("E-021")
 async def test_reported_task_names_are_capped_at_1000(broker, backend) -> None:
     """Ein Producer mit dynamischen Task-Namen darf den Speicher nicht
     unbegrenzt fuellen: ueber 1000 gemeldete Namen hinaus wird nicht mehr

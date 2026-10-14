@@ -127,3 +127,12 @@ Drei conftest.py Ebenen:
 - `tests/conftest.py` — gemeinsame Fixtures
 - `tests/unit/conftest.py` — Unit-spezifisch (Mocks, Factories)
 - `tests/integration/conftest.py` — Integration-spezifisch (Connections)
+
+## Entscheidungen respektieren
+
+Bewusst getroffene Entscheidungen über das Verhalten stehen im Entscheidungsregister `compound-packs/swarmq-entscheidungen/` (eine Datei je Entscheidung, ID `E-nnn`). Tests, die ein entschiedenes Verhalten festschreiben, tragen `@pytest.mark.entscheidung("E-nnn")`.
+
+1. **Vor einer Fehlermeldung oder einem Fix:** im Register nachsehen, ob das Verhalten entschieden ist. Ist es entschieden, ist es kein Fehler. Gemeldet wird höchstens „Entscheidung überdenken?“, und nur mit neuem Argument.
+2. **Einen Test mit `entscheidung`-Marker nicht anpassen oder löschen**, um einen Fix grün zu bekommen. Erst muss die Entscheidung geändert werden (neue Regel, alte `überholt`).
+3. **Fehlersuchen** folgen dem Ablauf in `docs/befunde/README.md` (Gegenprüfung vor Aufnahme ins Befundregister).
+4. **Neue Produktentscheidungen** sofort als Regel ins Register schreiben (z. B. per `/ce-compound`), samt festschreibendem Test.

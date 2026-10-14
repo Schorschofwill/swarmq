@@ -78,6 +78,7 @@ async def broker(rabbitmq_url: str) -> AsyncIterator[RabbitMQBroker]:
     await b.close()
 
 
+@pytest.mark.entscheidung("E-017")
 async def test_new_queue_is_created_at_least_once(rabbitmq_url: str, broker: RabbitMQBroker, queue: str) -> None:
     await broker.declare_queue(queue)
 
@@ -89,6 +90,7 @@ async def test_new_queue_is_created_at_least_once(rabbitmq_url: str, broker: Rab
         await _declare_raw(rabbitmq_url, queue, family[queue])
 
 
+@pytest.mark.entscheidung("E-017")
 async def test_existing_0_11_queue_keeps_its_arguments_and_warns_once(
     rabbitmq_url: str, broker: RabbitMQBroker, queue: str
 ) -> None:

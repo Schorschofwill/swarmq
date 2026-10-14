@@ -48,6 +48,7 @@ class TestDeadlineErrorReachesTheCaller:
         with pytest.raises(BrokerConnectionError, match="indeterminate"):
             await client.schedule("add", 1, 2, queue="math")
 
+    @pytest.mark.entscheidung("E-041")
     async def test_unique_claim_survives_an_indeterminate_publish(
         self,
         client,

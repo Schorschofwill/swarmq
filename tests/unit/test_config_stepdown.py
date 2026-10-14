@@ -17,6 +17,7 @@ def _cfg(**kwargs: object) -> SwarmQConfig:
     return SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x", **kwargs)  # type: ignore[arg-type]
 
 
+@pytest.mark.entscheidung("E-013")
 def test_default_is_the_scheduler_lock_ttl() -> None:
     assert _cfg(scheduler_lock_ttl=40.0).scheduler_publish_stepdown_s == 40.0
 

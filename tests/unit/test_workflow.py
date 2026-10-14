@@ -217,16 +217,19 @@ def test_group_at_max_size_allowed():
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.entscheidung("E-039")
 def test_faf_signature_rejected_in_chain():
     with pytest.raises(WorkflowValidationError):
         chain(Fetch.s("u"), FafTask.s(1))
 
 
+@pytest.mark.entscheidung("E-039")
 def test_faf_signature_rejected_in_group():
     with pytest.raises(WorkflowValidationError):
         group(FafTask.s(1), Fetch.s("u"))
 
 
+@pytest.mark.entscheidung("E-039")
 def test_faf_signature_rejected_as_chord_body():
     with pytest.raises(WorkflowValidationError):
         chord(group(Fetch.s("a")), FafTask.s(1))

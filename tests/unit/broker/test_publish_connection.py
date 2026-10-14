@@ -53,6 +53,7 @@ async def _connected(mode: str = "separate") -> tuple[RabbitMQBroker, AsyncMock,
     return broker, publish_conn, consume_conn
 
 
+@pytest.mark.entscheidung("E-025")
 async def test_first_consume_opens_a_second_connection_for_the_consume_channel() -> None:
     broker, publish_conn, consume_conn = await _connected()
 
@@ -70,6 +71,7 @@ async def test_shared_mode_consumes_on_the_one_connection() -> None:
     consume_conn.channel.assert_not_awaited()
 
 
+@pytest.mark.entscheidung("E-025")
 async def test_injected_connection_is_always_shared() -> None:
     conn = _connection()
     broker = RabbitMQBroker(connection=conn)

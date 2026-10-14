@@ -471,6 +471,7 @@ class TestValkeyBackendIsCancelled:
 
 
 class TestValkeyBackendClearCancelFlag:
+    @pytest.mark.entscheidung("E-020")
     async def test_clear_cancel_flag_shortens_to_one_hour(self):
         # BZ-23 (Plan 0.12.0, MR 5): PEXPIRE … LT statt DEL.
         backend = ValkeyBackend("valkey://localhost:6379/0")

@@ -21,6 +21,7 @@ def _cfg(**kwargs: object) -> SwarmQConfig:
     return SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x", **kwargs)  # type: ignore[arg-type]
 
 
+@pytest.mark.entscheidung("E-017")
 def test_default_is_auto() -> None:
     assert _cfg().queue_dead_letter_strategy == "auto"
 

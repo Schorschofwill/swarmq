@@ -824,6 +824,7 @@ class TestClientUniqueSchedule:
         assert received[0]["source"] == "client.schedule"
         assert len(received[0]["dedup_hash"]) == 64
 
+    @pytest.mark.entscheidung("E-033")
     async def test_schedule_per_call_override_none_disables_dedup(
         self,
         client_setnx,
@@ -1341,6 +1342,7 @@ class TestClientUniqueScheduleMany:
         assert received[0]["source"] == "client.schedule_many"
         assert received[0]["batch_index"] == 1
 
+    @pytest.mark.entscheidung("E-033")
     async def test_schedule_many_batch_override_none_disables_dedup(
         self,
         broker,

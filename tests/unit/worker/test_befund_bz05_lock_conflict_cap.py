@@ -78,6 +78,7 @@ def _worker_at_cap(
     return worker, seen, message
 
 
+@pytest.mark.entscheidung("E-007")
 @pytest.mark.befund("BZ-05")
 async def test_long_lock_conflict_keeps_waiting_instead_of_dead_lettering(broker, backend, config) -> None:
     worker, _seen, message = _worker_at_cap(broker, backend, config)

@@ -89,6 +89,7 @@ async def test_step_that_already_succeeded_does_not_fail_its_workflow() -> None:
 @pytest.mark.parametrize(
     "stored", [_result(is_error=True), None, BackendConnectionError("valkey down")], ids=["error", "none", "outage"]
 )
+@pytest.mark.entscheidung("E-040")
 async def test_step_without_a_success_result_fails_its_workflow(stored: object) -> None:
     advancer = MagicMock(fail=AsyncMock())
 

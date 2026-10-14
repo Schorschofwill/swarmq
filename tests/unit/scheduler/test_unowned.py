@@ -70,6 +70,7 @@ def _ghost(**fields: object) -> ScheduleDefinition:
     return _def(name="ghost", fire_ts_ms=_SCORE_MS, **fields)
 
 
+@pytest.mark.entscheidung("E-014")
 async def test_unowned_cron_is_held_instead_of_fired(leader, store, broker, config) -> None:
     store.poll_due.return_value = [("ghost", _SCORE_MS, _ghost())]
     await leader.adopt_reported_crons()
@@ -114,6 +115,7 @@ async def test_own_static_cron_fires(known, broker, config, lock_manager, store,
     broker.publish.assert_awaited_once()
 
 
+@pytest.mark.entscheidung("E-014")
 async def test_cron_never_reported_fires(leader, known, store, broker) -> None:
     known.schedules.known_cron_names.return_value = frozenset()
     await leader.adopt_reported_crons()
@@ -156,6 +158,7 @@ async def test_adopt_without_readable_reports_fails_open(leader, known, store, b
     assert skipped["log_level"] == "warning"
 
 
+@pytest.mark.entscheidung("E-014")
 async def test_poll_fails_open_five_seconds_after_the_takeover(leader, store, broker, swarmq_logs) -> None:
     leader._begin_term(_NOW_MS - 5_000)
 
@@ -176,6 +179,7 @@ def _recorded(signal_dispatcher, signal):
     return seen
 
 
+@pytest.mark.entscheidung("E-014")
 async def test_hold_logs_and_signals_only_on_the_transition(leader, store, signal_dispatcher, swarmq_logs) -> None:
     seen = _recorded(signal_dispatcher, Signal.SCHEDULER_CRON_UNOWNED)
     await leader.adopt_reported_crons()

@@ -55,6 +55,7 @@ def _ctx(task_id: str = "fire-1") -> GateContext:
     return GateContext(task_id=task_id, task_name="t", queue="q", task_info=TaskInfo(name="t", queues=["q"]))
 
 
+@pytest.mark.entscheidung("E-009")
 async def test_replay_of_a_completed_fire_runs_under_its_own_key(deps: MagicMock, backend: InMemoryBackend) -> None:
     gate = SchedfireGate(deps)
     await backend.schedules.mark_fire_completed(_KEY, 3_900_000)
@@ -80,6 +81,7 @@ async def test_replay_after_a_broker_dead_letter_uses_the_death_count(
     assert ctx.schedfire_claim.key == f"{_KEY}|#2"
 
 
+@pytest.mark.entscheidung("E-009")
 async def test_a_plain_duplicate_fire_keeps_the_key_and_is_skipped(deps: MagicMock, backend: InMemoryBackend) -> None:
     gate = SchedfireGate(deps)
     await backend.schedules.mark_fire_completed(_KEY, 3_900_000)

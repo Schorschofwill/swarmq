@@ -67,6 +67,7 @@ def _reader(*messages: Mock, events: list[str] | None = None, fail_for: str | No
     return broker
 
 
+@pytest.mark.entscheidung("E-028")
 async def test_list_reads_with_ack_and_acks_after_the_copy() -> None:
     events: list[str] = []
     broker = _reader(_message("t-1", events=events), _message("t-2", events=events), events=events)
@@ -87,6 +88,7 @@ async def test_retry_acks_the_original_after_the_copy_to_the_main_queue() -> Non
     assert events == ["publish t-1 -> tasks", "ack t-1"]
 
 
+@pytest.mark.entscheidung("E-028")
 async def test_failed_copy_leaves_the_original_unacknowledged() -> None:
     events: list[str] = []
     first, second = _message("t-1", events=events), _message("t-2", events=events)

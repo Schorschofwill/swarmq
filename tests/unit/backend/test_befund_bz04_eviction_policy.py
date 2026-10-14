@@ -83,6 +83,7 @@ def _eviction_warnings(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return hits
 
 
+@pytest.mark.entscheidung("E-006")
 @pytest.mark.parametrize("policy", ["volatile-lru", "allkeys-lru"])
 async def test_connect_warns_when_valkey_may_evict_swarmq_keys(
     monkeypatch: pytest.MonkeyPatch, swarmq_logs: list[dict[str, Any]], policy: str

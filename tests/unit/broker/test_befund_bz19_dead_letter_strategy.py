@@ -31,6 +31,7 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 pytestmark = [pytest.mark.timeout(5)]
 
 
+@pytest.mark.entscheidung("E-017")
 @pytest.mark.befund("BZ-19")
 async def test_quorum_dead_lettering_queues_request_at_least_once() -> None:
     # Plan 0.12.0, MR 8 (Abschnitt 6): Deklarationen laufen auf eigenen

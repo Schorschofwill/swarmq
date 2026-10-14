@@ -138,6 +138,7 @@ async def test_unreported_queue_with_backlog_and_no_consumer_is_reported(
     assert seen == [{"worker_id": "w-1", "queue": "old", "orphaned": True, "message_count": 3, "orphaned_count": 1}]
 
 
+@pytest.mark.entscheidung("E-015")
 async def test_second_check_in_the_same_state_is_silent(
     memory: InMemoryBackend, clock: FakeClock, broker: MagicMock, swarmq_logs: list[dict[str, Any]]
 ) -> None:
@@ -201,6 +202,7 @@ async def test_drained_queue_is_no_longer_orphaned(
 _DAY_S = 24 * 3600.0
 
 
+@pytest.mark.entscheidung("E-015")
 async def test_missing_or_empty_queues_unreported_for_7_days_are_forgotten(
     memory: InMemoryBackend, clock: FakeClock, broker: MagicMock
 ) -> None:

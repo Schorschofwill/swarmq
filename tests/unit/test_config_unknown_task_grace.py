@@ -18,6 +18,7 @@ def _cfg(**kwargs: object) -> SwarmQConfig:
     return SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x", **kwargs)  # type: ignore[arg-type]
 
 
+@pytest.mark.entscheidung("E-008")
 def test_default_is_fifteen_minutes() -> None:
     assert _cfg().unknown_task_grace_s == 900.0
 

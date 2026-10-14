@@ -89,6 +89,7 @@ async def test_list_empty_returns_empty(broker_and_queue):
     assert scanned == 0
 
 
+@pytest.mark.entscheidung("E-028")
 async def test_list_returns_each_message_exactly_once(broker_and_queue):
     broker, qname = broker_and_queue
     ids = [f"t-{i}" for i in range(3)]
@@ -107,6 +108,7 @@ async def test_list_returns_each_message_exactly_once(broker_and_queue):
     assert await _dlq_depth(broker, qname) == 3
 
 
+@pytest.mark.entscheidung("E-028")
 async def test_message_survives_25_listings(broker_and_queue):
     """BZ-21 (Plan 0.12.0, MR 16): jede Rueckgabe zaehlt den Delivery-Count der
     XQ hoch (Spike S4), nach 20 waere die Nachricht weg. Lesen per Kopie ans

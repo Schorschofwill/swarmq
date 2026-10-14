@@ -1,0 +1,4 @@
+# Compound Engineering: Packs, die ce-plan/ce-brainstorm beim Planen und
+# ce-code-review/ce-doc-review beim Prüfen anwenden (docs: Compound Packs).
+packs:
+  - source: compound-packs/swarmq-entscheidungen

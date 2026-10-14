@@ -73,6 +73,7 @@ def _draining_worker(clock: _VirtualTime, pid: int, events: list[tuple[str, floa
     return proc
 
 
+@pytest.mark.entscheidung("E-018")
 def test_default_shutdown_fits_into_kubernetes_termination_grace(monkeypatch: pytest.MonkeyPatch) -> None:
     clock = _VirtualTime()
     monkeypatch.setattr(

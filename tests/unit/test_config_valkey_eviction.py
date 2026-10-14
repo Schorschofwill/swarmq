@@ -18,6 +18,7 @@ def _cfg(**kwargs: object) -> SwarmQConfig:
     return SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x", **kwargs)  # type: ignore[arg-type]
 
 
+@pytest.mark.entscheidung("E-005")
 def test_default_is_strict() -> None:
     assert _cfg().valkey_eviction_check == "strict"
 

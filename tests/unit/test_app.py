@@ -841,6 +841,7 @@ class TestSwarmQPublicAPIExports:
 
 
 class TestSwarmQCancel:
+    @pytest.mark.entscheidung("E-020")
     async def test_cancel_delegates_to_client_with_computed_ttl(self, broker, backend):
         app = SwarmQ(broker, backend, result_ttl=60)
         with patch.object(app.client, "cancel", AsyncMock(return_value=True)) as cancel_mock:
@@ -851,6 +852,7 @@ class TestSwarmQCancel:
         cancel_mock.assert_awaited_once_with("task-abc", ttl_ms=86_400_000)
         assert result is True
 
+    @pytest.mark.entscheidung("E-020")
     async def test_cancel_ttl_follows_result_ttl_above_24h(self, broker, backend):
         app = SwarmQ(broker, backend, result_ttl=172_800)
         with patch.object(app.client, "cancel", AsyncMock(return_value=True)) as cancel_mock:
