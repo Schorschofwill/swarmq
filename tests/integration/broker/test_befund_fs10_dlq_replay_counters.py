@@ -175,6 +175,7 @@ async def _fs10_route_via_dlx(rabbitmq_url: str, queue: str) -> None:
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason=(
         "Grenze FS-10 (kein Befund): RabbitMQ 4.3 nimmt einen mitgebrachten x-delivery-count in die "
         "DLX-Kopie mit; solche Kopien und der 0.12.0-Bestand nur per 'swarmq dlq retry' zurueckspielen"
