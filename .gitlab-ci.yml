@@ -15,13 +15,20 @@
 #       (heavier than the CI runner). A red e2e job is now a real regression.
 #     * chaos + fuzz: nicht in der Pipeline -- oertlich vor Releases,
 #       siehe den Block weiter unten und docs/testing/test-strategy.md.
-#   secret-detection stage — GitLab Secret Detection (unchanged).
+#   secret_detection runs in the test stage, next to the tests (it needs
+#     nothing from them), so it does not extend the critical path.
 #
 # All Python steps run through uv against the committed uv.lock (UV_FROZEN),
 # on the project's pinned Python 3.14. Notes:
-#   * valkey[libvalkey] is a C extension with no cp314 wheel yet → compiled
-#     from source, so every uv job installs build-essential first (the slim uv
-#     image ships no compiler).
+#   * No compiler and no apt-get: every installed package ships a cp314 or
+#     abi3 wheel (libvalkey sits in the `fast` extra, which CI does not
+#     install). Jobs that need git (unit: ratchet test; coverage-combine:
+#     fetch main) use the non-slim uv image, which ships it; all others use
+#     the slim image (Plan Beschleunigung, Stufe 1).
+#   * The uv cache is the runner volume `swarmq-uv-cache` at /uv-cache (local
+#     runner, config.toml), not a GitLab cache archive: packing and unpacking
+#     the archive cost ~14 s per job. On a runner without that volume uv just
+#     downloads into an empty /uv-cache.
 #   * The `reload` extra (watchfiles) is needed by the hot-reload tests; it
 #     ships abi3 wheels so it installs without a Rust toolchain. `fast`
 #     (orjson) is intentionally NOT installed — it has no cp314/abi3 wheel and
@@ -38,11 +45,12 @@ workflow:
 stages:
   - test
   - coverage
-  - secret-detection
 
 variables:
   SECRET_DETECTION_ENABLED: 'true'
-  UV_CACHE_DIR: "$CI_PROJECT_DIR/.uv-cache"
+  UV_CACHE_DIR: "/uv-cache"
+  # The cache volume and the job's venv are different filesystems.
+  UV_LINK_MODE: "copy"
   UV_FROZEN: "1"
   # Canonical uv invocation: test deps + the reload extra the hot-reload
   # tests need. Keep every test job using this so the resolved env matches.
@@ -55,20 +63,15 @@ variables:
   # uv run just <rezept> nachstellen. scripts/run-tests.sh gibt ihn aus.
   SWARMQ_TEST_SEED: "$CI_PIPELINE_ID"
 
-# Shared uv setup: pinned-Python image, build toolchain for the libvalkey C
-# extension, and a lockfile-keyed dependency cache.
+# Shared uv setup: pinned-Python slim image, no setup steps (see header).
 .uv:
   image: ghcr.io/astral-sh/uv:python3.14-bookworm-slim
-  cache:
-    key:
-      files:
-        - uv.lock
-    paths:
-      - .uv-cache
-  before_script:
-    # git: tests/unit/test_coverage_ratchet.py prueft das Ratchet-Skript gegen
-    # ein echtes Git-Repository (Arbeitsbaum-Pruefung); das slim-Image hat keins.
-    - apt-get update && apt-get install -y --no-install-recommends build-essential git
+  before_script: []
+
+# Same, with git (non-slim image): the ratchet test and coverage-combine.
+.uv-git:
+  extends: .uv
+  image: ghcr.io/astral-sh/uv:python3.14-bookworm
 
 # Real RabbitMQ + Valkey services + a readiness gate. Reused by the
 # integration and e2e jobs. RabbitMQ is pinned exactly (Plan 2026-10-08-1541,
@@ -90,7 +93,6 @@ variables:
     # host:port pairs the readiness gate waits for (space separated).
     SWARMQ_CI_WAIT_FOR: "rabbitmq:5672 valkey:6379"
   before_script:
-    - apt-get update && apt-get install -y --no-install-recommends build-essential
     # Block until both services accept connections. check_docker SKIPS (not
     # fails) when a service is unreachable, so without this gate a slow broker
     # start would let the whole suite go green with zero tests run. This also
@@ -166,7 +168,7 @@ lock-check:
 # deterministic (seeded corpus), service-free and sub-second; previously NO
 # CI job ever executed tests/fuzz, so the suite was rotting unnoticed.
 unit-tests:
-  extends: .uv
+  extends: .uv-git
   stage: test
   variables:
     SWARMQ_TEST_COVERAGE: "1"
@@ -229,13 +231,12 @@ e2e-tests:
 #     darf nicht sinken, neue Zeilen muessen 100 % abgedeckt sein. Auf main
 #     und Tags entfaellt der Vergleich.
 coverage-combine:
-  extends: .uv
+  extends: .uv-git
   stage: coverage
   needs: [unit-tests, integration-tests, e2e-tests]
   variables:
     GIT_DEPTH: "0"
   before_script:
-    - apt-get update && apt-get install -y --no-install-recommends build-essential git
     - git config --global --add safe.directory "$CI_PROJECT_DIR"
   script:
     - $UV_RUN just coverage-report
@@ -297,7 +298,8 @@ soak-tests:
 # Wie und wann: docs/testing/test-strategy.md, Abschnitt "Chaos und Fuzz".
 
 secret_detection:
-  stage: secret-detection
+  stage: test
+  needs: []
 
 include:
 - template: Security/Secret-Detection.gitlab-ci.yml

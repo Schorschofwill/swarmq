@@ -61,6 +61,9 @@ test = [
     # Reihenfolge in jedem Lauf gemischt (Plan 2026-10-13-0902, KTD3). Im
     # Extra statt ``uv run --with``: dort zeigt sys.prefix auf ein Overlay.
     "pytest-randomly>=5.0",
+    # Unit-Suite auf mehrere Prozesse verteilt (just unit, Plan Beschleunigung
+    # Stufe 1); Integration und e2e folgen mit eigener vhost/DB je Prozess.
+    "pytest-xdist>=3.8",
     # Gemessen wird mit ``coverage run -m pytest`` (KTD5), nicht pytest-cov:
     # dessen eigene Unterprozess-Messung ist seit 7.0 entfallen, und
     # ``[tool.coverage.run] patch`` deckt Eltern und Kinder einheitlich ab.
