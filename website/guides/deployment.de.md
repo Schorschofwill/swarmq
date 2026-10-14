@@ -122,6 +122,13 @@ Default von 30 s ist der Drain kürzer als vor 0.12 (25 s eingebettet,
 fertig werden, erhöhe `SWARMQ_SHUTDOWN_TIMEOUT` und die Grace-Period
 gemeinsam ([Shutdown-Budget](../explanation/delivery-semantics.md#shutdown-budget)).
 
+**Mit Surge ausrollen, nicht erst stoppen.** Starte die neuen Worker,
+bevor die alten `SIGTERM` bekommen (Kubernetes `maxSurge` ≥ 1 mit
+`maxUnavailable: 0`, Compose `update_config.order: start-first`). Ein
+Worker, der während eines Schedule-Fires abstürzt, hinterlässt einen
+Claim; die Neuzustellung wartet darauf und läuft erst auf Workern ab
+0.12.1 ([Schedule-Fires nach einem Absturz](../explanation/delivery-semantics.md#was-den-ack-abbricht)).
+
 Weitere Hinweise für Container:
 
 - **Probes:** `/health` als Liveness, `/ready` als Readiness, nie

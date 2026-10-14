@@ -14,6 +14,7 @@ quelle:
   - docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:570 (MR 15, Rücktritt mit Abkühlzeit 2 × Lock-TTL)
   - docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:74 (Nachtrag Rücktritt nur bei Verbindungsfehlern)
   - docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:75 (Nachtrag PublishIndeterminate zählt nicht, Georg 2026-10-11)
+  - docs/plans/2026-10-14-0748-fix-fehlersuche-runde-2-plan.md:184 (KTD18, Nachtrag nicht gesendet nach Endfrist zählt, 2026-10-14)
 tests:
   - tests/unit/scheduler/test_stepdown.py::test_leader_steps_down_after_repeated_publish_failures
   - tests/unit/scheduler/test_stepdown.py::test_no_candidacy_during_the_cooldown
@@ -30,5 +31,7 @@ tests:
 **Begründung.** Ein Leader mit defektem Broker hielt alle Crons aller Apps an (BZ-10). Fehler, die alle Kandidaten gleich treffen (Alarm) oder an einer Queue hängen, würden die Führung nur rotieren lassen; ein einzelner Cron ohne Confirms soll nicht die Führung kosten.
 
 **Bewusste Folgen.** Ein toter TCP ohne RST zählt erst, wenn der Heartbeat den Verlust erkennt. Solange Apps < 0.12 auf dem Valkey laufen, empfiehlt die Doku `SCHEDULER_PUBLISH_STEPDOWN_S=0`, sonst wandert die Führung zu einer 0.11-App.
+
+**Nachtrag 2026-10-14 (FS-02a, KTD18).** Ein Publish nach verstrichener Shutdown-Publish-Endfrist geht nicht raus und endet als einfacher `BrokerConnectionError` („not sent“), nicht mehr als `PublishIndeterminate`. Er zählt deshalb für den Rücktritt; eine eigene, nicht gezählte Unterklasse gibt es bewusst nicht. Ein Leader im Shutdown, der zwischen `drain_until` und `scheduler.stop()` feuert, zählt also. Ein Rücktritt braucht trotzdem ≥ 2 Fehler über ≥ `scheduler_publish_stepdown_s`; im Shutdown-Fenster ist das höchstens kosmetisch (FAILOVER- statt LEADER-Signal). Festgehalten in `tests/unit/scheduler/test_fire_after_publish_deadline.py` (ohne `entscheidung`-Marker).
 
 **Überdenken nur mit neuem Argument.** Offen (Gegenprüfung 2026-10-13, nur Code-Analyse): Ein echter 403 beim Publish kommt als Channel-Close nach dem Senden und wird über `_raise_if_sent` (`broker/rabbitmq/delivery.py:82-91`) vermutlich zu `PublishIndeterminate` – dann zählt `ACCESS_REFUSED` entgegen dem Nachtrag nicht. Die Tests prüfen nur einen gemockten `BrokerConnectionError("ACCESS_REFUSED")`.

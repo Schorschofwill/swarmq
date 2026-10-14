@@ -1,0 +1,20 @@
+# Laufzeit-Abhaengigkeiten von swarmq 0.12.0, exakt wie im Lockfile des Tags (KTD19).
+# Erzeugt mit:
+#   git show v0.12.0:uv.lock > uv.lock; git show v0.12.0:pyproject.toml > pyproject.toml
+#   uv export --frozen --no-hashes --no-emit-project --no-default-groups --no-header --no-annotate
+# (--no-default-groups statt --no-dev: seit 0.12.0 gibt es die Gruppen lint und typing)
+aio-pika==10.0.1
+aiormq==7.0.0
+croniter==6.2.4
+idna==3.19
+msgpack==1.2.2
+msgspec==0.21.1
+multidict==6.8.0
+pamqp==4.0.1
+propcache==0.5.2
+python-dateutil==2.9.0.post0
+six==1.17.0
+structlog==26.1.0
+tzdata==2026.5
+valkey==6.1.1
+yarl==1.24.5

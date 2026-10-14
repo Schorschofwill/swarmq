@@ -48,8 +48,8 @@ pytestmark = [pytest.mark.integration, pytest.mark.timeout(60)]
 
 _ADMIN_HOST = os.environ.get("SWARMQ_TEST_TOXIPROXY_HOST", DEFAULT_ADMIN_HOST)
 _ADMIN_PORT = int(os.environ.get("SWARMQ_TEST_TOXIPROXY_PORT", str(DEFAULT_ADMIN_PORT)))
-# Wie die Kombinationen: Compose-Werte nur gegen den Compose-Stack, sonst
-# Proxy einen Port unter dem Testport (siehe docs/testing/test-strategy.md).
+# Wie die Kombinationen: Compose-Stack -> 5673/rabbitmq:5672, sonst ein
+# Host-Toxiproxy einen Port unter dem Testport (Standard 5698 -> 5699).
 _DEFAULT_PROXY_PORT, _DEFAULT_UPSTREAM = proxy_defaults("rabbitmq", RABBITMQ_HOST, RABBITMQ_PORT, 5672, 5673)
 _PROXY_PORT = int(os.environ.get("SWARMQ_TEST_TOXIPROXY_RMQ_PORT", str(_DEFAULT_PROXY_PORT)))
 _UPSTREAM = os.environ.get("SWARMQ_TEST_TOXIPROXY_RMQ_UPSTREAM", _DEFAULT_UPSTREAM)

@@ -34,12 +34,12 @@ def proxy_defaults(
     compose_port: int,
     compose_proxy_port: int,
 ) -> tuple[int, str]:
-    """Proxy-Port und Upstream eines Dienstes, abgeleitet aus seinem Testport.
+    """Proxy-Port und Upstream fuer einen Dienst.
 
-    Zeigen die Tests auf den Compose-Stack (``port == compose_port``), lauscht
-    Toxiproxy im Compose-Netz auf ``compose_proxy_port`` und erreicht den
-    Dienst über seinen Namen. Sonst läuft ein eigener Toxiproxy im Host-Netz
-    einen Port unter dem Dienst und leitet an ``host:port`` weiter.
+    Compose-Stack (Dienst auf ``compose_port``): Toxiproxy im Compose-Netz,
+    Upstream ist der Dienstname. Sonst ein Toxiproxy im Host-Netz neben den
+    Testcontainern: er lauscht einen Port unter dem Dienst und leitet an
+    ``host:port`` weiter.
     """
     if port == compose_port:
         return compose_proxy_port, f"{service}:{compose_port}"

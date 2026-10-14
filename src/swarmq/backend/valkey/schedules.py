@@ -234,8 +234,17 @@ class ValkeyScheduleStore:
         takeover: str | Sequence[str] | None = None,
     ) -> bool:
         """``sched_fire_claim.lua``: frei oder Wert in ``takeover`` -> Owner
-        ``owner`` mit neuer TTL, sonst ``False`` (Duplikat)."""
+        ``owner`` mit neuer TTL, sonst ``False`` (Duplikat).
+
+        Ein gesetzter ``owner`` steht selbst unter den Uebernahme-Tokens:
+        Wiederholt valkey-py den Befehl nach verlorener Antwort, trifft der
+        zweite Lauf den eigenen Claim und gewinnt (FS-06a). ``owner`` ist je
+        Zustellung frisch, eine Neuzustellung bleibt also Duplikat. Ohne
+        ``owner`` (Wert ``"1"``) wird nichts angehaengt, sonst gewaennen zwei
+        Aufrufe ohne Owner beide."""
         offered = [takeover] if isinstance(takeover, str) else list(takeover or ())
+        if owner is not None:
+            offered.append(owner)
         result = await self._run(
             "sched_fire_claim",
             self._fire_claim_script(

@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from swarmq import identity
-from swarmq.backoff import backend_defer_delay
+from swarmq.backoff import backend_defer_delay, nominal_defer_total
 from swarmq.contracts import ExecutionGuardStore
 from swarmq.exceptions import BackendConnectionError
 from swarmq.headers import HEADER_GUARD_DEFER_COUNT, HEADER_RETRY_COUNT
@@ -64,20 +64,6 @@ def execution_identity(delivery: Any, task_id: str) -> str:
     """Task-ID | ``x-swarmq-replay-id`` | #n (Plan 0.12.0, MR 12): siehe
     ``swarmq.identity.execution_identity``."""
     return identity.execution_identity(delivery.headers, task_id)
-
-
-def _nominal_defer_total(attempts: int, base: float, cap: float) -> float:
-    """Summe der nominellen Wartezeiten (ohne Jitter) der ersten
-    ``attempts`` Zurueckstellungen, wie ``backend_defer_delay``."""
-    total, delay = 0.0, base
-    for done in range(attempts):
-        if delay >= cap:
-            # Ab dem Deckel waechst die Summe linear (kein Ueberlauf bei
-            # tausenden Zurueckstellungen).
-            return total + cap * (attempts - done)
-        total += delay
-        delay *= 2
-    return total
 
 
 class ExecutionGuard:
@@ -235,7 +221,7 @@ class ExecutionGuard:
         config = self._deps.config
         base, cap = config.backend_defer_base_delay, config.backend_defer_max_delay
         limit = config.consumer_timeout_s
-        if not _nominal_defer_total(attempt - 1, base, cap) < limit <= _nominal_defer_total(attempt, base, cap):
+        if not nominal_defer_total(attempt - 1, base, cap) < limit <= nominal_defer_total(attempt, base, cap):
             return
         logger.warning(
             "execution_guard_defer_stalled",
@@ -356,7 +342,7 @@ class ExecutionGuard:
             await self._pause(backend_defer_delay(attempt, base, cap))
             # Begrenzt auf etwa eine Marker-TTL (nominelle Wartezeiten): danach
             # ist der Marker ohnehin abgelaufen.
-            last = self._closing.is_set() or _nominal_defer_total(attempt, base, cap) >= config.execution_guard_ttl_s
+            last = self._closing.is_set() or nominal_defer_total(attempt, base, cap) >= config.execution_guard_ttl_s
             try:
                 await bounded_backend_call(self._deps, call(), what=f"execution guard {marker}")
             except Exception as exc:  # noqa: BLE001 - Nachholversuch, naechste Runde oder Log

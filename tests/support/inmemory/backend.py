@@ -554,6 +554,10 @@ class InMemoryScheduleStore:
     ) -> bool:
         current = self._inflight.get(fire_key)
         offered = (takeover,) if isinstance(takeover, str) else tuple(takeover or ())
+        # Wie ``ValkeyScheduleStore``: der eigene Owner zaehlt als uebernehmbar
+        # (Transport-Retry, FS-06a); ohne Owner nicht.
+        if owner is not None:
+            offered = (*offered, owner)
         if current is not None and current not in offered:
             return False
         self._inflight.set(fire_key, owner or "1", ttl_ms)

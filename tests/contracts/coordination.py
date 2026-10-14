@@ -35,6 +35,14 @@ macht ``owner`` zum Scheduler-Leader (das Binding erwirbt den Leader-Lock
 # 9. Die Uebernahme setzt die TTL neu.
 # 10. Uebernahme mit mehreren angebotenen Tokens (Kopie nach unklarem
 #     Claim-Ausgang): jedes davon gewinnt, der Owner rotiert.
+#
+# Test list (Plan 2026-10-14-0748, U6, KTD7, FS-06a) -- ScheduleStoreContract:
+# 10a. Wiederholter claim_fire mit demselben ``owner`` (Transport-Retry nach
+#      verlorener Antwort) gewinnt.
+# 10b. ... auch nach einer Uebernahme (Wiederholung mit denselben Argumenten).
+# 10c. Eine Neuzustellung mit neuem ``owner`` bleibt nach dem Selbsttreffer
+#      fremd (Duplikat).
+# 10d. Ohne ``owner`` gewinnt nur der erste Aufruf (``test_fire_markers``).
 
 # Test list (Plan 2026-10-08-1541, U12, KTD10) -- ScheduleStoreContract:
 # 14. ``report_cron`` legt eine Meldung an: ``first_seen == last_seen`` in
@@ -614,6 +622,29 @@ class ScheduleStoreContract:
 
     async def test_fire_claim_with_owner_blocks_second_claim(self, impl: ScheduleStore) -> None:
         key = _name("fire")
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="a") is True
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="b") is False
+
+    async def test_fire_claim_repeated_by_same_owner_wins(self, impl: ScheduleStore) -> None:
+        """Liste 10a (FS-06a): valkey-py wiederholt den Claim nach verlorener
+        Antwort; der zweite Lauf trifft den eigenen Claim."""
+        key = _name("fire")
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="a") is True
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="a") is True
+
+    async def test_fire_claim_repeated_takeover_wins(self, impl: ScheduleStore) -> None:
+        """Liste 10b: die Wiederholung einer Uebernahme trifft den schon
+        rotierten Owner."""
+        key = _name("fire")
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="a") is True
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="b", takeover="a") is True
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="b", takeover="a") is True
+
+    async def test_fire_claim_redelivery_with_new_owner_stays_duplicate(self, impl: ScheduleStore) -> None:
+        """Liste 10c: der Selbsttreffer gilt nur fuer denselben Owner; eine
+        Neuzustellung (frischer Owner) bleibt Duplikat."""
+        key = _name("fire")
+        assert await impl.claim_fire(key, ttl_ms=60_000, owner="a") is True
         assert await impl.claim_fire(key, ttl_ms=60_000, owner="a") is True
         assert await impl.claim_fire(key, ttl_ms=60_000, owner="b") is False
 

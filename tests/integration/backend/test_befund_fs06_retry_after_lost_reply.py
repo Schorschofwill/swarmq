@@ -32,7 +32,7 @@ Lua-Skripte nicht ausfuehren.
 
 Testliste:
 # [x] claim_unique nach verlorener Antwort -> None (eigener Claim)
-# [x] claim_fire nach verlorener Antwort -> True (eigener Claim)
+# [x] claim_fire nach verlorener Antwort -> True (eigener Claim; behoben U6)
 # [x] Mutex-Acquire nach verlorener Antwort -> Token (eigener Lock)
 """
 
@@ -94,7 +94,6 @@ async def test_claim_unique_after_lost_reply_counts_as_own_claim(
 
 
 @pytest.mark.befund("FS-06")
-@pytest.mark.xfail(strict=True, reason="FS-06: offen - claim_fire haelt den eigenen Claim nach Retry fuer fremd")
 async def test_claim_fire_after_lost_reply_counts_as_own_claim(
     backend: ValkeyBackend, monkeypatch: pytest.MonkeyPatch
 ) -> None:
