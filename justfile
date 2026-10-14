@@ -51,9 +51,10 @@ integration *args:
 e2e *args:
     scripts/run-tests.sh tests/e2e "$@"
 
-# Chaos-Suiten (eigene Compose-Stacks, Toxiproxy; docs/testing/test-strategy.md)
+# Chaos-Suiten (eigene Compose-Stacks, Toxiproxy; docs/testing/test-strategy.md).
+# Ohne Pfad gilt testpaths; ``uv run just chaos tests/chaos`` grenzt ein.
 chaos *args:
-    scripts/run-tests.sh tests -m chaos "$@"
+    scripts/run-tests.sh -m chaos "$@"
 
 # Stress-Suite
 stress *args:
@@ -86,3 +87,7 @@ coverage-report:
 # Ratchet gegen den Merge-Base mit main und diff-cover (nach coverage-report; scripts/coverage_gate.py)
 coverage-gate:
     {{uv_run}} --group coverage python scripts/coverage_gate.py
+
+# fail_under aus drei main-Laeufen anheben (ohne Werte per GitLab-API; scripts/coverage_ratchet.py)
+ratchet *values:
+    {{uv_run}} python scripts/coverage_ratchet.py "$@"
