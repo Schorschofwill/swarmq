@@ -28,9 +28,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import selectors
-from collections.abc import Callable, Coroutine
-from typing import Any, override
 from unittest.mock import MagicMock
 
 import pytest
@@ -40,6 +37,7 @@ from swarmq.contracts.coordination import LockToken
 from swarmq.exceptions import BackendConnectionError
 from swarmq.signals import SignalDispatcher
 from tests.unit.scheduler._helpers import _make_loop  # pyright: ignore[reportUnknownVariableType] - ungetypter Bestandshelfer
+from tests.unit.scheduler._virtual_time import run_virtual
 
 pytestmark = [pytest.mark.timeout(5)]
 
@@ -47,44 +45,7 @@ pytestmark = [pytest.mark.timeout(5)]
 _RENEW_FAILURE_AFTER_S = 65.0
 
 
-class _FastForwardSelector(selectors.DefaultSelector):
-    """Wartet nie in Echtzeit: liegt nichts an, springt die Uhr vor."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.clock = 0.0
-
-    @override
-    def select(self, timeout: float | None = None) -> list[tuple[selectors.SelectorKey, int]]:
-        ready = super().select(0)
-        if ready:
-            return ready
-        if timeout is None:
-            raise RuntimeError("virtuelle Uhr: nichts geplant, die Loop wuerde ewig warten")
-        self.clock += max(timeout, 0.0)
-        return []
-
-
-class _VirtualTimeLoop(asyncio.SelectorEventLoop):
-    def __init__(self) -> None:
-        self._selector_ff = _FastForwardSelector()
-        super().__init__(selector=self._selector_ff)
-
-    @override
-    def time(self) -> float:
-        return self._selector_ff.clock
-
-
-def _run_virtual[T](main: Callable[[], Coroutine[Any, Any, T]]) -> T:
-    loop = _VirtualTimeLoop()
-    try:
-        return loop.run_until_complete(main())
-    finally:
-        loop.close()
-
-
 @pytest.mark.befund("FS-31")
-@pytest.mark.xfail(strict=True, reason="FS-31: offen - Leader-Renew ohne op_timeout, Ruecktritt erst nach ~150 s")
 def test_leader_steps_down_before_the_lock_ttl_when_renew_hangs(
     backend: MagicMock,
     broker: MagicMock,
@@ -112,7 +73,7 @@ def test_leader_steps_down_before_the_lock_ttl_when_renew_hangs(
             await election
         return state
 
-    state = _run_virtual(_main)
+    state = run_virtual(_main)
     assert state != "leader", (
         f"nach {config.scheduler_lock_ttl:.0f} s (Lock-TTL) haelt sich der Leader noch fuer Leader; "
         f"Renew ohne Zeitlimit, erster Fehler erst nach {_RENEW_FAILURE_AFTER_S:.0f} s"

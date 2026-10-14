@@ -197,6 +197,21 @@ class SchedulerLoop(
             1,
             int(config.scheduler_lock_ttl / config.scheduler_heartbeat_interval) - 1,
         )
+        # Zweiter Ausloeser (FS-31, KTD11): Zeitgrenze ``Start des letzten
+        # erfolgreichen Renews + ttl - Marge`` auf der Uhr der Event-Loop.
+        # Marge ist ``backend_op_timeout``, hoechstens die halbe Spanne
+        # zwischen Heartbeat und TTL: sonst laege die Grenze bei grossem
+        # op_timeout vor dem naechsten regulaeren Renew, und ein gesunder
+        # Leader traete bei jedem Takt zurueck.
+        # ``None``: noch keine Amtszeit mit bekanntem Start.
+        self._renew_deadline: float | None = None
+        self._renew_window = config.scheduler_lock_ttl - max(
+            0.0,
+            min(
+                config.backend_op_timeout,
+                (config.scheduler_lock_ttl - config.scheduler_heartbeat_interval) / 2,
+            ),
+        )
 
     # ---- lifecycle ------------------------------------------------------
 
@@ -388,17 +403,17 @@ class SchedulerLoop(
     async def _election_tick(self) -> None:
         if self._state == "leader":
             try:
-                still_leader = await self._lock_manager.renew(
-                    self._lock_token,
-                    int(self._config.scheduler_lock_ttl * 1000),
-                )
-            except BackendConnectionError as exc:
-                # A renew ERROR must not keep the
+                still_leader = await self._renew_lock()
+            except (BackendConnectionError, TimeoutError) as exc:
+                # A renew ERROR (or timeout, FS-31) must not keep the
                 # leader in office indefinitely. After `limit`
                 # consecutive failures (≈ one heartbeat before the lock
                 # TTL is provably expired) step down proactively so the
                 # old leader stops firing BEFORE a standby can take
                 # over — closing the unbounded split-brain window.
+                # Zweiter Ausloeser (KTD11): ist die Zeitgrenze erreicht,
+                # sofort, unabhaengig vom Zaehler. Der Renew ist auf die
+                # Restzeit begrenzt und endet spaetestens dort.
                 self._renew_failures += 1
                 logger.warning(
                     "scheduler_renew_error",
@@ -411,10 +426,10 @@ class SchedulerLoop(
                         "scheduler_renew_failures_stepdown",
                         consecutive_failures=self._renew_failures,
                     )
-                    self._renew_failures = 0
-                    self._state = "standby"
-                    self._prev_leader_seen = True
-                    await self._emit(Signal.SCHEDULER_STANDBY)
+                    await self._step_down_after_renew_failures()
+                elif self._renew_deadline_passed():
+                    logger.warning("scheduler_renew_deadline_stepdown", consecutive_failures=self._renew_failures)
+                    await self._step_down_after_renew_failures()
                 return
             self._renew_failures = 0
             if still_leader:
@@ -434,6 +449,7 @@ class SchedulerLoop(
         # Verbleibender Zustand: standby
         if self._in_stepdown_cooldown():
             return
+        acquire_started = asyncio.get_running_loop().time()
         try:
             acquired = (
                 await self._lock_manager.acquire(
@@ -460,6 +476,9 @@ class SchedulerLoop(
             logger.warning("scheduler_handover_marker_read_failed", **_error_fields(exc))
             had_handover = False
 
+        # FS-31: ein frischer Erwerb setzt die TTL frühestens beim Aufruf; die
+        # Grenze der alten Amtszeit gilt nicht mehr.
+        self._renew_deadline = acquire_started + self._renew_window
         # BZ-07: die Übernahme (Handover-Marker) kann dauern; direkt danach
         # verlängern, damit das Lock nicht vor der ersten Verlängerung abläuft.
         renewed = await self._renew_after_takeover()
@@ -494,13 +513,39 @@ class SchedulerLoop(
             return await schedules.take_handover_marker()
         return await schedules.take_handover_marker(previous_owner=self._last_seen_leader)
 
+    async def _step_down_after_renew_failures(self) -> None:
+        """Ruecktritt ohne Loeschen des Keys und ohne Abkuehlzeit (E-048)."""
+        self._renew_failures = 0
+        self._state = "standby"
+        self._prev_leader_seen = True
+        await self._emit(Signal.SCHEDULER_STANDBY)
+
+    def _renew_deadline_passed(self) -> bool:
+        return self._renew_deadline is not None and asyncio.get_running_loop().time() >= self._renew_deadline
+
+    async def _renew_lock(self) -> bool:
+        """Renew, begrenzt auf ``min(backend_op_timeout, Restzeit bis zur
+        Zeitgrenze)`` (FS-31): ein haengendes Valkey haelt den Leader nicht
+        ueber die Lock-TTL hinaus im Amt. Ein Erfolg schiebt die Grenze; als
+        Start zaehlt der Zeitpunkt vor dem Aufruf, frueher kann Valkey nicht
+        verlaengert haben. Wirft ``BackendConnectionError`` oder ``TimeoutError``."""
+        started = asyncio.get_running_loop().time()
+        budget = self._config.backend_op_timeout
+        if self._renew_deadline is not None:
+            budget = min(budget, self._renew_deadline - started)
+        async with asyncio.timeout(budget):
+            renewed = await self._lock_manager.renew(self._lock_token, int(self._config.scheduler_lock_ttl * 1000))
+        if renewed:
+            self._renew_deadline = started + self._renew_window
+        return renewed
+
     async def _renew_after_takeover(self) -> bool | None:
         """``False`` nur, wenn das Lock beobachtbar weg ist; ``None`` bei einem
         Fehler beim Verlängern. Der Fehler kostet die frisch erworbene Rolle
         nicht, verbraucht aber das Renew-Budget bis auf einen Fehlschlag."""
         try:
-            return await self._lock_manager.renew(self._lock_token, int(self._config.scheduler_lock_ttl * 1000))
-        except BackendConnectionError as exc:
+            return await self._renew_lock()
+        except (BackendConnectionError, TimeoutError) as exc:
             logger.warning("scheduler_renew_error", **_error_fields(exc))
             return None
 
