@@ -109,6 +109,7 @@ class ReloadController:
             cause = ValueError(probe.error() or f"dictConfig exited {returncode}")
             self._log_failed(LoggingConfigError(str(self.log_config), cause))
             return False
+        probe.close()
         return True
 
     def _log_failed(self, exc: LoggingConfigError) -> None:

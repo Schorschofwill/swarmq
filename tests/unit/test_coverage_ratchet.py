@@ -5,6 +5,10 @@ von ``main`` ab: kleinster Wert minus 0,5 Prozentpunkte, auf ganze Prozent
 abgerundet. Es hebt nur an und weigert sich bei verändertem Arbeitsbaum.
 Geprüft am Skript in einem eigenen Git-Repository im ``tmp_path``.
 
+Über 100 ms je Test, bewusst: Das Skript läuft als echter Prozess gegen
+ein echtes Git-Repository (Arbeitsbaum-Prüfung). Keine Dienste, deshalb
+Unit-Tests (AGENTS.md: Begründung im Test).
+
 Test-Liste:
 - [x] 93,40 / 93,10 / 93,70 bei bisher 90 ergeben ``fail_under = 92``
 - [x] ohne bisherigen Wert wird ``fail_under`` eingetragen

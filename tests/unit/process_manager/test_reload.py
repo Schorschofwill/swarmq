@@ -12,6 +12,8 @@ Tests der echten Probe stehen in
 # - [x] Mit ``--log-config`` startet ein Tick die Probe mit der geladenen
 #       Konfiguration; solange ``poll()`` None liefert, kein Reload, ``busy``
 # - [x] Probe gueltig: Reload beschlossen, ``busy`` endet
+# - [x] Probe gueltig: ihre Pipe wird geschlossen (sonst ein offener
+#       Deskriptor je erfolgreichem Reload im Supervisor)
 # - [x] Probe ungueltig: ``log_config_reload_failed`` mit Pfad und Fehler
 # - [x] Probe ueberschreitet die Frist: beendet,
 #       ``log_config_reload_probe_timeout``, kein ``log_config_reload_failed``
@@ -24,6 +26,7 @@ Tests der echten Probe stehen in
 # - [x] Die echte Probe meldet einen Handler-Tippfehler als Fehlertext
 #       (echter Prozess: in ``tests/integration/test_hot_reload_logconfig_e2e.py``)
 # - [x] Die echte Probe wird beim Beenden auch eingesammelt
+# - [x] Gueltige Konfiguration: die Pipe der echten Probe wird geschlossen
 # - [x] Ohne Fabrik prueft die echte Probe die Datei (ebenda)
 # - [x] Requests waehrend einer Probe, die in die Frist laeuft: keine zweite
 # Review A6 -- ``reexec``: ein SIGTERM nach der letzten Pruefung geht nicht
@@ -99,6 +102,15 @@ def test_a_valid_probe_accepts_the_reload(log_config):
     probe.rc = 0
     assert ctl.step() is True
     assert ctl.busy is False
+
+
+def test_an_accepted_reload_closes_the_probe(log_config):
+    probe = _Probe(rc=0)
+    ctl = ReloadController(log_config, probe_factory=_Factory(probe), clock=_Clock())
+    ctl.request()
+
+    assert ctl.step() is True
+    assert probe.closed is True
 
 
 def test_an_invalid_probe_logs_reload_failed(log_config, swarmq_logs):
@@ -229,6 +241,18 @@ def test_the_real_probe_runs_in_its_own_session():
     assert popen.call_args.kwargs["start_new_session"] is True
     popen.return_value.stdin.write.assert_called_once_with('{"version": 1}')
     popen.return_value.stdin.close.assert_called_once()
+
+
+def test_a_valid_config_closes_the_real_probes_pipe():
+    """``worker --check`` mit gueltiger Konfiguration: die stderr-Pipe der
+    Probe wird geschlossen, nicht dem Garbage Collector ueberlassen."""
+    from swarmq.logging_file import probe_dict_config
+
+    with patch("swarmq.logging_file.subprocess.Popen") as popen:
+        proc = popen.return_value
+        proc.wait.return_value = 0
+        probe_dict_config("log.json", '{"version": 1}')
+    proc.stderr.close.assert_called_once()
 
 
 def test_killing_the_real_probe_also_reaps_it():

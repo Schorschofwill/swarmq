@@ -6,6 +6,8 @@ import contextlib
 import gc
 import pathlib
 import subprocess
+import sys
+import types
 from collections.abc import Iterator
 from typing import Any
 
@@ -66,9 +68,22 @@ _collect_garbage_after_module = pytest.fixture(autouse=True, scope="module", nam
 )
 
 
+_STDLIB_DIR = pathlib.Path(subprocess.__file__).parent
+_TESTS_DIR = pathlib.Path(__file__).parent
+
+
+def _started_by_test_code() -> bool:
+    """True, wenn der erste Aufrufer außerhalb der Standardbibliothek unter
+    ``tests/`` liegt (``subprocess.run`` aus einem Test zählt als Testcode)."""
+    frame: types.FrameType | None = sys._getframe(2)  # Aufrufer von Popen.__init__, ohne das teure inspect.stack()
+    while frame is not None and frame.f_code.co_filename.startswith(str(_STDLIB_DIR)):
+        frame = frame.f_back
+    return frame is not None and frame.f_code.co_filename.startswith(str(_TESTS_DIR))
+
+
 @pytest.fixture(autouse=True)
 def _close_subprocess_pipes() -> Iterator[None]:
-    """Pipes jedes im Test gestarteten Unterprozesses am Testende schließen.
+    """Pipes der von Testcode gestarteten Unterprozesse am Testende schließen.
 
     Viele Tests starten ``swarmq worker`` mit ``stdout=PIPE``/``stderr=PIPE``,
     lesen die Ausgabe und beenden den Prozess, schließen die Pipe-Objekte aber
@@ -76,6 +91,10 @@ def _close_subprocess_pipes() -> Iterator[None]:
     ResourceWarning aus ``FileIO.__del__``. Die Fixture schließt die Pipes
     zentral, nachdem der Test fertig ist; Prozesse beendet sie nicht, das
     bleibt Sache des Tests.
+
+    Nur ``Popen`` aus Testcode (erster Aufrufer außerhalb der
+    Standardbibliothek liegt unter ``tests/``): Pipes, die swarmq selbst
+    offen lässt, sollen als Leck auffallen, nicht still geschlossen werden.
 
     Bewusst ohne ``monkeypatch``: die Fixture würde dessen Abbau hinter
     ``_reset_task_registry`` ziehen, und ein Test, der die Registry per
@@ -87,7 +106,8 @@ def _close_subprocess_pipes() -> Iterator[None]:
 
     def _tracking_init(self: subprocess.Popen[Any], *args: Any, **kwargs: Any) -> None:
         original_init(self, *args, **kwargs)
-        started.append(self)
+        if _started_by_test_code():
+            started.append(self)
 
     subprocess.Popen.__init__ = _tracking_init  # type: ignore[method-assign]  # Patch nur für diesen Test, unten zurückgesetzt
     try:

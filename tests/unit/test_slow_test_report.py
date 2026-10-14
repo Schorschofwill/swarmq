@@ -4,6 +4,10 @@ Setup- und Call-Phasen über 100 ms erscheinen in einer Zusammenfassung und
 in ``slow-unit-tests.json``; der Exit-Code bleibt unberührt. Geprüft mit
 ``pytester`` gegen das Plugin ``tests.support.slow_tests``.
 
+Über 100 ms je Test, bewusst: Der Bericht misst echte Laufzeiten, die
+inneren Tests müssen deshalb wirklich 150 ms schlafen. Sie brauchen keine
+Dienste und bleiben darum Unit-Tests (AGENTS.md: Begründung im Test).
+
 Test-Liste:
 - [x] Test mit 150 ms Call-Phase: im Bericht und in der Datei, Exit-Code 0
 - [x] langsame Fixture: Setup-Phase getrennt vom Call

@@ -19,12 +19,12 @@ Für jede Änderung am Produktionscode MUSS zuerst ein fehlschlagender Test exis
 
 --- RED ---
 1. EINEN fehlschlagenden Test schreiben (nicht zwei, nicht drei)
-2. Test ausführen: pytest tests/unit/test_<modul>.py::<testname> -x
+2. Test ausführen: uv run --extra test pytest tests/unit/test_<modul>.py::<testname> -x (ein Unit-Test braucht weder Dienste noch Sperre)
 3. Verifizieren: Test MUSS fehlschlagen, und zwar aus dem RICHTIGEN Grund
 
 --- GREEN ---
 4. MINIMALEN Produktionscode schreiben (nur so viel wie nötig)
-5. ALLE Tests ausführen: pytest tests/ -x
+5. ALLE Tests ausführen: uv run just all (Unit, Property, Fuzz, Integration, e2e; Testports und Sperre setzt das Rezept)
 6. Verifizieren: ALLE Tests müssen grün sein
 
 --- REFACTOR (optional, aber regelmäßig) ---

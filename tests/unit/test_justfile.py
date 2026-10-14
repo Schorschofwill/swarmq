@@ -4,6 +4,10 @@ Die Rezepte laufen echt über ``just``; ein Stub für ``uv`` im ``PATH``
 protokolliert Argumente und Umgebung, statt pytest zu starten. Die Sperre ist
 eine Datei im ``tmp_path``.
 
+Über 100 ms je Test, bewusst: Geprüft wird das echte ``just`` mit echtem
+``flock``, ein Nachbau bewiese nichts. Keine Dienste, deshalb Unit-Tests
+(AGENTS.md: Begründung im Test).
+
 Test-Liste:
 - [x] ``just e2e`` setzt die Ports 5699/6399, wenn keine gesetzt sind
 - [x] gesetzte Ports übernimmt ``just e2e`` unverändert
