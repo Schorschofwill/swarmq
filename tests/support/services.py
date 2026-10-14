@@ -52,22 +52,29 @@ VALKEY_PORT = int(os.environ.get("SWARMQ_TEST_VALKEY_PORT", str(DEFAULT_VALKEY_P
 # FLUSHDB nur die eigene Datenbank trifft. Ohne xdist: vhost ``/``, DB 0.
 # Unterprozesse erben PYTEST_XDIST_WORKER und landen im selben Namensraum.
 XDIST_WORKER = os.environ.get("PYTEST_XDIST_WORKER", "")
+# RabbitMQ löscht eine vhost asynchron, Queue für Queue. Ein Lauf direkt
+# danach fände unter demselben Namen die noch laufende Löschung vor: Sein
+# PUT bliebe wirkungslos, und die vhost verschwände mitten im Lauf. Darum
+# trägt der Name die Kennung des Testlaufs (von xdist je Lauf vergeben).
+XDIST_RUN = os.environ.get("PYTEST_XDIST_TESTRUNUID", "")
 # Valkey hat 16 Datenbanken; DB 0 bleibt dem Lauf ohne xdist.
 MAX_PARALLEL_WORKERS = 15
 
 
-def worker_namespace(worker: str) -> tuple[str, int]:
-    """vhost und Valkey-Datenbank für den xdist-Prozess ``worker`` (leer: keiner)."""
+def worker_namespace(worker: str, run_id: str = "") -> tuple[str, int]:
+    """vhost und Valkey-Datenbank für den xdist-Prozess ``worker`` (leer: keiner)
+    im Testlauf ``run_id``."""
     if not worker:
         return "/", 0
     index = int(worker.removeprefix("gw"))
     if index >= MAX_PARALLEL_WORKERS:
         msg = f"xdist worker {worker}: at most {MAX_PARALLEL_WORKERS} parallel workers (Valkey has 16 databases)"
         raise RuntimeError(msg)
-    return f"swarmq-test-{worker}", index + 1
+    vhost = f"swarmq-test-{worker}-{run_id[:8]}" if run_id else f"swarmq-test-{worker}"
+    return vhost, index + 1
 
 
-RABBITMQ_VHOST, VALKEY_DB = worker_namespace(XDIST_WORKER)
+RABBITMQ_VHOST, VALKEY_DB = worker_namespace(XDIST_WORKER, XDIST_RUN)
 
 
 ALLOW_DEFAULT_PORTS_VAR = "SWARMQ_TEST_ALLOW_DEFAULT_PORTS"

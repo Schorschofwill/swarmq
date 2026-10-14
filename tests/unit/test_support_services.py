@@ -19,6 +19,8 @@ Test-Liste:
 - [x] ohne xdist: vhost ``/`` und Valkey-DB 0
 - [x] xdist-Prozess gwN: vhost ``swarmq-test-gwN`` und DB N+1
 - [x] mehr als 15 xdist-Prozesse -> Fehler (Valkey hat 16 Datenbanken)
+- [x] vhost-Name je Testlauf eindeutig (RabbitMQ löscht vhosts asynchron; ein
+      neuer Lauf darf nicht in die noch laufende Löschung des alten geraten)
 - [x] RabbitMQNode: AMQP-URL und API-Pfad mit vhost; ``/`` bleibt ``/`` bzw. ``%2F``
 - [x] URLs über einen anderen Host/Port (Toxiproxy) behalten vhost und DB des Prozesses
 """
@@ -181,6 +183,12 @@ class TestWorkerNamespace:
     )
     def test_xdist_worker_gets_own_vhost_and_db(self, worker: str, expected: tuple[str, int]) -> None:
         assert services.worker_namespace(worker) == expected
+
+    def test_vhost_name_carries_the_test_run(self) -> None:
+        first, _ = services.worker_namespace("gw2", run_id="0a1b2c3d4e5f")
+        second, _ = services.worker_namespace("gw2", run_id="9f8e7d6c5b4a")
+        assert first == "swarmq-test-gw2-0a1b2c3d"
+        assert first != second
 
     def test_more_workers_than_valkey_databases_is_refused(self) -> None:
         with pytest.raises(RuntimeError, match="at most 15"):

@@ -30,7 +30,7 @@ import httpx
 import pytest
 from aio_pika.abc import AbstractConnection
 
-from tests.integration.spikes._broker import AUTH, QUORUM, declare
+from tests.integration.spikes._broker import AUTH, QUORUM, declare, reply_text
 from tests.support.services import RabbitMQNode
 
 pytestmark = [pytest.mark.integration, pytest.mark.spike]
@@ -54,8 +54,8 @@ async def test_exclusive_queue_of_another_connection(
     finally:
         await other.close()
 
-    expected = (
-        f"ChannelLockedResource: RESOURCE_LOCKED - cannot obtain exclusive access to locked queue '{queue}' "
+    expected = "ChannelLockedResource: " + reply_text(
+        f"RESOURCE_LOCKED - cannot obtain exclusive access to locked queue '{queue}' "
         f"in vhost '{node.vhost}'. It could be originally declared on another connection or the exclusive property value "
         "does not match that of the original declaration."
     )
