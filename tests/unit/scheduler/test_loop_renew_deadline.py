@@ -17,6 +17,11 @@ Testliste:
 # [x] backend_op_timeout >= lock_ttl, erfolgreiche Renews -> bleibt Leader
 # [x] Uebernahme, danach haengende Renews -> Ruecktritt vor Erwerb + ttl
 # [x] Verlaengerung nach der Uebernahme haengt -> begrenzt, bleibt Leader (BZ-07)
+# [x] Erwerb dauert laenger als das Fenster, Verlaengerung scheitert -> bleibt
+#     Standby, naechster Takt (Selbsttreffer) uebernimmt regulaer (Review U14)
+# [x] Handover-Marker-Lesen dauert laenger als das Fenster -> bleibt Standby
+# [x] Ruecktritt per Grenze, Selbsttreffer, Verlaengerung scheitert -> bleibt
+#     Standby: die Grenze der alten Amtszeit gilt weiter (Review U14)
 """
 
 from __future__ import annotations
@@ -30,6 +35,8 @@ import pytest
 
 from swarmq.config import SwarmQConfig
 from swarmq.contracts.coordination import LockToken
+from swarmq.exceptions import BackendConnectionError
+from swarmq.locking import SCHEDULER_LOCK_NAME
 from swarmq.scheduler import SchedulerLoop
 from swarmq.signals import Signal, SignalDispatcher
 from tests.unit.scheduler._helpers import _make_loop  # pyright: ignore[reportUnknownVariableType] - ungetypter Bestandshelfer
@@ -292,3 +299,143 @@ def test_the_deadline_stepdown_is_logged_and_signalled_once(
     assert [e["event"] for e in swarmq_logs if e["event"].endswith("_stepdown")] == [
         "scheduler_renew_deadline_stepdown"
     ]
+
+
+def _leader_signals(signal_dispatcher: SignalDispatcher) -> list[Signal]:
+    seen: list[Signal] = []
+    for signal in (Signal.SCHEDULER_LEADER, Signal.SCHEDULER_LEADER_FAILOVER):
+
+        async def _record(*, _signal: Signal = signal, **_kw: Any) -> None:
+            seen.append(_signal)
+
+        signal_dispatcher.on_signal(signal)(_record)
+    return seen
+
+
+@pytest.mark.entscheidung("E-048")
+def test_a_takeover_past_the_deadline_stays_standby_until_the_next_tick(
+    backend: MagicMock,
+    broker: MagicMock,
+    lock_manager: MagicMock,
+    store: MagicMock,
+    signal_dispatcher: SignalDispatcher,
+    swarmq_logs: list[dict[str, Any]],
+) -> None:
+    """Review U14: Haengt der Erwerb laenger als das Fenster, ist die Grenze vor
+    der Verlaengerung erreicht. Ohne gelungene Verlaengerung tritt der Loop das
+    Amt nicht an; beim naechsten Takt (Selbsttreffer) uebernimmt er regulaer."""
+    config = _config()
+    acquires = 0
+
+    async def _acquire(*_args: Any, **_kwargs: Any) -> LockToken:
+        nonlocal acquires
+        acquires += 1
+        if acquires == 1:
+            await asyncio.sleep(config.scheduler_lock_ttl)
+        return LockToken(name=SCHEDULER_LOCK_NAME, owner="test-owner", max_concurrency=1)
+
+    renews = 0
+
+    async def _renew(_token: LockToken, _ttl_ms: int) -> bool:
+        nonlocal renews
+        renews += 1
+        if renews == 1:
+            await _hang()
+        return True
+
+    lock_manager.acquire.side_effect = _acquire
+    lock_manager.renew.side_effect = _renew
+    took_office = _leader_signals(signal_dispatcher)
+    loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
+
+    async def _main() -> None:
+        await loop._election_tick()
+        assert loop.state == "standby"
+        assert took_office == []
+        assert [e["event"] for e in swarmq_logs if e["event"].endswith("_stepdown")] == [
+            "scheduler_renew_deadline_stepdown"
+        ]
+        await asyncio.sleep(config.scheduler_heartbeat_interval)
+        await loop._election_tick()
+
+    run_virtual(_main)
+
+    assert loop.state == "leader"
+    assert took_office == [Signal.SCHEDULER_LEADER_FAILOVER]
+    lock_manager.release.assert_not_awaited()
+
+
+def test_a_slow_handover_marker_read_past_the_deadline_keeps_the_loop_standby(
+    backend: MagicMock,
+    broker: MagicMock,
+    lock_manager: MagicMock,
+    store: MagicMock,
+    signal_dispatcher: SignalDispatcher,
+) -> None:
+    """Review U14: Auch das Lesen des Handover-Markers laeuft ohne Zeitlimit."""
+    config = _config()
+
+    async def _slow_marker(**_kwargs: Any) -> bool:
+        await asyncio.sleep(config.scheduler_lock_ttl)
+        return True
+
+    async def _hanging_renew(_token: LockToken, _ttl_ms: int) -> bool:
+        await _hang()
+        return True
+
+    backend.schedules.take_handover_marker.side_effect = _slow_marker
+    lock_manager.renew.side_effect = _hanging_renew
+    took_office = _leader_signals(signal_dispatcher)
+    loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
+
+    async def _main() -> None:
+        await loop._election_tick()
+
+    run_virtual(_main)
+
+    assert loop.state == "standby"
+    assert took_office == []
+    backend.schedules.set_leader_version.assert_not_awaited()
+
+
+@pytest.mark.entscheidung("E-048")
+def test_a_failed_renew_after_reelection_keeps_the_deadline_of_the_old_term(
+    backend: MagicMock,
+    broker: MagicMock,
+    lock_manager: MagicMock,
+    store: MagicMock,
+    signal_dispatcher: SignalDispatcher,
+) -> None:
+    """Review U14 (E-048, Nachtrag): Der Selbsttreffer (FS-06b) laesst die
+    Rest-TTL stehen. Scheitert die Verlaengerung danach, darf die Grenze nicht
+    ab dem Erwerb neu laufen: Der Key lebt hoechstens bis zur Frist der alten
+    Amtszeit. Heartbeat 5 s, damit die Zaehlregel nicht vor der Zeit greift."""
+    config = _config(scheduler_heartbeat_interval=5.0)
+
+    async def _renew(_token: LockToken, _ttl_ms: int) -> bool:
+        now = asyncio.get_running_loop().time()
+        if now < 1:
+            return True
+        if now < config.scheduler_lock_ttl - 1:
+            await _hang()
+        raise BackendConnectionError("valkey flaky")
+
+    lock_manager.renew.side_effect = _renew
+    loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
+    loop._state = "leader"
+    took_office = _leader_signals(signal_dispatcher)
+
+    async def _main() -> None:
+        clock = asyncio.get_running_loop()
+        stepped_down_at = clock.time()
+        while loop.state == "leader":
+            await loop._election_tick()
+            stepped_down_at = clock.time()
+            await asyncio.sleep(config.scheduler_heartbeat_interval)
+        assert stepped_down_at < config.scheduler_lock_ttl
+        await loop._election_tick()
+
+    run_virtual(_main)
+
+    assert loop.state == "standby"
+    assert took_office == []

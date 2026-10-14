@@ -402,48 +402,7 @@ class SchedulerLoop(
 
     async def _election_tick(self) -> None:
         if self._state == "leader":
-            try:
-                still_leader = await self._renew_lock()
-            except (BackendConnectionError, TimeoutError) as exc:
-                # A renew ERROR (or timeout, FS-31) must not keep the
-                # leader in office indefinitely. After `limit`
-                # consecutive failures (≈ one heartbeat before the lock
-                # TTL is provably expired) step down proactively so the
-                # old leader stops firing BEFORE a standby can take
-                # over — closing the unbounded split-brain window.
-                # Zweiter Ausloeser (KTD11): ist die Zeitgrenze erreicht,
-                # sofort, unabhaengig vom Zaehler. Der Renew ist auf die
-                # Restzeit begrenzt und endet spaetestens dort.
-                self._renew_failures += 1
-                logger.warning(
-                    "scheduler_renew_error",
-                    **_error_fields(exc),
-                    consecutive_failures=self._renew_failures,
-                    step_down_at=self._renew_failure_limit,
-                )
-                if self._renew_failures >= self._renew_failure_limit:
-                    logger.warning(
-                        "scheduler_renew_failures_stepdown",
-                        consecutive_failures=self._renew_failures,
-                    )
-                    await self._step_down_after_renew_failures()
-                elif self._renew_deadline_passed():
-                    logger.warning("scheduler_renew_deadline_stepdown", consecutive_failures=self._renew_failures)
-                    await self._step_down_after_renew_failures()
-                return
-            self._renew_failures = 0
-            if still_leader:
-                await self._write_leader_version()
-                await self._emit(Signal.SCHEDULER_HEARTBEAT)
-            else:
-                logger.warning("scheduler_lock_lost")
-                self._state = "standby"
-                self._prev_leader_seen = True
-                # Revive SCHEDULER_STANDBY (declared but never emitted):
-                # a genuine leader->standby transition, the natural point
-                # for it. Emitted once per transition, not per tick, so it
-                # carries signal without noise.
-                await self._emit(Signal.SCHEDULER_STANDBY)
+            await self._leader_tick()
             return
 
         # Verbleibender Zustand: standby
@@ -476,14 +435,27 @@ class SchedulerLoop(
             logger.warning("scheduler_handover_marker_read_failed", **_error_fields(exc))
             had_handover = False
 
-        # FS-31: ein frischer Erwerb setzt die TTL frühestens beim Aufruf; die
-        # Grenze der alten Amtszeit gilt nicht mehr.
+        # FS-31: ein frischer Erwerb setzt die TTL frühestens beim Aufruf. Der
+        # Selbsttreffer (FS-06b) setzt sie gar nicht: Dann lebt der Key nur bis
+        # zur Frist der alten Amtszeit. Die Verlängerung bekommt trotzdem das
+        # volle Budget ab dem Erwerb; scheitert sie, gilt die frühere Grenze.
+        previous_deadline = self._renew_deadline
         self._renew_deadline = acquire_started + self._renew_window
         # BZ-07: die Übernahme (Handover-Marker) kann dauern; direkt danach
         # verlängern, damit das Lock nicht vor der ersten Verlängerung abläuft.
         renewed = await self._renew_after_takeover()
         if renewed is False:
             logger.warning("scheduler_lock_lost")
+            self._prev_leader_seen = True
+            return
+        if renewed is None and previous_deadline is not None:
+            self._renew_deadline = min(self._renew_deadline, previous_deadline)
+        if renewed is None and self._renew_deadline_passed():
+            # Review U14: Erwerb und Marker-Lesen haben das Fenster verbraucht;
+            # ohne Verlaengerung kann der Key schon abgelaufen sein. Amt nicht
+            # antreten, Key nicht loeschen; der naechste Takt holt die Rolle
+            # per Selbsttreffer (FS-06b) zurueck, falls der Key noch eigen ist.
+            logger.warning("scheduler_renew_deadline_stepdown", consecutive_failures=0)
             self._prev_leader_seen = True
             return
 
@@ -505,6 +477,51 @@ class SchedulerLoop(
         # KTD10: die Cron-Meldungen aller Worker sofort übernehmen, nicht erst
         # nach einem Meldetakt.
         self._adopt_now.set()
+
+    async def _leader_tick(self) -> None:
+        """Wahl-Takt als Leader: verlängern oder zurücktreten (E-048)."""
+        try:
+            still_leader = await self._renew_lock()
+        except (BackendConnectionError, TimeoutError) as exc:
+            # A renew ERROR (or timeout, FS-31) must not keep the
+            # leader in office indefinitely. After `limit`
+            # consecutive failures (≈ one heartbeat before the lock
+            # TTL is provably expired) step down proactively so the
+            # old leader stops firing BEFORE a standby can take
+            # over — closing the unbounded split-brain window.
+            # Zweiter Ausloeser (KTD11): ist die Zeitgrenze erreicht,
+            # sofort, unabhaengig vom Zaehler. Der Renew ist auf die
+            # Restzeit begrenzt und endet spaetestens dort.
+            self._renew_failures += 1
+            logger.warning(
+                "scheduler_renew_error",
+                **_error_fields(exc),
+                consecutive_failures=self._renew_failures,
+                step_down_at=self._renew_failure_limit,
+            )
+            if self._renew_failures >= self._renew_failure_limit:
+                logger.warning(
+                    "scheduler_renew_failures_stepdown",
+                    consecutive_failures=self._renew_failures,
+                )
+                await self._step_down_after_renew_failures()
+            elif self._renew_deadline_passed():
+                logger.warning("scheduler_renew_deadline_stepdown", consecutive_failures=self._renew_failures)
+                await self._step_down_after_renew_failures()
+            return
+        self._renew_failures = 0
+        if still_leader:
+            await self._write_leader_version()
+            await self._emit(Signal.SCHEDULER_HEARTBEAT)
+        else:
+            logger.warning("scheduler_lock_lost")
+            self._state = "standby"
+            self._prev_leader_seen = True
+            # Revive SCHEDULER_STANDBY (declared but never emitted):
+            # a genuine leader->standby transition, the natural point
+            # for it. Emitted once per transition, not per tick, so it
+            # carries signal without noise.
+            await self._emit(Signal.SCHEDULER_STANDBY)
 
     async def _take_handover_marker(self) -> bool:
         """Ohne gesehenen Vorgänger ohne Argument (älterer Vertrag)."""
