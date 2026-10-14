@@ -4,6 +4,97 @@ All notable changes to SwarmQ. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [0.12.1rc1] — 2026-10-14
+
+Release candidate for 0.12.1 (install with `pip install --pre`). It
+fixes the three P1 findings of the second bug hunt and part of a
+fourth: a publish after an expired shutdown deadline that ran a task
+twice (FS-02), cron and `delay`/`eta` fires lost after a worker crash
+(FS-03), locks and concurrency slots blocked by a failing DI finalizer
+(FS-04), and a fire claim lost to a client retry (FS-06, fire-claim
+part). No configuration changes; 0.12.1 runs next to 0.12.0 on the
+same queues. Follow the upgrade notes below.
+
+### Upgrade notes
+
+1. **Surge deploy.** Start the new workers before the old ones stop
+   (Kubernetes `maxSurge` ≥ 1 with `maxUnavailable: 0`, or start the
+   new containers first). The FS-03 fix works only on the worker that
+   receives the redelivery: a 0.12.0 worker still acks a deferred fire
+   copy as a duplicate while the claim is held, and the fire is lost as
+   before.
+2. **Grace period of the orchestrator at least
+   `SWARMQ_SHUTDOWN_TIMEOUT`** (recommended
+   `SWARMQ_SHUTDOWN_TIMEOUT + 15 s`, as in
+   [step 3 of the deployment guide](../guides/deployment.md#step-3-grace-period-of-the-orchestrator)).
+   A `SIGKILL` before the budget ends cuts off the lock release and the
+   last publishes, and a cron fire running at that moment becomes the
+   crash case of FS-03.
+3. **Mixed operation with 0.12.0.** Deferred fire copies carry the new
+   header `x-swarmq-schedfire-defer-count`; 0.12.0 ignores it. On a
+   rollback a 0.12.0 worker acks such a copy as a duplicate while the
+   claim is held and runs it once the claim has expired. Messages of
+   0.12.0 run unchanged on 0.12.1.
+4. **Classic queues:** the FS-03 fix recognises a redelivery by the
+   broker's delivery counters, which only quorum queues (the default)
+   carry. On a classic queue the first redelivery after a crash is
+   still acked as a duplicate, so that fire is lost as before.
+5. **Dead-letter queue:** a deferred fire copy that ends up in the DLQ
+   keeps the defer counter; `swarmq dlq retry` drops it, so the replay
+   starts with a fresh backoff. DLQ entries of 0.12.0 carry no counter
+   and replay as before.
+
+### Fixed
+
+- **FS-02: a publish whose shutdown deadline has already passed sends
+  nothing.** Before, swarmq still sent it and reported
+  `PublishIndeterminate`; the retry or DLQ copy plus the requeue of the
+  original ran the task twice. This happened at the end of a drain,
+  and during recycling systematically after about 23 s of drain. Now
+  the publish raises `BrokerConnectionError` ("not sent") without
+  touching the channel. A task cancelled by the drain still ends with an
+  error result, but no retry or DLQ copy goes out: the original is
+  redelivered, without using a retry and without a DLQ entry. During
+  recycling this can repeat on every recycle, bounded by the delivery
+  limit. The publish deadline of a recycle now follows its actual drain
+  end, and the cleanup budget starts again from there. A deadline that
+  passes during the backoff or channel setup of a later attempt still
+  gives `PublishIndeterminate`. A fire the leader cannot send after the
+  deadline counts towards its step-down
+  ([what aborts the ack](../explanation/delivery-semantics.md#what-aborts-the-ack)).
+- **FS-03: a cron or `delay`/`eta` fire is no longer lost when its
+  worker dies (SIGKILL, OOM) after claiming it.** Before, the broker's
+  redelivery found the dead worker's in-flight claim and was acked as a
+  duplicate. Now the worker defers such a redelivery to the delay queue
+  with a growing backoff (`schedfire_redelivery_deferred`) and marks the
+  copy with `x-swarmq-schedfire-defer-count`. The copy is acked once the
+  fire has completed and runs once the claim has expired
+  (`SWARMQ_SCHEDULER_INFLIGHT_TTL`, or `hard_timeout + 30` s if larger).
+  If the original is still running (only its channel was lost), the
+  copy waits instead of running alongside. The deferral is capped; past
+  the cap the worker logs `schedfire_defer_stalled` and acks the copy. A
+  second publish of the same fire by the leader is still acked as a
+  duplicate. A worker shut down while fires wait for a free
+  concurrency slot now releases their claims, so the redelivery runs
+  them. Give cron tasks a `hard_timeout`: the claim then outlasts every
+  run, which closes the one remaining case of two runs at the same time
+  ([what aborts the ack](../explanation/delivery-semantics.md#what-aborts-the-ack)).
+- **FS-04: locks and concurrency slots are released even when a DI
+  finalizer fails.** Before, a failing Dishka finalizer (`ExitError`)
+  skipped the lock release and the slot return. The lock keeper kept
+  extending the lock as long as the worker lived; after `concurrency`
+  such failures the worker processed nothing, and `/ready` still
+  reported it ready. Now lock, slot and fire claim are released on every
+  error and cancellation path. If the shutdown cancels a task during the
+  DI teardown, lock and slot are released only after the finalizer (for
+  example a commit) has finished, so the commit does not run without
+  its mutex.
+- **FS-06 (fire claim): a fire claim is no longer lost when the Valkey
+  client repeats the claim after a lost reply.** The repeated call took
+  the worker's own claim for a foreign one, and the fire was acked as a
+  duplicate. The unique claim and the mutex keep the same flaw for now;
+  a later release fixes them.
+
 ## [0.12.0] — 2026-10-13
 
 0.12.0 is 0.12.0rc2 plus the fix below. The two release candidates
