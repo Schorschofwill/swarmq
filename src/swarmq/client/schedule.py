@@ -23,6 +23,7 @@ from swarmq.client.schedule_resolve import _MissingType as _MissingType
 from swarmq.contracts import Publisher, ResultBackend
 from swarmq.contracts.coordination import ScheduleStore as ContractScheduleStore
 from swarmq.exceptions import (
+    BackendConnectionError,
     PublishIndeterminate,
     TaskNotFoundError,
 )
@@ -101,12 +102,19 @@ class ClientScheduling(ClientScheduleResolve):
         exactly one edit.
         """
         dedup_hash = compute_dedup_hash(task_name, args, kwargs)
-        existing = await self._backend.claim_unique(
-            dedup_hash,
-            task_id,
-            ttl_ms,
-            op_timeout=self._backend_op_timeout,
-        )
+        try:
+            existing = await self._backend.claim_unique(
+                dedup_hash,
+                task_id,
+                ttl_ms,
+                op_timeout=self._backend_op_timeout,
+            )
+        except BackendConnectionError:
+            # FS-07: Der Timeout kann ein schon gesetztes Flag verdecken; die
+            # frische ``task_id`` macht die owner-gepruefte Freigabe sicher
+            # (KTD8). Ein Abbruch bleibt Restluecke, das Flag laeuft ab.
+            await self._rollback_unique_claim(dedup_hash, task_id)
+            raise
         if existing is None or existing == task_id:
             # FS-06b: ``task_id`` ist in diesem Aufruf frisch erzeugt; liefert
             # die Transport-Wiederholung nach verlorener Antwort sie als
@@ -364,8 +372,9 @@ class ClientScheduling(ClientScheduleResolve):
         for i, entry in enumerate(prepped):
             if entry["dedup_hash"] is None:
                 continue
-            if setnx_results.get(i) is None and i in setnx_tasks:
-                # Claim succeeded in Pass 1.
+            if i in setnx_tasks and setnx_results.get(i) in (None, entry["task_id"]):
+                # Claim succeeded in Pass 1 (FS-06b: incl. own task_id) or its
+                # outcome is unknown (FS-07); the release is owner-checked.
                 await self._rollback_unique_claim(
                     entry["dedup_hash"],
                     entry["task_id"],

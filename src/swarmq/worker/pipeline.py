@@ -142,6 +142,7 @@ class Worker(WorkerLifecycle, WorkerShutdown):
             register_lock=lambda handler_id, entry: self._active_handler_locks.setdefault(handler_id, []).append(entry),
             # BZ-29: Pause vor ``redeliver``, endet beim Shutdown sofort.
             redeliver_pause=lambda delay_s: redelivery.wait_unless_shutdown(delay_s, self._shutdown_event),
+            detach=self._track,  # FS-07: der Shutdown wartet ueber _detached_releases
         )
         # BZ-25 (Plan 0.12.0, MR 13): verlaengert gehaltene Locks, solange der
         # Handler lebt; endet mit der letzten Lease oder beim Schliessen.

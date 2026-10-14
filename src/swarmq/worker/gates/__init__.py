@@ -184,6 +184,10 @@ class GateDeps:
     # BZ-25 (MR 13): erworbenen Lock dem Keeper uebergeben (token, ttl_ms, ctx);
     # der Worker setzt es (``LockKeeper.keep``); ``None`` = keine Verlaengerung.
     keep_lock: Callable[[LockToken, int, GateContext], None] | None = None
+    # FS-07 (KTD8): Aufraeumarbeit im Hintergrund starten, getrackt; der
+    # Shutdown wartet vor ``backend.close`` darauf. Der Worker setzt es;
+    # ``None`` = inline abwarten.
+    detach: Callable[[Awaitable[None]], object] | None = None
 
 
 # Nicht in Kopien uebernommen: die Zaehler der Zurueckstellungen bei

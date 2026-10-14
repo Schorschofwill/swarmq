@@ -24,6 +24,12 @@ Eigener Claim nach Transport-Retry (Plan 2026-10-14-0748, U11, KTD7, FS-06b):
 - [x] Oneshot mit ``existing == task_id`` (stabile ID) → bleibt Duplikat (KTD7)
 - [x] Oneshot ohne stabile ID (``--at`` ohne Präfix/Feld) mit ``existing == task_id``
       → Publish, kein Dup-Signal (frische ID wie beim Cron, Review U11)
+
+Claim-Freigabe nach Timeout (Plan 2026-10-14-0748, U12, KTD8, FS-07):
+- [x] Cron: Timeout nach gesetztem Flag → Freigabe, der naechste Poll feuert
+      (Nachweis ``test_befund_fs07_unique_claim_after_timeout.py``)
+- [x] Oneshot mit stabiler ID: Timeout → keine Freigabe (E-011)
+- [x] Freigabe nach Timeout scheitert → geloggt, kein Publish, kein Commit
 """
 
 from __future__ import annotations
@@ -34,7 +40,7 @@ from unittest.mock import AsyncMock
 import msgspec
 import pytest
 
-from swarmq.exceptions import PublishIndeterminate, UnroutableMessage
+from swarmq.exceptions import BackendConnectionError, PublishIndeterminate, UnroutableMessage
 from swarmq.locking import SCHEDULER_LOCK_NAME
 from swarmq.scheduler import ScheduleDefinition, ScheduleStore
 from swarmq.serialization import compute_dedup_hash
@@ -295,3 +301,38 @@ async def test_oneshot_without_stable_id_publishes_when_the_claim_holds_its_own_
     (task_id,) = _published_task_ids(broker)
     assert task_id == backend.claim_unique.await_args.args[1]
     assert duplicates == []
+
+
+async def test_oneshot_claim_timeout_keeps_a_flag_of_its_stable_task_id(loop, backend, broker, store):
+    """KTD8 (E-011): Unter der stabilen ID eines Oneshots kann das Flag aus
+    einem frueheren Poll mit ``PublishIndeterminate`` stammen; nach einem
+    Claim-Timeout bleibt es stehen."""
+    backend.claim_unique = AsyncMock(side_effect=BackendConnectionError("setnx_unique timed out"))
+    backend.release_unique = AsyncMock(return_value=True)
+    definition = _definition("oneshot:fixed-id", cron=None, task_id="fixed-id", unique_for=3600)
+
+    await loop._fire_one("oneshot:fixed-id", 1_700_000_000_000, definition)
+
+    backend.release_unique.assert_not_awaited()
+    broker.publish.assert_not_awaited()
+    store.commit_fire.assert_not_awaited()
+
+
+async def test_cron_claim_timeout_with_failing_release_is_logged(loop, backend, broker, store, swarmq_logs):
+    """KTD8: Die Freigabe nach dem Timeout ist best effort; scheitert sie,
+    laeuft das Flag ueber seine TTL ab, der Termin bleibt fuer den naechsten
+    Poll offen (kein Publish, kein Commit)."""
+    backend.claim_unique = AsyncMock(side_effect=BackendConnectionError("setnx_unique timed out"))
+    backend.release_unique = AsyncMock(side_effect=BackendConnectionError("valkey down"))
+    definition = _definition("nightly", cron="*/5 * * * *", unique_for=3600)
+
+    await loop._fire_one("nightly", 1_700_000_000_000, definition)
+
+    claimed_by = backend.claim_unique.await_args.args[1]
+    backend.release_unique.assert_awaited_once()
+    assert backend.release_unique.await_args.args[1] == claimed_by
+    broker.publish.assert_not_awaited()
+    store.commit_fire.assert_not_awaited()
+    [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_unique_release_failed"]
+    assert entry["schedule_name"] == "nightly"
+    assert entry["error_type"] == "BackendConnectionError"

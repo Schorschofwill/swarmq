@@ -184,6 +184,14 @@ class SchedulerFire:
                         schedule_name=schedule_name,
                         **_error_fields(exc),
                     )
+                    # FS-07: Der Timeout kann ein schon gesetztes Flag verdecken.
+                    # Unter frischer task_id ist es sicher nur dieses Fire;
+                    # owner-geprueft freigeben, sonst blockiert es den naechsten
+                    # Poll bis ``unique_for``. Eine stabile ID (Oneshot) bleibt
+                    # unangetastet: ihr Flag kann aus einem Poll mit
+                    # ``PublishIndeterminate`` stammen (E-011, KTD8).
+                    if fresh_task_id:
+                        await self._release_own_claim(schedule_name, dedup_hash, task_id)
                     return  # Retry on next poll; commit not called.
 
                 # FS-06b: Unter frischer task_id (Cron, Oneshot ohne stabile
