@@ -465,11 +465,13 @@ async def test_cancel_during_handshake_kills_the_started_child(ctx, signals):
     t1.cancel()
     with pytest.raises(asyncio.CancelledError):
         await t1
-    assert signals
-    assert signals[0][0] == "kill"
+    # Ohne Ready keine bestaetigte eigene Gruppe: kein Sweep-SIGKILL an die (evtl.
+    # schon fremde) PID des per SIGTERM beendeten Kindes.
+    assert signals == [("kill", proc.pid, signal.SIGTERM)]
     assert not proc.is_alive()
     assert _free(p).qsize() == 1
     await p.aclose()
+    assert signals == [("kill", proc.pid, signal.SIGTERM)]
 
 
 @pytest.mark.timeout(5)
@@ -480,8 +482,7 @@ async def test_handshake_timeout_is_slot_unavailable_not_child_death(ctx, signal
     await _settle(lambda: not p._children)  # FS-24: erst nach _finalize zaehlt "kein Kindtod"
     assert p.stats.unavailable == 1
     assert p.stats.died == 0
-    assert signals
-    assert signals[0][0] == "kill"
+    assert signals == [("kill", FakeCtx.started[0].pid, signal.SIGTERM)]
     await p.aclose()
 
 
@@ -537,14 +538,71 @@ async def test_child_death_without_result_sweeps_its_group_exactly_once(ctx, sig
 
 
 @pytest.mark.timeout(5)
+async def test_a_denied_group_sweep_still_ends_run_with_child_died(ctx, signals, monkeypatch, swarmq_logs):
+    """Review U19: lebt in der Gruppe nur noch ein fremder (setuid-)Prozess, liefert
+    ``killpg`` EPERM. Der Sweep darf ``run`` dann nicht haengen lassen."""
+
+    def denied(pid: int, sig: int) -> None:
+        signals.append(("killpg", pid, sig))
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(os, "killpg", denied)
+    p = await _make_pool(ctx, slots=1)
+    t1 = asyncio.create_task(p.run(_job("a"), use_di=True))
+    proc = await _started(1)
+    await _ready(p, proc, 0)
+    proc.die()
+    with pytest.raises(ChildDied):
+        await asyncio.wait_for(t1, timeout=1.0)
+    assert signals == [("killpg", proc.pid, signal.SIGKILL)]
+    [entry] = [e for e in swarmq_logs if e["event"] == "compute_signal_denied"]
+    assert entry["log_level"] == "warning"
+    assert entry["pid"] == proc.pid
+    assert entry["group"] is True
+    await p.aclose()
+
+
+@pytest.mark.timeout(5)
+async def test_cancel_right_after_the_child_died_still_sweeps_its_group_once(ctx, signals):
+    """E-036-Nachtrag: trifft der Abbruch ein Kind, das gerade von selbst starb (EOF steht
+    noch aus), bekommt seine Gruppe trotzdem genau ein SIGKILL -- und kein SIGTERM."""
+    p = await _make_pool(ctx, slots=1, eof_grace_s=1.0)
+    t1 = asyncio.create_task(p.run(_job("a"), use_di=False))
+    proc = await _started(1)
+    await _ready(p, proc, 0)
+    proc.die(eof=False)
+    t1.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await t1
+    assert signals == [("killpg", proc.pid, signal.SIGKILL)]
+    await p.aclose()
+    assert signals == [("killpg", proc.pid, signal.SIGKILL)]
+
+
+@pytest.mark.timeout(5)
+async def test_a_by_pid_only_kill_of_a_dead_child_leaves_its_group_alone(ctx, signals):
+    """``by_pid_only`` (Handshake, verworfene Kindquelle) signalisiert nie die Gruppe,
+    auch nicht als Sweep nach dem Tod."""
+    p = await _make_pool(ctx, slots=1, eof_grace_s=0.05)
+    t1 = asyncio.create_task(p.run(_job("a"), use_di=False))
+    proc = await _started(1)
+    await _ready(p, proc, 0)
+    proc.die(eof=False)
+    await p._kill_child(_active(p), reason="handshake", by_pid_only=True)
+    assert signals == []
+    with pytest.raises(ChildDied):
+        await t1
+    await p.aclose()
+
+
+@pytest.mark.timeout(5)
 async def test_failed_handshake_without_own_group_sends_no_killpg(ctx, signals):
     """Ohne Ready ist die eigene Gruppe nicht bestaetigt: nur die PID wird signalisiert."""
     p = await _make_pool(ctx, slots=1, handshake_timeout_s=0.05)
     with pytest.raises(SlotUnavailable):
         await p.run(_job("a"), use_di=False)
     await _settle(lambda: not p._children)
-    assert signals
-    assert all(s[0] == "kill" for s in signals)
+    assert signals == [("kill", FakeCtx.started[0].pid, signal.SIGTERM)]
     await p.aclose()
 
 
@@ -596,6 +654,24 @@ async def test_recycled_child_ending_on_its_end_signal_is_not_swept(ctx, signals
     assert signals == []
     new.die()
     await p.aclose()
+
+
+@pytest.mark.timeout(5)
+async def test_warm_child_ending_on_its_close_signal_is_not_swept(ctx, signals):
+    """Regulaeres Ende beim Shutdown: das warme DI-Kind ist noch ``reuse_child`` seines
+    Slots, endet aber auf das Ende-Signal -- das ist kein Leerlauf-Tod, kein Sweep."""
+    p = await _make_pool(ctx, slots=1, end_grace_s=1.0)
+    t1 = asyncio.create_task(p.run(_job("a"), use_di=True))
+    proc = await _started(1)
+    await _ready(p, proc, 0)
+    assert (await _next_job(proc)).task_id == "a"
+    proc.channel.send(("result", _result("a", 0)))
+    await t1
+    closing = asyncio.create_task(p.aclose())
+    assert (await _next_job(proc)) is None  # Ende-Signal
+    proc.die()
+    await closing
+    assert signals == []
 
 
 @pytest.mark.timeout(5)

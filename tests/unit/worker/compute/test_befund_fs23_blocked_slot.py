@@ -21,6 +21,8 @@ Testliste:
 # [x] Nach der Hintergrund-Sperre landen zwei folgende run() nie auf dem gesperrten Slot
 # [x] Ein Slot gesperrt, der andere liefert ein Ergebnis (kein SlotUnavailable, Pool gesund)
 # [x] Beide Slots im Hintergrund gesperrt: run() wirft SlotUnavailable, healthy ist False
+# [x] run() wartet schon (gesperrten Index verworfen), als der letzte Slot im Hintergrund
+#     gesperrt wird: SlotUnavailable ueber die Poison-Werte, kein Haenger
 """
 
 from __future__ import annotations
@@ -117,4 +119,43 @@ async def test_with_every_slot_blocked_in_background_run_is_slot_unavailable(ctx
     with pytest.raises(SlotUnavailable):
         await p.run(_job("c"), use_di=False)
     assert not p.healthy
+    await _close(p, procs)
+
+
+@pytest.mark.befund("FS-23")
+async def test_a_waiting_run_wakes_with_slot_unavailable_when_the_last_slot_is_blocked_in_background(ctx, signals):
+    """Review U19: der Wartende hat den Index des gesperrten Slots 0 schon verworfen und
+    wartet auf Slot 1, der nicht frei wird (frisches Kind rechnet). Sperrt das
+    Recycling Slot 1 im Hintergrund, wecken ihn die Poison-Werte.
+
+    Laufzeit rund 1,3 s: ``end_grace_s=0.5`` gibt dem Aufbau (Slot 1 belegen, Wartenden
+    einreihen) sicheren Vorlauf vor der zweiten Sperre und gilt fuer beide Sperren."""
+    p = await _make_pool(ctx, slots=2, recycle_max_tasks=1, end_grace_s=0.5)
+    procs = await _block_in_background(p, "a", 0)
+    # Slot 1: DI-Job, das alte Kind ueberlebt sein Ende; die Sperre folgt erst nach end_grace_s.
+    n = len(FakeCtx.started)
+    t_old = asyncio.create_task(p.run(_job("b"), use_di=True))
+    old = await _started(n + 1)
+    old.behaviour = "immortal"
+    await _ready(p, old, 1)
+    old.channel.send(("result", _result("b", 1)))
+    await t_old
+    replacement = await _started(n + 2)
+    await _ready(p, replacement, 1)
+    procs += [old, replacement]
+    # Slot 1 belegen (der Wartende verwirft dabei Index 0) und warten lassen.
+    busy = asyncio.create_task(p.run(_job("c"), use_di=False))
+    fresh = await _started(n + 3)
+    await _ready(p, fresh, 1)
+    procs.append(fresh)
+    waiter = asyncio.create_task(p.run(_job("d"), use_di=False))
+    done, _ = await asyncio.wait({waiter}, timeout=0.05)
+    assert not done, "Voraussetzung: der Wartende haengt an der Freiliste"
+    assert p.stats.blocked_slots == {0}, "Voraussetzung: Slot 1 ist noch nicht gesperrt"
+    with pytest.raises(SlotUnavailable):
+        await asyncio.wait_for(waiter, timeout=2.0)
+    assert p.stats.blocked_slots == {0, 1}
+    assert not p.healthy
+    fresh.channel.send(("result", _result("c", 1, value="c")))
+    assert (await busy).value == "c"
     await _close(p, procs)
