@@ -12,11 +12,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from swarmq.exceptions import is_backend_outage
 from swarmq.limits import parse_rate_limit
 from swarmq.logging import _error_fields, get_logger
 from swarmq.signals import Signal
 from swarmq.worker.gates import GateContext, GateDeps, _as_count, redeliver_in_place, republish_headers
-from swarmq.worker.gates.backend_defer import bounded_backend_call, defer_backend_unavailable, is_backend_outage
+from swarmq.worker.gates.backend_defer import bounded_backend_call, defer_backend_unavailable
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered
 
 logger = get_logger(__name__)

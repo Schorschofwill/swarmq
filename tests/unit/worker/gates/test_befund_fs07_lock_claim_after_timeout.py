@@ -20,8 +20,10 @@ Testliste:
 #     -> zurueckgestellt und der geschriebene Token wird freigegeben
 # [x] Shutdown wartet auf die Hintergrund-Freigabe, bevor er das Backend schliesst
 # [x] Freigabe trifft nie einen fremden Lock (nur der Token dieses Versuchs)
-# [x] Freigabe scheitert -> ``lock_release_failed`` (stage ``acquire_timeout``),
-#     die Zurueckstellung bleibt
+# [x] Freigabe scheitert am Ausfall -> kein zusaetzliches WARNING (die
+#     Zurueckstellungszeile ist die eine Zeile), nur DEBUG ``lock_release_failed``
+#     (stage ``acquire_timeout``); die Zurueckstellung bleibt
+# [x] Freigabe scheitert anders (kein Ausfall) -> WARNING ``lock_release_failed``
 # [x] Fehlerantwort (kein Ausfall, z. B. WRONGTYPE) -> keine Freigabe
 # [x] ohne ``GateDeps.detach`` (eigene Verdrahtung) -> Freigabe inline
 """
@@ -29,7 +31,6 @@ Testliste:
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import dataclasses
 import uuid
 from typing import Any, override
@@ -51,10 +52,6 @@ from tests.support.messages import make_message
 from tests.unit.worker._helpers import _default_payload
 
 pytestmark = pytest.mark.timeout(5)
-
-# Ein Freigabe-Task im Hintergrund braucht mit gemocktem Store nur wenige
-# Schleifendurchlaeufe; 50 ms sind grosszuegig und halten den Test unter 100 ms.
-_RELEASE_GRACE_S = 0.05
 
 
 class Fs07LockedTask(Task):
@@ -82,7 +79,6 @@ def _ctx() -> GateContext:
 async def test_lock_written_before_acquire_timeout_is_released(worker: Worker, broker: MagicMock) -> None:
     worker._gate_deps.config.backend_op_timeout = 0.01
     held: dict[str, LockToken] = {}
-    released = asyncio.Event()
     never = asyncio.Event()
 
     async def _acquire(name: str, *, owner: str, ttl_ms: int, max_concurrency: int) -> LockToken:
@@ -93,7 +89,6 @@ async def test_lock_written_before_acquire_timeout_is_released(worker: Worker, b
 
     async def _release(token: LockToken) -> bool:
         held.pop(token.owner, None)
-        released.set()
         return True
 
     worker._lock_manager = MagicMock()
@@ -101,8 +96,7 @@ async def test_lock_written_before_acquire_timeout_is_released(worker: Worker, b
     worker._lock_manager.release = AsyncMock(side_effect=_release)
 
     outcome = await worker._lock_gate.apply(make_message(_default_payload()), _ctx())
-    with contextlib.suppress(TimeoutError):
-        await asyncio.wait_for(released.wait(), timeout=_RELEASE_GRACE_S)
+    await asyncio.gather(*worker._detached_releases)
 
     assert outcome is Redelivered, "Voraussetzung: Timeout stellt die Zustellung zurueck"
     assert held == {}, f"Lock nach Acquire-Timeout nicht freigegeben, verwaist bis hard_timeout + 30 s: {list(held)}"
@@ -190,9 +184,11 @@ async def test_release_after_timeout_never_touches_a_foreign_lock(worker: Worker
 
 
 @pytest.mark.befund("FS-07")
-async def test_failing_release_after_timeout_is_logged_and_still_defers(
+async def test_release_failing_on_the_outage_adds_no_warning_and_still_defers(
     worker: Worker, swarmq_logs: list[dict[str, Any]]
 ) -> None:
+    """Scheitert die Freigabe am selben Ausfall, meldet die Zurueckstellung den
+    Ausfall schon (eine Zeile je Zurueckstellung); die Lock-TTL heilt."""
     store = _LockStore(BackendConnectionError("lock acquire timed out"), release_error=BackendConnectionError("down"))
     _install(worker, store)
 
@@ -200,10 +196,30 @@ async def test_failing_release_after_timeout_is_logged_and_still_defers(
     await asyncio.gather(*worker._detached_releases)
 
     assert outcome is Redelivered
+    warnings = [e["event"] for e in swarmq_logs if e["log_level"] in ("warning", "error")]
+    assert warnings == ["task_deferred_backend_unavailable"]
     [entry] = [e for e in swarmq_logs if e["event"] == "lock_release_failed"]
+    assert entry["log_level"] == "debug"
     assert entry["lock_name"] == "fs07-resource"
     assert entry["stage"] == "acquire_timeout"
     assert entry["error_type"] == "BackendConnectionError"
+
+
+@pytest.mark.befund("FS-07")
+async def test_release_failing_otherwise_is_a_warning(worker: Worker, swarmq_logs: list[dict[str, Any]]) -> None:
+    """Ein anderer Fehler der Freigabe (kein Ausfall) ist nicht durch die
+    Zurueckstellungszeile erklaert und bleibt sichtbar."""
+    store = _LockStore(BackendConnectionError("lock acquire timed out"), release_error=RuntimeError("bug"))
+    _install(worker, store)
+
+    outcome = await worker._lock_gate.apply(make_message(_default_payload()), _ctx())
+    await asyncio.gather(*worker._detached_releases)
+
+    assert outcome is Redelivered
+    [entry] = [e for e in swarmq_logs if e["event"] == "lock_release_failed"]
+    assert entry["log_level"] == "warning"
+    assert entry["stage"] == "acquire_timeout"
+    assert entry["error_type"] == "RuntimeError"
 
 
 @pytest.mark.befund("FS-07")

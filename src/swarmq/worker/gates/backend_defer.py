@@ -28,7 +28,7 @@ import asyncio
 from collections.abc import Awaitable
 from typing import Any
 
-from swarmq.exceptions import BackendConnectionError, BackendResponseError
+from swarmq.exceptions import BackendConnectionError, is_backend_outage
 from swarmq.logging import _error_fields, get_logger
 from swarmq.worker.gates import GateContext, GateDeps, deferral_copy, redeliver_in_place
 from swarmq.worker.outcome import DeliveryOutcome, Redelivered
@@ -50,12 +50,6 @@ async def bounded_backend_call[T](deps: GateDeps, call: Awaitable[T], *, what: s
         return await asyncio.wait_for(call, timeout=timeout)
     except TimeoutError as exc:
         raise BackendConnectionError(f"{what} timed out after {timeout}s") from exc
-
-
-def is_backend_outage(exc: BaseException) -> bool:
-    """Ausfall des Backends (Verbindung, Timeout) -- nicht eine
-    Fehlerantwort (``BackendResponseError``) und kein anderer Fehler."""
-    return isinstance(exc, BackendConnectionError) and not isinstance(exc, BackendResponseError)
 
 
 async def defer_backend_unavailable(

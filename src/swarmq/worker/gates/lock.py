@@ -47,7 +47,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from swarmq.contracts.coordination import LockObservation, LockToken
-from swarmq.exceptions import LockWaitExceeded
+from swarmq.exceptions import LockWaitExceeded, is_backend_outage
 from swarmq.header_text import bounded_header_text
 from swarmq.headers import (
     HEADER_LOCK_CONFLICTS,
@@ -71,7 +71,7 @@ from swarmq.worker.gates import (
     republish_headers,
     route_via_dlx,
 )
-from swarmq.worker.gates.backend_defer import bounded_backend_call, defer_backend_unavailable, is_backend_outage
+from swarmq.worker.gates.backend_defer import bounded_backend_call, defer_backend_unavailable
 from swarmq.worker.lock_wait_tracker import LockWaitTracker
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered
 
@@ -550,11 +550,14 @@ class LockGate:
     async def _release_unconfirmed(self, lock_manager: LockStore, token: LockToken) -> None:
         """Freigabe eines Locks, dessen Acquire ohne Antwort blieb (FS-07).
         Owner-geprueft: ohne eigenen Lock ein No-op, ein fremder bleibt.
-        Scheitert sie, heilt die Lock-TTL."""
+        Scheitert sie, heilt die Lock-TTL. Scheitert sie am Ausfall, nur
+        DEBUG: ``task_deferred_backend_unavailable`` ist die eine Zeile je
+        Zurueckstellung."""
         try:
             await bounded_backend_call(self._deps, lock_manager.release(token), what=f"lock release for {token.name!r}")
         except Exception as exc:  # noqa: BLE001 - best effort, die Lock-TTL heilt den Fall
-            logger.warning("lock_release_failed", lock_name=token.name, stage="acquire_timeout", **_error_fields(exc))
+            log = logger.debug if is_backend_outage(exc) else logger.warning
+            log("lock_release_failed", lock_name=token.name, stage="acquire_timeout", **_error_fields(exc))
 
     async def _acquire_and_register(
         self, lock_manager: Any, ctx: GateContext, lock_name: str, owner_token: str, ttl_ms: int, max_concurrency: int

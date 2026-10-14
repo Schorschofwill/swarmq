@@ -13,7 +13,7 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from swarmq.exceptions import BackendConnectionError, PublishIndeterminate, UnroutableMessage
+from swarmq.exceptions import BackendConnectionError, PublishIndeterminate, UnroutableMessage, is_backend_outage
 from swarmq.logging import _error_fields
 from swarmq.scheduler.definition import ScheduleDefinition, make_schedfire_key
 from swarmq.serialization import compute_dedup_hash, encode_json
@@ -189,8 +189,9 @@ class SchedulerFire:
                     # owner-geprueft freigeben, sonst blockiert es den naechsten
                     # Poll bis ``unique_for``. Eine stabile ID (Oneshot) bleibt
                     # unangetastet: ihr Flag kann aus einem Poll mit
-                    # ``PublishIndeterminate`` stammen (E-011, KTD8).
-                    if fresh_task_id:
+                    # ``PublishIndeterminate`` stammen (E-011, KTD8). Eine
+                    # Fehlerantwort heisst: der Claim lief nicht (wie Lock-Gate).
+                    if fresh_task_id and is_backend_outage(exc):
                         await self._release_own_claim(schedule_name, dedup_hash, task_id)
                     return  # Retry on next poll; commit not called.
 

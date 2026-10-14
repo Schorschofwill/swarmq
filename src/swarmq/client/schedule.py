@@ -26,6 +26,7 @@ from swarmq.exceptions import (
     BackendConnectionError,
     PublishIndeterminate,
     TaskNotFoundError,
+    is_backend_outage,
 )
 from swarmq.headers import (
     HEADER_ENQUEUED_AT,
@@ -109,11 +110,13 @@ class ClientScheduling(ClientScheduleResolve):
                 ttl_ms,
                 op_timeout=self._backend_op_timeout,
             )
-        except BackendConnectionError:
+        except BackendConnectionError as exc:
             # FS-07: Der Timeout kann ein schon gesetztes Flag verdecken; die
             # frische ``task_id`` macht die owner-gepruefte Freigabe sicher
-            # (KTD8). Ein Abbruch bleibt Restluecke, das Flag laeuft ab.
-            await self._rollback_unique_claim(dedup_hash, task_id)
+            # (KTD8). Ein Abbruch bleibt Restluecke, das Flag laeuft ab. Eine
+            # Fehlerantwort heisst: der Claim lief nicht (wie Lock-Gate).
+            if is_backend_outage(exc):
+                await self._rollback_unique_claim(dedup_hash, task_id)
             raise
         if existing is None or existing == task_id:
             # FS-06b: ``task_id`` ist in diesem Aufruf frisch erzeugt; liefert
@@ -366,11 +369,15 @@ class ClientScheduling(ClientScheduleResolve):
         prepped: list[dict[str, Any]],
         setnx_tasks: dict[int, asyncio.Task[str | None]],
         setnx_results: dict[int, str | None],
+        setnx_errors: dict[int, BaseException],
     ) -> None:
         """Release every flag claimed in Pass 1 (all claims are equally
         orphaned since publish was never reached)."""
         for i, entry in enumerate(prepped):
             if entry["dedup_hash"] is None:
+                continue
+            if i in setnx_errors and not is_backend_outage(setnx_errors[i]):
+                # An error reply means the claim did not run (like the lock gate).
                 continue
             if i in setnx_tasks and setnx_results.get(i) in (None, entry["task_id"]):
                 # Claim succeeded in Pass 1 (FS-06b: incl. own task_id) or its
@@ -558,7 +565,7 @@ class ClientScheduling(ClientScheduleResolve):
                 # pre_enqueue: exception aborts the whole batch.
                 await chain.run_pre_enqueue(message_dict)
         except BaseException:
-            await self._batch_rollback_claims(prepped, setnx_tasks, setnx_results)
+            await self._batch_rollback_claims(prepped, setnx_tasks, setnx_results, setnx_errors)
             raise
 
         await self._batch_publish_and_finalize(state, chain)

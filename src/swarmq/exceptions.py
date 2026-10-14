@@ -155,6 +155,12 @@ class BackendResponseError(BackendConnectionError):
     """
 
 
+def is_backend_outage(exc: BaseException) -> bool:
+    """Ausfall des Backends (Verbindung, Timeout) -- nicht eine
+    Fehlerantwort (``BackendResponseError``) und kein anderer Fehler."""
+    return isinstance(exc, BackendConnectionError) and not isinstance(exc, BackendResponseError)
+
+
 class TaskNotFoundError(SwarmQError):
     pass
 
