@@ -13,6 +13,13 @@ Test-Liste:
       Retry); Ergebnis über den neuen Client lesbar
 - [x] Rollback: der Arbeitsstand stellt einen Retry in ``{queue}.DQ.15s`` zurück
       und stoppt; 0.12.0 allein führt ihn nach Ablauf aus, nichts doppelt
+- [x] Rolling Deploy (Review U2, P2): 0.12.0- und Arbeitsstands-Worker
+      gleichzeitig auf einer Queue mit Retry, in beiden Startreihenfolgen (wer die
+      Queue anlegt); je Nachricht genau zwei Versuche, beide Laufzeiten arbeiten
+- [x] Upgrade (Review U2, P2): 0.12.0 stellt einen Retry in ``{queue}.DQ.15s``
+      zurück und stoppt; der Arbeitsstand deklariert neu und führt Versuch 2 aus
+- [x] Der 0.12.0-Producer läuft wirklich aus dem venv, nicht aus ``REPO_ROOT/src``
+      (Review U2, P3)
 """
 
 from __future__ import annotations
@@ -23,6 +30,7 @@ import json
 import subprocess
 import tempfile
 from collections.abc import AsyncIterator, Callable
+from pathlib import PurePath
 
 import aio_pika
 import pytest
@@ -33,6 +41,7 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.client import Client
 from tests.compat._harness import (
     BASE_012_VERSION,
+    REPO_ROOT,
     CompatWorker,
     consumer_count,
     message_count,
@@ -45,19 +54,21 @@ pytestmark = [pytest.mark.compat, pytest.mark.timeout(120)]
 StartWorker = Callable[..., CompatWorker]
 
 _MESSAGES = 5
+_ROLLING_MESSAGES = 20
 _EVENT_TIMEOUT = 20.0
 _OLD_RUNTIME = f"pypi-{BASE_012_VERSION}"
 
 # Läuft im 0.12.0-venv: nur die öffentliche API, die 0.12.0 kennt.
 _OLD_PRODUCER = """
-import asyncio, importlib.metadata, json, sys
+import asyncio, importlib.metadata, json, os.path, sys
+import swarmq
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.client import Client
 
 async def main(broker_url, backend_url, queue, count):
-    out = {"version": importlib.metadata.version("swarmq"), "results": {}}
+    out = {"version": importlib.metadata.version("swarmq"), "location": os.path.realpath(swarmq.__file__), "results": {}}
     async with SwarmQ(RabbitMQBroker(broker_url), ValkeyBackend(backend_url), queues=[queue]) as app:
         producer = Client(app.broker, app.backend)
         task_ids = [await producer.schedule("compat_flaky", queue=queue) for _ in range(count)]
@@ -115,6 +126,8 @@ async def test_old_producer_new_worker(
     assert result.returncode == 0, result.stderr[-2000:]
     old = json.loads(result.stdout.strip().splitlines()[-1])
     assert old["version"] == BASE_012_VERSION
+    location = PurePath(old["location"])  # im Subprozess bereits realpath
+    assert not location.is_relative_to(REPO_ROOT / "src"), f"0.12.0 producer imports the repo: {location}"
     task_ids = list(old["results"])
     assert len(task_ids) == _MESSAGES
     assert set(old["results"].values()) == {"repo"}, "the 0.12.0 client reads the new worker's results"
@@ -147,6 +160,76 @@ async def test_new_producer_old_worker(
     assert await message_count(rabbitmq_url, f"{queue}.XQ") == 0
 
 
+@pytest.mark.parametrize("first", ["old", "new"], ids=["old-creates", "new-creates"])
+async def test_retry_between_0_12_0_and_new_worker_on_one_queue(
+    first: str,
+    start_worker: StartWorker,
+    python_0120: str,
+    python_repo: str,
+    app: SwarmQ,
+    rabbitmq_url: str,
+    valkey_url: str,
+    queue: str,
+) -> None:
+    """Rolling Deploy: die zuerst gestartete Version legt die Queue an, die
+    zweite übernimmt sie; Retries wandern zwischen beiden Laufzeiten."""
+    old, new = (python_0120, BASE_012_VERSION), (python_repo, "repo")
+    for count, (python, expect) in enumerate((old, new) if first == "old" else (new, old), start=1):
+        start_worker(python, expect)
+        await _wait_consumers(rabbitmq_url, queue, count)
+    producer = Client(app.broker, app.backend)
+
+    task_ids = [await producer.schedule("compat_flaky", queue=queue) for _ in range(_ROLLING_MESSAGES)]
+    results = {task_id: await app.get_result(task_id, timeout=_EVENT_TIMEOUT) for task_id in task_ids}
+
+    runs = await recorded_runs(valkey_url, queue)
+    attempts = collections.Counter(task_id for _, task_id, _, _ in runs)
+    assert attempts == dict.fromkeys(task_ids, 2), "every message runs exactly twice (fail, retry)"
+    assert set(results.values()) <= {"repo", _OLD_RUNTIME}
+    assert {runtime for *_, runtime in runs} == {"repo", _OLD_RUNTIME}, "both versions consumed"
+    assert await message_count(rabbitmq_url, queue) == 0
+    assert await message_count(rabbitmq_url, f"{queue}.XQ") == 0
+
+
+async def _wait_deferred_in_tier(rabbitmq_url: str, tier: str) -> None:
+    async def deferred_in_tier() -> bool:
+        try:
+            return await message_count(rabbitmq_url, tier) == 1
+        except aio_pika.exceptions.ChannelNotFoundEntity:
+            return False
+
+    assert await wait_until(deferred_in_tier, timeout=_EVENT_TIMEOUT), "retry never reached the delay tier"
+
+
+async def test_upgrade_runs_a_deferred_retry_of_0_12_0_on_new_worker(
+    start_worker: StartWorker,
+    python_0120: str,
+    python_repo: str,
+    app: SwarmQ,
+    rabbitmq_url: str,
+    valkey_url: str,
+    queue: str,
+) -> None:
+    """Upgrade: eine von 0.12.0 in eine Delay-Stufe zurückgestellte Nachricht
+    läuft nach Ablauf auf dem Arbeitsstand, der die Queue-Familie neu deklariert."""
+    tier = f"{queue}.DQ.15s"
+
+    old = start_worker(python_0120, BASE_012_VERSION)
+    await _wait_consumers(rabbitmq_url, queue, 1)
+    task_id = await Client(app.broker, app.backend).schedule("compat_slow_retry", queue=queue)
+    await _wait_deferred_in_tier(rabbitmq_url, tier)
+    old.stop()
+    await _wait_consumers(rabbitmq_url, queue, 0)
+    start_worker(python_repo, "repo")
+
+    assert await app.get_result(task_id, timeout=_EVENT_TIMEOUT + 10) == "repo"
+
+    runs = [(tid, attempt, runtime) for _, tid, attempt, runtime in await recorded_runs(valkey_url, queue)]
+    assert runs == [(task_id, 1, _OLD_RUNTIME), (task_id, 2, "repo")]
+    assert await message_count(rabbitmq_url, tier) == 0
+    assert await message_count(rabbitmq_url, f"{queue}.XQ") == 0
+
+
 async def test_rollback_runs_a_deferred_retry_on_0_12_0(
     start_worker: StartWorker,
     python_0120: str,
@@ -160,16 +243,10 @@ async def test_rollback_runs_a_deferred_retry_on_0_12_0(
     Nachricht läuft nach Ablauf auf 0.12.0, ohne Fehler und ohne Doppellauf."""
     tier = f"{queue}.DQ.15s"
 
-    async def deferred_in_tier() -> bool:
-        try:
-            return await message_count(rabbitmq_url, tier) == 1
-        except aio_pika.exceptions.ChannelNotFoundEntity:
-            return False
-
     new = start_worker(python_repo, "repo")
     await _wait_consumers(rabbitmq_url, queue, 1)
     task_id = await Client(app.broker, app.backend).schedule("compat_slow_retry", queue=queue)
-    assert await wait_until(deferred_in_tier, timeout=_EVENT_TIMEOUT), "retry never reached the delay tier"
+    await _wait_deferred_in_tier(rabbitmq_url, tier)
     new.stop()
     await _wait_consumers(rabbitmq_url, queue, 0)
     start_worker(python_0120, BASE_012_VERSION)
