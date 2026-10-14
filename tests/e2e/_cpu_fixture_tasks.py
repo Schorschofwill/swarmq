@@ -69,7 +69,11 @@ class CpuSlowOnce(Task):
         path = Path(pid_file)
         if path.exists():  # noqa: ASYNC240 - Rechenkind-Fixture arbeitet bewusst synchron
             return "redelivered"
-        path.write_text(str(os.getpid()), encoding="ascii")  # noqa: ASYNC240 - PID muss vor dem Blockieren synchron geschrieben sein
+        # Atomar (Zwischendatei, dann umbenennen): Der Test pollt auf die
+        # Datei und läse sonst eine eben angelegte, noch leere Datei.
+        partial = path.with_suffix(".partial")
+        partial.write_text(str(os.getpid()), encoding="ascii")
+        partial.replace(path)
         time.sleep(seconds)  # noqa: ASYNC251 - simuliert synchron blockierenden Rechencode, nur der Kill beendet ihn
         return "first"
 
