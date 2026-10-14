@@ -101,6 +101,27 @@ async def test_run_job_soft_timeout_becomes_soft_timeout_error():
     assert isinstance(env.error(), SoftTimeoutError)
 
 
+class _ServerTimeoutError(TimeoutError):
+    """Wie ``aiohttp.ServerTimeoutError``: eine Unterklasse von ``TimeoutError``."""
+
+
+@pytest.mark.timeout(5)
+async def test_run_job_keeps_a_task_timeout_error_subclass_under_soft_timeout():
+    """FS-05 (Plan 2026-10-14-0748, U18): nur der eigene Ablauf wird ``SoftTimeoutError``."""
+
+    class Upstream(Task):
+        task_info = TaskInfo(name="upstream", queues=["q"], soft_timeout=60)
+
+        @override
+        async def run(self) -> None:
+            raise _ServerTimeoutError("upstream did not answer")
+
+    env = await child.run_job(_job("upstream"), _queue.Queue())
+    error = env.error()
+    assert type(error) is _ServerTimeoutError
+    assert str(error) == "upstream did not answer"
+
+
 @pytest.mark.timeout(5)
 async def test_run_job_unknown_task_is_an_error_envelope():
     env = await child.run_job(_job("ghost"), _queue.Queue())

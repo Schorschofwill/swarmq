@@ -444,7 +444,7 @@ mutiert werden.
 
 | Feld | Typ | Default | Beschreibung |
 |---|---|---|---|
-| `soft_timeout` | `int \| None` | `None` | Sekunden, nach denen der Worker `SoftTimeoutError` im Task raist. |
+| `soft_timeout` | `int \| None` | `None` | Sekunden, nach denen der Worker `run()` abbricht. Im Task kommt `asyncio.CancelledError` an, die erneut geworfen werden muss; der Worker speichert `SoftTimeoutError` (wer den Abbruch verschluckt, liefert ein Erfolgsergebnis). |
 | `hard_timeout` | `int \| None` | `None` | Sekunden, nach denen der Worker die Task-Coroutine abbricht. Muss `> soft_timeout` sein, wenn beides gesetzt. Pflicht, wenn `lock` gesetzt ist. |
 
 ### Retries

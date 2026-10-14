@@ -42,7 +42,7 @@ except SwarmQError as exc:
 | `ResultSerializationError` | `SwarmQError` | Ergebnis ist nicht msgpack-serialisierbar |
 | `Retry` | `SwarmQError` | Control Flow — aus Task-Code geraist, um Retry anzufordern |
 | `NoRetry` | `SwarmQError` | Control Flow — aus Task-Code geraist, um Retries zu umgehen |
-| `SoftTimeoutError` | `SwarmQError` | Task überschritt `soft_timeout`, sollte aufräumen |
+| `SoftTimeoutError` | `SwarmQError` | Task überschritt `soft_timeout`; `run()` wurde abgebrochen (im Task kommt `CancelledError` an) |
 | `WorkflowValidationError` | `SwarmQError` | Workflow-Topologie ungültig oder Fan-in-Ergebnisse unvollständig |
 | `WorkflowNotFound` | `SwarmQError` | `app.workflow(id)` oder ein Handle-Aufruf fand keinen Workflow-Zustand |
 | `WorkflowResultExpired` | `SwarmQError` | Ein Schritt- oder End-Ergebnis des Workflows lief ab, bevor es gebraucht wurde |
@@ -435,17 +435,29 @@ leeren.
 ## `SoftTimeoutError`
 
 **Wann geraist.** Der Task-Body läuft noch, wenn `soft_timeout`
-abläuft. Der Worker bricht den Task mit dieser Klasse als Ursache
-ab, damit der Task vor `hard_timeout` noch graceful aufräumen kann.
+abläuft. Der Worker führt `run()` unter `asyncio.wait_for` aus: Ist
+die Zeit um, bricht er `run()` ab. Im Task kommt deshalb ein
+`asyncio.CancelledError` an, kein `SoftTimeoutError`. Der Worker
+speichert danach `SoftTimeoutError` als Fehlerergebnis. Es ist wie
+jeder andere Task-Fehler retry-fähig, und `post_execution` entfällt.
+`SoftTimeoutError` ist kein `TimeoutError`;
+`retry_exceptions=[TimeoutError]` erfasst ihn also nicht.
+
+Nur der Ablauf von `soft_timeout` selbst wird zu `SoftTimeoutError`.
+Ein `TimeoutError`, den der Task selbst wirft (`asyncio.timeout`,
+`socket.timeout`, `aiohttp.ServerTimeoutError`), bleibt, was er ist:
+Klasse und Meldung bleiben erhalten, und
+`retry_exceptions=[TimeoutError]` greift.
 
 **Ursache.** Der Task braucht länger als `TaskInfo(soft_timeout=N)`
 erlaubte.
 
-**Recovery.** Den Task schneller machen, `soft_timeout` erhöhen
-oder abfangen und checkpointen:
+**Recovery.** Den Task schneller machen oder `soft_timeout` erhöhen.
+Um Teilergebnisse zu sichern, in `finally` aufräumen oder den Abbruch
+abfangen und erneut werfen:
 
 ```python
-from swarmq import SoftTimeoutError
+import asyncio
 
 class LongJob(Task):
     task_info = TaskInfo(
@@ -456,11 +468,17 @@ class LongJob(Task):
     async def run(self) -> None:
         try:
             await process_items()
-        except SoftTimeoutError:
+        except asyncio.CancelledError:
             # Was fertig ist, committen, dann den Worker finalisieren lassen.
             await checkpoint()
             raise
 ```
+
+Das `raise` ist nötig. Ein Task, der die `CancelledError` verschluckt
+und normal zurückkehrt, liefert ein **Erfolgsergebnis** mit seinem
+Rückgabewert; der Worker verbucht dann keinen `SoftTimeoutError`.
+`hard_timeout` greift nur, wenn der Task den Abbruch ignoriert oder
+hinauszögert.
 
 ## `PublishIndeterminate`
 

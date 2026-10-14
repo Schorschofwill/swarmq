@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any, cast, override
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -570,3 +571,100 @@ async def test_watchdog_cancelled_on_success(broker, backend, config):
     stored = decode_result(backend.store_result.call_args[0][1])
     assert stored["is_error"] is False
     assert stored["result"] == 42
+
+
+# ---------------------------------------------------------------------------
+# FS-05 (Plan 2026-10-14-0748, U18): nur der eigene Ablauf wird SoftTimeoutError
+# ---------------------------------------------------------------------------
+
+
+class _ServerTimeoutError(TimeoutError):
+    """Wie ``aiohttp.ServerTimeoutError``: eine Unterklasse von ``TimeoutError``."""
+
+
+@pytest.mark.asyncio
+async def test_task_timeout_error_subclass_keeps_its_class_under_soft_timeout(broker, backend, config):
+    class UpstreamTask(Task):
+        task_info = TaskInfo(name="upstream_timeout", queues=["default"], soft_timeout=60)
+
+        @override
+        async def run(self) -> None:
+            raise _ServerTimeoutError("upstream did not answer")
+
+    reg = TaskRegistry()
+    reg.register(UpstreamTask)
+    w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+
+    await w._handle_message(make_message(_default_payload(name="upstream_timeout", args=[], kwargs={})))
+
+    stored = decode_result(backend.store_result.call_args[0][1])
+    assert stored["is_error"] is True
+    assert stored["error_class"] == f"{__name__}._ServerTimeoutError"
+    assert stored["error_message"] == "upstream did not answer"
+
+
+@pytest.mark.asyncio
+async def test_soft_timeout_and_drain_cancel_in_the_same_pass_give_the_drain_result(broker, backend, config):
+    """E-001 vor E-045: Laufen Drain-Abbruch und Soft-Timeout im selben
+    Loop-Durchlauf auf, bleibt es der Abbruch (Fehlerergebnis ohne
+    ``error_class``), kein ``SoftTimeoutError`` (``fix-r-flow.md``, FS-05 + Drain).
+
+    ``run()`` blockiert kurz synchron ueber die Frist und reiht den
+    Drain-Abbruch vor dem faelligen Fristablauf ein; beide laufen im naechsten
+    Durchlauf, bevor ``run()`` wieder an die Reihe kommt.
+    """
+
+    class DrainedTask(Task):
+        task_info = TaskInfo(name="drained_soft", queues=["default"], soft_timeout=cast("int", 0.01))
+        handler: asyncio.Task[None] | None = None
+
+        @override
+        async def run(self) -> None:
+            assert DrainedTask.handler is not None
+            time.sleep(0.02)  # noqa: ASYNC251 - Frist absichtlich synchron ueberschreiten
+            asyncio.get_running_loop().call_soon(DrainedTask.handler.cancel)
+            await asyncio.Event().wait()
+
+    reg = TaskRegistry()
+    reg.register(DrainedTask)
+    w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+
+    handler = asyncio.create_task(
+        w._handle_message(make_message(_default_payload(name="drained_soft", args=[], kwargs={})))
+    )
+    DrainedTask.handler = handler
+    await asyncio.wait({handler})
+
+    stored = decode_result(backend.store_result.call_args[0][1])
+    assert stored["is_error"] is True
+    assert "soft timeout" not in stored["error_message"].lower()
+    assert stored.get("error_class") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.entscheidung("E-045")
+async def test_task_that_swallows_the_soft_timeout_cancel_stores_a_success_result(broker, backend, config):
+    """E-045, Nachtrag FS-20: Im Task kommt beim Soft-Timeout ``CancelledError``
+    an. Wer sie verschluckt und normal zurueckkehrt, liefert ein Erfolgsergebnis;
+    ohne ``raise`` gibt es keinen ``SoftTimeoutError``."""
+
+    class SwallowingTask(Task):
+        task_info = TaskInfo(name="swallow_soft", queues=["default"], soft_timeout=_FAST_TIMEOUT_S)
+
+        @override
+        async def run(self) -> str:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                return "partial"
+            return "never"
+
+    reg = TaskRegistry()
+    reg.register(SwallowingTask)
+    w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+
+    await w._handle_message(make_message(_default_payload(name="swallow_soft", args=[], kwargs={})))
+
+    stored = decode_result(backend.store_result.call_args[0][1])
+    assert stored["is_error"] is False
+    assert stored["result"] == "partial"

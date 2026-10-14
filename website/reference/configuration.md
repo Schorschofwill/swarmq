@@ -438,7 +438,7 @@ definition time and cannot be mutated afterwards.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `soft_timeout` | `int \| None` | `None` | Seconds before the worker raises `SoftTimeoutError` inside the task. |
+| `soft_timeout` | `int \| None` | `None` | Seconds before the worker cancels `run()`. The task sees `asyncio.CancelledError` and must re-raise it; the worker stores `SoftTimeoutError` (swallowing the cancellation yields a success result). |
 | `hard_timeout` | `int \| None` | `None` | Seconds before the worker cancels the task coroutine outright. Must be `> soft_timeout` when both set. Required when `lock` is set. |
 
 ### Retries

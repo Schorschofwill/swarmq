@@ -698,9 +698,21 @@ task_info = TaskInfo(
 )
 ```
 
-- **Soft Timeout.** Der Worker raist `SoftTimeoutError` innerhalb
-  `run()`, damit dein Task checkpointen und aufräumen kann.
-- **Hard Timeout.** Der Worker bricht die Coroutine ab.
+- **Soft Timeout.** Der Worker bricht `run()` ab (es läuft unter
+  `asyncio.wait_for`). Im Task kommt das als `asyncio.CancelledError`
+  an, nicht als `SoftTimeoutError`. Zum Checkpointen in `finally` oder
+  in `except asyncio.CancelledError:` aufräumen und erneut werfen.
+  Der Worker speichert danach `SoftTimeoutError` als retry-fähiges
+  Fehlerergebnis, `post_execution` entfällt. Ein Task, der die
+  `CancelledError` verschluckt und normal zurückkehrt, liefert ein
+  Erfolgsergebnis. Nur der Ablauf von `soft_timeout` wird zu
+  `SoftTimeoutError`; ein `TimeoutError`, den der Task selbst wirft,
+  behält seine Klasse und greift bei
+  `retry_exceptions=[TimeoutError]`. Siehe
+  [`SoftTimeoutError`](../reference/errors.md#softtimeouterror).
+- **Hard Timeout.** Der Worker bricht die Coroutine ab. Das greift
+  nur, wenn der Task den Abbruch durch den Soft Timeout ignoriert
+  oder hinauszögert.
 
 `hard_timeout` muss strikt größer als `soft_timeout` sein, wenn
 beides gesetzt ist. `hard_timeout` ist auch pflicht, wenn ein Task

@@ -45,7 +45,6 @@ from tests.unit.worker._helpers import _default_payload
 pytestmark = pytest.mark.timeout(5)
 
 _UPSTREAM = "upstream did not answer within 5s"
-_REASON = "FS-05: offen - TimeoutError aus dem Task wird zu SoftTimeoutError"
 
 
 class Fs05RetriesOnTimeout(Task):
@@ -94,7 +93,6 @@ async def _stored_error(broker: Any, backend: Any, config: Any, task: type[Task]
 
 
 @pytest.mark.befund("FS-05")
-@pytest.mark.xfail(strict=True, reason=_REASON)
 async def test_task_timeout_error_is_retried_per_retry_exceptions(broker: Any, backend: Any, config: Any) -> None:
     worker = _worker(broker, backend, config, Fs05RetriesOnTimeout)
 
@@ -107,7 +105,6 @@ async def test_task_timeout_error_is_retried_per_retry_exceptions(broker: Any, b
 
 
 @pytest.mark.befund("FS-05")
-@pytest.mark.xfail(strict=True, reason=_REASON)
 async def test_task_timeout_error_keeps_its_message_without_soft_timeout(
     broker: Any, backend: Any, config: Any
 ) -> None:
@@ -117,7 +114,6 @@ async def test_task_timeout_error_keeps_its_message_without_soft_timeout(
 
 
 @pytest.mark.befund("FS-05")
-@pytest.mark.xfail(strict=True, reason=_REASON)
 async def test_task_timeout_error_is_not_a_soft_timeout_when_soft_timeout_did_not_expire(
     broker: Any, backend: Any, config: Any
 ) -> None:
@@ -139,7 +135,6 @@ def _isolated_task_registry() -> Iterator[None]:
 
 
 @pytest.mark.befund("FS-05")
-@pytest.mark.xfail(strict=True, reason=_REASON)
 @pytest.mark.usefixtures("_isolated_task_registry")
 async def test_cpu_child_keeps_the_task_timeout_error() -> None:
     class Fs05CpuTimeout(Task):

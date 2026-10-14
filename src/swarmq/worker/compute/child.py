@@ -188,13 +188,12 @@ async def _run_job(job: ComputeJob, channel: Any, slot: int | None) -> ResultEnv
         await instance.pre_execution()
         run_coro = instance.run(*job.args, **job.kwargs)
         if task_info.soft_timeout is not None:
-            run_coro = asyncio.wait_for(run_coro, timeout=task_info.soft_timeout)
-        try:
-            value = await run_coro
-        except TimeoutError as exc:
-            from swarmq.exceptions import SoftTimeoutError
+            # Wie im Loop-Prozess: nur der eigene Ablauf wird ``SoftTimeoutError``,
+            # eine ``TimeoutError`` des Tasks bleibt, was sie ist (E-045, FS-05).
+            from swarmq.worker.soft_timeout import run_with_soft_timeout
 
-            raise SoftTimeoutError(f"soft timeout after {task_info.soft_timeout}s") from exc
+            run_coro = run_with_soft_timeout(run_coro, task_info.soft_timeout)
+        value = await run_coro
         await instance.post_execution()
         envelope = success_envelope(job.task_id, value, **meta)
     except asyncio.CancelledError as exc:
