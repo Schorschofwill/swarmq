@@ -97,11 +97,9 @@ class WorkerShutdown:
             except Exception:  # noqa: BLE001 - Teardown best effort
                 _lc.logger.exception("health_server_stop_failed")
 
-    async def _drain_in_flight(self, drain_until: float | None = None) -> None:
+    async def _drain_in_flight(self, drain_until: float) -> None:
         # ``drain_until`` ist das Drain-Ende aus ``_drain_end`` (Loop-Zeit,
         # FS-02 Teil b): beim Recycling die eigene Frist, sonst das Budget.
-        if drain_until is None:
-            drain_until = asyncio.get_running_loop().time() + float(self._config.shutdown_timeout)
         # 1. DRAINING: stop accepting new messages.
         drain_until = await self._cancel_consume(drain_until)
 
