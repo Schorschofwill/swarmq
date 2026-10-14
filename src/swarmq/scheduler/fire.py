@@ -102,7 +102,7 @@ class SchedulerFire:
             return
 
         # Build the task message body — same shape as Client.schedule.
-        task_id = _fire_task_id(schedule_name, definition)
+        task_id, fresh_task_id = _fire_task_id(schedule_name, definition)
         body = encode_json(
             {
                 "task": {
@@ -186,10 +186,13 @@ class SchedulerFire:
                     )
                     return  # Retry on next poll; commit not called.
 
-                # FS-06b: Ein Cron feuert unter frischer task_id; meldet die
-                # Transport-Wiederholung sie als "existing", ist es der eigene
-                # Claim. Ein Oneshot (stabile ID) bleibt Duplikat (E-011).
-                if existing is not None and not (definition.cron is not None and existing == task_id):
+                # FS-06b: Unter frischer task_id (Cron, Oneshot ohne stabile
+                # ID) ist "existing == task_id" der eigene Claim, den die
+                # Transport-Wiederholung meldet. Unter stabiler ID (Oneshot aus
+                # ``schedule()``) ist der Selbsttreffer nicht von einem echten
+                # Duplikat zu unterscheiden (Folge-Poll nach
+                # ``PublishIndeterminate``) und bleibt Duplikat (KTD7, E-011-Nachtrag).
+                if existing is not None and not (fresh_task_id and existing == task_id):
                     await self._emit_duplicate_detected(
                         existing_task_id=existing,
                         task_name=definition.task_name,
@@ -377,13 +380,14 @@ class SchedulerFire:
 _ONESHOT_PREFIX = "oneshot:"
 
 
-def _fire_task_id(schedule_name: str, definition: ScheduleDefinition) -> str:
-    """task_id eines Fires (BZ-02): ein Oneshot (delay/eta) feuert unter der
-    ID, die ``schedule()`` geliefert hat (Feld ``task_id``, sonst Suffix von
-    ``oneshot:<id>`` für Einträge eines 0.11-Producers); ein Cron bekommt je
-    Fire eine neue."""
+def _fire_task_id(schedule_name: str, definition: ScheduleDefinition) -> tuple[str, bool]:
+    """task_id eines Fires (BZ-02) und ob sie frisch erzeugt ist: ein Oneshot
+    (delay/eta) feuert unter der ID, die ``schedule()`` geliefert hat (Feld
+    ``task_id``, sonst Suffix von ``oneshot:<id>`` für Einträge eines
+    0.11-Producers); ein Cron und ein Oneshot ohne beides bekommen je Fire
+    eine neue."""
     if definition.cron is None and definition.task_id:
-        return definition.task_id
+        return definition.task_id, False
     if definition.cron is None and schedule_name.startswith(_ONESHOT_PREFIX):
-        return schedule_name.removeprefix(_ONESHOT_PREFIX)
-    return str(uuid.uuid7())
+        return schedule_name.removeprefix(_ONESHOT_PREFIX), False
+    return str(uuid.uuid7()), True

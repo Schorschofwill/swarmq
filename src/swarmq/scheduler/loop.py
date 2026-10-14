@@ -462,7 +462,8 @@ class SchedulerLoop(
 
         # BZ-07: die Übernahme (Handover-Marker) kann dauern; direkt danach
         # verlängern, damit das Lock nicht vor der ersten Verlängerung abläuft.
-        if not await self._renew_after_takeover():
+        renewed = await self._renew_after_takeover()
+        if renewed is False:
             logger.warning("scheduler_lock_lost")
             self._prev_leader_seen = True
             return
@@ -471,7 +472,10 @@ class SchedulerLoop(
         self._begin_term(int(self._wall_time() * 1000))
         self._reset_publish_stepdown()
         self._state = "leader"
-        self._renew_failures = 0  # fresh term, fresh renew budget
+        # Neue Amtszeit, neues Renew-Budget. Scheiterte die Verlängerung, kann
+        # der Key nur noch kurz leben (Wiederwahl mit eigenem Token lässt die
+        # Rest-TTL stehen, FS-06b): der nächste Fehler tritt sofort zurück (E-048).
+        self._renew_failures = 0 if renewed else self._renew_failure_limit - 1
         await self._write_leader_version()
         await self._observe_leader(self._owner_token, self._version)
         if had_handover or not self._prev_leader_seen:
@@ -490,15 +494,15 @@ class SchedulerLoop(
             return await schedules.take_handover_marker()
         return await schedules.take_handover_marker(previous_owner=self._last_seen_leader)
 
-    async def _renew_after_takeover(self) -> bool:
-        """``False`` nur, wenn das Lock beobachtbar weg ist. Ein Fehler beim
-        Verlängern kostet die frisch erworbene Rolle nicht; die folgenden
-        Wahl-Takte entscheiden wie bei jeder Verlängerung."""
+    async def _renew_after_takeover(self) -> bool | None:
+        """``False`` nur, wenn das Lock beobachtbar weg ist; ``None`` bei einem
+        Fehler beim Verlängern. Der Fehler kostet die frisch erworbene Rolle
+        nicht, verbraucht aber das Renew-Budget bis auf einen Fehlschlag."""
         try:
             return await self._lock_manager.renew(self._lock_token, int(self._config.scheduler_lock_ttl * 1000))
         except BackendConnectionError as exc:
             logger.warning("scheduler_renew_error", **_error_fields(exc))
-            return True
+            return None
 
     # ---- poll loop ------------------------------------------------------
 

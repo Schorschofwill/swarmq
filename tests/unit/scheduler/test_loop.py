@@ -62,10 +62,16 @@ API), Poll/Fire, Schedfire-Dedup (``claim_unique``), Stop/Abort."""
 # 23. Liefert sie ``False`` (Lock während der Übernahme abgelaufen), bleibt
 #     der Loop Standby: kein Leader-Signal, ``scheduler_lock_lost``.
 # 24. Wirft sie ``BackendConnectionError``, wird er trotzdem Leader (Lock
-#     gerade erworben) und loggt ``scheduler_renew_error``; die folgenden
-#     Wahl-Takte entscheiden wie bei jeder Verlängerung.
+#     gerade erworben) und loggt ``scheduler_renew_error``; der nächste
+#     Renew-Fehler lässt ihn sofort zurücktreten (Liste 27).
 # 25. Der Standby merkt sich den zuletzt gesehenen Leader und reicht ihn an
 #     ``take_handover_marker`` (Handover eines 0.11-Leaders).
+#
+# Test list (Review U11, FS-06b, E-048): Wiederwahl mit eigenem Token.
+# 26. Die Wiederwahl verlängert den Key sofort auf die volle TTL (BZ-07).
+# 27. Kurze Rest-TTL, die Verlängerung nach der Übernahme wirft: der nächste
+#     Renew-Fehler lässt sofort zurücktreten, kein Leader über mehr als einen
+#     Heartbeat mit abgelaufenem Key.
 
 from __future__ import annotations
 
@@ -1645,3 +1651,44 @@ class TestStandbyWithOwnTokenInLock:
         await loop._election_tick()
 
         assert loop._state == "leader"
+
+    @pytest.mark.entscheidung("E-048")
+    async def test_reacquiring_its_own_lock_extends_it_at_once(self, broker, config, signal_dispatcher):
+        """Liste 26: ``lock_acquire`` laesst die Rest-TTL beim Selbsttreffer
+        stehen; die Verlaengerung nach der Uebernahme (BZ-07) setzt sie auf
+        die volle TTL."""
+        memory = InMemoryBackend(FakeClock())
+        await memory.connect()
+        assert await memory.locks.acquire(SCHEDULER_LOCK_NAME, owner="test-owner", ttl_ms=30, max_concurrency=1)
+        loop = _make_loop(memory, broker, config, memory.locks, ScheduleStore(memory), signal_dispatcher)
+
+        await loop._election_tick()
+
+        observed = await memory.locks.observe(SCHEDULER_LOCK_NAME, max_concurrency=1)
+        assert observed.owners == frozenset({"test-owner"})
+        assert observed.pttl_ms == int(config.scheduler_lock_ttl * 1000)
+
+    @pytest.mark.entscheidung("E-048")
+    async def test_failed_renew_after_reacquiring_steps_down_on_the_next_failure(
+        self, broker, config, signal_dispatcher
+    ):
+        """Liste 27: Nach einem Ruecktritt wegen Renew-Fehlern kann der eigene
+        Key nur noch kurz leben. Wirft die Verlaengerung direkt nach der
+        Wiederwahl, darf der Prozess nicht ``N`` weitere Heartbeats Leader
+        bleiben, waehrend ein anderer den abgelaufenen Key erwirbt (E-048)."""
+        clock = FakeClock()
+        memory = InMemoryBackend(clock)
+        await memory.connect()
+        assert await memory.locks.acquire(SCHEDULER_LOCK_NAME, owner="test-owner", ttl_ms=30, max_concurrency=1)
+        loop = _make_loop(memory, broker, config, memory.locks, ScheduleStore(memory), signal_dispatcher)
+        assert loop._renew_failure_limit > 2
+        memory.locks.renew = AsyncMock(side_effect=BackendConnectionError("valkey flaky"))  # type: ignore[method-assign]  # Renew-Fehler erzwingen
+
+        await loop._election_tick()
+        assert loop.state == "leader"
+
+        await clock.advance(config.scheduler_heartbeat_interval)
+        assert await memory.locks.acquire(SCHEDULER_LOCK_NAME, owner="other", ttl_ms=1_000, max_concurrency=1)
+        await loop._election_tick()
+
+        assert loop.state == "standby"

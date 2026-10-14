@@ -21,7 +21,9 @@ Unique beim Fire (Plan 0.12.0, MR 9, BZ-09):
 
 Eigener Claim nach Transport-Retry (Plan 2026-10-14-0748, U11, KTD7, FS-06b):
 - [x] Cron mit ``existing == task_id`` (frische ID je Fire) → Publish, kein Dup-Signal
-- [x] Oneshot mit ``existing == task_id`` (stabile ID) → bleibt Duplikat (E-011)
+- [x] Oneshot mit ``existing == task_id`` (stabile ID) → bleibt Duplikat (KTD7)
+- [x] Oneshot ohne stabile ID (``--at`` ohne Präfix/Feld) mit ``existing == task_id``
+      → Publish, kein Dup-Signal (frische ID wie beim Cron, Review U11)
 """
 
 from __future__ import annotations
@@ -264,8 +266,9 @@ async def test_cron_fire_publishes_when_the_claim_holds_its_own_task_id(loop, ba
     assert task_id == backend.claim_unique.await_args.args[1]
 
 
+@pytest.mark.entscheidung("E-011")
 async def test_oneshot_fire_stays_duplicate_when_the_claim_holds_its_task_id(loop, backend, broker, store):
-    """E-011: Der Oneshot feuert unter der stabilen ID aus ``schedule()``; nach
+    """KTD7 (E-011-Nachtrag): Der Oneshot feuert unter der stabilen ID aus ``schedule()``; nach
     ``PublishIndeterminate`` trifft der naechste Poll den eigenen Claim und
     muss Duplikat bleiben, sonst wird doppelt publiziert."""
     backend.claim_unique = AsyncMock(side_effect=_own_claim)
@@ -274,3 +277,21 @@ async def test_oneshot_fire_stays_duplicate_when_the_claim_holds_its_task_id(loo
     await loop._fire_one("oneshot:fixed-id", 1_700_000_000_000, definition)
 
     broker.publish.assert_not_awaited()
+
+
+@pytest.mark.entscheidung("E-011")
+async def test_oneshot_without_stable_id_publishes_when_the_claim_holds_its_own_task_id(loop, backend, broker):
+    """Review U11: Ein einmaliger Schedule ohne ``task_id``-Feld und ohne
+    ``oneshot:``-Praefix (CLI ``--at``) feuert unter einer frischen ID wie ein
+    Cron; meldet die Transport-Wiederholung sie als "existing", ist es der
+    eigene Claim, kein Duplikat."""
+    backend.claim_unique = AsyncMock(side_effect=_own_claim)
+    duplicates: list[dict[str, object]] = []
+    loop._signals.dispatch = AsyncMock(side_effect=lambda _sig, **kw: duplicates.append(kw))
+    definition = _definition("report-at-noon", cron=None, unique_for=3600)
+
+    await loop._fire_one("report-at-noon", 1_700_000_000_000, definition)
+
+    (task_id,) = _published_task_ids(broker)
+    assert task_id == backend.claim_unique.await_args.args[1]
+    assert duplicates == []
