@@ -14,7 +14,9 @@ private Helfer der Verben.
 from __future__ import annotations
 
 import asyncio
+import functools
 import time
+import weakref
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, cast
 
@@ -29,7 +31,11 @@ from swarmq.broker.rabbitmq.connection import (
 from swarmq.broker.rabbitmq.consumer_watch import ConsumerWatch, ReregisteredHook
 from swarmq.broker.rabbitmq.declarations import RabbitMQDeclarations
 from swarmq.broker.rabbitmq.header_guard import guard_headers, negotiated_frame_max
-from swarmq.broker.rabbitmq.publish_phase import collect_orphaned_confirm, sent_before_failure
+from swarmq.broker.rabbitmq.publish_phase import (
+    collect_orphaned_confirm,
+    enqueued_before_failure,
+    sent_before_failure,
+)
 from swarmq.broker.rabbitmq.redeclare import publish_redeclaring_once
 from swarmq.contracts import Delivery, DeliveryCallback, PublishReceipt
 from swarmq.exceptions import (
@@ -113,21 +119,31 @@ def _raise_if_sent(routing_key: str, exc: BaseException) -> None:
         ) from exc
 
 
-async def _closing_of(pub: aio_pika.abc.AbstractChannel) -> asyncio.Future[object] | None:
+async def _closing_of(pub: object, on_unreadable: Callable[[], None]) -> asyncio.Future[object] | None:
     """``closing`` des aiormq-Kanals unter *pub*, ``None`` wenn nicht lesbar.
 
     aio-pika holt den Kanal ohne Suspendieren, solange die Verbindung steht
     (Basis synchron, Robust ``connected.wait()`` auf gesetztem Event); das Kind
-    publiziert darum auf demselben Kanal."""
+    publiziert darum auf demselben Kanal. Fehlt einem echten aio-pika-Kanal
+    das ``closing``-Future (aio-pika oder aiormq geaendert), meldet das
+    *on_unreadable*: Ohne Waechter kehrt der FS-08-Haenger zurueck."""
     getter = getattr(pub, "get_underlay_channel", None)
-    if getter is None:
-        return None
-    closing = getattr(await getter(), "closing", None)
-    return cast("asyncio.Future[object]", closing) if isinstance(closing, asyncio.Future) else None
+    underlay = await getter() if getter is not None else None
+    closing = getattr(underlay, "closing", None)
+    if isinstance(closing, asyncio.Future):
+        return cast("asyncio.Future[object]", closing)
+    if isinstance(pub, aio_pika.abc.AbstractChannel):
+        # Nur ein echter aio-pika-Kanal; Test-Doubles bleiben still.
+        on_unreadable()
+    return None
 
 
 async def _publish_against_closing(
-    pub: aio_pika.abc.AbstractChannel, msg: aio_pika.Message, routing_key: str, maybe_sent: list[bool]
+    pub: aio_pika.abc.AbstractChannel,
+    msg: aio_pika.Message,
+    routing_key: str,
+    maybe_sent: list[bool],
+    on_unreadable: Callable[[], None],
 ) -> None:
     """Ein Publish-Versuch gegen ``closing`` seines aiormq-Kanals (FS-08, KTD9).
 
@@ -135,45 +151,84 @@ async def _publish_against_closing(
     Abriss in ihrer Warteschlange steht, reiht seine Frames danach in die
     ``write_queue`` der toten Verbindung und wartet ewig auf ``drain_future``.
     Darum laeuft der Versuch als Kind-Task gegen ``closing``. Wird der Kanal
-    zuerst geschlossen, wird das Kind abgebrochen; seine Ausnahme geht wie
-    jede andere an die Phasen-Auswertung (``drain_future`` erfuellt heisst
-    gesendet, E-042, sonst naechster Versuch).
+    zuerst geschlossen, bricht der Waechter des Kanals das Kind ab; seine
+    Ausnahme geht wie jede andere an die Phasen-Auswertung (``drain_future``
+    erfuellt heisst gesendet, E-042, sonst naechster Versuch).
 
     Ohne lesbares ``closing``-Future (aiormq geaendert, Test-Doubles) bleibt
-    es beim direkten Publish wie vor FS-08. ``maybe_sent`` wird unmittelbar
-    vor dem Senden gesetzt (a3)."""
-    closing = await _closing_of(pub)
+    es beim direkten Publish wie vor FS-08; *on_unreadable* meldet das.
+    ``maybe_sent`` bekommt je Versuch einen Eintrag unmittelbar vor dem
+    Senden (a3); ``False`` setzt ihn nur ein Abbruch vor dem Einreihen."""
+    closing = await _closing_of(pub, on_unreadable)
     if closing is None:
-        maybe_sent[:] = [True]
+        maybe_sent.append(True)
         await pub.default_exchange.publish(msg, routing_key=routing_key)
         return
     if closing.done():
         raise ChannelInvalidStateError(f"{pub!r} closed")
-    maybe_sent[:] = [True]
+    attempt = len(maybe_sent)
+    maybe_sent.append(True)
     child = asyncio.create_task(pub.default_exchange.publish(msg, routing_key=routing_key))
+    _cancel_on_close(closing, child)
     try:
-        first: set[asyncio.Future[Any]] = {child, closing}
-        await asyncio.wait(first, return_when=asyncio.FIRST_COMPLETED)
-        if not child.done():
-            child.cancel()
-            await asyncio.wait({child})
+        await asyncio.wait({child})
     except BaseException:
-        # Eigener Abbruch oder Frist: Das Kind endet mit dem Vorgang. Seinen
-        # Ausgang wertet niemand mehr aus; abgeholt wird er trotzdem, samt
-        # verwaistem Confirm (sonst "never retrieved" beim spaeteren Abriss).
+        # Eigener Abbruch oder Frist: Das Kind endet mit dem Vorgang. Sein
+        # Ausgang wird im Callback abgeholt, samt verwaistem Confirm (sonst
+        # "never retrieved" beim spaeteren Abriss); stand es noch vor dem
+        # Einreihen, hat dieser Versuch nichts gesendet (E-042).
         child.cancel()
-        child.add_done_callback(_collect_child)
+        child.add_done_callback(functools.partial(_collect_child, maybe_sent, attempt))
         await asyncio.wait({child})
         raise
     await child
 
 
-def _collect_child(child: asyncio.Task[Any]) -> None:
-    """Holt den Ausgang eines Publish-Kinds ab, auf das niemand mehr wartet."""
+#: Laufende Publish-Kinder je ``closing``-Future. Alle Publishes teilen den
+#: einen Publish-Kanal; ein Callback je Publish auf dessen ``closing`` (und
+#: sein lineares Entfernen) machte N parallele Publishes O(N^2).
+_CHILDREN_BY_CLOSING: weakref.WeakKeyDictionary[asyncio.Future[object], set[asyncio.Task[Any]]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _cancel_on_close(closing: asyncio.Future[object], child: asyncio.Task[Any]) -> None:
+    """Bricht *child* ab, sobald *closing* erledigt ist (FS-08).
+
+    Ein Waechter je Kanal: genau ein Callback auf ``closing`` beim ersten
+    Kind; jedes Kind traegt sich beim Ende in O(1) aus."""
+    children = _CHILDREN_BY_CLOSING.get(closing)
+    if children is None:
+        children = set[asyncio.Task[Any]]()
+        _CHILDREN_BY_CLOSING[closing] = children
+        closing.add_done_callback(functools.partial(_cancel_children, children))
+    children.add(child)
+    child.add_done_callback(children.discard)
+
+
+def _cancel_children(children: set[asyncio.Task[Any]], closing: asyncio.Future[object]) -> None:
+    # Erst im naechsten Durchlauf: Lehnt aiormq beim Abriss auch die
+    # Futures des Kinds ab (oder kam das Confirm gerade noch), laeuft das
+    # Kind vorher mit diesem Ausgang zu Ende statt mit einem Abbruch.
+    closing.get_loop().call_soon(_cancel_all, children)
+
+
+def _cancel_all(children: set[asyncio.Task[Any]]) -> None:
+    for child in list(children):
+        child.cancel()
+
+
+def _collect_child(maybe_sent: list[bool], attempt: int, child: asyncio.Task[Any]) -> None:
+    """Holt den Ausgang eines Publish-Kinds ab, auf das niemand mehr wartet.
+
+    Nur der erste Abholer bekommt die Original-``CancelledError`` mit den
+    Rahmen des Kinds; darum wertet dieser Callback sie auch aus."""
     try:
         child.result()
     except BaseException as exc:  # noqa: BLE001  # nur abholen, gemeldet hat der Vorgang selbst
         collect_orphaned_confirm(exc)
+        if not enqueued_before_failure(exc):
+            maybe_sent[attempt] = False
 
 
 class RabbitMQDelivery(RabbitMQDeclarations):
@@ -185,6 +240,8 @@ class RabbitMQDelivery(RabbitMQDeclarations):
     clock: Callable[[], float] = staticmethod(time.time)
     #: Fail-open beim unlesbaren Blocked-Zustand meldet je Broker einmal (BZ-16).
     _blocked_state_unreadable_reported: bool = False
+    #: Publish ohne lesbares ``closing`` des Kanals meldet je Broker einmal (FS-08).
+    _closing_unreadable_reported: bool = False
 
     # ------------------------------------------------------------------
     # Publish
@@ -262,8 +319,9 @@ class RabbitMQDelivery(RabbitMQDeclarations):
         # dieser Vorgang haengen blieb.
         in_flight: list[aio_pika.abc.AbstractChannel] = []
         blocked: list[bool] = []
-        # a3 (KTD9): gesetzt unmittelbar vor dem Senden, geleert nach einem
-        # als "nicht gesendet" erkannten Versuch.
+        # a3 (KTD9): ein Eintrag je Versuch, gesetzt unmittelbar vor dem
+        # Senden; ein als "nicht gesendet" erkannter Versuch nimmt nur seinen
+        # eigenen zurueck, ein negatives Confirm bleibt stehen (E-041).
         maybe_sent: list[bool] = []
         try:
             async with asyncio.timeout(timeout_s) as timeout_cm:
@@ -287,7 +345,7 @@ class RabbitMQDelivery(RabbitMQDeclarations):
             # Verbindung stehen und jeder Folge-Publish verbrennte erneut
             # die volle Frist (R10).
             await self._discard_publish_channel(in_flight[-1] if in_flight else None)
-            if not maybe_sent:
+            if not any(maybe_sent):
                 # a3 (KTD9, E-042): Die Frist riss vor dem Senden, etwa beim
                 # Warten auf die Verbindung oder im Backoff nach einem nicht
                 # gesendeten Versuch. Sicher wiederholbar, nicht unbestimmt.
@@ -363,6 +421,19 @@ class RabbitMQDelivery(RabbitMQDeclarations):
         await event.wait()
         blocked.clear()
 
+    def _report_closing_unreadable(self) -> None:
+        if self._closing_unreadable_reported:
+            return
+        self._closing_unreadable_reported = True
+        logger.warning(
+            "publish_channel_closing_unreadable",
+            hint=(
+                "cannot read the closing future of the aiormq publish channel; publishes run "
+                "unguarded and may hang in the channel lock until the publish deadline when "
+                "the connection drops"
+            ),
+        )
+
     async def _publish_attempts(
         self,
         routing_key: str,
@@ -381,8 +452,9 @@ class RabbitMQDelivery(RabbitMQDeclarations):
         for attempt in range(_PUBLISH_MAX_ATTEMPTS):
             pub = await self._ensure_publish_channel()
             in_flight.append(pub)
+            sent_before_attempt = len(maybe_sent)
             try:
-                await _publish_against_closing(pub, msg, routing_key, maybe_sent)
+                await _publish_against_closing(pub, msg, routing_key, maybe_sent, self._report_closing_unreadable)
             except PublishError as exc:
                 # basic.return: keine Queue mit diesem Namen. Eine Wiederholung
                 # aendert daran nichts; vor DeliveryError fangen (Unterklasse).
@@ -410,7 +482,9 @@ class RabbitMQDelivery(RabbitMQDeclarations):
                 if _is_own_cancel(exc, cancelling_at_entry):
                     raise
                 _raise_if_sent(routing_key, exc)
-                maybe_sent.clear()
+                # Nur der eigene Eintrag: ein frueherer Versuch mit negativem
+                # Confirm hat womoeglich gesendet (E-041).
+                del maybe_sent[sent_before_attempt:]
                 last_exc = exc
                 # Den womoeglich kaputten Kanal verwerfen, damit der
                 # naechste _ensure_publish_channel neu oeffnet. Derselbe

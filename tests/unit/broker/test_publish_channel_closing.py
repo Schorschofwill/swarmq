@@ -30,17 +30,31 @@ Test-Liste:
       (a3), nicht PublishIndeterminate
 - [x] Frist reisst beim Kanalaufbau nach einem nicht gesendeten Versuch ->
       BrokerConnectionError (a3)
+- [x] Versuch 1 negativ bestaetigt (Basic.Nack), Versuch 2 nicht gesendet,
+      Frist reisst beim Kanalaufbau -> PublishIndeterminate (E-041, Review U8)
+- [x] Frist reisst, waehrend das Kind in der Sperren-Warteschlange steht
+      (Verbindung offen) -> BrokerConnectionError (E-042, Review U8)
+- [x] viele parallele Publishes auf einem Kanal -> ein Callback auf
+      ``closing`` statt einem je Publish (O(N^2), Review U8)
+- [x] beendetes Kind haengt nicht am ``closing`` des Kanals (kein Speicherleck)
+- [x] aio-pika-Kanal ohne ``closing``-Future -> Rueckfall mit einer WARNING je Broker
+- [x] Versionsschutz: aiormq traegt ``closing``-Future, aio-pika ``get_underlay_channel``
 """
 
 from __future__ import annotations
 
 import asyncio
 import gc
+import weakref
 from collections.abc import AsyncIterator
-from typing import Any, cast
+from typing import Any, cast, override
 from unittest.mock import AsyncMock, Mock
 
+import aio_pika
+import aiormq
+import aiormq.base
 import pytest
+from aiormq.abc import ExceptionType
 from aiormq.exceptions import AMQPConnectionError, ChannelClosed
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
@@ -287,3 +301,171 @@ async def test_a_deadline_while_reconnecting_after_an_unsent_attempt_is_not_inde
 
     assert not isinstance(caught.value, PublishIndeterminate)
     assert ready_calls == 2, "Voraussetzung: die Frist riss beim zweiten Kanalaufbau"
+
+
+async def test_a_deadline_after_a_nacked_then_an_unsent_attempt_stays_indeterminate() -> None:
+    """E-041: Ein negatives Confirm heisst "womoeglich gesendet". Ein spaeterer,
+    nachweislich nicht gesendeter Versuch loescht das nicht; reisst die Frist
+    danach beim Kanalaufbau, bleibt der Ausgang unbestimmt."""
+    transport = FakeTransport(closing=True)
+    ready_calls = 0
+
+    async def _ready_once() -> None:
+        nonlocal ready_calls
+        ready_calls += 1
+        if ready_calls > 1:
+            await _never_ready()
+
+    broker = _broker(transport, ready=AsyncMock(side_effect=_ready_once))
+    broker.publish_timeout_s = 0.02
+    publish = asyncio.create_task(broker.publish("tasks", b"{}"))
+    frame = await transport.next_frame()
+    frame.drain()
+    transport.nack_all()  # Versuch 1: Basic.Nack -> DeliveryError
+    transport.close_channel(AMQPConnectionError(_LOST))  # Versuch 2 sendet nichts
+
+    with pytest.raises(PublishIndeterminate):
+        await publish
+
+    assert ready_calls == 2, "Voraussetzung: die Frist riss beim Kanalaufbau nach dem nicht gesendeten Versuch"
+    assert transport.write_queue.empty(), "Voraussetzung: Versuch 2 hat nichts eingereiht"
+
+
+async def test_a_deadline_while_waiting_for_the_channel_lock_is_not_indeterminate() -> None:
+    """E-042: Das Kind steht noch in der Warteschlange der Kanal-Sperre, die
+    Verbindung bleibt offen. Reisst die Frist, hat es nichts eingereiht; der
+    Aufrufer darf sicher wiederholen."""
+    transport = FakeTransport(closing=True)
+    broker = _broker(transport)
+    broker.publish_timeout_s = 0.02
+    await transport.lock.acquire()  # ein anderer Publish haelt die Sperre
+    try:
+        publish = asyncio.create_task(broker.publish("tasks", b"{}"))
+        await transport.lock.waiter_arrived.wait()
+
+        with pytest.raises(BrokerConnectionError) as caught:
+            await publish
+    finally:
+        transport.lock.release()
+
+    assert not isinstance(caught.value, PublishIndeterminate)
+    assert transport.write_queue.empty()
+
+
+class _CountingClosing(asyncio.Future[Any]):
+    """``closing``-Future, das die Callback-Registrierungen zaehlt."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.registered = 0
+
+    @override
+    def add_done_callback(self, fn: Any, *, context: Any = None) -> None:
+        self.registered += 1
+        super().add_done_callback(fn, context=context)
+
+
+async def test_many_concurrent_publishes_register_once_on_the_shared_closing() -> None:
+    """Alle Publishes teilen den einen Publish-Kanal und sein ``closing``. Je
+    Publish ein Callback darauf (und sein lineares Entfernen) machte N
+    parallele Publishes quadratisch teuer; registriert wird je Kanal einmal."""
+    transport = FakeTransport(closing=True)
+    closing = _CountingClosing()
+    transport.closing = closing
+    broker = _broker(transport)
+    wire = asyncio.create_task(_healthy_wire(transport))
+    try:
+        receipts = await asyncio.gather(*(broker.publish("tasks", b"{}") for _ in range(200)))
+    finally:
+        wire.cancel()
+        await asyncio.gather(wire, return_exceptions=True)
+
+    assert len(receipts) == 200
+    assert closing.registered == 1
+
+
+async def test_a_finished_publish_child_is_not_kept_alive_by_its_channel() -> None:
+    """Der Kanal lebt lange; ein beendetes Publish-Kind darf nicht an seinem
+    ``closing`` haengen bleiben (sonst waechst der Speicher je Publish)."""
+    transport = FakeTransport(closing=True)
+    broker = _broker(transport)
+    publish = asyncio.create_task(broker.publish("tasks", b"{}"))
+    frame = await transport.next_frame()
+    (child,) = asyncio.all_tasks() - {asyncio.current_task(), publish}
+    child_ref = weakref.ref(child)
+    del child
+    frame.drain()
+    transport.confirm_all()
+    await publish
+    gc.collect()
+
+    assert child_ref() is None
+
+
+class _AioPikaChannel(FakePublishChannel):
+    """Gibt sich als echter aio-pika-Kanal aus (virtuelle Unterklasse): Nur
+    dort heisst ein fehlendes ``closing``, dass sich aio-pika/aiormq
+    geaendert haben; Test-Doubles bleiben still."""
+
+
+aio_pika.abc.AbstractChannel.register(_AioPikaChannel)
+
+
+async def test_an_unreadable_closing_falls_back_with_one_warning_per_broker(
+    swarmq_logs: list[dict[str, Any]],
+) -> None:
+    """Ein aio-pika-Kanal ohne lesbares ``closing``-Future (aiormq geaendert):
+    Der Publish laeuft wie vor FS-08, das meldet je Broker einmal."""
+    transport = FakeTransport()  # ohne ``closing``
+    broker = _broker(transport)
+    cast("AsyncMock", broker._publish_channel_factory).side_effect = [_AioPikaChannel(transport)]
+    wire = asyncio.create_task(_healthy_wire(transport))
+    try:
+        await broker.publish("tasks", b"{}")
+        await broker.publish("tasks", b"{}")
+    finally:
+        wire.cancel()
+        await asyncio.gather(wire, return_exceptions=True)
+
+    warnings = [e["event"] for e in swarmq_logs if e["log_level"] == "warning"]
+    assert warnings == ["publish_channel_closing_unreadable"]
+
+
+class _AiormqBase(aiormq.base.Base):
+    @override
+    async def _on_close(self, exc: ExceptionType | None = None) -> None:
+        return None
+
+    @override
+    def __str__(self) -> str:
+        return "base"
+
+
+async def test_the_installed_aio_pika_and_aiormq_still_provide_a_closing_future() -> None:
+    """Versionsschutz: Der FS-08-Waechter braucht ``get_underlay_channel`` an
+    aio-pikas Kanal und ein ``closing``-Future an aiormqs Kanal. Fehlt eins
+    nach einem Upgrade, faellt der Publish still in den Haenger zurueck."""
+    base = _AiormqBase(loop=asyncio.get_running_loop())
+
+    assert isinstance(base.closing, asyncio.Future)
+    assert issubclass(aiormq.Channel, aiormq.base.Base)
+    assert callable(getattr(aio_pika.RobustChannel, "get_underlay_channel", None))
+    assert issubclass(aio_pika.RobustChannel, aio_pika.abc.AbstractChannel)
+
+
+async def test_a_confirm_that_arrives_with_the_channel_close_completes_the_publish() -> None:
+    """Das Ack und das Schliessen kommen im selben Moment (Schliessen zuerst).
+    Der Waechter bricht das Kind erst nach dessen eigenem Weiterlaufen ab;
+    ein schon bestaetigter Publish ist zugestellt, nicht unbestimmt."""
+    transport = FakeTransport(closing=True)
+    broker = _broker(transport)
+    publish = asyncio.create_task(broker.publish("tasks", b"{}"))
+    frame = await transport.next_frame()
+    frame.drain()
+    await _callbacks_ran()  # das Kind wartet jetzt auf das Confirm
+
+    transport.close_channel(AMQPConnectionError(_LOST))
+    transport.confirm_all()
+
+    receipt = await publish
+    assert receipt.queue == "tasks"

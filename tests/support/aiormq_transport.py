@@ -8,6 +8,8 @@ spielt den Writer und den Broker:
 
 * ``frame.drain()`` -- der Writer hat den Frame geschrieben;
 * ``confirm_all()`` -- der Broker bestaetigt;
+* ``nack_all()`` -- der Broker bestaetigt negativ (``Basic.Nack``, wie aiormq
+  als ``DeliveryError``);
 * ``lose_connection(exc)`` -- die Verbindung reisst; wie aiormqs
   ``FutureStore.reject_all`` scheitern alle offenen Futures mit ``exc``.
 
@@ -87,6 +89,11 @@ class FakeTransport:
         for future in self.confirmations.values():
             if not future.done():
                 future.set_result(aiormq.spec.Basic.Ack())
+
+    def nack_all(self) -> None:
+        for future in self.confirmations.values():
+            if not future.done():
+                future.set_exception(aiormq.exceptions.DeliveryError(None, aiormq.spec.Basic.Nack()))
 
     def lose_connection(self, exc: BaseException) -> None:
         self.reject_pending(exc)

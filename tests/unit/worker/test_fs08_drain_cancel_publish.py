@@ -17,7 +17,8 @@ Crash-Teardown), damit der Retry-Publish wirklich startet.
 Testliste:
 - [x] Drain-Abbruch, Retry-Publish verliert den Kanal (Kind abgebrochen):
       kein Completed-Marker, keine Unique-Freigabe, Abbruch nicht
-      durchgereicht, Original nicht bestaetigt
+      durchgereicht, Original nicht bestaetigt; der Handler endet ohne
+      Ausnahme und gibt das Original zur Neuzustellung zurueck
 """
 
 from __future__ import annotations
@@ -106,3 +107,6 @@ async def test_lost_channel_in_the_retry_publish_after_a_drain_cancel_is_not_ter
     backend.schedules.mark_fire_completed.assert_not_awaited()
     backend.release_unique.assert_not_awaited()
     msg.ack.assert_not_awaited()
+    # Positiv: Der Handler endet regulaer, das Original geht zur Neuzustellung.
+    assert handler.exception() is None
+    msg.nack.assert_awaited_once_with(requeue=True)
