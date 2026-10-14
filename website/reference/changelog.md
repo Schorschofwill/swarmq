@@ -4,6 +4,217 @@ All notable changes to SwarmQ. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [0.12.2] — unreleased
+
+Collective release for the P2 and P3 findings of the second bug hunt.
+Together with 0.12.1rc1 it fixes all 23 findings: the remaining 19
+and the rest of FS-06, among them a task's own `TimeoutError` that turned into `SoftTimeoutError` (FS-05, FS-20),
+locks and unique flags left behind by a lost Valkey reply or a timeout
+(FS-06, FS-07), a publish that hung on a dead channel (FS-08), DLQ
+copies that went straight back to the DLQ on a UI replay (FS-10),
+unique flags blocked by `unique_until="start"` and `unique_for=None`
+(FS-13, FS-14), grandchildren that outlived a CPU child (FS-16) and a
+recycling drain that cancelled long runners (FS-30). No configuration
+changes and no new message headers; 0.12.2 runs next to 0.12.0 and
+0.12.1 on the same queues and keys. Read the upgrade notes below:
+recycling, the scheduler leader and the DLQ behave differently.
+
+### Upgrade notes
+
+1. **Longer recycling drain.** If a task without `hard_timeout` can run
+   on a recycling worker (declared on a queue it consumes, or already
+   started there), the recycling drain now waits up to
+   `max(largest hard_timeout + 30 s, SWARMQ_CONSUMER_TIMEOUT_S)`, by
+   default 30 min, instead of `SWARMQ_SHUTDOWN_TIMEOUT`. The old
+   process keeps its slot and its memory for that time. Keep
+   `SWARMQ_CONSUMER_TIMEOUT_S` equal to the broker's `consumer_timeout`;
+   on a broker without a consumer timeout a healthy long runner is still
+   cancelled after `SWARMQ_CONSUMER_TIMEOUT_S`. A `SIGTERM` during a
+   recycling drain now puts the shutdown budget into force from that
+   signal, so a deploy is not held up by it
+   ([shutdown budget](../explanation/delivery-semantics.md#shutdown-budget)).
+2. **`unique_for=None` with `delay`/`eta` needs producer and leader on
+   0.12.2.** A producer up to 0.12.1 does not store the opt-out, and a
+   leader up to 0.12.1 falls back to its own `TaskInfo`; in both cases
+   the one-shot can still be dropped as a duplicate at fire time.
+   Producers often run in other services: update them too
+   ([`schedule()`](api.md#schedule)).
+3. **DLQ entries from older workers.** DLQ copies of 0.12.2 workers
+   carry no `x-delivery-count`/`x-acquired-count` and can be replayed
+   with "Move messages" in the RabbitMQ UI or with a shovel. DLQ entries
+   written by workers up to 0.12.1, and messages the broker itself
+   dead-lettered through the dead-letter exchange (`route_via_dlx`), may
+   still carry the counters; replay them with `swarmq dlq retry`, which
+   drops them
+   ([what aborts the ack](../explanation/delivery-semantics.md#what-aborts-the-ack)).
+4. **The scheduler leader steps down before its lock expires.** If
+   Valkey hangs, the leader now steps down before its lock TTL runs out
+   (new warning `scheduler_renew_deadline_stepdown`, signal
+   `SCHEDULER_STANDBY`), instead of after about 150 s. A renew is now
+   bounded by `SWARMQ_BACKEND_OP_TIMEOUT`, and a renew timeout counts as
+   a renew error (`scheduler_renew_error`, `error_type=TimeoutError`).
+   Side effect: `SCHEDULER_HEARTBEAT` handlers run in the same election
+   tick without a time limit. A handler that takes longer than about
+   10 to 15 s (defaults) makes a healthy leader step down and win the
+   role back on the next tick (`SCHEDULER_STANDBY` followed by
+   `SCHEDULER_LEADER_FAILOVER` without a real change). Keep those
+   handlers short.
+5. **New and changed log events.** New: `scheduler_renew_deadline_stepdown`,
+   `unique_release_backend_error`, `consumer_watch_detached`,
+   `publish_channel_closing_unreadable`, `compute_signal_denied` and
+   `worker_recycling_superseded_by_shutdown`.
+   `lock_release_failed` now also comes from the lock gate with field
+   `stage="acquire_timeout"`; `task_deferred_backend_unavailable`
+   can carry `stage="cancel_fail_workflow"`; `shutdown_step_timeout`
+   can carry `step="cancel_consume"`; and `cancel_consume_partial_failure`
+   can carry `late=true`. `scheduler_unique_release_failed` and
+   `dedup_rollback_failed` now also cover the release after a claim
+   timeout. Alerts that match on these names may need adjusting
+   ([event catalog](logging.md#event-catalog)).
+6. **Mixed operation with 0.12.0 and 0.12.1.** The lock script
+   `lock_acquire.lua` is loaded under a new SHA; old and new workers
+   still exclude each other on the same mutex or semaphore. Messages and
+   schedule entries of older versions run unchanged on 0.12.2, and the
+   reverse holds as well.
+
+### Fixed
+
+- **FS-05, FS-20: a `TimeoutError` raised by the task stays a
+  `TimeoutError`.** Before, every `TimeoutError` from `run()` became
+  `SoftTimeoutError`, even without `soft_timeout` (message "soft
+  timeout after None s"), so `retry_exceptions=[TimeoutError]` never
+  matched; the CPU child did the same. Now only the expiry of
+  `soft_timeout` itself becomes `SoftTimeoutError`; the task's own
+  timeout keeps its class, message and `error_class`. The docs promised
+  a `SoftTimeoutError` that `run()` could catch; inside the task the
+  soft timeout arrives as `asyncio.CancelledError`. Clean up in
+  `finally` or in `except asyncio.CancelledError:` and re-raise; a task
+  that swallows the cancellation produces a success result
+  ([`SoftTimeoutError`](errors.md#softtimeouterror)).
+- **FS-06 (unique claim, mutex): a lock or unique claim survives the
+  Valkey client's retry after a lost reply.** The repeated call took the
+  caller's own lock or flag for a foreign one: a mutex locked itself
+  out until its TTL, and `schedule()` returned an ID without
+  publishing. Now `lock_acquire.lua` counts the caller's own token as
+  acquired (mutex and semaphore, TTL unchanged), and `schedule()`,
+  `schedule_many()` and the leader's cron fire count a flag that
+  carries their freshly made `task_id` as their own. A one-shot from
+  `schedule(delay=/eta=)` keeps its stable ID; there the self-hit stays
+  a duplicate, because it cannot be told apart from the follow-up poll
+  after `PublishIndeterminate`.
+- **FS-07: a claim is released after a timeout.** A Valkey timeout after
+  a successful lock acquire or unique claim left the lock or flag
+  behind until its TTL. Now the lock gate releases the lock in the
+  background (owner-checked; shutdown waits for it), the leader
+  releases a cron's unique flag, and `schedule()`/`schedule_many()`
+  release the flag before the error reaches the caller. A release that
+  fails logs `lock_release_failed` (`stage="acquire_timeout"`) or
+  `unique_release_backend_error`. A one-shot under a stable ID keeps its
+  flag, as for FS-06.
+- **FS-08: a publish waiting in the channel lock ends when the
+  connection drops.** Before, it hung on the dead channel until
+  `publish_timeout_s` and then reported `PublishIndeterminate`, although
+  nothing had been sent. Now every attempt runs against the channel's
+  close: unsent attempts go to a new channel or end as
+  `BrokerConnectionError`. A deadline that expires before anything can
+  have been sent (waiting for the connection, backoff after an attempt
+  that was provably not sent, waiting in the channel lock) also ends as
+  `BrokerConnectionError` ("not sent"). For the leader, this counts
+  towards its step-down like any connection error
+  ([`BrokerConnectionError`](errors.md#brokerconnectionerror)).
+- **FS-09: the consumer watchdog no longer aborts `basic.cancel` or
+  `basic.consume`.** It aborted them after 2 s, and aiormq then closed
+  the whole consume channel with all unacked deliveries of the worker.
+  Now only getting the channel is bounded; the RPC itself has an
+  emergency limit of 60 s in aiormq. On stop, a running watchdog tick is
+  detached instead of cancelled (`consumer_watch_detached`), and a
+  consumer tag that arrives after that is cancelled at once.
+  `cancel_consume` during shutdown is bounded without aborting the RPC.
+- **FS-10: DLQ copies no longer carry the broker's delivery counters.**
+  A copy with `x-delivery-count`/`x-acquired-count`, replayed with the
+  RabbitMQ UI, a shovel or swarmv, went straight back to the DLQ.
+  Now every copy swarmq publishes drops the counters; replay ID and
+  generation stay the same. Messages the broker dead-letters itself
+  (`route_via_dlx`) are outside swarmq's reach (upgrade note 3).
+- **FS-12: cancelling a workflow step before it starts ends the
+  workflow.** `cancel(task_id)` on a step that had not started left the
+  workflow `running` until its TTL. Now the workflow is `failed` and
+  `get()` raises `TaskError` ("task was cancelled"). If marking the
+  workflow fails transiently, the message is deferred through the delay
+  queue (`task_deferred_backend_unavailable`,
+  `stage="cancel_fail_workflow"`)
+  ([failure modes](../guides/workflows.md#failure-modes)).
+- **FS-13: `unique_until="start"` releases the flag on every terminal
+  path before the start.** A message that ended before its task started
+  (cancel, `max_age` expiry, end of a lock wait, delivery limit, task
+  not registered) kept the flag until `unique_for`. Now it is released
+  there too, and still exactly once; a requeue (rate limit, lock wait)
+  keeps the flag
+  ([when to release the flag](../guides/locking-and-dedup.md#when-to-release-the-flag)).
+- **FS-14: `schedule(delay=/eta=, unique_for=None)` disables dedup.**
+  The opt-out was not stored, and the leader deduplicated with its own
+  `TaskInfo` and could drop the one-shot silently. Now the one-shot
+  entry records the opt-out and the leader fires without a dedup claim
+  (upgrade note 2;
+  [immediate vs deferred execution](../guides/scheduling-and-retries.md#immediate-vs-deferred-execution)).
+- **FS-15: `get_result()` no longer hangs in Pub/Sub.** `subscribe()`
+  and the teardown had no deadline, so a hanging Valkey held the caller
+  beyond `timeout`. Now both are bounded by the remaining time; without
+  a subscription the call keeps polling. `WorkflowHandle.get()` waits
+  the same way. The polling itself is unchanged.
+- **FS-16, FS-23, FS-24: CPU pool.** After a child dies (clean end
+  during the `SIGTERM` grace, death without result, death of a warm DI
+  child between jobs), one `SIGKILL` goes to its process group, so
+  grandchildren no longer survive; a group that cannot be signalled
+  logs `compute_signal_denied`. A slot locked in the background
+  (recycling) is no longer handed out again. A failed handshake no
+  longer logs an asyncio error ("exception in shielded future") and no
+  longer counts as a second child death.
+- **FS-17: an expired task whose ack fails after the DLQ copy is
+  terminal.** The `max_age` path treated `SettleFailedAfterPublish` as a
+  failure and redelivered the original; with the execution guard this
+  left misleading log lines and a unique flag held until `unique_for`.
+  Now it behaves like every other
+  dead-letter path: warning `dlq_ack_failed_after_publish`, unique
+  release, no `nack`
+  ([execution guard](../explanation/delivery-semantics.md#execution-guard)).
+- **FS-19: broken counter headers no longer block a message.** A
+  non-integer `x-swarmq-retry-count` (already `"3"`) or a non-numeric
+  `x-swarmq-rate-limit-count` left the message unacked. A non-integer
+  retry count now counts as no header (a UI replay with `"3"` gets the
+  full retry budget again); the rate-limit counter is read leniently.
+- **FS-27: `validate_namespace("SQ")` no longer suggests the forbidden
+  value `'sq'`.**
+- **FS-28: the message for a workflow step with `result_ttl=0` names the
+  cause.** It said "is FIRE_AND_FORGET"; now it says "stores no result
+  (result_ttl=0)".
+- **FS-30: recycling no longer cancels long runners after
+  `SWARMQ_SHUTDOWN_TIMEOUT`.** Without a registered `hard_timeout` the
+  recycling drain fell back to the shutdown timeout (30 s) and cancelled
+  every longer task, on every recycle. The drain now waits up to
+  `SWARMQ_CONSUMER_TIMEOUT_S` (upgrade note 1). A `SIGTERM` during the
+  recycling drain, or while the worker waits for the supervisor's
+  confirmation (`worker_recycling_superseded_by_shutdown`), puts the
+  shutdown budget into force; a second `SIGTERM` does not restart it.
+- **FS-31: the scheduler leader steps down before its lock TTL runs
+  out.** A renew ran without `op_timeout` (up to about 65 s on a hanging
+  Valkey), and the step-down came only after about 150 s. Now each
+  renew is bounded, and the leader steps down once the time limit is
+  reached without a successful renew (upgrade note 4;
+  [leader takeover](../guides/scheduling-and-retries.md#leader-takeover)).
+- **Follow-up to FS-03:** a retry copy of a cron or `delay`/`eta` fire
+  drops `x-swarmq-schedfire-defer-count`. With it, the copy was deferred
+  instead of acked as a duplicate while another claim was held, and its
+  defer cap started from the old count.
+- **Smaller fixes.** `ValkeyBackend.close()` refuses new connections and
+  disconnects those returned later, so handlers that finish after a
+  worker abort leave no open connections; the abort path lets the
+  execution guard's pending writes run out like the orderly shutdown.
+  The supervisor closes the stderr pipe of the logging config probe
+  after a successful reload (one file descriptor per reload). A held
+  cron commits its postponed fire time before `SCHEDULER_CRON_UNOWNED`
+  is sent, so a handler reading it sees the new time.
+
 ## [0.12.1rc1] — 2026-10-14
 
 Release candidate for 0.12.1 (install with `pip install --pre`). It

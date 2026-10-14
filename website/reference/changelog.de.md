@@ -4,6 +4,235 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 [Keep a Changelog](https://keepachangelog.com/) und
 [Semantic Versioning](https://semver.org/).
 
+## [0.12.2] — unveröffentlicht
+
+Sammelrelease für die P2- und P3-Befunde der zweiten Fehlersuche;
+zusammen mit 0.12.1rc1 sind damit alle 23 Befunde behoben. Es behebt
+die übrigen 19 und den Rest von FS-06, darunter eine eigene
+`TimeoutError` des Tasks, die zu `SoftTimeoutError` wurde (FS-05,
+FS-20), Locks und Unique-Flags, die eine verlorene Valkey-Antwort oder
+ein Timeout zurückließ (FS-06, FS-07), einen Publish, der auf einem
+toten Kanal hing (FS-08), DLQ-Kopien, die bei einem Replay per UI
+sofort wieder in der DLQ landeten (FS-10), Unique-Flags, die
+`unique_until="start"` und `unique_for=None` blockierten (FS-13,
+FS-14), Enkelprozesse, die ein CPU-Kind überlebten (FS-16), und einen
+Recycling-Drain, der Langläufer abbrach (FS-30). Keine
+Konfigurationsänderungen und keine neuen Nachrichten-Header; 0.12.2
+läuft neben 0.12.0 und 0.12.1 auf denselben Queues und Keys. Die
+Upgrade-Hinweise unten lesen: Recycling, Scheduler-Leader und DLQ
+verhalten sich anders.
+
+### Upgrade-Hinweise
+
+1. **Längerer Recycling-Drain.** Kann auf einem recycelnden Worker ein
+   Task ohne `hard_timeout` laufen (deklariert auf einer Queue, die er
+   konsumiert, oder dort bereits gestartet), wartet der Recycling-Drain
+   jetzt bis zu `max(größter hard_timeout + 30 s,
+   SWARMQ_CONSUMER_TIMEOUT_S)`, im Default 30 min, statt
+   `SWARMQ_SHUTDOWN_TIMEOUT`. So lange behält der alte Prozess seinen
+   Slot und seinen Speicher. `SWARMQ_CONSUMER_TIMEOUT_S` gleich dem
+   `consumer_timeout` des Brokers halten; bei einem Broker ohne
+   Consumer-Timeout wird auch ein gesunder Langläufer nach
+   `SWARMQ_CONSUMER_TIMEOUT_S` abgebrochen. Ein `SIGTERM` während eines
+   Recycling-Drains setzt jetzt ab diesem Signal das Shutdown-Budget in
+   Kraft; ein Deploy wartet also nicht auf den Drain
+   ([Shutdown-Budget](../explanation/delivery-semantics.md#shutdown-budget)).
+2. **`unique_for=None` mit `delay`/`eta` braucht Producer und Leader
+   auf 0.12.2.** Ein Producer bis 0.12.1 speichert den Opt-out nicht,
+   und ein Leader bis 0.12.1 fällt auf seine eigene `TaskInfo` zurück;
+   in beiden Fällen kann der Oneshot beim Fire weiter als Duplikat
+   verworfen werden. Producer laufen oft in anderen Diensten: auch diese
+   aktualisieren ([`schedule()`](api.md#schedule)).
+3. **DLQ-Einträge älterer Worker.** DLQ-Kopien von 0.12.2-Workern
+   tragen kein `x-delivery-count`/`x-acquired-count` und lassen sich per
+   "Move messages" in der RabbitMQ-UI oder per Shovel zurückspielen.
+   DLQ-Einträge von Workern bis 0.12.1 und Nachrichten, die der Broker
+   selbst über den Dead-Letter-Exchange ablegt (`route_via_dlx`), können
+   die Zähler noch tragen; für sie `swarmq dlq retry` verwenden, es
+   entfernt sie
+   ([was den Ack abbricht](../explanation/delivery-semantics.md#was-den-ack-abbricht)).
+4. **Der Scheduler-Leader tritt vor Ablauf seines Locks zurück.** Hängt
+   Valkey, tritt der Leader jetzt vor Ablauf seiner Lock-TTL zurück
+   (neue Warnung `scheduler_renew_deadline_stepdown`, Signal
+   `SCHEDULER_STANDBY`), statt erst nach etwa 150 s. Ein Renew ist jetzt
+   auf `SWARMQ_BACKEND_OP_TIMEOUT` begrenzt, und ein Renew-Timeout zählt
+   als Renew-Fehler (`scheduler_renew_error`, `error_type=TimeoutError`).
+   Nebenwirkung: Handler für `SCHEDULER_HEARTBEAT` laufen im selben
+   Wahl-Takt ohne Zeitlimit. Braucht ein Handler länger als etwa 10 bis
+   15 s (Defaults), tritt ein gesunder Leader zurück und holt die Rolle
+   im nächsten Takt zurück (`SCHEDULER_STANDBY`, danach
+   `SCHEDULER_LEADER_FAILOVER` ohne echten Wechsel). Diese Handler kurz
+   halten.
+5. **Neue und geänderte Log-Events.** Neu:
+   `scheduler_renew_deadline_stepdown`, `unique_release_backend_error`,
+   `consumer_watch_detached`, `publish_channel_closing_unreadable`,
+   `compute_signal_denied` und `worker_recycling_superseded_by_shutdown`.
+   `lock_release_failed` kommt jetzt auch aus dem Lock-Gate, mit dem
+   Feld `stage="acquire_timeout"`; `task_deferred_backend_unavailable`
+   kann `stage="cancel_fail_workflow"` tragen, `shutdown_step_timeout`
+   kann `step="cancel_consume"` tragen und
+   `cancel_consume_partial_failure` kann `late=true` tragen.
+   `scheduler_unique_release_failed` und `dedup_rollback_failed`
+   decken jetzt auch die Freigabe nach einem Claim-Timeout ab. Alerts,
+   die auf diese Namen prüfen, ggf. anpassen
+   ([Event-Katalog](logging.md#event-katalog)).
+6. **Mischbetrieb mit 0.12.0 und 0.12.1.** Das Lock-Skript
+   `lock_acquire.lua` wird unter einer neuen SHA geladen; alte und neue
+   Worker schließen sich auf demselben Mutex oder Semaphor weiter
+   gegenseitig aus. Nachrichten und Schedule-Einträge älterer Versionen
+   laufen unverändert auf 0.12.2 und umgekehrt.
+
+### Behoben
+
+- **FS-05, FS-20: Eine `TimeoutError` des Tasks bleibt eine
+  `TimeoutError`.** Bisher wurde jede `TimeoutError` aus `run()` zu
+  `SoftTimeoutError`, auch ohne `soft_timeout` (Meldung „soft timeout
+  after None s“), und `retry_exceptions=[TimeoutError]` griff nie; das
+  CPU-Kind machte es genauso. Jetzt wird nur der Ablauf von
+  `soft_timeout` selbst zu `SoftTimeoutError`; der eigene Timeout des
+  Tasks behält Klasse, Meldung und `error_class`. Die Doku versprach
+  einen `SoftTimeoutError`, den `run()` fangen kann; im Task kommt der
+  Soft Timeout aber als `asyncio.CancelledError` an. In `finally` oder
+  in `except asyncio.CancelledError:` aufräumen und erneut werfen; ein
+  Task, der den Abbruch verschluckt, liefert ein Erfolgsergebnis
+  ([`SoftTimeoutError`](errors.md#softtimeouterror)).
+- **FS-06 (Unique-Claim, Mutex): Ein Lock oder Unique-Claim übersteht
+  die Wiederholung des Valkey-Clients nach einer verlorenen Antwort.**
+  Der wiederholte Aufruf hielt den eigenen Lock bzw. das eigene Flag für
+  fremd: Ein Mutex sperrte sich bis zu seiner TTL selbst aus, und
+  `schedule()` gab eine ID zurück, ohne zu publizieren. Jetzt wertet
+  `lock_acquire.lua` den eigenen Token als erworben (Mutex und
+  Semaphor, TTL unverändert), und `schedule()`, `schedule_many()` und
+  das Cron-Fire des Leaders werten ein Flag mit ihrer frisch erzeugten
+  `task_id` als eigenes. Ein Oneshot aus `schedule(delay=/eta=)` behält
+  seine stabile ID; dort bleibt der Selbsttreffer ein Duplikat, weil er
+  sich nicht vom Folge-Poll nach `PublishIndeterminate` unterscheiden
+  lässt.
+- **FS-07: Ein Claim wird nach einem Timeout freigegeben.** Ein
+  Valkey-Timeout nach erfolgreichem Lock-Erwerb oder Unique-Claim ließ
+  Lock bzw. Flag bis zur TTL stehen. Jetzt gibt das Lock-Gate den Lock
+  im Hintergrund frei (owner-geprüft; der Shutdown wartet darauf), der
+  Leader gibt das Unique-Flag eines Crons frei, und
+  `schedule()`/`schedule_many()` geben das Flag frei, bevor der Fehler
+  beim Aufrufer ankommt. Scheitert die Freigabe, loggt swarmq
+  `lock_release_failed` (`stage="acquire_timeout"`) bzw.
+  `unique_release_backend_error`. Ein Oneshot unter stabiler ID behält
+  sein Flag, wie bei FS-06.
+- **FS-08: Ein Publish, der in der Kanal-Sperre wartet, endet beim
+  Verbindungsabriss.** Bisher hing er bis `publish_timeout_s` auf dem
+  toten Kanal und meldete dann `PublishIndeterminate`, obwohl nichts
+  gesendet war. Jetzt läuft jeder Versuch gegen das Schließen seines
+  Kanals: Nicht gesendete Versuche gehen auf einen neuen Kanal oder
+  enden als `BrokerConnectionError`. Reißt die Frist, bevor etwas
+  gesendet sein kann (Warten auf die Verbindung, Backoff nach einem
+  nachweislich nicht gesendeten Versuch, Warten in der Kanal-Sperre),
+  folgt ebenfalls `BrokerConnectionError` („nicht gesendet“). Beim
+  Leader zählt das wie jeder Verbindungsfehler für den Rücktritt
+  ([`BrokerConnectionError`](errors.md#brokerconnectionerror)).
+- **FS-09: Der Consumer-Wächter bricht `basic.cancel` und
+  `basic.consume` nicht mehr ab.** Er brach sie nach 2 s ab, und
+  aiormq schloss daraufhin den ganzen Consume-Kanal mit allen
+  unbestätigten Zustellungen des Workers. Jetzt ist nur der Kanalbezug
+  begrenzt; das RPC selbst hat in aiormq eine Notbremse von 60 s. Beim
+  Stoppen wird ein laufender Takt abgekoppelt statt abgebrochen
+  (`consumer_watch_detached`), und ein danach eintreffender
+  Consumer-Tag wird sofort wieder abgemeldet. `cancel_consume` im
+  Shutdown ist begrenzt, ohne das RPC abzubrechen.
+- **FS-10: DLQ-Kopien tragen keine Zustellzähler des Brokers mehr.**
+  Eine Kopie mit `x-delivery-count`/`x-acquired-count` landete nach
+  einem Replay per RabbitMQ-UI, Shovel oder swarmv sofort wieder in der
+  DLQ. Jetzt entfernt jede Kopie, die swarmq publiziert, die Zähler;
+  Replay-ID und Generation bleiben gleich. Nachrichten, die der Broker
+  selbst dead-lettert (`route_via_dlx`), liegen außerhalb von swarmq
+  (Upgrade-Hinweis 3).
+- **FS-12: Ein Workflow-Schritt, der vor dem Start abgebrochen wird,
+  beendet den Workflow.** `cancel(task_id)` auf einen noch nicht
+  gestarteten Schritt ließ den Workflow bis zur TTL `running`. Jetzt
+  ist der Workflow `failed`, und `get()` wirft `TaskError` („task was
+  cancelled“). Scheitert die Markierung vorübergehend, wird die
+  Nachricht über die Delay-Queue zurückgestellt
+  (`task_deferred_backend_unavailable`,
+  `stage="cancel_fail_workflow"`)
+  ([Fehlerfälle](../guides/workflows.md#fehlerfalle)).
+- **FS-13: `unique_until="start"` gibt das Flag auf jedem terminalen
+  Pfad vor dem Start frei.** Eine Nachricht, die vor dem Start ihres
+  Tasks endete (Cancel, Ablauf über `max_age`, Ende einer
+  Lock-Wartezeit, Delivery-Limit, Task nicht registriert), hielt das
+  Flag bis `unique_for`. Jetzt wird es auch dort freigegeben, weiterhin
+  genau einmal; eine Zurückstellung (Rate-Limit, Lock-Wartezeit) behält
+  das Flag
+  ([Wann das Flag freigeben](../guides/locking-and-dedup.md#wann-das-flag-freigeben)).
+- **FS-14: `schedule(delay=/eta=, unique_for=None)` schaltet die Dedup
+  ab.** Der Opt-out wurde nicht gespeichert, der Leader deduplizierte
+  mit seiner eigenen `TaskInfo` und konnte den Oneshot still verwerfen.
+  Jetzt hält der Oneshot-Eintrag den Opt-out fest, und der Leader
+  feuert ohne Dedup-Claim (Upgrade-Hinweis 2;
+  [Immediate vs Deferred](../guides/scheduling-and-retries.md#immediate-vs-deferred)).
+- **FS-15: `get_result()` hängt nicht mehr in Pub/Sub.** `subscribe()`
+  und der Teardown hatten keine Frist; ein hängendes Valkey hielt den
+  Aufrufer über `timeout` hinaus fest. Jetzt sind beide an die
+  Restfrist gebunden; ohne Abonnement pollt der Aufruf weiter.
+  `WorkflowHandle.get()` wartet genauso. Am Polling selbst ändert sich
+  nichts.
+- **FS-16, FS-23, FS-24: CPU-Pool.** Nach dem Tod eines Kindes (Ende in
+  der `SIGTERM`-Gnadenfrist, Tod ohne Ergebnis, Tod eines warmen
+  DI-Kinds zwischen zwei Jobs) geht ein `SIGKILL` an seine
+  Prozessgruppe; Enkelprozesse überleben nicht mehr. Lässt sich die
+  Gruppe nicht signalisieren, loggt der Pool `compute_signal_denied`.
+  Ein im Hintergrund (Recycling) gesperrter Slot wird nicht mehr
+  vergeben. Ein gescheiterter Handshake loggt keinen asyncio-Fehler
+  („exception in shielded future“) mehr und zählt nicht mehr als
+  zweiter Kindtod.
+- **FS-17: Ein abgelaufener Task, dessen Ack nach der DLQ-Kopie
+  scheitert, ist terminal.** Der `max_age`-Pfad wertete
+  `SettleFailedAfterPublish` als Fehlschlag und stellte das Original
+  neu zu; mit Ausführungsschutz blieben irreführende Logzeilen und ein
+  Unique-Flag bis `unique_for`. Jetzt verhält er sich wie jeder andere
+  Dead-Letter-Pfad: Warnung `dlq_ack_failed_after_publish`,
+  Unique-Freigabe, kein `nack`
+  ([Ausführungsschutz](../explanation/delivery-semantics.md#ausfuhrungsschutz)).
+- **FS-19: Kaputte Zähler-Header blockieren keine Nachricht mehr.** Ein
+  nicht ganzzahliger `x-swarmq-retry-count` (schon `"3"`) oder ein nicht
+  numerischer `x-swarmq-rate-limit-count` ließ die Nachricht
+  unbestätigt. Ein nicht ganzzahliger Retry-Zähler zählt jetzt wie kein
+  Header (ein UI-Replay mit `"3"` bekommt wieder das volle
+  Retry-Budget); der Rate-Limit-Zähler wird nachsichtig gelesen.
+- **FS-27: `validate_namespace("SQ")` schlägt nicht mehr den verbotenen
+  Wert `'sq'` vor.**
+- **FS-28: Die Meldung für einen Workflow-Schritt mit `result_ttl=0`
+  nennt die Ursache.** Sie lautete „is FIRE_AND_FORGET“; jetzt „stores
+  no result (result_ttl=0)“.
+- **FS-30: Recycling bricht Langläufer nicht mehr nach
+  `SWARMQ_SHUTDOWN_TIMEOUT` ab.** Ohne registrierten `hard_timeout` fiel
+  der Recycling-Drain auf das Shutdown-Timeout (30 s) zurück und brach
+  bei jedem Recycling jeden längeren Task ab. Jetzt wartet der Drain bis
+  zu `SWARMQ_CONSUMER_TIMEOUT_S` (Upgrade-Hinweis 1). Ein `SIGTERM`
+  während des Recycling-Drains oder während der Worker auf die
+  Bestätigung des Supervisors wartet
+  (`worker_recycling_superseded_by_shutdown`) setzt das Shutdown-Budget
+  in Kraft; ein zweites `SIGTERM` startet es nicht neu.
+- **FS-31: Der Scheduler-Leader tritt vor Ablauf seiner Lock-TTL
+  zurück.** Ein Renew lief ohne `op_timeout` (bei hängendem Valkey bis
+  etwa 65 s), und der Rücktritt kam erst nach etwa 150 s. Jetzt ist
+  jeder Renew begrenzt, und der Leader tritt zurück, sobald die
+  Zeitgrenze ohne erfolgreichen Renew erreicht ist (Upgrade-Hinweis 4;
+  [Leader-Übernahme](../guides/scheduling-and-retries.md#leader-ubernahme)).
+- **Nachtrag zu FS-03:** Eine Retry-Kopie eines Cron- oder
+  `delay`/`eta`-Fires trägt `x-swarmq-schedfire-defer-count` nicht mehr.
+  Mit dem Zähler wurde die Kopie bei fremdem Claim zurückgestellt statt
+  als Duplikat bestätigt, und ihr Zurückstellungsdeckel begann mit dem
+  alten Stand.
+- **Kleinere Korrekturen.** `ValkeyBackend.close()` verweigert neue
+  Verbindungen und trennt später zurückgegebene; Handler, die nach
+  einem Worker-Abbruch fertig werden, hinterlassen keine offenen
+  Verbindungen mehr, und der Abbruchpfad lässt die ausstehenden
+  Schreibvorgänge des Ausführungsschutzes auslaufen wie der geordnete
+  Shutdown. Der Supervisor schließt nach einem erfolgreichen Reload die
+  stderr-Pipe der Logging-Konfigurationsprobe (ein Dateideskriptor je
+  Reload). Ein zurückgehaltener Cron schreibt seinen verschobenen
+  Termin, bevor `SCHEDULER_CRON_UNOWNED` gesendet wird; ein Handler,
+  der ihn liest, sieht schon den neuen Termin.
+
 ## [0.12.1rc1] — 2026-10-14
 
 Release-Candidate für 0.12.1 (Installation mit `pip install --pre`).
