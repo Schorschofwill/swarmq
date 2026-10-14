@@ -217,8 +217,10 @@ class ScheduleStore(Protocol):
         """In-Flight-Claim mit Owner-Token (atomar). ``True``, wenn der Claim
         frei war oder sein Wert eines der ``takeover``-Tokens ist (ein Token
         oder mehrere) -- dann gehoert er danach ``owner`` mit neuer TTL
-        (Uebernahme durch die eigene Kopie). Ohne ``owner`` speichert der
-        Claim einen Platzhalter."""
+        (Uebernahme durch die eigene Kopie). Haelt der Claim schon ``owner``
+        (Wiederholung desselben Aufrufs nach verlorener Antwort), gilt er
+        ebenfalls als gewonnen. Ohne ``owner`` speichert der Claim einen
+        Platzhalter, und von zwei Aufrufen gewinnt nur der erste."""
         ...
 
     async def release_fire_claim(self, fire_key: str, *, owner: str | None = None) -> None:
