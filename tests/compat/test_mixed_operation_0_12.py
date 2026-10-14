@@ -257,3 +257,105 @@ async def test_rollback_runs_a_deferred_retry_on_0_12_0(
     assert runs == [(task_id, 1, "repo"), (task_id, 2, _OLD_RUNTIME)]
     assert await message_count(rabbitmq_url, tier) == 0
     assert await message_count(rabbitmq_url, f"{queue}.XQ") == 0
+
+
+# ---------------------------------------------------------------------------
+# U5 (FS-03, KTD5/KTD19): Schedfire-Zurueckstellung im Mischbetrieb.
+# Eine zurueckgestellte Kopie traegt ``x-swarmq-schedfire-defer-count``;
+# 0.12.0 kennt den Header nicht und verhaelt sich wie bisher (fremder Claim:
+# Duplikat-Ack, freier Claim: Lauf), ohne Fehler.
+# ---------------------------------------------------------------------------
+
+
+async def _publish_schedfire_copy(app: SwarmQ, queue: str, fire_key: str, defer_count: int) -> str:
+    """Eine Schedfire-Kopie, wie sie der Arbeitsstand zurueckstellt."""
+    import uuid
+
+    from swarmq.headers import HEADER_SCHEDFIRE_DEFER_COUNT
+    from swarmq.serialization import encode_json
+
+    task_id = uuid.uuid4().hex
+    body = encode_json({"task": {"id": task_id, "queue": queue, "name": "compat_poison"}, "args": [], "kwargs": {}})
+    headers = {"x-swarmq-schedfire": fire_key, HEADER_SCHEDFIRE_DEFER_COUNT: defer_count}
+    await app.broker.publish(queue, body, headers=headers)
+    return task_id
+
+
+async def _allow_poison(valkey_url: str, queue: str) -> None:
+    """``compat_poison`` gelingt ab jetzt (``compat:flag:<queue>``)."""
+    import valkey.asyncio as aio_valkey
+
+    client = aio_valkey.Valkey.from_url(valkey_url)
+    try:
+        await client.set(f"compat:flag:{queue}", "1")
+    finally:
+        await client.aclose()
+
+
+async def test_deferred_schedfire_copy_with_foreign_claim_is_acked_by_0_12_0(
+    start_worker: StartWorker,
+    python_0120: str,
+    app: SwarmQ,
+    rabbitmq_url: str,
+    valkey_url: str,
+    queue: str,
+) -> None:
+    """Eine zurueckgestellte Kopie erreicht einen 0.12.0-Worker, der Claim ist
+    noch fremd: 0.12.0 bestaetigt sie als Duplikat wie bisher -- ohne Fehler,
+    ohne Lauf, ohne DLQ (Verlust nur mit 0.12.0 als Empfaenger, dokumentiert)."""
+    old = start_worker(python_0120, BASE_012_VERSION)
+    await _wait_consumers(rabbitmq_url, queue, 1)
+    await _allow_poison(valkey_url, queue)
+    fire_key = f"compat-cron:{queue}:1700000000000"
+    assert await app.backend.schedules.claim_fire(fire_key, 60_000, owner="W1") is True
+
+    await _publish_schedfire_copy(app, queue, fire_key, defer_count=2)
+
+    async def acked_as_duplicate() -> bool:
+        return any("schedfire_inflight_duplicate_acked" in line for line in old.lines)
+
+    assert await wait_until(acked_as_duplicate, timeout=_EVENT_TIMEOUT), "0.12.0 never acked the copy"
+    assert await recorded_runs(valkey_url, queue) == []
+    assert not [line for line in old.lines if "Traceback" in line]
+    assert await message_count(rabbitmq_url, queue) == 0
+    assert await message_count(rabbitmq_url, f"{queue}.XQ") == 0
+
+
+async def test_rollback_runs_a_deferred_schedfire_copy_on_0_12_0_once_the_claim_expired(
+    start_worker: StartWorker,
+    python_0120: str,
+    python_repo: str,
+    app: SwarmQ,
+    rabbitmq_url: str,
+    valkey_url: str,
+    queue: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rollback mit Kopien in der Delay-Queue: der Arbeitsstand stellt eine
+    Neuzustellung bei fremdem Claim zurueck (``{queue}.DQ.15s``) und stoppt;
+    nach Ablauf des Claims fuehrt 0.12.0 die Kopie genau einmal aus."""
+    # Zurueckstellung 2 mit Basis 6 s: 9,6 ... 14,4 s, also immer DQ.15s.
+    monkeypatch.setenv("SWARMQ_BACKEND_DEFER_BASE_DELAY", "6")
+    monkeypatch.setenv("SWARMQ_BACKEND_DEFER_MAX_DELAY", "60")
+    tier = f"{queue}.DQ.15s"
+    new = start_worker(python_repo, "repo")
+    await _wait_consumers(rabbitmq_url, queue, 1)
+    await _allow_poison(valkey_url, queue)
+    fire_key = f"compat-cron:{queue}:1700000000000"
+    assert await app.backend.schedules.claim_fire(fire_key, 60_000, owner="W1") is True
+
+    task_id = await _publish_schedfire_copy(app, queue, fire_key, defer_count=1)
+    await _wait_deferred_in_tier(rabbitmq_url, tier)
+    assert await recorded_runs(valkey_url, queue) == []
+    new.stop()
+    await _wait_consumers(rabbitmq_url, queue, 0)
+    await app.backend.schedules.clear_schedfire_inflight(fire_key)  # Claim abgelaufen
+    start_worker(python_0120, BASE_012_VERSION)
+
+    assert await app.get_result(task_id, timeout=_EVENT_TIMEOUT + 10) == _OLD_RUNTIME
+
+    runs = [(tid, runtime) for _, tid, _, runtime in await recorded_runs(valkey_url, queue)]
+    assert runs == [(task_id, _OLD_RUNTIME)]
+    assert await app.backend.schedules.is_fire_completed(fire_key) is True
+    assert await message_count(rabbitmq_url, tier) == 0
+    assert await message_count(rabbitmq_url, f"{queue}.XQ") == 0

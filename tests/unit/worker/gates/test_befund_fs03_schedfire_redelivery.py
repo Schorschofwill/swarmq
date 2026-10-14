@@ -21,6 +21,8 @@ wird (owner-geprueft) freigegeben.
 Testliste:
 # [x] Broker-Neuzustellung, Claim gehoert dem toten Vorgaenger -> nicht als
 #     Duplikat bestaetigt (ausgefuehrt oder zurueckgestellt)
+# [x] Kopie mit Defer-Header ohne Broker-Zaehler (die Zurueckstellung von
+#     eben), Claim weiter fremd -> erneut zurueckgestellt, nicht bestaetigt
 # [x] Shutdown bricht ein am Semaphor wartendes Fire ab -> Claim freigegeben
 """
 
@@ -63,7 +65,6 @@ class Fs03SlowJob(Task):
 
 
 @pytest.mark.befund("FS-03")
-@pytest.mark.xfail(strict=True, reason="FS-03: offen - Neuzustellung mit fremdem Claim wird als Duplikat bestaetigt")
 async def test_redelivery_after_worker_death_is_not_acked_as_duplicate(
     broker: MagicMock, backend: MagicMock, config: SwarmQConfig
 ) -> None:
@@ -86,6 +87,29 @@ async def test_redelivery_after_worker_death_is_not_acked_as_duplicate(
         "Broker-Neuzustellung nach Worker-Tod als Duplikat bestaetigt "
         f"(ack={broker.ack.await_count}), Fire ohne Lauf verloren"
     )
+
+
+@pytest.mark.befund("FS-03")
+async def test_deferred_copy_without_counters_is_not_acked_as_duplicate(
+    broker: MagicMock, backend: MagicMock, config: SwarmQConfig
+) -> None:
+    """Die Zurueckstellung ist eine neue Nachricht ohne Broker-Zaehler; der
+    Defer-Header haelt sie als Neuzustellung kenntlich."""
+    registry = TaskRegistry()
+    registry.register(Fs03CronJob)
+    worker = Worker(broker=broker, backend=backend, registry=registry, config=config)
+    backend.schedules.claim_fire = AsyncMock(return_value=False)
+    message = make_message(
+        _default_payload(task_id="fs03-t1", name="fs03_cron_job", args=[], kwargs={}),
+        headers={"x-swarmq-schedfire": "cron:fs03:1", "x-swarmq-schedfire-defer-count": 1},
+    )
+
+    await worker._handle_message(message)
+
+    broker.ack.assert_not_awaited()
+    backend.store_result.assert_not_awaited()
+    broker.retry_later.assert_awaited_once()
+    assert broker.retry_later.await_args.kwargs["headers"]["x-swarmq-schedfire-defer-count"] == 2
 
 
 @pytest.mark.befund("FS-03")

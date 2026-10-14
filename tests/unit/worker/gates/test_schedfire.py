@@ -12,7 +12,8 @@ Test-Liste 0.9.0 (Schedfire-Claim bei Nicht-Ausfuehrung, Claim-Token):
    ``x-swarmq-schedfire-claim`` -- sie erkennt den Claim als ihren, auch
    wenn die Freigabe am Backend-Ausfall scheitert.
 6. Die nicht-terminale Freigabe im finally ist owner-geprueft (Token).
-7. Verlorener Claim bleibt Duplikat (Ack, kein Lauf) -- auch mit fremdem Token.
+7. Verlorener Claim bleibt bei frischer Zustellung Duplikat (Ack, kein Lauf)
+   -- auch mit fremdem Token; Neuzustellungen: ``test_schedfire_defer.py``.
 
 Test-Liste 0.9.0 (Zeitlimit):
 8. Haengender Completed-Check (Blackhole) -> nach ``backend_op_timeout``
@@ -213,10 +214,11 @@ class TestSchedfireDedup:
         backend.store_result.assert_not_awaited()
 
     async def test_duplicate_when_inflight_claim_lost(self, broker, backend, config):
-        """Another worker is running the same fire right now. Ack+skip
-        without running. When that worker completes, the completed
-        marker blocks future redeliveries; if it crashes, the in-flight
-        TTL expires and the next redelivery can re-run."""
+        """Another worker is running the same fire right now. A fresh
+        delivery (no broker counters, no schedfire defer header) is a
+        duplicate: ack+skip without running (E-047). A redelivery after a
+        crash of that worker is deferred instead until the in-flight claim
+        expires (FS-03, ``test_schedfire_defer.py``)."""
 
         class NoopTask(Task):
             task_info = TaskInfo(name="noop", queues=["default"])

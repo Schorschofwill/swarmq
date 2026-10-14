@@ -181,7 +181,7 @@ trägt das Owner-Token des Claims in `x-swarmq-schedfire-claim`. Konnte
 der Worker den Claim nicht freigeben, etwa weil Valkey direkt nach dem
 Claim ausfiel, erkennt die Kopie den Claim als ihren und übernimmt ihn,
 statt sich als Duplikat zu bestätigen. Das Token wechselt bei jeder
-Übernahme, eine Redelivery derselben Kopie bleibt also ein Duplikat.
+Übernahme, ein zweites Publish derselben Kopie bleibt also ein Duplikat.
 Geht die Antwort auf den Claim selbst verloren (Valkey kann ihn
 geschrieben haben oder nicht), trägt die Kopie das neue Token zusammen
 mit den angebotenen und übernimmt den Claim in beiden Fällen. Ein
@@ -191,11 +191,37 @@ Freigabe, publiziert der Worker stattdessen eine Kopie mit dem Token in
 die Delay-Queue (mit dem Backoff einer Zurückstellung) und bestätigt
 das Original, sobald der Broker die Kopie bestätigt hat. Nur wenn auch
 der Broker diese Kopie nicht annimmt, reiht er an derselben Stelle neu
-ein; die Redelivery findet den Claim dann noch vor und wird als
-Duplikat bestätigt, bis der Claim abläuft
-(`SWARMQ_SCHEDULER_INFLIGHT_TTL`) -- dieser Fire geht verloren. Der Claim-Schutz
+ein; die Redelivery findet den Claim dann noch vor und wird wie jede
+Redelivery zurückgestellt (nächster Absatz). Der Claim-Schutz
 setzt voraus, dass alle Worker mindestens 0.9.0 laufen: ein Worker
 älterer Version schreibt das Token weder noch erkennt er es.
+
+Stirbt der Worker mit dem Claim (SIGKILL, OOM) vor dem Ack, stellt der
+Broker den Fire neu zu, während der Claim noch dem toten Worker gehört.
+Seit 0.12.1 wird eine Redelivery eines Fires, dessen Claim anderswo
+liegt, nicht als Duplikat bestätigt. Der Worker stellt sie mit
+wachsendem Backoff in die Delay-Queue zurück
+(`schedfire_redelivery_deferred`) und markiert die Kopie mit
+`x-swarmq-schedfire-defer-count`. Die Kopie wird bestätigt, sobald der
+Fire abgeschlossen ist, und läuft, sobald der Claim abgelaufen ist
+(`SWARMQ_SCHEDULER_INFLIGHT_TTL` bzw. `hard_timeout + 30` s, wenn das
+größer ist). Läuft das Original noch (nur sein Kanal ist weg), wartet
+die Kopie, statt parallel zu laufen. Ein zweites Publish desselben Fires
+durch den Leader trägt keine der beiden Markierungen und bleibt ein
+Duplikat. Die Zurückstellung ist gedeckelt auf
+`max(TTL des Completed-Markers, In-Flight-TTL + SWARMQ_BACKEND_DEFER_MAX_DELAY)`,
+gemessen an der Summe der Wartezeiten aus dem Defer-Zähler; danach loggt
+der Worker `schedfire_defer_stalled` und bestätigt die Kopie.
+`swarmq dlq retry` entfernt den Defer-Zähler.
+
+Grenzen: Der Worker erkennt eine Redelivery an den Zustellzählern des
+Brokers (`x-delivery-count`, `x-acquired-count`), und die führen nur
+Quorum-Queues (der Standard). Auf einer klassischen Queue findet die
+erste Redelivery nach einem Absturz weiter den fremden Claim und wird
+als Duplikat bestätigt; dieser Fire geht wie bisher verloren. Ein
+0.12.0-Worker bestätigt eine zurückgestellte Kopie als Duplikat, solange
+der Claim steht. 0.12.1 deshalb per Surge-Deploy ausrollen, damit
+Redeliveries neue Worker erreichen.
 
 ## Redelivery-Szenarien
 

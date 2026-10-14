@@ -168,7 +168,7 @@ in `x-swarmq-schedfire-claim`. If the worker could not release the
 claim, for example because Valkey went down right after the claim, the
 copy recognises the claim as its own and takes it over instead of
 acking itself as a duplicate. The token changes on each takeover, so a
-redelivery of the same copy is still a duplicate. When the reply to the
+second publish of the same copy is still a duplicate. When the reply to the
 claim itself is lost (Valkey may or may not have written it), the copy
 carries the new token together with the ones it was offered, and takes
 the claim over either way. A requeue in place (`nack(requeue=True)`)
@@ -177,11 +177,35 @@ requeues. If that release fails, the worker publishes a copy carrying
 the token to the delay queue instead (with the backoff of a deferral)
 and acks the original once the broker confirmed the copy. Only if the
 broker cannot take that copy either does it requeue in place; the
-redelivery then finds the claim still held and is acked as a duplicate
-until the claim expires (`SWARMQ_SCHEDULER_INFLIGHT_TTL`), so that fire
-is lost. The claim
+redelivery then finds the claim still held and is deferred like any
+redelivery (next paragraph). The claim
 protection needs every worker on 0.9.0 or later: a worker of an older
 version neither writes nor recognises the token.
+
+If the worker holding the claim dies (SIGKILL, OOM) before it acks, the
+broker redelivers the fire while the claim still belongs to the dead
+worker. Since 0.12.1 a redelivery of a fire whose claim is held
+elsewhere is not acked as a duplicate. The worker defers it to the delay
+queue with a growing backoff (`schedfire_redelivery_deferred`) and marks
+the copy with `x-swarmq-schedfire-defer-count`. The copy is acked once
+the fire has completed, and it runs once the claim has expired
+(`SWARMQ_SCHEDULER_INFLIGHT_TTL`, or `hard_timeout + 30` s if larger). If
+the original is still running (only its channel was lost), the copy
+waits instead of running alongside. A second publish of the same fire by
+the leader carries neither marker and is still acked as a duplicate. The
+deferral is capped at
+`max(completed marker TTL, in-flight TTL + SWARMQ_BACKEND_DEFER_MAX_DELAY)`,
+summed over the waits the defer counter implies; past it the worker logs
+`schedfire_defer_stalled` and acks the copy. `swarmq dlq retry` drops the
+defer counter.
+
+Limits: the worker recognises a redelivery by the broker's delivery
+counters (`x-delivery-count`, `x-acquired-count`), which only quorum
+queues carry (the default). On a classic queue the first redelivery after
+a crash still finds the foreign claim and is acked as a duplicate, so
+that fire is lost as before. A 0.12.0 worker acks a deferred copy as a
+duplicate while the claim is held; roll out 0.12.1 with a surge deploy
+so that redeliveries reach new workers.
 
 ## Redelivery scenarios
 

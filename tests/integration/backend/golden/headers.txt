@@ -18,6 +18,7 @@ x-swarmq-replay-id
 x-swarmq-retry-count
 x-swarmq-schedfire
 x-swarmq-schedfire-claim
+x-swarmq-schedfire-defer-count
 x-swarmq-traceback
 x-swarmq-unique-hash
 x-swarmq-unique-until
