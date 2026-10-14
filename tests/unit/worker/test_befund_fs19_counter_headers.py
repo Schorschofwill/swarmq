@@ -85,6 +85,10 @@ class Fs19SeesContext(Task):
         self.seen.append(task_context.retry_count)
 
 
+# DI-Tasks nicht global registriert lassen (Muster test_worker_dishka.py).
+Task._registered_tasks.remove(Fs19SeesContext)
+
+
 class Fs19RecordingMiddleware(Middleware):
     def __init__(self) -> None:
         self.seen: list[Any] = []
