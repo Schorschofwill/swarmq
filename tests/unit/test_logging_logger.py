@@ -88,10 +88,19 @@ def test_stdlib_app_renders_field_via_format_string(logger_name: str) -> None:
 
 @pytest.fixture
 def app_structlog_config() -> Iterator[None]:
-    """Stellt die globale structlog-Konfiguration nach dem Test wieder her."""
+    """Stellt die globale structlog-Konfiguration nach dem Test wieder her.
+
+    Auch den Zustand „nicht konfiguriert“: ``configure(**saved)`` allein setzte
+    ``structlog.is_configured()`` auf True, und spätere Tests sähen eine
+    App-Konfiguration, wo keine ist (etwa das Compute-Kind, das structlog dann
+    nicht an die stdlib-Handler leitet).
+    """
+    was_configured = structlog.is_configured()
     saved = structlog.get_config()
     yield
-    structlog.configure(**saved)
+    structlog.reset_defaults()
+    if was_configured:
+        structlog.configure(**saved)
 
 
 def test_structlog_app_renders_fields_as_json_keys(logger_name: str, app_structlog_config: None) -> None:
