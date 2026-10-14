@@ -14,8 +14,12 @@ Testliste:
 #     finally-Schritte (kein Completed-Marker, kein Broker-Verb, Semaphor
 #     bleibt beim Halter)
 # [x] Abbruch am Semaphor ohne Schedfire-Header -> keine Freigabe-Aufrufe
-# [x] aeusserer Abbruch trifft den DI-Teardown -> Semaphor zurueckgegeben,
-#     Lock frei
+# [x] aeusserer Abbruch trifft den DI-Teardown -> Lock und Semaphor bleiben
+#     gehalten, bis der Finalizer endet; danach frei (KTD6)
+# [x] Normalpfad ohne Abbruch, blockierender Finalizer -> Lock gehalten, bis
+#     der Finalizer endet
+# [x] Abbruch im DI-Teardown und Shutdown-Abraeumen gleichzeitig -> genau
+#     eine Freigabe, kein task_lock_lost
 # [x] Finalizer wirft BaseException (CancelledError) -> Semaphor
 #     zurueckgegeben, Lock frei
 # [x] concurrency=1, scheiternder Finalizer -> die zweite Zustellung laeuft
@@ -227,6 +231,10 @@ async def test_cancel_at_semaphore_without_schedfire_header_releases_nothing(
 async def test_outer_cancel_during_di_teardown_still_returns_the_slot_and_lock(
     broker: MagicMock, backend: MagicMock
 ) -> None:
+    """KTD6: Finalizer vor Lock-Freigabe, auch nach aeusserem Abbruch. Der
+    geshieldete Finalizer (z. B. DB-Commit) laeuft weiter; Lock und
+    Semaphor werden erst nach seinem Ende frei, sonst liefe der Commit ohne
+    Mutex."""
     entered, proceed = asyncio.Event(), asyncio.Event()
     di.setup_dishka(make_async_container(_BlockingFinalizerProvider(entered, proceed)))
     store = InMemoryLockStore(FakeClock())
@@ -235,15 +243,41 @@ async def test_outer_cancel_during_di_teardown_still_returns_the_slot_and_lock(
     handler = asyncio.ensure_future(worker._handle_message(_message("fin-c2", "finally_locked_di")))
     await entered.wait()
     handler.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await handler
-
     try:
-        assert not worker._semaphore.locked(), "Semaphor-Platz nach Abbruch im DI-Teardown verloren"
-        assert await store.current_owner(_LOCK) is None, "Lock nach Abbruch im DI-Teardown gehalten"
+        with pytest.raises(asyncio.CancelledError):
+            await handler
+
+        assert await store.current_owner(_LOCK) is not None, "Lock frei, waehrend der Finalizer noch laeuft"
+        assert worker._semaphore.locked(), "Semaphor frei, waehrend der Finalizer noch laeuft"
     finally:
         proceed.set()
-        await asyncio.gather(*worker._detached_releases)
+        while worker._detached_releases:
+            await asyncio.gather(*worker._detached_releases)
+
+    assert not worker._semaphore.locked(), "Semaphor-Platz nach Abbruch im DI-Teardown verloren"
+    assert await store.current_owner(_LOCK) is None, "Lock nach Abbruch im DI-Teardown gehalten"
+
+
+async def test_blocking_finalizer_without_cancel_keeps_the_lock_until_it_ends(
+    broker: MagicMock, backend: MagicMock
+) -> None:
+    """Normalpfad (KTD6): der Finalizer laeuft vor der Lock-Freigabe."""
+    entered, proceed = asyncio.Event(), asyncio.Event()
+    di.setup_dishka(make_async_container(_BlockingFinalizerProvider(entered, proceed)))
+    store = InMemoryLockStore(FakeClock())
+    worker = _worker(broker, backend, _LockedDiTask, store=store)
+
+    handler = asyncio.ensure_future(worker._handle_message(_message("fin-c3", "finally_locked_di")))
+    await entered.wait()
+    try:
+        assert await store.current_owner(_LOCK) is not None, "Lock frei, waehrend der Finalizer noch laeuft"
+        assert worker._semaphore.locked()
+    finally:
+        proceed.set()
+        await handler
+
+    assert await store.current_owner(_LOCK) is None
+    assert not worker._semaphore.locked()
 
 
 async def test_finalizer_raising_base_exception_still_returns_the_slot_and_lock(
@@ -354,3 +388,46 @@ async def test_handler_release_racing_shutdown_cleanup_reports_no_lost_lock(
 
     assert not [e for e in swarmq_logs if e["event"] == "task_lock_lost"]
     assert await store.current_owner(_LOCK) is None
+
+
+async def test_cancel_during_di_teardown_racing_shutdown_cleanup_releases_once(
+    broker: MagicMock, backend: MagicMock, swarmq_logs: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Der Nachlauf eines abgebrochenen DI-Teardowns wartet noch auf den
+    Finalizer, als der Shutdown die liegengebliebenen Locks abraeumt. Der
+    Shutdown gibt den Lock frei; der Nachlauf darf es danach nicht noch
+    einmal tun (sonst Fehlalarm ``task_lock_lost``)."""
+    from swarmq.worker import lifecycle
+
+    # Kurzes Mindestbudget je Schritt: das Warten auf den (absichtlich
+    # angehaltenen) Nachlauf laeuft ab, der Shutdown raeumt selbst ab.
+    monkeypatch.setattr(lifecycle, "_SHUTDOWN_STEP_MIN_S", 0.01)
+    entered, proceed = asyncio.Event(), asyncio.Event()
+    di.setup_dishka(make_async_container(_BlockingFinalizerProvider(entered, proceed)))
+    store = InMemoryLockStore(FakeClock())
+    releases: list[str] = []
+    original_release = store.release
+
+    async def counting_release(token: LockToken) -> bool:
+        releases.append(token.name)
+        return await original_release(token)
+
+    monkeypatch.setattr(store, "release", counting_release)
+    worker = _worker(broker, backend, _LockedDiTask, store=store)
+    worker._config.shutdown_timeout = 0
+
+    handler = asyncio.ensure_future(worker._handle_message(_message("fin-c4", "finally_locked_di")))
+    await entered.wait()
+    handler.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await handler
+    worker._request_shutdown()
+    await worker._execute_shutdown()
+    proceed.set()
+    while worker._detached_releases:
+        await asyncio.gather(*worker._detached_releases)
+
+    assert releases == [_LOCK]
+    assert not [e for e in swarmq_logs if e["event"] == "task_lock_lost"]
+    assert await store.current_owner(_LOCK) is None
+    assert not worker._semaphore.locked()
