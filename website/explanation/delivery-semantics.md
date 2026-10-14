@@ -298,10 +298,13 @@ at least 1 s); a step that exceeds it is logged
 TTL heal what it left.
 
 **Recycling.** A recycling worker (`SWARMQ_RECYCLE_*`) keeps its own
-drain without forced cancellation: the largest `hard_timeout` plus 30 s
-of the tasks on the queues it consumes. If one of those tasks has no
-`hard_timeout`, it waits at least `SWARMQ_CONSUMER_TIMEOUT_S` (default
-30 min): by then RabbitMQ has taken back every delivery the worker held,
+drain without forced cancellation: the largest `hard_timeout` of all
+registered tasks plus 30 s (a task sent with `schedule(..., queue=...)`
+can run on any worker). If a task without `hard_timeout` can run on this
+worker (declared on a queue it consumes, or already started there), it
+waits at least `SWARMQ_CONSUMER_TIMEOUT_S` (default 30 min); otherwise,
+with no `hard_timeout` anywhere, the drain falls back to
+`SWARMQ_SHUTDOWN_TIMEOUT`. By then RabbitMQ has taken back every delivery the worker held,
 so waiting longer could not ack anything. A task that runs past that
 limit is cancelled like a drain cancellation on shutdown. Keep
 `SWARMQ_CONSUMER_TIMEOUT_S` equal to the broker's `consumer_timeout`;

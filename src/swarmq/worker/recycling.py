@@ -39,6 +39,7 @@ def start_recycle_monitor(worker: Any) -> None:
     worker._recycle_ack_missing = False
     worker._drain_timeout_override = None
     worker._recycle_monitor_task = None
+    worker._recycle_started_names = set()
     if not recycling_enabled(worker._config):
         return
     if current_channel() is None:
@@ -51,8 +52,14 @@ def start_recycle_monitor(worker: Any) -> None:
     async def _count(**_kw: Any) -> None:
         worker._tasks_done += 1
 
+    async def _note_started(*, task_name: str, **_kw: Any) -> None:
+        # Ein per ``schedule(queue=...)`` umgeleiteter Task laeuft hier, ohne
+        # dass seine deklarierten Queues konsumiert werden (FS-30, Review U9).
+        worker._recycle_started_names.add(task_name)
+
     for terminal in _TERMINAL_SIGNALS:
         worker._signal_dispatcher.on_signal(terminal)(_count)
+    worker._signal_dispatcher.on_signal(Signal.TASK_STARTED)(_note_started)
     worker._recycle_monitor_task = asyncio.create_task(recycle_monitor(worker))
 
 
@@ -62,6 +69,8 @@ async def recycle_monitor(worker: Any) -> None:
     last_seen = 0
     while not worker._shutdown_event.is_set():
         await asyncio.sleep(0.25)
+        if worker._shutdown_event.is_set():
+            return  # SIGTERM im Schlaf: kein Recycling (sonst unnoetiger Ersatz)
         if worker._tasks_done == last_seen:
             continue
         last_seen = worker._tasks_done
@@ -77,25 +86,22 @@ async def recycle_monitor(worker: Any) -> None:
 def recycle_drain_timeout(worker: Any) -> float:
     """Frist des Recycling-Drains (R22, FS-30, KTD4 Plan 2026-10-14-0748).
 
-    Gezaehlt werden nur Tasks auf ``consumed_queues``: groesster
-    ``hard_timeout`` plus Puffer. Hat einer davon keinen ``hard_timeout``,
-    wartet der Drain mindestens ``consumer_timeout_s`` -- danach hat RabbitMQ
-    jede vor dem Recycling zugestellte Nachricht ohnehin zurueckgenommen.
-    Ohne konsumierten Task bleibt es bei ``shutdown_timeout``.
+    Groesster ``hard_timeout`` aller registrierten Tasks plus Puffer -- auch
+    auf fremden Queues, weil ``schedule(queue=...)`` jeden Task auf eine
+    konsumierte Queue umleiten kann. Kann hier ein Task ohne ``hard_timeout``
+    laufen (deklariert auf ``consumed_queues`` oder hier gestartet), wartet
+    der Drain mindestens ``consumer_timeout_s`` -- danach hat RabbitMQ jede
+    vor dem Recycling zugestellte Nachricht ohnehin zurueckgenommen. Sonst
+    bleibt es bei ``shutdown_timeout``.
     """
     consumed = set(worker._config.consumed_queues)
-    infos = [
-        ti
-        for cls in worker._registry.get_all().values()
-        if (ti := getattr(cls, "task_info", None)) is not None and consumed.intersection(ti.queues)
-    ]
-    if not infos:
-        return float(worker._config.shutdown_timeout)
+    started: set[str] = getattr(worker, "_recycle_started_names", set())
+    infos = [ti for cls in worker._registry.get_all().values() if (ti := getattr(cls, "task_info", None)) is not None]
     hard_timeouts = [ti.hard_timeout for ti in infos if ti.hard_timeout is not None]
-    timeout = float(max(hard_timeouts)) + RECYCLE_DRAIN_BUFFER_S if hard_timeouts else 0.0
-    if len(hard_timeouts) < len(infos):
-        timeout = max(timeout, float(worker._config.consumer_timeout_s))
-    return timeout
+    timeout = float(max(hard_timeouts)) + RECYCLE_DRAIN_BUFFER_S if hard_timeouts else None
+    if any(ti.hard_timeout is None and (consumed.intersection(ti.queues) or ti.name in started) for ti in infos):
+        timeout = max(timeout or 0.0, float(worker._config.consumer_timeout_s))
+    return float(worker._config.shutdown_timeout) if timeout is None else timeout
 
 
 async def request_recycle(worker: Any, reason: str, value: float) -> None:
@@ -117,6 +123,8 @@ async def request_recycle(worker: Any, reason: str, value: float) -> None:
         channel.request_recycle()
         deadline = time.monotonic() + RECYCLE_ACK_TIMEOUT_S
         while not channel.replacement_acknowledged():
+            if worker._shutdown_event.is_set():
+                break  # SIGTERM: ein Supervisor im Abbau bestaetigt nie (kein Exit 75)
             if time.monotonic() >= deadline:
                 worker._recycle_ack_missing = True
                 logger.error("recycle_ack_missing", timeout_s=RECYCLE_ACK_TIMEOUT_S)

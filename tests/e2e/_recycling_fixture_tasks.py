@@ -31,7 +31,9 @@ class RecycleLongLocked(Task):
         name="recycle_long_locked",
         queues=[_QUEUE],
         lock=RECYCLE_LOCK,
-        hard_timeout=600,  # ``lock`` verlangt ihn; Recycling-Frist damit 630 s
+        # ``lock`` verlangt ihn. Recycling-Frist: max(630 s, consumer_timeout_s),
+        # weil ``recycle_quick`` auf derselben Queue keinen hard_timeout hat.
+        hard_timeout=600,
         max_retries=0,
     )
 

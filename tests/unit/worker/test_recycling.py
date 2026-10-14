@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import multiprocessing
 from typing import Any
 
@@ -163,16 +164,56 @@ def test_task_without_hard_timeout_on_a_foreign_queue_does_not_extend_the_drain(
     assert recycling.recycle_drain_timeout(worker) == 120 + recycling.RECYCLE_DRAIN_BUFFER_S
 
 
-def test_hard_timeout_on_a_foreign_queue_does_not_extend_the_drain(worker):
+def test_hard_timeout_on_a_foreign_queue_still_counts(worker):
+    # Konservativ wie vor FS-30: ``schedule(queue=...)`` kann jeden registrierten
+    # Task auf eine konsumierte Queue umleiten, ein noch nicht gestarteter
+    # (vorab zugestellter) Lauf ist aber nicht sichtbar. Der groesste
+    # hard_timeout aller registrierten Tasks bleibt deshalb Teil der Frist; der
+    # Drain endet ohnehin, sobald keine Tasks mehr laufen.
     worker._registry.register(_HugeHardElsewhere)
-    assert recycling.recycle_drain_timeout(worker) == worker._config.consumer_timeout_s
+    assert recycling.recycle_drain_timeout(worker) == 5000 + recycling.RECYCLE_DRAIN_BUFFER_S
 
 
-def test_priority_queues_count_for_their_base_queue(worker):
-    worker._config.queues = ["q"]
-    worker._config.priorities = True
+@pytest.mark.timeout(5)
+async def test_task_routed_by_queue_override_extends_the_drain(worker):
+    # ``schedule(..., queue="q")`` leitet ``no_hard_elsewhere`` (deklariert auf
+    # ``other``, ohne hard_timeout) auf die konsumierte Queue um: der Worker
+    # fuehrt ihn aus, also gilt fuer ihn die Grenze consumer_timeout_s.
+    _arm(worker, queues=["q"], recycle_max_tasks=1000)
     worker._registry.register(_LongHard)
+    worker._registry.register(_NoHardElsewhere)
+    worker._start_recycle_monitor()
+    try:
+        await worker._signal_dispatcher.dispatch(
+            Signal.TASK_STARTED, task_id="t", task_name="no_hard_elsewhere", queue="q"
+        )
+        assert recycling.recycle_drain_timeout(worker) == worker._config.consumer_timeout_s
+    finally:
+        worker._recycle_monitor_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await worker._recycle_monitor_task
+
+
+class _NoHardOnLowPriority(Task):
+    task_info = TaskInfo(name="no_hard_low", queues=["q.low"])
+
+
+def test_priority_queues_count_only_when_priorities_are_on(worker):
+    # Mit priorities konsumiert der Worker q.high/q/q.low (``consumed_queues``),
+    # ohne nur q: ein Task ohne hard_timeout auf q.low zaehlt nur im ersten Fall.
+    worker._config.queues = ["q"]
+    worker._registry.register(_LongHard)
+    worker._registry.register(_NoHardOnLowPriority)
+    worker._config.priorities = True
+    assert recycling.recycle_drain_timeout(worker) == worker._config.consumer_timeout_s
+    worker._config.priorities = False
     assert recycling.recycle_drain_timeout(worker) == 120 + recycling.RECYCLE_DRAIN_BUFFER_S
+
+
+def test_without_any_task_that_can_run_here_the_drain_keeps_shutdown_timeout(worker):
+    worker._config.queues = ["q"]  # ``add`` (default, ohne hard_timeout) laeuft hier nicht
+    worker._config.shutdown_timeout = 7
+    assert recycling.recycle_drain_timeout(worker) == 7.0
 
 
 @pytest.mark.timeout(5)

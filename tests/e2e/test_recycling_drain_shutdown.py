@@ -1,6 +1,7 @@
 """e2e: Supervisor-Abbau waehrend eines Recycling-Drains (FS-30, Plan 2026-10-14-0748, U9, KTD4).
 
-Ein recycelnder Worker wartet seine eigene Frist ab (hier 630 s). Kommt in
+Ein recycelnder Worker wartet seine eigene Frist ab (hier max(630 s,
+``consumer_timeout_s``), da ``recycle_quick`` keinen ``hard_timeout`` hat). Kommt in
 dieser Zeit ein Deploy (SIGTERM an den Supervisor), muss der Worker im
 Shutdown-Budget ab diesem Signal enden: vor dem SIGKILL des Supervisors, mit
 freigegebener Task-Sperre und sauberer Leader-Uebergabe (Marker, also
@@ -127,7 +128,8 @@ async def test_supervisor_shutdown_during_a_recycling_drain_ends_in_budget(rabbi
                 await app_b.schedule("recycle_long_locked", queue=queue)
                 await _until(lambda: client.exists(STARTED_KEY), "Langlaeufer laeuft", lines)
                 await app_b.schedule("recycle_quick", queue=queue)
-                # Ersatz gestartet -> der alte Worker ist im Recycling-Drain (Frist 630 s).
+                # Ersatz gestartet -> der alte Worker ist im Recycling-Drain
+                # (Frist max(630 s, consumer_timeout_s), recycle_quick ohne hard_timeout).
                 await _until(lambda: _started(2), "Ersatzworker gestartet", lines)
                 assert await client.exists(lock_key(RECYCLE_LOCK)), "Voraussetzung: Sperre gehalten"
 
