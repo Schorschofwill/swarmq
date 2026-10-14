@@ -19,9 +19,20 @@ Absturz) in die Haupt-Queue; das Gate schickt sie ohne Ausfuehrung in die DLQ.
 
 Gegen echtes RabbitMQ und Valkey (Testports 5699/6399 via itest.sh).
 
+Behoben (KTD13): ``identity.copy_headers`` entfernt die Zaehler aus jeder
+Kopie, die swarmq publiziert, auch aus dem DLQ-Stempel.
+
+Grenze: Eine Nachricht, die der Broker selbst ueber den DLX ins ``.XQ``
+legt (``route_via_dlx``, ``nack(requeue=False)``), kann swarmq nicht
+filtern. Die zweite Variante haelt fest, was RabbitMQ dabei mit einem
+mitgebrachten Zaehler macht.
+
 Testliste:
 # [x] am Zustelllimit dead-gelettert, unveraendert aus dem .XQ in die
 #     Haupt-Queue zurueckgelegt -> der Task laeuft
+# [x] Broker-DLX (``route_via_dlx``) einer Nachricht mit Zaehlern: Replay
+#     per Shovel -> Verhalten des Brokers festgehalten (RabbitMQ 4.3.6: der
+#     Zaehler bleibt, das Replay geht wieder in die DLQ; xfail als Grenze)
 """
 
 from __future__ import annotations
@@ -37,6 +48,7 @@ import pytest
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
+from swarmq.contracts import Delivery
 from swarmq.task import Task, TaskInfo
 from tests.support.wait import wait_until
 from tests.unit._log_capture import capture_swarmq_logs
@@ -107,10 +119,6 @@ async def _fs10_move(rabbitmq_url: str, source: str, target: str, extra_headers:
 
 
 @pytest.mark.befund("FS-10")
-@pytest.mark.xfail(
-    strict=True,
-    reason="FS-10: offen - DLQ-Kopie behaelt x-delivery-count, Shovel-Replay geht sofort wieder in die DLQ",
-)
 @pytest.mark.usefixtures("_fs10_tasks")
 async def test_fs10_shovel_replay_of_a_delivery_limit_dead_letter_runs_the_task(
     rabbitmq_url: str, valkey_url: str, fs10_queue: str, fs10_runs: list[str]
@@ -146,3 +154,56 @@ async def test_fs10_shovel_replay_of_a_delivery_limit_dead_letter_runs_the_task(
     assert fs10_runs == ["run"], (
         f"Replay nicht ausgefuehrt, sofort wieder dead-gelettert: {[(e.get('error_type'), e.get('error')) for e in _dlq_events()[1:]]}"
     )
+
+
+async def _fs10_route_via_dlx(rabbitmq_url: str, queue: str) -> None:
+    """Eine Nachricht aus *queue* holen und per ``route_via_dlx``
+    (``nack(requeue=False)``) vom Broker ins ``.XQ`` legen lassen."""
+    broker = RabbitMQBroker(rabbitmq_url)
+    await broker.connect()
+    try:
+        assert broker._connection is not None
+        channel = await broker._connection.channel()
+        message = await (await channel.get_queue(queue)).get(no_ack=False)
+        assert message is not None, f"Voraussetzung: Nachricht liegt in {queue}"
+        delivery = Delivery(body=message.body, headers=dict(message.headers or {}), queue=queue, handle=message)
+        await broker.route_via_dlx(delivery)
+        await channel.close()
+    finally:
+        await broker.close()
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Grenze FS-10 (kein Befund): RabbitMQ 4.3 nimmt einen mitgebrachten x-delivery-count in die "
+        "DLX-Kopie mit; solche Kopien und der 0.12.0-Bestand nur per 'swarmq dlq retry' zurueckspielen"
+    ),
+)
+@pytest.mark.usefixtures("_fs10_tasks")
+async def test_fs10_shovel_replay_of_a_broker_dlx_copy_with_counters(
+    rabbitmq_url: str, valkey_url: str, fs10_queue: str, fs10_runs: list[str]
+) -> None:
+    """Grenze von FS-10: Die DLX-Kopie entsteht im Broker, swarmq filtert
+    sie nicht. Festgehalten wird, ob RabbitMQ den vom Publisher gesetzten
+    Zaehler dabei mitnimmt -- dann gilt fuer solche Kopien weiter
+    ``swarmq dlq retry`` (Doku ``delivery-semantics``)."""
+    producer = SwarmQ(RabbitMQBroker(rabbitmq_url), ValkeyBackend(valkey_url), queues=[fs10_queue])
+    async with producer:
+        await producer.broker.declare_queue(fs10_queue)
+        await producer.schedule("fs10_crashed_before_fix")
+    await _fs10_move(
+        rabbitmq_url,
+        fs10_queue,
+        fs10_queue,
+        extra_headers={"x-delivery-count": _FS10_COUNT_AT_LIMIT, "x-acquired-count": _FS10_COUNT_AT_LIMIT},
+    )
+    await _fs10_route_via_dlx(rabbitmq_url, fs10_queue)
+    await _fs10_move(rabbitmq_url, f"{fs10_queue}.XQ", fs10_queue)
+
+    with capture_swarmq_logs() as logs:
+        async with _fs10_worker(rabbitmq_url, valkey_url, fs10_queue):
+            await _fs10_wait_for(lambda: len(fs10_runs) >= 1 or any(e["event"] == "task_sent_to_dlq" for e in logs))
+
+    dlq = [(e.get("error_type"), e.get("error")) for e in logs if e["event"] == "task_sent_to_dlq"]
+    assert fs10_runs == ["run"], f"DLX-Kopie traegt den Zaehler, Replay wieder dead-gelettert: {dlq}"

@@ -2,9 +2,11 @@
 
 Abgelaufen → Workflow fehlmarkieren (BZ-13), Fehler-Ergebnis speichern,
 Signal ``TASK_EXPIRED``, an das Dead-Letter-Ziel veröffentlichen, bestätigen
-(``dead_letter``); Outcome ``Terminal.release_only()`` (BZ-22: das Dedup-Flag
-wird im ``finally`` owner-geprueft freigegeben). Publish-Fehler →
-``redeliver`` (Fallback laut KTD3), Outcome ``Terminal.never_release()``.
+(``dead_letter_copy``); Outcome ``Terminal.release_only()`` (BZ-22: das
+Dedup-Flag wird im ``finally`` owner-geprueft freigegeben). Liegt die Kopie
+und scheitert nur das Ack (``SettleFailedAfterPublish``), gilt das ebenso als
+terminal (FS-17, E-043). Publish-Fehler → ``redeliver`` (Fallback laut KTD3),
+Outcome ``Terminal.never_release()``.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from swarmq.headers import HEADER_ENQUEUED_AT
 from swarmq.logging import _error_fields, get_logger
 from swarmq.serialization import encode_result
 from swarmq.signals import Signal
-from swarmq.worker.gates import GateContext, GateDeps, redeliver_in_place
+from swarmq.worker.gates import GateContext, GateDeps, dead_letter_copy, redeliver_in_place
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered, Terminal
 
 logger = get_logger(__name__)
@@ -79,8 +81,10 @@ class ExpiryGate:
         )
         # Store an error result so callers waiting on get_result() see
         # a clean TaskError("expired") instead of an indefinite timeout.
-        # result_ttl=0 means fire-and-forget — skip the
-        # store entirely (mirrors the main-path semantics).
+        # E-031: ``task_info.result_ttl=0`` faellt auf die Konfiguration
+        # zurueck (kein FIRE_AND_FORGET-Zweig wie auf dem Erfolgspfad); nur
+        # eine globale ``config.result_ttl=0`` ueberspringt das Speichern
+        # (kein ``SET ... PX 0``).
         ttl_ms = (task_info.result_ttl or deps.config.result_ttl) * 1000
         if ttl_ms > 0:
             try:
@@ -115,8 +119,12 @@ class ExpiryGate:
         # generating duplicate TASK_EXPIRED signals. nack(requeue=True)
         # preserves the message so a subsequent delivery retries the
         # terminal path.
+        #
+        # FS-17 (E-043): ``dead_letter_copy`` wertet ``SettleFailedAfterPublish``
+        # (Kopie liegt, nur das Ack scheiterte) als terminal -- kein
+        # ``redeliver``; die Neuzustellung ueberspringt der Ausfuehrungsschutz.
         try:
-            await deps.broker.dead_letter(delivery, headers=dict(delivery.headers or {}))
+            await dead_letter_copy(deps, delivery, dict(delivery.headers or {}))
         except BrokerConnectionError as exc:
             logger.warning("task_expired_dlq_publish_failed", **_error_fields(exc))
             try:

@@ -20,6 +20,8 @@ Test-Liste:
       zurück und stoppt; der Arbeitsstand deklariert neu und führt Versuch 2 aus
 - [x] Der 0.12.0-Producer läuft wirklich aus dem venv, nicht aus ``REPO_ROOT/src``
       (Review U2, P3)
+- [x] U16 (FS-10): eine DLQ-Kopie des Arbeitsstands (am Zustelllimit) läuft nach
+      einem Replay per Shovel/"Move messages" auf einem 0.12.0-Worker
 """
 
 from __future__ import annotations
@@ -358,4 +360,83 @@ async def test_rollback_runs_a_deferred_schedfire_copy_on_0_12_0_once_the_claim_
     assert runs == [(task_id, _OLD_RUNTIME)]
     assert await app.backend.schedules.is_fire_completed(fire_key) is True
     assert await message_count(rabbitmq_url, tier) == 0
+    assert await message_count(rabbitmq_url, f"{queue}.XQ") == 0
+
+
+# ---------------------------------------------------------------------------
+# U16 (FS-10, KTD13/KTD19): DLQ-Kopien des Arbeitsstands tragen keine
+# Broker-Zustellzaehler. Ein Replay per Shovel/"Move messages" einer solchen
+# Kopie laeuft auch auf einem 0.12.0-Worker (dessen Delivery-Count-Gate sieht
+# keinen Zaehler).
+# ---------------------------------------------------------------------------
+
+_AT_DELIVERY_LIMIT = 19  # delivery_limit 20 (Default) -> Gate ab 19
+
+
+async def _shovel(rabbitmq_url: str, source: str, target: str) -> None:
+    """Eine Nachricht mit allen Headern von *source* nach *target* legen --
+    wie "Move messages" in der RabbitMQ-UI bzw. ein Shovel."""
+    connection = await aio_pika.connect(rabbitmq_url)
+    try:
+        channel = await connection.channel()
+        message = await (await channel.get_queue(source)).get(no_ack=True)
+        assert message is not None, f"no message in {source}"
+        await channel.default_exchange.publish(
+            aio_pika.Message(message.body, headers=dict(message.headers or {})), routing_key=target
+        )
+    finally:
+        await connection.close()
+
+
+async def _result_is(app: SwarmQ, task_id: str, expected: str) -> bool:
+    from swarmq.exceptions import TaskError
+
+    try:
+        result: object = await app.get_result(task_id, timeout=1)
+    except TaskError:  # Fehlerergebnis des Dead-Letterns, noch nicht ueberschrieben
+        return False
+    return result == expected
+
+
+async def test_shovel_replay_of_a_new_dlq_copy_runs_on_0_12_0(
+    start_worker: StartWorker,
+    python_0120: str,
+    python_repo: str,
+    app: SwarmQ,
+    rabbitmq_url: str,
+    valkey_url: str,
+    queue: str,
+) -> None:
+    import uuid
+
+    from swarmq.serialization import encode_json
+
+    new = start_worker(python_repo, "repo")
+    await _wait_consumers(rabbitmq_url, queue, 1)
+    await _allow_poison(valkey_url, queue)
+    task_id = uuid.uuid4().hex
+    body = encode_json({"task": {"id": task_id, "queue": queue, "name": "compat_poison"}, "args": [], "kwargs": {}})
+    counters = {"x-delivery-count": _AT_DELIVERY_LIMIT, "x-acquired-count": _AT_DELIVERY_LIMIT}
+    await app.broker.publish(queue, body, headers=counters)
+
+    async def dead_lettered() -> bool:
+        return await message_count(rabbitmq_url, f"{queue}.XQ") == 1
+
+    assert await wait_until(dead_lettered, timeout=_EVENT_TIMEOUT), "the new worker never dead-lettered the message"
+    assert await recorded_runs(valkey_url, queue) == [], "at the delivery limit: dead-lettered before running"
+    new.stop()
+    await _wait_consumers(rabbitmq_url, queue, 0)
+    await _shovel(rabbitmq_url, f"{queue}.XQ", queue)
+    start_worker(python_0120, BASE_012_VERSION)
+
+    async def replay_done() -> bool:
+        # Das Fehlerergebnis des Dead-Letterns steht schon; erst der Lauf auf
+        # 0.12.0 ueberschreibt es.
+        return await message_count(rabbitmq_url, queue) == 0 and bool(await recorded_runs(valkey_url, queue))
+
+    assert await wait_until(replay_done, timeout=_EVENT_TIMEOUT), "0.12.0 never ran the replayed copy"
+    runs = [(tid, runtime) for _, tid, _, runtime in await recorded_runs(valkey_url, queue)]
+    assert runs == [(task_id, _OLD_RUNTIME)]
+    assert await wait_until(lambda: _result_is(app, task_id, _OLD_RUNTIME), timeout=_EVENT_TIMEOUT)
+    assert await message_count(rabbitmq_url, queue) == 0
     assert await message_count(rabbitmq_url, f"{queue}.XQ") == 0

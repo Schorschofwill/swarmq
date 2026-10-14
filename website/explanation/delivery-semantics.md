@@ -157,9 +157,16 @@ not in `x-delivery-count`. The worker's delivery-count check counts
 both and dead-letters the delivery one round before the limit, as
 `RedeliveryLimitError` when only `x-acquired-count` reached it.
 
-Retry copies and the copies after a rate-limit hit or a lock conflict
-drop the broker's delivery counters the same way, so an inherited
-`x-delivery-count` cannot send them to `{queue}.XQ` as a hung message.
+Retry copies, the copies after a rate-limit hit or a lock conflict and
+the worker's DLQ copies drop the broker's delivery counters the same
+way, so an inherited `x-delivery-count` cannot send them to
+`{queue}.XQ` as a hung message. A DLQ copy can therefore also be
+replayed with "Move messages" in the RabbitMQ UI or with a shovel. The
+exceptions are messages the broker itself put into `.XQ` through the
+dead-letter exchange (`route_via_dlx`) and DLQ copies made by workers
+up to 0.12.1: they may still carry the counters, and a replay at the
+delivery limit then goes straight back to the DLQ. Use `swarmq dlq retry`
+for them; it drops the counters.
 
 A schedule fire (`x-swarmq-schedfire`) is claimed in Valkey before it
 runs, so a second publish of the same fire is dropped. A copy of a
@@ -373,7 +380,10 @@ An `ack` that fails because the channel is gone (RabbitMQ up to 4.2
 after a consumer timeout) still sets the done marker. A retry or
 dead-letter publish that the broker confirmed but whose ack failed
 raises `SettleFailedAfterPublish` and sets its marker as after
-success; the redelivered original is then skipped.
+success; the redelivered original is then skipped. Every dead-letter
+path of the worker, including the one for expired tasks (`max_age`),
+treats this case as terminal: warning `dlq_ack_failed_after_publish`,
+unique release, no `nack`.
 
 **On redelivery** the claim decides:
 

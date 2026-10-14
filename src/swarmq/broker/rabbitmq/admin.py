@@ -21,6 +21,7 @@ from swarmq.contracts import Delivery
 from swarmq.contracts.broker import QueueStatus
 from swarmq.exceptions import BrokerConnectionError
 from swarmq.headers import (
+    BROKER_DELIVERY_COUNTERS,
     HEADER_DEAD_LETTER_TTL_MS,
     HEADER_DEAD_LETTERED_AT,
     HEADER_DLQ_GENERATION,
@@ -74,9 +75,6 @@ def _fresh_generation(headers: dict[str, Any]) -> bool:
 
 
 _UNLIMITED = ("none", b"none")
-
-# Zustellzaehler des Brokers (Quorum-Queues; Spike S4).
-_BROKER_DELIVERY_COUNTERS = ("x-delivery-count", "x-acquired-count")
 
 
 def _message_ttl_s(headers: dict[str, Any]) -> tuple[bool, float | None]:
@@ -327,7 +325,7 @@ class RabbitMQAdmin(RabbitMQDelivery):
         for msg, body, read_headers, is_match, is_malformed in drained:
             # Die Kopie ist eine neue Nachricht: ohne die Zustellzaehler, die
             # der Broker nach einem abgebrochenen Lesen gesetzt hat.
-            headers = {k: v for k, v in read_headers.items() if k not in _BROKER_DELIVERY_COUNTERS}
+            headers = {k: v for k, v in read_headers.items() if k not in BROKER_DELIVERY_COUNTERS}
             try:
                 # Route to main when:
                 #  * move_to_main is set, AND

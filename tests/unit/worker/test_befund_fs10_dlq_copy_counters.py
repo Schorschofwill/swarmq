@@ -21,6 +21,10 @@ Geprueft wird an der Broker-Grenze: ein echter ``RabbitMQBroker`` mit
 aufzeichnendem Publish-Channel; so ist egal, ob ein Fix im Worker oder im
 Broker filtert.
 
+Behoben (KTD13): ``identity.copy_headers`` entfernt die Broker-Zaehler aus
+jeder Kopie, die swarmq publiziert -- auch aus dem DLQ-Stempel
+(``dead_letter_generation``).
+
 Testliste:
 # [x] Delivery-Count-Gate (WorkerHungError): DLQ-Kopie ohne Broker-Zaehler
 # [x] Retry erschoepft (RetryHandler.dead_letter): DLQ-Kopie ohne Broker-Zaehler
@@ -128,7 +132,6 @@ def _fs10_assert_dlq_copy_without_counters(exchange: Fs10Exchange) -> None:
 
 
 @pytest.mark.befund("FS-10")
-@pytest.mark.xfail(strict=True, reason="FS-10: offen - DLQ-Kopie (Delivery-Count-Gate) behaelt x-delivery-count")
 async def test_fs10_delivery_limit_dlq_copy_drops_broker_counters(backend: Any, config: Any) -> None:
     worker, exchange = _fs10_worker(backend, config)
 
@@ -138,7 +141,6 @@ async def test_fs10_delivery_limit_dlq_copy_drops_broker_counters(backend: Any, 
 
 
 @pytest.mark.befund("FS-10")
-@pytest.mark.xfail(strict=True, reason="FS-10: offen - DLQ-Kopie (Retry erschoepft) behaelt x-delivery-count")
 async def test_fs10_retry_exhausted_dlq_copy_drops_broker_counters(backend: Any, config: Any) -> None:
     worker, exchange = _fs10_worker(backend, config)
 
@@ -148,7 +150,6 @@ async def test_fs10_retry_exhausted_dlq_copy_drops_broker_counters(backend: Any,
 
 
 @pytest.mark.befund("FS-10")
-@pytest.mark.xfail(strict=True, reason="FS-10: offen - DLQ-Kopie (Expiry-Gate) behaelt x-delivery-count")
 async def test_fs10_expired_dlq_copy_drops_broker_counters(backend: Any, config: Any) -> None:
     worker, exchange = _fs10_worker(backend, config)
     message = _fs10_message("fs10_expiring", _FS10_BELOW_LIMIT, **{HEADER_ENQUEUED_AT: int(time.time()) - 120})
@@ -159,7 +160,6 @@ async def test_fs10_expired_dlq_copy_drops_broker_counters(backend: Any, config:
 
 
 @pytest.mark.befund("FS-10")
-@pytest.mark.xfail(strict=True, reason="FS-10: offen - DLQ-Kopie (Ablehnung) behaelt x-delivery-count")
 async def test_fs10_rejected_dlq_copy_drops_broker_counters(backend: Any, config: Any) -> None:
     worker, exchange = _fs10_worker(backend, config)
     message = make_message(body=b"fs10: kein JSON", headers=dict(_FS10_BELOW_LIMIT))

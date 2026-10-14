@@ -29,6 +29,7 @@ from swarmq.contracts.coordination import (
 )
 from swarmq.exceptions import SettleFailedAfterPublish
 from swarmq.headers import (
+    BROKER_DELIVERY_COUNTERS,
     HEADER_BACKEND_DEFER_COUNT,
     HEADER_GUARD_DEFER_COUNT,
     HEADER_SCHEDFIRE_CLAIM,
@@ -185,20 +186,15 @@ class GateDeps:
     keep_lock: Callable[[LockToken, int, GateContext], None] | None = None
 
 
-# Zaehler, die der Broker je Zustellung fuehrt (Quorum-Queues). Eine Kopie
-# ueber ``retry_later`` ist eine neue Nachricht mit eigenem Zustellbudget:
-# mitkopiert hielte das Delivery-Count-Gate sie fuer haengend, obwohl der
-# Broker sie noch nie zugestellt hat (RabbitMQ 4 behaelt einen vom Publisher
-# gesetzten ``x-delivery-count`` bei, 3.13 zaehlt zudem Requeues).
-BROKER_DELIVERY_COUNTERS = frozenset({"x-delivery-count", "x-acquired-count"})
-
-# Nicht in Kopien uebernommen: die Broker-Zaehler (s. o.) und die Zaehler der
-# Zurueckstellungen bei Backend-Ausfall und durch den Ausfuehrungsschutz. Wer
-# eine Kopie macht, ohne am Backend gescheitert zu sein (Retry, Rate-Limit-/
-# Lock-Requeue), hat das Backend erreicht -- die Stoerung ist ueberstanden,
-# eine naechste beginnt wieder mit der Basiswartezeit. Die Zurueckstellung
-# selbst liest den bisherigen Stand vom Original und zaehlt weiter.
-_NOT_COPIED = BROKER_DELIVERY_COUNTERS | {HEADER_BACKEND_DEFER_COUNT, HEADER_GUARD_DEFER_COUNT}
+# Nicht in Kopien uebernommen: die Zaehler der Zurueckstellungen bei
+# Backend-Ausfall und durch den Ausfuehrungsschutz. Wer eine Kopie macht, ohne
+# am Backend gescheitert zu sein (Retry, Rate-Limit-/Lock-Requeue), hat das
+# Backend erreicht -- die Stoerung ist ueberstanden, eine naechste beginnt
+# wieder mit der Basiswartezeit. Die Zurueckstellung selbst liest den
+# bisherigen Stand vom Original und zaehlt weiter. Die Zustellzaehler des
+# Brokers (``BROKER_DELIVERY_COUNTERS``) entfernt schon ``copy_headers``
+# (FS-10).
+_NOT_COPIED = frozenset({HEADER_BACKEND_DEFER_COUNT, HEADER_GUARD_DEFER_COUNT})
 
 
 def republish_headers(delivery: Any, ctx: GateContext) -> dict[str, Any]:

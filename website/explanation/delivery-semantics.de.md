@@ -169,10 +169,17 @@ zählt beide und schickt die Zustellung eine Runde vor dem Limit in die
 DLQ, als `RedeliveryLimitError`, wenn nur `x-acquired-count` es
 erreicht hat.
 
-Retry-Kopien und die Kopien nach einem Rate-Limit-Treffer oder
-Lock-Konflikt lassen die Zustellzähler des Brokers genauso weg; ein
-geerbter `x-delivery-count` kann sie also nicht als hängende Nachricht
-nach `{queue}.XQ` schicken.
+Retry-Kopien, die Kopien nach einem Rate-Limit-Treffer oder
+Lock-Konflikt und die DLQ-Kopien des Workers lassen die Zustellzähler
+des Brokers genauso weg; ein geerbter `x-delivery-count` kann sie also
+nicht als hängende Nachricht nach `{queue}.XQ` schicken. Eine
+DLQ-Kopie lässt sich deshalb auch per "Move messages" in der
+RabbitMQ-UI oder per Shovel zurückspielen. Ausgenommen sind Nachrichten,
+die der Broker selbst über den Dead-Letter-Exchange ins `.XQ` gelegt
+hat (`route_via_dlx`), und DLQ-Kopien von Workern bis 0.12.1: Sie
+können die Zähler noch tragen, und ein Replay am Zustelllimit landet
+dann sofort wieder in der DLQ. Für sie `swarmq dlq retry` verwenden; es entfernt
+die Zähler.
 
 Ein Schedule-Fire (`x-swarmq-schedfire`) wird vor dem Lauf in Valkey
 beansprucht, damit ein zweites Publish desselben Fires verworfen wird.
@@ -399,7 +406,9 @@ nach einem Consumer-Timeout), setzt trotzdem den Done-Marker. Ein
 Retry- oder Dead-Letter-Publish, den der Broker bestätigt hat, dessen
 Ack aber scheitert, wirft `SettleFailedAfterPublish` und setzt seinen
 Marker wie nach Erfolg; das neu zugestellte Original wird dann
-übersprungen.
+übersprungen. Jeder Dead-Letter-Pfad des Workers, auch der für
+abgelaufene Tasks (`max_age`), wertet diesen Fall als terminal: Warnung
+`dlq_ack_failed_after_publish`, Unique-Freigabe, kein `nack`.
 
 **Bei einer Neuzustellung** entscheidet der Claim:
 
