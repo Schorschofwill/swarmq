@@ -13,7 +13,7 @@ import asyncio
 import contextlib
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, override
 
 import valkey.asyncio
 from valkey.exceptions import ValkeyError
@@ -38,6 +38,9 @@ _TEARDOWN_GRACE_S = 0.05
 # Hoechstdauer je Schritt (``unsubscribe``, ``aclose``) eines im Hintergrund
 # weiterlaufenden Teardowns, damit keine Task ewig haengen bleibt.
 _BACKGROUND_CLOSE_LIMIT_S = 5.0
+# So lange wartet ``close()`` auf noch laufende Hintergrund-Teardowns, bevor
+# es sie abbricht.
+_CLOSE_DRAIN_S = 0.1
 
 
 class ValkeyResults(ValkeyConnection):
@@ -60,6 +63,18 @@ class ValkeyResults(ValkeyConnection):
         # FS-15: Referenzen auf Pub/Sub-Teardowns, die nach der Frist im
         # Hintergrund weiterlaufen (sonst raeumt der GC die Task weg).
         self._pubsub_closers: set[asyncio.Task[None]] = set()
+
+    @override
+    async def close(self) -> None:
+        """Noch laufende Pub/Sub-Teardowns kurz abwarten, den Rest abbrechen
+        und einsammeln, dann den Client schliessen (FS-15)."""
+        closers = set(self._pubsub_closers)
+        if closers:
+            _, pending = await asyncio.wait(closers, timeout=_CLOSE_DRAIN_S)
+            for closer in pending:
+                closer.cancel()
+            await asyncio.gather(*closers, return_exceptions=True)
+        await super().close()
 
     # ------------------------------------------------------------------
     # Keys und Kanäle (Wire-Format, KTD12 — unverändert)
@@ -164,21 +179,27 @@ class ValkeyResults(ValkeyConnection):
             pass
 
     @staticmethod
-    async def _close_pubsub_bounded(pubsub: Any, channel: str) -> None:
+    async def _close_pubsub_bounded(pubsub: Any, channel: str, *, subscribed: bool) -> None:
         """Teardown mit Hoechstdauer je Schritt; ``aclose`` laeuft auch dann,
-        wenn ``unsubscribe`` haengt, damit die Verbindung geschlossen wird."""
-        with contextlib.suppress(Exception):
-            async with asyncio.timeout(_BACKGROUND_CLOSE_LIMIT_S):
-                await pubsub.unsubscribe(channel)
+        wenn ``unsubscribe`` haengt, damit die Verbindung geschlossen wird.
+        Ohne erfolgreiches Abonnement entfaellt ``unsubscribe``: valkey-py
+        wuerde dafuer eine getrennte Verbindung neu aufbauen."""
+        if subscribed:
+            with contextlib.suppress(Exception):
+                async with asyncio.timeout(_BACKGROUND_CLOSE_LIMIT_S):
+                    await pubsub.unsubscribe(channel)
         with contextlib.suppress(Exception):
             async with asyncio.timeout(_BACKGROUND_CLOSE_LIMIT_S):
                 await pubsub.aclose()
 
-    def _discard_pubsub(self, pubsub: Any, channel: str) -> asyncio.Task[None]:
+    def _discard_pubsub(self, pubsub: Any, channel: str, *, subscribed: bool) -> asyncio.Task[None]:
         """FS-15: Den PubSub nicht blockierend schliessen. Ein abgebrochenes
         ``subscribe`` kann ``SUBSCRIBE`` schon gesendet haben; die Verbindung
-        darf darum nicht wiederverwendet werden, ``aclose`` trennt sie."""
-        closer = asyncio.get_running_loop().create_task(self._close_pubsub_bounded(pubsub, channel))
+        darf darum nicht wiederverwendet werden, ``aclose`` trennt sie (und
+        beendet damit auch ein serverseitig schon bestehendes Abonnement)."""
+        closer = asyncio.get_running_loop().create_task(
+            self._close_pubsub_bounded(pubsub, channel, subscribed=subscribed)
+        )
         self._pubsub_closers.add(closer)
         closer.add_done_callback(self._pubsub_closers.discard)
         return closer
@@ -190,17 +211,17 @@ class ValkeyResults(ValkeyConnection):
         try:
             await asyncio.wait_for(pubsub.subscribe(channel), timeout=limit)
         except asyncio.CancelledError:
-            _ = self._discard_pubsub(pubsub, channel)
+            _ = self._discard_pubsub(pubsub, channel, subscribed=False)
             raise
         except Exception:  # noqa: BLE001 - Pub/Sub nicht verfuegbar oder zu langsam
-            _ = self._discard_pubsub(pubsub, channel)
+            _ = self._discard_pubsub(pubsub, channel, subscribed=False)
             return False
         return True
 
     async def _close_pubsub_within(self, pubsub: Any, channel: str, deadline: float) -> None:
         """FS-15: Teardown bis zur Deadline (mindestens ``_TEARDOWN_GRACE_S``)
         abwarten; was dann noch laeuft, schliesst im Hintergrund weiter."""
-        closer = self._discard_pubsub(pubsub, channel)
+        closer = self._discard_pubsub(pubsub, channel, subscribed=True)
         grace = max(deadline - asyncio.get_running_loop().time(), _TEARDOWN_GRACE_S)
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(asyncio.shield(closer), timeout=grace)
