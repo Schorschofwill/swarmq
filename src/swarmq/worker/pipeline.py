@@ -267,12 +267,7 @@ class Worker(WorkerLifecycle, WorkerShutdown):
     def _extract_valid_workflow_id(message: Any) -> str | None:
         return decode.valid_workflow_id(message)
 
-    async def _maybe_release_unique(
-        self,
-        message: Any,
-        ctx: GateContext,
-        task_info: TaskInfo | None = None,
-    ) -> None:
+    async def _maybe_release_unique(self, message: Any, ctx: GateContext, task_info: TaskInfo | None = None) -> None:
         """Siehe ``finalize.maybe_release_unique``."""
         unique_hash = self._extract_valid_unique_hash(message)
         await maybe_release_unique(
@@ -494,9 +489,8 @@ class Worker(WorkerLifecycle, WorkerShutdown):
         laufen mit ``release_unique=True`` hier durch; nicht-terminale
         Pfade (Requeues) erhalten den ``x-swarmq-unique-hash``-Header in
         der Kopie und melden ``Redelivered`` — die nächste Zustellung
-        durchläuft die Owner-Check-Pipeline erneut. Start-mode ist nach dem
-        Startpunkt bereits freigegeben (No-op, FS-13: ``ctx.start_release_reached``),
-        ebenso Nachrichten ohne Header."""
+        durchläuft die Owner-Check-Pipeline erneut. Start-mode nach dem Startpunkt
+        (``ctx.start_release_reached``) und Nachrichten ohne Header: No-op."""
         terminal = outcome if isinstance(outcome, Terminal) else None
         await self._finalize_schedfire(
             ctx,
@@ -652,9 +646,7 @@ class Worker(WorkerLifecycle, WorkerShutdown):
                 outcome = Terminal.release_in_finally()
 
             await self._release_unique_on_start(message, task_id, task_info)
-            # FS-13 (KTD12): ab hier gibt kein terminaler Pfad im start-Modus
-            # ein zweites Mal frei.
-            ctx.start_release_reached = True
+            ctx.start_release_reached = True  # FS-13: keine zweite Freigabe
 
             # 5d. FIRE_AND_FORGET: ack immediately before execution — ab hier
             # ist kein Broker-Verb mehr zulässig (acked_before_execute).
