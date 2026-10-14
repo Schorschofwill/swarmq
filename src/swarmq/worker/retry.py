@@ -39,6 +39,7 @@ from swarmq.worker.compute.pool import SlotUnavailable
 from swarmq.worker.error_info import error_class_of, gate_error_class
 from swarmq.worker.execution import ExecutionResult
 from swarmq.worker.gates import GateContext, GateDeps, dead_letter_copy, redeliver_in_place, republish_headers
+from swarmq.worker.gates.execution_guard import retry_count_of
 from swarmq.worker.outcome import DeliveryOutcome, Redelivered
 from swarmq.worker.terminal import fail_workflow_step
 
@@ -112,8 +113,9 @@ class RetryHandler:
         ):
             return await self._terminal_failure(delivery, ctx, exc, error_message)
 
-        # 3. Read retry count from message headers
-        retry_count = delivery.headers.get(HEADER_RETRY_COUNT, 0)
+        # 3. Read retry count from message headers; ein nicht ganzzahliger
+        # Wert zaehlt wie kein Header (FS-19, KTD15).
+        retry_count = retry_count_of(delivery.headers)
 
         # 4. Check if retries exhausted
         if retry_count >= task_info.max_retries:

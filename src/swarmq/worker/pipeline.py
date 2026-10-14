@@ -28,7 +28,7 @@ from swarmq.dishka import (
 from swarmq.exceptions import (
     BackendConnectionError,
 )
-from swarmq.headers import HEADER_RETRY_COUNT, HEADER_UNIQUE_UNTIL
+from swarmq.headers import HEADER_UNIQUE_UNTIL
 from swarmq.logging import _error_fields, _task_log_context, get_logger
 from swarmq.middleware import (
     MessageContext,
@@ -51,7 +51,7 @@ from swarmq.worker.gates import (
 )
 from swarmq.worker.gates.cancel import CancelGate
 from swarmq.worker.gates.delivery_count import DeliveryCountGate
-from swarmq.worker.gates.execution_guard import ExecutionGuard
+from swarmq.worker.gates.execution_guard import ExecutionGuard, retry_count_of
 from swarmq.worker.gates.expiry import ExpiryGate
 from swarmq.worker.gates.lock import (  # noqa: F401  # Re-Export der Konstanten (Tests)
     LOCK_CONFLICT_BACKOFF_BASE_MS,  # pyright: ignore[reportUnusedImport]  # Re-Export fuer Tests
@@ -382,7 +382,7 @@ class Worker(WorkerLifecycle, WorkerShutdown):
 
     @staticmethod
     def _build_message_dict(ctx: GateContext, message: Any) -> MessageContext:
-        """Canonical middleware payload + retry_count from the headers."""
+        """Canonical middleware payload + retry_count from the headers (kaputt = 0, FS-19)."""
         assert ctx.task_info is not None
         return {
             "task_id": ctx.task_id,
@@ -391,7 +391,7 @@ class Worker(WorkerLifecycle, WorkerShutdown):
             "args": ctx.args,
             "kwargs": ctx.kwargs,
             "delivery_mode": ctx.task_info.delivery.value,
-            "retry_count": message.headers.get(HEADER_RETRY_COUNT, 0),
+            "retry_count": retry_count_of(message.headers),
         }
 
     async def _resolve_chain_or_route(
