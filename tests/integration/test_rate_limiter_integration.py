@@ -66,7 +66,10 @@ class TestCheck:
 
     async def test_two_task_names_are_isolated(self, valkey_client):
         limiter = RateLimiter(valkey_client)
-        config = parse_rate_limit("1/s")
+        # Minutenfenster: Geprüft wird die Trennung der Task-Namen, nicht die
+        # Fensterlänge. Mit 1/s lief unter CI-Last mehr als eine Sekunde
+        # zwischen den Aufrufen, und der zweite Aufruf von task_a ging durch.
+        config = parse_rate_limit("1/m")
         task_a = f"a-{uuid.uuid4().hex[:8]}"
         task_b = f"b-{uuid.uuid4().hex[:8]}"
 
