@@ -16,7 +16,7 @@ Test-Liste:
 - [x] ein verwaister Kindprozess hält die Sperre nicht
 - [x] ``just unit`` sperrt nicht (keine Dienste)
 - [x] ``just coverage`` misst Unit, Integration und e2e unter einer Sperre
-- [x] ``lint``, ``types``, ``chaos``, ``stress``, ``coverage-report`` rufen die CI-Befehle
+- [x] ``lint``, ``types``, ``chaos``, ``stress``, ``coverage-report``, ``coverage-gate`` rufen die CI-Befehle
 """
 
 from __future__ import annotations
@@ -217,6 +217,7 @@ def test_coverage_measures_every_suite_under_one_lock(stub: dict[str, str]) -> N
         ("chaos", ["pytest tests -m chaos"], True),
         ("stress", ["pytest tests/stress -m stress"], True),
         ("coverage-report", ["coverage combine", "coverage xml", "coverage report"], False),
+        ("coverage-gate", ["--group coverage python scripts/coverage_gate.py"], False),
     ],
 )
 def test_recipes_run_the_ci_commands(stub: dict[str, str], recipe: str, expected: list[str], locked: bool) -> None:

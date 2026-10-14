@@ -82,3 +82,7 @@ coverage-report:
     {{uv_run}} coverage combine
     {{uv_run}} coverage xml
     {{uv_run}} coverage report
+
+# Ratchet gegen den Merge-Base mit main und diff-cover (nach coverage-report; scripts/coverage_gate.py)
+coverage-gate:
+    {{uv_run}} --group coverage python scripts/coverage_gate.py
