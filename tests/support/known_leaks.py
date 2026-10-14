@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import gc
+from collections.abc import Iterator
 
 import pytest
 
@@ -67,3 +68,14 @@ def close_orphaned_streams() -> None:
             sock.close()
         transport._sock = None  # type: ignore[attr-defined]  # verhindert die Warnung in __del__
         transport._closing = True  # type: ignore[attr-defined]  # is_closing() ohne die geschlossene Loop
+
+
+@pytest.fixture(autouse=True, scope="module")
+def close_orphaned_streams_after_module() -> Iterator[None]:
+    """Autouse fuer Chaos-Bereiche (TS-02): verwaiste aiormq-Writer am
+    Modulende schliessen. Netzwerk-Abrisse und Broker-Neustarts hinterlassen
+    Writer, an denen keine sichtbare Referenz mehr haengt; ohne das warnten
+    sie spaeter in einem unbeteiligten Test. Ein Leck, das noch im eigenen
+    Test abgeraeumt wird, laesst diesen weiterhin scheitern."""
+    yield
+    close_orphaned_streams()

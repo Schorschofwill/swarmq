@@ -77,6 +77,12 @@ class WithDi(Task):
         return 1
 
 
+# Attrappe mit erfundenem DI-Schluessel; die Tests reichen sie direkt durch.
+# Global registriert liesse sie jeden eingebetteten Worker-Start eines Laufs
+# ueber alle Module an der DI-Pruefung scheitern (Waechter in tests/conftest.py).
+Task._registered_tasks.remove(WithDi)
+
+
 def _deps(**cfg: Any) -> GateDeps:
     config = SwarmQConfig(broker_url="amqp://x", backend_url="redis://x", cancel_poll_interval=0.02, **cfg)
     backend = MagicMock()

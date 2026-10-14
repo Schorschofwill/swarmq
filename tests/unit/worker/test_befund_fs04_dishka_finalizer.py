@@ -87,6 +87,14 @@ class Fs04DiTask(Task):
         return None
 
 
+# Auf Modulebene wegen FromDishka, aber nicht in der globalen Liste: Die
+# Tests bauen ihre eigene TaskRegistry (_worker). Global registriert liessen
+# sie jeden eingebetteten Worker-Start eines Laufs ueber alle Module an der
+# DI-Pruefung scheitern (Waechter in tests/conftest.py).
+Task._registered_tasks.remove(Fs04LockedDiTask)
+Task._registered_tasks.remove(Fs04DiTask)
+
+
 def _register_failing_finalizer_container() -> None:
     """Registriert den Container; ``tests/conftest.py`` stellt den alten
     Stand nach dem Test wieder her."""

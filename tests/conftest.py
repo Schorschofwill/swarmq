@@ -164,6 +164,33 @@ def _reset_supervisor_channel():
     _sv.set_current_channel(snapshot)
 
 
+def pytest_collection_finish() -> None:
+    """Bricht ab, wenn ein Testmodul DI-Tasks global registriert lässt.
+
+    Task-Unterklassen auf Modulebene landen beim Import in
+    ``Task._registered_tasks``. Für ``FromDishka``-Tasks prüft jeder
+    eingebettete Worker-Start, ob der globale Container sie auflöst; sammelt
+    ein Lauf Unit- und andere Module zusammen (``just chaos``, ``pytest
+    tests``), scheiterten dann Dutzende fremder Tests mit „no provider“.
+    Testmodule bauen ihre eigene ``TaskRegistry`` und nehmen solche Tasks
+    nach der Definition aus der globalen Liste (``tests/unit/worker/test_worker_dishka.py``).
+    Fixture-Module (``_*_fixture_tasks``) dürfen registrieren, sie bringen
+    ihren Container mit.
+    """
+    leaked = [
+        task
+        for task in Task._registered_tasks
+        if getattr(task, "_dishka_injected_keys", None) and task.__module__.rsplit(".", 1)[-1].startswith("test_")
+    ]
+    if leaked:
+        names = ", ".join(f"{task.__module__}.{task.__qualname__}" for task in leaked)
+        msg = (
+            f"DI-Tasks aus Testmodulen sind global registriert: {names}. "
+            "Nach der Definition aus Task._registered_tasks nehmen (Muster: tests/unit/worker/test_worker_dishka.py)."
+        )
+        raise pytest.UsageError(msg)
+
+
 # ---------------------------------------------------------------------------
 # Auto-marker: tag every test with unit / integration / e2e based on its path
 # ---------------------------------------------------------------------------

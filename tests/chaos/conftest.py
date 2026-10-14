@@ -28,6 +28,8 @@ from pathlib import Path
 import httpx
 import pytest
 
+from tests.support.known_leaks import close_orphaned_streams_after_module  # noqa: F401 - autouse, TS-02
+
 _COMPOSE_FILE = Path(__file__).parent / "compose.yml"
 
 
