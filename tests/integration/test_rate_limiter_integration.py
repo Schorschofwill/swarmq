@@ -50,16 +50,35 @@ def task_name() -> str:
 
 class TestCheck:
     async def test_five_per_second_allows_five_then_blocks(self, valkey_client, task_name):
+        """Fünf Aufrufe gehen durch, der sechste im selben Fenster nicht.
+
+        Das Skript nähert ein Gleitfenster aus zwei festen Fenstern an: Liegt
+        der sechste Aufruf schon im nächsten Sekundenfenster, zählen die fünf
+        davor nur noch anteilig, und er geht durch (an der Grenze nachgestellt:
+        2 von 5). Ausgewertet wird deshalb nur eine Folge, die laut Server-Uhr
+        ganz in einem Fenster lag; sonst neue Folge mit frischem Namen.
+        """
         limiter = RateLimiter(valkey_client)
         config = parse_rate_limit("5/s")
 
-        for _ in range(5):
-            allowed, remaining, retry = await limiter.check(task_name, config)
+        async def window_of_server_time() -> int:
+            sec, usec = await valkey_client.time()
+            return (int(sec) * 1000 + int(usec) // 1000) // config.window_size_ms
+
+        for attempt in range(5):
+            name = f"{task_name}-{attempt}"
+            window = await window_of_server_time()
+            results = [await limiter.check(name, config) for _ in range(6)]
+            if await window_of_server_time() == window:
+                break
+        else:
+            pytest.fail("no sequence of six calls stayed within one window")
+
+        for allowed, remaining, retry in results[:5]:
             assert allowed is True
             assert retry == 0
             assert remaining >= 0
-
-        allowed, remaining, retry = await limiter.check(task_name, config)
+        allowed, remaining, retry = results[5]
         assert allowed is False
         assert retry >= 1
         assert remaining == 0
