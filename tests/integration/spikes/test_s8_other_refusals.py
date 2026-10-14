@@ -21,6 +21,7 @@ Test-Liste:
 
 from __future__ import annotations
 
+import dataclasses
 import uuid
 from collections.abc import AsyncIterator, Callable
 
@@ -55,7 +56,7 @@ async def test_exclusive_queue_of_another_connection(
 
     expected = (
         f"ChannelLockedResource: RESOURCE_LOCKED - cannot obtain exclusive access to locked queue '{queue}' "
-        "in vhost '/'. It could be originally declared on another connection or the exclusive property value "
+        f"in vhost '{node.vhost}'. It could be originally declared on another connection or the exclusive property value "
         "does not match that of the original declaration."
     )
     assert (active, passive) == (expected, expected)
@@ -77,7 +78,7 @@ async def limited_vhost(node: RabbitMQNode) -> AsyncIterator[str]:
 
 
 async def test_queue_limit_and_access_refused(node: RabbitMQNode, limited_vhost: str) -> None:
-    connection = await aio_pika.connect(f"{node.amqp_url}{limited_vhost}")
+    connection = await aio_pika.connect(dataclasses.replace(node, vhost=limited_vhost).amqp_url)
     try:
         first = await declare(connection, "allowed-1", QUORUM)
         over_limit = await declare(connection, "allowed-2", QUORUM)

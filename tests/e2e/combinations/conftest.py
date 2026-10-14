@@ -27,6 +27,7 @@ from tests.support.services import (
     VALKEY_HOST,
     VALKEY_PORT,
     flush_valkey_db,
+    rabbitmq_amqp_url,
     require_safe_valkey_url,
     valkey_db_url,
 )
@@ -127,7 +128,7 @@ async def rabbitmq_proxied_url(
             upstream=_RMQ_UPSTREAM,
         ),
     )
-    return f"amqp://guest:guest@localhost:{_RMQ_PROXY_PORT}/"
+    return rabbitmq_amqp_url("localhost", _RMQ_PROXY_PORT)
 
 
 @pytest.fixture
@@ -142,7 +143,7 @@ async def valkey_proxied_url(
             upstream=_VALKEY_UPSTREAM,
         ),
     )
-    return f"valkey://localhost:{_VALKEY_PROXY_PORT}/0"
+    return valkey_db_url("localhost", _VALKEY_PROXY_PORT)
 
 
 # ---------------------------------------------------------------------------

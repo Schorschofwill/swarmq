@@ -37,7 +37,9 @@ from tests.support.queues import delete_queue_family
 from tests.support.services import RABBITMQ_PORT
 from tests.support.wait import wait_until
 
-pytestmark = [pytest.mark.integration, pytest.mark.timeout(30)]
+# exclusive: der Speicheralarm blockiert jeden Verleger des Brokers, auch die
+# parallelen xdist-Prozesse (tests/support/xdist_isolation.py).
+pytestmark = [pytest.mark.integration, pytest.mark.timeout(30), pytest.mark.exclusive]
 
 _CONTAINER = os.environ.get("SWARMQ_TEST_RABBITMQ_CONTAINER", "swarmq-test-rabbit")
 _ALARM_WATERMARK = "0.0000001"

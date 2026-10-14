@@ -20,7 +20,12 @@ Test-Liste:
 - [x] ein verwaister Kindprozess hält die Sperre nicht
 - [x] ``just unit`` sperrt nicht (keine Dienste)
 - [x] ``just unit`` verteilt auf 8 Prozesse (pytest-xdist), ``SWARMQ_TEST_WORKERS`` ändert die Zahl
-- [x] ``just coverage`` misst Unit, Integration und e2e unter einer Sperre
+- [x] ``just coverage`` misst Unit, Integration und e2e unter einer Sperre, parallel wie die Einzelrezepte
+- [x] ``just e2e``: paralleler Durchgang (8 Prozesse, loadgroup) ohne exclusive-Tests, dann serieller nur mit ihnen
+- [x] beide Durchgänge unter einer Sperre
+- [x] junit-Datei des seriellen Durchgangs mit Endung ``-serial``
+- [x] ein roter Durchgang macht den Lauf rot, der andere läuft trotzdem
+- [x] ein leerer Durchgang (Exit 5) zählt nicht als Fehler, zwei leere schon
 - [x] ``lint``, ``types``, ``chaos``, ``stress``, ``coverage-report``, ``coverage-gate``, ``ratchet`` rufen die CI-Befehle
 """
 
@@ -46,9 +51,11 @@ _UV_STUB = """#!/usr/bin/env bash
 held=free
 if [[ -n "${STUB_LOCK:-}" ]] && ! flock -n "$STUB_LOCK" true 2>/dev/null; then held=held; fi
 echo "args=$* rmq=${SWARMQ_TEST_RABBITMQ_PORT:-} valkey=${SWARMQ_TEST_VALKEY_PORT:-} \
-lockheld=${SWARMQ_TEST_LOCK_HELD:-} lock=$held" >> "$STUB_LOG"
+lockheld=${SWARMQ_TEST_LOCK_HELD:-} lock=$held excl=${SWARMQ_TEST_EXCLUSIVE:-}" >> "$STUB_LOG"
 if [[ -n "${STUB_ORPHAN:-}" ]]; then (sleep 5 >/dev/null 2>&1 &) ; fi
 if [[ -n "${STUB_SLEEP:-}" ]]; then sleep "$STUB_SLEEP"; fi
+rc="STUB_RC_${SWARMQ_TEST_EXCLUSIVE:-none}"
+exit "${!rc:-0}"
 """
 
 
@@ -93,9 +100,8 @@ def test_e2e_sets_the_test_ports_when_none_are_given(stub: dict[str, str]) -> No
     result = _just(stub, "e2e")
 
     assert result.returncode == 0, result.stderr
-    [call] = _calls(stub)
-    assert "pytest tests/e2e" in call
-    assert "rmq=5699 valkey=6399" in call
+    calls = _calls(stub)
+    assert all("tests/e2e" in call and "rmq=5699 valkey=6399" in call for call in calls)
 
 
 def test_e2e_keeps_ports_from_the_environment(stub: dict[str, str]) -> None:
@@ -104,15 +110,14 @@ def test_e2e_keeps_ports_from_the_environment(stub: dict[str, str]) -> None:
     result = _just(stub, "e2e")
 
     assert result.returncode == 0, result.stderr
-    [call] = _calls(stub)
-    assert "rmq=5672 valkey=6380" in call
+    assert all("rmq=5672 valkey=6380" in call for call in _calls(stub))
 
 
 def test_the_seed_is_passed_explicitly_and_printed(stub: dict[str, str]) -> None:
     result = _just(stub, "e2e", "-q")
 
     assert result.returncode == 0, result.stderr
-    [call] = _calls(stub)
+    call = _calls(stub)[0]
     seed = call.split("--randomly-seed=")[1].split()[0]
     assert seed.isdigit()
     assert f"SWARMQ_TEST_SEED={seed}" in result.stdout + result.stderr
@@ -123,16 +128,14 @@ def test_swarmq_test_seed_fixes_the_seed(stub: dict[str, str]) -> None:
 
     _just(stub, "e2e")
 
-    [call] = _calls(stub)
-    assert "--randomly-seed=12345" in call
+    assert all("--randomly-seed=12345" in call for call in _calls(stub))
 
 
 def test_e2e_holds_the_lock_while_pytest_runs(stub: dict[str, str]) -> None:
     result = _just(stub, "e2e")
 
     assert result.returncode == 0, result.stderr
-    [call] = _calls(stub)
-    assert "lock=held" in call
+    assert all("lock=held" in call for call in _calls(stub))
 
 
 def test_a_held_lock_aborts_with_a_hint_after_the_wait(stub: dict[str, str]) -> None:
@@ -151,12 +154,14 @@ def test_all_holds_the_lock_once_across_every_suite(stub: dict[str, str]) -> Non
 
     assert result.returncode == 0, result.stderr
     calls = _calls(stub)
-    suites = [call.split("pytest ")[1].split()[0] for call in calls]
+    suites = [next(arg for arg in call.split("pytest ")[1].split() if arg.startswith("tests/")) for call in calls]
     assert suites == [
         "tests/unit",
         "tests/property",
         "tests/fuzz/test_parser_fuzz.py",
         "tests/integration",
+        "tests/integration",
+        "tests/e2e",
         "tests/e2e",
     ]
     assert all("lockheld=1 lock=held" in call for call in calls)
@@ -168,8 +173,7 @@ def test_with_ci_set_no_recipe_locks(stub: dict[str, str]) -> None:
     result = _just(stub, "e2e")
 
     assert result.returncode == 0, result.stderr
-    [call] = _calls(stub)
-    assert "lockheld= lock=free" in call
+    assert all("lockheld= lock=free" in call for call in _calls(stub))
 
 
 def test_an_orphaned_child_does_not_keep_the_lock(stub: dict[str, str]) -> None:
@@ -196,13 +200,15 @@ def test_coverage_measures_every_suite_under_one_lock(stub: dict[str, str]) -> N
     assert result.returncode == 0, result.stderr
     calls = [call.split("reload ")[-1].split(" rmq=")[0] for call in _calls(stub)]
     assert calls[0] == "coverage erase"
-    measured = [call.split(" --randomly-seed")[0] for call in calls[1:4]]
+    measured = [call.split(" --randomly-seed")[0] for call in calls[1:6]]
     assert measured == [
-        "coverage run -m pytest tests/unit",
+        "coverage run -m pytest tests/unit -n 8",
+        "coverage run -m pytest -n 8 --dist loadgroup tests/integration",
         "coverage run -m pytest tests/integration",
+        "coverage run -m pytest -n 8 --dist loadgroup tests/e2e",
         "coverage run -m pytest tests/e2e",
     ]
-    assert calls[4:] == ["coverage combine", "coverage report"]
+    assert calls[6:] == ["coverage combine", "coverage report"]
     assert all("lockheld=1 lock=held" in call for call in _calls(stub))
 
 
@@ -250,3 +256,50 @@ def test_swarmq_test_workers_sets_the_worker_count(stub: dict[str, str]) -> None
 
     [call] = _calls(stub)
     assert "pytest tests/unit -n 3" in call
+
+
+def test_e2e_runs_a_parallel_pass_then_the_exclusive_tests_alone(stub: dict[str, str]) -> None:
+    result = _just(stub, "e2e", "-q")
+
+    assert result.returncode == 0, result.stderr
+    parallel, serial = _calls(stub)
+    assert "pytest -n 8 --dist loadgroup tests/e2e -q" in parallel
+    assert parallel.endswith("excl=skip")
+    assert "pytest tests/e2e -q" in serial
+    assert serial.endswith("excl=only")
+
+
+@pytest.mark.parametrize("junit", [["--junitxml=junit-e2e.xml"], ["--junitxml", "junit-e2e.xml"]])
+def test_the_serial_pass_writes_its_own_junit_file(stub: dict[str, str], junit: list[str]) -> None:
+    result = _just(stub, "e2e", *junit)
+
+    assert result.returncode == 0, result.stderr
+    parallel, serial = _calls(stub)
+    assert " ".join(junit) in parallel
+    assert " ".join(junit).replace("junit-e2e.xml", "junit-e2e-serial.xml") in serial
+
+
+@pytest.mark.parametrize(("parallel_rc", "serial_rc"), [("1", "0"), ("0", "1")])
+def test_a_red_pass_fails_the_run_and_the_other_pass_still_runs(
+    stub: dict[str, str], parallel_rc: str, serial_rc: str
+) -> None:
+    stub |= {"STUB_RC_skip": parallel_rc, "STUB_RC_only": serial_rc}
+
+    result = _just(stub, "e2e")
+
+    assert result.returncode != 0
+    assert len(_calls(stub)) == 2
+
+
+@pytest.mark.parametrize(
+    ("parallel_rc", "serial_rc", "expected"),
+    [("0", "5", 0), ("5", "0", 0), ("5", "5", 5), ("5", "1", 1)],
+)
+def test_an_empty_pass_is_no_failure_unless_both_are_empty(
+    stub: dict[str, str], parallel_rc: str, serial_rc: str, expected: int
+) -> None:
+    stub |= {"STUB_RC_skip": parallel_rc, "STUB_RC_only": serial_rc}
+
+    result = _just(stub, "e2e")
+
+    assert result.returncode == expected, result.stderr
