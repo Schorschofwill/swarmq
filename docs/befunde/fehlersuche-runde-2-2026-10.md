@@ -1,7 +1,7 @@
 <!-- Befundregister. IDs FS-nn sind die Ticketnummern fuer xfail-Marker (AGENTS.md: kein Skip ohne Ticket). -->
 # Befundregister „Fehlersuche Runde 2“ – swarmq v0.12.0 (ac989a3), 2026-10-13
 
-Status (2026-10-13): Gegenprüfung abgeschlossen. 23 Befunde stehen als FEHLER fest: 3 × P1, 10 × P2, 10 × P3. P1 und P2 haben alle einen Nachweis-Test, P3 teilweise. 6 Verdachte sind bewusste ENTSCHEIDUNGEN und keine Befunde mehr, 4 sind LÜCKEN (Produktfragen). Alle offen.
+Status (2026-10-13): Gegenprüfung abgeschlossen. 23 Befunde stehen als FEHLER fest: 3 × P1, 10 × P2, 10 × P3. P1 und P2 haben alle einen Nachweis-Test, P3 teilweise. 6 Verdachte sind bewusste ENTSCHEIDUNGEN und keine Befunde mehr, 4 sind LÜCKEN (Produktfragen). Stand 2026-10-14: FS-02, FS-03, FS-04 behoben, FS-06 teilweise (Release 0.12.1); übrige offen.
 
 Nachweis-Tests tragen `@pytest.mark.befund("FS-nn")` und `xfail(strict=True)`. Wird ein Befund behoben, wird sein Test XPASS (rot), und die Markierung muss entfernt werden. Alle Nachweise: `pytest -m befund --runxfail` (Integration nur über die Testports).
 
@@ -92,11 +92,11 @@ Cron bei Zeitumstellung (Berlin, New York, Lord Howe), sieben Workflow-Kombinati
 
 | ID | Testdateien | Status |
 |---|---|---|
-| FS-02 | `tests/unit/broker/test_befund_fs02_publish_after_deadline.py`, `tests/unit/worker/test_befund_fs02_recycling_publish_deadline.py` | offen |
-| FS-03 | `tests/unit/worker/gates/test_befund_fs03_schedfire_redelivery.py` | offen |
-| FS-04 | `tests/unit/worker/test_befund_fs04_dishka_finalizer.py` | offen |
+| FS-02 | `tests/unit/broker/test_befund_fs02_publish_after_deadline.py`, `tests/unit/worker/test_befund_fs02_recycling_publish_deadline.py` | behoben (U3, 7a2bb19; Review f79fc04, 1f2f1eb) |
+| FS-03 | `tests/unit/worker/gates/test_befund_fs03_schedfire_redelivery.py` | behoben (Teil 2: U4, 4fbbd97; Teil 1: U5, de10d90; Review 7ede93e, 4dbc28f) |
+| FS-04 | `tests/unit/worker/test_befund_fs04_dishka_finalizer.py` | behoben (U4, 4fbbd97; Review 01cb43a, f21459f) |
 | FS-05 | `tests/unit/worker/test_befund_fs05_task_timeout_error.py` | offen |
-| FS-06 | `tests/integration/backend/test_befund_fs06_retry_after_lost_reply.py` | offen |
+| FS-06 | `tests/integration/backend/test_befund_fs06_retry_after_lost_reply.py` | teilweise: Fire-Claim behoben (U6, c8f407a); Unique-Claim und Mutex offen (U11) |
 | FS-07 | `tests/unit/scheduler/test_befund_fs07_unique_claim_after_timeout.py`, `tests/unit/worker/gates/test_befund_fs07_lock_claim_after_timeout.py` (Client-Pfad ohne Nachweis) | offen |
 | FS-08 | `tests/unit/broker/test_befund_fs08_publish_lock_waiter.py` | offen |
 | FS-09 | `tests/unit/broker/test_befund_fs09_consumer_watch_rpc_abort.py` | offen |
