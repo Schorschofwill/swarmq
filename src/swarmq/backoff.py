@@ -48,8 +48,11 @@ def _jittered_cap(delay: float, jitter: float, max_delay: float) -> float:
     return float(max_delay * (0.6 + 0.2 * (jitter - 1.0)))
 
 
-# Multiplikativer Jitter der Zurueckstellung: +-20 %.
-_DEFER_JITTER = (0.8, 1.2)
+# Multiplikativer Jitter der Zurueckstellung: +-20 %. Die Untergrenze ist
+# oeffentlich: wer die tatsaechlich verstrichene Wartezeit nach unten
+# abschaetzt (Schedfire-Deckel), multipliziert die nominelle Summe damit.
+MIN_DEFER_JITTER = 0.8
+_DEFER_JITTER = (MIN_DEFER_JITTER, 1.2)
 
 
 def backend_defer_delay(
@@ -71,3 +74,17 @@ def backend_defer_delay(
     """
     exponent = min(max(attempt, 1) - 1, _MAX_DEFER_EXPONENT)
     return float(min(base_delay * 2**exponent, max_delay) * uniform(*_DEFER_JITTER))
+
+
+def nominal_defer_total(attempts: int, base: float, cap: float) -> float:
+    """Summe der nominellen Wartezeiten (ohne Jitter) der ersten
+    ``attempts`` Zurueckstellungen, wie ``backend_defer_delay``."""
+    total, delay = 0.0, base
+    for done in range(attempts):
+        if delay >= cap:
+            # Ab dem Deckel waechst die Summe linear (kein Ueberlauf bei
+            # tausenden Zurueckstellungen).
+            return total + cap * (attempts - done)
+        total += delay
+        delay *= 2
+    return total

@@ -37,17 +37,21 @@ from tests.e2e.combinations._toxiproxy import (
     DEFAULT_ADMIN_PORT,
     ProxyConfig,
     ToxiproxyClient,
+    proxy_defaults,
 )
 from tests.support.queues import delete_queue_family
-from tests.support.services import port_is_open, rabbitmq_amqp_url
+from tests.support.services import RABBITMQ_HOST, RABBITMQ_PORT, port_is_open, rabbitmq_amqp_url
 from tests.support.wait import wait_until
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(60)]
 
 _ADMIN_HOST = os.environ.get("SWARMQ_TEST_TOXIPROXY_HOST", DEFAULT_ADMIN_HOST)
 _ADMIN_PORT = int(os.environ.get("SWARMQ_TEST_TOXIPROXY_PORT", str(DEFAULT_ADMIN_PORT)))
-_PROXY_PORT = int(os.environ.get("SWARMQ_TEST_TOXIPROXY_RMQ_PORT", "5673"))
-_UPSTREAM = os.environ.get("SWARMQ_TEST_TOXIPROXY_RMQ_UPSTREAM", "rabbitmq:5672")
+# Wie die Kombinationen: Compose-Stack -> 5673/rabbitmq:5672, sonst ein
+# Host-Toxiproxy einen Port unter dem Testport (Standard 5698 -> 5699).
+_DEFAULT_PROXY_PORT, _DEFAULT_UPSTREAM = proxy_defaults("rabbitmq", RABBITMQ_HOST, RABBITMQ_PORT, 5672, 5673)
+_PROXY_PORT = int(os.environ.get("SWARMQ_TEST_TOXIPROXY_RMQ_PORT", str(_DEFAULT_PROXY_PORT)))
+_UPSTREAM = os.environ.get("SWARMQ_TEST_TOXIPROXY_RMQ_UPSTREAM", _DEFAULT_UPSTREAM)
 _PROXY = "rabbitmq"
 _TOXIC = "b24-hold-confirms"
 

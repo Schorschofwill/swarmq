@@ -28,6 +28,7 @@ from swarmq.headers import (
     HEADER_LOCK_CONFLICT_COUNT_LEGACY,
     HEADER_REPLAY_ID,
     HEADER_RETRY_COUNT,
+    HEADER_SCHEDFIRE_DEFER_COUNT,
     LOOP_STATE_HEADERS,
 )
 from swarmq.identity import HEADER_X_DEATH, copy_headers, replay_id_of, retry_replay_id
@@ -400,6 +401,10 @@ class RabbitMQAdmin(RabbitMQDelivery):
         # Reset retry-count so the operator's "try this again" intent isn't
         # blocked by a stale counter.
         forward_headers.pop(HEADER_RETRY_COUNT, None)
+        # FS-03 (F9): ebenso der Zaehler der Schedfire-Zurueckstellungen --
+        # sonst begaenne die Wiederholung mit gewachsenem Backoff und naeher
+        # am Deckel.
+        forward_headers.pop(HEADER_SCHEDFIRE_DEFER_COUNT, None)
         # Keine DLQ-Nachricht mehr (KTD6): ohne Frist und Zeitstempel; ein
         # erneutes Dead-Lettering stempelt neu.
         forward_headers.pop(HEADER_DEAD_LETTERED_AT, None)

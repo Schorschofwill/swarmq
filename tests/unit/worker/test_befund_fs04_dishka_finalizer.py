@@ -55,7 +55,6 @@ from tests.unit.worker._helpers import _default_payload
 pytestmark = pytest.mark.timeout(5)
 
 _LOCK = "fs04-report"
-_REASON = "FS-04: offen - scheiternder DI-Finalizer ueberspringt Lock-Freigabe und Semaphor-Rueckgabe"
 
 
 class Fs04Session:
@@ -113,7 +112,6 @@ async def _deliver(worker: Worker, task_id: str, name: str) -> None:
 
 
 @pytest.mark.befund("FS-04")
-@pytest.mark.xfail(strict=True, reason=_REASON)
 async def test_lock_is_released_when_the_di_finalizer_fails(broker: Any, backend: Any) -> None:
     store = InMemoryLockStore(FakeClock())
     worker = _worker(broker, backend, Fs04LockedDiTask, concurrency=1)
@@ -128,7 +126,6 @@ async def test_lock_is_released_when_the_di_finalizer_fails(broker: Any, backend
 
 
 @pytest.mark.befund("FS-04")
-@pytest.mark.xfail(strict=True, reason=_REASON)
 async def test_semaphore_slot_is_returned_when_the_di_finalizer_fails(broker: Any, backend: Any) -> None:
     worker = _worker(broker, backend, Fs04DiTask, concurrency=1)
 

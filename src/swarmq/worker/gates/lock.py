@@ -582,7 +582,14 @@ async def release_acquired_locks(
 
     ``drop`` (BZ-25): nimmt den Lock VOR dem Freigabeversuch aus dem Keeper,
     auch wenn der Versuch scheitert.
+
+    Der Registry-Eintrag wird VOR der Freigabe entnommen (FS-04, KTD6): laeuft
+    die Freigabe noch, wenn der Shutdown liegengebliebene Locks abraeumt
+    (``_release_leftover_locks``), gaebe er denselben Token sonst ein zweites
+    Mal frei -- Fehlalarm ``task_lock_lost``. Was hier nicht frei wird, heilt
+    die Lock-TTL.
     """
+    active_handler_locks.pop(handler_id, None)
     for token in acquired_locks:
         kept = drop(token) if drop is not None else None
         # Task-Felder aus der Lease (Review MR 13, Hinweis); im Handler setzt
@@ -609,7 +616,3 @@ async def release_acquired_locks(
                 stage="release",
                 hint="the lock was gone or held by another owner at release; a second holder may have run in parallel",
             )
-    # Drop the worker-wide registry entry whether release succeeded
-    # or not — anything still held will time out via TTL, and we
-    # don't want shutdown-cleanup to double-release.
-    active_handler_locks.pop(handler_id, None)

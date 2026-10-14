@@ -316,28 +316,42 @@ class Worker(WorkerLifecycle, WorkerShutdown):
             return False
 
     async def _teardown_di_scope(
-        self, di_scope: Any, di_token: Any, is_cancelled: bool, task_exception: BaseException | None
+        self,
+        di_scope: Any,
+        di_token: Any,
+        is_cancelled: bool,
+        task_exception: BaseException | None,
+        teardown: list[asyncio.Task[None]],
     ) -> None:
         """Dishka-REQUEST-Scope schließen — ``__aexit__`` mit der
         eingefangenen Exception (Commit/Rollback der yield-Finalizer);
         User-Cancel übergibt CancelledError. Detached-Shield-Muster wie
         beim Lock-Release: der Exit läuft als eigener getrackter Task,
         ein Outer-Cancel in den finally bricht ihn nicht ab
-        (``_execute_shutdown`` drained ``_detached_releases``)."""
+        (``_execute_shutdown`` drained ``_detached_releases``). Der Task landet
+        in ``teardown``: laeuft er nach einem Outer-Cancel weiter, gibt der
+        ``finally`` Lock und Semaphor erst nach seinem Ende frei (KTD6)."""
         if di_token is not None:
             request_container.reset(di_token)
         _di_exc = asyncio.CancelledError() if is_cancelled else task_exception
         _di_et = type(_di_exc) if _di_exc is not None else None
         _di_tb = _di_exc.__traceback__ if _di_exc is not None else None
-        await self._detached(di_scope.__aexit__(_di_et, _di_exc, _di_tb))
+        inner = self._track(di_scope.__aexit__(_di_et, _di_exc, _di_tb))
+        teardown.append(inner)
+        await asyncio.shield(inner)
+
+    def _track(self, call: Awaitable[None]) -> asyncio.Task[None]:
+        """Als eigenen Task starten und in ``_detached_releases`` tracken: der
+        Shutdown wartet vor ``backend.close`` darauf."""
+        inner = asyncio.ensure_future(call)
+        self._detached_releases.add(inner)
+        inner.add_done_callback(self._detached_releases.discard)
+        return inner
 
     async def _detached(self, call: Awaitable[None]) -> None:
         """Als eigener getrackter Task + geshieldeter Await (siehe
         ``_detached_lock_release``): ein Outer-Cancel bricht ihn nicht ab."""
-        inner = asyncio.ensure_future(call)
-        self._detached_releases.add(inner)
-        inner.add_done_callback(self._detached_releases.discard)
-        await asyncio.shield(inner)
+        await asyncio.shield(self._track(call))
 
     async def _detached_lock_release(self, handler_id: uuid.UUID, acquired_locks: list[LockToken]) -> None:
         """Lock-Release als eigener getrackter Task + geshieldeter Await.
@@ -571,8 +585,8 @@ class Worker(WorkerLifecycle, WorkerShutdown):
         if not await self._pre_pipeline_gates(message, ctx):
             return
 
-        # 3. Acquire semaphore
-        await self._semaphore.acquire()
+        # 3. Acquire semaphore -- bewusst vor dem ``try`` (siehe ``_acquire_slot``).
+        await self._acquire_slot(ctx)
         # Per-handler lock-tracking state, scoped to this invocation —
         # task_id alone would collide under AT_LEAST_ONCE redelivery.
         # handler_id ist der Registry-Schlüssel fürs Shutdown-Cleanup.
@@ -678,6 +692,57 @@ class Worker(WorkerLifecycle, WorkerShutdown):
             return
 
         finally:
+            # FS-04 (KTD6): Kaskade in fester Reihenfolge Settle/Finalize ->
+            # DI-Teardown -> Lock-Freigabe -> Semaphor. Jeder spaetere Schritt
+            # laeuft auch, wenn ein frueherer scheitert oder abgebrochen wird
+            # (Dishka-``ExitError``, ``BaseException`` aus einem Finalizer,
+            # aeusserer Abbruch); eine spaetere Ausnahme ersetzt eine fruehere
+            # (die fruehere haengt in ``__context__``).
+            teardown: list[asyncio.Task[None]] = []
+            try:
+                await self._settle_and_teardown(
+                    message, outcome, ctx, task_info, _di_scope, _di_token, is_cancelled, task_exception, teardown
+                )
+            finally:
+                running = [task for task in teardown if not task.done()]
+                if running:
+                    # Ein aeusserer Abbruch traf den geshieldeten DI-Teardown,
+                    # dessen Finalizer (z. B. DB-Commit) noch laeuft: Lock und
+                    # Semaphor erst nach seinem Ende freigeben (KTD6), als
+                    # getrackter Nachlauf -- der Abbruch propagiert sofort.
+                    _ = self._track(self._release_after_teardown(running[0], handler_id, acquired_locks))
+                else:
+                    await self._release_locks_and_slot(handler_id, acquired_locks)
+
+    async def _acquire_slot(self, ctx: GateContext) -> None:
+        """Semaphor-Platz nehmen, vor dem ``try/finally`` der Zustellung: ein
+        Abbruch hier darf den ``finally`` nicht erreichen (dessen
+        Terminal-Default schriebe den Schedfire-Completed-Marker). Wie bei
+        einer Gate-Ausnahme wird der Schedfire-Claim nicht-terminal
+        freigegeben, sonst saehe die Neuzustellung ihn als Duplikat (FS-03
+        Teil 2). Geshieldet und getrackt: der Shutdown wartet vor
+        ``backend.close`` auf die Freigabe."""
+        try:
+            await self._semaphore.acquire()
+        except BaseException:
+            await self._detached(self._release_schedfire_claim(ctx))
+            raise
+
+    async def _settle_and_teardown(
+        self,
+        message: Any,
+        outcome: DeliveryOutcome,
+        ctx: GateContext,
+        task_info: TaskInfo | None,
+        di_scope: Any,
+        di_token: Any,
+        is_cancelled: bool,
+        task_exception: BaseException | None,
+        teardown: list[asyncio.Task[None]],
+    ) -> None:
+        """Erste Stufen der ``finally``-Kaskade: Settle/Finalize, danach -- auch
+        wenn das scheitert oder abgebrochen wird -- der DI-Teardown (FS-04)."""
+        try:
             # 12-pre. Finalize the schedfire claim if this message was a
             # schedfire delivery we claimed in-flight. On a terminal
             # outcome this writes the completed marker (a redelivery
@@ -694,7 +759,7 @@ class Worker(WorkerLifecycle, WorkerShutdown):
             if self._execution_guard.lease_of(message) is not None:
                 await self._detached(self._execution_guard.settle(message))
             await self._finalize_delivery(message, outcome, ctx, task_info)
-
+        finally:
             # 12-pre. Close the Dishka REQUEST scope (if opened), driving
             # __aexit__ with the captured task exception so yield-based
             # finalizers can commit on success / roll back on failure. On a
@@ -704,12 +769,32 @@ class Worker(WorkerLifecycle, WorkerShutdown):
             # Task so an outer (shutdown) cancel into this finally does not
             # abort the finalizer mid-await — _execute_shutdown drains
             # _detached_releases before closing the backend.
-            if _di_scope is not None:
-                await self._teardown_di_scope(_di_scope, _di_token, is_cancelled, task_exception)
+            if di_scope is not None:
+                await self._teardown_di_scope(di_scope, di_token, is_cancelled, task_exception, teardown)
 
+    async def _release_after_teardown(
+        self, teardown: asyncio.Task[None], handler_id: uuid.UUID, acquired_locks: list[LockToken]
+    ) -> None:
+        """Nachlauf nach einem abgebrochenen DI-Teardown: erst dessen Ende
+        abwarten (seine Ausnahme bleibt geschluckt wie bisher -- ``shield``
+        holt sie ab), dann Lock und Semaphor freigeben. Hat der Shutdown die
+        Locks inzwischen selbst abgeraeumt (Registry-Eintrag weg), nicht noch
+        einmal freigeben -- sonst Fehlalarm ``task_lock_lost``."""
+        try:
+            await asyncio.wait([teardown])
+        finally:
+            if handler_id not in self._active_handler_locks:
+                acquired_locks = []
+            await self._release_locks_and_slot(handler_id, acquired_locks)
+
+    async def _release_locks_and_slot(self, handler_id: uuid.UUID, acquired_locks: list[LockToken]) -> None:
+        """Letzte Stufen der ``finally``-Kaskade: Lock-Freigabe, danach -- auch
+        wenn sie scheitert oder abgebrochen wird -- der Semaphor (FS-04)."""
+        try:
             # 12a. Release any task-locks acquired by this handler
             # (detached-shield pattern, see ``_detached_lock_release``).
             if acquired_locks and self._lock_manager is not None:
                 await self._detached_lock_release(handler_id, acquired_locks)
+        finally:
             # 12b. Release semaphore
             self._semaphore.release()

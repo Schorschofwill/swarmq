@@ -32,6 +32,7 @@ from swarmq.headers import (
     HEADER_BACKEND_DEFER_COUNT,
     HEADER_GUARD_DEFER_COUNT,
     HEADER_SCHEDFIRE_CLAIM,
+    HEADER_SCHEDFIRE_DEFER_COUNT,
     LOCK_WAIT_STATE_HEADERS,
 )
 from swarmq.identity import copy_headers
@@ -231,14 +232,33 @@ def broker_redelivered(headers: Mapping[str, Any]) -> bool:
     return any(_as_count(headers.get(counter)) > 0 for counter in BROKER_DELIVERY_COUNTERS)
 
 
+def schedfire_redelivery(headers: Mapping[str, Any]) -> bool:
+    """Neuzustellung eines Schedfires (FS-03, E-046): vom Broker
+    zurueckgegeben (Zustellzaehler) oder eine Kopie, die den Defer-Header
+    ``x-swarmq-schedfire-defer-count`` traegt (auch mit 0). Ein frisches
+    Doppel-Fire des Leaders traegt beides nicht (E-047)."""
+    return broker_redelivered(headers) or HEADER_SCHEDFIRE_DEFER_COUNT in headers
+
+
 def deferral_copy(deps: GateDeps, delivery: Any, ctx: GateContext) -> tuple[dict[str, Any], int, int]:
     """Header, Zaehlerstand und Wartezeit (ms) der Kopie einer Zurueckstellung
     bei Backend-Ausfall: ``republish_headers`` plus hochgezaehltem
     ``x-swarmq-backend-defer-count``, Wartezeit nach ``backend_defer_delay``.
     Vor der Freigabe des Claims aufrufen -- sonst fehlt der Kopie dessen
-    Token."""
+    Token.
+
+    Ist die Zustellung die Neuzustellung eines Schedfires, bleibt die Kopie
+    als solche erkennbar (Review U5, P1): sie verliert die Broker-Zaehler und
+    traegt deshalb den Defer-Header mit dem Stand aus ``prior_deferrals`` --
+    bei einer Broker-Neuzustellung 0 (die Folge beginnt neu), damit keine
+    Wartezeit zu viel gegen den Deckel zaehlt. Ohne ihn kaeme sie
+    als frisches Duplikat zurueck und wuerde beim noch fremden Claim des
+    Toten bestaetigt. 0.12.0-Worker lesen den Header nicht."""
     headers = republish_headers(delivery, ctx)
-    attempt = prior_deferrals(delivery.headers or {}) + 1
+    original: dict[str, Any] = delivery.headers or {}
+    if original.get("x-swarmq-schedfire") and schedfire_redelivery(original):
+        headers[HEADER_SCHEDFIRE_DEFER_COUNT] = prior_deferrals(original, HEADER_SCHEDFIRE_DEFER_COUNT)
+    attempt = prior_deferrals(original) + 1
     headers[HEADER_BACKEND_DEFER_COUNT] = attempt
     delay_s = backend_defer_delay(
         attempt,

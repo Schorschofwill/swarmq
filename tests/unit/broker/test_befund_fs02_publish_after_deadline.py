@@ -93,10 +93,6 @@ _OPERATIONS: dict[str, Operation] = {
 
 
 @pytest.mark.befund("FS-02")
-@pytest.mark.xfail(
-    strict=True,
-    reason="FS-02: offen - Publish nach Fristende geht raus, Aufrufer bekommt PublishIndeterminate",
-)
 @pytest.mark.parametrize("operation", list(_OPERATIONS))
 async def test_fs02_publish_after_elapsed_deadline_is_never_failed_and_sent(
     fs02_wire: Fs02Wire, operation: str

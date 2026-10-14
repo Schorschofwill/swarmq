@@ -28,4 +28,6 @@ tests:
 
 **Bewusste Folgen.** Ein laufender Task bekommt beim Shutdown weniger als `shutdown_timeout` Drain-Zeit; ein abgebrochener Task folgt dem Fehlerpfad (E-001). Beim Recycling gilt das Budget nicht.
 
+**Nachtrag 2026-10-14 (FS-02b, U3).** Dauert ein Recycling-Drain länger als `drain_until`, wird das Aufräumbudget ab dem tatsächlichen Drain-Ende neu angesetzt: Jeder Aufräumschritt bekommt danach die Reserve `finish_by − drain_until` (unter dem Supervisor mit `finish_by = sigkill_at`), nie weniger als das ursprüngliche Ende. Ohne Recycling bleibt das Ende bei `finish_by`. Offen bis U9 (FS-30): Ein SIGTERM während eines laufenden Recycling-Drains setzt das Budget heute nicht in Kraft; es gilt weiter die Recycling-Frist, und der SIGKILL des Supervisors bzw. von Kubernetes kann vor Sperrenfreigabe und Verbindungsschluss kommen.
+
 **Überdenken nur mit neuem Argument.** Offen (Gegenprüfung 2026-10-13): `process_manager/restart_budget.py:57` und `process_manager/setpoint.py:210` rechnen noch `shutdown_grace_s + SHUTDOWN_TERM_S`, also mit der alten Bedeutung „Drain-Zeit“; das ändert die Eskalation nicht, überschreitet aber das Gesamtbudget bei Heartbeat-Frist und Status-TTL.

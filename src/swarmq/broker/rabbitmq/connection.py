@@ -462,8 +462,10 @@ class RabbitMQConnection:
 
         Ohne gesetzte Shutdown-Endfrist gilt die Konfiguration. Mit gilt
         die kuerzere von beiden; eine bereits verstrichene Endfrist ergibt
-        0.0 und laesst den Publish sofort scheitern, statt in einen
-        negativen Deckel zu laufen.
+        0.0 statt eines negativen Deckels. Den Publish selbst haelt dann
+        schon ``_publish_with_retry`` vor dem Deckel an (FS-02 Teil a):
+        ``asyncio.timeout(0)`` braeche erst beim ersten Suspendieren ab, wenn
+        der Frame bereits in aiormqs ``write_queue`` liegt.
         """
         if self._publish_deadline_at is None:
             return self.publish_timeout_s

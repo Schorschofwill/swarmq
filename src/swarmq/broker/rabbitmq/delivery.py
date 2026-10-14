@@ -61,6 +61,22 @@ def dead_letter_ttl_header(ttl_s: float | None) -> int | str:
     return "none" if ttl_s is None else int(ttl_s * 1000)
 
 
+def _cancelling_now() -> int:
+    """``cancelling()`` der laufenden Task (0 ausserhalb einer Task)."""
+    current = asyncio.current_task()
+    return current.cancelling() if current is not None else 0
+
+
+def _is_own_cancel(exc: BaseException, cancelling_at_entry: int) -> bool:
+    """Ist *exc* der Abbruch der eigenen Task (KTD9, wie ``asyncio.Timeout``)?
+
+    Nur ein Anstieg von ``cancelling()`` gegenueber *cancelling_at_entry*
+    zaehlt: Ein vom Drain abgebrochener Handler laeuft nach E-001 mit
+    ``cancelling() > 0`` weiter. Jede andere ``CancelledError`` stammt aus
+    aio-pika (Kanal- oder Verbindungsverlust) und heisst "nicht erledigt"."""
+    return isinstance(exc, asyncio.CancelledError) and _cancelling_now() > cancelling_at_entry
+
+
 async def settle(action: Awaitable[None], verb: str) -> None:
     """Fuehrt ein Abschluss-Verb (ack/nack) aus und uebersetzt einen
     Kanal- oder Verbindungsverlust in ``BrokerConnectionError`` (B22).
@@ -68,14 +84,20 @@ async def settle(action: Awaitable[None], verb: str) -> None:
     Der Ausgang ist dabei klar: RabbitMQ stellt unbestaetigte Nachrichten
     nach dem Kanalverlust neu zu. Der Abbruch der eigenen Task geht wie im
     Publish-Pfad unveraendert durch; nur aio_pikas interne
-    ``CancelledError`` zaehlt als Kanalverlust."""
+    ``CancelledError`` zaehlt als Kanalverlust.
+
+    "Eigener Abbruch" heisst ein Anstieg von ``cancelling()`` gegenueber dem
+    Eintritt (KTD9, wie ``asyncio.Timeout``): Ein vom Drain abgebrochener
+    Handler laeuft nach E-001 mit ``cancelling() > 0`` weiter; ein
+    Kanalverlust beim ``nack`` darf dort nicht als Abbruch durchgehen, sonst
+    schriebe die Pipeline den Completed-Marker auf eine unbestaetigte
+    Nachricht (fix-r-flow.md 2.2)."""
+    cancelling_at_entry = _cancelling_now()
     try:
         await action
     except _CHANNEL_TRANSIENT_ERRORS as exc:
-        if isinstance(exc, asyncio.CancelledError):
-            current = asyncio.current_task()
-            if current is not None and current.cancelling() > 0:
-                raise
+        if _is_own_cancel(exc, cancelling_at_entry):
+            raise
         raise BrokerConnectionError(f"{verb} failed, channel or connection lost: {exc}") from exc
 
 
@@ -162,12 +184,15 @@ class RabbitMQDelivery(RabbitMQDeclarations):
         drain_future. We retry with exponential backoff, recreating
         the channel between attempts. Task-level cancellation (caller
         cancelled the publish) is preserved by re-raising when
-        current_task().cancelling() indicates our task is being
-        cancelled.
+        current_task().cancelling() rose above its value at entry (KTD9:
+        a drain-cancelled handler keeps running with cancelling() > 0,
+        E-001; its internal aio-pika cancel is a lost channel, not its own).
         """
+        cancelling_at_entry = _cancelling_now()
         # Vor jedem Versuch und ohne Wiederholung: zu grosse Header schloessen
         # die ganze Verbindung (BZ-17).
         msg.headers = guard_headers(msg.headers, negotiated_frame_max(self._connection)) or {}
+        self._raise_if_publish_deadline_passed(routing_key)
         timeout_s = self._effective_publish_timeout()
         # Pro-Aufruf-Container statt Instanzzustand: bei nebenlaeufigen
         # Publishes darf der Verwurf nur den Kanal treffen, auf dem GENAU
@@ -181,7 +206,7 @@ class RabbitMQDelivery(RabbitMQDeclarations):
                 self._active_publish_timeouts.add(timeout_cm)
                 try:
                     await self._wait_while_blocked(routing_key, blocked)
-                    return await self._publish_attempts(routing_key, msg, in_flight)
+                    return await self._publish_attempts(routing_key, msg, in_flight, cancelling_at_entry)
                 finally:
                     self._active_publish_timeouts.discard(timeout_cm)
         except TimeoutError as exc:
@@ -209,6 +234,21 @@ class RabbitMQDelivery(RabbitMQDeclarations):
             raise PublishIndeterminate(
                 f"publish to {routing_key!r} exceeded the publish deadline of {timeout_s}s; delivery is indeterminate"
             ) from exc
+
+    def _raise_if_publish_deadline_passed(self, routing_key: str) -> None:
+        """FS-02 Teil a (KTD3, E-042): Ist die Publish-Endfrist schon
+        verstrichen, geht nichts auf die Leitung.
+
+        ``asyncio.timeout(0)`` bricht erst beim ersten Suspendieren ab; auf
+        aiormqs Fast-Path liegt der Frame da schon in der ``write_queue`` und
+        wird geschrieben. Deshalb vor dem Zeitdeckel pruefen, ohne Kanal und
+        ohne Verwurf: Der Aufrufer bekommt ein sicher wiederholbares "nicht
+        gesendet" statt ``PublishIndeterminate``."""
+        deadline = self._publish_deadline_at
+        if deadline is not None and asyncio.get_running_loop().time() >= deadline:
+            raise BrokerConnectionError(
+                f"publish to {routing_key!r} not sent: the shutdown publish deadline has passed"
+            )
 
     async def _wait_while_blocked(self, routing_key: str, blocked: list[bool]) -> None:
         """Wartet, solange der Broker die Publish-Verbindung blockiert (BZ-16).
@@ -248,11 +288,13 @@ class RabbitMQDelivery(RabbitMQDeclarations):
         routing_key: str,
         msg: aio_pika.Message,
         in_flight: list[aio_pika.abc.AbstractChannel],
+        cancelling_at_entry: int,
     ) -> None:
         """Die bounded-retry-Schleife. Der Zeitdeckel liegt beim Aufrufer,
         damit er den gesamten Vorgang umspannt und nicht den Einzelversuch
         (KTD1). ``in_flight`` traegt den zuletzt benutzten Kanal nach oben,
-        damit der Verwurf genau ihn trifft."""
+        damit der Verwurf genau ihn trifft. ``cancelling_at_entry`` ist der
+        Stand beim Eintritt in ``_publish_with_retry`` (KTD9)."""
         last_exc: BaseException | None = None
         for attempt in range(_PUBLISH_MAX_ATTEMPTS):
             pub = await self._ensure_publish_channel()
@@ -282,11 +324,9 @@ class RabbitMQDelivery(RabbitMQDeclarations):
                 collect_orphaned_confirm(exc)
                 # Distinguish task-level cancellation from aio_pika's
                 # internal drain cancellation. If our own task is being
-                # cancelled, propagate.
-                if isinstance(exc, asyncio.CancelledError):
-                    current = asyncio.current_task()
-                    if current is not None and current.cancelling() > 0:
-                        raise
+                # cancelled (relative to entry, KTD9), propagate.
+                if _is_own_cancel(exc, cancelling_at_entry):
+                    raise
                 _raise_if_sent(routing_key, exc)
                 last_exc = exc
                 # Den womoeglich kaputten Kanal verwerfen, damit der

@@ -5,8 +5,11 @@ stellt der Worker die Nachricht zurueck -- und auch die Freigabe des Claims
 scheitert. Frueher sah die Kopie den stehengebliebenen Claim als fremden Lauf
 und bestaetigte sich als Duplikat: der Fire ging verloren (bis
 ``scheduler_inflight_ttl``). Jetzt traegt die Kopie das Owner-Token
-(``x-swarmq-schedfire-claim``) und uebernimmt den Claim; echte Duplikate
-(ohne bzw. mit altem Token) werden weiter verworfen.
+(``x-swarmq-schedfire-claim``) und uebernimmt den Claim; frische Duplikate
+(ohne bzw. mit altem Token, ohne Broker-Zaehler) werden weiter verworfen.
+Eine echte Broker-Neuzustellung (``x-delivery-count``/``x-acquired-count``
+> 0) wird bei fremdem Claim zurueckgestellt und laeuft nicht parallel
+(FS-03, ``test_schedfire_redelivery_defer.py``).
 
 Broker ist ein Mock (die Kopie wird aus den ``retry_later``-Headern gebaut),
 Backend ist das echte ``ValkeyBackend``; den Ausfall simulieren gepatchte
@@ -15,10 +18,11 @@ Methoden.
 Test-Liste:
 - [x] Cancel-Check und Freigabe scheitern -> die zurueckgestellte Kopie laeuft
       genau einmal, der Fire ist danach abgeschlossen
-- [x] waehrend der Claim steht, bleibt eine Zustellung ohne Token (Stale-
-      Leader-Kopie, Broker-Redelivery des Originals) ein Duplikat
-- [x] nach der Uebernahme bleibt eine Zustellung mit dem alten Token
-      (Broker-Redelivery der Kopie) ein Duplikat
+- [x] waehrend der Claim steht, bleibt eine frische Zustellung ohne Token
+      (Stale-Leader-Kopie, ohne Broker-Zaehler) ein Duplikat
+- [x] nach der Uebernahme bleibt eine frische Zustellung mit dem alten Token
+      (ohne Broker-Zaehler) ein Duplikat; mit Zaehler wird sie
+      zurueckgestellt statt bestaetigt (FS-03)
 - [x] Claim geschrieben, Antwort verloren (unklarer Ausgang), Freigabe
       scheitert -> die Kopie uebernimmt den Claim und laeuft genau einmal
 - [x] die Kopie einer Kopie: deren Claim kam nicht an (das alte Token steht
@@ -211,7 +215,9 @@ async def test_redelivery_of_the_copy_after_takeover_stays_a_duplicate(
     first = asyncio.create_task(worker._handle_message(_copy_of(original, headers)))
     await asyncio.wait_for(started.wait(), timeout=5)
 
-    redelivered = _copy_of(original, headers)  # gleiche Header, altes Token
+    # Gleiche Header, altes Token, ohne Broker-Zaehler; mit Zaehler stellte
+    # das Gate sie zurueck (FS-03).
+    redelivered = _copy_of(original, headers)
     assert redelivered.headers[HEADER_SCHEDFIRE_CLAIM] == headers[HEADER_SCHEDFIRE_CLAIM]
     await worker._handle_message(redelivered)
     broker.ack.assert_awaited_once_with(redelivered)

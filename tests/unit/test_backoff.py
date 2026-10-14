@@ -2,7 +2,7 @@
 
 import pytest
 
-from swarmq.backoff import calculate_backoff
+from swarmq.backoff import calculate_backoff, nominal_defer_total
 
 # Testliste backend_defer_delay (Zurueckstellung bei Backend-Ausfall):
 # [x] erster Versuch -> Basiswartezeit
@@ -18,6 +18,12 @@ from swarmq.backoff import calculate_backoff
 # Testliste calculate_backoff am Deckel (BZ-26):
 # [x] oberhalb des Deckels liegt die Wartezeit im Band 0.6..0.8 * max_delay,
 #     gespeist aus der einen bestehenden Ziehung U(1, 2) (kein zweiter Zufall)
+#
+# Testliste nominal_defer_total (Summe der nominellen Wartezeiten, Review U5):
+# [x] keine Zurueckstellung -> 0
+# [x] vor dem Deckel: Summe der Verdopplungen
+# [x] ab dem Deckel waechst die Summe linear um den Deckel je Versuch
+# [x] sehr viele Versuche laufen nicht ueber (geschlossene Formel)
 
 
 def _no_jitter(_lo: float, _hi: float) -> float:
@@ -156,3 +162,22 @@ def test_backend_defer_delay_applies_multiplicative_jitter_even_at_the_cap():
     assert backend_defer_delay(3, base_delay=1.0, max_delay=60.0, uniform=_uniform) == pytest.approx(4.8)
     assert backend_defer_delay(8, base_delay=1.0, max_delay=60.0, uniform=_uniform) == pytest.approx(72.0)
     assert drawn == [(0.8, 1.2), (0.8, 1.2)]
+
+
+def test_nominal_defer_total_without_deferrals_is_zero():
+    assert nominal_defer_total(0, 1.0, 60.0) == 0.0
+
+
+def test_nominal_defer_total_sums_the_doublings_below_the_cap():
+    assert nominal_defer_total(3, 1.0, 60.0) == 1.0 + 2.0 + 4.0
+
+
+def test_nominal_defer_total_grows_linearly_from_the_cap():
+    """1+2+4+8+16+32 = 63, ab Versuch 7 (nominal 64) gilt der Deckel 60."""
+    assert nominal_defer_total(6, 1.0, 60.0) == 63.0
+    assert nominal_defer_total(7, 1.0, 60.0) == 123.0
+    assert nominal_defer_total(10, 1.0, 60.0) == 63.0 + 4 * 60.0
+
+
+def test_nominal_defer_total_huge_attempt_count_stays_finite():
+    assert nominal_defer_total(10**9, 1.0, 60.0) == 63.0 + (10**9 - 6) * 60.0
