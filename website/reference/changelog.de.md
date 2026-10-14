@@ -4,6 +4,107 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 [Keep a Changelog](https://keepachangelog.com/) und
 [Semantic Versioning](https://semver.org/).
 
+## [0.12.1rc1] — 2026-10-14
+
+Release-Candidate für 0.12.1 (Installation mit `pip install --pre`).
+Er behebt die drei P1-Befunde der zweiten Fehlersuche und einen Teil
+eines vierten: einen Publish nach verstrichener Shutdown-Endfrist, der
+einen Task doppelt ausführte (FS-02), verlorene Cron- und
+`delay`/`eta`-Fires nach einem Worker-Absturz (FS-03), Locks und
+Concurrency-Slots, die ein scheiternder DI-Finalizer blockierte
+(FS-04), und einen Fire-Claim, den eine Client-Wiederholung verlor
+(FS-06, Teil Fire-Claim). Keine Konfigurationsänderungen; 0.12.1 läuft
+neben 0.12.0 auf denselben Queues. Die Upgrade-Hinweise unten befolgen.
+
+### Upgrade-Hinweise
+
+1. **Surge-Deploy.** Die neuen Worker starten, bevor die alten
+   stoppen (Kubernetes `maxSurge` ≥ 1 mit `maxUnavailable: 0`, oder die
+   neuen Container zuerst starten). Die Korrektur von FS-03 wirkt nur
+   auf dem Worker, der die Neuzustellung empfängt: Ein 0.12.0-Worker
+   bestätigt eine zurückgestellte Fire-Kopie weiter als Duplikat,
+   solange der Claim gehalten wird, und das Fire geht wie bisher
+   verloren.
+2. **Grace-Period des Orchestrators mindestens
+   `SWARMQ_SHUTDOWN_TIMEOUT`** (empfohlen
+   `SWARMQ_SHUTDOWN_TIMEOUT + 15 s` wie in
+   [Schritt 3 der Deployment-Anleitung](../guides/deployment.md#schritt-3-grace-period-des-orchestrators)).
+   Ein `SIGKILL` vor Ende des Budgets schneidet die Lock-Freigabe und
+   die letzten Publishes ab, und ein gerade laufendes Cron-Fire wird
+   zum Absturzfall aus FS-03.
+3. **Mischbetrieb mit 0.12.0.** Zurückgestellte Fire-Kopien tragen den
+   neuen Header `x-swarmq-schedfire-defer-count`; 0.12.0 ignoriert ihn.
+   Nach einem Rollback bestätigt ein 0.12.0-Worker eine solche Kopie als
+   Duplikat, solange der Claim gehalten wird, und führt sie aus, sobald
+   der Claim abgelaufen ist. Nachrichten von 0.12.0 laufen unverändert
+   auf 0.12.1.
+4. **Klassische Queues:** Die Korrektur von FS-03 erkennt eine
+   Neuzustellung an den Zustellzählern des Brokers, die nur
+   Quorum-Queues (der Default) führen. Auf einer klassischen Queue wird
+   die erste Neuzustellung nach einem Absturz weiter als Duplikat
+   bestätigt, das Fire geht dort wie bisher verloren.
+5. **Dead-Letter-Queue:** Eine zurückgestellte Fire-Kopie, die in der
+   DLQ landet, behält den Defer-Zähler; `swarmq dlq retry` entfernt
+   ihn, die Wiederholung beginnt also mit frischem Backoff.
+   DLQ-Einträge von 0.12.0 tragen keinen Zähler und laufen wie bisher.
+
+### Behoben
+
+- **FS-02: Ein Publish, dessen Shutdown-Endfrist schon verstrichen ist,
+  sendet nichts.** Bisher sendete swarmq trotzdem und meldete
+  `PublishIndeterminate`; Retry- bzw. DLQ-Kopie plus Requeue des
+  Originals führten den Task doppelt aus. Das geschah am Ende eines
+  Drains, beim Recycling systematisch nach etwa 23 s Drain. Jetzt
+  scheitert der Publish mit `BrokerConnectionError` („nicht gesendet“),
+  ohne den Kanal anzufassen. Ein vom Drain abgebrochener Task endet
+  weiter mit einem Fehlerergebnis, aber Retry- und DLQ-Kopie gehen
+  nicht mehr raus: Das Original wird neu zugestellt, ohne einen Retry
+  zu verbrauchen und ohne DLQ-Eintrag. Beim Recycling kann sich das bei
+  jedem Recycling wiederholen, begrenzt durch das Delivery-Limit. Die
+  Publish-Endfrist eines Recyclings folgt jetzt seinem tatsächlichen
+  Drain-Ende, das Aufräumbudget beginnt danach neu. Reißt die Frist
+  erst während des Backoffs oder des Kanalaufbaus eines späteren
+  Versuchs, bleibt es bei `PublishIndeterminate`. Ein Fire, das der
+  Leader nach der Endfrist nicht mehr senden kann, zählt für seinen
+  Rücktritt
+  ([was den Ack abbricht](../explanation/delivery-semantics.md#was-den-ack-abbricht)).
+- **FS-03: Ein Cron- oder `delay`/`eta`-Fire geht nicht mehr verloren,
+  wenn sein Worker nach dem Claim stirbt (SIGKILL, OOM).** Bisher fand
+  die Neuzustellung des Brokers den In-Flight-Claim des toten Workers
+  und wurde als Duplikat bestätigt. Jetzt stellt der Worker eine solche
+  Neuzustellung mit wachsendem Backoff in die Delay-Queue zurück
+  (`schedfire_redelivery_deferred`) und markiert die Kopie mit
+  `x-swarmq-schedfire-defer-count`. Die Kopie wird bestätigt, sobald
+  das Fire abgeschlossen ist, und läuft, sobald der Claim abgelaufen ist
+  (`SWARMQ_SCHEDULER_INFLIGHT_TTL`, oder `hard_timeout + 30` s, falls
+  größer). Läuft das Original noch (nur sein Kanal ging verloren),
+  wartet die Kopie, statt daneben zu laufen. Die Zurückstellung ist
+  gedeckelt; danach loggt der Worker `schedfire_defer_stalled` und
+  bestätigt die Kopie. Ein zweiter Publish desselben Fires durch den
+  Leader bleibt ein Duplikat. Ein Worker, der herunterfährt, während
+  Fires auf einen freien Concurrency-Slot warten, gibt jetzt deren
+  Claims frei, sodass die Neuzustellung sie ausführt. Cron-Tasks
+  sollten einen `hard_timeout` haben: Der Claim überdauert dann jeden
+  Lauf, das schließt den einen verbleibenden Fall zweier gleichzeitiger
+  Läufe
+  ([was den Ack abbricht](../explanation/delivery-semantics.md#was-den-ack-abbricht)).
+- **FS-04: Locks und Concurrency-Slots werden auch frei, wenn ein
+  DI-Finalizer scheitert.** Bisher übersprang ein scheiternder
+  Dishka-Finalizer (`ExitError`) Lock-Freigabe und Slot-Rückgabe. Der
+  Lock-Keeper verlängerte den Lock, solange der Worker lebte; nach
+  `concurrency` solchen Fehlern verarbeitete der Worker nichts mehr, und
+  `/ready` meldete ihn trotzdem bereit. Jetzt werden Lock, Slot und
+  Fire-Claim in jedem Fehler- und Abbruchpfad frei. Bricht der Shutdown
+  einen Task während des DI-Teardowns ab, werden Lock und Slot erst
+  frei, wenn der Finalizer (etwa ein Commit) fertig ist; der Commit
+  läuft also nicht ohne seinen Mutex.
+- **FS-06 (Fire-Claim): Ein Fire-Claim geht nicht mehr verloren, wenn
+  der Valkey-Client den Claim nach einer verlorenen Antwort
+  wiederholt.** Der wiederholte Aufruf hielt den eigenen Claim des
+  Workers für fremd, und das Fire wurde als Duplikat bestätigt.
+  Unique-Claim und Mutex haben denselben Fehler vorerst weiter; ein
+  späteres Release behebt sie.
+
 ## [0.12.0] — 2026-10-13
 
 0.12.0 ist 0.12.0rc2 plus die Korrektur unten. Die beiden
