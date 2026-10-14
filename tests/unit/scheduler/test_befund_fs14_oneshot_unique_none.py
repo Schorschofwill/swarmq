@@ -73,6 +73,7 @@ async def _deferred_definition(
 
 
 @pytest.mark.befund("FS-14")
+@pytest.mark.entscheidung("E-033")
 @pytest.mark.usefixtures("_cleanup_tasks")
 async def test_oneshot_with_unique_for_none_is_published_despite_a_held_flag(
     monkeypatch: pytest.MonkeyPatch,

@@ -394,6 +394,7 @@ async def test_cron_claim_error_reply_releases_nothing(loop, backend, broker, st
     assert entry["error_type"] == "BackendResponseError"
 
 
+@pytest.mark.entscheidung("E-033")
 @pytest.mark.usefixtures("_cleanup_tasks")
 async def test_cli_unique_oneshot_without_hash_publishes_without_unique_claim(loop, backend, broker, store):
     """FS-14: ``cli_unique`` ohne Hash ist der ausdrueckliche Opt-out des

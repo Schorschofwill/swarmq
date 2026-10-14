@@ -16,6 +16,9 @@ quelle:
 tests:
   - tests/unit/client/test_schedule.py::TestClientUniqueSchedule::test_schedule_per_call_override_none_disables_dedup
   - tests/unit/client/test_schedule.py::TestClientUniqueScheduleMany::test_schedule_many_batch_override_none_disables_dedup
+  - tests/unit/client/test_schedule.py::TestClientUniqueDeferred::test_deferred_explicit_none_persists_the_opt_out_as_cli_unique_without_hash
+  - tests/unit/scheduler/test_fire.py::test_cli_unique_oneshot_without_hash_publishes_without_unique_claim
+  - tests/unit/scheduler/test_befund_fs14_oneshot_unique_none.py::test_oneshot_with_unique_for_none_is_published_despite_a_held_flag
 ---
 
 **Entscheidung.** Ein ausdrücklich übergebenes `unique_for=None` an `Client.schedule()` oder `schedule_many()` schaltet die Deduplizierung für diesen Aufruf ab, auch wenn die `TaskInfo` einen `unique_for`-Default setzt. Ein weggelassenes Argument nutzt den Default. Die Zusage gilt für sofortige und für verzögerte Aufrufe (`delay`, `eta`).

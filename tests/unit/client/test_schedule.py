@@ -1026,6 +1026,7 @@ class TestClientUniqueDeferred:
     # [x] _MISSING ohne Registry -> cli (Rueckfall E-032 bleibt)
     # [x] unique_for=60 -> unveraendert cli_unique mit Hash (siehe naechster Test)
 
+    @pytest.mark.entscheidung("E-033")
     async def test_deferred_explicit_none_persists_the_opt_out_as_cli_unique_without_hash(
         self,
         client_setnx,
@@ -1041,6 +1042,7 @@ class TestClientUniqueDeferred:
         assert definition.source == "cli_unique"
         assert definition.dedup_hash is None
 
+    @pytest.mark.entscheidung("E-032")
     async def test_deferred_without_registry_and_unique_for_stays_cli(
         self,
         broker,
