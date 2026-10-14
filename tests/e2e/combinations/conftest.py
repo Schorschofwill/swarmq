@@ -168,13 +168,21 @@ async def _combinations_cleanup():
       locks and results from one test do not bleed into the next. Without
       this the scheduler-driven combos (cron catch-up) accumulate stale
       schedule definitions and flake under the resulting load.
-    """
-    yield
-    Task._clear_registered_tasks()
 
+    Geflusht wird vor UND nach dem Test: Unter pytest-xdist laufen auf einem
+    Prozess auch Tests anderer Module davor. Bricht einer davon
+    ``start_worker`` ab (Abbruchpfad, keine Leader-Übergabe), bleibt sein
+    Leader-Lock bis zur TTL (Standard 30 s) stehen; ein Kombi-Test, der auf
+    ``SCHEDULER_LEADER`` wartet, lief dann nach 20 s in den Timeout.
+    """
     # Guard outside the suppress: a refusal (local host on 6379) must fail
     # the test, while an unreachable Valkey stays a best-effort cleanup.
     url = valkey_db_url()
     require_safe_valkey_url(url)
+    with contextlib.suppress(Exception):
+        await flush_valkey_db(url)
+    yield
+    Task._clear_registered_tasks()
+
     with contextlib.suppress(Exception):
         await flush_valkey_db(url)
