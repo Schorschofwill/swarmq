@@ -292,6 +292,7 @@ async def test_bz11_removed_cron_once_reported_is_held_by_the_leader(rabbitmq_ur
         rabbitmq_url,
         valkey_url,
         queue,
+        start_worker=False,
         dead_letter_ttl_s=3600.0,
         unknown_task_grace_s=0,
         scheduler_seen_interval_s=0.2,
@@ -306,17 +307,24 @@ async def test_bz11_removed_cron_once_reported_is_held_by_the_leader(rabbitmq_ur
         definition = msgspec.json.encode(_removed_cron(removed, queue, due_ms))
         # "Je gemeldet": ein Worker mit dem Task hat den Cron einmal gemeldet;
         # die Meldung ist tot (kein lebender Worker), der Name bleibt bekannt.
+        # Vor dem Start des Leaders: Liefe sein Abgleich zwischen Melden und
+        # Loeschen, saehe er die Meldung als lebend (Fenster 3 x seen_interval)
+        # und feuerte den Cron zu Recht -- unter Coverage in der CI geschehen.
         await app.backend.schedules.report_cron(removed, "0" * 16, definition, live_window_ms=1)
         await app.backend.schedules.prune_cron_reports(max_age_ms=-1)
         await app.backend.schedules.put(removed, definition, due_ms)
 
-        await asyncio.wait_for(held.wait(), timeout=_EVENT_TIMEOUT)
-        next_fire = await app.backend.schedules.fire_ts(removed)
-        xq_empty = not await wait_until(
-            lambda: _xq_has_message(rabbitmq_url, queue),
-            timeout=2.0,
-            interval=0.2,
-        )
+        worker = await _start_worker(app)
+        try:
+            await asyncio.wait_for(held.wait(), timeout=_EVENT_TIMEOUT)
+            next_fire = await app.backend.schedules.fire_ts(removed)
+            xq_empty = not await wait_until(
+                lambda: _xq_has_message(rabbitmq_url, queue),
+                timeout=2.0,
+                interval=0.2,
+            )
+        finally:
+            await _stop(worker)
 
     assert transitions[0]["schedule_name"] == removed
     assert transitions[0]["held"] is True
