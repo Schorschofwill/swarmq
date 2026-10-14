@@ -18,6 +18,10 @@ Unique beim Fire (Plan 0.12.0, MR 9, BZ-09):
 - [x] unroutbarer Cron-Fire nach eigenem Claim → Flag frei
 - [x] unroutbarer Oneshot (Claim des Leaders aus der Registry) → Flag frei vor dem Zurückstellen
 - [x] Freigabe scheitert oder fehlt (MagicMock-Backend, Q15) → geloggt, Fire endet normal
+
+Eigener Claim nach Transport-Retry (Plan 2026-10-14-0748, U11, KTD7, FS-06b):
+- [x] Cron mit ``existing == task_id`` (frische ID je Fire) → Publish, kein Dup-Signal
+- [x] Oneshot mit ``existing == task_id`` (stabile ID) → bleibt Duplikat (E-011)
 """
 
 from __future__ import annotations
@@ -242,3 +246,31 @@ async def test_failed_release_is_logged_and_the_lost_cron_fire_still_commits(loo
     assert entry["logger"] == "swarmq.scheduler.loop"
     assert entry["schedule_name"] == "nightly"
     assert entry["error_type"] == "TypeError"
+
+
+async def _own_claim(_dedup_hash: str, task_id: str, _ttl_ms: int, **_kwargs: object) -> str:
+    return task_id
+
+
+async def test_cron_fire_publishes_when_the_claim_holds_its_own_task_id(loop, backend, broker):
+    """FS-06b: valkey-py wiederholt ``SET NX GET`` nach verlorener Antwort; die
+    Wiederholung meldet die frische task_id dieses Fires als "existing"."""
+    backend.claim_unique = AsyncMock(side_effect=_own_claim)
+    definition = _definition("nightly", cron="*/5 * * * *", unique_for=3600)
+
+    await loop._fire_one("nightly", 1_700_000_000_000, definition)
+
+    (task_id,) = _published_task_ids(broker)
+    assert task_id == backend.claim_unique.await_args.args[1]
+
+
+async def test_oneshot_fire_stays_duplicate_when_the_claim_holds_its_task_id(loop, backend, broker, store):
+    """E-011: Der Oneshot feuert unter der stabilen ID aus ``schedule()``; nach
+    ``PublishIndeterminate`` trifft der naechste Poll den eigenen Claim und
+    muss Duplikat bleiben, sonst wird doppelt publiziert."""
+    backend.claim_unique = AsyncMock(side_effect=_own_claim)
+    definition = _definition("oneshot:fixed-id", cron=None, task_id="fixed-id", unique_for=3600)
+
+    await loop._fire_one("oneshot:fixed-id", 1_700_000_000_000, definition)
+
+    broker.publish.assert_not_awaited()

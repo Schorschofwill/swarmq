@@ -44,6 +44,14 @@ macht ``owner`` zum Scheduler-Leader (das Binding erwirbt den Leader-Lock
 #      fremd (Duplikat).
 # 10d. Ohne ``owner`` gewinnt nur der erste Aufruf (``test_fire_markers``).
 
+# Test list (Plan 2026-10-14-0748, U11, KTD7, FS-06b) -- LockStoreContract:
+# L1. Wiederholter Mutex-``acquire`` mit demselben ``owner`` (Transport-Retry
+#     nach verlorener Antwort) liefert das Token; die PTTL bleibt (E-022).
+# L2. ... ebenso beim Semaphor: Token, PTTL unveraendert.
+# L3. Semaphor voll inklusive eigenem Token: die Wiederholung liefert das Token.
+# L4. Ein anderer ``owner`` bleibt nach dem Selbsttreffer ausgeschlossen
+#     (Mutex) bzw. abgewiesen (voller Semaphor).
+
 # Test list (Plan 2026-10-08-1541, U12, KTD10) -- ScheduleStoreContract:
 # 14. ``report_cron`` legt eine Meldung an: ``first_seen == last_seen`` in
 #     Backend-Zeit, Payload abrufbar; ``cron_reports`` liefert die
@@ -130,6 +138,52 @@ class LockStoreContract:
         assert token == LockToken(name=name, owner="a", max_concurrency=1)
         assert await impl.acquire(name, owner="b", ttl_ms=60_000, max_concurrency=1) is None
         assert await impl.current_owner(name) == "a"
+
+    async def test_acquire_repeated_by_same_owner_returns_token_and_keeps_pttl(
+        self,
+        impl: LockStore,
+        clock: Clock,
+    ) -> None:
+        """FS-06b (KTD7): die Wiederholung nach verlorener Antwort trifft den
+        eigenen Mutex und gewinnt; die Frist wird nicht neu gesetzt (E-022)."""
+        name = _name("lock")
+        token = await impl.acquire(name, owner="a", ttl_ms=60_000, max_concurrency=1)
+        await clock.advance(0.05)
+        before = (await impl.observe(name, max_concurrency=1)).pttl_ms
+
+        again = await impl.acquire(name, owner="a", ttl_ms=60_000, max_concurrency=1)
+
+        assert again == token
+        assert (await impl.observe(name, max_concurrency=1)).pttl_ms <= before
+        assert await impl.acquire(name, owner="b", ttl_ms=60_000, max_concurrency=1) is None
+
+    async def test_semaphore_acquire_repeated_by_same_owner_returns_token_and_keeps_pttl(
+        self,
+        impl: LockStore,
+        clock: Clock,
+    ) -> None:
+        """FS-06b (KTD7): wie beim Mutex, der eigene Slot gilt als erworben,
+        ohne die Frist des Keys neu zu setzen (E-022)."""
+        name = _name("sem")
+        token = await impl.acquire(name, owner="a", ttl_ms=60_000, max_concurrency=2)
+        await clock.advance(0.05)
+        before = (await impl.observe(name, max_concurrency=2)).pttl_ms
+
+        again = await impl.acquire(name, owner="a", ttl_ms=60_000, max_concurrency=2)
+
+        assert again == token
+        assert (await impl.observe(name, max_concurrency=2)).pttl_ms <= before
+
+    async def test_full_semaphore_including_own_token_returns_token_on_repeat(self, impl: LockStore) -> None:
+        """FS-06b: ist der Semaphor samt eigenem Slot voll, liefert die
+        Wiederholung des eigenen Aufrufs trotzdem das Token; ein fremder
+        Owner bleibt abgewiesen."""
+        name = _name("sem")
+        token = await impl.acquire(name, owner="a", ttl_ms=60_000, max_concurrency=2)
+        assert await impl.acquire(name, owner="b", ttl_ms=60_000, max_concurrency=2) is not None
+
+        assert await impl.acquire(name, owner="a", ttl_ms=60_000, max_concurrency=2) == token
+        assert await impl.acquire(name, owner="c", ttl_ms=60_000, max_concurrency=2) is None
 
     async def test_release_enforces_owner_via_token(self, impl: LockStore) -> None:
         name = _name("lock")

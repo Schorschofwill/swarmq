@@ -74,6 +74,26 @@ class TestAddThenList:
         assert "already exists" in buf.getvalue()
 
     @pytest.mark.usefixtures("_env")
+    async def test_add_unique_twice_reports_the_second_as_duplicate(self, valkey_url):
+        """FS-06b (Plan 2026-10-14-0748, U11, KTD7): Der Owner des Flags ist der
+        stabile Schedule-Name; der Selbsttreffer gilt hier nicht als eigener
+        Claim, das zweite ``add`` bleibt Duplikat."""
+        import json
+
+        name = f"cron-{uuid.uuid4().hex[:8]}"
+        task_args = json.dumps([uuid.uuid4().hex])
+        await cli._run_schedule_add(_ns_add(name=name, args=task_args, unique_for=60, unique_until="completion"))
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            await cli._run_schedule_add(
+                _ns_add(name=name, args=task_args, unique_for=60, unique_until="completion", format="json")
+            )
+        result = json.loads(buf.getvalue())
+        assert result["inserted"] is False
+        assert result["duplicate_of"] == name
+
+    @pytest.mark.usefixtures("_env")
     async def test_list_json_format(self, valkey_url):
         name = f"cron-{uuid.uuid4().hex[:8]}"
         await cli._run_schedule_add(_ns_add(name=name))

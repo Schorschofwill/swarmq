@@ -23,6 +23,10 @@ schon ausgefuehrt hat (Valkey-Neustart, Failover, Proxy-Reset,
   eigene verwaiste Lock blockiert bis ``hard_timeout + 30 s``.
 
 Erwartet: ein Claim, den derselbe Owner schon haelt, gilt als gewonnen.
+Beim Unique-Claim entscheidet das die Aufrufstelle, nicht das Backend (KTD7):
+nur wo die ``task_id`` in genau diesem Aufruf frisch erzeugt wurde (Client,
+Leader-Cron); ``swarmq schedule add --unique-for`` und der Leader-Oneshot
+halten eine stabile ID und bleiben beim Selbsttreffer Duplikat (E-011).
 
 Integration (echter Valkey auf dem Testport): Die Antwort wird nach dem
 vollstaendigen Lesen verworfen (``Valkey.parse_response`` wirft einmal
@@ -31,21 +35,27 @@ Rest (Trennen, Wiederholen) macht der echte Client. Ein Unit-Fake kann die
 Lua-Skripte nicht ausfuehren.
 
 Testliste:
-# [x] claim_unique nach verlorener Antwort -> None (eigener Claim)
+# [x] Client.schedule(unique_for) nach verlorener SET-Antwort -> publiziert
+#     (eigener Claim; behoben U11)
 # [x] claim_fire nach verlorener Antwort -> True (eigener Claim; behoben U6)
-# [x] Mutex-Acquire nach verlorener Antwort -> Token (eigener Lock)
+# [x] Mutex-Acquire nach verlorener Antwort -> Token (eigener Lock; behoben U11)
+# [x] Semaphor voll inklusive eigenem Token, verlorene Antwort -> Token (U11)
 """
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
+import msgspec
 import pytest
 import valkey.asyncio.client
 from valkey.exceptions import ConnectionError as ValkeyConnectionError
 
 from swarmq.backend.valkey import ValkeyBackend
+from swarmq.client import Client
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(10)]
 
@@ -81,16 +91,19 @@ async def backend(valkey_url: str) -> AsyncIterator[ValkeyBackend]:
 
 
 @pytest.mark.befund("FS-06")
-@pytest.mark.xfail(strict=True, reason="FS-06: offen - claim_unique haelt den eigenen Claim nach Retry fuer fremd")
 async def test_claim_unique_after_lost_reply_counts_as_own_claim(
     backend: ValkeyBackend, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    broker = AsyncMock()
+    client = Client(broker=broker, backend=backend)
     lost = _LostReply(monkeypatch, "SET")
 
-    existing = await backend.claim_unique("fs06-hash", "fs06-task", 60_000)
+    task_id = await client.schedule("fs06.unique", uuid.uuid4().hex, queue="fs06", unique_for=60)
 
     assert lost.injected, "Voraussetzung: Antwort des SET verloren"
-    assert existing is None, f"eigener Claim nach Transport-Retry als fremd gemeldet: existing={existing!r}"
+    broker.publish.assert_awaited_once()
+    published = msgspec.json.decode(broker.publish.await_args.args[1])["task"]["id"]
+    assert published == task_id, "eigener Unique-Claim nach Transport-Retry als Duplikat gewertet"
 
 
 @pytest.mark.befund("FS-06")
@@ -108,7 +121,6 @@ async def test_claim_fire_after_lost_reply_counts_as_own_claim(
 
 
 @pytest.mark.befund("FS-06")
-@pytest.mark.xfail(strict=True, reason="FS-06: offen - Mutex-Acquire haelt den eigenen Lock nach Retry fuer fremd")
 async def test_mutex_acquire_after_lost_reply_counts_as_own_lock(
     backend: ValkeyBackend, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -119,3 +131,18 @@ async def test_mutex_acquire_after_lost_reply_counts_as_own_lock(
 
     assert lost.injected, "Voraussetzung: Antwort des EVALSHA verloren"
     assert token is not None, "eigener Mutex nach Transport-Retry als fremd gewertet (Konflikt mit sich selbst)"
+
+
+async def test_full_semaphore_acquire_after_lost_reply_counts_as_own_slot(
+    backend: ValkeyBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Der eigene Slot fuellt den Semaphor; ohne Selbsttreffer zaehlte die
+    Wiederholung ihn als belegt und wiese sich selbst ab."""
+    name = f"fs06-sem-{uuid.uuid4().hex[:8]}"
+    assert await backend.locks.acquire(name, owner="fs06-other", ttl_ms=60_000, max_concurrency=2)
+    lost = _LostReply(monkeypatch, "EVALSHA")
+
+    token = await backend.locks.acquire(name, owner="fs06-owner", ttl_ms=60_000, max_concurrency=2)
+
+    assert lost.injected, "Voraussetzung: Antwort des EVALSHA verloren"
+    assert token is not None, "eigener Semaphor-Slot nach Transport-Retry als fremd gewertet"

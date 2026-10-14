@@ -1641,3 +1641,76 @@ class TestScheduleLogging:
         assert entry["dedup_hash"] == backend.claim_unique.await_args.args[0]
         assert entry["error_type"] == "ConnectionError"
         assert entry["error"] == "valkey down"
+
+
+class TestClientUniqueOwnClaimAfterRetry:
+    """FS-06b (Plan 2026-10-14-0748, U11, KTD7): valkey-py wiederholt
+    ``SET NX GET`` nach verlorener Antwort; die Wiederholung liefert die eigene,
+    in diesem Aufruf frisch erzeugte ``task_id`` als "existing". Das ist der
+    eigene Claim, kein Duplikat.
+
+    Test-Liste:
+    - [x] ``schedule`` mit ``existing == task_id`` publiziert, kein Dup-Signal
+    - [x] ``_schedule_deferred`` (delay) mit ``existing == task_id`` speichert
+    - [x] ``schedule_many`` mit ``existing == task_id`` publiziert das Element
+    """
+
+    @pytest.fixture
+    def backend_own(self, backend):
+        async def _own(_dedup_hash, task_id, _ttl_ms, **_kwargs):
+            return task_id
+
+        backend.claim_unique = AsyncMock(side_effect=_own)
+        return backend
+
+    @pytest.fixture
+    def duplicates(self) -> list[dict[str, Any]]:
+        return []
+
+    @pytest.fixture
+    def client_own(self, broker, backend_own, registry, duplicates):
+        dispatcher = SignalDispatcher()
+
+        @dispatcher.on_signal(Signal.TASK_DUPLICATE_DETECTED)
+        async def _record(**kwargs: Any) -> None:
+            duplicates.append(kwargs)
+
+        return Client(broker=broker, backend=backend_own, registry=registry, signal_dispatcher=dispatcher)
+
+    @pytest.mark.timeout(5)
+    async def test_schedule_publishes_when_the_claim_holds_its_own_task_id(self, client_own, broker, duplicates):
+        task_id = await client_own.schedule("add", 1, 2, queue="math", unique_for=60)
+
+        broker.publish.assert_awaited_once()
+        assert decode_json(broker.publish.await_args.args[1])["task"]["id"] == task_id
+        assert "x-swarmq-unique-hash" in broker.publish.await_args.kwargs["headers"]
+        assert duplicates == []
+
+    @pytest.mark.timeout(5)
+    async def test_deferred_schedule_stores_when_the_claim_holds_its_own_task_id(
+        self,
+        client_own,
+        patched_schedule_store,
+        duplicates,
+    ):
+        task_id = await client_own.schedule("add", 1, queue="math", delay=60.0, unique_for=300)
+
+        definition = patched_schedule_store.add_schedule.await_args.args[0]
+        assert definition.task_id == task_id
+        assert definition.source == "cli_unique"
+        assert duplicates == []
+
+    @pytest.mark.timeout(5)
+    async def test_schedule_many_publishes_elements_whose_claim_holds_their_own_task_id(
+        self,
+        client_own,
+        broker,
+        duplicates,
+    ):
+        tasks: _Batch = [("add", (1,), {}), ("add", (2,), {})]
+
+        ids = await client_own.schedule_many(tasks, queue="math", unique_for=60)
+
+        assert broker.publish.await_count == 2
+        assert [decode_json(call.args[1])["task"]["id"] for call in broker.publish.await_args_list] == ids
+        assert duplicates == []

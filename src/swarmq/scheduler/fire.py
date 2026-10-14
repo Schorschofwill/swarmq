@@ -186,7 +186,10 @@ class SchedulerFire:
                     )
                     return  # Retry on next poll; commit not called.
 
-                if existing is not None:
+                # FS-06b: Ein Cron feuert unter frischer task_id; meldet die
+                # Transport-Wiederholung sie als "existing", ist es der eigene
+                # Claim. Ein Oneshot (stabile ID) bleibt Duplikat (E-011).
+                if existing is not None and not (definition.cron is not None and existing == task_id):
                     await self._emit_duplicate_detected(
                         existing_task_id=existing,
                         task_name=definition.task_name,

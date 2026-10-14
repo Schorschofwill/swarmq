@@ -1624,3 +1624,24 @@ class TestAdoptDuringFire:
         headers = broker.publish.await_args.kwargs["headers"]
         assert headers["x-swarmq-schedfire"] == "cron_a:1000"
         self._assert_scored_by_new_cron(await memory.schedules.fire_ts("cron_a"))
+
+
+class TestStandbyWithOwnTokenInLock:
+    """FS-06b (Plan 2026-10-14-0748, U11, KTD7): ``lock_acquire`` wertet den
+    eigenen Token im Key als erworben. Fuer die Leader-Wahl (stabiler
+    ``owner_token`` je Loop) heisst das: Traegt der Key nach einem Ruecktritt
+    ohne Loeschen (E-048, Renew-Fehler) noch den eigenen Token, wird der
+    Standby beim naechsten Wahl-Takt sofort wieder Leader, statt den
+    TTL-Ablauf abzuwarten. Kein Split-Brain: kein anderer haelt den Key."""
+
+    @pytest.mark.entscheidung("E-048")
+    async def test_standby_reacquires_its_own_lock_at_once(self, broker, config, signal_dispatcher):
+        memory = InMemoryBackend(FakeClock())
+        await memory.connect()
+        assert await memory.locks.acquire(SCHEDULER_LOCK_NAME, owner="test-owner", ttl_ms=60_000, max_concurrency=1)
+        loop = _make_loop(memory, broker, config, memory.locks, ScheduleStore(memory), signal_dispatcher)
+        assert loop._state == "standby"
+
+        await loop._election_tick()
+
+        assert loop._state == "leader"

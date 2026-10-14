@@ -21,4 +21,6 @@ tests:
 
 **Bewusste Folgen.** Ein doppelter Publish desselben Fires durch zwei Leader ist für sich kein Fehler. Ein Fehler ist erst, wenn das Duplikat tatsächlich zweimal ausgeführt wird oder ein Commit des alten Leaders den Zustand des neuen überschreibt.
 
+**Nachtrag 2026-10-14 (FS-06b, U11).** Ein Standby, dessen eigener Token noch im Leader-Key steht, wird seit FS-06b sofort wieder Leader (Nachtrag in E-048). Das öffnet kein zusätzliches Doppel-Leader-Fenster: Solange der Key den eigenen Token trägt, kann kein anderer ihn halten.
+
 **Überdenken nur mit neuem Argument.** FS-31 (Leader-Renew ohne `op_timeout`) fällt in der Wirkung unter dieses Risiko, verletzt aber die Zeitgrenze aus E-048.
