@@ -571,8 +571,8 @@ class Worker(WorkerLifecycle, WorkerShutdown):
         if not await self._pre_pipeline_gates(message, ctx):
             return
 
-        # 3. Acquire semaphore
-        await self._semaphore.acquire()
+        # 3. Acquire semaphore -- bewusst vor dem ``try`` (siehe ``_acquire_slot``).
+        await self._acquire_slot(ctx)
         # Per-handler lock-tracking state, scoped to this invocation —
         # task_id alone would collide under AT_LEAST_ONCE redelivery.
         # handler_id ist der Registry-Schlüssel fürs Shutdown-Cleanup.
@@ -678,6 +678,46 @@ class Worker(WorkerLifecycle, WorkerShutdown):
             return
 
         finally:
+            # FS-04 (KTD6): Kaskade in fester Reihenfolge Settle/Finalize ->
+            # DI-Teardown -> Lock-Freigabe -> Semaphor. Jeder spaetere Schritt
+            # laeuft auch, wenn ein frueherer scheitert oder abgebrochen wird
+            # (Dishka-``ExitError``, ``BaseException`` aus einem Finalizer,
+            # aeusserer Abbruch); die erste Ausnahme propagiert wie bisher.
+            try:
+                await self._settle_and_teardown(
+                    message, outcome, ctx, task_info, _di_scope, _di_token, is_cancelled, task_exception
+                )
+            finally:
+                await self._release_locks_and_slot(handler_id, acquired_locks)
+
+    async def _acquire_slot(self, ctx: GateContext) -> None:
+        """Semaphor-Platz nehmen, vor dem ``try/finally`` der Zustellung: ein
+        Abbruch hier darf den ``finally`` nicht erreichen (dessen
+        Terminal-Default schriebe den Schedfire-Completed-Marker). Wie bei
+        einer Gate-Ausnahme wird der Schedfire-Claim nicht-terminal
+        freigegeben, sonst saehe die Neuzustellung ihn als Duplikat (FS-03
+        Teil 2). Geshieldet und getrackt: der Shutdown wartet vor
+        ``backend.close`` auf die Freigabe."""
+        try:
+            await self._semaphore.acquire()
+        except BaseException:
+            await self._detached(self._release_schedfire_claim(ctx))
+            raise
+
+    async def _settle_and_teardown(
+        self,
+        message: Any,
+        outcome: DeliveryOutcome,
+        ctx: GateContext,
+        task_info: TaskInfo | None,
+        di_scope: Any,
+        di_token: Any,
+        is_cancelled: bool,
+        task_exception: BaseException | None,
+    ) -> None:
+        """Erste Stufen der ``finally``-Kaskade: Settle/Finalize, danach -- auch
+        wenn das scheitert oder abgebrochen wird -- der DI-Teardown (FS-04)."""
+        try:
             # 12-pre. Finalize the schedfire claim if this message was a
             # schedfire delivery we claimed in-flight. On a terminal
             # outcome this writes the completed marker (a redelivery
@@ -694,7 +734,7 @@ class Worker(WorkerLifecycle, WorkerShutdown):
             if self._execution_guard.lease_of(message) is not None:
                 await self._detached(self._execution_guard.settle(message))
             await self._finalize_delivery(message, outcome, ctx, task_info)
-
+        finally:
             # 12-pre. Close the Dishka REQUEST scope (if opened), driving
             # __aexit__ with the captured task exception so yield-based
             # finalizers can commit on success / roll back on failure. On a
@@ -704,12 +744,17 @@ class Worker(WorkerLifecycle, WorkerShutdown):
             # Task so an outer (shutdown) cancel into this finally does not
             # abort the finalizer mid-await — _execute_shutdown drains
             # _detached_releases before closing the backend.
-            if _di_scope is not None:
-                await self._teardown_di_scope(_di_scope, _di_token, is_cancelled, task_exception)
+            if di_scope is not None:
+                await self._teardown_di_scope(di_scope, di_token, is_cancelled, task_exception)
 
+    async def _release_locks_and_slot(self, handler_id: uuid.UUID, acquired_locks: list[LockToken]) -> None:
+        """Letzte Stufen der ``finally``-Kaskade: Lock-Freigabe, danach -- auch
+        wenn sie scheitert oder abgebrochen wird -- der Semaphor (FS-04)."""
+        try:
             # 12a. Release any task-locks acquired by this handler
             # (detached-shield pattern, see ``_detached_lock_release``).
             if acquired_locks and self._lock_manager is not None:
                 await self._detached_lock_release(handler_id, acquired_locks)
+        finally:
             # 12b. Release semaphore
             self._semaphore.release()

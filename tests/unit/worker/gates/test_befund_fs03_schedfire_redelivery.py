@@ -89,7 +89,6 @@ async def test_redelivery_after_worker_death_is_not_acked_as_duplicate(
 
 
 @pytest.mark.befund("FS-03")
-@pytest.mark.xfail(strict=True, reason="FS-03: offen - Abbruch am Semaphor laesst den Schedfire-Claim stehen")
 async def test_shutdown_cancel_while_waiting_for_slot_releases_the_fire_claim(
     broker: MagicMock, backend: MagicMock
 ) -> None:
