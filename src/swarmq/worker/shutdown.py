@@ -17,7 +17,7 @@ import contextlib
 import signal
 import uuid
 from collections.abc import Awaitable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from swarmq.dishka import _Missing, get_registered_container
 from swarmq.logging import _error_fields
@@ -103,53 +103,77 @@ class WorkerShutdown:
         if drain_until is None:
             drain_until = asyncio.get_running_loop().time() + float(self._config.shutdown_timeout)
         # 1. DRAINING: stop accepting new messages.
-        await self._cancel_consume(drain_until)
+        drain_until = await self._cancel_consume(drain_until)
 
-        # 2. Wait for in-flight tasks to complete
+        # 2. Wait for in-flight tasks to complete. Neu gestartete Handler
+        # (Zustellung an einen spaet angemeldeten Consumer oder nach einem
+        # aufgegebenen ``cancel_consume``) gehoeren mit in den Drain: Sonst
+        # liefen sie ungesehen in Sperrenfreigabe und ``broker.close()``
+        # (Review U10).
+        pending: set[asyncio.Task[None]] = set()
         tasks_snapshot = set(self._active_tasks)
-        if tasks_snapshot:
+        while tasks_snapshot and not pending:
             pending = await self._wait_for_drain(tasks_snapshot, drain_until)
+            tasks_snapshot = set(self._active_tasks) - pending
 
-            # 3. SHUTTING_DOWN: cancel remaining tasks if drain timeout exceeded
-            if pending:
-                self._state = WorkerState.SHUTTING_DOWN
-                for task in pending:
-                    task.cancel()
-                await asyncio.wait(pending, timeout=min(1.0, self._step_timeout()))
+        # 3. SHUTTING_DOWN: cancel remaining tasks if drain timeout exceeded
+        if pending:
+            pending |= set(self._active_tasks)
+            self._state = WorkerState.SHUTTING_DOWN
+            for task in pending:
+                task.cancel()
+            await asyncio.wait(pending, timeout=min(1.0, self._step_timeout()))
 
-    async def _cancel_consume(self, drain_until: float) -> None:
+    async def _cancel_consume(self, drain_until: float) -> float:
         """Consumer abmelden, begrenzt bis zum Drain-Ende (FS-09, KTD16).
 
         Das Warten endet spaetestens bei *drain_until* (mindestens
-        ``_SHUTDOWN_STEP_MIN_S``), das Abmelden selbst wird dabei nicht
-        abgebrochen: Ein abgebrochenes ``basic.cancel`` schloesse in aiormq den
+        ``_SHUTDOWN_STEP_MIN_S``); ein SIGTERM im Recycling-Drain zieht es wie
+        den Drain selbst auf den Anker vor (FS-30, Review U10). Liefert das so
+        gueltige Drain-Ende. Das Abmelden selbst wird dabei nicht abgebrochen:
+        Ein abgebrochenes ``basic.cancel`` schloesse in aiormq den
         Consume-Kanal, und alle laufenden Handler kaemen als Neuzustellung
         zurueck. Es laeuft weiter, bis der Broker antwortet, die Notbremse des
-        Waechters greift oder ``broker.close()`` den Kanal schliesst.
+        Waechters greift, ``broker.close()`` den Kanal schliesst oder der
+        Kanalbezug bei getrennter Verbindung aufgibt.
 
         ``cancel_consume`` isoliert Fehler je Consumer und wirft erst danach;
         ein Teilfehler darf den Rest der Sequenz (Drain, Sperrenfreigabe,
         Scheduler-Stopp) nicht abbrechen (Audit 2026-06-02).
         """
+        loop = asyncio.get_running_loop()
+        started = loop.time()
         cancelling = asyncio.ensure_future(self._broker.cancel_consume())
-        timeout = max(drain_until - asyncio.get_running_loop().time(), _lc._SHUTDOWN_STEP_MIN_S)
-        await asyncio.wait({cancelling}, timeout=timeout)
-        if not cancelling.done():
+        pending, drain_until = await self._wait_anchored(
+            {cancelling}, drain_until, not_before=started + _lc._SHUTDOWN_STEP_MIN_S
+        )
+        if pending:
+            timeout = max(drain_until - started, _lc._SHUTDOWN_STEP_MIN_S)
             _lc.logger.warning("shutdown_step_timeout", step="cancel_consume", timeout_s=round(timeout, 3))
             _LATE_CONSUME_CANCELS.add(cancelling)
             cancelling.add_done_callback(_collect_late_consume_cancel)
-            return
+            return drain_until
         try:
             cancelling.result()
         except Exception as exc:  # noqa: BLE001 - Teilfehler darf Shutdown nicht abbrechen
             _lc.logger.warning("cancel_consume_partial_failure", **_error_fields(exc))
+        return drain_until
 
     async def _wait_for_drain(self, tasks: set[asyncio.Task[None]], drain_until: float) -> set[asyncio.Task[None]]:
-        """Bis *drain_until* auf *tasks* warten; liefert die noch laufenden.
+        """Bis *drain_until* auf *tasks* warten; liefert die noch laufenden."""
+        pending, _drain_until = await self._wait_anchored(set(tasks), drain_until)
+        return cast("set[asyncio.Task[None]]", pending)
 
-        FS-30 (KTD4): Ein SIGTERM im Recycling-Drain weckt das Warten
-        (``_recycle_interrupt``) und zieht das Drain-Ende samt Publish-Endfrist
-        nach vorn. Der Weck-Task wird im ``finally`` gestrichen (kein Task-Leck).
+    async def _wait_anchored(
+        self, futures: set[asyncio.Future[Any]], drain_until: float, *, not_before: float | None = None
+    ) -> tuple[set[asyncio.Future[Any]], float]:
+        """Bis *drain_until* (nicht vor *not_before*) auf *futures* warten.
+
+        Liefert die noch laufenden und das gueltige Drain-Ende. FS-30 (KTD4):
+        Ein SIGTERM im Recycling-Drain weckt das Warten
+        (``_recycle_interrupt``) und zieht das Drain-Ende samt
+        Publish-Endfrist nach vorn. Der Weck-Task wird im ``finally``
+        gestrichen (kein Task-Leck).
         """
         loop = asyncio.get_running_loop()
         interrupt = asyncio.Event()
@@ -157,14 +181,15 @@ class WorkerShutdown:
         if getattr(self, "_recycle_sigterm_at", None) is not None:
             interrupt.set()
         waiter: asyncio.Task[bool] | None = asyncio.create_task(interrupt.wait())
-        pending = set(tasks)
+        pending = set(futures)
         try:
             while pending:
                 watched: set[asyncio.Future[Any]] = set(pending)
                 if waiter is not None:
                     watched.add(waiter)
+                end = drain_until if not_before is None else max(drain_until, not_before)
                 done, _ = await asyncio.wait(
-                    watched, timeout=max(0.0, drain_until - loop.time()), return_when=asyncio.FIRST_COMPLETED
+                    watched, timeout=max(0.0, end - loop.time()), return_when=asyncio.FIRST_COMPLETED
                 )
                 if not done:
                     break
@@ -181,7 +206,7 @@ class WorkerShutdown:
                 waiter.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await waiter
-        return pending
+        return pending, drain_until
 
     def _anchored_drain_end(self, drain_end: float) -> float:
         """KTD4: nach einem SIGTERM im Recycling-Drain endet der Drain

@@ -34,7 +34,7 @@ import asyncio
 import socket
 import time
 from typing import Any, cast, override
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 
@@ -197,8 +197,8 @@ class TestBrokerCancelConsume:
 
         await broker.cancel_consume()
 
-        mock_queue_1.cancel.assert_awaited_once_with("tag-1")
-        mock_queue_2.cancel.assert_awaited_once_with("tag-2")
+        mock_queue_1.cancel.assert_awaited_once_with("tag-1", timeout=ANY)
+        mock_queue_2.cancel.assert_awaited_once_with("tag-2", timeout=ANY)
 
     async def test_cancel_consume_isolates_per_consumer_failure(self):
         """A consumer whose cancel() raises must not prevent the remaining
@@ -226,7 +226,7 @@ class TestBrokerCancelConsume:
             await broker.cancel_consume()
 
         # The second consumer was still cancelled despite the first raising.
-        mock_queue_2.cancel.assert_awaited_once_with("tag-2")
+        mock_queue_2.cancel.assert_awaited_once_with("tag-2", timeout=ANY)
         # Registry cleared so a redelivery window cannot reuse stale tags.
         assert broker.consumer_gaps() == {}
 

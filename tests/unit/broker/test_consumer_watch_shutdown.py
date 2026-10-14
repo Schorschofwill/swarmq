@@ -12,6 +12,12 @@ Test-Liste:
 # [x] die consume-Antwort eines abgekoppelten Takts nach cancel_all: Tag sofort abgemeldet, nicht übernommen
 # [x] eine späte consume-Antwort, deren Abmeldung scheitert: geloggt, nicht übernommen
 # [x] ein abgekoppelter Takt endet mit dem Schließen des Kanals (kein hängender Task)
+# [x] ein abgekoppelter Takt meldet nach stop() keinen weiteren Eintrag neu an (Review U10)
+# Kanalbezug vor dem RPC (aio-pika wartet dort auf ``connection.ready()``, ohne Frist):
+# [x] cancel_all bei getrennter Verbindung: endet nach timeout_s mit Fehler je Tag
+# [x] cancel_all gibt dem RPC die Notbremse mit
+# [x] eine späte consume-Antwort bei getrennter Verbindung: Abmelden endet, geloggt
+# [x] Verbindung bricht nach dem eigenen Cancel weg: Neuanmeldung endet, geloggt
 """
 
 from __future__ import annotations
@@ -216,3 +222,147 @@ async def test_a_detached_tick_ends_when_the_channel_closes(
     _done, pending = await asyncio.wait(detached, timeout=1.0)
     assert pending == set()
     assert _closes(_sent(connector)) == []
+
+
+async def test_a_detached_tick_registers_no_further_entry_after_stop(short_stop: None) -> None:
+    """Review U10: Der erste Eintrag hängt im Cancel über ``stop()`` hinaus;
+    nach dessen Antwort darf der Takt den zweiten (Neuanmeldung ausstehend)
+    nicht mehr am Broker anmelden -- der Worker drainiert schon."""
+    first = FakeQueue("q1", FakeChannel(FakeUnderlay()))
+    second = FakeQueue("q2", FakeChannel(FakeUnderlay()))
+    entered, answer = asyncio.Event(), asyncio.Event()
+    plain_cancel = first.cancel
+
+    async def slow_cancel(tag: str, timeout: float | None = None) -> None:
+        entered.set()
+        await answer.wait()
+        await plain_cancel(tag, timeout)
+
+    first.cancel = slow_cancel  # type: ignore[method-assign]
+    watch = ConsumerWatch()
+    watch.add("q1", first, object(), "tag-1")
+    watch.add("q2", second, object(), "tag-2")
+    watch._entries[0].seen_on = first.channel.underlay  # Tag fehlt auf offenem, unverändertem Kanal
+    watch._entries[1].tag = None  # Neuanmeldung steht aus
+    before = asyncio.all_tasks()
+    watch.start(interval_s=3600.0)
+    watch.request_check()
+    await asyncio.wait_for(entered.wait(), 1.0)
+    await watch.stop()
+    [detached] = asyncio.all_tasks() - before
+
+    answer.set()
+    await asyncio.wait_for(detached, 1.0)
+
+    assert first.cancelled == ["tag-1"]
+    assert second.consumed == []
+
+
+class _GatedQueue:
+    """Wie aio-pikas ``RobustQueue``: ``cancel``/``consume`` holen den Kanal
+    selbst über ``get_underlay_channel``, das auf ``connection.ready()``
+    wartet -- bei getrennter Verbindung (``ready`` gelöscht) ohne Ende."""
+
+    def __init__(self) -> None:
+        self.ready = asyncio.Event()
+        self.ready.set()
+        self.underlay = FakeUnderlay()
+        self.channel = self
+        self.cancels: list[tuple[str, float | None]] = []
+        self.consumes = 0
+
+    async def get_underlay_channel(self) -> FakeUnderlay:
+        await self.ready.wait()
+        return self.underlay
+
+    async def cancel(self, tag: str, timeout: float | None = None) -> None:
+        await self.get_underlay_channel()
+        self.cancels.append((tag, timeout))
+        self.underlay.consumers.pop(tag, None)
+
+    async def consume(self, callback: Any, timeout: float | None = None) -> str:
+        await self.get_underlay_channel()
+        self.consumes += 1
+        tag = f"gated-{self.consumes}"
+        self.underlay.consumers[tag] = callback
+        return tag
+
+
+async def test_cancel_all_on_a_disconnected_channel_ends_after_the_channel_timeout() -> None:
+    queue = _GatedQueue()
+    queue.ready.clear()  # Verbindung getrennt, aio-pika wartet auf ready()
+    watch = ConsumerWatch(timeout_s=0.01)
+    watch.add("q1", queue, object(), "tag-1")
+
+    errors = await asyncio.wait_for(watch.cancel_all(), 1.0)
+
+    [(tag, exc)] = errors
+    assert tag == "tag-1"
+    assert isinstance(exc, TimeoutError)
+    assert queue.cancels == []
+
+
+async def test_cancel_all_gives_the_rpc_the_emergency_timeout() -> None:
+    queue = _GatedQueue()
+    watch = ConsumerWatch(rpc_timeout_s=7.5)
+    watch.add("q1", queue, object(), "tag-1")
+
+    assert await watch.cancel_all() == []
+
+    assert queue.cancels == [("tag-1", 7.5)]
+
+
+async def test_a_late_consume_answer_on_a_disconnected_channel_ends_its_cancel(
+    short_stop: None, swarmq_logs: list[dict[str, Any]]
+) -> None:
+    queue = _GatedQueue()
+    entered, answer = asyncio.Event(), asyncio.Event()
+    plain_consume = queue.consume
+
+    async def slow_consume(callback: Any, timeout: float | None = None) -> str:
+        entered.set()
+        await answer.wait()
+        tag = await plain_consume(callback, timeout)
+        queue.ready.clear()  # nach consume-ok bricht die Verbindung weg
+        return tag
+
+    queue.consume = slow_consume  # type: ignore[method-assign]
+    watch = ConsumerWatch(timeout_s=0.01)
+    watch.add("q1", queue, object(), "tag-1")
+    watch._entries[0].tag = None
+    before = asyncio.all_tasks()
+    watch.start(interval_s=3600.0)
+    watch.request_check()
+    await asyncio.wait_for(entered.wait(), 1.0)
+    await watch.cancel_all()
+    [detached] = asyncio.all_tasks() - before
+
+    answer.set()
+    await asyncio.wait_for(detached, 1.0)
+
+    [failed] = [e for e in swarmq_logs if e["event"] == "consumer_cancel_failed"]
+    assert failed["consumer_tag"] == "gated-1"
+    assert failed["error_type"] == "TimeoutError"
+
+
+async def test_a_connection_lost_after_the_own_cancel_ends_the_reregistration(
+    swarmq_logs: list[dict[str, Any]],
+) -> None:
+    queue = _GatedQueue()
+    plain_cancel = queue.cancel
+
+    async def cancel_then_disconnect(tag: str, timeout: float | None = None) -> None:
+        await plain_cancel(tag, timeout)
+        queue.ready.clear()  # nach cancel-ok bricht die Verbindung weg
+
+    queue.cancel = cancel_then_disconnect  # type: ignore[method-assign]
+    watch = ConsumerWatch(timeout_s=0.01)
+    watch.add("q1", queue, object(), "tag-1")
+    watch._entries[0].seen_on = queue.underlay  # Tag fehlt auf offenem, unverändertem Kanal
+
+    await asyncio.wait_for(watch.tick(), 1.0)
+
+    assert queue.consumes == 0
+    [failed] = [e for e in swarmq_logs if e["event"] == "consumer_reregister_failed"]
+    assert failed["error_type"] == "TimeoutError"
+    assert watch.tags() == []

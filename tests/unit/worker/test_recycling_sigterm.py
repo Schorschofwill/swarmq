@@ -23,6 +23,8 @@ Testliste:
       Recycling-Drain nicht; SIGTERM vor einem kurzen Drain behaelt dessen Ende
 - [x] SIGTERM im Ack-Warten ohne Bestaetigung: kein recycle_ack_missing (Exit 75)
 - [x] SIGTERM im Schlaf des Recycling-Monitors: kein Recycling-Antrag
+- [x] SIGTERM, waehrend ``cancel_consume`` im Recycling-Drain haengt: der Schritt
+      endet bei SIGTERM + drain_until, die Endfrist folgt (Review U10)
 (request_recycle selbst setzt keinen Anker: Nachweis FS-30 mit shutdown_timeout 0;
 bis zum SIGTERM gilt die Endfrist aus U3: test_recycling_drain_end.py)
 """
@@ -44,6 +46,7 @@ from swarmq.shutdown_budget import shutdown_budget
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 from swarmq.worker import WorkerState, recycling
+from swarmq.worker import lifecycle as _lc
 from tests.support.messages import make_message
 from tests.unit.worker._helpers import _default_payload
 
@@ -391,3 +394,39 @@ async def test_recycling_drain_without_sigterm_leaves_no_helper_task(worker: Any
 
     leftover = {t for t in asyncio.all_tasks() - before if not t.done()}
     assert not leftover
+
+
+async def test_sigterm_cuts_a_hanging_cancel_consume_in_the_recycling_drain(
+    worker: Any, broker: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review U10: ``cancel_consume`` haengt (Broker stumm) im Recycling-Drain
+    mit langer Frist. Das SIGTERM muss auch diesen Schritt auf SIGTERM +
+    drain_until verkuerzen, sonst kaeme der SIGKILL vor dem Aufraeumen."""
+    monkeypatch.setattr(_lc, "_SHUTDOWN_STEP_MIN_S", 0.01)
+    loop = asyncio.get_running_loop()
+    worker._config.shutdown_timeout = 0.08  # drain_until 0.04 s, finish_by 0.08 s
+    budget = shutdown_budget(0.08, supervised=False)
+    worker._drain_timeout_override = 5.0  # Recycling-Frist weit hinter dem Budget
+    worker._state = WorkerState.RUNNING
+    worker._request_shutdown()  # wie request_recycle
+    broker.cancel_consume.side_effect = _forever
+    step_ended: list[float] = []
+
+    async def _close_executor() -> None:
+        step_ended.append(loop.time())  # erster Schritt nach dem Drain
+
+    worker._close_executor = _close_executor
+    sigterms: list[float] = []
+    _sigterm_at(worker, 0.01, sigterms)
+
+    await asyncio.wait_for(worker._execute_shutdown(), 1.0)
+
+    (sigterm,) = sigterms
+    (ended,) = step_ended
+    assert sigterm + budget.drain_until - _EPS <= ended < sigterm + budget.finish_by
+    deadlines = [d for d in _deadlines(broker) if d is not None]
+    assert abs(deadlines[-1] - (sigterm + budget.drain_until)) < _EPS
+
+
+async def _forever() -> None:
+    await asyncio.Event().wait()
