@@ -27,6 +27,25 @@ DEFAULT_ADMIN_HOST = "localhost"
 DEFAULT_ADMIN_PORT = 8474
 
 
+def proxy_defaults(
+    service: str,
+    host: str,
+    port: int,
+    compose_port: int,
+    compose_proxy_port: int,
+) -> tuple[int, str]:
+    """Proxy-Port und Upstream fuer einen Dienst.
+
+    Compose-Stack (Dienst auf ``compose_port``): Toxiproxy im Compose-Netz,
+    Upstream ist der Dienstname. Sonst ein Toxiproxy im Host-Netz neben den
+    Testcontainern: er lauscht einen Port unter dem Dienst und leitet an
+    ``host:port`` weiter.
+    """
+    if port == compose_port:
+        return compose_proxy_port, f"{service}:{compose_port}"
+    return port - 1, f"{host}:{port}"
+
+
 @dataclass(frozen=True)
 class ProxyConfig:
     """Declarative description of a Toxiproxy proxy."""
