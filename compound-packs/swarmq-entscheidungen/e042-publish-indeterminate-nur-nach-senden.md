@@ -25,6 +25,6 @@ tests:
 
 **Bewusste Folgen.** Ein Publish ohne Wiederholung nach einem Abriss beim Confirm ist kein Fehler (siehe auch E-041).
 
-**Überdenken nur mit neuem Argument.** Heute in Randfällen verletzt, zwei Befunde der Fehlersuche Runde 2 (xfail-Nachweise im Branch `test/fehlersuche-runde-2`):
+**Überdenken nur mit neuem Argument.** Befunde der Fehlersuche Runde 2 (xfail-Nachweise im Branch `test/fehlersuche-runde-2`):
 - FS-08: Ein Publish, der in aiormqs Kanal-Sperre wartet, während die Verbindung reißt, hängt bis zur Frist und endet als `PublishIndeterminate`, obwohl sein Frame nie gesendet wurde.
-- FS-02 Teil a: Bei schon vor Beginn verstrichener Endfrist wird trotzdem gesendet und `PublishIndeterminate` gemeldet.
+- FS-02 Teil a, behoben (U3, Plan 2026-10-14-0748): Bei schon vor Beginn verstrichener Endfrist wurde trotzdem gesendet und `PublishIndeterminate` gemeldet. Seit U3 geht nichts raus, der Aufrufer bekommt `BrokerConnectionError`.

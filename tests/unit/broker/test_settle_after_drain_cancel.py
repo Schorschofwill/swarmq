@@ -12,6 +12,8 @@ Testliste:
 - [x] Task mit cancelling() > 0 beim Eintritt, interne CancelledError -> BrokerConnectionError
 - [x] Abbruch der Task waehrend settle() geht weiter als CancelledError durch
 - [x] ohne vorherigen Abbruch: interne CancelledError -> BrokerConnectionError (Bestand)
+- [x] vom Drain abgebrochener Handler (cancelling() == 1) wird waehrend settle()
+      erneut abgebrochen -> CancelledError geht durch (Review U3, testing)
 """
 
 from __future__ import annotations
@@ -78,3 +80,29 @@ async def test_cancel_during_settle_still_propagates() -> None:
 async def test_internal_cancel_without_a_prior_cancel_is_a_lost_channel() -> None:
     with pytest.raises(BrokerConnectionError):
         await settle(_internal_cancel(), "ack")
+
+
+async def test_second_cancel_of_a_drain_cancelled_handler_during_settle_propagates() -> None:
+    running = asyncio.Event()
+    settling = asyncio.Event()
+
+    async def _hanging_action() -> None:
+        settling.set()
+        await asyncio.Event().wait()
+
+    async def _handler() -> None:
+        try:
+            running.set()
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            pass  # E-001: der Handler laeuft nach dem Drain-Abbruch weiter
+        await settle(_hanging_action(), "redeliver")
+
+    handler = asyncio.create_task(_handler())
+    await running.wait()
+    handler.cancel()  # Drain-Abbruch, cancelling() bleibt 1
+    await settling.wait()
+    handler.cancel()  # zweiter, echter Abbruch waehrend settle() (etwa _abort_teardown)
+
+    with pytest.raises(asyncio.CancelledError):
+        await handler

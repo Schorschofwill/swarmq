@@ -13,7 +13,7 @@ quelle:
   - docs/plans/2026-09-03-001-feat-cpu-worker-modus-plan.md:267 (KTD11, Drain ohne erzwungenen Abbruch, Frist größter hard_timeout plus Puffer)
   - docs/plans/2026-09-03-001-feat-cpu-worker-modus-plan.md:389 (Risikotabelle)
   - website/reference/changelog.md:2293-2296 („drains without forced cancellation“)
-ohne_test: verletzt, Nachweis FS-30 (xfail, test_befund_fs30_recycling_drain.py im Branch test/fehlersuche-runde-2) und FS-02 Teil b
+ohne_test: verletzt, Nachweis FS-30 (xfail, test_befund_fs30_recycling_drain.py im Branch test/fehlersuche-runde-2); FS-02 Teil b behoben (U3)
 ---
 
 **Entscheidung.** Recycelt sich ein Worker selbst (RSS- oder Taskzahl-Schwelle, Opt-in), nimmt er keine neuen Nachrichten an und wartet ohne erzwungenen Abbruch auf das Ende laufender Tasks. Die Drainfrist ist der größte registrierte `hard_timeout` plus Puffer, nicht `shutdown_timeout`. Ein laufender Task verliert durch das Recycling keinen Retry; der erzwungene Abbruch bleibt SIGTERM vorbehalten (dort gilt E-001).
@@ -22,6 +22,6 @@ ohne_test: verletzt, Nachweis FS-30 (xfail, test_befund_fs30_recycling_drain.py 
 
 **Bewusste Folgen.** Ein Recycling-Drain, der deutlich länger dauert als `shutdown_timeout`, ist kein Fehler. Ein Task, der seinen eigenen `hard_timeout` reißt, folgt auch während des Recyclings E-037.
 
-**Überdenken nur mit neuem Argument.** Heute verletzt, zwei Befunde der Fehlersuche Runde 2:
+**Überdenken nur mit neuem Argument.** Befunde der Fehlersuche Runde 2:
 - FS-30 (früher FS-01 Recycling-Teil, MB-2): `recycling.py:78-86` fällt ohne registrierten `hard_timeout` (Default `None`) auf `shutdown_timeout` zurück und bricht Langläufer dann nach E-001 als Fehler ab. Der Rückfall ist im Docstring und in `tests/unit/worker/test_recycling.py:84` festgeschrieben, aber nirgends entschieden; er ist eine Umsetzungslücke gegen R22. Den Test bei einem Fix anpassen.
-- FS-02 Teil b: Die Publish-Endfrist liegt beim Recycling bei `drain_until`, nicht am Drain-Ende; Retry-, DLQ- und Workflow-Publishes nach etwa 23 s laufen in die verstrichene Frist.
+- FS-02 Teil b, behoben (U3, Plan 2026-10-14-0748): Die Publish-Endfrist lag beim Recycling bei `drain_until`, nicht am Drain-Ende; Retry-, DLQ- und Workflow-Publishes nach etwa 23 s liefen in die verstrichene Frist. Seit U3 folgt die Endfrist dem Drain-Ende des Recyclings. Ein erst am Ende der Recycling-Frist abgebrochener Task wird danach neu zugestellt statt per Retry kopiert (E-001, Nachtrag).
