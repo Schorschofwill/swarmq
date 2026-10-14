@@ -66,7 +66,9 @@ variables:
     paths:
       - .uv-cache
   before_script:
-    - apt-get update && apt-get install -y --no-install-recommends build-essential
+    # git: tests/unit/test_coverage_ratchet.py prueft das Ratchet-Skript gegen
+    # ein echtes Git-Repository (Arbeitsbaum-Pruefung); das slim-Image hat keins.
+    - apt-get update && apt-get install -y --no-install-recommends build-essential git
 
 # Real RabbitMQ + Valkey services + a readiness gate. Reused by the
 # integration and e2e jobs. RabbitMQ is pinned exactly (Plan 2026-10-08-1541,
