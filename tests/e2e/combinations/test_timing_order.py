@@ -1345,7 +1345,10 @@ class TestMaxAgeSchedulerCombo:
             task_info = TaskInfo(
                 name=task_name,
                 queues=[queue],
-                max_age=1,
+                # 3 s statt 1 s: Die frische Aufgabe muss innerhalb von
+                # max_age abgeholt werden; 1 s war unter paralleler Last
+                # (xdist, CI) knapp. Die alte Aufgabe altert entsprechend.
+                max_age=3,
             )
 
             @override
@@ -1368,7 +1371,7 @@ class TestMaxAgeSchedulerCombo:
 
             # Stale task.
             await app.schedule(task_name, "stale")
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(3.5)
 
             async with _running_worker(
                 rabbitmq_url,
@@ -1379,7 +1382,7 @@ class TestMaxAgeSchedulerCombo:
                 # Stale task gets TASK_EXPIRED.
                 await asyncio.wait_for(expired_event.wait(), timeout=8.0)
 
-                # Fresh task — enqueued now, well within max_age=1s.
+                # Fresh task — enqueued now, well within max_age=3s.
                 tid_fresh = await app.schedule(task_name, "fresh")
                 await asyncio.wait_for(fresh_done.wait(), timeout=8.0)
                 result = await app.get_result(tid_fresh, timeout=5)
