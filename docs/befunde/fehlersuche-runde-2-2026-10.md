@@ -1,7 +1,7 @@
 <!-- Befundregister. IDs FS-nn sind die Ticketnummern fuer xfail-Marker (AGENTS.md: kein Skip ohne Ticket). -->
 # Befundregister „Fehlersuche Runde 2“ – swarmq v0.12.0 (ac989a3), 2026-10-13
 
-Status (2026-10-13): Gegenprüfung abgeschlossen. 23 Befunde stehen als FEHLER fest: 3 × P1, 10 × P2, 10 × P3. P1 und P2 haben alle einen Nachweis-Test, P3 teilweise. 6 Verdachte sind bewusste ENTSCHEIDUNGEN und keine Befunde mehr, 4 sind LÜCKEN (Produktfragen). Stand 2026-10-14: FS-02, FS-03, FS-04 behoben, FS-06 teilweise (Release 0.12.1); übrige offen.
+Status (2026-10-13): Gegenprüfung abgeschlossen. 23 Befunde stehen als FEHLER fest: 3 × P1, 10 × P2, 10 × P3. P1 und P2 haben alle einen Nachweis-Test, P3 teilweise. 6 Verdachte sind bewusste ENTSCHEIDUNGEN und keine Befunde mehr, 4 sind LÜCKEN (Produktfragen). Stand 2026-10-14: FS-02, FS-03, FS-04, FS-06 (Fire-Claim) in 0.12.1rc1; auf `fix/fehlersuche-runde-2-p2` behoben: FS-05, FS-06 (Rest), FS-07, FS-08, FS-09, FS-10, FS-12, FS-13, FS-15, FS-16, FS-17, FS-19, FS-20, FS-23, FS-24, FS-27, FS-28, FS-30, FS-31; FS-14 in Arbeit (U13).
 
 Nachweis-Tests tragen `@pytest.mark.befund("FS-nn")` und `xfail(strict=True)`. Wird ein Befund behoben, wird sein Test XPASS (rot), und die Markierung muss entfernt werden. Alle Nachweise: `pytest -m befund --runxfail` (Integration nur über die Testports).
 
@@ -95,19 +95,25 @@ Cron bei Zeitumstellung (Berlin, New York, Lord Howe), sieben Workflow-Kombinati
 | FS-02 | `tests/unit/broker/test_befund_fs02_publish_after_deadline.py`, `tests/unit/worker/test_befund_fs02_recycling_publish_deadline.py` | behoben (U3, 7a2bb19; Review f79fc04, 1f2f1eb) |
 | FS-03 | `tests/unit/worker/gates/test_befund_fs03_schedfire_redelivery.py` | behoben (Teil 2: U4, 4fbbd97; Teil 1: U5, de10d90; Review 7ede93e, 4dbc28f) |
 | FS-04 | `tests/unit/worker/test_befund_fs04_dishka_finalizer.py` | behoben (U4, 4fbbd97; Review 01cb43a, f21459f) |
-| FS-05 | `tests/unit/worker/test_befund_fs05_task_timeout_error.py` | offen |
-| FS-06 | `tests/integration/backend/test_befund_fs06_retry_after_lost_reply.py` | teilweise: Fire-Claim behoben (U6, c8f407a); Unique-Claim und Mutex offen (U11) |
-| FS-07 | `tests/unit/scheduler/test_befund_fs07_unique_claim_after_timeout.py`, `tests/unit/worker/gates/test_befund_fs07_lock_claim_after_timeout.py` (Client-Pfad ohne Nachweis) | offen |
-| FS-08 | `tests/unit/broker/test_befund_fs08_publish_lock_waiter.py` | offen |
-| FS-09 | `tests/unit/broker/test_befund_fs09_consumer_watch_rpc_abort.py` | offen |
-| FS-10 | `tests/integration/broker/test_befund_fs10_dlq_replay_counters.py` (maßgeblich), `tests/unit/worker/test_befund_fs10_dlq_copy_counters.py` | offen |
-| FS-12 | `tests/unit/worker/test_befund_fs12_cancel_before_start.py` | offen |
-| FS-13 | `tests/unit/worker/test_befund_fs13_unique_until_start.py` | offen |
+| FS-05, FS-20 | `tests/unit/worker/test_befund_fs05_task_timeout_error.py` | behoben (U18, 2632029; Review 06958c8) |
+| FS-06 | `tests/integration/backend/test_befund_fs06_retry_after_lost_reply.py` | behoben (Fire-Claim U6, c8f407a; Unique-Claim und Mutex U11, 86798d1; Review 72036b1) |
+| FS-07 | `tests/unit/scheduler/test_befund_fs07_unique_claim_after_timeout.py`, `tests/unit/worker/gates/test_befund_fs07_lock_claim_after_timeout.py` `tests/unit/client/test_befund_fs07_client_claim_after_timeout.py` | behoben (U12, 2dc73f8; Review 21a1d46) |
+| FS-08 | `tests/unit/broker/test_befund_fs08_publish_lock_waiter.py` | behoben (U8, 67cb34b; Review 44722f6) |
+| FS-09 | `tests/unit/broker/test_befund_fs09_consumer_watch_rpc_abort.py` | behoben (U10, 7643879; Review 3348b96) |
+| FS-10 | `tests/integration/broker/test_befund_fs10_dlq_replay_counters.py` (maßgeblich), `tests/unit/worker/test_befund_fs10_dlq_copy_counters.py` | behoben für Worker-Kopien (U16, b69dd89; Review 7a50258); Grenze: Broker-DLX-Kopien behalten den Zähler (xfail) |
+| FS-12 | `tests/unit/worker/test_befund_fs12_cancel_before_start.py` | behoben (U15, 4956358; Review 546cd08) |
+| FS-13 | `tests/unit/worker/test_befund_fs13_unique_until_start.py` | behoben (U15, 4956358, 58f069b) |
 | FS-14 | `tests/unit/scheduler/test_befund_fs14_oneshot_unique_none.py` | offen |
-| FS-15 | `tests/unit/backend/test_befund_fs15_result_wait_polling.py` (nur `subscribe()`-Frist) | offen |
-| FS-16 | `tests/unit/worker/compute/test_befund_fs16_kill_group.py` | offen |
-| FS-30 | `tests/unit/worker/test_befund_fs30_recycling_drain.py` | offen |
-| FS-31 | `tests/unit/scheduler/test_befund_fs31_leader_renew_timeout.py` | offen |
+| FS-15 | `tests/unit/backend/test_befund_fs15_result_wait_polling.py` (nur `subscribe()`-Frist) | behoben (U20, 1b05cd9; Review d2aa879) |
+| FS-16 | `tests/unit/worker/compute/test_befund_fs16_kill_group.py` | behoben (U19, 13472d9; Review 30e536c) |
+| FS-30 | `tests/unit/worker/test_befund_fs30_recycling_drain.py` | behoben (U9, 177b954; Review 38634cf) |
+| FS-31 | `tests/unit/scheduler/test_befund_fs31_leader_renew_timeout.py` | behoben (U14, 9c9fe19; Review b8d7a78) |
+| FS-17 | `tests/unit/worker/gates/test_befund_fs17_expiry_ack_failed.py` | behoben (U16, b69dd89) |
+| FS-19 | `tests/unit/worker/test_befund_fs19_counter_headers.py` | behoben (U17, 29f9a3e; Review 06958c8) |
+| FS-23 | `tests/unit/worker/compute/test_befund_fs23_blocked_slot.py` | behoben (U19, 13472d9; Review 30e536c) |
+| FS-24 | `tests/unit/worker/compute/test_befund_fs24_handshake.py` | behoben (U19, 13472d9) |
+| FS-27 | `tests/unit/test_namespace_lowercase.py` | behoben (U20, 1b05cd9) |
+| FS-28 | `tests/unit/worker/test_befund_fs28_no_store_step_message.py` | behoben (U17, 29f9a3e) |
 
 Entfernt nach der Gegenprüfung: die FS-01-Nachweise für IO und CPU (sie prüften die von KTD2 verworfene Option), der FS-11-Nachweis (widersprach der BZ-11-Entscheidung und `test_unowned.py`) sowie zwei FS-15-Nachweise zum Polling-Intervall (entschieden).
 
