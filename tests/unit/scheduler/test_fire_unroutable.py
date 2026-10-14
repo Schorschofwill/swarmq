@@ -70,6 +70,7 @@ def loop(backend, broker, config, lock_manager, store, signal_dispatcher, monkey
     return loop
 
 
+@pytest.mark.entscheidung("E-003")
 async def test_unroutable_cron_fire_is_committed_to_the_next_occurrence(loop, store):
     await loop._fire_one("cron_a", _SCORE_MS, _cron())
 
@@ -103,6 +104,7 @@ def _loop_events(logs, event: str) -> list[dict[str, Any]]:
     return [e for e in logs if e["logger"] == "swarmq.scheduler.loop" and e["event"] == event]
 
 
+@pytest.mark.entscheidung("E-003")
 async def test_unroutable_cron_warning_is_throttled_per_cron_and_ten_minutes(loop, swarmq_logs):
     await loop._fire_one("cron_a", _SCORE_MS, _cron())
     loop.clock_s += 599
@@ -131,6 +133,7 @@ async def test_unroutable_log_table_stays_bounded(loop):
     assert len(loop._unroutable_logged_at) == 1
 
 
+@pytest.mark.entscheidung("E-003")
 async def test_unroutable_cron_reported_by_another_worker_logs_foreign_hint(loop, swarmq_logs):
     loop._reported_names = frozenset({"cron_a"})
 
@@ -175,6 +178,7 @@ def _oneshot(name: str = "oneshot:t-1", **fields: Any) -> ScheduleDefinition:
     )
 
 
+@pytest.mark.entscheidung("E-004")
 async def test_unroutable_oneshot_is_deferred_by_sixty_seconds_from_now(loop, store):
     await loop._fire_one("oneshot:t-1", _SCORE_MS, _oneshot())
 
@@ -186,6 +190,7 @@ async def test_unroutable_oneshot_is_deferred_by_sixty_seconds_from_now(loop, st
     assert store.commit_fire.await_args.kwargs["fired_ts_ms"] == _SCORE_MS
 
 
+@pytest.mark.entscheidung("E-004")
 async def test_repeatedly_unroutable_oneshot_keeps_its_first_unroutable_since(loop, store):
     first_ms = _NOW_MS - 3_600_000
 
@@ -196,6 +201,7 @@ async def test_repeatedly_unroutable_oneshot_keeps_its_first_unroutable_since(lo
     assert updated.unroutable_since == first_ms
 
 
+@pytest.mark.entscheidung("E-004")
 async def test_oneshot_unroutable_past_the_limit_is_dropped(loop, store, config, signal_dispatcher, swarmq_logs):
     seen = _recorded(signal_dispatcher, Signal.SCHEDULER_FIRE_UNROUTABLE)
     since_ms = _NOW_MS - int(config.scheduler_unroutable_oneshot_max_s * 1000)
@@ -215,6 +221,7 @@ def _expired(config, **fields: Any) -> ScheduleDefinition:
     return _oneshot(unroutable_since=_NOW_MS - int(config.scheduler_unroutable_oneshot_max_s * 1000), **fields)
 
 
+@pytest.mark.entscheidung("E-004")
 async def test_dropped_oneshot_stores_an_error_result_under_its_task_id(loop, backend, config):
     backend.store_result = AsyncMock()
     backend.notify_result = AsyncMock()
@@ -241,6 +248,7 @@ async def test_dropped_oneshot_error_result_names_unroutable_message(loop, backe
     assert result["error_class"] == "swarmq.exceptions.UnroutableMessage"
 
 
+@pytest.mark.entscheidung("E-004")
 async def test_dropped_cli_unique_oneshot_releases_its_unique_claim(loop, backend, config):
     backend.release_unique = AsyncMock(return_value=True)
 

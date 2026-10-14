@@ -20,6 +20,7 @@ def _cfg(**kwargs: object) -> SwarmQConfig:
     return SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x", **kwargs)  # type: ignore[arg-type]
 
 
+@pytest.mark.entscheidung("E-007")
 def test_default_is_six_hours() -> None:
     assert _cfg().lock_wait_max_s == 21600.0
 

@@ -71,6 +71,7 @@ def _snapshot(*reports: CronReport) -> CronReports:
 
 
 class TestPlanPrune:
+    @pytest.mark.entscheidung("E-049")
     def test_reported_cron_silent_longer_than_prune_after_is_stale(self):
         plan = plan_prune(
             [_static()],
@@ -90,6 +91,7 @@ class TestPlanPrune:
         assert plan.stale == ()
 
     @pytest.mark.parametrize("source", ["cli", "cli_unique"])
+    @pytest.mark.entscheidung("E-049")
     def test_cli_cron_is_never_pruned(self, source):
         plan = plan_prune(
             [_static(source=source)],
@@ -99,6 +101,7 @@ class TestPlanPrune:
 
         assert plan.stale == ()
 
+    @pytest.mark.entscheidung("E-049")
     def test_never_reported_static_cron_is_an_orphan_not_stale(self):
         plan = plan_prune(
             [_static("legacy"), _static("cli_only", source="cli")],
@@ -213,6 +216,7 @@ class TestLeaderPrunes:
         await leader.adopt_reported_crons()
         assert await memory.schedules.get("nightly") is None
 
+    @pytest.mark.entscheidung("E-049")
     async def test_never_reported_cron_stays_and_is_logged_once_as_candidate(
         self,
         memory,

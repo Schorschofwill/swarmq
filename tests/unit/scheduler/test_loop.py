@@ -214,6 +214,7 @@ class TestElectionLoop:
         assert loop.state == "standby"
         assert loop._prev_leader_seen is True
 
+    @pytest.mark.entscheidung("E-048")
     async def test_renew_exception_steps_down_after_threshold(
         self, backend, broker, config, lock_manager, store, signal_dispatcher
     ):
@@ -265,6 +266,7 @@ class TestElectionLoop:
 
         assert loop.state == "leader"
 
+    @pytest.mark.entscheidung("E-048")
     async def test_renew_failure_limit_derived_from_ttl_and_heartbeat(
         self, backend, broker, lock_manager, store, signal_dispatcher
     ):
@@ -334,6 +336,7 @@ class TestLeaderVersion:
         assert entry["error_type"] == "BackendConnectionError"
         assert entry["error"] == "valkey down"
 
+    @pytest.mark.entscheidung("E-029")
     async def test_outdated_leader_is_reported_once_per_change(
         self,
         backend,
@@ -674,6 +677,7 @@ class TestPollLoop:
 
         store.commit_fire.assert_not_awaited()
 
+    @pytest.mark.entscheidung("E-047")
     async def test_commit_owner_mismatch_transitions_to_standby(
         self, backend, broker, config, lock_manager, store, signal_dispatcher
     ):

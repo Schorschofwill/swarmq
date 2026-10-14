@@ -59,6 +59,7 @@ def _returned(routing_key: str) -> PublishError:
     return PublishError(cast("DeliveredMessage", SimpleNamespace(delivery=frame)), frame)
 
 
+@pytest.mark.entscheidung("E-002")
 async def test_returned_publish_raises_unroutable_without_retry_and_keeps_channel() -> None:
     broker = RabbitMQBroker("amqp://guest:guest@localhost/")
     channel = AsyncMock(is_closed=False)
@@ -101,6 +102,7 @@ def _all_throwaway_channels_closed(broker: RabbitMQBroker, throwaway: AsyncMock)
     return opened > 0 and throwaway.close.await_count == opened
 
 
+@pytest.mark.entscheidung("E-002")
 async def test_retry_later_redeclares_own_queue_on_throwaway_channel_and_retries() -> None:
     broker, channel, throwaway = _worker_broker(_returned("tasks.DQ"), None)
     delivery = _delivery()
@@ -138,6 +140,7 @@ async def test_failed_redeclare_becomes_broker_connection_error_and_leaves_origi
     cast("AsyncMock", delivery.handle).ack.assert_not_awaited()
 
 
+@pytest.mark.entscheidung("E-002")
 async def test_second_unroutable_publish_raises_after_a_single_redeclare() -> None:
     broker, _channel, throwaway = _worker_broker(_returned("tasks.DQ"), _returned("tasks.DQ"))
     delivery = _delivery()

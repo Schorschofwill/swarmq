@@ -89,6 +89,7 @@ async def _frame_or_outcome(transport: FakeTransport, publish: asyncio.Task[Any]
     return frame.result()
 
 
+@pytest.mark.entscheidung("E-042")
 async def test_connection_lost_before_the_frame_was_written_retries_on_a_new_channel() -> None:
     first, second = FakeTransport(), FakeTransport()
     broker = _broker(first, second)
@@ -104,6 +105,7 @@ async def test_connection_lost_before_the_frame_was_written_retries_on_a_new_cha
     assert receipt.queue == "tasks"
 
 
+@pytest.mark.entscheidung("E-042")
 async def test_connection_lost_while_waiting_for_the_confirm_is_indeterminate_and_not_resent() -> None:
     """Der Kern von B24: Die Nachricht kann schon in der Queue liegen. Ein
     erneutes Senden fuehrte den Task doppelt aus, ein ``BrokerConnectionError``
@@ -184,6 +186,7 @@ async def test_dead_letter_whose_ack_loses_the_connection_reports_the_copy_as_pu
         await dead_letter
 
 
+@pytest.mark.entscheidung("E-041")
 async def test_dead_letter_losing_the_copy_confirm_is_indeterminate_and_keeps_the_original() -> None:
     transport = FakeTransport()
     broker = _broker(transport)
@@ -199,6 +202,7 @@ async def test_dead_letter_losing_the_copy_confirm_is_indeterminate_and_keeps_th
     handle.ack.assert_not_awaited()
 
 
+@pytest.mark.entscheidung("E-042")
 async def test_a_reader_failure_before_the_frame_was_written_retries_on_a_new_channel() -> None:
     """Endet aiormqs Reader an einem kaputten Frame, ist die Verbindung tot
     wie bei ``AMQPConnectionError``; gesendet wurde nichts."""

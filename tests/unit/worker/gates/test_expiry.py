@@ -124,6 +124,7 @@ class TestCheckMaxAgeExpired:
         assert captured[0]["max_age_s"] == 60
         assert captured[0]["age_s"] >= 120
 
+    @pytest.mark.entscheidung("E-031")
     async def test_expired_stores_error_result_for_callers(self):
         w = _make_worker()
         ti = TaskInfo(name="t", queues=["q"], max_age=10)

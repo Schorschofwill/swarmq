@@ -67,6 +67,7 @@ def _sent(broker: RabbitMQBroker) -> list[str]:
     return [call.kwargs["routing_key"] for call in publish.await_args_list]
 
 
+@pytest.mark.entscheidung("E-025")
 async def test_unblocked_connection_publishes_without_waiting_or_roundtrip() -> None:
     event = Mock(spec=asyncio.Event)
     event.is_set.return_value = True
@@ -80,6 +81,7 @@ async def test_unblocked_connection_publishes_without_waiting_or_roundtrip() -> 
     broker._connection.ready.assert_not_awaited()  # type: ignore[union-attr]
 
 
+@pytest.mark.entscheidung("E-025")
 async def test_blocked_until_the_deadline_raises_publish_blocked(swarmq_logs) -> None:
     broker = _broker(_underlying(blocked=True), timeout=0.05)
     channel = broker._publish_channel
@@ -128,6 +130,7 @@ async def test_no_transport_connection_publishes_without_warning(swarmq_logs) ->
     assert [e for e in swarmq_logs if e["log_level"] == "warning"] == []
 
 
+@pytest.mark.entscheidung("E-025")
 async def test_unreadable_state_fails_open_with_one_warning_per_broker(swarmq_logs) -> None:
     # aiormq ohne das private Event: der Publish laeuft wie vor 0.12.
     broker = _broker(SimpleNamespace())

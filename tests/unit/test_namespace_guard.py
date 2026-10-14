@@ -54,6 +54,7 @@ def test_producer_app_accepts_namespace(monkeypatch: pytest.MonkeyPatch) -> None
     assert (app.config.namespace, app.backend.namespace) == ("app1", "app1")
 
 
+@pytest.mark.entscheidung("E-012")
 def test_worker_cli_exits_78_on_an_invalid_namespace(monkeypatch: pytest.MonkeyPatch) -> None:
     from swarmq.cli import main
     from swarmq.supervision import CONFIG_ERROR_EXIT_CODE

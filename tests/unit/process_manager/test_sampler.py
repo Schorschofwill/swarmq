@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from swarmq.process_manager.sampler import _make_queue_depth_sampler
 
 
@@ -81,6 +83,7 @@ class TestReadyDepthForAutoscaling:
     """Plan 0.12.0, MR 10 (Abschnitt 1, F9): der Autoscaler zaehlt nur die
     Haupt-Queue. Lange Rueckstellungen in den Delay-Stufen skalieren nicht."""
 
+    @pytest.mark.entscheidung("E-027")
     def test_sums_ready_depth_of_the_main_queues(self):
         admin = ReadyAdmin(ready={"a": 2, "b": 1}, depths={"a": 50, "b": 70})
 
@@ -88,6 +91,7 @@ class TestReadyDepthForAutoscaling:
 
         assert sampler() == 3
 
+    @pytest.mark.entscheidung("E-027")
     def test_magicmock_broker_falls_back_to_queue_depth(self):
         # Q15: ein MagicMock hat jedes Attribut; ``ready_depth`` liefert dort
         # nichts Await-bares. Der Sampler faellt auf ``queue_depth`` zurueck.
@@ -100,6 +104,7 @@ class TestReadyDepthForAutoscaling:
 
         assert _make_queue_depth_sampler(lambda: admin, ["a"])() == 5
 
+    @pytest.mark.entscheidung("E-027")
     def test_failing_ready_depth_falls_back_to_queue_depth(self):
         class Failing(FakeAdmin):
             async def ready_depth(self, queue):

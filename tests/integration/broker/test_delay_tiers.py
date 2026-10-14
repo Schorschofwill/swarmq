@@ -92,6 +92,7 @@ async def worker(rabbitmq_url: str) -> AsyncIterator[Worker]:
         await delete_queue_family(rabbitmq_url, queue)
 
 
+@pytest.mark.entscheidung("E-026")
 async def test_refused_tier_falls_back_to_the_delay_queue(worker: Worker, rabbitmq_url: str) -> None:
     tier = f"{worker.queue}.DQ.1s"
     connection = await aio_pika.connect(rabbitmq_url)
@@ -123,6 +124,7 @@ async def test_deleted_tier_is_declared_again_by_the_next_retry(worker: Worker, 
     assert await _message_count(rabbitmq_url, f"{worker.queue}.DQ.1s") == 0
 
 
+@pytest.mark.entscheidung("E-027")
 async def test_queue_depth_counts_tiers_and_ready_depth_only_the_main_queue(worker: Worker) -> None:
     await worker.start()
 

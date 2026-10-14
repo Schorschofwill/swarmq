@@ -120,6 +120,7 @@ async def test_publish_channel_declares_with_adopted_strategy() -> None:
     assert _published(broker)["tasks"]["x-dead-letter-strategy"] == "at-least-once"
 
 
+@pytest.mark.entscheidung("E-016")
 async def test_differing_delivery_limit_is_adopted_with_warning(swarmq_logs: list[dict[str, Any]]) -> None:
     limit = _conflict("tasks", "x-delivery-limit", "received '20' but current is '40'")
     broker = _broker(Probes({"tasks": [limit]}))
@@ -169,6 +170,7 @@ async def test_same_argument_conflicting_again_fails() -> None:
     assert len(probes.declared) == 2
 
 
+@pytest.mark.entscheidung("E-016")
 async def test_all_three_arguments_take_four_attempts() -> None:
     overflow = _conflict(
         "tasks", "x-overflow", "received none but current is the value 'reject-publish' of type 'longstr'"

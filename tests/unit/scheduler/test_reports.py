@@ -86,6 +86,7 @@ class TestFingerprint:
     def test_each_code_field_changes_the_fingerprint(self, change):
         assert cron_fingerprint(_static(**change)) != cron_fingerprint(_static())
 
+    @pytest.mark.entscheidung("E-011")
     def test_fingerprint_without_unique_for_is_unchanged_since_0_11(self):
         """BZ-09: ohne ``unique_for`` bleibt der Abdruck byte-gleich zu
         0.11 (Hex vor MR 9 berechnet), sonst meldeten 0.11- und 0.12-Worker

@@ -29,6 +29,7 @@ from tests.unit._log_capture import capture_swarmq_logs
 pytestmark = pytest.mark.timeout(5)
 
 
+@pytest.mark.entscheidung("E-021")
 @pytest.mark.befund("BZ-24")
 async def test_registry_less_schedule_warns_that_task_defaults_are_unresolved(broker, backend) -> None:
     with capture_swarmq_logs() as logs:

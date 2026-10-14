@@ -78,6 +78,7 @@ def _ctx(task_id: str = "bz12-task") -> GateContext:
     return GateContext(task_id=task_id, task_name="t", queue="q", task_info=TaskInfo(name="t", queues=["q"]))
 
 
+@pytest.mark.entscheidung("E-010")
 async def test_deferred_copy_after_a_long_backlog_is_still_skipped(
     deps: MagicMock, backend: InMemoryBackend, clock: FakeClock
 ) -> None:

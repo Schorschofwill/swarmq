@@ -67,6 +67,7 @@ def _mentions(record: logging.LogRecord, text: str) -> bool:
     return text in record.getMessage() or text in repr(record.__dict__)
 
 
+@pytest.mark.entscheidung("E-015")
 async def test_backlog_in_abandoned_queue_is_reported(
     rabbitmq_url: str, valkey_url: str, caplog: pytest.LogCaptureFixture
 ) -> None:

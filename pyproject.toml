@@ -79,6 +79,8 @@ test = [
     "prometheus_client",
     # Dishka DI integration tests exercise the with-installed path.
     "dishka>=1.10.1",
+    # Entscheidungsregister: Frontmatter der Pack-Regeln (tests/unit/test_entscheidungsregister.py).
+    "pyyaml",
 ]
 docs = [
     "mkdocs-material>=9.5",
@@ -102,6 +104,7 @@ typing = [
     "basedpyright>=1.40",
     # Typen für psutil (tests/support, Chaos-Tests).
     "types-psutil",
+    "types-PyYAML",
 ]
 
 # just als Einstiegspunkt für lokal und CI (KTD9); ``uv run just …``.
@@ -156,6 +159,7 @@ markers = [
     "property: hypothesis property-based tests (opt-in, nightly thorough)",
     "fuzz: byte/json fuzzing tests (opt-in, nightly)",
     "mutation: marker for mutmut configuration (not invoked directly)",
+    "entscheidung(id): schreibt eine Entscheidung aus compound-packs/swarmq-entscheidungen/ fest (ID E-nnn)",
     "befund(id): Nachweis eines offenen Befunds aus docs/befunde/ (immer mit xfail strict=True)",
     "compat: Mischbetrieb mit swarmq 0.11.x aus PyPI (tests/compat, opt-in, braucht Netz zu PyPI)",
     "spike: Charakterisierung des Broker-Verhaltens (tests/integration/spikes, RabbitMQ 4.3 und 4.2)",
@@ -315,7 +319,24 @@ max-complexity = 12
 # E2E-Hardening Phase 3 U3.10 — mutation testing.
 # Runner scores mutants against the fast unit-test suite.
 [tool.mutmut]
-paths_to_mutate = "src/swarmq/"
-backup = false
-runner = "uv run --extra test pytest tests/unit -x --no-header -q"
-tests_dir = "tests/unit"
+# mutmut 3: Kernmodule (Zustellung, Gates, Retry, Scheduler, Schedules, Workflows).
+source_paths = [
+    "src/swarmq/backoff.py",
+    "src/swarmq/keyspace.py",
+    "src/swarmq/locking.py",
+    "src/swarmq/worker/",
+    "src/swarmq/broker/rabbitmq/delivery.py",
+    "src/swarmq/broker/rabbitmq/publish_phase.py",
+    "src/swarmq/scheduler/",
+    "src/swarmq/backend/valkey/schedules.py",
+    "src/swarmq/backend/valkey/results.py",
+    "src/swarmq/client/schedule.py",
+    "src/swarmq/workflow_orchestration.py",
+]
+pytest_add_cli_args_test_selection = ["tests/unit"]
+# Abgewählt: Architektur-/Typ-Tests prüfen den (mutierten) Quelltext; zwei Tests erkennen Tasks am Coroutine-Namen.
+pytest_add_cli_args = ["-p", "no:randomly", "-q", "--no-header", "--ignore", "tests/unit/test_architecture_guards.py", "--ignore", "tests/unit/typing", "--ignore", "tests/unit/test_benchmark_guard.py", "--deselect", "tests/unit/worker/test_lifecycle.py::TestStartupAbortLeavesNoScheduler", "--ignore", "tests/unit/test_logging_architecture.py", "--deselect", "tests/unit/scheduler/test_loop_candidate.py::test_second_start_does_not_start_a_second_report_loop"]
+also_copy = ["tests", "typings", "src/swarmq", "website", "docs", "scripts", "benchmarks", "overrides", "README.md", "AGENTS.md", "mkdocs.yml", "docker-compose.yml", "docker-compose.chaos.yml", "docker-compose.swarmq-dev.yml", "uv.lock"]
+# Kein Fork aus dem Hauptprozess: die Testsuite hinterlässt Modulzustand.
+process_isolation = "forkserver"
+forkserver_warmup = "none"

@@ -24,6 +24,7 @@ def test_uppercase_namespace_is_rejected_with_a_hint(value: str) -> None:
         validate_namespace(value)
 
 
+@pytest.mark.entscheidung("E-012")
 def test_uppercase_environment_namespace_is_a_configuration_error(monkeypatch: pytest.MonkeyPatch) -> None:
     from swarmq.config import SwarmQConfig
     from swarmq.exceptions import ConfigurationError

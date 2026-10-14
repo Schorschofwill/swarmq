@@ -296,6 +296,7 @@ class TestPreStartCancelIntegration:
 
 
 class TestRunningCancelIntegration:
+    @pytest.mark.entscheidung("E-020")
     @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_running_task_cancel_via_monitor(
         self,

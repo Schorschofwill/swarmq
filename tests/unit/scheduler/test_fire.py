@@ -106,7 +106,9 @@ def _unique_headers(broker) -> tuple[str, str]:
     return headers["x-swarmq-unique-hash"], headers["x-swarmq-unique-until"]
 
 
+@pytest.mark.entscheidung("E-011")
 @pytest.mark.usefixtures("_cleanup_tasks")
+@pytest.mark.entscheidung("E-032")
 async def test_old_definition_takes_both_unique_values_from_the_registry(loop, backend, broker):
     """BZ-09: Eine Definition aus 0.11 (ohne ``unique_for``) mischt nicht den
     Default ``unique_until`` der Definition mit ``unique_for`` der Registry."""
@@ -119,6 +121,7 @@ async def test_old_definition_takes_both_unique_values_from_the_registry(loop, b
     assert _unique_headers(broker)[1] == "start"
 
 
+@pytest.mark.entscheidung("E-011")
 @pytest.mark.usefixtures("_cleanup_tasks")
 async def test_definition_with_unique_for_beats_the_registry(loop, backend, broker):
     _register_ping(unique_for=60, unique_until="completion")
@@ -145,6 +148,7 @@ async def memory_loop(broker, config, lock_manager, signal_dispatcher):
     return loop
 
 
+@pytest.mark.entscheidung("E-011")
 async def test_publish_failure_releases_the_own_claim_so_the_next_poll_fires(memory_loop, broker):
     """BZ-09/B7: Ohne Freigabe haelt der eigene Claim des gescheiterten
     Fires den Wiederholungsversuch als Duplikat auf; der Termin ginge verloren."""
@@ -156,6 +160,7 @@ async def test_publish_failure_releases_the_own_claim_so_the_next_poll_fires(mem
     assert broker.publish.await_count == 2
 
 
+@pytest.mark.entscheidung("E-011")
 async def test_indeterminate_publish_keeps_the_claim(memory_loop, broker):
     """Q14: Bei ``PublishIndeterminate`` kann die Nachricht angekommen sein;
     das Flag bleibt, der Wiederholungsversuch gilt als Duplikat."""
@@ -180,6 +185,7 @@ async def test_blocked_publish_releases_the_own_claim(memory_loop, broker):
     assert broker.publish.await_count == 2
 
 
+@pytest.mark.entscheidung("E-011")
 async def test_publish_failure_keeps_a_cli_unique_claim_of_the_producer(loop, backend, broker):
     """B7: Das Flag eines ``cli_unique``-Oneshots hat der Producer genommen;
     der Leader gibt es bei einem Publish-Fehler nicht frei."""

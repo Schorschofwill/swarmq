@@ -25,6 +25,7 @@ from tests.unit.worker._helpers import AddTask, _default_payload
 pytestmark = pytest.mark.timeout(5)
 
 
+@pytest.mark.entscheidung("E-008")
 @pytest.mark.befund("BZ-06")
 async def test_first_delivery_of_an_unknown_task_is_deferred_not_dead_lettered(broker, backend, config) -> None:
     # Alter Worker: kennt nur ``add``; ein neuer Producer schickt ``new_task``.

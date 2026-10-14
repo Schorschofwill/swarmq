@@ -280,7 +280,7 @@ def _parse_log_config(path: str, text: str) -> Any:
     if not path.endswith((".yaml", ".yml")):
         return jsonlib.loads(text)
     try:
-        import yaml  # type: ignore[import-untyped]  # PyYAML ohne mitgelieferte Typen
+        import yaml
     except ImportError as exc:
         msg = "YAML logging configs need PyYAML (pip install pyyaml)"
         raise ImportError(msg) from exc

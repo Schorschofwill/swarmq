@@ -59,6 +59,7 @@ def _events(logs: list[dict[str, Any]], event: str) -> list[dict[str, Any]]:
     return [e for e in logs if e["event"] == event]
 
 
+@pytest.mark.entscheidung("E-043")
 async def test_render_error_with_failed_ack_after_publish_is_terminal(worker, broker, swarmq_logs) -> None:
     worker._lock_manager = MagicMock()
     broker.dead_letter = AsyncMock(side_effect=SettleFailedAfterPublish("channel closed"))
@@ -83,6 +84,7 @@ class _Locked(Task):
         return None
 
 
+@pytest.mark.entscheidung("E-043")
 async def test_wait_limit_with_failed_ack_after_publish_is_terminal(worker, broker, swarmq_logs) -> None:
     worker._lock_manager = MagicMock()
     worker._lock_manager.acquire = AsyncMock(return_value=None)  # Konflikt

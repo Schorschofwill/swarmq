@@ -18,6 +18,7 @@ def _cfg(**kwargs: object) -> SwarmQConfig:
     return SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x", **kwargs)  # type: ignore[arg-type]
 
 
+@pytest.mark.entscheidung("E-004")
 def test_default_is_one_day() -> None:
     assert _cfg().scheduler_unroutable_oneshot_max_s == 86400.0
 

@@ -34,6 +34,7 @@ def _tracker(window_s: float = 30.0):
     return PublishStepdown(window_s, clock=clock), clock
 
 
+@pytest.mark.entscheidung("E-013")
 def test_a_gap_longer_than_the_window_starts_a_new_series() -> None:
     tracker, clock = _tracker(30.0)
     tracker.failure(BrokerConnectionError("down"))
@@ -88,6 +89,7 @@ def leader(backend, broker, config, lock_manager, store, signal_dispatcher, cloc
     return loop
 
 
+@pytest.mark.entscheidung("E-013")
 async def test_a_new_term_starts_a_new_series(leader, clock, lock_manager) -> None:
     from unittest.mock import AsyncMock
 
@@ -134,6 +136,7 @@ async def test_a_single_broken_cron_does_not_step_down(leader, clock, broker, lo
     lock_manager.release.assert_not_awaited()
 
 
+@pytest.mark.entscheidung("E-013")
 async def test_a_single_cron_without_confirms_does_not_step_down(leader, clock, broker, lock_manager) -> None:
     # Georg, 2026-10-11: ``PublishIndeterminate`` zaehlt nicht fuer den Ruecktritt.
     from unittest.mock import AsyncMock
