@@ -19,12 +19,12 @@ Für jede Änderung am Produktionscode MUSS zuerst ein fehlschlagender Test exis
 
 --- RED ---
 1. EINEN fehlschlagenden Test schreiben (nicht zwei, nicht drei)
-2. Test ausführen: pytest tests/unit/test_<modul>.py::<testname> -x
+2. Test ausführen: uv run --extra test pytest tests/unit/test_<modul>.py::<testname> -x (ein Unit-Test braucht weder Dienste noch Sperre)
 3. Verifizieren: Test MUSS fehlschlagen, und zwar aus dem RICHTIGEN Grund
 
 --- GREEN ---
 4. MINIMALEN Produktionscode schreiben (nur so viel wie nötig)
-5. ALLE Tests ausführen: pytest tests/ -x
+5. ALLE Tests ausführen: uv run just all (Unit, Property, Fuzz, Integration, e2e; Testports und Sperre setzt das Rezept)
 6. Verifizieren: ALLE Tests müssen grün sein
 
 --- REFACTOR (optional, aber regelmäßig) ---
@@ -73,11 +73,17 @@ Für jede Änderung am Produktionscode MUSS zuerst ein fehlschlagender Test exis
 |---|---|
 | Alle Tests grün | Kein Commit, kein neues Feature wenn Tests rot sind |
 | Kein ungetesteter Code | Jede Zeile Produktionscode wurde durch einen fehlschlagenden Test motiviert |
-| Tests sind schnell | Jeder Unit-Test < 100 ms. Die Gesamtlaufzeit darf mit der Zahl der Tests wachsen; Richtwert sind rund 15 ms pro Unit-Test im Mittel. Langsame Tests mit `pytest tests/unit --durations=20` finden |
-| Langsame Tests verschieben, nicht abschwächen | Ein Unit-Test, der dauerhaft über 100 ms braucht (echte Prozesse, Timer, Fork), gehört nach `tests/integration/` oder trägt eine Begründung im Test |
+| Tests sind schnell | Jeder Unit-Test < 100 ms. Die Gesamtlaufzeit darf mit der Zahl der Tests wachsen; Richtwert sind rund 15 ms pro Unit-Test im Mittel. `uv run just unit` meldet jede Setup- oder Call-Phase über 100 ms am Ende und in `slow-unit-tests.json` |
+| Langsame Tests melden, nicht abschwächen | Eine Überschreitung ist kein Fehler: Lieber ein langsamer genauer Test als ein schneller ungenauer. Ein Unit-Test, der dauerhaft über 100 ms braucht (echte Prozesse, Timer, Fork), gehört nach `tests/integration/` oder trägt eine Begründung im Test |
 | Tests sind deterministisch | Kein Test darf manchmal bestehen und manchmal fehlschlagen |
-| Tests sind unabhängig | Kein Test darf von der Ausführungsreihenfolge abhängen |
-| Format, Lint und Typen grün | `ruff format --check`, `ruff check` (alle Regeln, Ausnahmen begründet in `pyproject.toml`), mypy und basedpyright müssen grün sein, bevor committed wird. Die Hooks erzwingen Format und Lint beim Commit, die Typprüfer erst beim Push (auf dem Arbeitsbaum); vor dem Commit deshalb mypy und basedpyright selbst laufen lassen. Verbindlich ist der CI-Job `lint-and-types`. Hooks einrichten (`uv run prek install --hook-type pre-commit --hook-type pre-push --allow-missing-config`, siehe `docs/testing/test-strategy.md`). Jede neue Unterdrückung (`# noqa`, `# type: ignore`, `# pyright: ignore`) nennt Code und Grund; ältere `type: ignore` in `tests/` tragen teils nur den Code |
+| Tests sind unabhängig | Kein Test darf von der Ausführungsreihenfolge abhängen. Jeder Lauf mischt die Reihenfolge (pytest-randomly); es gibt keine Wiederholung fehlgeschlagener Tests. Ein roter Lauf wird mit dem ausgegebenen Seed nachgestellt: `SWARMQ_TEST_SEED=<seed> uv run just <rezept>` |
+| Warnungen sind Fehler | `filterwarnings = error`: Jede Warnung, auch eine `ResourceWarning` aus `__del__` (offene Verbindung, Pipe, Socket), lässt den Test scheitern, der sie erzeugt. Ausnahmen nur für Lecks in Bibliotheken, eng an den betroffenen Tests, mit Befund in `docs/befunde/teststrenge-2026-10.md` und Marker aus `tests/support/known_leaks.py` |
+| Coverage-Gate | Die CI misst Unit, Integration und e2e mit Kindprozessen (`coverage-combine`). Neue und geänderte Zeilen müssen zu 100 % abgedeckt sein (diff-cover gegen den Merge-Base mit `main`); `fail_under` in `pyproject.toml` darf nur steigen und wird mit `uv run just ratchet` aus drei `main`-Läufen angehoben |
+| Format, Lint und Typen grün | `uv run just lint` (Format, ruff mit allen Regeln, Ausnahmen begründet in `pyproject.toml`) und `uv run just types` (mypy über `src` und `tests`, basedpyright, stubtest) müssen grün sein, bevor committed wird. Die Hooks erzwingen Format und Lint beim Commit, die Typprüfer erst beim Push (auf dem Arbeitsbaum); vor dem Commit deshalb `uv run just types` selbst laufen lassen (`uv run mypy` allein prüft `tests/` nicht). Verbindlich ist der CI-Job `lint-and-types`. Hooks einrichten (`uv run prek install --hook-type pre-commit --hook-type pre-push --allow-missing-config`, siehe `docs/testing/test-strategy.md`). Jede neue Unterdrückung (`# noqa`, `# type: ignore`, `# pyright: ignore`) nennt Code und Grund; ältere `type: ignore` in `tests/` tragen teils nur den Code |
+
+### Tests ausführen
+
+Einstiegspunkt ist das `justfile`: `uv run just` listet die Rezepte (`unit`, `property`, `fuzz`, `integration`, `e2e`, `all`, `chaos`, `stress`, `coverage`, `lint`, `types`, …); Test-Rezepte reichen Argumente an pytest durch (`uv run just unit -k logging`). Rezepte mit RabbitMQ und Valkey setzen die Testports 5699/6399 und laufen unter einer gemeinsamen Sperre, weil sich Sitzungen sonst gegenseitig stören (`docs/solutions/tooling-decisions/feste-testports-und-testsperre-2026-10-14.md`). Integrations- und e2e-Tests nie direkt gegen 5672/6379 starten.
 
 ### Verbotene Aktionen
 

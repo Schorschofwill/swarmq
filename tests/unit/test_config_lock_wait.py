@@ -35,7 +35,11 @@ def test_must_be_positive() -> None:
         _cfg(lock_wait_max_s=0)
 
 
-@pytest.mark.parametrize("value", [float("inf"), float("nan"), "inf", "nan"])
+@pytest.mark.parametrize(
+    "value",
+    [float("inf"), float("nan"), "inf", "nan"],
+    ids=["float-inf", "float-nan", "str-inf", "str-nan"],
+)
 def test_must_be_finite(monkeypatch: pytest.MonkeyPatch, value: object) -> None:
     """Review MR 13, P2-3: ``inf``/``nan`` bestehen die Pruefung ``<= 0``;
     ``int(inf * 1000)`` im Lock-Gate warf dann bei jedem Konflikt."""

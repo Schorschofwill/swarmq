@@ -147,11 +147,17 @@ class TestResolveWatchDirs:
         finally:
             sys.modules.pop("swarmq_ns_test_pkg", None)
 
-    def test_installed_package_warns_with_module_name(self, swarmq_logs):
+    def test_installed_package_warns_with_module_name(self, swarmq_logs, monkeypatch, tmp_path):
         """Plan 2026-10-06-0831, U9: ``module`` ist ein reserviertes
-        LogRecord-Attribut -- das Feld heisst ``module_name``."""
+        LogRecord-Attribut -- das Feld heisst ``module_name``.
+
+        ``sys.prefix`` wird ausdrücklich gesetzt: Ob structlog darunter
+        liegt, hängt sonst von der Umgebung ab (``uv run --with`` legt ein
+        Overlay an, dessen Präfix das Paket nicht enthält)."""
         import structlog
 
+        monkeypatch.setattr(sys, "prefix", str(Path(structlog.__file__).parent.parent))
+        monkeypatch.setattr(sys, "exec_prefix", str(tmp_path))
         resolve_watch_dirs("structlog", ())
         [entry] = [e for e in swarmq_logs if e["event"] == "watch_dir_inside_venv_or_stdlib"]
         assert entry["log_level"] == "warning"

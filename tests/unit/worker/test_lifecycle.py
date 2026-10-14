@@ -999,6 +999,17 @@ class TestAbortTeardownClosesComputePool:
         assert worker._executor is before
 
 
+class TestAbortTeardownDrainsExecutionGuard:
+    """Ein abgebrochener start_worker() darf keine Nachholversuche des
+    Ausfuehrungsschutzes zuruecklassen: sie liefen gegen das geschlossene
+    Backend weiter, bis der Event-Loop schliesst (Plan 2026-10-13-0902, U3)."""
+
+    async def test_abort_teardown_drains_the_execution_guard(self, worker):
+        worker._execution_guard.drain = AsyncMock()
+        await worker._abort_teardown()
+        worker._execution_guard.drain.assert_awaited_once()
+
+
 class TestWorkerIdentityInSignalsAndMetrics:
     """U2 (R3): dieselbe stabile Kennung in Signalen, Metrik-Labels und
     Logkontext — ``str(id(self))`` wechselte bei jedem Prozess und war fuer

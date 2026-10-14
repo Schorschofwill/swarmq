@@ -48,6 +48,7 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import BackendConnectionError
 from swarmq.task import Task, TaskInfo
 from tests.chaos.conftest import ChaosStack
+from tests.support.known_leaks import aiormq_streamwriter_leak
 
 
 def _unique_queue() -> str:
@@ -259,6 +260,8 @@ class TestResourceExhaustion:
     # Test 3 — RabbitMQ channel-limit exhaustion
     # ------------------------------------------------------------------
 
+    # TS-02: der Server schliesst die Verbindung am Kanal-Limit (tests/support/known_leaks.py).
+    @aiormq_streamwriter_leak
     async def test_channel_limit_exhaustion_typed_error(
         self,
         chaos_stack: ChaosStack,

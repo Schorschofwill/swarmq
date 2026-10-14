@@ -1,4 +1,4 @@
-# Test-Strategie (Phase 1+2 Stand)
+# Test-Strategie
 
 Das Test-Universum von SwarmQ teilt sich in **sechs** Suiten mit
 unterschiedlichen Ausführungs-Stufen.
@@ -25,7 +25,35 @@ damit der Dev-Loop schnell bleibt. Für Unit-Tests gilt die Regel aus
 feste Grenze für die Gesamtlaufzeit gibt es nicht — sie darf mit der Zahl der
 Tests wachsen. Ein Unit-Test, der dauerhaft länger braucht (echte Prozesse,
 Timer, Fork), wandert nach `tests/integration/`, statt abgeschwächt zu werden.
-Langsame Tests findet `pytest tests/unit --durations=20`.
+`uv run just unit` meldet jede Setup- oder Call-Phase über 100 ms am Ende des
+Laufs und in `slow-unit-tests.json`; eine Überschreitung ist kein Fehler
+(lieber langsam und genau). Unter Coverage schweigt der Bericht, weil die
+Zeiten dort aufgebläht sind.
+
+## Einstiegspunkt und Reproduktion
+
+Alle Suiten, Lint und Typen laufen über das `justfile` (`uv run just` listet
+die Rezepte); die CI ruft dieselben Rezepte auf. Test-Rezepte reichen weitere
+Argumente an pytest durch, etwa `uv run just unit -k logging`. Rezepte mit
+RabbitMQ und Valkey setzen die Testports 5699/6399 und laufen unter einer
+gemeinsamen Sperre (`docs/solutions/tooling-decisions/feste-testports-und-testsperre-2026-10-14.md`).
+
+Jeder Lauf mischt die Reihenfolge (pytest-randomly), und fehlgeschlagene Tests
+werden nicht wiederholt. Ein Rezept setzt den Seed ausdrücklich und gibt ihn
+aus (`pytest-randomly: Seed …`); in der CI ist es die Pipeline-ID. Nachstellen:
+
+```bash
+SWARMQ_TEST_SEED=<seed> uv run just e2e
+```
+
+Hypothesis gibt bei einem Fehlschlag sein eigenes Beispiel und
+`--hypothesis-seed=<n>` aus; das wird zusätzlich übergeben, etwa
+`uv run just property --hypothesis-seed=<n>`.
+
+Warnungen sind Fehler (`filterwarnings = error`); auch eine `ResourceWarning`
+aus `__del__` lässt den Test scheitern, der das Leck erzeugt hat. Ausnahmen
+gibt es nur für Lecks in Bibliotheken, eng an den betroffenen Tests:
+`docs/befunde/teststrenge-2026-10.md`, Marker in `tests/support/known_leaks.py`.
 
 ## CI-Stufen
 
@@ -37,12 +65,24 @@ niemand für eine Zusicherung hält.
 
 | Job | Was |
 |---|---|
-| `lint-and-types` | `ruff format --check .`, `ruff check src/ tests/ typings/`, `mypy src/swarmq tests`, `basedpyright`, `stubtest` (siehe „Lint, Format und Typen“) |
+| `lint-and-types` | `just lint` und `just types` (siehe „Lint, Format und Typen“) |
 | `lock-check` | `uv.lock` ist zum `pyproject.toml` synchron |
-| `unit-tests` | `tests/unit`, dazu `tests/property` und `tests/fuzz/test_parser_fuzz.py` |
-| `integration-tests` | `tests/integration` gegen RabbitMQ und Valkey |
-| `e2e-tests` | `tests/e2e` |
+| `unit-tests` | `just unit`, `just property`, `just fuzz`, unter Coverage |
+| `integration-tests` | `just integration` gegen RabbitMQ und Valkey, unter Coverage |
+| `e2e-tests` | `just e2e`, unter Coverage |
+| `coverage-combine` | nur wenn die drei Test-Jobs grün sind: `just coverage-report` (zusammenführen, `coverage.xml` für die MR-Anzeige, `fail_under`) und `just coverage-gate` |
 | `secret_detection` | GitLab Secret Detection (Template) |
+
+**Coverage-Gate.** Gemessen werden Zeilen und Zweige über Unit, Integration
+und e2e einschließlich aller Kindprozesse (spawn, forkserver, fork mit
+`os._exit`, execv; Konfiguration in `pyproject.toml`). `just coverage-gate`
+holt `main` ausdrücklich und vergleicht gegen den Merge-Base: `fail_under`
+darf nicht sinken, neue und geänderte Zeilen müssen zu 100 % abgedeckt sein
+(diff-cover). Auf `main` und bei Tags entfällt der Vergleich. Die Untergrenze
+hebt `uv run just ratchet` an (kleinster der letzten drei `main`-Werte minus
+0,5 Prozentpunkte, abgerundet; die Schwankung lag bei Einführung bei 0,01).
+Örtlich misst `uv run just coverage`; örtliche Werte liegen tiefer als die der
+CI (kein zweiter Broker) und zählen für den Ratchet nicht.
 
 **Manuell in der Pipeline**, nicht blockierend: `stress-tests`, `soak-tests`.
 Beide werden faktisch nie gestartet; wer Last messen will, fährt sie von
@@ -78,11 +118,11 @@ KTD15 aus Plan U2.
 Standard-Suite (Unit, Integration, E2E) gegen den Teststack:
 
 ```bash
-SWARMQ_TEST_RABBITMQ_PORT=5699 SWARMQ_TEST_VALKEY_PORT=6399 \
-  uv run --extra test --extra reload pytest tests -q
+uv run just all
 ```
 
-Erwartung (Stand 2026-10-07): **3476 passed, 2 skipped**.
+Erwartung (Stand 2026-10-14): alle Suiten grün, rund 4360 Unit-, 590
+Integrations- und 270 e2e-Tests.
 
 Dann das vollständige Chaos-Gate über alle opt-in-Marker. Es umfasst
 `tests/chaos` (eigene Compose-Stacks), den Chaos-gestützten Fuzz-Lauf
@@ -102,12 +142,10 @@ sind. Jeder Wert lässt sich per `SWARMQ_TEST_TOXIPROXY_*` überschreiben:
 ```bash
 docker run -d --name swarmq-test-toxiproxy --network host \
   ghcr.io/shopify/toxiproxy:2.9.0 -host 127.0.0.1 -port 8474
-SWARMQ_TEST_RABBITMQ_PORT=5699 SWARMQ_TEST_VALKEY_PORT=6399 \
-  uv run --extra test --extra reload pytest tests -q \
-  -m "chaos or stress or property or fuzz"
+uv run just chaos -m "chaos or stress or property or fuzz"
 ```
 
-Erwartung (Stand 2026-10-07): **113 passed, 4 skipped** (117 Tests). Die
+Erwartung (Stand 2026-10-14): **116 passed, 4 skipped** (120 Tests). Die
 vier Skips sind begründet und sollen so bleiben — `libfaketime` fehlt (auf
 die U3.x-Stressreihe vertagt), und die drei Disk-Pressure-Tests stehen
 hinter `SWARMQ_RUN_DISK_TESTS=1`, weil sie unter geteilter Last flattern.
@@ -117,11 +155,9 @@ bestanden.
 Einzeln, etwa zum Nachfahren eines roten Teils:
 
 ```bash
-uv run --extra test --extra reload pytest -m chaos tests/chaos -q        # 41 Tests, 37 passed + 4 skipped
-uv run --extra test --extra reload pytest -m fuzz tests/fuzz/test_external_publish_fuzz.py -q  # 2 passed
-# Chaos-Kombinationen gegen den Toxiproxy von oben: 28 passed
-SWARMQ_TEST_RABBITMQ_PORT=5699 SWARMQ_TEST_VALKEY_PORT=6399 \
-  uv run --extra test pytest -m chaos tests/e2e/combinations -q
+uv run just chaos tests/chaos -q                      # nur tests/chaos
+uv run just chaos -m fuzz tests/fuzz/test_external_publish_fuzz.py -q
+uv run just chaos tests/e2e/combinations -q           # Kombinationen gegen den Toxiproxy von oben
 ```
 
 Die Chaos-Kombinationen in `tests/e2e/combinations` waren von Mai bis
@@ -182,7 +218,7 @@ etwa nach `docker compose up -d` aus diesem Repo:
 ```bash
 SWARMQ_TEST_RABBITMQ_PORT=5672 SWARMQ_TEST_RABBITMQ_MGMT_PORT=15672 \
 SWARMQ_TEST_VALKEY_PORT=6379 SWARMQ_TEST_ALLOW_DEFAULT_PORTS=1 \
-  uv run --extra test --extra reload pytest tests/integration -q
+  uv run just integration
 ```
 
 Nur der Wert `1` gibt frei. Die CI ist nicht betroffen: Sie erreicht die
@@ -196,13 +232,16 @@ stehen in den Dependency-Groups `lint` (ruff, prek) und `typing` (mypy,
 basedpyright, Stubs); `uv sync` und `uv run` ziehen beide über
 `default-groups` mit.
 
-| Prüfung | Befehl | Umfang |
+`uv run just lint` prüft Format und Lint, `uv run just types` die Typen; die
+CI ruft dieselben Rezepte auf.
+
+| Prüfung | Rezept | Umfang |
 |---|---|---|
-| Format | `uv run ruff format --check .` | alle Python-Dateien |
-| Lint | `uv run ruff check src tests typings` | `select = ["ALL"]`, Ausnahmekatalog in `pyproject.toml` |
-| mypy | `uv run --extra test --extra reload mypy src/swarmq tests` | strict plus Zusatzcodes; Tests ohne Annotationspflicht |
-| basedpyright | `uv run --extra test --extra reload basedpyright` | strict, nur `src/swarmq` |
-| Stubs | `uv run python -m mypy.stubtest msgpack croniter --mypy-config-file pyproject.toml --ignore-missing-stub` | `typings/` gegen die installierten Pakete; Drift nach einem Upgrade wird rot |
+| Format | `just lint` | `ruff format --check .`, alle Python-Dateien |
+| Lint | `just lint` | `ruff check src/ tests/ typings/`, `select = ["ALL"]`, Ausnahmekatalog in `pyproject.toml` |
+| mypy | `just types` | `mypy src/swarmq tests`, strict plus Zusatzcodes; Tests ohne Annotationspflicht. `uv run mypy` allein prüft `tests/` nicht |
+| basedpyright | `just types` | strict, nur `src/swarmq` |
+| Stubs | `just types` | `stubtest` für `typings/` gegen die installierten Pakete; Drift nach einem Upgrade wird rot |
 
 **Hooks einrichten** (einmal je Klon):
 
@@ -221,26 +260,37 @@ Formatierungs-Commits stehen in `.git-blame-ignore-revs`.
 
 ## Lokale Ausführung
 
+Die Testcontainer `swarmq-test-rabbit` (5699, Management 15699) und
+`swarmq-test-valkey` (6399) sind die Standardziele; die `just`-Rezepte setzen
+die Ports selbst.
+
 ```bash
 # Dev-Loop
-uv run --extra test pytest tests/unit -q
+uv run just unit
 
-# E2E gegen Dev-Stack
-SWARMQ_TEST_RABBITMQ_PORT=5673 SWARMQ_TEST_VALKEY_PORT=6380 \
-  uv run --extra test pytest tests/e2e -q
+# Integration und e2e gegen die Testcontainer (mit Sperre)
+uv run just integration
+uv run just e2e
+
+# Alles, was die CI testet, unter einer Sperre
+uv run just all
+
+# Coverage wie in der CI (Unit, Integration, e2e, zusammengeführt)
+uv run just coverage
 
 # Chaos-Suite (startet eigene Compose-Stacks)
-uv run --extra test pytest tests/chaos -m chaos
+uv run just chaos tests/chaos
 
 # Property-Tests im thorough-Profil
-HYPOTHESIS_PROFILE=thorough uv run --extra test pytest tests/property -m property
+HYPOTHESIS_PROFILE=thorough uv run just property
 
-# Soak (default 60s; opt-in 1h via env)
+# Soak (default 60s; opt-in 1h via env); ohne eigenes Rezept
 SWARMQ_SOAK_HOURS=1 uv run --extra test pytest tests/soak -m soak
 
 # Mischbetrieb 0.11.0 / Arbeitsstand: legt pro Sitzung ein venv mit
-# swarmq==0.11.0 an (Abhängigkeiten aus tests/compat/constraints-0.11.0.txt)
-uv run --extra test --extra reload pytest tests/compat -m compat -q
+# swarmq==0.11.0 an (Abhängigkeiten aus tests/compat/constraints-0.11.0.txt);
+# ohne eigenes Rezept, Sperre per Hand
+scripts/with-test-lock.sh uv run --extra test --extra reload pytest tests/compat -m compat -q
 ```
 
 ## RabbitMQ-Versionen

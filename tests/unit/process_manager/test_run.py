@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import argparse
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -102,7 +102,10 @@ class TestReloadRoutingThroughCLI:
         assert kwargs["watch_dirs"][0].endswith("json")
         # Single find_spec call — the one inside _validate_module_importable.
         # resolve_watch_dirs must NOT call find_spec again because spec is passed.
-        hot_reload_find_spec.assert_not_called()
+        # The patch replaces importlib.util.find_spec process-wide, so only the
+        # module under test counts: coverage resolves its ``source`` package
+        # through the same function while it measures.
+        assert call("json") not in hot_reload_find_spec.call_args_list
 
     def test_reload_true_without_watchfiles_raises(self):
         import importlib.util

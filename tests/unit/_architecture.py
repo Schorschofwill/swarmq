@@ -37,7 +37,12 @@ def iter_modules(src_root: Path, package: str) -> dict[str, Path]:
 
 
 def module_line_counts(src_root: Path, package: str) -> dict[str, int]:
-    return {name: sum(1 for _ in path.open(encoding="utf-8")) for name, path in iter_modules(src_root, package).items()}
+    return {name: _line_count(path) for name, path in iter_modules(src_root, package).items()}
+
+
+def _line_count(path: Path) -> int:
+    with path.open(encoding="utf-8") as handle:
+        return sum(1 for _ in handle)
 
 
 _DYNAMIC_IMPORT_FUNCS = frozenset({"import_module", "__import__"})

@@ -37,6 +37,7 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import TaskCancelledError
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
+from tests.support.known_leaks import aiormq_streamwriter_leak
 from tests.support.worker_subprocess import (
     SHORT_SCHEDULER_LOCK_ENV,
     SHORT_SCHEDULER_LOCK_TTL_S,
@@ -332,6 +333,8 @@ class TestRetryUniqueCombo:
         assert len(dup_signals) >= 1
 
     @pytest.mark.chaos
+    # TS-02: Toxiproxy trennt die RabbitMQ-Verbindung (tests/support/known_leaks.py).
+    @aiormq_streamwriter_leak
     async def test_backend_drop_mid_retry_faf_invariants(
         self,
         rabbitmq_url: str,
@@ -1409,6 +1412,8 @@ class TestResultTtlRetryCombo:
         assert_at_least_once_held(attempts, expected_min=3)
 
     @pytest.mark.chaos
+    # TS-02: Toxiproxy trennt die RabbitMQ-Verbindung (tests/support/known_leaks.py).
+    @aiormq_streamwriter_leak
     async def test_backend_drop_mid_result_store_faf_invariants(
         self,
         rabbitmq_url: str,

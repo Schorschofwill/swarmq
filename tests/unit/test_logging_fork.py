@@ -84,7 +84,8 @@ from tests.unit._fork_child import run_in_forked_child
 pytestmark = pytest.mark.timeout(5)
 
 RECORDS: list[logging.LogRecord] = []
-"""Ziel des ``RecordingHandler`` aus den dictConfig-Dateien der Tests."""
+"""Ziel des ``RecordingHandler`` aus den dictConfig-Dateien der Tests; je
+Test eine neue Liste (``isolated_logging``)."""
 
 RECORDED = threading.Condition()
 """Meldet jeden neuen Eintrag in ``RECORDS``."""
@@ -94,12 +95,21 @@ RELEASE = threading.Event()
 
 
 class RecordingHandler(logging.Handler):
-    """Per dictConfig (``"()"``) referenzierbarer Sammel-Handler."""
+    """Per dictConfig (``"()"``) referenzierbarer Sammel-Handler.
+
+    Bindet sich beim Anlegen an die Liste des laufenden Tests: Der Listener
+    eines Tests, den erst dessen Teardown freigibt (``RELEASE``), schreibt
+    unter Last womoeglich noch, wenn der naechste Test laeuft. In eine
+    gemeinsame Liste erbte dessen Kind den fremden Eintrag beim Fork."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._records = RECORDS
 
     @override
     def emit(self, record: logging.LogRecord) -> None:
         with RECORDED:
-            RECORDS.append(record)
+            self._records.append(record)
             RECORDED.notify_all()
 
 
@@ -158,7 +168,7 @@ def isolated_logging(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     freigegeben."""
     monkeypatch.setattr(logging, "_handlerList", [])
     monkeypatch.setattr(logging, "_handlers", weakref.WeakValueDictionary())
-    RECORDS.clear()
+    monkeypatch.setattr(sys.modules[__name__], "RECORDS", [])
     ENTERED.clear()
     RELEASE.clear()
     yield

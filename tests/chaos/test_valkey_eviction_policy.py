@@ -97,10 +97,15 @@ async def test_worker_refuses_to_start_under_strict(evicting_valkey: str) -> Non
     broker.connect = AsyncMock()
     broker.close = AsyncMock()
     config = SwarmQConfig(broker_url="amqp://unused", backend_url=evicting_valkey, valkey_eviction_check="strict")
-    worker = Worker(broker=broker, backend=ValkeyBackend(evicting_valkey), registry=TaskRegistry(), config=config)
+    backend = ValkeyBackend(evicting_valkey)
+    worker = Worker(broker=broker, backend=backend, registry=TaskRegistry(), config=config)
 
-    with pytest.raises(ConfigurationError, match="volatile-lru"):
-        await worker.start()
+    try:
+        with pytest.raises(ConfigurationError, match="volatile-lru"):
+            await worker.start()
+    finally:
+        # Das Backend gehoert dem Aufrufer; ein abgebrochener Start schliesst es nicht.
+        await backend.close()
 
 
 def test_check_exits_78(

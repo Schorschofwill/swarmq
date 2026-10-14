@@ -67,6 +67,7 @@ from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
+from tests.support.known_leaks import aiormq_streamwriter_leak
 from tests.support.worker_subprocess import (
     SHORT_EXECUTION_GUARD_ENV,
     SHORT_SCHEDULER_LOCK_ENV,
@@ -2074,6 +2075,9 @@ class TestHotReloadSchedulerLeaderCombo:
 
     @pytest.mark.chaos
     @pytest.mark.timeout(90)
+    # TS-03: aio-pika verbindet unter Last im Hintergrund neu, waehrend der
+    # Test den Broker schliesst (tests/support/known_leaks.py).
+    @aiormq_streamwriter_leak
     async def test_new_leader_election_post_reload(self, rabbitmq_url: str, valkey_url: str) -> None:
         """After graceful leader stop, standby worker takes over leadership.
 

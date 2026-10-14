@@ -8,6 +8,7 @@ from valkey.exceptions import ValkeyError
 
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.exceptions import BackendConnectionError, ConfigurationError
+from tests.unit.backend._pipeline_fakes import FakeScript, fake_client
 
 
 class TestValkeyBackendInit:
@@ -177,6 +178,27 @@ class TestValkeyBackendClose:
 
         mock_client.aclose.assert_awaited_once()
         assert backend._client is None
+
+    async def test_a_store_fetched_before_close_opens_no_connection_after_it(self):
+        """Ein Worker hält seine Stores (Locks, Ausführungsschutz, …) über
+        ``close()`` hinaus. Ein Handler, der nach dem Abbruch des Workers noch
+        abschließt, darf über den geschlossenen Pool keine neue Verbindung
+        öffnen (sie schlösse niemand mehr); er scheitert wie jede Operation
+        nach ``close()``. Hier am Ausführungsschutz, dessen Pipeline sich die
+        Verbindung direkt beim Pool holt."""
+        client, connection, pool = fake_client(lambda _argv: [b"claimed", 0])
+        client.register_script = lambda _source: FakeScript()
+        client.aclose = AsyncMock()
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        backend._client = client
+        guard = backend.execution_guard
+
+        await backend.close()
+
+        with pytest.raises(BackendConnectionError, match="closed"):
+            await guard.claim("t-1", owner="o", retry_count=0, ttl_ms=1, state_ttl_ms=1, max_orphans=3)
+        assert pool.in_use == 0
+        assert connection.sent == []
 
     async def test_close_is_idempotent(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")

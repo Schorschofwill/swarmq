@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from swarmq.worker.compute.forkserver import SENTINEL_ENV
+from tests.support.slow_tests import pytest_configure  # noqa: F401 - Laufzeitbericht langsamer Unit-Tests (Plan 2026-10-13-0902, U5)
 from tests.unit._log_capture import capture_swarmq_logs, preserved_root_logger
 
 # Logging-Umgebungsvariablen, die swarmq auswertet (Plan 2026-10-06-0831, U4).

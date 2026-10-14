@@ -101,6 +101,32 @@ def _keyspace(namespace: str | None) -> KeySpace:
         raise ConfigurationError(f"namespace: {exc}") from exc
 
 
+async def _refuse_connection(*_args: Any, **_kwargs: Any) -> Any:
+    """Ersatz fuer ``ConnectionPool.get_connection`` nach ``close()``."""
+    msg = "ValkeyBackend is closed; no new connections"
+    raise ValkeyConnectionError(msg)
+
+
+def _seal_pool(pool: Any) -> None:
+    """Sperrt *pool* fuer die Zeit nach ``close()``.
+
+    Stores (Locks, Ausfuehrungsschutz, ...) halten den Client ueber
+    ``close()`` hinaus, etwa ein Worker, dessen Handler erst nach dem Abbruch
+    abschliessen. Neue Verbindungen verweigert der Pool. Ein Befehl, der beim
+    ``close()`` schon eine Verbindung hielt, verbindet sie ueber die
+    Retry-Politik neu; bei der Rueckgabe wird sie deshalb getrennt, sonst
+    bliebe sie offen, ohne dass sie noch jemand schliesst.
+    """
+    release = pool.release
+
+    async def release_and_disconnect(connection: Any) -> None:
+        await release(connection)
+        await connection.disconnect()
+
+    pool.get_connection = _refuse_connection
+    pool.release = release_and_disconnect
+
+
 class ValkeyConnection:
     def __init__(
         self,
@@ -250,6 +276,9 @@ class ValkeyConnection:
             # client/pool (injected at construction) is left open for the
             # caller — closing it here would break the caller's own app.
             if self._owns_client:
+                # Vor dem Trennen: Ein Befehl, der waehrend aclose() erst
+                # startet, bekaeme sonst die gerade getrennte Verbindung.
+                _seal_pool(self._client.connection_pool)
                 await self._client.aclose()
             self._client = None
 
