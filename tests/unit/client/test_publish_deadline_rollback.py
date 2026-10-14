@@ -11,10 +11,13 @@ mehr durch die eigene Dedup-Sperre gedeckt ist.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+import asyncio
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from swarmq.broker.rabbitmq import RabbitMQBroker
+from swarmq.client import Client
 from swarmq.exceptions import (
     BrokerConnectionError,
     MessageHeadersTooLarge,
@@ -134,4 +137,26 @@ async def test_unique_claim_is_released_when_the_publish_connection_stayed_block
     with pytest.raises(BrokerPublishBlocked):
         await client.schedule("add", 1, 2, queue="math", unique_for=60)
 
+    backend.release_unique.assert_awaited_once()
+
+
+async def test_schedule_after_the_publish_deadline_rolls_back_the_unique_claim(backend, registry):
+    """FS-02 Teil a (Plan 2026-10-14-0748, U3): Ein eingebetteter Producer im
+    selben Prozess publiziert nach der Endfrist des Workers. Nichts geht
+    raus, der Aufrufer bekommt ``BrokerConnectionError`` statt
+    ``PublishIndeterminate``, und die Unique-Sperre weicht."""
+    broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+    broker._connection = Mock(transport=None, is_closed=False)
+    broker._connection.ready = AsyncMock()
+    broker._publish_channel = AsyncMock(is_closed=False)
+    broker.set_publish_deadline(asyncio.get_running_loop().time() - 1.0)
+    backend.claim_unique = AsyncMock(return_value=None)
+    backend.release_unique = AsyncMock()
+    client = Client(broker=broker, backend=backend, registry=registry)
+
+    with pytest.raises(BrokerConnectionError) as info:
+        await client.schedule("add", 1, 2, queue="math", unique_for=60)
+
+    assert not isinstance(info.value, PublishIndeterminate)
+    broker._publish_channel.default_exchange.publish.assert_not_awaited()
     backend.release_unique.assert_awaited_once()

@@ -10,6 +10,7 @@ datum: 2026-09-03
 status: gilt
 quelle:
   - docs/plans/2026-09-03-001-feat-cpu-worker-modus-plan.md (KTD2, user-approved)
+  - docs/plans/2026-10-14-0748-fix-fehlersuche-runde-2-plan.md:87 (Nachtrag Drain-Abbruch nach FS-02a, Georg 2026-10-14)
 tests:
   - tests/unit/worker/compute/test_executor.py::test_outer_cancel_during_drain_kills_child_and_returns_error_result
   - tests/unit/worker/compute/test_executor.py::test_hard_timeout_and_drain_errors_have_no_error_class
@@ -20,5 +21,7 @@ tests:
 **Begründung.** Ein propagierter Abbruch träfe den Terminal-Default im `finally` von `_handle_message`, der den Schedfire-Completed-Marker und die Unique-Freigabe auf eine unbestätigte Nachricht schreibt (`docs/solutions/logic-errors/schedfire-retry-dedup-collision-silent-drop-2026-06-02.md`). Gewählt statt „Cancel im Retry-Pfad“: Ein stornierter Task darf nicht bis `max_retries` erneut laufen.
 
 **Bewusste Folgen.** Ein Drain-Abbruch verbraucht einen Retry. Bei `max_retries=0` landet der Task in der DLQ, ein Workflow-Schritt markiert den Workflow als fehlgeschlagen.
+
+**Nachtrag 2026-10-14 (FS-02a, bis zur Klärung von FS-01).** Am Drain-Ende ist die Publish-Endfrist verstrichen. Seit FS-02a geht danach kein Publish mehr raus (`BrokerConnectionError`, nichts gesendet). Ein vom SIGTERM-Drain abgebrochener Task endet weiter als Fehlerergebnis, und ein Workflow-Schritt markiert den Workflow weiter als fehlgeschlagen. Retry- bzw. DLQ-Kopie gehen aber nicht mehr raus: Das Original wird per `redeliver` neu zugestellt, ohne Retry-Verbrauch und ohne DLQ-Eintrag. Bei `max_retries=0` im Workflow-Schritt kann so „Workflow `failed`, Schrittergebnis `success`“ entstehen, ohne DLQ-Eintrag als Erklärung (`fix-r-flow.md` 2.1). Festgehalten in `tests/unit/worker/test_fs02_worker_after_publish_deadline.py` (ohne `entscheidung`-Marker).
 
 **Überdenken nur mit neuem Argument.** Offen: FS-01 (Fehlersuche Runde 2). KTD2 setzt voraus, dass Retry und DLQ nach dem Abbruch normal durchlaufen. Am Drain-Ende ist die Publish-Endfrist aber schon verstrichen, sodass Fehlerergebnis, DLQ-Kopie und erneuter Lauf zusammenkommen (siehe FS-02). Außerdem widerspricht `website/explanation/delivery-semantics.md:267-268` („cancelled and redelivered“) dieser Entscheidung.

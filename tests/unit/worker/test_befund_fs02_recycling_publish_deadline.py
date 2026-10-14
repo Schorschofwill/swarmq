@@ -19,6 +19,10 @@ endet kurz nach der Publish-Endfrist -- dem "25 s nach Drain-Beginn" des
 Szenarios -- und publiziert dann seine Retry-Kopie ueber einen echten
 ``RabbitMQBroker`` (Writer und Broker spielt ``FakeTransport``).
 
+Mit dem Fix (Plan 2026-10-14-0748, U3) folgt die Publish-Endfrist dem
+Drain-Ende; die normale Frist berechnet der Test darum aus
+``shutdown_budget`` statt sie vom Broker zu lesen.
+
 Testliste:
 # [x] Retry-Publish eines Langlaeufers nach der normalen Publish-Endfrist,
 #     aber innerhalb der Recycling-Drain-Frist, scheitert nicht
@@ -35,6 +39,7 @@ import pytest
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.contracts import Delivery
 from swarmq.registry import TaskRegistry
+from swarmq.shutdown_budget import shutdown_budget
 from swarmq.worker import Worker, WorkerState
 from tests.support.aiormq_transport import FakePublishChannel, FakeTransport
 
@@ -59,10 +64,6 @@ def _fs02_real_broker(transport: FakeTransport) -> RabbitMQBroker:
 
 
 @pytest.mark.befund("FS-02")
-@pytest.mark.xfail(
-    strict=True,
-    reason="FS-02: offen - Publish-Endfrist gilt auch im Recycling-Drain, Retry-Kopie des Langlaeufers scheitert",
-)
 async def test_fs02_long_runner_can_publish_its_retry_during_the_recycling_drain(backend: Any, config: Any) -> None:
     transport = FakeTransport()
     writer = asyncio.create_task(_fs02_wire(transport))
@@ -76,9 +77,13 @@ async def test_fs02_long_runner_can_publish_its_retry_during_the_recycling_drain
 
     async def _drain_started() -> None:
         # Erster Schritt des Drains; die Publish-Endfrist ist da schon gesetzt.
-        deadline = broker._publish_deadline_at
-        assert deadline is not None, "Voraussetzung: das Herunterfahren setzt eine Publish-Endfrist"
-        loop.call_at(deadline + 0.005, past_publish_deadline.set)
+        assert broker._publish_deadline_at is not None, "Voraussetzung: das Herunterfahren setzt eine Publish-Endfrist"
+        # Die normale Frist (ohne Recycling) aus dem Budget berechnen, nicht
+        # vom Broker lesen: Mit dem Fix ist dort die Recycling-Frist gesetzt
+        # (Plan 2026-10-14-0748, U3). ``started_at`` liegt vor diesem Aufruf,
+        # der Zeitpunkt unten also sicher hinter der normalen Frist.
+        normal_deadline = loop.time() + shutdown_budget(config.shutdown_timeout, supervised=False).drain_until
+        loop.call_at(normal_deadline + 0.005, past_publish_deadline.set)
 
     # Grenzen des Abbaus, die eine echte Verbindung braeuchten.
     broker.cancel_consume = AsyncMock(side_effect=_drain_started)  # type: ignore[method-assign]  # Grenze: kein Consumer im Unit-Test

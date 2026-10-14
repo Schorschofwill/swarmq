@@ -94,17 +94,11 @@ class WorkerShutdown:
         # 2. Wait for in-flight tasks to complete
         tasks_snapshot = set(self._active_tasks)
         if tasks_snapshot:
-            # KTD11/R22: ein Recycling-Drain wartet ohne erzwungenen Abbruch
-            # (Frist aus dem groessten hard_timeout), damit ein gesunder
-            # Langlaeufer keinen Retry verliert; SIGTERM behaelt shutdown_timeout.
-            # BZ-18 (Plan 0.12.0, MR 17): sonst endet der Drain bei ``drain_until``
-            # (Loop-Zeit), damit Sperren, Leader-Uebergabe und Verbindungsschluss
-            # noch im Gesamtbudget ab SIGTERM liegen.
-            drain_timeout = getattr(self, "_drain_timeout_override", None)
-            if not drain_timeout:
-                drain_timeout = float(self._config.shutdown_timeout)
-                if drain_until is not None:
-                    drain_timeout = max(0.0, drain_until - asyncio.get_running_loop().time())
+            # ``drain_until`` ist das Drain-Ende aus ``_drain_end`` (Loop-Zeit,
+            # FS-02 Teil b): beim Recycling die eigene Frist, sonst das Budget.
+            drain_timeout = float(self._config.shutdown_timeout)
+            if drain_until is not None:
+                drain_timeout = max(0.0, drain_until - asyncio.get_running_loop().time())
             _done, pending = await asyncio.wait(
                 tasks_snapshot,
                 timeout=drain_timeout,
@@ -234,6 +228,21 @@ class WorkerShutdown:
         Supervisor (Kanal gesetzt) endet es mit dessen SIGKILL."""
         return shutdown_budget(float(self._config.shutdown_timeout), supervised=current_channel() is not None)
 
+    def _drain_end(self, started_at: float, budget: ShutdownBudget) -> float:
+        """Drain-Ende in Loop-Zeit ab ``started_at`` (FS-02 Teil b, KTD3).
+
+        Die einzige Quelle fuer Drain-Wartezeit und Publish-Endfrist: Ein
+        Recycling-Drain wartet ohne erzwungenen Abbruch seine eigene Frist ab
+        (KTD11/R22, ``_drain_timeout_override``), damit ein gesunder
+        Langlaeufer keinen Retry verliert; SIGTERM endet bei ``drain_until``
+        (BZ-18), damit Sperren, Leader-Uebergabe und Verbindungsschluss noch
+        im Gesamtbudget ab SIGTERM liegen. ``0``/``None`` heisst: kein Override.
+        """
+        override: float | None = getattr(self, "_drain_timeout_override", None)
+        if override:
+            return started_at + override
+        return started_at + budget.drain_until
+
     def _set_publish_deadline(self, at: float | None) -> None:
         """Setzt die Endfrist, sofern der Broker sie kennt.
 
@@ -268,8 +277,19 @@ class WorkerShutdown:
             # verbleibende Budget. Auch bereits laufende werden nachgezogen.
             budget = self._shutdown_budget()
             self._shutdown_end = started_at + budget.finish_by
-            self._set_publish_deadline(started_at + budget.drain_until)
-            await self._drain_in_flight(started_at + budget.drain_until)
+            drain_end = self._drain_end(started_at, budget)
+            self._set_publish_deadline(drain_end)
+            await self._drain_in_flight(drain_end)
+            if drain_end > started_at + budget.drain_until:
+                # Nur ein Recycling-Drain darf ueber das Budget hinaus warten.
+                # Danach bekaemen die Aufraeumschritte sonst nur noch die
+                # Untergrenze: Reserve ab Drain-Ende, nie kuerzer als das
+                # urspruengliche Ende (FS-02 Teil b, KTD3). Ohne Recycling
+                # bleibt es bei ``finish_by`` (E-018, SIGKILL des Supervisors).
+                self._shutdown_end = max(
+                    self._shutdown_end,
+                    asyncio.get_running_loop().time() + (budget.finish_by - budget.drain_until),
+                )
             await self._bounded_step("executor_close", self._close_executor())
             await self._release_leftover_locks()
             await self._stop_scheduler_and_di()

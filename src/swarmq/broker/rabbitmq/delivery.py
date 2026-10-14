@@ -68,14 +68,22 @@ async def settle(action: Awaitable[None], verb: str) -> None:
     Der Ausgang ist dabei klar: RabbitMQ stellt unbestaetigte Nachrichten
     nach dem Kanalverlust neu zu. Der Abbruch der eigenen Task geht wie im
     Publish-Pfad unveraendert durch; nur aio_pikas interne
-    ``CancelledError`` zaehlt als Kanalverlust."""
+    ``CancelledError`` zaehlt als Kanalverlust.
+
+    "Eigener Abbruch" heisst ein Anstieg von ``cancelling()`` gegenueber dem
+    Eintritt (KTD9, wie ``asyncio.Timeout``): Ein vom Drain abgebrochener
+    Handler laeuft nach E-001 mit ``cancelling() > 0`` weiter; ein
+    Kanalverlust beim ``nack`` darf dort nicht als Abbruch durchgehen, sonst
+    schriebe die Pipeline den Completed-Marker auf eine unbestaetigte
+    Nachricht (fix-r-flow.md 2.2)."""
+    current = asyncio.current_task()
+    cancelling_at_entry = current.cancelling() if current is not None else 0
     try:
         await action
     except _CHANNEL_TRANSIENT_ERRORS as exc:
-        if isinstance(exc, asyncio.CancelledError):
-            current = asyncio.current_task()
-            if current is not None and current.cancelling() > 0:
-                raise
+        own_cancel = current is not None and current.cancelling() > cancelling_at_entry
+        if isinstance(exc, asyncio.CancelledError) and own_cancel:
+            raise
         raise BrokerConnectionError(f"{verb} failed, channel or connection lost: {exc}") from exc
 
 
@@ -168,6 +176,7 @@ class RabbitMQDelivery(RabbitMQDeclarations):
         # Vor jedem Versuch und ohne Wiederholung: zu grosse Header schloessen
         # die ganze Verbindung (BZ-17).
         msg.headers = guard_headers(msg.headers, negotiated_frame_max(self._connection)) or {}
+        self._raise_if_publish_deadline_passed(routing_key)
         timeout_s = self._effective_publish_timeout()
         # Pro-Aufruf-Container statt Instanzzustand: bei nebenlaeufigen
         # Publishes darf der Verwurf nur den Kanal treffen, auf dem GENAU
@@ -209,6 +218,21 @@ class RabbitMQDelivery(RabbitMQDeclarations):
             raise PublishIndeterminate(
                 f"publish to {routing_key!r} exceeded the publish deadline of {timeout_s}s; delivery is indeterminate"
             ) from exc
+
+    def _raise_if_publish_deadline_passed(self, routing_key: str) -> None:
+        """FS-02 Teil a (KTD3, E-042): Ist die Publish-Endfrist schon
+        verstrichen, geht nichts auf die Leitung.
+
+        ``asyncio.timeout(0)`` bricht erst beim ersten Suspendieren ab; auf
+        aiormqs Fast-Path liegt der Frame da schon in der ``write_queue`` und
+        wird geschrieben. Deshalb vor dem Zeitdeckel pruefen, ohne Kanal und
+        ohne Verwurf: Der Aufrufer bekommt ein sicher wiederholbares "nicht
+        gesendet" statt ``PublishIndeterminate``."""
+        deadline = self._publish_deadline_at
+        if deadline is not None and asyncio.get_running_loop().time() >= deadline:
+            raise BrokerConnectionError(
+                f"publish to {routing_key!r} not sent: the shutdown publish deadline has passed"
+            )
 
     async def _wait_while_blocked(self, routing_key: str, blocked: list[bool]) -> None:
         """Wartet, solange der Broker die Publish-Verbindung blockiert (BZ-16).
