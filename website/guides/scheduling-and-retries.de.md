@@ -56,7 +56,7 @@ Dedup-Claim. Fehlt `unique_for` und kennt die Registry des Producers
 den Task, gilt sofort `TaskInfo.unique_for`: Der Producer setzt das
 Flag beim Aufruf von `schedule()`, für `unique_for` plus Verzögerung,
 und ein gleicher Aufruf in dieser Zeit ist ein Duplikat. Nur ein
-Producer ohne Registry (oder ohne diesen Task) überlässt es dem Leader.
+Producer ohne Registry überlässt es dem Leader.
 Der löst `unique_for` beim Fire aus seiner eigenen `TaskInfo` auf und
 überspringt den Task, solange ein anderer Lauf mit denselben Argumenten
 das Flag hält. Der Producer berechnet seinen Dedup-Hash aus den

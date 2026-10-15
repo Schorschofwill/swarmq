@@ -18,8 +18,8 @@ normalises `float` seconds in `result_ttl` and `unique_for` (F3-31).
 No new configuration variables, no new message headers and no format
 change: 0.12.3 runs next to 0.12.0 to 0.12.2 on the same queues and
 keys, in both directions. Read the upgrade notes: some settings that
-used to start now end with an error, and middleware sees deferred
-calls.
+used to start and some calls now end with an error, and middleware
+sees deferred calls.
 
 ### Upgrade notes
 
@@ -91,6 +91,13 @@ calls.
    `swarmq.exceptions`. Agents that read `spec/errors.json` see
    `TaskCancelledError` with `when: ["result"]` instead of
    `["run", "result"]`.
+10. **`unique_for` in `schedule()` must be positive and finite.**
+    `unique_for` of `schedule()` and `schedule_many()` must be `> 0`
+    and finite. `unique_for=0` or a negative value with `delay`/`eta`
+    used to be accepted silently and now raises `ValueError` at the
+    call, in the running producer and not at startup. Pass
+    `unique_for=None` to switch dedup off (E-056, E-033;
+    [`schedule()`](api.md#schedule)).
 
 ### Changed
 
@@ -147,7 +154,7 @@ calls.
 - **F3-07: `schedule()` and `schedule_many()` reject `unique_for <= 0`**
   with `ValueError`, also `inf` and `nan`, like `TaskInfo`. It used to
   fail in Valkey or, with `delay`/`eta`, be accepted silently
-  ([`schedule()`](api.md#schedule)).
+  (upgrade note 10; [`schedule()`](api.md#schedule)).
 - **F3-08: a `TaskInfo` cron without a next fire time raises
   `ValueError` at import** instead of being dropped silently by the
   scheduler leader (upgrade note 1).
@@ -231,8 +238,9 @@ calls.
   loop.** With a hanging `GET`, the `nan` deadline reached
   `asyncio.wait_for`, and the loop failed with `ValueError: cannot
   convert float NaN to integer`; a negative `timeout` read nothing. Now
-  both read once and then raise `ResultNotReadyError`;
-  `wait_for_workflow` and `WorkflowHandle.get()` behave alike, and
+  both read once and then raise `ResultNotReadyError`.
+  `WorkflowHandle.get()` behaves alike; the backend's
+  `wait_for_workflow` returns `False` at once without subscribing.
   `inf` still waits without limit ([`get_result()`](api.md#get_result)).
 
 ### Documentation

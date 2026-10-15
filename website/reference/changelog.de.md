@@ -19,8 +19,8 @@ Handler unter `swarmq worker` nie liefen (F3-06). Dazu normalisiert es
 Konfigurationsvariablen, keine neuen Nachrichten-Header und kein
 Formatwechsel: 0.12.3 läuft in beiden Richtungen neben 0.12.0 bis
 0.12.2 auf denselben Queues und Keys. Die Upgrade-Hinweise lesen:
-Manche Einstellungen, die bisher starteten, enden jetzt mit einem
-Fehler, und Middleware sieht verzögerte Aufrufe.
+Manche Einstellungen, die bisher starteten, und manche Aufrufe enden
+jetzt mit einem Fehler, und Middleware sieht verzögerte Aufrufe.
 
 ### Upgrade-Hinweise
 
@@ -96,6 +96,13 @@ Fehler, und Middleware sieht verzögerte Aufrufe.
    `swarmq.exceptions`. Agenten, die `spec/errors.json` lesen, sehen
    `TaskCancelledError` mit `when: ["result"]` statt
    `["run", "result"]`.
+10. **`unique_for` in `schedule()` muss positiv und endlich sein.**
+    `unique_for` von `schedule()` und `schedule_many()` muss `> 0` und
+    endlich sein. `unique_for=0` oder ein negativer Wert mit
+    `delay`/`eta` wurde bisher still angenommen und wirft jetzt beim
+    Aufruf `ValueError`, also im laufenden Producer und nicht beim
+    Start. Zum Abschalten der Dedup `unique_for=None` übergeben (E-056,
+    E-033; [`schedule()`](api.md#schedule)).
 
 ### Geändert
 
@@ -154,7 +161,8 @@ Fehler, und Middleware sieht verzögerte Aufrufe.
 - **F3-07: `schedule()` und `schedule_many()` lehnen
   `unique_for <= 0` ab**, mit `ValueError`, ebenso `inf` und `nan`, wie
   `TaskInfo`. Bisher scheiterte es in Valkey oder wurde bei
-  `delay`/`eta` still angenommen ([`schedule()`](api.md#schedule)).
+  `delay`/`eta` still angenommen (Upgrade-Hinweis 10;
+  [`schedule()`](api.md#schedule)).
 - **F3-08: Ein `TaskInfo`-Cron ohne nächsten Termin wirft beim Import
   `ValueError`**, statt vom Scheduler-Leader still verworfen zu werden
   (Upgrade-Hinweis 1).
@@ -244,8 +252,9 @@ Fehler, und Middleware sieht verzögerte Aufrufe.
   `asyncio.wait_for`, und die Loop scheiterte mit `ValueError: cannot
   convert float NaN to integer`; ein negatives `timeout` las gar
   nicht. Jetzt lesen beide einmal und werfen dann
-  `ResultNotReadyError`; `wait_for_workflow` und `WorkflowHandle.get()`
-  verhalten sich gleich, und `inf` wartet weiter unbegrenzt
+  `ResultNotReadyError`. `WorkflowHandle.get()` verhält sich gleich;
+  `wait_for_workflow` des Backends meldet sofort `False` ohne
+  Abonnement. `inf` wartet weiter unbegrenzt
   ([`get_result()`](api.md#get_result)).
 
 ### Dokumentation

@@ -54,7 +54,7 @@ leave out `unique_for`, a producer whose registry knows the task
 applies `TaskInfo.unique_for` right away: it claims the flag when you
 call `schedule()`, for `unique_for` plus the delay, and a call with the
 same arguments in that time is a duplicate. Only a producer without a
-registry (or one that does not know the task) leaves it to the leader,
+registry leaves it to the leader,
 which resolves `unique_for` from its own `TaskInfo` at fire time and
 skips the task if another run with the same arguments holds the flag.
 The producer computes its dedup hash from the arguments before the
