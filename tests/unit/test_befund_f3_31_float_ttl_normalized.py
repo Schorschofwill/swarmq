@@ -9,6 +9,8 @@ Speichern ``DataError: px must be datetime.timedelta or int``, jede Nachricht
 bleibt unbestaetigt; ein Cron mit ``unique_for=3600.0`` wird vom Leader nie
 uebernommen.
 
+Behoben in 0.12.3 (E-055, ``swarmq.seconds.whole_seconds``).
+
 Festlegung (Entscheidung 2, Option a): normalisieren -- ganzzahlige Floats
 still zu ``int``, echte Brueche aufrunden (``ceil``). Gilt fuer ``TaskInfo``
 (``result_ttl``, ``unique_for``) und ``SwarmQConfig`` (``result_ttl``). Der
@@ -29,8 +31,6 @@ import pytest
 from swarmq.config import SwarmQConfig
 from swarmq.task import TaskInfo
 
-_REASON = "F3-31: offen - float in result_ttl/unique_for wird nicht zu int normalisiert"
-
 _CASES = [
     pytest.param(86400.0, 86400, id="ganzzahlig"),
     pytest.param(1.5, 2, id="bruch-aufgerundet"),
@@ -38,7 +38,7 @@ _CASES = [
 
 
 @pytest.mark.befund("F3-31")
-@pytest.mark.xfail(strict=True, reason=_REASON)
+@pytest.mark.entscheidung("E-055")
 @pytest.mark.parametrize(("given", "expected"), _CASES)
 def test_task_info_result_ttl_is_normalized_to_int(given: float, expected: int) -> None:
     info = TaskInfo(
@@ -50,7 +50,7 @@ def test_task_info_result_ttl_is_normalized_to_int(given: float, expected: int) 
 
 
 @pytest.mark.befund("F3-31")
-@pytest.mark.xfail(strict=True, reason=_REASON)
+@pytest.mark.entscheidung("E-055")
 @pytest.mark.parametrize(
     ("given", "expected"), [pytest.param(3600.0, 3600, id="ganzzahlig"), pytest.param(0.5, 1, id="bruch-aufgerundet")]
 )
@@ -64,7 +64,7 @@ def test_task_info_unique_for_is_normalized_to_int(given: float, expected: int) 
 
 
 @pytest.mark.befund("F3-31")
-@pytest.mark.xfail(strict=True, reason=_REASON)
+@pytest.mark.entscheidung("E-055")
 @pytest.mark.parametrize(("given", "expected"), _CASES)
 def test_config_result_ttl_is_normalized_to_int(given: float, expected: int) -> None:
     config = SwarmQConfig(

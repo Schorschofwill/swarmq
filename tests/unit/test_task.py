@@ -583,6 +583,47 @@ def test_taskinfo_unique_for_negative_raises():
         TaskInfo(name="t", queues=["q"], unique_for=-5)
 
 
+def test_taskinfo_unique_for_zero_float_raises_like_zero():
+    """E-055/E-056: ``0.0`` ist wie ``0`` ein Fehler, nicht still 0."""
+    with pytest.raises(ValueError, match="use None to disable dedup"):
+        TaskInfo(name="t", queues=["q"], unique_for=0.0)
+
+
+def test_taskinfo_negative_fraction_unique_for_is_checked_before_rounding():
+    """``ceil(-0.5) == 0``: die Meldung nennt den Rohwert, nicht ``unique_for=0``."""
+    with pytest.raises(ValueError, match=r"unique_for must be > 0 \(got -0.5\)"):
+        TaskInfo(name="t", queues=["q"], unique_for=-0.5)
+
+
+@pytest.mark.parametrize("value", [float("inf"), float("nan")])
+def test_taskinfo_non_finite_result_ttl_raises_naming_the_field(value: float):
+    """E-055 mit E-063: kein ``OverflowError`` aus ``ceil``, sondern ein
+    ``ValueError`` mit dem Feldnamen beim Import des Task-Moduls."""
+    with pytest.raises(ValueError, match="result_ttl must be a finite number"):
+        TaskInfo(name="t", queues=["q"], result_ttl=value)
+
+
+@pytest.mark.parametrize("value", [float("inf"), float("nan")])
+def test_taskinfo_non_finite_unique_for_raises_naming_the_field(value: float):
+    with pytest.raises(ValueError, match="unique_for must be a finite number"):
+        TaskInfo(name="t", queues=["q"], unique_for=value)
+
+
+def test_taskinfo_result_ttl_zero_float_becomes_int_zero():
+    t = TaskInfo(name="t", queues=["q"], result_ttl=0.0)
+
+    assert type(t.result_ttl) is int
+    assert t.result_ttl == 0
+
+
+def test_taskinfo_bool_seconds_stay_unchanged():
+    """E-055 regelt ``bool`` nicht; ``True`` bleibt ``True`` (wirkt als 1 s)."""
+    t = TaskInfo(name="t", queues=["q"], result_ttl=True, unique_for=True)
+
+    assert t.result_ttl is True
+    assert t.unique_for is True
+
+
 def test_taskinfo_unique_until_invalid_literal_raises():
     with pytest.raises(ValueError, match="unique_until must be"):
         TaskInfo(

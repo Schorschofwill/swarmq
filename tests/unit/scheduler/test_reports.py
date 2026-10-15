@@ -143,6 +143,19 @@ class TestStaticDefinitions:
         ]
 
     @pytest.mark.usefixtures("_cleanup_tasks")
+    def test_float_unique_for_is_reported_as_whole_seconds(self):
+        """F3-31: ``unique_for=3600.0`` landet als ``int`` in der Meldung;
+        ein ``float`` im ``int``-Feld lehnt msgspec beim Dekodieren ab, und
+        der Leader übernähme den Cron nie."""
+        unique = _task(name="nightly", queues=["default"], cron="0 1 * * *", unique_for=3600.0)
+
+        (definition,) = static_definitions([unique], None)
+        decoded = msgspec.json.decode(msgspec.json.encode(definition), type=ScheduleDefinition)
+
+        assert decoded.unique_for == 3600
+        assert type(decoded.unique_for) is int
+
+    @pytest.mark.usefixtures("_cleanup_tasks")
     def test_unique_until_without_unique_for_is_not_carried(self):
         """Ohne ``unique_for`` wirkt ``unique_until`` nicht; die Definition
         bleibt wie vor 0.12 (gleicher Abdruck, kein Übernahme-Schreiben)."""

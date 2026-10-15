@@ -16,10 +16,12 @@ quelle:
   - docs/befunde/fehlersuche-runde-3-2026-10.md (F3-07, Gegenprüfung G2)
 tests:
   - tests/unit/test_task.py::test_taskinfo_unique_for_zero_raises
-ohne_test: Für den Aufrufparameter unique_for von schedule()/schedule_many() entsteht der Test mit dem Fix in 0.12.3 (F3-07).
+  - tests/unit/client/test_befund_f3_07_call_unique_for_bounds.py::test_schedule_rejects_non_positive_unique_for
+  - tests/unit/client/test_befund_f3_07_call_unique_for_bounds.py::test_deferred_schedule_rejects_non_positive_unique_for
+  - tests/unit/client/test_befund_f3_07_call_unique_for_bounds.py::test_schedule_many_rejects_non_positive_unique_for
 ---
 
-**Entscheidung.** `unique_for=0` wirft `ValueError` („use None to disable dedup“), `unique_for < 0` ebenso. Abschalten geht nur mit `None` (E-033). `unique_until` ohne `unique_for` wird still ignoriert. Die CLI nimmt `--unique-for` nur als positive Ganzzahl an. Der Aufrufparameter `unique_for` von `schedule()`/`schedule_many()` folgt derselben Regel; dass er heute `<= 0` annimmt, ist der Befund F3-07 (Fix in 0.12.3).
+**Entscheidung.** `unique_for=0` wirft `ValueError` („use None to disable dedup“), `unique_for < 0` ebenso. Abschalten geht nur mit `None` (E-033). `unique_until` ohne `unique_for` wird still ignoriert. Die CLI nimmt `--unique-for` nur als positive Ganzzahl an. Der Aufrufparameter `unique_for` von `schedule()`/`schedule_many()` folgt derselben Regel; dass er `<= 0` annahm, war der Befund F3-07 (behoben in 0.12.3).
 
 **Begründung.** Ein still zu `None` normalisiertes `0` würde einen Tippfehler verdecken (CD6). Ein Fehler für `unique_until` ohne `unique_for` hätte in der eingefrorenen Dataclass einen Sentinel gebraucht, um „Default“ von „ausdrücklich gesetzt“ zu unterscheiden.
 

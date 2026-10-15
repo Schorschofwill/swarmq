@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, ClassVar
 from swarmq.exceptions import ConfigurationError
 from swarmq.keyspace import validate_namespace
 from swarmq.logging_settings import VALID_LOG_LEVELS, valid_drain_timeout, validate_logger_levels
+from swarmq.seconds import whole_seconds
 from swarmq.valkey_policy import EVICTION_CHECK_MODES
 
 
@@ -79,6 +80,17 @@ class ConfigValidation:
     # Herunterfahren kein Publish-Budget mehr laesst, faengt stattdessen die
     # anteilige Reserve in ``WorkerLifecycle._shutdown_publish_budget`` ab.
 
+    def _validate_result_ttl(self) -> None:
+        # E-055: float-Sekunden werden int (aufgerundet); inf/nan sind ein
+        # ConfigurationError (Exit 78) statt eines Fehlers zur Laufzeit.
+        try:
+            self.result_ttl = whole_seconds(self.result_ttl, "result_ttl")
+        except ValueError as exc:
+            raise ConfigurationError(str(exc)) from exc
+        if self.result_ttl < 0:
+            msg = f"result_ttl must be >= 0, got {self.result_ttl}"
+            raise ConfigurationError(msg)
+
     def _validate_core(self) -> None:
         self._apply_pool_defaults()
         self._validate_pool()
@@ -90,9 +102,7 @@ class ConfigValidation:
             msg = "backend_url must not be empty"
             raise ConfigurationError(msg)
 
-        if self.result_ttl < 0:
-            msg = f"result_ttl must be >= 0, got {self.result_ttl}"
-            raise ConfigurationError(msg)
+        self._validate_result_ttl()
 
         if self.concurrency < 1:
             msg = f"concurrency must be >= 1, got {self.concurrency}"

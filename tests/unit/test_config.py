@@ -76,6 +76,20 @@ def test_negative_result_ttl_raises():
         )
 
 
+@pytest.mark.parametrize("value", [float("inf"), float("nan")])
+def test_non_finite_result_ttl_raises_configuration_error(value):
+    """E-055 mit E-063: Exit 78 statt ``OverflowError`` (Exit 1)."""
+    with pytest.raises(ConfigurationError, match="result_ttl must be a finite number"):
+        SwarmQConfig(broker_url="redis://localhost", backend_url="redis://localhost", result_ttl=value)
+
+
+def test_float_result_ttl_from_env_stays_a_configuration_error(monkeypatch):
+    """E-055 gilt fuer Argumente; ``SWARMQ_RESULT_TTL`` bleibt ganzzahlig."""
+    monkeypatch.setenv("SWARMQ_RESULT_TTL", "1.5")
+    with pytest.raises(ConfigurationError, match="SWARMQ_RESULT_TTL"):
+        SwarmQConfig(broker_url="redis://localhost", backend_url="redis://localhost")
+
+
 def test_zero_concurrency_raises():
     with pytest.raises(ConfigurationError):
         SwarmQConfig(

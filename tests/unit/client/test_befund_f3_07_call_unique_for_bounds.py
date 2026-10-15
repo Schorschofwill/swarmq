@@ -11,6 +11,8 @@ ausgefuehrt meldet Valkey ``SET PX 0`` als undokumentierte
 ``BackendResponseError``, verzoegert laeuft es still und das Flag lebt nur bis
 zum Fire.
 
+Behoben in 0.12.3 (E-056; ``_resolve_unique`` prueft wie ``TaskInfo``).
+
 Erwartet (CD6 fuer den Aufruf-Override): ``ValueError`` vor jedem Claim,
 Publish oder Speichern, sofort wie verzoegert.
 
@@ -54,7 +56,7 @@ def f307_client(broker: AsyncMock, backend: AsyncMock) -> Client:
 
 
 @pytest.mark.befund("F3-07")
-@pytest.mark.xfail(strict=True, reason="F3-07: offen - schedule() nimmt unique_for<=0 an")
+@pytest.mark.entscheidung("E-056")
 @pytest.mark.parametrize("unique_for", _BAD)
 async def test_schedule_rejects_non_positive_unique_for(
     f307_client: Client, broker: AsyncMock, backend: AsyncMock, unique_for: int
@@ -67,7 +69,7 @@ async def test_schedule_rejects_non_positive_unique_for(
 
 
 @pytest.mark.befund("F3-07")
-@pytest.mark.xfail(strict=True, reason="F3-07: offen - schedule(delay=) nimmt unique_for<=0 still an")
+@pytest.mark.entscheidung("E-056")
 @pytest.mark.parametrize("unique_for", _BAD)
 async def test_deferred_schedule_rejects_non_positive_unique_for(
     f307_client: Client, backend: AsyncMock, schedule_store: MagicMock, unique_for: int
@@ -80,7 +82,7 @@ async def test_deferred_schedule_rejects_non_positive_unique_for(
 
 
 @pytest.mark.befund("F3-07")
-@pytest.mark.xfail(strict=True, reason="F3-07: offen - schedule_many() nimmt unique_for<=0 an")
+@pytest.mark.entscheidung("E-056")
 @pytest.mark.parametrize("unique_for", _BAD)
 async def test_schedule_many_rejects_non_positive_unique_for(
     f307_client: Client, broker: AsyncMock, backend: AsyncMock, unique_for: int

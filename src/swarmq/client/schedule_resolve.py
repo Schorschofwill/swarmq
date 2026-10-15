@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Literal, override
 
 from swarmq.exceptions import TaskNotFoundError
 from swarmq.logging import get_logger
+from swarmq.seconds import validate_unique_for
 from swarmq.serialization import compute_dedup_hash
 
 logger = get_logger(__name__)
@@ -112,7 +113,7 @@ class ClientScheduleResolve:
     def _resolve_unique(
         self,
         task_name: str,
-        unique_for: int | _MissingType | None,
+        unique_for: float | _MissingType | None,
         unique_until: Literal["start", "completion"] | _MissingType,
     ) -> tuple[int | None, UniqueUntil]:
         """Resolve effective unique_for / unique_until for a schedule() call.
@@ -122,7 +123,8 @@ class ClientScheduleResolve:
             is available; otherwise None (dedup off) in Client-Modus.
           - unique_for is None (explicit): dedup off for this call,
             even if TaskInfo sets a default.
-          - unique_for is int: use this value.
+          - unique_for is a number: validated like TaskInfo (E-056) and
+            normalized to whole seconds (E-055).
         unique_until follows the same pattern with default "completion".
         """
         final_for: int | None
@@ -134,8 +136,12 @@ class ClientScheduleResolve:
                 entry = self._registry.get_entry(task_name)
                 final_for = entry.task_info.unique_for
                 final_until = entry.task_info.unique_until
+        elif unique_for is None:
+            final_for = None
         else:
-            final_for = unique_for
+            # E-056/E-055: wie TaskInfo prüfen, float ganzzahlig machen; vor
+            # jedem Claim, Publish oder Speichern.
+            final_for = validate_unique_for(unique_for)
 
         if not isinstance(unique_until, _MissingType):
             final_until = unique_until
@@ -148,7 +154,7 @@ class ClientScheduleResolve:
         self,
         tasks: list[tuple[str, tuple[Any, ...], dict[str, Any]]],
         queue: str | None,
-        unique_for: int | _MissingType | None,
+        unique_for: float | _MissingType | None,
         unique_until: Literal["start", "completion"] | _MissingType,
     ) -> list[dict[str, Any]]:
         """Pass 0 (sync): validate + generate task_ids + compute dedup
