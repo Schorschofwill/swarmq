@@ -82,10 +82,22 @@ P8 (Plan 2026-10-12-1105, MR 2, T10, E4 A) -- ``Retry`` gilt unabhaengig von
     ``test_task_sent_to_dlq_carries_error_type_of_triggering_exception``).
 35. CPU-Modus: aus dem Envelope rekonstruierte ``Retry(delay=5)`` mit
     Filter -> ``retry_later`` mit 5000 ms.
+
+F3-03 (Plan 2026-10-15-1138, U5, E-060) -- Grenzen der ``Retry``-Wartezeit,
+Zusatzfaelle zum Nachweis ``test_befund_f3_03_retry_negative_delay.py``
+(Klasse ``TestRetryDelayBounds``):
+
+36. ``Retry(delay=-inf)`` -> ``ValueError`` beim Erzeugen.
+37. ``Retry(delay=-0.0)`` und ``Retry(delay=-0.0005)`` -> ``delay_ms == 0``.
+38. ``Retry(delay=0)`` -> ``delay_ms == 0``, Ziel ist die Stufe ``{queue}.DQ.1s``.
+39. ``max_retries=2``, Header ``retry_count=2``, ``Retry(delay=-5)`` -> terminal.
+40. ``on_retry`` und ``TASK_RETRYING`` sehen die geklemmte Wartezeit 0.
+41. Ein gepickeltes ``Retry`` aus dem Rechenkind behaelt den geklemmten Wert.
 """
 
 from __future__ import annotations
 
+import math
 from typing import override
 from unittest.mock import AsyncMock, MagicMock
 
@@ -829,3 +841,103 @@ async def test_retry_rebuilt_from_compute_envelope_retries_despite_filter(broker
 
     broker.dead_letter.assert_not_awaited()
     assert broker.retry_later.await_args.kwargs["delay_ms"] == 5000
+
+
+class _BudgetTwoTask(Task):
+    task_info = TaskInfo(name="budget-two-task", queues=["default"], max_retries=2)
+
+
+class TestRetryDelayBounds:
+    """F3-03 (E-060): Klemmen und Pruefen in ``Retry`` (KTD6)."""
+
+    def test_negative_infinity_is_rejected(self) -> None:
+        """Liste 36."""
+        from swarmq.exceptions import Retry
+
+        with pytest.raises(ValueError, match="delay"):
+            Retry(delay=-math.inf)
+
+    @pytest.mark.timeout(5)
+    @pytest.mark.parametrize("delay", [-0.0, -0.0005], ids=["minus-zero", "sub-millisecond"])
+    async def test_tiny_negative_delays_retry_immediately(self, broker, backend, config, delay) -> None:
+        """Liste 37."""
+        from swarmq.exceptions import Retry
+        from swarmq.middleware import MiddlewareChain
+
+        handler, _ = _handler(broker, backend, config, _BudgetTwoTask)
+        msg = make_message(_default_payload(name="budget-two-task"))
+
+        await handler.evaluate(
+            msg, _ctx(_BudgetTwoTask), Retry(delay=delay), "", {"retry_count": 0}, MiddlewareChain([])
+        )
+
+        assert broker.retry_later.await_args.kwargs["delay_ms"] == 0
+
+    @pytest.mark.timeout(5)
+    async def test_zero_delay_goes_to_the_one_second_tier(self, broker, backend, config) -> None:
+        """Liste 38: ``delay_ms=0`` braucht keine eigene Queue; die kleinste
+        Stufe nimmt es auf (RabbitMQ erlaubt ``expiration="0"``)."""
+        from swarmq.exceptions import Retry
+        from swarmq.middleware import MiddlewareChain
+        from swarmq.queue_names import delay_tier_for
+
+        handler, _ = _handler(broker, backend, config, _BudgetTwoTask)
+        msg = make_message(_default_payload(name="budget-two-task"))
+
+        await handler.evaluate(msg, _ctx(_BudgetTwoTask), Retry(delay=0), "", {"retry_count": 0}, MiddlewareChain([]))
+
+        delay_ms = broker.retry_later.await_args.kwargs["delay_ms"]
+        assert delay_ms == 0
+        assert delay_tier_for("default", delay_ms) == "default.DQ.1s"
+
+    @pytest.mark.timeout(5)
+    @pytest.mark.entscheidung("E-060")
+    async def test_clamped_retry_with_exhausted_budget_ends_terminally(self, broker, backend, config) -> None:
+        """Liste 39: die geklemmte Wartezeit zaehlt normal gegen ``max_retries``."""
+        from swarmq.exceptions import Retry
+        from swarmq.middleware import MiddlewareChain
+
+        handler, _ = _handler(broker, backend, config, _BudgetTwoTask)
+        msg = make_message(_default_payload(name="budget-two-task"), headers={"x-swarmq-retry-count": 2})
+
+        await handler.evaluate(msg, _ctx(_BudgetTwoTask), Retry(delay=-5), "", {"retry_count": 0}, MiddlewareChain([]))
+
+        broker.retry_later.assert_not_awaited()
+        broker.dead_letter.assert_awaited_once()
+
+    @pytest.mark.timeout(5)
+    async def test_hooks_see_the_clamped_delay(self, broker, backend, config) -> None:
+        """Liste 40: Middleware und Signal bekommen nie ``-5``."""
+        from swarmq.exceptions import Retry
+        from swarmq.middleware import Middleware, MiddlewareChain
+
+        seen: list[float] = []
+
+        class _Spy(Middleware):
+            @override
+            async def on_retry(self, message, exception, retry_count, delay) -> None:
+                seen.append(delay)
+
+        handler, worker = _handler(broker, backend, config, _BudgetTwoTask)
+        msg = make_message(_default_payload(name="budget-two-task"))
+
+        await handler.evaluate(
+            msg, _ctx(_BudgetTwoTask), Retry(delay=-5), "", {"retry_count": 0}, MiddlewareChain([_Spy()])
+        )
+
+        assert seen == [0]
+        retrying = [c for c in worker._signal_dispatcher.dispatch.await_args_list if c.args[0] is Signal.TASK_RETRYING]
+        assert [c.kwargs["delay"] for c in retrying] == [0]
+
+    def test_pickled_retry_from_the_compute_child_keeps_the_clamped_delay(self) -> None:
+        """Liste 41: Entpickeln ruft ``Retry()`` ohne Wert und setzt danach
+        ``__dict__``; der im Kind geklemmte Wert bleibt."""
+        import pickle
+
+        from swarmq.exceptions import Retry
+        from swarmq.worker.compute.envelope import error_envelope
+
+        rebuilt = pickle.loads(pickle.dumps(error_envelope("abc-123", Retry(delay=-5)))).error()
+
+        assert isinstance(rebuilt, Retry)
+        assert rebuilt.delay == 0

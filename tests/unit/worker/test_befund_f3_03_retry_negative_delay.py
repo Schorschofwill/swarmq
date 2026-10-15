@@ -22,6 +22,9 @@ Testliste:
 # [x] Retry(delay=-5) -> retry_later mit delay_ms=0, Retry-Zaehler +1, kein
 #     redeliver (zaehlt gegen max_retries)
 # [x] Retry(delay=inf) / Retry(delay=nan) -> ValueError beim Erzeugen
+
+Behoben in 0.12.3 (``Retry.__init__`` klemmt und prueft); ``befund`` bleibt
+als Rueckverweis.
 """
 
 from __future__ import annotations
@@ -45,8 +48,6 @@ from tests.unit.worker._helpers import _default_payload
 
 if TYPE_CHECKING:
     from swarmq.middleware import MessageContext
-
-_REASON = "F3-03: offen - Retry(delay<0) und inf/nan werden ungeprueft uebernommen"
 
 
 class F303RateLimitedTask(Task):
@@ -77,7 +78,7 @@ async def _reject_negative_expiration(delivery: Any, *, delay_ms: int, headers: 
 
 
 @pytest.mark.befund("F3-03")
-@pytest.mark.xfail(strict=True, reason=_REASON)
+@pytest.mark.entscheidung("E-060")
 @pytest.mark.timeout(5)
 async def test_negative_retry_delay_is_clamped_to_zero_and_counts(
     broker: MagicMock, backend: MagicMock, config: SwarmQConfig
@@ -110,7 +111,7 @@ async def test_negative_retry_delay_is_clamped_to_zero_and_counts(
 
 
 @pytest.mark.befund("F3-03")
-@pytest.mark.xfail(strict=True, reason=_REASON)
+@pytest.mark.entscheidung("E-060")
 @pytest.mark.parametrize("delay", [math.inf, math.nan], ids=["inf", "nan"])
 def test_non_finite_retry_delay_is_rejected(delay: float) -> None:
     with pytest.raises(ValueError, match="delay"):

@@ -16,7 +16,10 @@ tests:
   - tests/unit/worker/test_retry.py::test_retry_delay_wins_although_retry_exceptions_does_not_list_it
   - tests/unit/worker/test_retry.py::test_retry_retries_although_retry_exceptions_does_not_list_it
   - tests/unit/worker/test_retry.py::test_retry_with_zero_max_retries_ends_terminally
-ohne_test: Test entsteht mit dem Fix in 0.12.3 (F3-03, tests/unit/worker/test_befund_f3_03_retry_negative_delay.py).
+  - tests/unit/worker/test_retry.py::TestRetryDelayBounds::test_clamped_retry_with_exhausted_budget_ends_terminally
+  - tests/unit/worker/test_befund_f3_03_retry_negative_delay.py::test_negative_retry_delay_is_clamped_to_zero_and_counts
+  - tests/unit/worker/test_befund_f3_03_retry_negative_delay.py::test_non_finite_retry_delay_is_rejected
+  - tests/integration/broker/test_befund_f3_03_negative_expiration.py::test_negative_retry_delay_counts_and_spares_parallel_publishes
 ---
 
 **Entscheidung.** `raise Retry(delay=…)` wiederholt mit genau dieser Wartezeit statt des Backoffs, unabhängig von `retry_exceptions`, und zählt gegen `max_retries`; ist das Budget aufgebraucht (immer bei `max_retries=0`), endet der Task terminal (DLQ bzw. Fehlerergebnis). Eine negative Wartezeit wird auf 0 geklemmt und zählt normal. `inf` und `nan` lehnt schon der Konstruktor von `Retry` mit `ValueError` ab.
