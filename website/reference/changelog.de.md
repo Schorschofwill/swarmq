@@ -279,7 +279,9 @@ jetzt mit einem Fehler, und Middleware sieht verzögerte Aufrufe.
   verbraucht ([Event-Katalog](logging.md#event-katalog),
   [Rate-Limits](../guides/rate-limiting.md#kombination-mit-retries-und-locks)).
 
-## [0.12.2] — unveröffentlicht
+## [0.12.2rc1] — 2026-10-15
+
+Release-Candidate für 0.12.2 (Installation mit `pip install --pre`).
 
 Sammelrelease für die P2- und P3-Befunde der zweiten Fehlersuche;
 zusammen mit 0.12.1rc1 sind damit alle 23 Befunde behoben. Es behebt
@@ -497,16 +499,39 @@ verhalten sich anders.
   Mit dem Zähler wurde die Kopie bei fremdem Claim zurückgestellt statt
   als Duplikat bestätigt, und ihr Zurückstellungsdeckel begann mit dem
   alten Stand.
-- **Kleinere Korrekturen.** `ValkeyBackend.close()` verweigert neue
-  Verbindungen und trennt später zurückgegebene; Handler, die nach
-  einem Worker-Abbruch fertig werden, hinterlassen keine offenen
-  Verbindungen mehr, und der Abbruchpfad lässt die ausstehenden
-  Schreibvorgänge des Ausführungsschutzes auslaufen wie der geordnete
-  Shutdown. Der Supervisor schließt nach einem erfolgreichen Reload die
-  stderr-Pipe der Logging-Konfigurationsprobe (ein Dateideskriptor je
-  Reload). Ein zurückgehaltener Cron schreibt seinen verschobenen
-  Termin, bevor `SCHEDULER_CRON_UNOWNED` gesendet wird; ein Handler,
-  der ihn liest, sieht schon den neuen Termin.
+
+## [0.12.1] — 2026-10-15
+
+0.12.1 ist 0.12.1rc1 plus die Korrekturen unten. Die wesentlichen
+Änderungen und die Upgrade-Hinweise (Surge-Deploy, Grace-Periode,
+Mischbetrieb mit 0.12.0) stehen unter
+[0.12.1rc1](#0121rc1-2026-10-14) und gelten unverändert. Installation
+mit `pip install 'swarmq==0.12.*'`; `--pre` ist nicht mehr nötig.
+
+### Behoben
+
+- **`ValkeyBackend.close()` lässt keine Verbindungen mehr offen.**
+  Locks, Ausführungsschutz und andere Stores halten den Client über
+  `close()` hinaus, etwa wenn Handler erst nach dem Abbruch eines
+  Workers abschließen. Ihre Befehle öffneten neue Verbindungen, die
+  niemand mehr schloss. Nach `close()` verweigert der Pool jetzt neue
+  Verbindungen, und eine an ihn zurückgegebene Verbindung wird getrennt.
+- **Ein abgebrochener Worker lässt die Nachholversuche des
+  Ausführungsschutzes auslaufen wie der geordnete Shutdown:** ein
+  letzter, begrenzter Versuch, danach keiner mehr. Bisher liefen sie
+  gegen das geschlossene Backend weiter, bis der Event-Loop schloss.
+- **CPU-Modus: kein Traceback „Event loop is closed“ mehr auf stderr
+  beim Ende eines Workers.** Kam das Ende des Kanals eines Kindes erst
+  nach dem Schließen des Event-Loops an (ein Enkel hielt den Deskriptor
+  noch offen, oder der Leser-Thread lief unter Last spät), scheiterte
+  sein Leser-Thread. Er endet jetzt still.
+- **`SCHEDULER_CRON_UNOWNED` mit `held=True` kommt erst, nachdem der
+  Leader den verschobenen Termin** des zurückgehaltenen Crons
+  gespeichert hat. Bisher sah ein Empfänger, der den Schedule las, noch
+  den alten Termin.
+- **Ein erfolgreicher Reload der Logging-Konfiguration (`SIGHUP`) lässt
+  im Supervisor keinen Dateideskriptor mehr offen.** Die stderr-Pipe der
+  `dictConfig`-Probe blieb bei jedem gültigen Reload offen.
 
 ## [0.12.1rc1] — 2026-10-14
 

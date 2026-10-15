@@ -56,6 +56,7 @@ from tests.unit._log_capture import capture_swarmq_logs
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(60)]
 
 _FS10_COUNT_AT_LIMIT = 19  # delivery_limit 20 (Default) -> Gate ab 19
+_FS10_WAIT_S = 10.0  # Ankunft einer Kopie in der Ziel-Queue (DLX ist asynchron)
 
 
 @pytest.fixture
@@ -109,9 +110,14 @@ async def _fs10_move(rabbitmq_url: str, source: str, target: str, extra_headers:
     try:
         assert broker._connection is not None
         channel = await broker._connection.channel()
-        message = await (await channel.get_queue(source)).get(no_ack=True)
+        # Auf die Nachricht warten statt einmal zu lesen: Eine Kopie, die der
+        # Broker per DLX anlegt, kommt asynchron nach dem nack an (vorher
+        # QueueEmpty unter Last, CI-Pipeline 2952180199).
+        queue = await channel.get_queue(source)
+        async with queue.iterator() as messages:
+            message = await asyncio.wait_for(anext(messages), timeout=_FS10_WAIT_S)
+            await message.ack()
         await channel.close()
-        assert message is not None, f"Voraussetzung: Nachricht liegt in {source}"
         headers = {**dict(message.headers or {}), **(extra_headers or {})}
         await broker.publish(target, message.body, headers=headers)
     finally:
