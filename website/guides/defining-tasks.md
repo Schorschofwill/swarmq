@@ -171,28 +171,47 @@ async def run(self, retry_delay: float) -> None:
     ...
 ```
 
+A few more keyword names belong to the calls that start a task, but
+swarmq does not reject them on `run()`:
+
+- `queue` — `app.schedule()` and `app.run()` read it as the target
+  queue and do not pass it on. `schedule("export", queue="eu")` routes
+  the task to the queue `eu`: the publish fails with
+  `UnroutableMessage` if no such queue exists, or the task runs
+  without the argument (`TypeError` for a required parameter).
+- `timeout`, `polling` — `app.run()` reads them to wait for the result
+  and does not pass them on.
+
+Rename such a parameter, or pass the value positionally
+(`schedule("export", "eu")`).
+
 ## Lifecycle hooks
 
 Override `pre_execution` and `post_execution` to run code on the
-worker around the task body:
+worker around the task body. `post_execution` runs only after
+`pre_execution` and `run()` succeeded. It does not run when either
+raises, on a soft or hard timeout, or on a cancel; an exception in it
+turns the attempt into a failure. Use it for follow-up work on
+success. Cleanup that must run on every outcome belongs in
+`try/finally` inside `run()`:
 
 ```python
 class WithSession(Task):
     task_info = TaskInfo(name="with_session", queues=["default"])
 
-    async def pre_execution(self) -> None:
-        self.session = await open_db_session()
-
     async def run(self, user_id: int) -> dict:
-        return await self.session.fetch(user_id)
-
-    async def post_execution(self) -> None:
-        await self.session.close()
+        session = await open_db_session()
+        try:
+            return await session.fetch(user_id)
+        finally:
+            await session.close()
 ```
 
-`post_execution` runs on both success and failure. Use it for
-deterministic cleanup. For cross-cutting concerns that should apply
-to **every** task, use [middleware](middleware.md) instead.
+With [dependency injection](../reference/api.md#dependency-injection-dishka),
+put it in the provider's `yield` finalizer instead; it also receives
+the exception, for commit or rollback. For cross-cutting concerns that
+should apply to **every** task, use [middleware](middleware.md)
+instead; its `on_error` runs on every failure.
 
 ## Progress reporting
 

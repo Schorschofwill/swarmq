@@ -861,13 +861,21 @@ value, existing ones keep theirs and the worker uses the smaller one
 queue at-least-once dead-lettering without a policy, migrate it:
 
 1. Stop the producers of the queue (including the scheduler crons that
-   publish to it).
+   publish to it). Deferred tasks (`delay=`/`eta=`) are not in the
+   queue: they wait in the Valkey scheduler store, and the scheduler
+   leader keeps publishing them when they fall due, also during the
+   migration. One that falls due while the queue is deleted is retried
+   every 60 s and dropped after
+   `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S` (default one day; see
+   [missing queues](../guides/scheduling-and-retries.md#missing-queues)).
+   Keep the gap between deleting and recreating the queue short, or
+   raise that limit on the workers for the migration.
 2. Let the workers drain `{queue}`, `{queue}.DQ` and the
    [delay tiers](#delay-tiers) `{queue}.DQ.*`. They hold pending
-   retries and deferred tasks (`delay`/`eta`) that may be due only much
-   later: wait for them, or move them to a temporary queue with a
-   shovel. Never delete a delay queue that still holds messages; they
-   would be lost.
+   retries and deferrals (lock conflicts, rate limits, an unavailable
+   backend) that may be due only much later: wait for them, or move
+   them to a temporary queue with a shovel. Never delete a delay queue
+   that still holds messages; they would be lost.
 3. Stop the workers.
 4. Move or keep what is in `{queue}.XQ`.
 5. Delete the queues of the family (`{queue}`, `{queue}.DQ`, the tiers
