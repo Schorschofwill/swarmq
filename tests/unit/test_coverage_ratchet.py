@@ -17,6 +17,7 @@ Test-Liste:
 - [x] eine unversionierte Datei blockiert nicht
 - [x] weniger als drei Werte: Abbruch
 - [x] der Eintrag landet im Report-Abschnitt, ein folgender Abschnitt bleibt unberührt
+- [x] vor dem folgenden Abschnitt bleibt genau eine Leerzeile (keine zusätzliche)
 """
 
 from __future__ import annotations
@@ -120,6 +121,18 @@ def test_the_floor_lands_in_the_report_section_before_the_next_one(tmp_path: Pat
     parsed = tomllib.loads(path.read_text(encoding="utf-8"))
     assert parsed["tool"]["coverage"]["report"] == {"precision": 2, "fail_under": 96}
     assert parsed["tool"]["mypy"] == {"strict": True}
+
+
+def test_exactly_one_blank_line_stays_before_the_next_section(tmp_path: Path) -> None:
+    repo = _repo(tmp_path, None)
+    path = repo / "pyproject.toml"
+    path.write_text(path.read_text(encoding="utf-8") + "\n[tool.mypy]\nstrict = true\n", encoding="utf-8")
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "mypy"], cwd=repo, check=True)
+
+    result = _ratchet(repo, "96.50", "96.51", "96.50")
+
+    assert result.returncode == 0, result.stderr
+    assert "fail_under = 96\n\n[tool.mypy]" in path.read_text(encoding="utf-8")
 
 
 def test_an_untracked_file_does_not_block(tmp_path: Path) -> None:
