@@ -12,8 +12,10 @@ quelle:
   - Georg 2026-10-15 (Fehlersuche Runde 3, F3-14)
   - docs/plans/2026-09-03-001-feat-cpu-worker-modus-plan.md:84 (R3, nicht die Kernzahl des Hosts und nicht 10), :124 (R25, Speicherdimensionierung), :443 (Auflösung nach dem Pool-Modus)
   - website/reference/configuration.md:34 (10 (io) / assigned CPUs (cpu))
-tests: []
-ohne_test: Test entsteht mit dem Fix in 0.12.3 (F3-14, tests/unit/test_befund_f3_14_embedded_cpu_concurrency.py). Kandidaten ohne Marker für die CLI sind tests/unit/test_slots.py::test_effective_concurrency_cpu_uses_assigned_cpus und ::test_effective_concurrency_explicit_wins_for_every_pool.
+tests:
+  - tests/unit/test_slots.py::test_effective_concurrency_cpu_uses_assigned_cpus
+  - tests/unit/test_slots.py::test_effective_concurrency_explicit_wins_for_every_pool
+ohne_test: Test entsteht mit dem Fix in 0.12.3 (F3-14, tests/unit/test_befund_f3_14_embedded_cpu_concurrency.py).
 ---
 
 **Entscheidung.** Ohne ausdrückliches `concurrency` hat ein Worker im CPU-Modus so viele Slots, wie ihm CPUs zugeteilt sind (Affinität und cgroup-Quote, aufgerundet, bei `--processes N` geteilt). Das gilt für die CLI und für eine eingebettete App (`SwarmQConfig(pool="cpu")`). Ein ausdrückliches `concurrency` gewinnt immer. Im IO-Modus bleibt die Voreinstellung 10.

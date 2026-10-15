@@ -10,7 +10,7 @@ id: E-019
 datum: 2026-10-09
 status: gilt
 quelle:
-  - docs/befunde/betrieb-ueber-zeit-2026-10.md:107 (Nachweis-Tests BZ-20: Grenze, gemeldet)
+  - 'docs/befunde/betrieb-ueber-zeit-2026-10.md:107 (Nachweis-Tests BZ-20: Grenze, gemeldet)'
   - docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:53 (Abschnitt 1, BZ-20 dokumentierte Grenze)
   - docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:611 (MR 18, BZ-20)
   - docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:722 (Abschnitt 7)

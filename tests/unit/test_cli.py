@@ -253,6 +253,7 @@ class TestMainErrorRendering:
         captured = capsys.readouterr()
         return rc, captured.err
 
+    @pytest.mark.entscheidung("E-057")
     def test_module_not_found_exits_with_the_config_code(self, capsys):
         """Bewusst geaenderter Test (U4/R19): vorher 1 mit stderr-Zeile, jetzt
         78 mit strukturiertem Logsatz. Der Text erscheint als
@@ -396,6 +397,7 @@ class TestRunWorkerAsync:
         return _FakeApp
 
     @pytest.mark.asyncio
+    @pytest.mark.entscheidung("E-069")
     async def test_configure_hook_runs_with_the_app_before_start(self, monkeypatch):
         """U5 (R9/R10): Der Hook sieht die fertige App und laeuft vor dem
         Start des Workers -- Middleware, die er registriert, muss den ersten
@@ -428,6 +430,7 @@ class TestRunWorkerAsync:
         assert sink["calls"] == ["hook", "enter", "start_worker"]
 
     @pytest.mark.asyncio
+    @pytest.mark.entscheidung("E-069")
     async def test_async_configure_hook_is_awaited(self, monkeypatch):
         class _Probe(Task):
             from swarmq.task import TaskInfo

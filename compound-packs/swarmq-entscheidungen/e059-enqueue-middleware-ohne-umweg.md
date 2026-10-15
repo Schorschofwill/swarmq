@@ -16,8 +16,9 @@ quelle:
   - docs/plans/2026-09-08-001-feat-debug-backlog-loadsuite-plan.md:16, 92 (B9 in 0.6.0 behoben)
   - website/reference/changelog.md:2468 (0.6.0, Workflow steps run through the enqueue middleware)
   - website/guides/middleware.md:12, 27 (every task; pre_enqueue aborts the enqueue)
-tests: []
-ohne_test: Test entsteht mit dem Fix in 0.12.3 (F3-02, tests/unit/client/test_befund_f3_02_deferred_pre_enqueue.py). Kandidat ohne Marker für den Workflow-Teil (B9) ist tests/unit/worker/test_pipeline.py::test_workflow_step_publisher_runs_middleware_then_signals.
+tests:
+  - tests/unit/worker/test_pipeline.py::test_workflow_step_publisher_runs_middleware_then_signals
+ohne_test: Test entsteht mit dem Fix in 0.12.3 (F3-02, tests/unit/client/test_befund_f3_02_deferred_pre_enqueue.py).
 ---
 
 **Entscheidung.** Jeder Enqueue über den Client (`schedule`, `schedule_many`, `apply`) und jeder Workflow-Folgeschritt läuft durch `pre_enqueue` und löst `TASK_ENQUEUED` aus. Bei `schedule(delay=…/eta=…)` läuft `pre_enqueue` im Producer vor dem Speichern im Scheduler-Store und vor dem Unique-Claim; ein Veto verhindert beides. `TASK_ENQUEUED` feuert nach dem Speichern, nicht erst beim Fire. Header- und Message-Änderungen der Middleware werden mit der Definition gespeichert, und der Leader publiziert sie beim Fire.

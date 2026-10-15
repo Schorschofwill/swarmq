@@ -15,8 +15,12 @@ quelle:
   - website/reference/configuration.md:471 (Standard 5-field cron expression), :494-500 (validates every field at class definition time, This is deliberate)
   - docs/plans/2026-10-08-1541-fix-einbindungsfehler-plan.md:160 (KTD10, Cron-Meldungen)
   - src/swarmq/scheduler/sync.py:30-41 (_validated, nächster Termin muss berechenbar sein)
-tests: []
-ohne_test: Kein Test trägt bisher den Marker. Kandidaten ohne Marker sind tests/unit/test_task.py::test_taskinfo_cron_extended_L_syntax_rejected, ::test_taskinfo_cron_extended_W_syntax_rejected, ::test_taskinfo_cron_extended_hash_syntax_rejected, ::test_taskinfo_cron_invalid_syntax_raises und tests/unit/scheduler/test_reports.py::TestAdoptReportedCrons::test_invalid_report_is_not_adopted_and_logged.
+tests:
+  - tests/unit/test_task.py::test_taskinfo_cron_extended_L_syntax_rejected
+  - tests/unit/test_task.py::test_taskinfo_cron_extended_W_syntax_rejected
+  - tests/unit/test_task.py::test_taskinfo_cron_extended_hash_syntax_rejected
+  - tests/unit/test_task.py::test_taskinfo_cron_invalid_syntax_raises
+  - tests/unit/scheduler/test_reports.py::TestAdoptReportedCrons::test_invalid_report_is_not_adopted_and_logged
 ---
 
 **Entscheidung.** `TaskInfo.__post_init__` prüft jedes Feld beim Klassenbau; ein falscher Wert wirft `ValueError` beim Import des Task-Moduls, nicht beim ersten `schedule()`. Ein Cron ist ein Standard-Ausdruck mit 5 Feldern; erweiterte Syntax (`L`, `W`, `#`) wird abgelehnt. Der Leader prüft jeden gemeldeten Cron noch einmal (Quelle `static`, Ausdruck vorhanden, nächster Termin in der Zone berechenbar) und verwirft ihn sonst mit `scheduler_cron_report_invalid`.

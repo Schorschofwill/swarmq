@@ -15,7 +15,7 @@ quelle:
   - Commit c18a144 (asyncio.sleep(polling) ersetzt durch festes 5-ms-Intervall)
   - website/reference/api.md:227-229 („5ms-interval polling as a fallback“)
   - src/swarmq/backend/valkey/results.py:30 (_FALLBACK_POLL_S)
-  - Commit 1b05cd9 (U20, FS-15: subscribe und Teardown an die Frist gebunden) und Review d2aa879 (verworfener PubSub ohne unsubscribe, close() räumt Hintergrund-Closer ab)
+  - 'Commit 1b05cd9 (U20, FS-15: subscribe und Teardown an die Frist gebunden) und Review d2aa879 (verworfener PubSub ohne unsubscribe, close() räumt Hintergrund-Closer ab)'
   - src/swarmq/backend/valkey/results.py:229-275 (wait_for_result), :490-512 (wait_for_workflow)
   - docs/plans/2026-04-15-005-feat-pubsub-batch-performance-plan.md:72 (get_results mit MGET-Polling, kein Pub/Sub), :250 (timeout=0 ein GET)
 tests:

@@ -12,8 +12,11 @@ quelle:
   - Georg 2026-10-15 (Fehlersuche Runde 3, F3-03)
   - docs/plans/2026-04-15-003-feat-phase2-production-core-plan.md:280, 286 (Retry überschreibt Backoff; respektiert max_retries, kein unendlicher Retry)
   - website/guides/scheduling-and-retries.md:646-651 (unabhängig von retry_exceptions, zählt gegen max_retries)
-tests: []
-ohne_test: Test entsteht mit dem Fix in 0.12.3 (F3-03, tests/unit/worker/test_befund_f3_03_retry_negative_delay.py). Kandidaten ohne Marker für den bestehenden Teil sind tests/unit/worker/test_retry.py::test_retry_delay_wins_although_retry_exceptions_does_not_list_it, ::test_retry_retries_although_retry_exceptions_does_not_list_it und ::test_retry_with_zero_max_retries_ends_terminally.
+tests:
+  - tests/unit/worker/test_retry.py::test_retry_delay_wins_although_retry_exceptions_does_not_list_it
+  - tests/unit/worker/test_retry.py::test_retry_retries_although_retry_exceptions_does_not_list_it
+  - tests/unit/worker/test_retry.py::test_retry_with_zero_max_retries_ends_terminally
+ohne_test: Test entsteht mit dem Fix in 0.12.3 (F3-03, tests/unit/worker/test_befund_f3_03_retry_negative_delay.py).
 ---
 
 **Entscheidung.** `raise Retry(delay=…)` wiederholt mit genau dieser Wartezeit statt des Backoffs, unabhängig von `retry_exceptions`, und zählt gegen `max_retries`; ist das Budget aufgebraucht (immer bei `max_retries=0`), endet der Task terminal (DLQ bzw. Fehlerergebnis). Eine negative Wartezeit wird auf 0 geklemmt und zählt normal. `inf` und `nan` lehnt schon der Konstruktor von `Retry` mit `ValueError` ab.

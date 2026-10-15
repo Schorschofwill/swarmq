@@ -10,7 +10,7 @@ datum: 2026-04-15
 status: gilt
 quelle:
   - docs/plans/2026-04-15-003-feat-phase2-production-core-plan.md:77 (Hard-Timeout routed durch den Retry-Pfad statt nack(requeue=True)), :78 und :313-314 (FIRE_AND_FORGET nur cancel und loggen)
-  - docs/plans/2026-09-03-001-feat-cpu-worker-modus-plan.md:92-93 (R8, R9: Kindtod wie Taskfehler, nicht über Nack mit Requeue), :258 (KTD2, user-approved)
+  - 'docs/plans/2026-09-03-001-feat-cpu-worker-modus-plan.md:92-93 (R8, R9: Kindtod wie Taskfehler, nicht über Nack mit Requeue), :258 (KTD2, user-approved)'
 tests:
   - tests/unit/worker/test_worker_timeouts.py::test_hard_timeout_fires_and_retries
   - tests/unit/worker/test_worker_timeouts.py::test_hard_timeout_exhausted_retries_sends_to_dlq

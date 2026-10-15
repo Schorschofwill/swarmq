@@ -740,6 +740,7 @@ class _FilteredFixedTask(Task):
 
 
 @pytest.mark.timeout(5)
+@pytest.mark.entscheidung("E-060")
 async def test_retry_retries_although_retry_exceptions_does_not_list_it(broker, backend, config):
     """Liste 30 (P8, T10): ``raise Retry()`` ist eine ausdrueckliche
     Anweisung des Tasks; der Filter ``retry_exceptions`` gilt fuer
@@ -758,6 +759,7 @@ async def test_retry_retries_although_retry_exceptions_does_not_list_it(broker, 
 
 
 @pytest.mark.timeout(5)
+@pytest.mark.entscheidung("E-060")
 async def test_retry_delay_wins_although_retry_exceptions_does_not_list_it(broker, backend, config):
     """Liste 31 (P8): die Verzoegerung aus ``Retry(delay=...)`` gilt auch mit
     Filter."""
@@ -792,6 +794,7 @@ async def test_retry_with_filter_still_consumes_the_budget(broker, backend, conf
 
 
 @pytest.mark.timeout(5)
+@pytest.mark.entscheidung("E-060")
 async def test_retry_with_zero_max_retries_ends_terminally(broker, backend, config):
     """Liste 33 (P8, E4 A): bei ``max_retries=0`` endet ``Retry`` terminal."""
     from swarmq.exceptions import Retry

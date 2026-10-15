@@ -13,7 +13,7 @@ quelle:
   - Commit 9cf72c7 (Ausführungsschutz U8, SettleFailedAfterPublish)
   - src/swarmq/worker/gates/__init__.py:304-308 (dead_letter_copy)
   - website/explanation/delivery-semantics.md:316-320
-  - Commit b69dd89 (U16, FS-17: Expiry-Gate nutzt dead_letter_copy)
+  - 'Commit b69dd89 (U16, FS-17: Expiry-Gate nutzt dead_letter_copy)'
 tests:
   - tests/unit/worker/test_retry.py::test_dead_letter_with_failed_ack_after_publish_is_terminal
   - tests/unit/worker/gates/test_lock_dlq_ack_failed.py::test_render_error_with_failed_ack_after_publish_is_terminal

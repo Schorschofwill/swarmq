@@ -9,7 +9,7 @@ id: E-004
 datum: 2026-10-09
 status: gilt
 quelle:
-  - docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:55 (Abschnitt 1, BZ-03 Oneshot: „Mit Backoff erneut versuchen“)
+  - 'docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:55 (Abschnitt 1, BZ-03 Oneshot: „Mit Backoff erneut versuchen“)'
   - docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:347 (MR 6, Leader Oneshot)
 tests:
   - tests/unit/scheduler/test_fire_unroutable.py::test_unroutable_oneshot_is_deferred_by_sixty_seconds_from_now

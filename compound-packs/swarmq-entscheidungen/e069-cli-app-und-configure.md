@@ -12,8 +12,9 @@ quelle:
   - docs/plans/2026-09-08-001-feat-debug-backlog-loadsuite-plan.md:82 (R9), :231 (KTD5)
   - website/tutorials/first-email-worker.md:374-377 (The worker CLI builds its own SwarmQ)
   - website/reference/cli.md:99 (--configure)
-tests: []
-ohne_test: Kein Test trägt bisher den Marker. Kandidaten ohne Marker sind tests/unit/test_cli.py::TestRunWorkerAsync::test_configure_hook_runs_with_the_app_before_start und ::test_async_configure_hook_is_awaited.
+tests:
+  - tests/unit/test_cli.py::TestRunWorkerAsync::test_configure_hook_runs_with_the_app_before_start
+  - tests/unit/test_cli.py::TestRunWorkerAsync::test_async_configure_hook_is_awaited
 ---
 
 **Entscheidung.** `swarmq worker` konstruiert seine eigene `SwarmQ`-App. Das Task-Modul liefert nur die Tasks. Signal-Handler und Middleware registriert man in einem Callable, das `--configure MODULE:CALLABLE` nach der App-Konstruktion und vor dem Start mit der App aufruft (ein Awaitable wird abgewartet; jede Ausnahme wird `ConfigurationError`, E-057).

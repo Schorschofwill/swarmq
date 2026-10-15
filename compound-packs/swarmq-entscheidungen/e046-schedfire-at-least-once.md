@@ -13,7 +13,7 @@ quelle:
   - docs/plans/2026-04-17-003-fix-phase3c-review-followup-plan.md:27-32 (H-2, „At-most-once-Hole in einem at-least-once-System“), :103-125 (Unit 1, Ziel at-least-once bei SETNX-winner-crash-before-ack), :414-416 (E2E-Test mit simuliertem Crash Pflicht)
   - docs/solutions/logic-errors/schedfire-retry-dedup-collision-silent-drop-2026-06-02.md (stiller Fire-Drop ist kritisch)
   - website/explanation/delivery-semantics.md:176-183 (Fire-Verlust nur, wenn Freigabe und Broker-Kopie scheitern)
-  - Commit 06958c8 (Review U5: Retry-Kopie ohne Schedfire-Defer-Zähler)
+  - 'Commit 06958c8 (Review U5: Retry-Kopie ohne Schedfire-Defer-Zähler)'
   - src/swarmq/worker/retry.py:157-160
   - docs/befunde/fehlersuche-runde-2-recherche/fix-r-scheduler.md:48 (Absturzloop endet über execution_guard_max_orphans)
   - docs/befunde/fehlersuche-runde-2-recherche/fix-r-flow.md:155 (zwei Kopie-Schleifen vor dem DeliveryCount-Gate)

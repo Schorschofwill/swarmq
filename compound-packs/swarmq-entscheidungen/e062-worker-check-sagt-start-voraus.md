@@ -16,8 +16,13 @@ quelle:
   - website/reference/cli.md:11-12 (validates exactly the values the workers would get), :32-33 (Exit 1 für jeden --check-Fehler, auch argparse)
   - Commit 656078c (R5.3 ce-review pass 2, argparse-Fehler unter --check als JSON)
   - src/swarmq/cli/check_cmd.py:22-39 (stabiler Feldsatz des Payloads), :291-309
-tests: []
-ohne_test: Test entsteht mit dem Fix in 0.12.3 (F3-17, tests/unit/test_befund_f3_17_worker_check_env.py; F3-19, tests/unit/test_befund_f3_19_check_argparse_payload.py). Kandidaten ohne Marker für den bestehenden Teil sind tests/unit/test_cli_multiprocess.py::TestMainRouting::test_check_argparse_error_emits_json und die Klasse tests/unit/process_manager/test_port_guard.py::TestPreflightCommandAgrees.
+tests:
+  - tests/unit/test_cli_multiprocess.py::TestMainRouting::test_check_argparse_error_emits_json
+  - tests/unit/process_manager/test_port_guard.py::TestPreflightCommandAgrees::test_payload_names_both_ranges
+  - tests/unit/process_manager/test_port_guard.py::TestPreflightCommandAgrees::test_checks_the_effective_values_cli_over_environment
+  - tests/unit/process_manager/test_port_guard.py::TestPreflightCommandAgrees::test_environment_port_is_named_in_the_error
+  - tests/unit/process_manager/test_port_guard.py::TestPreflightCommandAgrees::test_reports_the_overlap_instead_of_ok
+ohne_test: Test entsteht mit dem Fix in 0.12.3 (F3-17, tests/unit/test_befund_f3_17_worker_check_env.py; F3-19, tests/unit/test_befund_f3_19_check_argparse_payload.py).
 ---
 
 **Entscheidung.** `swarmq worker --check` sagt den Start voraus: Ein `ok: true` heißt, dass der Pre-Flight des Supervisors und die Konfigurationsprüfung des Workers bestehen. Geprüft werden dazu alle Env-Werte, die der Start mit 78 ablehnt (z. B. `SWARMQ_SCHEDULER`, `SWARMQ_CONCURRENCY`, `SWARMQ_SHUTDOWN_TIMEOUT`, `SWARMQ_VALKEY_EVICTION_CHECK`). Fehlende `SWARMQ_BROKER_URL`/`SWARMQ_BACKEND_URL` prüft `--check` nicht; die Doku sagt das. Ein argparse-Fehler unter `--check` kommt als JSON-Payload mit Exit 1 (nicht 2), mit demselben stabilen Feldsatz wie jeder andere `--check`-Fehler.

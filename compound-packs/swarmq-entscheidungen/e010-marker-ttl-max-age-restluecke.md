@@ -10,7 +10,7 @@ id: E-010
 datum: 2026-10-10
 status: gilt
 quelle:
-  - docs/befunde/betrieb-ueber-zeit-2026-10.md:128 (Entscheidungen, BZ-08/BZ-12: Marker-TTL an max_age/Rückstand gekoppelt)
+  - 'docs/befunde/betrieb-ueber-zeit-2026-10.md:128 (Entscheidungen, BZ-08/BZ-12: Marker-TTL an max_age/Rückstand gekoppelt)'
   - docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:49 (Abschnitt 1, BZ-12 Restlücke akzeptiert)
   - docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:79 (Nachtrag max_age-Untergrenze, Georg 2026-10-10)
   - docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:706 (Abschnitt 7, BZ-12; Done-Marker ohne Deckel, Georg 2026-10-11)

@@ -12,8 +12,8 @@ quelle:
   - docs/plans/2026-04-16-008-feat-phase3b2-task-locking-plan.md:45 (Brief-Decision-6, Pipeline-Position nach Rate-Limit), :155-164 (Reihenfolge in _handle_message)
   - src/swarmq/worker/pipeline.py:632-643 (Gate-Sequenz in fester Reihenfolge, der Ordnungstest pinnt sie)
   - src/swarmq/lua/sliding_window_counter.lua:55 (Zählung beim Durchlass)
-tests: []
-ohne_test: Kein Test trägt bisher den Marker. Kandidat ohne Marker ist tests/unit/worker/test_pipeline.py::test_gates_run_in_fixed_order_and_ack_comes_last.
+tests:
+  - tests/unit/worker/test_pipeline.py::test_gates_run_in_fixed_order_and_ack_comes_last
 ---
 
 **Entscheidung.** Die Gates laufen in fester Reihenfolge: Ausführungsschutz, Expiry, Rate-Limit, Lock, danach der FIRE_AND_FORGET-Ack und die Ausführung. Das Rate-Limit zählt beim Durchlass; ein anschließender Lock-Konflikt stellt die Nachricht zurück, ohne den Slot zurückzugeben.

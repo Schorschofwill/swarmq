@@ -309,6 +309,7 @@ class TestMainRouting:
         assert payload["error_type"] == "PermissionError"
         assert "simulated .pth lockout" in payload["error"]
 
+    @pytest.mark.entscheidung("E-062")
     def test_check_argparse_error_emits_json(self, capsys):
         """R5.3 ce-review pass 2 #2 / AC-06 / CLI-02: when --check is
         requested but argparse itself rejects the invocation, the JSON

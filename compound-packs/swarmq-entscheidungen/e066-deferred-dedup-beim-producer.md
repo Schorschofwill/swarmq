@@ -11,8 +11,10 @@ status: gilt
 quelle:
   - docs/plans/2026-04-17-004-feat-phase3-5-unique-tasks-plan.md:56 (R10, Deferred-Pfad-SETNX-Timing, origin CD11), :694-760 (Unit 7, Dedup vor dem ScheduleStore-Insert)
   - src/swarmq/client/schedule.py:589-597 (The producer here is authoritative)
-tests: []
-ohne_test: Kein Test trägt bisher den Marker. Kandidaten ohne Marker sind tests/unit/client/test_schedule.py::TestClientUniqueDeferred::test_deferred_with_unique_for_sets_flag_and_persists_hash, ::test_deferred_duplicate_returns_existing_and_skips_store und ::test_deferred_with_eta_ttl_covers_fire_plus_unique_for.
+tests:
+  - tests/unit/client/test_schedule.py::TestClientUniqueDeferred::test_deferred_with_unique_for_sets_flag_and_persists_hash
+  - tests/unit/client/test_schedule.py::TestClientUniqueDeferred::test_deferred_duplicate_returns_existing_and_skips_store
+  - tests/unit/client/test_schedule.py::TestClientUniqueDeferred::test_deferred_with_eta_ttl_covers_fire_plus_unique_for
 ---
 
 **Entscheidung.** Löst ein Producer bei `schedule(delay=…/eta=…)` ein `unique_for` auf (Aufrufparameter oder `TaskInfo`-Default aus seiner Registry), beansprucht er den Unique-Claim vor dem Speichern im Scheduler-Store mit TTL `(unique_for + Verzögerung)`. Die Definition wird als `cli_unique` gespeichert; der Leader setzt beim Fire keinen eigenen Claim. Ein Duplikat gibt die bestehende `task_id` zurück und feuert `TASK_DUPLICATE_DETECTED`, ohne zu speichern. Nur ein Producer ohne Registry und ohne ausdrückliches `unique_for` überlässt die Entscheidung dem Leader (E-032).

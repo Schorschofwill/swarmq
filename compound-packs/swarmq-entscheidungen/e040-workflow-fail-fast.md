@@ -11,9 +11,9 @@ status: gilt
 quelle:
   - docs/plans/2026-05-30-001-feat-workflow-primitives-plan.md:50 (R16, Fail-fast inkl. Liveness), :116 (synchroner Hook, nicht DLQ-Beobachtung)
   - docs/brainstorms/2026-05-30-workflow-primitives-requirements.md:188-196 (R16)
-  - Commit 17dac64 (U6, „terminal-failure seam“, Cancel eingeschlossen: „task was cancelled“)
+  - 'Commit 17dac64 (U6, „terminal-failure seam“, Cancel eingeschlossen: „task was cancelled“)'
   - src/swarmq/worker/results.py:205-213
-  - Commit 4956358 (U15, FS-12: Cancel vor Start beendet Workflow) und Review 546cd08 (Zurückstellung über die Delay-Queue)
+  - 'Commit 4956358 (U15, FS-12: Cancel vor Start beendet Workflow) und Review 546cd08 (Zurückstellung über die Delay-Queue)'
   - src/swarmq/worker/gates/cancel.py:45-61 (_defer_fail_mark), :117-138
 tests:
   - tests/unit/worker/test_terminal.py::test_step_without_a_success_result_fails_its_workflow

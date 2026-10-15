@@ -9,7 +9,7 @@ id: E-047
 datum: 2026-04-17
 status: gilt
 quelle:
-  - docs/plans/2026-04-17-002-feat-phase3c-scheduler-plan.md:1388-1391 (Risks & Dependencies, Split-Brain und GC-Pause: gering/niedrig, Abmilderung Consumer-Dedup und Owner-Check)
+  - 'docs/plans/2026-04-17-002-feat-phase3c-scheduler-plan.md:1388-1391 (Risks & Dependencies, Split-Brain und GC-Pause: gering/niedrig, Abmilderung Consumer-Dedup und Owner-Check)'
 tests:
   - tests/unit/scheduler/test_loop.py::TestPollLoop::test_commit_owner_mismatch_transitions_to_standby
   - tests/unit/backend/test_valkey_schedules.py::TestScripts::test_commit_fire_rejected_by_owner_check

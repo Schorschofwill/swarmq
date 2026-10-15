@@ -14,6 +14,7 @@ Testliste:
 # [x] Marker in Tests mit unbekannter ID wird gemeldet
 # [x] Regel ohne Test braucht eine Begründung (ohne_test)
 # [x] README.md und Unterordner sind keine Regeln
+# [x] Einträge unter quelle, tests und applies_when sind Text (kein Mapping durch ": ")
 # [x] das echte Register ist konsistent
 """
 
@@ -169,6 +170,20 @@ def test_rule_without_tests_needs_a_reason(tmp_path: Path) -> None:
 
     assert any("e002-ohne.md" in p and "ohne_test" in p for p in problems)
     assert not any("e003-begruendet.md" in p for p in problems)
+
+
+def test_list_entries_read_as_mapping_are_reported(tmp_path: Path) -> None:
+    front = (
+        _VALID.replace("docs/plans/plan.md (KTD2)", "docs/plans/plan.md: Abschnitt 1")
+        .replace("tests/unit/test_x.py::test_drain", "tests/unit/test_x.py::test_drain\n  - Notiz: kein Pfad")
+        .replace("ein Task wird", "Fall: ein Task wird")
+    )
+    pack, tests = _repo(tmp_path, front)
+
+    problems = check_register(pack, tests, tmp_path)
+
+    for key in ("quelle", "tests", "applies_when"):
+        assert any("e001-drain.md" in p and key in p and "Text" in p for p in problems), key
 
 
 def test_real_register_is_consistent() -> None:

@@ -96,6 +96,7 @@ class TestRejectsRangesThatCannotWork:
         assert result["metrics_ports"] == [8000, 8001]
 
 
+@pytest.mark.entscheidung("E-062")
 class TestPreflightCommandAgrees:
     """``swarmq worker --check`` sagt zu, dass ein erfolgreiches Ergebnis den
     Pre-Flight des Supervisors impliziert."""

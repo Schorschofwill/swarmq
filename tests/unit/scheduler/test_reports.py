@@ -316,6 +316,7 @@ class TestAdoptReportedCrons:
             {"cron": None},
         ],
     )
+    @pytest.mark.entscheidung("E-065")
     async def test_invalid_report_is_not_adopted_and_logged(
         self,
         memory,

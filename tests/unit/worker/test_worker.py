@@ -209,6 +209,7 @@ async def test_task_exception_stores_error_result(broker, backend, config):
 
 
 @pytest.mark.asyncio
+@pytest.mark.entscheidung("E-067")
 async def test_pre_execution_raises_skips_post(broker, backend, config):
     post_called = False
 
@@ -1364,6 +1365,7 @@ class TestWorkerMiddlewareAndSignals:
         mw_chain.run_on_error.assert_not_awaited()
 
     @pytest.mark.asyncio
+    @pytest.mark.entscheidung("E-067")
     async def test_post_execute_not_called_when_post_execution_fails(self, broker, backend, config):
         """post_execute hook is NOT called when the task's post_execution() raises."""
 
@@ -2135,6 +2137,7 @@ class TestRunningCancelInHandleMessage:
         )
         return Worker(broker=broker, backend=backend, registry=registry, config=cfg)
 
+    @pytest.mark.entscheidung("E-068")
     async def test_cancel_during_run_raises_task_cancelled_error(
         self,
         slow_worker,
@@ -2167,6 +2170,7 @@ class TestRunningCancelInHandleMessage:
         broker.ack.assert_awaited_once()
         broker.redeliver.assert_not_awaited()
 
+    @pytest.mark.entscheidung("E-068")
     async def test_cancel_during_run_dispatches_task_cancelled_signal(
         self,
         slow_worker,

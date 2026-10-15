@@ -166,6 +166,7 @@ async def test_injection_through_handle_message(broker, backend, config):
 
 
 @pytest.mark.timeout(5)
+@pytest.mark.entscheidung("E-067")
 async def test_finalizer_receives_exception(broker, backend, config):
     """AE4/R13: when run raises, post_execution is skipped but the yield
     finalizer still runs and receives the real exception (rollback signal)."""

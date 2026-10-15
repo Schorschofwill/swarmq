@@ -11,7 +11,7 @@ status: gilt
 quelle:
   - docs/plans/2026-04-15-003-feat-phase2-production-core-plan.md:76 (Soft-Timeout via asyncio.wait_for), :79 (post_execution nicht aufgerufen), :312 (Umwandlung nur bei gesetztem soft_timeout)
   - docs/brainstorms/implementation-order-requirements.md:70 (R2.4, ursprünglich „fangbar“, durch die wait_for-Umsetzung ersetzt)
-  - docs/plans/2026-10-14-0748-fix-fehlersuche-runde-2-plan.md (U18, KTD14, R6/R20: Nachtrag FS-05/FS-20)
+  - 'docs/plans/2026-10-14-0748-fix-fehlersuche-runde-2-plan.md (U18, KTD14, R6/R20: Nachtrag FS-05/FS-20)'
 tests:
   - tests/unit/worker/test_worker_timeouts.py::test_soft_timeout_fires_when_run_exceeds_limit
   - tests/unit/worker/test_worker_timeouts.py::test_soft_timeout_triggers_retry

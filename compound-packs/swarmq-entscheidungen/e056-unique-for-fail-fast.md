@@ -14,8 +14,9 @@ quelle:
   - src/swarmq/task.py:253-267 (_validate_unique)
   - src/swarmq/cli/parser_ops.py:97-100 (--unique-for nur als positive Ganzzahl)
   - docs/befunde/fehlersuche-runde-3-2026-10.md (F3-07, Gegenprüfung G2)
-tests: []
-ohne_test: Kein Test trägt bisher den Marker. Kandidat ohne Marker ist tests/unit/test_task.py::test_taskinfo_unique_for_zero_raises; für den Aufrufparameter entsteht der Test mit dem Fix in 0.12.3 (F3-07).
+tests:
+  - tests/unit/test_task.py::test_taskinfo_unique_for_zero_raises
+ohne_test: Für den Aufrufparameter unique_for von schedule()/schedule_many() entsteht der Test mit dem Fix in 0.12.3 (F3-07).
 ---
 
 **Entscheidung.** `unique_for=0` wirft `ValueError` („use None to disable dedup“), `unique_for < 0` ebenso. Abschalten geht nur mit `None` (E-033). `unique_until` ohne `unique_for` wird still ignoriert. Die CLI nimmt `--unique-for` nur als positive Ganzzahl an. Der Aufrufparameter `unique_for` von `schedule()`/`schedule_many()` folgt derselben Regel; dass er heute `<= 0` annimmt, ist der Befund F3-07 (Fix in 0.12.3).

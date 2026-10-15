@@ -1060,6 +1060,7 @@ class TestClientUniqueDeferred:
         assert definition.source == "cli"
         assert definition.dedup_hash is None
 
+    @pytest.mark.entscheidung("E-066")
     async def test_deferred_with_unique_for_sets_flag_and_persists_hash(
         self,
         client_setnx,
@@ -1090,6 +1091,7 @@ class TestClientUniqueDeferred:
         assert definition.source == "cli_unique"
         assert definition.dedup_hash == dedup_hash
 
+    @pytest.mark.entscheidung("E-066")
     async def test_deferred_duplicate_returns_existing_and_skips_store(
         self,
         client_setnx,
@@ -1147,6 +1149,7 @@ class TestClientUniqueDeferred:
         assert received[0]["task_name"] == "add"
 
     @pytest.mark.usefixtures("patched_schedule_store")
+    @pytest.mark.entscheidung("E-066")
     async def test_deferred_with_eta_ttl_covers_fire_plus_unique_for(
         self,
         client_setnx,

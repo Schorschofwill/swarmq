@@ -12,8 +12,11 @@ status: gilt
 quelle:
   - docs/plans/2026-04-16-009-feat-phase3b3-task-cancellation-plan.md:750-754 (run_task.cancel(), CancelledError), :523-558 (TaskCancelledError im Client), :236-238 (Cancel während post_execution ist akzeptierte Limitation), :982-985 (Cancel ist kein Error, beobachtbar über TASK_CANCELLED)
   - src/swarmq/worker/execution.py:236-241 (Cancel umgeht on_error und post_execute)
-tests: []
-ohne_test: Kein Test trägt bisher den Marker. Kandidaten ohne Marker sind tests/unit/worker/test_worker.py::TestRunningCancelInHandleMessage::test_cancel_during_run_raises_task_cancelled_error, ::test_cancel_during_run_dispatches_task_cancelled_signal und tests/unit/client/test_results.py::test_get_result_cancelled_raises_task_cancelled_error. Für „kein on_error/post_execute bei Cancel“ fehlt ein Test.
+tests:
+  - tests/unit/worker/test_worker.py::TestRunningCancelInHandleMessage::test_cancel_during_run_raises_task_cancelled_error
+  - tests/unit/worker/test_worker.py::TestRunningCancelInHandleMessage::test_cancel_during_run_dispatches_task_cancelled_signal
+  - tests/unit/client/test_results.py::test_get_result_cancelled_raises_task_cancelled_error
+ohne_test: Für „kein on_error/post_execute bei Cancel“ fehlt ein Test.
 ---
 
 **Entscheidung.** Ein Cancel bricht den laufenden Task über `run_task.cancel()` ab; im Task-Körper kommt `asyncio.CancelledError` an. `TaskCancelledError` sieht nur der Client (`get_result`, `SwarmQ.run`). Ein Cancel ist kein Fehler: Die Middleware bekommt weder `on_error` noch `post_execute`, beobachtbar ist er nur über das Signal `TASK_CANCELLED`. Ein Cancel während `post_execution` wirkt nicht mehr (das Fenster schließt mit dem Ende von `run()`).

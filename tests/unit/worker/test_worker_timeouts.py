@@ -247,6 +247,7 @@ async def test_no_timeouts_normal_behavior(broker, backend, config):
 
 @pytest.mark.asyncio
 @pytest.mark.entscheidung("E-045")
+@pytest.mark.entscheidung("E-067")
 async def test_soft_timeout_skips_post_execution(broker, backend, config):
     """When soft timeout fires, post_execution must NOT be called."""
     post_called = False

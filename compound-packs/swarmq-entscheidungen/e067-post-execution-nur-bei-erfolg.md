@@ -13,8 +13,11 @@ quelle:
   - docs/brainstorms/2026-05-31-dishka-di-tasks-requirements.md:58 (AE4)
   - docs/plans/2026-04-15-001-feat-phase0-phase1-roundtrip-plan.md:757-762 (Fehlerbehandlung um pre_execution/run/post_execution)
   - docs/plans/2026-04-16-001-feat-phase3a-middleware-signals-plan.md:221-222 (post_execute nach erfolgreichem post_execution, on_error bei jedem Fehler)
-tests: []
-ohne_test: Kein Test trägt bisher den Marker. Kandidaten ohne Marker sind tests/unit/worker/test_worker_dishka.py::test_finalizer_receives_exception (AE4), tests/unit/worker/test_worker.py::test_pre_execution_raises_skips_post, tests/unit/worker/test_worker_timeouts.py::test_soft_timeout_skips_post_execution und tests/unit/worker/test_worker.py::TestWorkerMiddlewareAndSignals::test_post_execute_not_called_when_post_execution_fails.
+tests:
+  - tests/unit/worker/test_worker_dishka.py::test_finalizer_receives_exception
+  - tests/unit/worker/test_worker.py::test_pre_execution_raises_skips_post
+  - tests/unit/worker/test_worker_timeouts.py::test_soft_timeout_skips_post_execution
+  - tests/unit/worker/test_worker.py::TestWorkerMiddlewareAndSignals::test_post_execute_not_called_when_post_execution_fails
 ---
 
 **Entscheidung.** `Task.post_execution()` läuft nur, wenn `pre_execution()` und `run()` ohne Ausnahme durchliefen. Aufräumen, das auch bei Fehlern laufen muss, gehört in den `yield`-Finalizer des Dishka-Providers (er erhält die Ausnahme) oder in ein `try/finally` im Task. `post_execute` der Middleware kommt nach erfolgreichem `post_execution`, `on_error` bei jedem Fehler (`pre_execution`, `run`, `post_execution`).

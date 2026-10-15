@@ -30,6 +30,7 @@ def test_environment_sets_the_value(monkeypatch: pytest.MonkeyPatch, raw: str, e
 
 
 @pytest.mark.parametrize("value", [-1.0, float("inf"), float("nan")])
+@pytest.mark.entscheidung("E-063")
 def test_negative_or_infinite_is_rejected(value: float) -> None:
     from swarmq.exceptions import ConfigurationError
 

@@ -14,8 +14,12 @@ quelle:
   - src/swarmq/task.py:37-42 (_RESERVED_RUN_PARAM_NAMES mit Begründung)
   - website/guides/defining-tasks.md:155-158 (Reserved parameter names)
   - Orchestrator nach Gegenprüfung G3/G4 (Fehlersuche Runde 3, F3-10, Doku-Fix statt Reservierung, 2026-10-15)
-tests: []
-ohne_test: Kein Test trägt bisher den Marker. Kandidaten ohne Marker sind tests/unit/test_task.py::test_task_subclass_with_delay_parameter_raises, ::test_task_subclass_with_eta_parameter_raises, ::test_task_subclass_reserved_unique_for_raises und ::test_task_subclass_reserved_unique_until_raises. Zu queue entsteht kein Test (F3-10 ist ein Doku-Fix).
+tests:
+  - tests/unit/test_task.py::test_task_subclass_with_delay_parameter_raises
+  - tests/unit/test_task.py::test_task_subclass_with_eta_parameter_raises
+  - tests/unit/test_task.py::test_task_subclass_reserved_unique_for_raises
+  - tests/unit/test_task.py::test_task_subclass_reserved_unique_until_raises
+ohne_test: Zu queue entsteht kein Test (F3-10 ist ein Doku-Fix).
 ---
 
 **Entscheidung.** Eine Task-Klasse, deren `run()` (auch per Dependency Injection) einen Parameter `delay`, `eta`, `unique_for` oder `unique_until` deklariert, wirft beim Klassenbau `ValueError` mit Migrationshinweis. `queue` (bei `schedule()`) sowie `timeout` und `polling` (bei `SwarmQ.run`) werden bewusst nicht reserviert; die Doku nennt sie als Grenze in der Liste „Reserved parameter names“.

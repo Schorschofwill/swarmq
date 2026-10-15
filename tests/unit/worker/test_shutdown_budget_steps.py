@@ -244,6 +244,7 @@ async def test_recycling_drain_is_exempt_from_the_budget(worker: Any) -> None:
     assert not task.cancelled()
 
 
+@pytest.mark.entscheidung("E-018")
 async def test_exhausted_budget_still_gives_each_step_the_floor(worker: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_lc, "_SHUTDOWN_STEP_MIN_S", 0.5)
     worker._config.shutdown_timeout = 0.001

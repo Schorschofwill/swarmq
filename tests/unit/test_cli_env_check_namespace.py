@@ -123,6 +123,7 @@ def test_scan_failure_is_a_warning(monkeypatch: pytest.MonkeyPatch, capsys: pyte
     assert [f["code"] for f in report["findings"]] == ["unprefixed_keys_unknown"]
 
 
+@pytest.mark.entscheidung("E-012")
 def test_invalid_namespace_exits_78(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     _install(monkeypatch, [], namespace="a:b")
 

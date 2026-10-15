@@ -99,6 +99,7 @@ async def test_get_result_error_exposes_error_class_when_present(client, backend
 
 
 @pytest.mark.asyncio
+@pytest.mark.entscheidung("E-068")
 async def test_get_result_cancelled_raises_task_cancelled_error(client, backend):
     result_data = encode_result(
         {

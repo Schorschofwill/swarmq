@@ -12,7 +12,7 @@ quelle:
   - Commit 2958d54 und 8bce711 (B24, Loadsuite v0.12.0rc1)
   - website/reference/changelog.de.md:154-173 (B24) und :181-188
   - website/reference/errors.de.md:466-472, :485-487
-  - src/swarmq/broker/rabbitmq/delivery.py:187-195 (BrokerPublishBlocked: nichts gesendet, sicher wiederholbar)
+  - 'src/swarmq/broker/rabbitmq/delivery.py:187-195 (BrokerPublishBlocked: nichts gesendet, sicher wiederholbar)'
   - Commit 67cb34b (U8, FS-08) und Review 44722f6 (Fail-open ohne lesbares closing)
   - src/swarmq/broker/rabbitmq/delivery.py:122-138 (_closing_of), :424-435 (_report_closing_unreadable)
 tests:

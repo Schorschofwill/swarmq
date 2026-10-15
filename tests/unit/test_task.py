@@ -343,22 +343,26 @@ def test_taskinfo_cron_every_minute_accepted():
     assert info.cron == "* * * * *"
 
 
+@pytest.mark.entscheidung("E-065")
 def test_taskinfo_cron_invalid_syntax_raises():
     with pytest.raises(ValueError, match="cron"):
         TaskInfo(name="task", queues=["q"], cron="not-a-cron")
 
 
+@pytest.mark.entscheidung("E-065")
 def test_taskinfo_cron_extended_L_syntax_rejected():
     """Extended cron syntax (L, W, #) is rejected at construction."""
     with pytest.raises(ValueError, match="cron"):
         TaskInfo(name="task", queues=["q"], cron="0 3 L * *")
 
 
+@pytest.mark.entscheidung("E-065")
 def test_taskinfo_cron_extended_W_syntax_rejected():
     with pytest.raises(ValueError, match="cron"):
         TaskInfo(name="task", queues=["q"], cron="0 3 15W * *")
 
 
+@pytest.mark.entscheidung("E-065")
 def test_taskinfo_cron_extended_hash_syntax_rejected():
     with pytest.raises(ValueError, match="cron"):
         TaskInfo(name="task", queues=["q"], cron="0 3 * * 1#2")
@@ -451,6 +455,7 @@ def test_taskinfo_explicit_utc_is_kept_as_utc():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.entscheidung("E-064")
 def test_task_subclass_with_delay_parameter_raises():
     """Task.run accepting 'delay' as a parameter would silently lose its
     payload once Client.schedule(delay=) is called. Guard at registration."""
@@ -465,6 +470,7 @@ def test_task_subclass_with_delay_parameter_raises():
                 return delay
 
 
+@pytest.mark.entscheidung("E-064")
 def test_task_subclass_with_eta_parameter_raises():
     Task._clear_registered_tasks()
     with pytest.raises(ValueError, match="eta"):
@@ -565,6 +571,7 @@ def test_taskinfo_unique_until_start_accepted():
     assert t.unique_until == "start"
 
 
+@pytest.mark.entscheidung("E-056")
 def test_taskinfo_unique_for_zero_raises():
     """origin CD6: unique_for=0 is a fail-fast, not silent normalize to None."""
     with pytest.raises(ValueError, match="unique_for=0"):
@@ -595,6 +602,7 @@ def test_taskinfo_unique_until_without_unique_for_is_accepted():
     assert t.unique_until == "start"  # preserved but unused
 
 
+@pytest.mark.entscheidung("E-064")
 def test_task_subclass_reserved_unique_for_raises():
     Task._clear_registered_tasks()
 
@@ -608,6 +616,7 @@ def test_task_subclass_reserved_unique_for_raises():
                 return unique_for
 
 
+@pytest.mark.entscheidung("E-064")
 def test_task_subclass_reserved_unique_until_raises():
     Task._clear_registered_tasks()
 

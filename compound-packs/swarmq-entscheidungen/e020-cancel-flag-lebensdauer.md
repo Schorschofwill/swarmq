@@ -12,7 +12,7 @@ status: gilt
 quelle:
   - docs/befunde/betrieb-ueber-zeit-2026-10.md:137 (Entscheidungen, BZ-23)
   - docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:60 (Abschnitt 1, kein task_name in cancel())
-  - docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:64 (Abschnitt 1, BZ-23 Rev. 3 F11: PEXPIRE LT statt Löschen)
+  - 'docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:64 (Abschnitt 1, BZ-23 Rev. 3 F11: PEXPIRE LT statt Löschen)'
   - docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:724 (Abschnitt 7, sofort publizierter Task 24 h stornierbar)
 tests:
   - tests/unit/test_app.py::TestSwarmQCancel::test_cancel_delegates_to_client_with_computed_ttl

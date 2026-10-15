@@ -62,6 +62,7 @@ def test_unparseable_cpu_max_is_ignored(affinity, tmp_path, content):
     assert slots.resolve_default_slots(cgroup_path=_cpu_max(tmp_path, content)).count == 3
 
 
+@pytest.mark.entscheidung("E-061")
 def test_effective_concurrency_explicit_wins_for_every_pool():
     assert slots.effective_concurrency(6, "cpu", 4) == slots.SlotDecision(6, "explicit")
     assert slots.effective_concurrency(6, "io") == slots.SlotDecision(6, "explicit")
@@ -71,6 +72,7 @@ def test_effective_concurrency_io_default_is_ten():
     assert slots.effective_concurrency(None, "io") == slots.SlotDecision(10, "default")
 
 
+@pytest.mark.entscheidung("E-061")
 def test_effective_concurrency_cpu_uses_assigned_cpus(affinity, monkeypatch):
     affinity(4)
     monkeypatch.setattr(slots, "_cgroup_quota", lambda _path: None)

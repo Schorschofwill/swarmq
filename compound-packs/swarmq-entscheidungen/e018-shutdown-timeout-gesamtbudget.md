@@ -26,6 +26,7 @@ tests:
   - tests/unit/worker/test_shutdown_budget_steps.py::test_hanging_broker_close_is_bounded_and_the_backend_still_closes
   - tests/unit/worker/test_befund_bz18_cleanup_after_grace.py::test_locks_and_leader_are_released_within_the_grace_period
   - tests/unit/worker/test_recycling_sigterm.py::test_sigterm_cuts_the_recycling_drain_with_the_budget_from_the_signal
+  - tests/unit/worker/test_shutdown_budget_steps.py::test_exhausted_budget_still_gives_each_step_the_floor
 ---
 
 **Entscheidung.** `SWARMQ_SHUTDOWN_TIMEOUT` (und `ProcessManager.shutdown_grace_s`) ist das Gesamtbudget ab SIGTERM. Die Eskalation des Supervisors endet bei `total − 2 s` (SIGKILL), der Drain läuft höchstens bis `finish_by − 5 s`, damit Lock-Freigabe, Leader-Übergabe und Guard-Abschluss noch Zeit haben; das gilt auch eingebettet. Jeder Aufräumschritt hat ein eigenes Zeitlimit. Der Recycling-Drain ist ausgenommen. Die Doku nennt `terminationGracePeriodSeconds` bzw. Docker `stop_grace_period` ≥ `shutdown_timeout + 15`.
