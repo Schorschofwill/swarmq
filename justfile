@@ -1,9 +1,11 @@
 # swarmq-Aufgaben (Plan 2026-10-13-0902, U7). Aufruf: uv run just <rezept>
 #
 # Test-Rezepte reichen weitere Argumente an pytest durch, etwa
-# ``uv run just unit -k logging``. Der Seed fuer pytest-randomly wird
-# ausgegeben; ``SWARMQ_TEST_SEED=<seed> uv run just <rezept>`` stellt einen
-# Lauf nach. Rezepte mit RabbitMQ/Valkey laufen unter einer gemeinsamen
+# ``uv run just unit -k logging``. Ein Pfad grenzt die Suite ein
+# (``uv run just integration tests/integration/test_x.py``, auch als Node-ID),
+# Optionen wie ``-k`` nicht (scripts/run-tests.sh --suite). Der Seed fuer
+# pytest-randomly wird ausgegeben; ``SWARMQ_TEST_SEED=<seed> uv run just
+# <rezept>`` stellt einen Lauf nach. Rezepte mit RabbitMQ/Valkey laufen unter einer gemeinsamen
 # Testsperre (scripts/with-test-lock.sh).
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
@@ -38,11 +40,11 @@ types:
 
 # Unit-Suite (ohne Dienste)
 unit *args:
-    scripts/run-tests.sh --no-services tests/unit -n {{workers}} "$@"
+    scripts/run-tests.sh --no-services --suite tests/unit -n {{workers}} "$@"
 
 # Property-Tests (ohne Dienste)
 property *args:
-    scripts/run-tests.sh --no-services tests/property -m property "$@"
+    scripts/run-tests.sh --no-services --suite tests/property -m property "$@"
 
 # Parser-Fuzz (ohne Dienste)
 fuzz *args:
@@ -52,11 +54,11 @@ fuzz *args:
 # je in eigener vhost und Valkey-Datenbank (tests/support/services.py), danach
 # die exclusive-Tests allein (scripts/run-tests.sh --parallel)
 integration *args:
-    scripts/run-tests.sh --parallel {{workers}} tests/integration "$@"
+    scripts/run-tests.sh --parallel {{workers}} --suite tests/integration "$@"
 
 # e2e-Suite gegen RabbitMQ und Valkey
 e2e *args:
-    scripts/run-tests.sh --parallel {{workers}} tests/e2e "$@"
+    scripts/run-tests.sh --parallel {{workers}} --suite tests/e2e "$@"
 
 # Chaos-Suiten (eigene Compose-Stacks, Toxiproxy; docs/testing/test-strategy.md).
 # Ohne Pfad gilt testpaths; ``uv run just chaos tests/chaos`` grenzt ein.
@@ -65,7 +67,7 @@ chaos *args:
 
 # Stress-Suite
 stress *args:
-    scripts/run-tests.sh tests/stress -m stress "$@"
+    scripts/run-tests.sh --suite tests/stress -m stress "$@"
 
 # Alle Suiten der CI, unter einer Sperre
 all:

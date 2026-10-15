@@ -34,7 +34,11 @@ Zeiten dort aufgebläht sind.
 
 Alle Suiten, Lint und Typen laufen über das `justfile` (`uv run just` listet
 die Rezepte); die CI ruft dieselben Rezepte auf. Test-Rezepte reichen weitere
-Argumente an pytest durch, etwa `uv run just unit -k logging`. Rezepte mit
+Argumente an pytest durch, etwa `uv run just unit -k logging`. Ein Pfad
+grenzt die Suite ein, auch als Node-ID, etwa
+`uv run just integration tests/integration/test_x.py` oder
+`uv run just e2e tests/e2e/test_x.py::test_y`; Optionen wie `-k` grenzen nicht
+ein (`scripts/run-tests.sh --suite`). Rezepte mit
 RabbitMQ und Valkey setzen die Testports 5699/6399 und laufen unter einer
 gemeinsamen Sperre (`docs/solutions/tooling-decisions/feste-testports-und-testsperre-2026-10-14.md`).
 
@@ -274,6 +278,10 @@ uv run just unit
 # SWARMQ_TEST_WORKERS Prozessen; danach die exclusive-Tests allein
 uv run just integration
 uv run just e2e
+
+# Nur eine Datei oder ein Test (beide Durchgaenge, gleiche Sperre und Ports)
+uv run just integration tests/integration/test_x.py
+uv run just e2e tests/e2e/test_x.py::test_y
 
 # Alles, was die CI testet, unter einer Sperre
 uv run just all
