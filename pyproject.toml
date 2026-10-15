@@ -163,7 +163,7 @@ markers = [
     "fuzz: byte/json fuzzing tests (opt-in, nightly)",
     "mutation: marker for mutmut configuration (not invoked directly)",
     "entscheidung(id): schreibt eine Entscheidung aus compound-packs/swarmq-entscheidungen/ fest (ID E-nnn)",
-    "befund(id): Nachweis eines offenen Befunds aus docs/befunde/ (immer mit xfail strict=True)",
+    "befund(id): Nachweis eines Befunds aus docs/befunde/ (offen mit xfail strict=True; nach dem Fix ohne xfail als Rückverweis)",
     "compat: Mischbetrieb mit swarmq 0.11.x und 0.12.0 aus PyPI (tests/compat, opt-in, braucht Netz zu PyPI)",
     "spike: Charakterisierung des Broker-Verhaltens (tests/integration/spikes, RabbitMQ 4.3 und 4.2)",
 ]

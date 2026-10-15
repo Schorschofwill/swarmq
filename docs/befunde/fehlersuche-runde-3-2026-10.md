@@ -154,7 +154,7 @@ Nur für FEHLER mit Code-Fix. Die Doku-only-FEHLER F3-06, F3-10 (entschieden: Do
 |---|---|---|---|
 | F3-01 | `tests/integration/backend/test_befund_f3_01_schedule_add_lost_reply.py` (Muster FS-06: HSETNX-Antwort verwerfen → Oneshot hat Score im Fire-Index; CLI `schedule add` meldet nach E-058 weiter „already exists“ und gehört nicht in den Nachweis) | Integration | offen |
 | F3-02 | `tests/unit/client/test_befund_f3_02_deferred_pre_enqueue.py` (Veto bei `delay=30`: Ausnahme propagiert, kein `add_schedule`, kein Unique-Claim) | Unit | offen |
-| F3-03 | `tests/unit/worker/test_befund_f3_03_retry_negative_delay.py` (über `RetryHandler`: geklemmt bzw. abgelehnt, zählt gegen `max_retries`); `tests/integration/broker/test_befund_f3_03_negative_expiration.py` (keine fremden `PublishIndeterminate`) | Unit + Integration | offen |
+| F3-03 | `tests/unit/worker/test_befund_f3_03_retry_negative_delay.py` (über `RetryHandler`: geklemmt bzw. abgelehnt, zählt gegen `max_retries`); `tests/integration/broker/test_befund_f3_03_negative_expiration.py` (über einen echten Worker: keine fremden `PublishIndeterminate`; entsteht in U5) | Unit + Integration | offen |
 | F3-04 | `tests/unit/test_befund_f3_04_finite_deadlines.py` (parametrisiert, `inf`/`nan` → `ConfigurationError`) | Unit | offen |
 | F3-05 | `tests/unit/process_manager/test_befund_f3_05_import_error_exit78.py` (`ImportError("cannot import name …")` → Exit 78, `worker_config_error`) | Unit | offen |
 | F3-07 | `tests/unit/client/test_befund_f3_07_call_unique_for_bounds.py` (`schedule`/`schedule_many`, sofort und verzögert → `ValueError`) | Unit | offen |
@@ -169,6 +169,7 @@ Nur für FEHLER mit Code-Fix. Die Doku-only-FEHLER F3-06, F3-10 (entschieden: Do
 | F3-16 | `tests/unit/test_befund_f3_16_fixed_backoff_cap.py` (`calculate_backoff(0,"fixed",7200,3600) == 3600`), E-023 präzisiert | Unit | offen |
 | F3-17 | `tests/unit/test_befund_f3_17_worker_check_env.py` (vier Env-Werte → `ok: false`, rc 1; fehlende URLs bleiben nach E-062 ungeprüft) | Unit | offen |
 | F3-18 | `tests/unit/test_befund_f3_18_check_invalid_config_exit78.py` (`EVICTION_CHECK=bogus`, `SHUTDOWN_TIMEOUT=abc` → rc 78) | Unit | offen |
+| F3-31 | `tests/unit/test_befund_f3_31_float_ttl_normalized.py` (`TaskInfo.result_ttl`/`unique_for` und `SwarmQConfig.result_ttl`: ganzzahlig → int, Bruch → aufgerundet) | Unit | offen |
 | F3-19 | `tests/unit/test_befund_f3_19_check_argparse_payload.py` (Schlüssel des Argparse-Payloads ⊇ `_WORKER_CHECK_PAYLOAD_KEYS`, Rest `null`) | Unit | offen |
 
 Quellberichte (Scratchpad der Sitzung, `fs3/`): Analysen `A-lebenszyklus.md`, `B-claims.md`, `C-grenzwerte.md`, `D-doku.md`; Gegenprüfungen `G1-gegenpruefung-AB.md` (R3A, R3B), `G2-gegenpruefung-C.md` (R3C), `G3-gegenpruefung-D1.md` (R3D-01–10), `G4-gegenpruefung-D2.md` (R3D-11–20).
