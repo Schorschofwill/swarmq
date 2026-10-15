@@ -383,6 +383,7 @@ def _render_table(report: dict[str, Any]) -> str:
 def run_env_check(args: argparse.Namespace) -> int:
     """Einstieg aus ``swarmq.cli.main``; liefert den Exit-Code."""
     from swarmq.config import env_valkey_eviction_check
+    from swarmq.logging_settings import resolve_logging_settings
     from swarmq.process_manager.check import start_config
 
     url = os.environ.get("SWARMQ_BACKEND_URL", "")
@@ -397,11 +398,14 @@ def run_env_check(args: argparse.Namespace) -> int:
         # F3-18 (E-006): jeder ``SWARMQ_*``-Wert, an dem der Worker-Start
         # scheitert, endet hier mit 78 -- vor jeder Verbindung, also auch bei
         # unerreichbarem Valkey. ``scheduler`` bleibt aussen vor: den meldet
-        # der Abschnitt ``scheduler`` als Befund im Bericht.
+        # der Abschnitt ``scheduler`` als Befund im Bericht. Die Logging-Env
+        # loest ``check`` wie der Start ohne Flags auf: Kleinschreibung der
+        # Level gilt, unvereinbare Kombinationen enden mit 78.
+        settings = resolve_logging_settings(None, os.environ, None)
         start_config(
             broker_url=broker_url,
             backend_url=url,
-            logging_settings=None,
+            logging_settings=settings,
             scheduler="on",
             resolved_fields=("scheduler",),
         )

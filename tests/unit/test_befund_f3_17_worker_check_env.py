@@ -30,6 +30,8 @@ Testliste:
 # [x] SWARMQ_QUEUE_TYPE=foo → ok: false (jeder Wert, den SwarmQConfig ablehnt)
 # [x] Gleichlauf: jeder abgelehnte Wert lässt auch den Start mit 78 enden
 # [x] --log-format human überstimmt SWARMQ_LOG_FORMAT=xml → ok: true
+# [x] Gleichlauf im Flag-Fall (N-1): --concurrency 4 / --no-scheduler neben
+#     ungültigem Env-Wert → --check und Start entscheiden gleich
 
 Behoben in 0.12.3: ``--check`` baut die Konfiguration über denselben Helfer
 wie der Pre-Flight des Starts (``process_manager.check.start_config``).
@@ -157,7 +159,7 @@ class _UnreachedProcessManager:
         return 0
 
 
-@pytest.mark.parametrize(("variable", "value"), _REJECTED_ENV)
+@pytest.mark.parametrize(("variable", "value"), [*_REJECTED_ENV, ("SWARMQ_QUEUE_TYPE", "foo")])
 def test_the_start_rejects_every_value_the_check_rejects(
     task_module: str,
     variable: str,
@@ -177,3 +179,44 @@ def test_the_start_rejects_every_value_the_check_rejects(
 
     capsys.readouterr()
     assert code == CONFIG_ERROR_EXIT_CODE
+
+
+@pytest.mark.parametrize(
+    ("flags", "variable", "value"),
+    [
+        (["--concurrency", "4"], "SWARMQ_CONCURRENCY", "0"),
+        (["--no-scheduler"], "SWARMQ_SCHEDULER", "maybe"),
+    ],
+    ids=["concurrency", "scheduler"],
+)
+def test_check_and_start_decide_alike_when_a_flag_overrides_an_invalid_env_value(
+    task_module: str,
+    flags: list[str],
+    variable: str,
+    value: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Gleichlauf im Flag-Fall (Review U9, offener Punkt N-1, KTD15).
+
+    Ein Flag sollte den ungültigen Env-Wert überstimmen (CLI > Env); heute
+    bauen Pre-Flight und ``--check`` die Konfiguration aber ohne die
+    aufgelösten Worker-Optionen, also lehnen beide ab. N-1 bleibt offen;
+    der Test verhindert nur, dass ``--check`` und Start auseinanderlaufen,
+    wenn N-1 an nur einer Stelle behoben wird.
+    """
+    from swarmq.process_manager import run as run_module
+    from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
+    monkeypatch.setattr(run_module, "ProcessManager", _UnreachedProcessManager)
+    monkeypatch.setenv(variable, value)
+
+    main(["worker", f"--module={task_module}", *flags, "--check"])
+    check_ok = json.loads(capsys.readouterr().out)["ok"]
+    monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://guest:guest@f3-17.invalid:5699/")
+    monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://f3-17.invalid:6399/0")
+    start_code = main(["worker", f"--module={task_module}", *flags])
+    capsys.readouterr()
+
+    start_ok = start_code != CONFIG_ERROR_EXIT_CODE
+    assert check_ok == start_ok, f"{flags} mit {variable}={value}: --check ok={check_ok}, Start {start_code}"

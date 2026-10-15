@@ -37,6 +37,6 @@ tests:
 
 **Bewusste Folgen.** Zwei Apps im selben vhost teilen sich Queues trotz Namensraum. Bei getrennten vhosts ist der Namensraum Pflicht. Nach dem Setzen kein Rollback unter 0.12; Umzug einer App nur mit vollständigem Stopp und Neuanlage der Termine; ACL-Muster und swarmv müssen nachziehen.
 
-**Nachtrag 2026-10-15 (Fehlersuche Runde 3, F3-24): Exitcode außerhalb von `swarmq worker`.** Ein ungültiger Namensraum ist auch bei `swarmq schedule`, `dlq`, `inspect` und `check` ein Konfigurationsfehler mit Exit 78, geprüft vor jeder Verbindung (BZ-10, MR 15). Das ist eine gewollte Ausnahme von `cli.md:32` („jeder Konfigurationsfehler von schedule/dlq/inspect endet mit 1“); die Doku wird nachgezogen (F3-24, Doku-Fix). Festgehalten in `tests/unit/test_cli_env_check_namespace.py::test_invalid_namespace_exits_78` (Marker seit 580ef3c).
+**Nachtrag 2026-10-15 (Fehlersuche Runde 3, F3-24): Exitcode außerhalb von `swarmq worker`.** Ein ungültiger Namensraum ist auch bei `swarmq schedule`, `dlq`, `inspect` und `check` ein Konfigurationsfehler mit Exit 78, geprüft vor jeder Verbindung (BZ-10, MR 15). Das ist eine gewollte Ausnahme von `cli.md:32` („jeder Konfigurationsfehler von schedule/dlq/inspect endet mit 1“); die Doku ist nachgezogen (F3-24, behoben in 0.12.3). Festgehalten in `tests/unit/test_cli_env_check_namespace.py::test_invalid_namespace_exits_78` (Marker seit 580ef3c) und `tests/unit/test_cli_env_check_namespace.py::test_invalid_namespace_exits_78_for_every_command`.
 
 **Überdenken nur mit neuem Argument.** Keine offenen Einwände bekannt.
