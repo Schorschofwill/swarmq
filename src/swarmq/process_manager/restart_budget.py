@@ -52,8 +52,15 @@ class RestartBudget:
     # ---- Lebenszeichen (Plan 2026-09-03-001, R21/R30, KTD10)
 
     def _heartbeat_deadline(self, info: WorkerInfo) -> float:
-        """Frist: normal ``heartbeat_timeout_s``; im Drain die Shutdown-Gnade plus SIGTERM-Frist."""
-        if info.channel is not None and info.channel.intent_value() in (INTENT_DRAINING, INTENT_RECYCLE):
+        """Frist: normal ``heartbeat_timeout_s``; im Drain die Shutdown-Gnade plus SIGTERM-Frist.
+
+        Ein recycelnder Worker bekommt mindestens ``heartbeat_timeout_s`` (F3-13, E-018):
+        sonst gilt er bei kleinem ``shutdown_timeout`` zwischen zwei Beats als haengend.
+        """
+        intent = info.channel.intent_value() if info.channel is not None else None
+        if intent == INTENT_RECYCLE:
+            return max(self.shutdown_grace_s + self.SHUTDOWN_TERM_S, self.heartbeat_timeout_s)
+        if intent == INTENT_DRAINING:
             return self.shutdown_grace_s + self.SHUTDOWN_TERM_S
         return self.heartbeat_timeout_s
 
