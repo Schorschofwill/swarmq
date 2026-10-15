@@ -15,6 +15,7 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import ResultNotReadyError, TaskError
 from swarmq.task import DeliveryMode, Task, TaskInfo
 from swarmq.worker import Worker, WorkerState
+from tests.support.wait import wait_until
 
 
 def _unique_queue() -> str:
@@ -272,12 +273,14 @@ async def test_soft_timeout_retry(rabbitmq_url: str, valkey_url: str) -> None:
 async def test_graceful_shutdown(rabbitmq_url: str, valkey_url: str) -> None:
     queue = _unique_queue()
     task_name = f"e2e_shutdown_{uuid.uuid4().hex[:8]}"
+    started = asyncio.Event()
 
     class SlowTask(Task):
         task_info = TaskInfo(name=task_name, queues=[queue])
 
         @override
         async def run(self) -> str:
+            started.set()
             await asyncio.sleep(1)
             return "completed during shutdown"
 
@@ -296,12 +299,14 @@ async def test_graceful_shutdown(rabbitmq_url: str, valkey_url: str) -> None:
         worker_task = asyncio.create_task(worker.start())
 
         try:
-            await asyncio.sleep(0.5)
+            # _request_shutdown wirkt erst im Zustand RUNNING; unter Last
+            # dauert der Start länger als eine feste Pause.
+            assert await wait_until(lambda: worker._state is WorkerState.RUNNING, timeout=10)
 
             task_id = await app.schedule(task_name)
 
             # Wait for the task to start executing
-            await asyncio.sleep(0.3)
+            await asyncio.wait_for(started.wait(), timeout=10)
 
             # Request graceful shutdown while the task is still running
             worker._request_shutdown()

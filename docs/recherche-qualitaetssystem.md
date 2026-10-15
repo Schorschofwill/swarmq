@@ -188,8 +188,9 @@ Dependency-Groups `lint`/`typing`.
   Läufe. Gefunden: Scheduler meldete einen gehaltenen Cron vor dem Commit
   des Termins (behoben).
 - CI: Combine-Job mit Cobertura-Bericht, Ratchet gegen den Merge-Base mit
-  `main` und diff-cover 100 % für neue Zeilen; `fail_under` wird nach drei
-  `main`-Läufen mit `uv run just ratchet` gesetzt.
+  `main` und diff-cover 100 % für neue Zeilen; `fail_under = 96` seit
+  2026-10-15 (`uv run just ratchet` aus drei `main`-Läufen: 96,53 / 96,52 /
+  96,53).
 - `justfile` als Einstiegspunkt für Lint, Typen und alle Suiten; feste
   Testports 5699/6399, gemeinsame Sperre, Seed immer ausgegeben.
 

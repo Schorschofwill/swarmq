@@ -116,6 +116,7 @@ _PREFIX = "ChannelPreconditionFailed: PRECONDITION_FAILED - inequivalent arg"
     ],
 )
 async def test_inequivalent_arg_text(
+    node: RabbitMQNode,
     amqp: AbstractConnection,
     queue_name: Callable[[str], str],
     first: dict[str, Any],
@@ -127,7 +128,7 @@ async def test_inequivalent_arg_text(
 
     assert (
         await declare(amqp, queue, second)
-        == f"{_PREFIX} {expected.format(where=f"for queue '{queue}' in vhost '/': ")}"
+        == f"{_PREFIX} {expected.format(where=f"for queue '{queue}' in vhost '{node.vhost}': ")}"
     )
 
 

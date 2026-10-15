@@ -87,7 +87,7 @@ async def test_connection_lost_while_waiting_for_the_confirm_is_indeterminate(
     toxiproxy: ToxiproxyClient,
 ) -> None:
     queue = f"b24_{uuid.uuid4().hex[:8]}"
-    broker = RabbitMQBroker(f"amqp://guest:guest@127.0.0.1:{_PROXY_PORT}/")
+    broker = RabbitMQBroker(rabbitmq_amqp_url("127.0.0.1", _PROXY_PORT))
     await broker.connect()
     try:
         await broker.declare_queue(queue)

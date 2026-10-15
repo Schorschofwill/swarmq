@@ -23,6 +23,8 @@ from tests.support.services import missing_services, rabbitmq_amqp_url, valkey_d
 
 pytestmark = [
     pytest.mark.timeout(180),
+    # Feste Metrik-Ports 9188 und 9190/9191: beide Tests auf einem xdist-Prozess.
+    pytest.mark.xdist_group("metrics-ports"),
     pytest.mark.skipif(bool(missing_services()), reason="RabbitMQ/Valkey nicht erreichbar"),
 ]
 

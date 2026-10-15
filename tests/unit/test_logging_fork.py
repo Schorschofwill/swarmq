@@ -10,6 +10,16 @@ Betrieb, statt dass ein Test den privaten Hook aufruft.
 
 from __future__ import annotations
 
+import json
+import logging
+import logging.handlers
+import pathlib
+import queue
+import sys
+import threading
+import time
+import weakref
+
 # Test list:
 # 1. [x] Datei-Modus, Listener im Elternprozess blockiert, ein Record wartet
 #        in der Queue: Das Kind gibt den geerbten Record nicht aus, sein
@@ -59,25 +69,18 @@ from __future__ import annotations
 # 21. [x] Wie 20, aber der vom Record neu gestartete Listener liest erst nach
 #         dem Sentinel von ``shutdown_logging``: Der Sentinel bleibt in der
 #         geschlossenen Queue liegen und zaehlt nicht als verworfener Record.
-import json
-import logging
-import logging.handlers
-import pathlib
-import queue
-import sys
-import threading
-import time
-import weakref
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from typing import Any, override
 from unittest.mock import MagicMock
 
 import pytest
 
+from swarmq import logging_queue
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.logging import configure_logging, shutdown_logging
+from swarmq.logging_fork import hold_handler_locks
 from swarmq.logging_settings import LoggingSettings
 from tests.unit._fork_child import run_in_forked_child
 
@@ -337,7 +340,7 @@ def _hold_in_other_thread(locks: list[threading.RLock]) -> threading.Thread:
     return holder
 
 
-def test_the_lock_budget_covers_all_targets_together(tmp_path: pathlib.Path) -> None:
+def test_the_lock_budget_covers_all_targets_together(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     names = [f"rec{i}" for i in range(10)]
     config = {
         "version": 1,
@@ -353,14 +356,24 @@ def test_the_lock_budget_covers_all_targets_together(tmp_path: pathlib.Path) -> 
     (handler,) = logging.getLogger().handlers
     targets = handler.listener.handlers  # type: ignore[attr-defined]
     holder = _hold_in_other_thread([t.lock for t in targets])
+    # Gemessen wird nur der ``before``-Hook, nicht Fork und Kind: Die hingen
+    # unter Coverage und CI-Last ab und hatten mit dem Budget nichts zu tun.
+    waited: list[float] = []
+    hold = hold_handler_locks
 
-    started = time.monotonic()
+    def timed_hold(handlers: Iterable[logging.Handler]) -> None:
+        started = time.monotonic()
+        hold(handlers)
+        waited.append(time.monotonic() - started)
+
+    monkeypatch.setattr(logging_queue, "hold_handler_locks", timed_hold)
+
     assert run_in_forked_child(lambda: None) == 0
-    elapsed = time.monotonic() - started
 
     RELEASE.set()
     holder.join(2)
     # Pro Handler waeren es mindestens 10 x 50 ms.
+    [elapsed] = waited
     assert elapsed < 0.3
 
 
