@@ -595,6 +595,7 @@ def test_taskinfo_negative_fraction_unique_for_is_checked_before_rounding():
         TaskInfo(name="t", queues=["q"], unique_for=-0.5)
 
 
+@pytest.mark.entscheidung("E-055")
 @pytest.mark.parametrize("value", [float("inf"), float("nan")])
 def test_taskinfo_non_finite_result_ttl_raises_naming_the_field(value: float):
     """E-055 mit E-063: kein ``OverflowError`` aus ``ceil``, sondern ein
@@ -603,6 +604,7 @@ def test_taskinfo_non_finite_result_ttl_raises_naming_the_field(value: float):
         TaskInfo(name="t", queues=["q"], result_ttl=value)
 
 
+@pytest.mark.entscheidung("E-055")
 @pytest.mark.parametrize("value", [float("inf"), float("nan")])
 def test_taskinfo_non_finite_unique_for_raises_naming_the_field(value: float):
     with pytest.raises(ValueError, match="unique_for must be a finite number"):
@@ -616,6 +618,7 @@ def test_taskinfo_result_ttl_zero_float_becomes_int_zero():
     assert t.result_ttl == 0
 
 
+@pytest.mark.entscheidung("E-055")
 def test_taskinfo_bool_seconds_stay_unchanged():
     """E-055 regelt ``bool`` nicht; ``True`` bleibt ``True`` (wirkt als 1 s)."""
     t = TaskInfo(name="t", queues=["q"], result_ttl=True, unique_for=True)

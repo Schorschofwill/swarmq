@@ -62,6 +62,7 @@ def _seconds(value: float) -> int:
     return cast("int", value)
 
 
+@pytest.mark.entscheidung("E-055")
 @pytest.mark.parametrize("unique_for", _INVALID)
 async def test_schedule_rejects_invalid_unique_for(
     client: Client, broker: AsyncMock, backend: AsyncMock, unique_for: float
@@ -73,6 +74,7 @@ async def test_schedule_rejects_invalid_unique_for(
     broker.publish.assert_not_awaited()
 
 
+@pytest.mark.entscheidung("E-055")
 @pytest.mark.parametrize("unique_for", _INVALID)
 async def test_deferred_schedule_rejects_invalid_unique_for(
     client: Client, backend: AsyncMock, schedule_store: MagicMock, unique_for: float
@@ -84,6 +86,7 @@ async def test_deferred_schedule_rejects_invalid_unique_for(
     schedule_store.add_schedule.assert_not_awaited()
 
 
+@pytest.mark.entscheidung("E-055")
 @pytest.mark.parametrize("unique_for", _INVALID)
 async def test_schedule_many_rejects_invalid_unique_for(
     client: Client, broker: AsyncMock, backend: AsyncMock, unique_for: float

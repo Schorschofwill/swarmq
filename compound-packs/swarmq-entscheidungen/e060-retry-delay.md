@@ -17,6 +17,7 @@ tests:
   - tests/unit/worker/test_retry.py::test_retry_retries_although_retry_exceptions_does_not_list_it
   - tests/unit/worker/test_retry.py::test_retry_with_zero_max_retries_ends_terminally
   - tests/unit/worker/test_retry.py::TestRetryDelayBounds::test_clamped_retry_with_exhausted_budget_ends_terminally
+  - tests/unit/worker/test_retry.py::TestRetryDelayBounds::test_task_raising_infinite_retry_ends_terminally
   - tests/unit/worker/test_befund_f3_03_retry_negative_delay.py::test_negative_retry_delay_is_clamped_to_zero_and_counts
   - tests/unit/worker/test_befund_f3_03_retry_negative_delay.py::test_non_finite_retry_delay_is_rejected
   - tests/integration/broker/test_befund_f3_03_negative_expiration.py::test_negative_retry_delay_counts_and_spares_parallel_publishes
@@ -26,6 +27,6 @@ tests:
 
 **Begründung.** Eine berechnete Wartezeit wie `reset_at - time.time()` nach einem 429 wird leicht negativ. RabbitMQ lehnt `expiration < 0` ab, schließt den Publish-Kanal und reißt parallele Publishes mit; der Rückfall wiederholte bis zum Zustelllimit, ohne gegen `max_retries` zu zählen (F3-03). Klemmen hält den häufigen Fall am Laufen, ein Fehler beim Erzeugen trifft nur unsinnige Werte.
 
-**Bewusste Folgen.** `Retry(delay=-30)` wiederholt sofort und verbraucht einen Retry. Das ist kein Fehler.
+**Bewusste Folgen.** `Retry(delay=-30)` wiederholt sofort und verbraucht einen Retry. Das ist kein Fehler. Wirft ein Task `Retry(delay=math.inf)`, kommt der `ValueError` aus dem Konstruktor als gewöhnlicher Task-Fehler an, nicht als `Retry`: er unterliegt `retry_exceptions` und dem Backoff (endet also terminal, wenn der Filter ihn nicht nennt) und erreicht den Broker nie mit einer unendlichen Wartezeit.
 
 **Überdenken nur mit neuem Argument.** Keine offenen Einwände bekannt.

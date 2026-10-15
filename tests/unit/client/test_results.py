@@ -13,6 +13,9 @@ Test-Liste F3-09 (Plan 2026-10-15-1138, U4; Nachweise in
   ``ResultNotReadyError`` mit den fehlenden IDs.
 - [x] ``timeout=0.05``, ``poll_interval=1.0`` -> Schlaf ``0.05``, nicht ``1.0``.
 - [x] Teilergebnis ``[x, None]`` -> Meldung nennt nur die fehlende ID.
+- [x] ``timeout=nan`` -> ein MGET, dann ``ResultNotReadyError`` wie bei
+  ``get_result``; kein Endlos-Polling (Review U4, E-030 Nachtrag).
+- [x] negatives ``timeout`` -> ein MGET, dann ``ResultNotReadyError``.
 """
 
 from __future__ import annotations
@@ -318,6 +321,35 @@ async def test_get_results_partial_result_names_only_the_missing_id(client, back
 
     assert "'pending'" in str(exc_info.value)
     assert "'done'" not in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(5)
+@pytest.mark.entscheidung("E-030")
+@pytest.mark.usefixtures("clock")
+async def test_get_results_with_nan_timeout_reads_once_then_raises(client, backend):
+    # Endlos-Polling erschoepft die drei Antworten (StopAsyncIteration)
+    # statt am Testtimeout zu haengen.
+    backend.get_results = AsyncMock(side_effect=[[None], [None], [None]])
+
+    with pytest.raises(ResultNotReadyError, match=r"\['x'\]"):
+        await client.get_results(["x"], timeout=float("nan"))
+
+    backend.get_results.assert_awaited_once_with(["x"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(5)
+@pytest.mark.entscheidung("E-030")
+@pytest.mark.usefixtures("clock")
+async def test_get_results_with_negative_timeout_reads_once_then_raises(client, backend):
+    """Charakterisierung: eine negative Frist ist sofort abgelaufen."""
+    backend.get_results = AsyncMock(side_effect=[[None], [None]])
+
+    with pytest.raises(ResultNotReadyError, match=r"\['x'\]"):
+        await client.get_results(["x"], timeout=-1.0)
+
+    backend.get_results.assert_awaited_once_with(["x"])
 
 
 @pytest.mark.asyncio

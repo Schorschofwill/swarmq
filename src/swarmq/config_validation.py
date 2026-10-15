@@ -82,14 +82,16 @@ class ConfigValidation:
 
     def _validate_result_ttl(self) -> None:
         # E-055: float-Sekunden werden int (aufgerundet); inf/nan sind ein
-        # ConfigurationError (Exit 78) statt eines Fehlers zur Laufzeit.
+        # ConfigurationError (Exit 78) statt eines Fehlers zur Laufzeit. Der
+        # Bereich wird auf dem Rohwert geprüft, sonst wird -0.5 still zu 0
+        # (nan passiert diese Prüfung und scheitert in whole_seconds).
+        if self.result_ttl < 0:
+            msg = f"result_ttl must be >= 0, got {self.result_ttl}"
+            raise ConfigurationError(msg)
         try:
             self.result_ttl = whole_seconds(self.result_ttl, "result_ttl")
         except ValueError as exc:
             raise ConfigurationError(str(exc)) from exc
-        if self.result_ttl < 0:
-            msg = f"result_ttl must be >= 0, got {self.result_ttl}"
-            raise ConfigurationError(msg)
 
     def _validate_core(self) -> None:
         self._apply_pool_defaults()

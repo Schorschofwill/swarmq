@@ -93,6 +93,10 @@ Zusatzfaelle zum Nachweis ``test_befund_f3_03_retry_negative_delay.py``
 39. ``max_retries=2``, Header ``retry_count=2``, ``Retry(delay=-5)`` -> terminal.
 40. ``on_retry`` und ``TASK_RETRYING`` sehen die geklemmte Wartezeit 0.
 41. Ein gepickeltes ``Retry`` aus dem Rechenkind behaelt den geklemmten Wert.
+42. Ein Task wirft ``Retry(delay=math.inf)`` mit
+    ``retry_exceptions=[ConnectionError]``: der Konstruktor wirft
+    ``ValueError``, der Filter greift nicht -> terminal (Dead-Letter,
+    Fehlerergebnis ``builtins.ValueError``), kein Retry, nichts an den Broker.
 """
 
 from __future__ import annotations
@@ -847,6 +851,18 @@ class _BudgetTwoTask(Task):
     task_info = TaskInfo(name="budget-two-task", queues=["default"], max_retries=2)
 
 
+class _InfiniteRetryTask(Task):
+    task_info = TaskInfo(
+        name="infinite-retry-task", queues=["default"], max_retries=3, retry_exceptions=[ConnectionError]
+    )
+
+    @override
+    async def run(self) -> None:
+        from swarmq.exceptions import Retry
+
+        raise Retry(delay=math.inf)
+
+
 class TestRetryDelayBounds:
     """F3-03 (E-060): Klemmen und Pruefen in ``Retry`` (KTD6)."""
 
@@ -860,18 +876,29 @@ class TestRetryDelayBounds:
     @pytest.mark.timeout(5)
     @pytest.mark.parametrize("delay", [-0.0, -0.0005], ids=["minus-zero", "sub-millisecond"])
     async def test_tiny_negative_delays_retry_immediately(self, broker, backend, config, delay) -> None:
-        """Liste 37."""
+        """Liste 37. ``delay_ms`` ist auch ohne Klemmen 0 (``int(-0.5) == 0``);
+        das Klemmen belegt erst der Wert, den die Hooks sehen. ``-0.0`` ist
+        reine Charakterisierung: ``-0.0 < 0`` greift nicht, ``-0.0 == 0``."""
         from swarmq.exceptions import Retry
-        from swarmq.middleware import MiddlewareChain
+        from swarmq.middleware import Middleware, MiddlewareChain
+
+        seen: list[float] = []
+
+        class _Spy(Middleware):
+            @override
+            async def on_retry(self, message, exception, retry_count, delay) -> None:
+                seen.append(delay)
 
         handler, _ = _handler(broker, backend, config, _BudgetTwoTask)
         msg = make_message(_default_payload(name="budget-two-task"))
 
         await handler.evaluate(
-            msg, _ctx(_BudgetTwoTask), Retry(delay=delay), "", {"retry_count": 0}, MiddlewareChain([])
+            msg, _ctx(_BudgetTwoTask), Retry(delay=delay), "", {"retry_count": 0}, MiddlewareChain([_Spy()])
         )
 
         assert broker.retry_later.await_args.kwargs["delay_ms"] == 0
+        assert seen == [0]
+        assert Retry(delay=delay).delay == 0
 
     @pytest.mark.timeout(5)
     async def test_zero_delay_goes_to_the_one_second_tier(self, broker, backend, config) -> None:
@@ -928,6 +955,25 @@ class TestRetryDelayBounds:
         assert seen == [0]
         retrying = [c for c in worker._signal_dispatcher.dispatch.await_args_list if c.args[0] is Signal.TASK_RETRYING]
         assert [c.kwargs["delay"] for c in retrying] == [0]
+
+    @pytest.mark.timeout(5)
+    @pytest.mark.entscheidung("E-060")
+    async def test_task_raising_infinite_retry_ends_terminally(self, broker, backend, config) -> None:
+        """Liste 42: der ``ValueError`` aus ``Retry()`` ist ein gewoehnlicher
+        Task-Fehler, kein ``Retry``; ``retry_exceptions`` nennt ihn nicht."""
+        from swarmq.serialization import decode_result
+
+        registry = TaskRegistry()
+        registry.register(_InfiniteRetryTask)
+        worker = Worker(broker=broker, backend=backend, registry=registry, config=config)
+
+        await worker._handle_message(make_message(_default_payload(name="infinite-retry-task", args=[], kwargs={})))
+
+        broker.retry_later.assert_not_awaited()
+        broker.dead_letter.assert_awaited_once()
+        stored = decode_result(backend.store_result.await_args.args[1])
+        assert stored["is_error"] is True
+        assert stored["error_class"] == "builtins.ValueError"
 
     def test_pickled_retry_from_the_compute_child_keeps_the_clamped_delay(self) -> None:
         """Liste 41: Entpickeln ruft ``Retry()`` ohne Wert und setzt danach

@@ -159,9 +159,11 @@ class ClientResults:
                 # Narrowing über die Comprehension-Grenze nicht.
                 return [self._unpack(r) for r in raw_list if r is not None]
             # Erst lesen, dann die Restfrist prüfen: so liegt der letzte
-            # MGET an der Frist und nicht davor (F3-09).
+            # MGET an der Frist und nicht davor (F3-09). ``not > 0`` statt
+            # ``<= 0``: ``timeout=nan`` gilt wie bei ``get_result`` als
+            # abgelaufen, statt endlos zu pollen (E-030, Nachtrag).
             remaining = deadline - loop.time()
-            if remaining <= 0:
+            if not remaining > 0:
                 break
             await asyncio.sleep(min(poll_interval, remaining))
 
