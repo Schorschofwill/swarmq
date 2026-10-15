@@ -1049,6 +1049,9 @@ async def _wait_definition_gone(
 
 
 class TestCronPruneAcrossApps:
+    # TS-01: B wird abgebrochen, sobald es online gemeldet ist, unter Last
+    # noch mitten im Aufbau der Consume-Verbindung (tests/support/known_leaks.py).
+    @aiormq_streamwriter_leak
     @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_silent_cron_of_another_app_is_pruned_legacy_stays(
         self,
