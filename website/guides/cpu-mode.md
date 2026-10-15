@@ -15,7 +15,7 @@ swarmq worker --module myapp.tasks --pool cpu --queues images
 | Concern | IO worker (default) | CPU mode |
 |---|---|---|
 | Where `run()` executes | in the worker's event loop | in a compute child, one per task |
-| `--concurrency` | tasks in flight | compute slots; default = CPUs assigned to the worker (affinity ∩ cgroup quota) divided by `--processes` |
+| `--concurrency` | tasks in flight | compute slots; default = CPUs assigned to the worker (affinity ∩ cgroup quota) divided by `--processes`. An embedded `SwarmQConfig(pool="cpu")` / `SwarmQ(..., pool="cpu")` without `concurrency` uses the assigned CPUs too (since 0.12.3, before: 10); an explicit `concurrency` always wins |
 | `hard_timeout` | asyncio cancel; cannot interrupt a blocked loop | kills the child's process group (SIGTERM, 1 s grace, SIGKILL); the task follows the usual retry/DLQ path |
 | Cancel | asyncio cancel | kills the child; the task ends as cancelled, no retry |
 | Gates, middleware, signals, ack | loop process | loop process — unchanged |

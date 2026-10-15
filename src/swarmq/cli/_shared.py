@@ -9,6 +9,7 @@ command handler, not here.
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import re
 import sys
@@ -85,6 +86,9 @@ def _positive_float(raw: str) -> float:
         raise argparse.ArgumentTypeError(f"not a number: {raw!r}") from exc
     if value <= 0:
         raise argparse.ArgumentTypeError(f"must be > 0 (got {value})")
+    if not math.isfinite(value):
+        # E-063: Fristen sind endlich; sonst scheitert der Start erst im Kind.
+        raise argparse.ArgumentTypeError(f"must be a finite number (got {value})")
     return value
 
 
@@ -269,6 +273,10 @@ async def _broker_from_env() -> RabbitMQBroker:
         ttl = cast("float | None", parse_env_value("optional_float", ttl_raw, "SWARMQ_DEAD_LETTER_TTL_S"))
         if ttl is not None and ttl <= 0:
             msg = f"dead_letter_ttl_s must be > 0, got {ttl}"
+            raise ConfigurationError(msg)
+        if ttl is not None and not math.isfinite(ttl):
+            # E-063: unbegrenzt heisst ``none``, nicht ``inf``.
+            msg = f"dead_letter_ttl_s must be a finite number, got {ttl}"
             raise ConfigurationError(msg)
         broker.dead_letter_ttl_s = ttl
     await broker.connect()

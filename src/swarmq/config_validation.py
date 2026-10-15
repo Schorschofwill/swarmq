@@ -53,6 +53,7 @@ class ConfigValidation:
         namespace: str | None
         scheduler_publish_stepdown_s: float | None
         _POSITIVE_FIELDS: ClassVar[tuple[str, ...]]
+        _FINITE_FIELDS: ClassVar[tuple[str, ...]]
         _VALID_POOLS: ClassVar[frozenset[str]]
         _VALID_PRUNE_MODES: ClassVar[tuple[str, ...]]
         _VALID_SCHEDULER_MODES: ClassVar[tuple[str, ...]]
@@ -95,6 +96,10 @@ class ConfigValidation:
 
     def _validate_core(self) -> None:
         self._apply_pool_defaults()
+        # Bereich und Endlichkeit vor jeder Relationspruefung, damit die
+        # Meldung das ursaechliche Feld nennt (E-063).
+        self._validate_positive()
+        self._validate_finite()
         self._validate_pool()
         if not self.broker_url:
             msg = "broker_url must not be empty"
@@ -134,15 +139,6 @@ class ConfigValidation:
             msg = "queue_dead_letter_strategy='at-least-once' requires queue_type='quorum'; use 'auto' or 'legacy'"
             raise ConfigurationError(msg)
 
-        for field_name in self._POSITIVE_FIELDS:
-            value = getattr(self, field_name)
-            # None nur bei optionalen Fristen (``dead_letter_ttl_s``: unbegrenzt).
-            if value is not None and value <= 0:
-                msg = f"{field_name} must be > 0, got {value}"
-                raise ConfigurationError(msg)
-
-        self._validate_finite()
-
         if self.backend_defer_max_delay < self.backend_defer_base_delay:
             msg = (
                 "backend_defer_max_delay must be >= backend_defer_base_delay, "
@@ -172,12 +168,23 @@ class ConfigValidation:
             )
             raise ConfigurationError(msg)
 
+    def _validate_positive(self) -> None:
+        for field_name in self._POSITIVE_FIELDS:
+            value = getattr(self, field_name)
+            # None nur bei optionalen Fristen (``dead_letter_ttl_s``: unbegrenzt).
+            if value is not None and value <= 0:
+                msg = f"{field_name} must be > 0, got {value}"
+                raise ConfigurationError(msg)
+
     def _validate_finite(self) -> None:
-        """Review MR 13, P2-3: ``inf``/``nan`` bestehen ``<= 0``; das Lock-Gate
-        rechnet ``lock_wait_max_s`` in ganze Millisekunden um."""
-        if not math.isfinite(self.lock_wait_max_s):
-            msg = f"lock_wait_max_s must be a finite number of seconds, got {self.lock_wait_max_s}"
-            raise ConfigurationError(msg)
+        """E-063: ``inf``/``nan`` bestehen ``<= 0``, werden aber in ganze
+        Millisekunden umgerechnet oder an Broker und Valkey gegeben (Review
+        MR 13, P2-3; F3-04). ``None`` heisst bei optionalen Fristen unbegrenzt."""
+        for field_name in self._FINITE_FIELDS:
+            value = getattr(self, field_name)
+            if value is not None and not math.isfinite(value):
+                msg = f"{field_name} must be a finite number, got {value}"
+                raise ConfigurationError(msg)
 
     def _validate_logging(self) -> None:
         """Logging-Felder pruefen (R13/R14); CRITICAL gilt ueberall (KTD8)."""

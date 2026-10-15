@@ -17,7 +17,8 @@ tests:
   - tests/unit/test_config_lock_wait.py::test_must_be_finite
   - tests/unit/test_config_stepdown.py::test_negative_or_infinite_is_rejected
   - tests/unit/test_logging_settings.py::TestValidation::test_non_positive_non_numeric_or_infinite_drain_timeout_is_a_configuration_error
-ohne_test: Test entsteht mit dem Fix in 0.12.3 (F3-04, tests/unit/test_befund_f3_04_finite_deadlines.py).
+  - tests/unit/test_befund_f3_04_finite_deadlines.py::test_deadline_field_must_be_finite_kwarg
+  - tests/unit/test_befund_f3_04_finite_deadlines.py::test_deadline_field_must_be_finite_env
 ---
 
 **Entscheidung.** Jedes Frist-, TTL- und Zeitfeld der Konfiguration (alle `_POSITIVE_FIELDS`, dazu `retry_max_delay` und gleichartige Felder) muss endlich sein. `inf` und `nan` ergeben `ConfigurationError` (Exit 78), als Argument wie als Env-Wert. Wo „unbegrenzt“ vorgesehen ist, heißt das `none`, nicht `inf`. Neue Felder dieser Art bekommen die Prüfung mit.

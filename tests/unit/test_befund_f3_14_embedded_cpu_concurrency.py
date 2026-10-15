@@ -13,6 +13,9 @@ Festlegung (Entscheidung 7): Code-Fix -- der eingebettete CPU-Pool nimmt
 dieselbe Slot-Voreinstellung wie die CLI; ein ausdrueckliches
 ``concurrency=`` gewinnt weiterhin.
 
+Behoben in 0.12.3: ``concurrency`` hat einen ``int``-Marker als Default,
+``_apply_pool_defaults`` loest ihn ueber ``slots.effective_concurrency`` auf.
+
 Gemockt sind nur die Grenzen: die CPU-Affinitaet (``os.sched_getaffinity``)
 und das Lesen der cgroup-Quote.
 
@@ -51,9 +54,7 @@ def three_assigned_cpus(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.befund("F3-14")
-@pytest.mark.xfail(
-    strict=True, reason="F3-14: offen - eingebetteter CPU-Pool nimmt 10 Slots statt der zugeteilten CPUs"
-)
+@pytest.mark.entscheidung("E-061")
 @pytest.mark.usefixtures("three_assigned_cpus")
 def test_embedded_cpu_pool_defaults_to_assigned_cpus() -> None:
     config = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x", pool="cpu")

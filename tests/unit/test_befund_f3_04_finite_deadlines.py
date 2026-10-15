@@ -15,12 +15,12 @@ Festlegung (Entscheidung 9): Alle Frist-/Zeitfelder muessen endlich sein,
 Muster ``test_must_be_finite`` aus 2962bf2 (kwarg und Umgebung, ``inf`` und
 ``nan``) -> ``ConfigurationError``, deren Meldung das Feld nennt.
 
-Nicht aufgenommen sind Kombinationen, die heute schon (mit irrefuehrender
-Meldung einer Relationspruefung) abgelehnt werden: ``inf`` in
-``heartbeat_interval_s``, ``scheduler_heartbeat_interval``,
+Seit 0.12.3 behoben (E-063): ``_validate_finite`` prueft ``_FINITE_FIELDS``
+vor allen Relationspruefungen. Darum sind auch die Faelle dabei, die vorher
+nur ueber eine Relationspruefung (mit irrefuehrender Meldung) scheiterten:
+``inf`` in ``heartbeat_interval_s``, ``scheduler_heartbeat_interval``,
 ``scheduler_seen_interval_s``, ``backend_defer_base_delay`` und
-``scheduler_lock_ttl`` sowie ``nan`` in ``scheduler_lock_ttl`` (ueber den
-Default von ``scheduler_publish_stepdown_s``).
+``scheduler_lock_ttl`` sowie ``nan`` in ``scheduler_lock_ttl``.
 
 Testliste:
 # [x] jedes Frist-Feld (Fliesskomma-Sekunden) lehnt inf/nan als kwarg ab
@@ -69,25 +69,11 @@ _DEADLINE_FIELDS: tuple[tuple[str, str], ...] = (
     ("retry_max_delay", "SWARMQ_RETRY_MAX_DELAY"),
 )
 
-# Heute schon (ueber eine Relationspruefung) abgelehnt, siehe Modul-Docstring.
-_ALREADY_REJECTED: frozenset[tuple[str, str]] = frozenset(
-    {
-        ("heartbeat_interval_s", "inf"),
-        ("scheduler_heartbeat_interval", "inf"),
-        ("scheduler_seen_interval_s", "inf"),
-        ("backend_defer_base_delay", "inf"),
-        ("scheduler_lock_ttl", "inf"),
-        ("scheduler_lock_ttl", "nan"),
-    }
-)
 _CASES = [
     pytest.param(field_name, env_name, value, id=f"{field_name}-{value}")
     for field_name, env_name in _DEADLINE_FIELDS
     for value in ("inf", "nan")
-    if (field_name, value) not in _ALREADY_REJECTED
 ]
-
-_REASON = "F3-04: offen - inf/nan in Frist-Feldern werden angenommen"
 
 
 def _cfg(**kwargs: Any) -> SwarmQConfig:
@@ -95,7 +81,7 @@ def _cfg(**kwargs: Any) -> SwarmQConfig:
 
 
 @pytest.mark.befund("F3-04")
-@pytest.mark.xfail(strict=True, reason=_REASON)
+@pytest.mark.entscheidung("E-063")
 @pytest.mark.parametrize(("field_name", "env_name", "value"), _CASES)
 def test_deadline_field_must_be_finite_kwarg(field_name: str, env_name: str, value: str) -> None:
     del env_name
@@ -104,7 +90,7 @@ def test_deadline_field_must_be_finite_kwarg(field_name: str, env_name: str, val
 
 
 @pytest.mark.befund("F3-04")
-@pytest.mark.xfail(strict=True, reason=_REASON)
+@pytest.mark.entscheidung("E-063")
 @pytest.mark.parametrize(("field_name", "env_name", "value"), _CASES)
 def test_deadline_field_must_be_finite_env(
     monkeypatch: pytest.MonkeyPatch, field_name: str, env_name: str, value: str

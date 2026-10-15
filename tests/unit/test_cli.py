@@ -1085,6 +1085,14 @@ class TestDlqParser:
         assert ns.task_id is None
         assert ns.all is True
 
+    @pytest.mark.parametrize("raw", ["inf", "nan"])
+    def test_worker_rejects_infinite_burst_idle_timeout(self, raw):
+        """F3-04 (E-063): argparse lehnt ``inf`` vor dem Start ab (Exit 2)."""
+        parser = cli._build_parser()
+        with pytest.raises(SystemExit) as excinfo:
+            parser.parse_args(["worker", "--module=x", "--burst-idle-timeout", raw])
+        assert excinfo.value.code == 2
+
     def test_dlq_retry_rejects_zero_limit(self):
         parser = cli._build_parser()
         with pytest.raises(SystemExit):
@@ -1122,6 +1130,19 @@ class TestDlqHandlerValidation:
         monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://guest:guest@localhost:5699/")
         monkeypatch.setenv("SWARMQ_DEAD_LETTER_TTL_S", "0")
         with pytest.raises(ConfigurationError, match="dead_letter_ttl_s must be > 0"):
+            await cli._broker_from_env()
+
+    @pytest.mark.timeout(5)
+    @pytest.mark.parametrize("raw", ["inf", "nan"])
+    async def test_broker_from_env_rejects_infinite_dead_letter_ttl(self, monkeypatch, raw):
+        """F3-04 (E-063): ``inf`` liesse das Zuruecklegen von Altbestand an
+        ``aio_pika.Message`` scheitern; unbegrenzt heisst ``none``."""
+        from swarmq.broker.rabbitmq import RabbitMQBroker
+
+        monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://guest:guest@localhost:5699/")
+        monkeypatch.setenv("SWARMQ_DEAD_LETTER_TTL_S", raw)
+        monkeypatch.setattr(RabbitMQBroker, "connect", AsyncMock())
+        with pytest.raises(ConfigurationError, match="dead_letter_ttl_s must be a finite number"):
             await cli._broker_from_env()
 
     @pytest.mark.timeout(5)

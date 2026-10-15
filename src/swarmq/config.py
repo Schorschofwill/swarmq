@@ -17,6 +17,7 @@ from swarmq.logging_settings import (
     parse_logger_levels,
     split_csv,
 )
+from swarmq.slots import DEFAULT_IO_CONCURRENCY, effective_concurrency
 from swarmq.valkey_policy import EVICTION_CHECK_MODES
 
 # Credential-free placeholder used as ``broker_url`` / ``backend_url`` when a
@@ -37,6 +38,20 @@ _MAX_PORT = 65535
 # Ergebnis-TTL in Sekunden: Default von ``SwarmQConfig.result_ttl`` und
 # Fallback, wenn keine Ebene der Kaskade einen Wert liefert.
 DEFAULT_RESULT_TTL_S = 86400
+
+
+class _DefaultConcurrency(int):
+    """Marker: ``concurrency`` nicht gesetzt (E-061, KTD10).
+
+    ``_apply_pool_defaults`` loest ihn nach dem Pool-Modus zu einem
+    gewoehnlichen ``int`` auf; ein ausdrueckliches ``concurrency`` (Argument
+    oder ``SWARMQ_CONCURRENCY``) ist ein ``int`` und gewinnt.
+    """
+
+    __slots__ = ()
+
+
+_DEFAULT_CONCURRENCY = _DefaultConcurrency(DEFAULT_IO_CONCURRENCY)
 
 
 def resolve_result_ttl(task_ttl: int | None, config_ttl: int | None, *, fire_and_forget: bool) -> int:
@@ -188,7 +203,8 @@ class SwarmQConfig(ConfigValidation):
     backend_url: str = ""
     result_ttl: int = DEFAULT_RESULT_TTL_S
     queues: list[str] = field(default_factory=lambda: ["default"])
-    concurrency: int = 10
+    # Ohne Angabe: 10 (io) bzw. die zugeteilten CPUs (cpu) wie in der CLI (E-061).
+    concurrency: int = _DEFAULT_CONCURRENCY
     # Eingebettet steuern ``log_level``/``log_json`` den Opt-in ``log_queue``
     # (``swarmq``-Level, Format der Drop-Meldung); ``SwarmQ`` richtet sonst
     # nichts ein (Plan 2026-10-06-0831, KTD10).
@@ -550,6 +566,18 @@ class SwarmQConfig(ConfigValidation):
         "compute_thread_limit",
         "log_queue_size",
     )
+    # E-063: Fristen, TTLs und Zeitangaben muessen endlich sein. Erst die
+    # Eingabefelder, dann die abgeleiteten, damit die Meldung die Ursache
+    # nennt (``retry_max_delay=inf`` statt ``scheduler_dedup_ttl``).
+    _FINITE_FIELDS: ClassVar[tuple[str, ...]] = (
+        *_POSITIVE_FIELDS,
+        "retry_max_delay",
+        "unknown_task_grace_s",
+        "shutdown_timeout",
+        "bind_retry_budget_s",
+        "scheduler_dedup_ttl",
+        "execution_guard_done_ttl_s",
+    )
     _VALID_POOLS: ClassVar[frozenset[str]] = frozenset({"io", "cpu"})
     _VALID_PRUNE_MODES: ClassVar[tuple[str, ...]] = ("off", "log", "on")
     _VALID_SCHEDULER_MODES: ClassVar[tuple[str, ...]] = ("on", "off")
@@ -559,6 +587,9 @@ class SwarmQConfig(ConfigValidation):
 
     @override
     def _apply_pool_defaults(self) -> None:
+        # ``type(...) is`` statt Identitaet: ``copy.deepcopy`` erzeugt eine neue Instanz.
+        if type(self.concurrency) is _DefaultConcurrency:
+            self.concurrency = effective_concurrency(None, self.pool).count
         if self.pool != "cpu":
             return
         if self.recycle_rss_mb is None:

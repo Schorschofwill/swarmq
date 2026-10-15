@@ -15,7 +15,7 @@ quelle:
 tests:
   - tests/unit/test_slots.py::test_effective_concurrency_cpu_uses_assigned_cpus
   - tests/unit/test_slots.py::test_effective_concurrency_explicit_wins_for_every_pool
-ohne_test: Test entsteht mit dem Fix in 0.12.3 (F3-14, tests/unit/test_befund_f3_14_embedded_cpu_concurrency.py).
+  - tests/unit/test_befund_f3_14_embedded_cpu_concurrency.py::test_embedded_cpu_pool_defaults_to_assigned_cpus
 ---
 
 **Entscheidung.** Ohne ausdrückliches `concurrency` hat ein Worker im CPU-Modus so viele Slots, wie ihm CPUs zugeteilt sind (Affinität und cgroup-Quote, aufgerundet, bei `--processes N` geteilt). Das gilt für die CLI und für eine eingebettete App (`SwarmQConfig(pool="cpu")`). Ein ausdrückliches `concurrency` gewinnt immer. Im IO-Modus bleibt die Voreinstellung 10.
@@ -24,4 +24,4 @@ ohne_test: Test entsteht mit dem Fix in 0.12.3 (F3-14, tests/unit/test_befund_f3
 
 **Bewusste Folgen.** Bestehende eingebettete CPU-Nutzer ohne `concurrency` bekommen mit 0.12.3 eine andere Slot-Zahl; der Changelog weist darauf hin. Das ist kein Fehler.
 
-**Überdenken nur mit neuem Argument.** Keine offenen Einwände bekannt. Dass die eingebettete App heute 10 nimmt, ist der Befund F3-14 (Fix in 0.12.3).
+**Überdenken nur mit neuem Argument.** Keine offenen Einwände bekannt. Dass die eingebettete App bis 0.12.2 10 nahm, war der Befund F3-14 (behoben in 0.12.3).
