@@ -4,7 +4,9 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 [Keep a Changelog](https://keepachangelog.com/) und
 [Semantic Versioning](https://semver.org/).
 
-## [0.12.3] — unveröffentlicht
+## [0.12.3rc1] — 2026-10-15
+
+Release-Candidate für 0.12.3 (Installation mit `pip install --pre`).
 
 Patch-Release für die dritte Fehlersuche, aufbauend auf 0.12.2. Es
 behebt alle 27 als FEHLER eingestuften Befunde (F3-01 bis F3-25,
