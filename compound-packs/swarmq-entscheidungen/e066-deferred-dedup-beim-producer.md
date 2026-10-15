@@ -24,6 +24,6 @@ tests:
 
 **Bewusste Folgen.** Das Flag lebt ab `schedule()` bis Fire plus `unique_for`; ein gleicher Aufruf in dieser Zeit ist ein Duplikat, auch lange vor dem Fire. Das ist kein Fehler.
 
-**Überdenken nur mit neuem Argument.** Keine offenen Einwände bekannt. `scheduling-and-retries.md:52-54` (+ DE) widerspricht sich dazu selbst und wird korrigiert (F3-29, Doku-Fix).
+**Überdenken nur mit neuem Argument.** Keine offenen Einwände bekannt. `scheduling-and-retries.md:52-54` (+ DE) widersprach sich dazu selbst; korrigiert in 0.12.3 (F3-29, Doku-Fix: Guide und API-Referenz unterscheiden Producer mit und ohne Registry).
 
 **Nachtrag 2026-10-15 (F3-02, U15, E-059).** `pre_enqueue` läuft im verzögerten Pfad vor dem Claim (E-059 hat Vorrang). Ein Veto aus `pre_enqueue` bei einem Aufruf, der ein Duplikat wäre, propagiert darum das Veto, statt die bestehende `task_id` zurückzugeben (bis 0.12.2 kam die `task_id`). Im sofortigen Pfad liegt der Claim vor `pre_enqueue`, dort gibt ein Duplikat weiter die bestehende `task_id` zurück, ohne die Middleware zu fragen. Das ist kein Fehler. Upgrade-Hinweis im Changelog (U17).

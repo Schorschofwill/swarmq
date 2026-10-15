@@ -103,7 +103,7 @@ async def schedule(
     queue: str | None = None,
     delay: float | None = None,
     eta: datetime | None = None,
-    unique_for: int | None = _MISSING,
+    unique_for: float | None = _MISSING,
     unique_until: Literal["start", "completion"] = _MISSING,
     **kwargs: Any,
 ) -> str
@@ -120,7 +120,7 @@ Enqueue a task and return its `task_id`.
 | `queue` | `str \| None` | Override the task's default queue. Required in client-only mode (no registry). |
 | `delay` | `float \| None` | Seconds to wait before delivery. Mutually exclusive with `eta`. Must be `≥ 0`. |
 | `eta` | `datetime \| None` | Absolute fire time. Mutually exclusive with `delay`. Must be in the future (1s lenience). |
-| `unique_for` | `int \| None` | Override `TaskInfo.unique_for`. Pass `None` to disable dedup for this call. |
+| `unique_for` | `float \| None` | Override `TaskInfo.unique_for`, in seconds. Must be `> 0` and finite (`ValueError` otherwise, before any claim, publish or store; since 0.12.3); a `float` is rounded up to whole seconds. Pass `None` to disable dedup for this call. |
 | `unique_until` | `"start" \| "completion"` | Override `TaskInfo.unique_until`. |
 
 **Returns.** `str` — the `task_id` (UUIDv7). On a dedup hit, the
@@ -135,8 +135,25 @@ sets `unique_for`. This needs both a producer and a leader after
 leader up to 0.12.1 falls back to its own `TaskInfo`. In both cases the
 leader may drop the task as a duplicate at fire time while another run
 with the same arguments holds the flag. If you leave out `unique_for`,
-the leader still applies its own `TaskInfo` at fire time
+a producer whose registry knows the task claims the flag at the call
+with `TaskInfo.unique_for` plus the delay; only a producer without a
+registry leaves it to the leader, which applies its own `TaskInfo` at
+fire time
 ([Scheduling and retries](../guides/scheduling-and-retries.md#immediate-vs-deferred-execution)).
+
+**Middleware and signals with `delay`/`eta`.** Since 0.12.3 a deferred
+call runs through the enqueue middleware like an immediate one. The
+checks of `delay`, `eta` and `unique_for` come first. Then the client
+computes the dedup hash from the arguments as passed (before any
+middleware), runs `pre_enqueue`, claims the `unique_for` flag, stores
+the one-shot entry, runs `post_enqueue` and fires `TASK_ENQUEUED`. A
+veto from `pre_enqueue` aborts the call before anything is claimed or
+stored, also for a call that would be a duplicate (that call used to
+return the existing `task_id`). A duplicate returns the existing
+`task_id` after `pre_enqueue`, without `post_enqueue`. In-place changes
+a middleware makes to `kwargs` are stored, and the leader publishes
+them at fire time; the leader fires without the enqueue middleware
+([middleware guide](../guides/middleware.md#deferred-tasks-delayeta)).
 
 **Client-only mode (no registry).** Without a registry the client does
 not know the task's `TaskInfo`: `unique_for`, `priority` and the
@@ -151,9 +168,16 @@ defaults, build the producer with the same tasks registered, e.g. via a
 **Raises.**
 
 - `TaskNotFoundError` — task_name not in the registry (registry mode).
-- `ValueError` — `delay < 0`, both `delay` and `eta` set, `eta` in the past.
+- `ValueError` — `delay < 0`, both `delay` and `eta` set, `eta` in the past,
+  `unique_for` `<= 0`, `inf` or `nan`.
 - `BrokerConnectionError` — broker unreachable at publish.
-- Propagated from `pre_enqueue` middleware hooks.
+- `BackendResponseError` — with `delay`/`eta`: the scheduler store holds
+  a different entry under the one-shot's name, or refused the write. On
+  a conflict, and when Valkey is unreachable while storing, the call's
+  own `unique_for` claim stays until its TTL ends, because the entry may
+  have been stored and fire; after an error reply it is released.
+- Propagated from `pre_enqueue` middleware hooks (with `delay`/`eta`
+  too).
 
 **Example.**
 
@@ -173,7 +197,7 @@ async def schedule_many(
     tasks: list[tuple[str, tuple, dict]],
     queue: str | None = None,
     *,
-    unique_for: int | None = _MISSING,
+    unique_for: float | None = _MISSING,
     unique_until: Literal["start", "completion"] = _MISSING,
 ) -> list[str]
 ```
@@ -184,6 +208,9 @@ kwargs)` tuple. Published concurrently via `asyncio.gather`.
 **Returns.** `list[str]` — one `task_id` per input, in input order.
 On dedup hits, the existing owner's task_id is placed at that index
 (list length always equals input length).
+
+`unique_for` follows the same rules as in `schedule()`: `> 0` and
+finite, a `float` rounded up to whole seconds.
 
 **Raises.** Same shape as `schedule()`. On partial publish failure,
 successfully published task_ids are still written to the result
@@ -237,7 +264,11 @@ Block until the task result is available, or `timeout` elapses.
 
 Internally subscribes to `[<namespace>:]sq:notify:{task_id}` on Valkey for a
 push-based wait, with 5ms-interval polling as a fallback. When
-`timeout=0`, performs a single `GET` without Pub/Sub.
+`timeout=0`, performs a single `GET` without Pub/Sub. A negative
+`timeout` or `nan` counts as already expired: one `GET`, then
+`ResultNotReadyError` if there is no result yet (since 0.12.3; before,
+`nan` could crash the event loop when the `GET` hung). `inf` waits
+without limit.
 
 **Raises.**
 
@@ -248,7 +279,10 @@ push-based wait, with 5ms-interval polling as a fallback. When
   mode the class reported by the child); it is advisory and `None` for
   results of older workers and for failures the worker generates itself
   (hard timeout, drain, lost compute child, expiry).
-- `TaskCancelledError` — cancel flag tripped during execution.
+- `TaskCancelledError` — the task was cancelled with `cancel()`, before
+  or during execution (the stored result carries the cancel flag). The
+  task itself never sees this exception; inside `run()` a cancel
+  arrives as `asyncio.CancelledError`.
 
 ### `get_results()`
 
@@ -261,8 +295,14 @@ async def get_results(
 ```
 
 Batch-poll version of `get_result`. Uses `MGET` to fetch many at
-once. Raises `ResultNotReadyError` with the missing task_ids when
-any timeout.
+once, every `poll_interval` seconds, without Pub/Sub. It reads at least
+once: `timeout=0` is a single `MGET`, and when the timeout expires while
+waiting a last `MGET` runs before it gives up (since 0.12.3; before,
+`timeout=0` read nothing and reported every task as not ready). A
+negative `timeout` or `nan` behaves like `0`; `inf` waits without limit.
+Raises `ResultNotReadyError` with the missing task_ids when any is not
+ready in time, and `TaskError` or `TaskCancelledError` like
+`get_result()`.
 
 ### `cancel()`
 
@@ -445,7 +485,7 @@ TaskInfo(
     soft_timeout: int | None = None,
     hard_timeout: int | None = None,
     delivery: DeliveryMode = DeliveryMode.AT_LEAST_ONCE,
-    result_ttl: int | None = None,
+    result_ttl: float | None = None,
     max_retries: int = 0,
     retry_backoff: str = "exponential",
     retry_exceptions: list[type[BaseException]] | None = None,
@@ -454,7 +494,7 @@ TaskInfo(
     lock: str | None = None,
     max_concurrency: int = 1,
     cron: str | None = None,
-    unique_for: int | None = None,
+    unique_for: float | None = None,
     unique_until: Literal["start", "completion"] = "completion",
     max_age: int | None = None,
     priority: Literal["high", "normal", "low"] = "normal",
@@ -463,8 +503,11 @@ TaskInfo(
 )
 ```
 
-Field semantics and validation rules live in
-[Configuration reference — TaskInfo fields](configuration.md#taskinfo-fields).
+`result_ttl` and `unique_for` take a `float` such as
+`timedelta(hours=1).total_seconds()`: a whole value becomes `int`, a
+fraction is rounded up to the next second, `inf` and `nan` raise
+`ValueError` (since 0.12.3). Field semantics and validation rules live
+in [Configuration reference — TaskInfo fields](configuration.md#taskinfo-fields).
 
 ## `next_fire_times()`
 
@@ -513,8 +556,11 @@ class Task:
 - `run(*args, **kwargs)` — the task body. Called with the args and
   kwargs the client passed to `schedule()` / `run()`. **Required.**
 - `pre_execution()` — called before `run()`. Default: no-op.
-- `post_execution()` — called after `run()` (success or failure).
-  Default: no-op.
+- `post_execution()` — called after `run()`, only when
+  `pre_execution()` and `run()` succeeded (not on an exception, a
+  timeout or a cancel). An exception from it fails the attempt.
+  Cleanup for every outcome belongs in `try/finally` in `run()` or a
+  Dishka `yield` finalizer. Default: no-op.
 
 ### Methods you call from inside `run()`
 
@@ -596,11 +642,16 @@ about.
 **Error semantics.**
 
 - `pre_enqueue` exceptions **propagate** — a raising middleware
-  aborts the enqueue.
+  aborts the enqueue, with `delay`/`eta` before anything is stored or
+  a `unique_for` flag is claimed.
 - All other hooks **swallow** exceptions: each error is logged as
   `middleware_hook_failed` (ERROR, logger `swarmq.middleware`, fields
   `hook`, `middleware`, `error_type`, `error` and the traceback) and
   the chain continues.
+- A cancelled task gets no `on_error` and no `post_execute`, only
+  `pre_execute` before it: a cancel is not an error. Middleware that
+  keeps state per task also handles the `TASK_CANCELLED` signal
+  (`task_id`, `task_name`, `queue`).
 
 **Registration order.**
 
@@ -643,12 +694,12 @@ Lifecycle events emitted by SwarmQ. Register handlers with
 
 | Signal | Payload (kwargs) | Fires |
 |---|---|---|
-| `TASK_ENQUEUED` | `task_id`, `task_name`, `queue` | After a publish (`schedule`, `schedule_many`, each workflow step). |
+| `TASK_ENQUEUED` | `task_id`, `task_name`, `queue` | After a publish (`schedule`, `schedule_many`, each workflow step), or, for `delay`/`eta`, once the one-shot is stored (not at fire time; cron fires do not dispatch it). |
 | `TASK_STARTED` | `task_id`, `task_name`, `queue` | Before `run()`. |
 | `TASK_COMPLETED` | `task_id`, `task_name`, `queue`, `duration_ms` | After a successful `run()`. |
 | `TASK_FAILED` | `task_id`, `task_name`, `queue`, `exception` | After **every** failed attempt, also when a retry follows. `exception` is `str(exc)`. |
 | `TASK_RETRYING` | `task_id`, `task_name`, `queue`, `retry_count`, `delay` | A retry was scheduled; `retry_count` is the new count, `delay` in seconds. |
-| `TASK_CANCELLED` | `task_id`, `task_name`, `queue` | Cancelled before or during execution. |
+| `TASK_CANCELLED` | `task_id`, `task_name`, `queue` | Cancelled before or during execution. No `on_error`/`post_execute` follows. |
 | `TASK_EXPIRED` | `task_id`, `task_name`, `queue`, `age_s`, `max_age_s` | Picked up older than `max_age`; routed to the DLQ. |
 | `TASK_LOCKED` | `task_id`, `task_name`, `lock_name`, `lock_conflict_count` | The task's lock was held by another execution (lock conflict); the message is requeued, or dead-lettered as `LockWaitExceeded` when the wait ends. |
 | `TASK_RATE_LIMITED` | `task_id`, `task_name`, `retry_after_ms`, `remaining`, `rate_limit_count` | Rate limit hit; message delayed. |
@@ -664,7 +715,7 @@ Lifecycle events emitted by SwarmQ. Register handlers with
 | `SCHEDULER_LEADER_HANDOVER` / `SCHEDULER_LEADER_FAILOVER` | `worker_id` | Leader hands over on shutdown / takes over after an expired lock. |
 | `SCHEDULER_FIRE_SKIPPED` | `worker_id`, `schedule_name`, `skipped_count` | Catch-up after downtime skipped cron occurrences. |
 | `SCHEDULER_CRON_CONFLICT` | `worker_id`, `schedule_name`, `fingerprints` | Several definitions of one static cron have been live for more than 10 minutes; the leader emits it on every adoption tick while the conflict lasts. |
-| `SCHEDULER_LEADER_OUTDATED` | `worker_id`, `leader`, `leader_version`, `outdated` | A non-leader saw a scheduler leader without time zone support (`leader_version` `None` means before 0.10.0); once per leader with `outdated=True`, again with `outdated=False` when a current leader follows. |
+| `SCHEDULER_LEADER_OUTDATED` | `worker_id`, `leader`, `leader_version`, `outdated` | A non-leader saw a scheduler leader running a swarmq below the minimum leader version (currently 0.12; `leader_version` `None` means before 0.10.0; an unreadable version does not count); once per leader with `outdated=True`, again with `outdated=False` when a current leader follows. |
 | `SCHEDULER_CRON_UNOWNED` | `worker_id`, `schedule_name`, `task_name`, `held`, `held_count` | The leader holds a static cron no live worker reports and it does not register itself (`held=True`), or releases it (`held=False`); once per transition, `held_count` is the number of held crons afterwards. Sets `swarmq_scheduler_crons_held`. |
 | `SCHEDULER_VALKEY_CHECKED` | `worker_id`, `status`, `policy`, `maxmemory`, `used_memory` | The leader checked Valkey's eviction policy and memory again, at most once per hour; `status` is `safe`, `unsafe` or `unknown`, `maxmemory` `0` means no limit, `None` unknown. Sets `swarmq_valkey_memory_used_ratio` (only with a limit). |
 | `SCHEDULER_QUEUE_ORPHANED` | `worker_id`, `queue`, `orphaned`, `message_count`, `orphaned_count` | The leader found a reported queue with messages, no consumer and no live worker reporting it (`orphaned=True`), or the queue is no longer orphaned (`orphaned=False`: drained, consumed, deleted or reported again); once per transition, `orphaned_count` is the number of orphaned queues afterwards. Sets `swarmq_scheduler_queues_orphaned`. |
@@ -730,7 +781,9 @@ class WorkflowHandle:
   running completes, but no further steps are enqueued. Returns `True`
   when the flag was newly set.
 - `get(timeout=30.0)` — waits for a terminal status and returns the
-  final result.
+  final result. A negative `timeout` or `nan` reads the state once and
+  then raises `ResultNotReadyError` (since 0.12.3; before, it polled
+  without end).
 
 **Raises.** `WorkflowNotFound` when the state is gone (`status()`,
 `children()`, `get()`),
@@ -753,9 +806,9 @@ Key fields:
 | `total` | `int` | Total unit count. |
 | `percent` | `float` | `current / total * 100`, 0.0–100.0. |
 | `message` | `str` | Optional status line. |
-| `updated_at` | `datetime` | UTC timestamp of the update. |
-| `started_at` | `datetime \| None` | UTC start time, if recorded. |
-| `eta_seconds` | `int \| None` | Linear extrapolation; `None` until the first non-zero progress. |
+| `updated_at` | `str` | ISO 8601 timestamp of the update, UTC. |
+| `started_at` | `str \| None` | ISO 8601 wall-clock start of the run, UTC (since 0.12.3; before, a monotonic clock value that read as a date in 1970). |
+| `eta_seconds` | `int \| None` | Linear extrapolation from the monotonic run time; `None` until the first non-zero progress and on the final update. |
 
 ## `enum DeliveryMode`
 
@@ -968,6 +1021,17 @@ class ExecutionGuardStore(Protocol):
 - A backend without an `execution_guard` attribute runs without the
   guard.
 
+Contract note for 0.12.3 (signatures unchanged). `ScheduleStore.add`
+should write the definition and its fire-index entry in one atomic
+step, as swarmq's Valkey store does (`sched_add.lua`), so that a
+repeated write after a lost reply never leaves an entry without a fire
+time. When `add` returns `False` for a one-shot of
+`schedule(delay=/eta=)` (name `oneshot:<task_id>`), swarmq reads the
+entry back with `get`; a byte-identical entry counts as its own insert,
+and a missing fire time is added with `replan_if_unchanged`. Any other
+existing entry is a conflict, and `swarmq schedule add` still reports
+"already exists" for an existing name.
+
 ## Dependency injection (Dishka)
 
 Optional; install with `pip install 'swarmq[dishka]'`.
@@ -1088,11 +1152,19 @@ default.
 
 All library exceptions descend from `SwarmQError` and can be imported
 from `swarmq` (`from swarmq import TaskError, WorkflowNotFound, ...`).
-`WorkflowStateConflict` is the one exception left out of the
-top-level package; import it from `swarmq.exceptions`. Detailed
-semantics and `When raised` / `Cause` / `Recovery` for each class
-live in the [error catalog](errors.md). `ForkSourceRejected`, raised by
-an embedded CPU worker, is a `RuntimeError` in `swarmq.supervision`.
+The two worker-internal classes `WorkflowStateConflict` and
+`SettleFailedAfterPublish` are left out of the top-level package;
+import them from `swarmq.exceptions`. `BrokerPublishBlocked` and
+`PublishRejected` can be imported from `swarmq` since 0.12.3; code that
+must also run on 0.12.0–0.12.2 imports them from `swarmq.exceptions`.
+Detailed semantics and `When raised` / `Cause` / `Recovery` for each
+class live in the [error catalog](errors.md). `ForkSourceRejected`,
+raised by an embedded CPU worker, is a `RuntimeError` in
+`swarmq.supervision`.
+
+`Retry(delay=...)` clamps a negative delay to `0` (retry immediately,
+counted against `max_retries`) and raises `ValueError` for `inf` and
+`nan` when it is created (since 0.12.3).
 
 ## See also
 

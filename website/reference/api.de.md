@@ -105,7 +105,7 @@ async def schedule(
     queue: str | None = None,
     delay: float | None = None,
     eta: datetime | None = None,
-    unique_for: int | None = _MISSING,
+    unique_for: float | None = _MISSING,
     unique_until: Literal["start", "completion"] = _MISSING,
     **kwargs: Any,
 ) -> str
@@ -122,7 +122,7 @@ Enqueuet einen Task und gibt seine `task_id` zurück.
 | `queue` | `str \| None` | Überschreibt die Default-Queue des Tasks. Im Client-Only-Modus (ohne Registry) pflicht. |
 | `delay` | `float \| None` | Sekunden Verzögerung vor Zustellung. Gegenseitig ausschließend mit `eta`. Muss `≥ 0` sein. |
 | `eta` | `datetime \| None` | Absoluter Fire-Zeitpunkt. Gegenseitig ausschließend mit `delay`. Muss in der Zukunft liegen (1s Lenienz). |
-| `unique_for` | `int \| None` | Überschreibt `TaskInfo.unique_for`. `None` deaktiviert Dedup für diesen Aufruf. |
+| `unique_for` | `float \| None` | Überschreibt `TaskInfo.unique_for`, in Sekunden. Muss `> 0` und endlich sein (sonst `ValueError`, vor jedem Claim, Publish oder Speichern; seit 0.12.3); ein `float` wird auf ganze Sekunden aufgerundet. `None` deaktiviert Dedup für diesen Aufruf. |
 | `unique_until` | `"start" \| "completion"` | Überschreibt `TaskInfo.unique_until`. |
 
 **Returns.** `str` — die `task_id` (UUIDv7). Bei Dedup-Hit wird
@@ -137,8 +137,26 @@ als 0.12.1 sein: Ein Producer bis 0.12.1 speichert den Opt-out nicht,
 und ein Leader bis 0.12.1 fällt auf seine eigene `TaskInfo` zurück. In
 beiden Fällen kann der Leader den Task beim Fire als Duplikat verwerfen,
 solange ein anderer Lauf mit denselben Argumenten das Flag hält. Fehlt
-`unique_for`, wendet der Leader beim Fire weiter seine eigene `TaskInfo`
-an ([Scheduling und Retries](../guides/scheduling-and-retries.de.md#immediate-vs-deferred)).
+`unique_for`, setzt ein Producer, dessen Registry den Task kennt, das
+Flag beim Aufruf mit `TaskInfo.unique_for` plus Verzögerung; nur ein
+Producer ohne Registry überlässt es dem Leader, der beim Fire seine
+eigene `TaskInfo` anwendet
+([Scheduling und Retries](../guides/scheduling-and-retries.de.md#immediate-vs-deferred)).
+
+**Middleware und Signale bei `delay`/`eta`.** Seit 0.12.3 läuft ein
+verzögerter Aufruf wie ein sofortiger durch die Enqueue-Middleware.
+Zuerst laufen die Prüfungen von `delay`, `eta` und `unique_for`. Dann
+berechnet der Client den Dedup-Hash aus den übergebenen Argumenten (vor
+jeder Middleware), ruft `pre_enqueue`, setzt das `unique_for`-Flag,
+speichert den Oneshot-Eintrag, ruft `post_enqueue` und löst
+`TASK_ENQUEUED` aus. Ein Veto aus `pre_enqueue` bricht den Aufruf ab,
+bevor etwas beansprucht oder gespeichert ist, auch bei einem Aufruf,
+der ein Duplikat wäre (bisher kam dort die bestehende `task_id`
+zurück). Ein Duplikat gibt die bestehende `task_id` nach `pre_enqueue`
+zurück, ohne `post_enqueue`. In-place-Änderungen einer Middleware an
+`kwargs` werden gespeichert, und der Leader publiziert sie beim Fire;
+der Leader feuert ohne Enqueue-Middleware
+([Middleware-Guide](../guides/middleware.md#verzogerte-tasks-delayeta)).
 
 **Client-Only-Modus (ohne Registry).** Ohne Registry kennt der Client
 die `TaskInfo` des Tasks nicht: `unique_for`, `priority` und der
@@ -154,9 +172,17 @@ Task-Module importiert.
 **Raises.**
 
 - `TaskNotFoundError` — task_name nicht in der Registry (Registry-Modus).
-- `ValueError` — `delay < 0`, `delay` und `eta` gleichzeitig, `eta` in Vergangenheit.
+- `ValueError` — `delay < 0`, `delay` und `eta` gleichzeitig, `eta` in Vergangenheit,
+  `unique_for` `<= 0`, `inf` oder `nan`.
 - `BrokerConnectionError` — Broker beim Publish unerreichbar.
-- Propagiert aus `pre_enqueue`-Middleware-Hooks.
+- `BackendResponseError` — bei `delay`/`eta`: Der Scheduler-Store hat
+  unter dem Namen des Oneshots einen anderen Eintrag, oder er hat das
+  Schreiben abgelehnt. Bei einem Konflikt und wenn Valkey beim Speichern
+  nicht erreichbar ist, bleibt die eigene `unique_for`-Sperre des
+  Aufrufs bis zu ihrem TTL stehen, weil der Eintrag gespeichert sein und
+  feuern kann; nach einer Fehlerantwort wird sie freigegeben.
+- Propagiert aus `pre_enqueue`-Middleware-Hooks (auch bei
+  `delay`/`eta`).
 
 **Beispiel.**
 
@@ -176,7 +202,7 @@ async def schedule_many(
     tasks: list[tuple[str, tuple, dict]],
     queue: str | None = None,
     *,
-    unique_for: int | None = _MISSING,
+    unique_for: float | None = _MISSING,
     unique_until: Literal["start", "completion"] = _MISSING,
 ) -> list[str]
 ```
@@ -188,6 +214,9 @@ published.
 **Returns.** `list[str]` — eine `task_id` pro Input, in
 Input-Reihenfolge. Bei Dedup-Hits wird die Owner-task_id an diesem
 Index platziert (Listenlänge ist immer gleich Input-Länge).
+
+`unique_for` folgt denselben Regeln wie bei `schedule()`: `> 0` und
+endlich, ein `float` wird auf ganze Sekunden aufgerundet.
 
 **Raises.** Dieselbe Form wie `schedule()`. Bei partiellem
 Publish-Fehlschlag werden erfolgreich publishte task_ids trotzdem
@@ -242,7 +271,11 @@ abläuft.
 
 Intern wird `[<namensraum>:]sq:notify:{task_id}` auf Valkey abonniert für ein
 Push-basiertes Warten, mit 5ms-Polling als Fallback. Bei
-`timeout=0` ein einzelnes `GET` ohne Pub/Sub.
+`timeout=0` ein einzelnes `GET` ohne Pub/Sub. Ein negatives `timeout`
+oder `nan` gilt als schon abgelaufen: ein `GET`, dann
+`ResultNotReadyError`, wenn noch kein Ergebnis da ist (seit 0.12.3;
+vorher konnte `nan` die Event-Loop zum Absturz bringen, wenn das `GET`
+hing). `inf` wartet unbegrenzt.
 
 **Raises.**
 
@@ -254,7 +287,10 @@ Push-basiertes Warten, mit 5ms-Polling als Fallback. Bei
   beratend und `None` bei Ergebnissen älterer Worker und bei Fehlern, die
   der Worker selbst erzeugt (harter Timeout, Drain, verlorenes Rechenkind,
   Ablauf).
-- `TaskCancelledError` — Cancel-Flag während Ausführung ausgelöst.
+- `TaskCancelledError` — der Task wurde mit `cancel()` abgebrochen, vor
+  oder während der Ausführung (das gespeicherte Ergebnis trägt das
+  Cancel-Flag). Der Task selbst sieht diese Exception nie; in `run()`
+  kommt ein Cancel als `asyncio.CancelledError` an.
 
 ### `get_results()`
 
@@ -267,8 +303,14 @@ async def get_results(
 ```
 
 Batch-Poll-Variante von `get_result`. Nutzt `MGET`, um viele auf
-einmal zu holen. Raist `ResultNotReadyError` mit den fehlenden
-task_ids bei jedem Timeout.
+einmal zu holen, alle `poll_interval` Sekunden, ohne Pub/Sub. Liest
+mindestens einmal: `timeout=0` ist ein einzelnes `MGET`, und läuft die
+Frist während des Wartens ab, folgt vor dem Aufgeben ein letztes `MGET`
+(seit 0.12.3; vorher las `timeout=0` nichts und meldete jeden Task als
+nicht fertig). Ein negatives `timeout` oder `nan` wirkt wie `0`; `inf`
+wartet unbegrenzt. Raist `ResultNotReadyError` mit den fehlenden
+task_ids, wenn einer nicht rechtzeitig fertig ist, sowie `TaskError`
+oder `TaskCancelledError` wie `get_result()`.
 
 ### `cancel()`
 
@@ -459,7 +501,7 @@ TaskInfo(
     soft_timeout: int | None = None,
     hard_timeout: int | None = None,
     delivery: DeliveryMode = DeliveryMode.AT_LEAST_ONCE,
-    result_ttl: int | None = None,
+    result_ttl: float | None = None,
     max_retries: int = 0,
     retry_backoff: str = "exponential",
     retry_exceptions: list[type[BaseException]] | None = None,
@@ -468,7 +510,7 @@ TaskInfo(
     lock: str | None = None,
     max_concurrency: int = 1,
     cron: str | None = None,
-    unique_for: int | None = None,
+    unique_for: float | None = None,
     unique_until: Literal["start", "completion"] = "completion",
     max_age: int | None = None,
     priority: Literal["high", "normal", "low"] = "normal",
@@ -477,7 +519,11 @@ TaskInfo(
 )
 ```
 
-Feld-Semantik und Validierungsregeln leben in
+`result_ttl` und `unique_for` nehmen einen `float` wie
+`timedelta(hours=1).total_seconds()` an: Ein ganzzahliger Wert wird
+`int`, ein Bruch wird auf die nächste Sekunde aufgerundet, `inf` und
+`nan` werfen `ValueError` (seit 0.12.3). Feld-Semantik und
+Validierungsregeln leben in
 [Konfigurations-Referenz — TaskInfo-Felder](configuration.md#taskinfo-felder).
 
 ## `next_fire_times()`
@@ -530,8 +576,11 @@ class Task:
   Args/Kwargs, die der Client an `schedule()` / `run()` übergeben
   hat. **Pflicht.**
 - `pre_execution()` — vor `run()` aufgerufen. Default: No-Op.
-- `post_execution()` — nach `run()` aufgerufen (Success oder
-  Fehler). Default: No-Op.
+- `post_execution()` — nach `run()` aufgerufen, nur wenn
+  `pre_execution()` und `run()` erfolgreich waren (nicht bei Ausnahme,
+  Timeout oder Cancel). Eine Ausnahme darin lässt den Versuch
+  scheitern. Aufräumen für jeden Ausgang gehört in `try/finally` in
+  `run()` oder in einen Dishka-`yield`-Finalizer. Default: No-Op.
 
 ### Methoden, die du aus `run()` aufrufst
 
@@ -614,11 +663,16 @@ brauchst.
 **Fehlersemantik.**
 
 - `pre_enqueue`-Exceptions **propagieren** — eine raisende
-  Middleware bricht das Enqueue ab.
+  Middleware bricht das Enqueue ab, bei `delay`/`eta` bevor etwas
+  gespeichert oder ein `unique_for`-Flag gesetzt ist.
 - Alle anderen Hooks **schlucken** Exceptions: Jeder Fehler wird als
   `middleware_hook_failed` geloggt (ERROR, Logger `swarmq.middleware`,
   Felder `hook`, `middleware`, `error_type`, `error` und der
   Traceback), die Kette läuft weiter.
+- Ein abgebrochener Task bekommt kein `on_error` und kein
+  `post_execute`, nur vorher `pre_execute`: Ein Cancel ist kein Fehler.
+  Middleware mit Zustand je Task behandelt zusätzlich das Signal
+  `TASK_CANCELLED` (`task_id`, `task_name`, `queue`).
 
 **Registrierungs-Reihenfolge.**
 
@@ -663,12 +717,12 @@ Lifecycle-Events, die SwarmQ emittiert. Registriere Handler mit
 
 | Signal | Payload (kwargs) | Feuert |
 |---|---|---|
-| `TASK_ENQUEUED` | `task_id`, `task_name`, `queue` | Nach einem Publish (`schedule`, `schedule_many`, jeder Workflow-Schritt). |
+| `TASK_ENQUEUED` | `task_id`, `task_name`, `queue` | Nach einem Publish (`schedule`, `schedule_many`, jeder Workflow-Schritt) oder, bei `delay`/`eta`, sobald der Oneshot gespeichert ist (nicht beim Fire; Cron-Fires lösen es nicht aus). |
 | `TASK_STARTED` | `task_id`, `task_name`, `queue` | Vor `run()`. |
 | `TASK_COMPLETED` | `task_id`, `task_name`, `queue`, `duration_ms` | Nach erfolgreichem `run()`. |
 | `TASK_FAILED` | `task_id`, `task_name`, `queue`, `exception` | Nach **jedem** gescheiterten Versuch, auch wenn ein Retry folgt. `exception` ist `str(exc)`. |
 | `TASK_RETRYING` | `task_id`, `task_name`, `queue`, `retry_count`, `delay` | Ein Retry wurde eingeplant; `retry_count` ist der neue Zähler, `delay` in Sekunden. |
-| `TASK_CANCELLED` | `task_id`, `task_name`, `queue` | Vor oder während der Ausführung abgebrochen. |
+| `TASK_CANCELLED` | `task_id`, `task_name`, `queue` | Vor oder während der Ausführung abgebrochen. Es folgt kein `on_error`/`post_execute`. |
 | `TASK_EXPIRED` | `task_id`, `task_name`, `queue`, `age_s`, `max_age_s` | Älter als `max_age` abgeholt; in die DLQ geleitet. |
 | `TASK_LOCKED` | `task_id`, `task_name`, `lock_name`, `lock_conflict_count` | Der Lock des Tasks war von einer anderen Ausführung belegt (Lock-Konflikt); die Nachricht wird neu eingereiht, am Ende der Wartezeit als `LockWaitExceeded` in die DLQ geleitet. |
 | `TASK_RATE_LIMITED` | `task_id`, `task_name`, `retry_after_ms`, `remaining`, `rate_limit_count` | Rate-Limit erreicht; Nachricht verzögert. |
@@ -684,7 +738,7 @@ Lifecycle-Events, die SwarmQ emittiert. Registriere Handler mit
 | `SCHEDULER_LEADER_HANDOVER` / `SCHEDULER_LEADER_FAILOVER` | `worker_id` | Leader gibt beim Shutdown ab / übernimmt nach abgelaufenem Lock. |
 | `SCHEDULER_FIRE_SKIPPED` | `worker_id`, `schedule_name`, `skipped_count` | Nachholen nach Ausfallzeit hat Cron-Termine übersprungen. |
 | `SCHEDULER_CRON_CONFLICT` | `worker_id`, `schedule_name`, `fingerprints` | Mehrere Definitionen eines statischen Crons leben seit mehr als 10 Minuten; der Leader sendet es in jedem Übernahme-Takt, solange der Konflikt besteht. |
-| `SCHEDULER_LEADER_OUTDATED` | `worker_id`, `leader`, `leader_version`, `outdated` | Ein Nicht-Leader hat einen Scheduler-Leader ohne Zeitzonen-Unterstützung gesehen (`leader_version` `None` heißt vor 0.10.0); einmal pro Leader mit `outdated=True`, erneut mit `outdated=False`, wenn ein aktueller Leader folgt. |
+| `SCHEDULER_LEADER_OUTDATED` | `worker_id`, `leader`, `leader_version`, `outdated` | Ein Nicht-Leader hat einen Scheduler-Leader gesehen, der ein swarmq unter der Mindestversion für Leader ausführt (derzeit 0.12; `leader_version` `None` heißt vor 0.10.0; eine unlesbare Version zählt nicht); einmal pro Leader mit `outdated=True`, erneut mit `outdated=False`, wenn ein aktueller Leader folgt. |
 | `SCHEDULER_CRON_UNOWNED` | `worker_id`, `schedule_name`, `task_name`, `held`, `held_count` | Der Leader hält einen statischen Cron zurück, den kein lebender Worker meldet und den er selbst nicht registriert (`held=True`), oder gibt ihn frei (`held=False`); einmal je Übergang, `held_count` ist die Zahl der danach zurückgehaltenen Crons. Setzt `swarmq_scheduler_crons_held`. |
 | `SCHEDULER_VALKEY_CHECKED` | `worker_id`, `status`, `policy`, `maxmemory`, `used_memory` | Der Leader hat Eviction-Policy und Speicher von Valkey erneut geprüft, höchstens einmal je Stunde; `status` ist `safe`, `unsafe` oder `unknown`, `maxmemory` `0` heißt ohne Grenze, `None` unbekannt. Setzt `swarmq_valkey_memory_used_ratio` (nur mit Grenze). |
 | `SCHEDULER_QUEUE_ORPHANED` | `worker_id`, `queue`, `orphaned`, `message_count`, `orphaned_count` | Der Leader hat eine gemeldete Queue mit Nachrichten, ohne Consumer und ohne lebenden Worker, der sie meldet, gefunden (`orphaned=True`), oder die Queue ist nicht mehr verwaist (`orphaned=False`: abgearbeitet, konsumiert, gelöscht oder wieder gemeldet); einmal je Übergang, `orphaned_count` ist die Zahl der danach verwaisten Queues. Setzt `swarmq_scheduler_queues_orphaned`. |
@@ -753,7 +807,9 @@ class WorkflowHandle:
   Schritte eingereiht. Gibt `True` zurück, wenn das Flag neu gesetzt
   wurde.
 - `get(timeout=30.0)` — wartet auf einen Endzustand und gibt das
-  Endergebnis zurück.
+  Endergebnis zurück. Ein negatives `timeout` oder `nan` liest den
+  Zustand einmal und wirft dann `ResultNotReadyError` (seit 0.12.3;
+  vorher pollte es ohne Ende).
 
 **Raises.** `WorkflowNotFound`, wenn der Zustand weg ist (`status()`,
 `children()`, `get()`), `ResultNotReadyError`, wenn `get()` in den Timeout läuft,
@@ -775,9 +831,9 @@ Kernfelder:
 | `total` | `int` | Gesamt-Einheiten-Anzahl. |
 | `percent` | `float` | `current / total * 100`, 0.0–100.0. |
 | `message` | `str` | Optionale Statuszeile. |
-| `updated_at` | `datetime` | UTC-Zeitstempel des Updates. |
-| `started_at` | `datetime \| None` | UTC-Startzeit, falls aufgezeichnet. |
-| `eta_seconds` | `int \| None` | Lineare Extrapolation; `None` bis zum ersten nicht-null Progress. |
+| `updated_at` | `str` | ISO-8601-Zeitstempel des Updates, UTC. |
+| `started_at` | `str \| None` | ISO-8601-Wanduhr-Start des Laufs, UTC (seit 0.12.3; vorher ein Wert der monotonen Uhr, der als Datum von 1970 erschien). |
+| `eta_seconds` | `int \| None` | Lineare Extrapolation aus der monotonen Laufzeit; `None` bis zum ersten nicht-null Progress und beim letzten Update. |
 
 ## `enum DeliveryMode`
 
@@ -992,6 +1048,19 @@ class ExecutionGuardStore(Protocol):
   Running-Marker nur, solange er `owner` gehört.
 - Ein Backend ohne Attribut `execution_guard` läuft ohne den Schutz.
 
+Vertragshinweis für 0.12.3 (Signaturen unverändert).
+`ScheduleStore.add` sollte die Definition und ihren Eintrag im
+Fire-Index in einem atomaren Schritt schreiben, wie es der Valkey-Store
+von swarmq tut (`sched_add.lua`), damit ein nach verlorener Antwort
+wiederholtes Schreiben nie einen Eintrag ohne Fire-Zeitpunkt
+hinterlässt. Liefert `add` für einen Oneshot aus
+`schedule(delay=/eta=)` (Name `oneshot:<task_id>`) `False`, liest
+swarmq den Eintrag mit `get` zurück; ein byte-gleicher Eintrag gilt als
+eigener Insert, und ein fehlender Fire-Zeitpunkt wird mit
+`replan_if_unchanged` ergänzt. Jeder andere bestehende Eintrag ist ein
+Konflikt, und `swarmq schedule add` meldet für einen bestehenden Namen
+weiter „already exists“.
+
 ## Dependency Injection (Dishka)
 
 Optional; Installation mit `pip install 'swarmq[dishka]'`.
@@ -1114,12 +1183,20 @@ Beide Server haben keine Authentifizierung und binden per Default an
 
 Alle Library-Exceptions erben von `SwarmQError` und lassen sich aus
 `swarmq` importieren (`from swarmq import TaskError, WorkflowNotFound,
-...`). `WorkflowStateConflict` ist die eine Exception, die nicht im
-Top-Level-Paket steht; importiere sie aus `swarmq.exceptions`.
+...`). Die beiden Worker-internen Klassen `WorkflowStateConflict` und
+`SettleFailedAfterPublish` stehen nicht im Top-Level-Paket; importiere
+sie aus `swarmq.exceptions`. `BrokerPublishBlocked` und
+`PublishRejected` lassen sich seit 0.12.3 aus `swarmq` importieren;
+Code, der auch auf 0.12.0–0.12.2 laufen muss, importiert sie aus
+`swarmq.exceptions`.
 Detaillierte Semantik und `Wann geraist` / `Ursache` / `Recovery` pro
 Klasse leben im [Fehlerkatalog](errors.md). `ForkSourceRejected`, das
 ein eingebetteter CPU-Worker wirft, ist ein `RuntimeError` in
 `swarmq.supervision`.
+
+`Retry(delay=...)` klemmt eine negative Wartezeit auf `0` (sofort
+wiederholen, zählt gegen `max_retries`) und wirft für `inf` und `nan`
+beim Erzeugen einen `ValueError` (seit 0.12.3).
 
 ## Siehe auch
 

@@ -25,6 +25,6 @@ tests:
 
 **Begründung.** `post_execution` kann das Ergebnis selbst zum Fehler machen; transaktionale Logik (Commit/Rollback) braucht die Ausnahme und gehört deshalb in den Finalizer (DI-Plan, AE4).
 
-**Bewusste Folgen.** Ressourcen, die nur in `post_execution` freigegeben werden, bleiben bei einem Fehler liegen. Das ist kein Fehler von swarmq. Die Doku (`defining-tasks.md:193` + DE, `api.md:516`), die „success or failure“ versprach, war falsch (F3-28); der Task-Guide ist in 0.12.3 korrigiert, die API-Referenz folgt in derselben Version.
+**Bewusste Folgen.** Ressourcen, die nur in `post_execution` freigegeben werden, bleiben bei einem Fehler liegen. Das ist kein Fehler von swarmq. Die Doku (`defining-tasks.md:193` + DE, `api.md:516`), die „success or failure“ versprach, war falsch (F3-28); der Task-Guide ist in 0.12.3 korrigiert, die API-Referenz ist in 0.12.3 nachgezogen.
 
 **Überdenken nur mit neuem Argument.** Keine offenen Einwände bekannt.
