@@ -172,7 +172,8 @@ class ScheduleStore:
 
         E-058: a client one-shot (``oneshot:<task_id>``) whose existing
         entry is byte-identical is its own insert after a lost reply; a
-        missing fire-index entry is added via ``put``. A differing or
+        missing fire-index entry is added via ``replan_if_unchanged`` (only
+        while the entry is unchanged and unscored). A differing or
         vanished entry stays a conflict, and any other name (CLI, cron)
         keeps "already exists"."""
         fire_ts_ms = None if definition.disabled else definition.fire_ts_ms
@@ -188,8 +189,12 @@ class ScheduleStore:
             existing = existing.encode()
         if existing != payload:
             return False
-        if await self._store.fire_ts(name) is None:
-            await self._store.put(name, payload, fire_ts_ms)
+        if fire_ts_ms is not None:
+            # Bedingt in einem EVAL (sched_replan.lua): nur solange die
+            # Definition byte-gleich ist und keinen Score hat. Ein Leader,
+            # der den Oneshot seit dem Lesen gefeuert und gelöscht hat,
+            # gewinnt; der Eintrag wird nicht neu angelegt (Review U3).
+            await self._store.replan_if_unchanged(name, payload, payload, fire_ts_ms)
         return True
 
     async def update_static_schedule(

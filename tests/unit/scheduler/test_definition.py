@@ -52,13 +52,19 @@ insert-if-absent vs. update-static branches that live in Python.
 # Test list (Plan 2026-10-15-1138, U3, KTD4, E-058 -- Oneshot-Idempotenz):
 # 15. Oneshot, ``add`` -> False, ``get`` -> dieselben Bytes, Score vorhanden
 #     -> True, kein ``put``.
-# 16. Wie 15 ohne Score -> genau ein ``put(name, payload, fire_ts)``, True.
+# 16. Wie 15 ohne Score -> Fire-Index ergänzt, True (seit Review U3 bedingt
+#     per ``replan_if_unchanged``, In-Memory-Backend).
 # 17. ``get`` liefert ``str`` mit gleichem Inhalt -> True.
 # 18. Abweichende Bytes (``unroutable_since`` gesetzt) -> False, kein ``put``.
 # 19. ``get`` -> None -> False.
 # 20. CLI-artige Definition (``task_id=None``, ``--at``) mit ``add`` -> False
 #     -> False, kein ``get``.
 # 21. Cron-Definition mit ``task_id`` und ``add`` -> False -> False.
+#
+# Test list (Review U3, Reliability P3 -- Index-Ergänzung bedingt):
+# 22. Feuert und löscht der Leader den Oneshot nach dem Lesen der
+#     Definitionsschicht, legt die Index-Ergänzung ihn nicht neu an.
+# 23. Ein deaktivierter byte-gleicher Oneshot bekommt keinen Fire-Index.
 
 from __future__ import annotations
 
@@ -76,6 +82,7 @@ from swarmq.scheduler import (
     make_schedfire_key,
     parse_schedfire_key,
 )
+from tests.support.inmemory import FakeClock, InMemoryBackend
 
 # AGENTS.md §Async-Code testen rule 3: 5s per-test timeout.
 pytestmark = [pytest.mark.timeout(5)]
@@ -247,6 +254,8 @@ def _make_store(hget_return=None, hsetnx_return=True, hexists_return=1):
     schedules = MagicMock()
     schedules.add = AsyncMock(return_value=bool(hsetnx_return))
     schedules.put = AsyncMock()
+    # Index-Ergänzung eines byte-gleichen Oneshots (E-058): ``False`` = schon eingeplant.
+    schedules.replan_if_unchanged = AsyncMock(return_value=False)
     schedules.remove = AsyncMock(return_value=bool(hexists_return))
     schedules.get = AsyncMock(return_value=hget_return)
     schedules.list_all = AsyncMock(return_value={})
@@ -355,15 +364,15 @@ class TestScheduleStoreAddOneshotIdempotent:
 
     @pytest.mark.entscheidung("E-058")
     async def test_identical_existing_oneshot_without_score_gets_its_fire_index(self):
-        """Liste 16: der Fire-Index wird per ``put`` ergänzt."""
-        store, schedules = _make_store(hsetnx_return=False)
+        """Liste 16: der fehlende Fire-Index wird ergänzt (bedingt, Review U3;
+        Nachtrag E-058)."""
+        memory = InMemoryBackend(FakeClock(1_700_000_000_000))
+        await memory.connect()
         d = _oneshot()
-        payload = msgspec.json.encode(d)
-        schedules.get.return_value = payload
-        schedules.fire_ts = AsyncMock(return_value=None)
+        await memory.schedules.put(d.schedule_name, msgspec.json.encode(d), None)
 
-        assert await store.add_schedule(d) is True
-        schedules.put.assert_awaited_once_with("oneshot:t1", payload, d.fire_ts_ms)
+        assert await ScheduleStore(memory).add_schedule(d) is True
+        assert await memory.schedules.fire_ts(d.schedule_name) == d.fire_ts_ms
 
     @pytest.mark.entscheidung("E-058")
     async def test_identical_existing_oneshot_as_str_counts_as_own_insert(self):
@@ -423,6 +432,46 @@ class TestScheduleStoreAddOneshotIdempotent:
 
         assert await store.add_schedule(d) is False
         schedules.get.assert_not_awaited()
+
+
+class TestScheduleStoreAddOneshotRepairIsConditional:
+    """Review U3 (Reliability P3): die Index-Ergänzung eines byte-gleichen
+    Oneshots darf einen inzwischen gefeuerten Eintrag nicht neu anlegen."""
+
+    @staticmethod
+    async def _memory() -> InMemoryBackend:
+        backend = InMemoryBackend(FakeClock(1_700_000_000_000))
+        await backend.connect()
+        return backend
+
+    async def test_oneshot_fired_after_the_read_is_not_recreated(self, monkeypatch: pytest.MonkeyPatch):
+        """Liste 22: der Leader committet (ZREM + HDEL) direkt nach dem
+        HGET der Definitionsschicht."""
+        memory = await self._memory()
+        d = _oneshot()
+        payload = msgspec.json.encode(d)
+        await memory.schedules.put(d.schedule_name, payload, None)  # Altzustand ohne Index
+        read = memory.schedules.get
+
+        async def _read_then_leader_commits(name: str) -> bytes | None:
+            seen = await read(name)
+            await memory.schedules.remove(name)
+            return seen
+
+        monkeypatch.setattr(memory.schedules, "get", _read_then_leader_commits)
+
+        assert await ScheduleStore(memory).add_schedule(d) is True
+        assert await memory.schedules.exists(d.schedule_name) is False
+        assert await memory.schedules.fire_ts(d.schedule_name) is None
+
+    async def test_disabled_identical_oneshot_gets_no_fire_index(self):
+        """Liste 23."""
+        memory = await self._memory()
+        d = _oneshot(disabled=True)
+        await memory.schedules.put(d.schedule_name, msgspec.json.encode(d), None)
+
+        assert await ScheduleStore(memory).add_schedule(d) is True
+        assert await memory.schedules.fire_ts(d.schedule_name) is None
 
 
 class TestScheduleStoreUpdateStaticSchedule:
