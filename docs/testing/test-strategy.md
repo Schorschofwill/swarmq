@@ -81,6 +81,7 @@ darf nicht sinken, neue und geänderte Zeilen müssen zu 100 % abgedeckt sein
 (diff-cover). Auf `main` und bei Tags entfällt der Vergleich. Die Untergrenze
 hebt `uv run just ratchet` an (kleinster der letzten drei `main`-Werte minus
 0,5 Prozentpunkte, abgerundet; die Schwankung lag bei Einführung bei 0,01).
+Stand: `fail_under = 96` (2026-10-15).
 Örtlich misst `uv run just coverage`; örtliche Werte liegen tiefer als die der
 CI (kein zweiter Broker) und zählen für den Ratchet nicht.
 
