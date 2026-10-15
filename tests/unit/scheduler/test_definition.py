@@ -48,6 +48,17 @@ insert-if-absent vs. update-static branches that live in Python.
 # 14. ``delay``/``eta``: ein eigenes Objekt in ``args`` ergibt beim
 #     Kodieren der Definition einen rohen ``TypeError`` (kein
 #     ``ResultSerializationError``).
+#
+# Test list (Plan 2026-10-15-1138, U3, KTD4, E-058 -- Oneshot-Idempotenz):
+# 15. Oneshot, ``add`` -> False, ``get`` -> dieselben Bytes, Score vorhanden
+#     -> True, kein ``put``.
+# 16. Wie 15 ohne Score -> genau ein ``put(name, payload, fire_ts)``, True.
+# 17. ``get`` liefert ``str`` mit gleichem Inhalt -> True.
+# 18. Abweichende Bytes (``unroutable_since`` gesetzt) -> False, kein ``put``.
+# 19. ``get`` -> None -> False.
+# 20. CLI-artige Definition (``task_id=None``, ``--at``) mit ``add`` -> False
+#     -> False, kein ``get``.
+# 21. Cron-Definition mit ``task_id`` und ``add`` -> False -> False.
 
 from __future__ import annotations
 
@@ -312,6 +323,106 @@ class TestScheduleStoreAddSchedule:
         """CD11 insert-if-absent: der Store meldet False → kein Insert."""
         store, _ = _make_store(hsetnx_return=False)
         assert await store.add_schedule(_def(schedule_name="existing", cron="0 * * * *")) is False
+
+
+def _oneshot(**overrides: Any) -> ScheduleDefinition:
+    """Oneshot aus ``schedule(delay=/eta=)``: frische ``task_id`` im Namen."""
+    base: dict[str, Any] = {
+        "schedule_name": "oneshot:t1",
+        "task_id": "t1",
+        "cron": None,
+        "source": "cli",
+    }
+    base.update(overrides)
+    return _def(**base)
+
+
+class TestScheduleStoreAddOneshotIdempotent:
+    """E-058 (F3-01): Ein byte-gleicher bestehender Oneshot ist der eigene
+    Insert nach einer verlorenen Antwort; ein fehlender Fire-Index wird
+    ergänzt. Alles andere bleibt Konflikt bzw. „already exists“."""
+
+    @pytest.mark.entscheidung("E-058")
+    async def test_identical_existing_oneshot_counts_as_own_insert(self):
+        """Liste 15."""
+        store, schedules = _make_store(hsetnx_return=False)
+        d = _oneshot()
+        schedules.get.return_value = msgspec.json.encode(d)
+        schedules.fire_ts = AsyncMock(return_value=d.fire_ts_ms)
+
+        assert await store.add_schedule(d) is True
+        schedules.put.assert_not_awaited()
+
+    @pytest.mark.entscheidung("E-058")
+    async def test_identical_existing_oneshot_without_score_gets_its_fire_index(self):
+        """Liste 16: der Fire-Index wird per ``put`` ergänzt."""
+        store, schedules = _make_store(hsetnx_return=False)
+        d = _oneshot()
+        payload = msgspec.json.encode(d)
+        schedules.get.return_value = payload
+        schedules.fire_ts = AsyncMock(return_value=None)
+
+        assert await store.add_schedule(d) is True
+        schedules.put.assert_awaited_once_with("oneshot:t1", payload, d.fire_ts_ms)
+
+    @pytest.mark.entscheidung("E-058")
+    async def test_identical_existing_oneshot_as_str_counts_as_own_insert(self):
+        """Liste 17: ein Client mit ``decode_responses=True`` liefert ``str``."""
+        store, schedules = _make_store(hsetnx_return=False)
+        d = _oneshot()
+        schedules.get.return_value = msgspec.json.encode(d).decode()
+        schedules.fire_ts = AsyncMock(return_value=d.fire_ts_ms)
+
+        assert await store.add_schedule(d) is True
+
+    @pytest.mark.entscheidung("E-058")
+    async def test_differing_existing_oneshot_is_a_conflict(self):
+        """Liste 18: der Leader hat den Eintrag umgeschrieben."""
+        store, schedules = _make_store(hsetnx_return=False)
+        d = _oneshot()
+        schedules.get.return_value = msgspec.json.encode(msgspec.structs.replace(d, unroutable_since=1_700))
+        schedules.fire_ts = AsyncMock(return_value=None)
+
+        assert await store.add_schedule(d) is False
+        schedules.put.assert_not_awaited()
+
+    @pytest.mark.entscheidung("E-058")
+    async def test_vanished_existing_oneshot_is_a_conflict(self):
+        """Liste 19: zwischen HSETNX und HGET verschwunden -- konservativ ein
+        Konflikt (Plan, Assumptions; Nachtrag E-058 vom 2026-10-15)."""
+        store, schedules = _make_store(hsetnx_return=False, hget_return=None)
+        schedules.fire_ts = AsyncMock(return_value=None)
+
+        assert await store.add_schedule(_oneshot()) is False
+        schedules.put.assert_not_awaited()
+
+    @pytest.mark.entscheidung("E-058")
+    async def test_cli_at_definition_with_same_name_stays_already_exists(self):
+        """Liste 20: ``swarmq schedule add --at`` setzt nie ``task_id``."""
+        store, schedules = _make_store(hsetnx_return=False)
+        d = _def(schedule_name="report", cron=None, source="cli")
+        schedules.get.return_value = msgspec.json.encode(d)
+
+        assert await store.add_schedule(d) is False
+        schedules.get.assert_not_awaited()
+
+    async def test_cron_definition_with_task_id_is_no_oneshot(self):
+        """Liste 21: ein Cron ist nie ein Oneshot, auch mit passendem Namen."""
+        store, schedules = _make_store(hsetnx_return=False)
+        d = _oneshot(cron="* * * * *")
+        schedules.get.return_value = msgspec.json.encode(d)
+
+        assert await store.add_schedule(d) is False
+        schedules.get.assert_not_awaited()
+
+    async def test_oneshot_name_must_carry_its_task_id(self):
+        """Nur ``oneshot:<task_id>`` ist ein Client-Oneshot."""
+        store, schedules = _make_store(hsetnx_return=False)
+        d = _oneshot(schedule_name="oneshot:other")
+        schedules.get.return_value = msgspec.json.encode(d)
+
+        assert await store.add_schedule(d) is False
+        schedules.get.assert_not_awaited()
 
 
 class TestScheduleStoreUpdateStaticSchedule:

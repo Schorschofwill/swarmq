@@ -116,6 +116,17 @@ def parse_schedfire_key(value: str) -> tuple[str, int]:
         raise ValueError(f"schedfire key has non-integer timestamp: {value!r}") from exc
 
 
+def _is_client_oneshot(definition: ScheduleDefinition) -> bool:
+    """Oneshot aus ``schedule(delay=/eta=)``: ``task_id`` gesetzt, kein Cron,
+    Name ``oneshot:<task_id>`` (frische UUID). Die CLI setzt nie
+    ``task_id``, statische Crons haben ``cron`` (E-058)."""
+    return (
+        definition.task_id is not None
+        and definition.cron is None
+        and definition.schedule_name == f"oneshot:{definition.task_id}"
+    )
+
+
 class ScheduleStore:
     """Definitions-Sicht der Scheduler-Persistenz.
 
@@ -155,10 +166,31 @@ class ScheduleStore:
 
     async def add_schedule(self, definition: ScheduleDefinition) -> bool:
         """Insert a new schedule. Returns True on insert, False on no-op
-        (insert-if-absent via HSETNX, Unit 8). A disabled definition gets
-        no fire-index entry (Plan 2026-10-08-1541, U10)."""
+        (insert-if-absent, Unit 8; definition and fire index in one step,
+        F3-01). A disabled definition gets no fire-index entry (Plan
+        2026-10-08-1541, U10).
+
+        E-058: a client one-shot (``oneshot:<task_id>``) whose existing
+        entry is byte-identical is its own insert after a lost reply; a
+        missing fire-index entry is added via ``put``. A differing or
+        vanished entry stays a conflict, and any other name (CLI, cron)
+        keeps "already exists"."""
         fire_ts_ms = None if definition.disabled else definition.fire_ts_ms
-        return await self._store.add(definition.schedule_name, msgspec.json.encode(definition), fire_ts_ms)
+        payload = msgspec.json.encode(definition)
+        if await self._store.add(definition.schedule_name, payload, fire_ts_ms):
+            return True
+        if not _is_client_oneshot(definition):
+            return False
+        name = definition.schedule_name
+        # Ein injizierter Client mit ``decode_responses=True`` liefert ``str``.
+        existing: bytes | str | None = await self._store.get(name)
+        if isinstance(existing, str):
+            existing = existing.encode()
+        if existing != payload:
+            return False
+        if await self._store.fire_ts(name) is None:
+            await self._store.put(name, payload, fire_ts_ms)
+        return True
 
     async def update_static_schedule(
         self,

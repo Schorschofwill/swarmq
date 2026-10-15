@@ -1,4 +1,4 @@
-"""Nachweis F3-01: Geht die Antwort auf das HSETNX in ``ScheduleStore.add``
+"""Nachweis F3-01: Geht die Antwort auf das Speichern in ``ScheduleStore.add``
 verloren, fehlt der Oneshot im Fire-Index.
 
 Register: docs/befunde/fehlersuche-runde-3-2026-10.md (F3-01; Quelle R3B-01).
@@ -15,18 +15,24 @@ Oneshot aus ``schedule(delay=…)`` steht in ``sq:sched:defs``, aber nicht im
 Fire-Index, und laeuft nie (mit ``unique_for`` sperrt er zudem gleiche
 Aufrufe).
 
-Erwartet laut Entscheidung 4 (Georg, 2026-10-15): Oneshots (frische UUID im
+Seit 0.12.3 schreibt ``sched_add.lua`` Definition und Fire-Index in einem
+EVAL (KTD4); verloren geht also die Antwort auf das ``EVALSHA``. Die
+Wiederholung meldet 0, und die Definitionsschicht erkennt den eigenen Insert.
+
+Erwartet laut E-058 (Georg, 2026-10-15): Oneshots (frische UUID im
 Namen) sind beim Speichern idempotent; ein byte-gleicher bestehender Eintrag
 zaehlt als eigener Insert, der Fire-Index wird ergaenzt. ``swarmq schedule
-add`` mit gleichem Namen meldet weiter „already exists“ (nicht Teil dieses
-Nachweises).
+add`` mit gleichem Namen meldet weiter „already exists“; seit dem atomaren
+Skript ist der Eintrag dabei vollständig (zweiter Test).
 
 Integration (echter Valkey auf dem Testport): Die Antwort wird nach dem
 vollstaendigen Lesen verworfen, den Rest (Trennen, Wiederholen) macht der
 echte Client.
 
 Testliste:
-# [x] schedule(delay=60) nach verlorener HSETNX-Antwort -> Eintrag im Fire-Index
+# [x] schedule(delay=60) nach verlorener EVALSHA-Antwort -> Eintrag im Fire-Index
+# [x] CLI-Cron nach verlorener EVALSHA-Antwort -> Score vorhanden,
+#     ``add_schedule`` meldet ``False`` („already exists“, E-058)
 """
 
 from __future__ import annotations
@@ -42,6 +48,7 @@ from valkey.exceptions import ConnectionError as ValkeyConnectionError
 
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.client import Client
+from swarmq.scheduler import ScheduleDefinition, ScheduleStore
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(10)]
 
@@ -77,20 +84,47 @@ async def backend(valkey_url: str) -> AsyncIterator[ValkeyBackend]:
 
 
 @pytest.mark.befund("F3-01")
-@pytest.mark.xfail(strict=True, reason="F3-01: offen - Oneshot fehlt nach verlorener HSETNX-Antwort im Fire-Index")
+@pytest.mark.entscheidung("E-058")
 async def test_deferred_oneshot_is_indexed_after_lost_hsetnx_reply(
     backend: ValkeyBackend, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client = Client(broker=AsyncMock(), backend=backend)
-    lost = _F301LostReply(monkeypatch, "HSETNX")
+    lost = _F301LostReply(monkeypatch, "EVALSHA")
 
     task_id = await client.schedule("f301.oneshot", uuid.uuid4().hex, queue="f301", delay=60)
     name = f"oneshot:{task_id}"
     try:
-        assert lost.injected, "Voraussetzung: Antwort des HSETNX verloren"
+        assert lost.injected, "Voraussetzung: Antwort des EVALSHA verloren"
         assert await backend.schedules.get(name) is not None, "Voraussetzung: Definition gespeichert"
         assert await backend.schedules.fire_ts(name) is not None, (
             "Oneshot ohne Eintrag im Fire-Index: schedule() lieferte eine ID, die nie feuert"
         )
+    finally:
+        await backend.schedules.remove(name)
+
+
+@pytest.mark.befund("F3-01")
+@pytest.mark.entscheidung("E-058")
+async def test_cli_cron_is_indexed_after_lost_reply_and_reports_already_exists(
+    backend: ValkeyBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bewusste Folge von E-058: „already exists“ trotz eigenem Insert --
+    harmlos, weil der Eintrag vollständig ist und feuert."""
+    name = f"f301-cli-{uuid.uuid4().hex[:12]}"
+    definition = ScheduleDefinition(
+        schedule_name=name,
+        task_name="f301.cron",
+        args=(),
+        kwargs={},
+        queue="f301",
+        cron="0 3 * * *",
+        fire_ts_ms=1_700_000_000_000,
+        source="cli",
+    )
+    lost = _F301LostReply(monkeypatch, "EVALSHA")
+    try:
+        assert await ScheduleStore(backend).add_schedule(definition) is False
+        assert lost.injected, "Voraussetzung: Antwort des EVALSHA verloren"
+        assert await backend.schedules.fire_ts(name) == 1_700_000_000_000
     finally:
         await backend.schedules.remove(name)

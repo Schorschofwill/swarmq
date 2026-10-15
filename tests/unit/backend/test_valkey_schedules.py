@@ -24,6 +24,12 @@ Test-Liste Plan 0.12.0, MR 4 (BZ-07, Handover ohne SCAN):
 Test-Liste Plan 2026-10-14-0748 (U6, KTD7, FS-06a):
 8. ``claim_fire`` mit ``owner`` haengt den eigenen Owner an die
    Uebernahme-Tokens; ohne ``owner`` nichts (Argumente ``["1", ttl, ""]``).
+
+Test-Liste Plan 2026-10-15-1138 (U3, KTD4, F3-01):
+9. ``add`` ruft ``sched_add.lua`` mit ``keys=[defs, zset]`` und
+   ``args=[name, payload, fire_ts]``; ohne Fire-Zeitpunkt ``""``.
+10. Skriptergebnis 1 -> ``True``, 0 -> ``False``.
+11. Ein Skriptfehler wird ``BackendConnectionError``.
 """
 
 from __future__ import annotations
@@ -61,6 +67,7 @@ def _store(*, hexists: int = 1, hsetnx: int = 1) -> tuple[ValkeyScheduleStore, M
         "report": AsyncMock(return_value=1),
         "report_prune": AsyncMock(return_value=0),
         "prune": AsyncMock(return_value=1),
+        "add": AsyncMock(return_value=hsetnx),
     }
     client.register_script = MagicMock(side_effect=list(scripts.values()))
     client.hexists = AsyncMock(return_value=hexists)
@@ -78,21 +85,24 @@ def _store(*, hexists: int = 1, hsetnx: int = 1) -> tuple[ValkeyScheduleStore, M
 
 
 class TestCrud:
-    async def test_add_writes_hsetnx_then_zadd(self) -> None:
-        store, client, _ = _store(hsetnx=1)
+    async def test_add_runs_sched_add_script_with_defs_and_zset(self) -> None:
+        """Liste 9/10 (F3-01): Definition und Fire-Index in einem EVAL."""
+        store, client, scripts = _store(hsetnx=1)
         assert await store.add("s", b"payload", 1_700) is True
-        client.hsetnx.assert_awaited_once_with(DEFS_KEY, "s", b"payload")
-        client.zadd.assert_awaited_once_with(ZSET_KEY, {"s": 1_700})
+        scripts["add"].assert_awaited_once_with(keys=[DEFS_KEY, ZSET_KEY], args=["s", b"payload", 1_700])
+        client.hsetnx.assert_not_awaited()
+        client.zadd.assert_not_awaited()
 
-    async def test_add_existing_is_noop_without_zadd(self) -> None:
-        store, client, _ = _store(hsetnx=0)
+    async def test_add_existing_reports_false(self) -> None:
+        """Liste 10: Skriptergebnis 0 -> ``False`` (Name existiert)."""
+        store, _, _ = _store(hsetnx=0)
         assert await store.add("s", b"payload", 1_700) is False
-        client.zadd.assert_not_awaited()
 
-    async def test_add_without_fire_time_skips_index(self) -> None:
-        store, client, _ = _store()
+    async def test_add_without_fire_time_passes_empty_argument(self) -> None:
+        """Liste 9: ohne Fire-Zeitpunkt ``""`` (kein Index-Eintrag)."""
+        store, _, scripts = _store()
         assert await store.add("s", b"payload", None) is True
-        client.zadd.assert_not_awaited()
+        assert _await_kwargs(scripts["add"])["args"] == ["s", b"payload", ""]
 
     async def test_put_overwrites_and_indexes(self) -> None:
         store, client, _ = _store()
@@ -188,8 +198,9 @@ class TestScripts:
 
 class TestErrorWrapping:
     async def test_driver_errors_become_backend_connection_error(self) -> None:
-        store, client, _ = _store()
-        client.hsetnx = AsyncMock(side_effect=ValkeyConnectionError("down"))
+        """Liste 11: ein Transportfehler im ``sched_add``-Skript."""
+        store, _, scripts = _store()
+        scripts["add"].side_effect = ValkeyConnectionError("down")
         with pytest.raises(BackendConnectionError):
             await store.add("s", b"p", None)
 
