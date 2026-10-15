@@ -206,14 +206,6 @@ recycling, the scheduler leader and the DLQ behave differently.
   drops `x-swarmq-schedfire-defer-count`. With it, the copy was deferred
   instead of acked as a duplicate while another claim was held, and its
   defer cap started from the old count.
-- **Smaller fixes.** `ValkeyBackend.close()` refuses new connections and
-  disconnects those returned later, so handlers that finish after a
-  worker abort leave no open connections; the abort path lets the
-  execution guard's pending writes run out like the orderly shutdown.
-  The supervisor closes the stderr pipe of the logging config probe
-  after a successful reload (one file descriptor per reload). A held
-  cron commits its postponed fire time before `SCHEDULER_CRON_UNOWNED`
-  is sent, so a handler reading it sees the new time.
 
 ## [0.12.1rc1] — 2026-10-14
 

@@ -222,16 +222,6 @@ verhalten sich anders.
   Mit dem Zähler wurde die Kopie bei fremdem Claim zurückgestellt statt
   als Duplikat bestätigt, und ihr Zurückstellungsdeckel begann mit dem
   alten Stand.
-- **Kleinere Korrekturen.** `ValkeyBackend.close()` verweigert neue
-  Verbindungen und trennt später zurückgegebene; Handler, die nach
-  einem Worker-Abbruch fertig werden, hinterlassen keine offenen
-  Verbindungen mehr, und der Abbruchpfad lässt die ausstehenden
-  Schreibvorgänge des Ausführungsschutzes auslaufen wie der geordnete
-  Shutdown. Der Supervisor schließt nach einem erfolgreichen Reload die
-  stderr-Pipe der Logging-Konfigurationsprobe (ein Dateideskriptor je
-  Reload). Ein zurückgehaltener Cron schreibt seinen verschobenen
-  Termin, bevor `SCHEDULER_CRON_UNOWNED` gesendet wird; ein Handler,
-  der ihn liest, sieht schon den neuen Termin.
 
 ## [0.12.1rc1] — 2026-10-14
 
