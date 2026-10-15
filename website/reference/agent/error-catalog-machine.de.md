@@ -27,18 +27,21 @@ Jede Zeile hat die folgenden Spalten:
 | `swarmq.exceptions.SwarmQError` | `Exception` | library | any | controlled | yes | `1` | `error_class` |
 | `swarmq.exceptions.ConfigurationError` | `SwarmQError` | library | startup, cli | no | n/a | `78` (`swarmq worker`), `1` (andere Subcommands) | Logsatz `worker_config_error` (Worker), `stderr line` (andere Subcommands) |
 | `swarmq.exceptions.LoggingConfigError` | `ConfigurationError` | library | startup, cli | no | n/a | `78` | Logsatz `worker_config_error` mit `path` |
+| `swarmq.exceptions.QueueArgumentsMismatch` | `ConfigurationError` | library | startup | no | n/a | `78` | Logsatz `worker_config_error` |
 | `swarmq.exceptions.BrokerConnectionError` | `SwarmQError` | library | startup, schedule, run | no | n/a | `1` | `stderr line` |
 | `swarmq.exceptions.PublishIndeterminate` | `BrokerConnectionError` | library | schedule, run | no | n/a | `1` | `stderr line` |
 | `swarmq.exceptions.SettleFailedAfterPublish` | `BrokerConnectionError` | library | run | no | n/a | `1` | `stderr line` |
 | `swarmq.exceptions.MessageHeadersTooLarge` | `BrokerConnectionError` | library | schedule, run | no | n/a | `1` | `stderr line` |
 | `swarmq.exceptions.UnroutableMessage` | `BrokerConnectionError` | library | schedule, run | no | n/a | `1` | `stderr line` |
+| `swarmq.exceptions.BrokerPublishBlocked` | `BrokerConnectionError` | library | schedule, run | yes | n/a | `1` | `stderr line` |
+| `swarmq.exceptions.PublishRejected` | `BrokerConnectionError` | library | schedule, run | yes | n/a | `1` | `stderr line` |
 | `swarmq.exceptions.BackendConnectionError` | `SwarmQError` | library | startup, schedule, run | no | n/a | `1` | `stderr line` |
 | `swarmq.exceptions.BackendResponseError` | `BackendConnectionError` | library | startup, schedule, run | no | n/a | `1` | `stderr line` |
 | `swarmq.exceptions.TaskNotFoundError` | `SwarmQError` | library | schedule | no | n/a | n/a | raised to caller |
 | `swarmq.exceptions.LockWaitExceeded` | `SwarmQError` | library | run | no | yes | n/a | `error_message`, `is_error=true` |
 | `swarmq.exceptions.RedeliveryLimitError` | `SwarmQError` | library | run | no | yes | n/a | `error_message`, `is_error=true` |
 | `swarmq.exceptions.TaskError` | `SwarmQError` | library | result | n/a (post-mortem) | n/a | n/a | `error_message`, `error_class`, `is_error=true` |
-| `swarmq.exceptions.TaskCancelledError` | `TaskError` | library | run, result | no | no (Cancel umgeht DLQ) | n/a | `is_cancelled=true` |
+| `swarmq.exceptions.TaskCancelledError` | `TaskError` | library | result | no | no (Cancel umgeht DLQ) | n/a | `is_cancelled=true` |
 | `swarmq.exceptions.ResultNotReadyError` | `SwarmQError` | library | result | no | n/a | n/a | raised to caller |
 | `swarmq.exceptions.ResultExpiredError` | `SwarmQError` | library | result | no | n/a | n/a | not raised (reserved) |
 | `swarmq.exceptions.ResultSerializationError` | `SwarmQError` | library | run | no | yes | n/a | `error_message`, `is_error=true` |
@@ -64,7 +67,7 @@ des `swarmq`-Binaries ab:
 | `1` | Laufzeitfehler | `BrokerConnectionError`, `BackendConnectionError`; `ConfigurationError` außerhalb von `swarmq worker` |
 | `2` | Schlechte Argumente (argparse) | — (von argparse gedruckt) |
 | `3` | `dlq inspect` / `dlq retry <task_id>` nicht gefunden | `_DLQNotFound` (interner Sentinel) |
-| `78` | Konfigurationsfehler von `swarmq worker` (`EX_CONFIG`) — im Elternprozess oder in einem beliebigen Worker-Kind; der Supervisor reicht ihn durch | `ConfigurationError`, `ModuleNotFoundError`, `ImportError` des Task-Moduls, ein werfender `--configure`-Hook |
+| `78` | Konfigurationsfehler von `swarmq worker` (`EX_CONFIG`) — im Elternprozess oder in einem beliebigen Worker-Kind; der Supervisor reicht ihn durch | `ConfigurationError`, `ModuleNotFoundError`, `ImportError` oder `SyntaxError` des Task-Moduls, ein werfender `--configure`-Hook |
 | `130` | Durch Strg-C unterbrochen, außerhalb der Behandlung durch den Befehl selbst | `KeyboardInterrupt` |
 
 `75` (`EX_TEMPFAIL`) wird nur zwischen Worker-Kind und Supervisor
@@ -109,10 +112,13 @@ Für Agenten, die eine schnelle Aktionstabelle brauchen:
 | `PublishIndeterminate` | Nicht blind neu veröffentlichen: Der Broker kann die Nachricht schon haben. Erst das Ergebnis prüfen oder den Task idempotent machen. |
 | `MessageHeadersTooLarge` | Nicht mit denselben Headern wiederholen: Es wurde nichts gesendet, und sie scheitern wieder. Die Header verkleinern. |
 | `UnroutableMessage` | Nicht wiederholen, bevor die Queue existiert: den Worker starten (oder korrigieren), der sie deklariert, dann erneut veröffentlichen. Nichts wurde zugestellt. |
+| `BrokerPublishBlocked` | Der Broker hat das Publizieren blockiert (Speicher- oder Plattenalarm); nichts wurde gesendet. Später erneut versuchen; Speicher oder Platte am Broker freigeben. |
+| `PublishRejected` | Die Queue hat die Nachricht abgelehnt (voll mit `reject-publish` oder Quorum-Queue ohne Quorum); nichts wurde gespeichert. Queue reparieren, dann erneut versuchen. |
 | `LockWaitExceeded` (`error_type` in der DLQ) | Die Wartezeit auf einen Task-Lock endete (hängender Halter oder `SWARMQ_LOCK_WAIT_MAX_S`). Den in `x-swarmq-lock-name` genannten Halter prüfen, einen festgefahrenen Lock per `DEL` entfernen, dann `swarmq dlq retry`. |
 | `RedeliveryLimitError` (`error_type` in der DLQ) | Der Worker hat die Zustellung bis zum Zustelllimit zurückgegeben. Die Ursache im Log vor dem DLQ-Eintrag beheben, dann `swarmq dlq retry`. |
 | `BackendResponseError` | Valkey hat mit einem Fehler geantwortet (`WRONGTYPE`, Skriptfehler); Warten hilft nicht. Schlüssel oder Skript prüfen, dann erneut versuchen. |
 | `ConfigurationError` | Nicht retry'n. Config fixen und neustarten. |
+| `QueueArgumentsMismatch` | Nicht unverändert neu starten (Exit `78`). Vorherige Einstellung wiederherstellen oder die Queue migrieren. |
 | `TaskNotFoundError` bei `schedule()` | Bug melden; der Task ist nicht registriert. |
 | `TaskError` bei `get_result()` | Nach `TaskError.error_class` (beratend) klassifizieren, sonst nach `error_message`. Retry hilft je nach Upstream-Ursache. |
 | `TaskCancelledError` bei `get_result()` | User/Operator hat abgebrochen. Nicht retry'n, außer du weißt, dass der Cancel versehentlich war. |

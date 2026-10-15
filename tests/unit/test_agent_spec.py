@@ -16,6 +16,10 @@ Test list
   the main case for agents; other commands' exit 1 is in the CLI table.
 - the CLI exit codes list every code of the `swarmq` binary: 78 and 130 are
   anchored to the real constants.
+=== U7: Markdown-Katalog (F3-23) ===
+- beide Seiten von error-catalog-machine führen jede SwarmQError-Klasse genau
+  einmal; parent, origin, when, retriable und dlq_on_uncaught gleichen dem
+  erzeugten Katalog.
 """
 
 from __future__ import annotations
@@ -128,6 +132,15 @@ def test_error_catalog_known_semantics() -> None:
     # nie geworfen; der Katalog sagt das.
     assert by_name["ResultExpiredError"]["transport_field"] == "not raised (reserved)"
     assert "never raised" in by_name["ResultExpiredError"]["doc"]
+
+
+@pytest.mark.entscheidung("E-068")
+def test_task_cancelled_error_surfaces_only_at_the_client() -> None:
+    """E-068 (F3-20): Im Task kommt ein Cancel als asyncio.CancelledError an,
+    TaskCancelledError wirft nur der Client. Der Katalog führt deshalb nur
+    die Stufe ``result``."""
+    by_name = {e["name"]: e for e in build_error_catalog()["errors"]}
+    assert by_name["TaskCancelledError"]["when"] == ["result"]
 
 
 # === U2: config spec ===
@@ -488,3 +501,29 @@ def test_committed_spec_files_match_generators() -> None:
             committed, expected = _strip_version(committed), _strip_version(expected)
         assert committed == expected, f"{rel} is stale — run `python -m swarmq.agent_spec`"
     assert DEFAULT_LLMS_TXT.read_text(encoding="utf-8") == build_llms_txt()
+
+
+# === U7: Markdown-Katalog (F3-23) ===
+
+_AGENT_DOCS = DEFAULT_SPEC_DIR.parent
+_CATALOG_ROW = re.compile(
+    r"^\| `swarmq\.exceptions\.(\w+)` \| `(\w+)` \| (\w+) \| ([^|]+) \| ([^|]+) \| ([^|]+) \|",
+    re.MULTILINE,
+)
+
+
+@pytest.mark.parametrize("page", ["error-catalog-machine.md", "error-catalog-machine.de.md"])
+def test_machine_error_catalog_table_matches_the_generated_catalog(page: str) -> None:
+    """F3-23: Die handgeschriebene Tabelle verspricht jede Klasse genau einmal.
+    ``transport_field`` und Exitcode sind Prosa und werden nicht verglichen."""
+    rows = _CATALOG_ROW.findall((_AGENT_DOCS / page).read_text(encoding="utf-8"))
+    names = [row[0] for row in rows]
+    assert sorted(names) == sorted(_all_swarmq_errors())
+    by_name = {e["name"]: e for e in build_error_catalog()["errors"]}
+    for name, parent, origin, when, retriable, dlq in rows:
+        entry = by_name[name]
+        assert parent == entry["parent"], name
+        assert origin == entry["origin"], name
+        assert [w.strip() for w in when.split(",")] == entry["when"], name
+        assert retriable.split()[0] == entry["retriable"], name
+        assert dlq.split()[0] == entry["dlq_on_uncaught"], name

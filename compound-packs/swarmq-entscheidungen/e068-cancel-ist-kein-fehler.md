@@ -16,13 +16,14 @@ tests:
   - tests/unit/worker/test_worker.py::TestRunningCancelInHandleMessage::test_cancel_during_run_raises_task_cancelled_error
   - tests/unit/worker/test_worker.py::TestRunningCancelInHandleMessage::test_cancel_during_run_dispatches_task_cancelled_signal
   - tests/unit/client/test_results.py::test_get_result_cancelled_raises_task_cancelled_error
-ohne_test: Für „kein on_error/post_execute bei Cancel“ fehlt ein Test.
+  - tests/unit/test_agent_spec.py::test_task_cancelled_error_surfaces_only_at_the_client
+  - tests/unit/worker/test_cancel_skips_middleware_hooks.py::test_cancel_during_run_skips_on_error_and_post_execute
 ---
 
 **Entscheidung.** Ein Cancel bricht den laufenden Task über `run_task.cancel()` ab; im Task-Körper kommt `asyncio.CancelledError` an. `TaskCancelledError` sieht nur der Client (`get_result`, `SwarmQ.run`). Ein Cancel ist kein Fehler: Die Middleware bekommt weder `on_error` noch `post_execute`, beobachtbar ist er nur über das Signal `TASK_CANCELLED`. Ein Cancel während `post_execution` wirkt nicht mehr (das Fenster schließt mit dem Ende von `run()`).
 
 **Begründung.** Cancel ist eine gewollte Unterbrechung, kein Ausfall; er soll weder Retry noch Fehlerzähler oder Fehler-Middleware auslösen (Closed Decision im Cancel-Brainstorm).
 
-**Bewusste Folgen.** Middleware, die Zustand je Task-ID in `pre_execute` anlegt und in `post_execute`/`on_error` abräumt, muss zusätzlich `TASK_CANCELLED` behandeln, sonst bleibt der Zustand liegen. Ein Task, der `TaskCancelledError` fängt, fängt nie etwas. Beides ist kein Fehler; die Doku, die anderes sagt, ist falsch (F3-20, F3-30, Doku-Fix).
+**Bewusste Folgen.** Middleware, die Zustand je Task-ID in `pre_execute` anlegt und in `post_execute`/`on_error` abräumt, muss zusätzlich `TASK_CANCELLED` behandeln, sonst bleibt der Zustand liegen. Ein Task, der `TaskCancelledError` fängt, fängt nie etwas. Beides ist kein Fehler; die Doku, die anderes sagt, ist falsch (F3-20, F3-30, Doku-Fix; behoben in 0.12.3: `spec/errors.json` führt `TaskCancelledError` nur mit `when: ["result"]`, Fehlerkatalog und Middleware-Doku sagen, dass im Task `asyncio.CancelledError` ankommt und ein Cancel weder `on_error` noch `post_execute` ruft).
 
 **Überdenken nur mit neuem Argument.** Offen (F3-30): Das Muster aus dem eigenen Middleware-Guide (Zustand je Task-ID, `TimingMiddleware`) leckt bei jedem Cancel; der Plan hat das nicht betrachtet. Mögliche Antwort: ein eigener Hook `on_cancel`.

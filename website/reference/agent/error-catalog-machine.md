@@ -26,18 +26,21 @@ Every row has the following columns:
 | `swarmq.exceptions.SwarmQError` | `Exception` | library | any | controlled | yes | `1` | `error_class` |
 | `swarmq.exceptions.ConfigurationError` | `SwarmQError` | library | startup, cli | no | n/a | `78` (`swarmq worker`), `1` (other subcommands) | `worker_config_error` log line (worker), `stderr line` (other subcommands) |
 | `swarmq.exceptions.LoggingConfigError` | `ConfigurationError` | library | startup, cli | no | n/a | `78` | `worker_config_error` log line with `path` |
+| `swarmq.exceptions.QueueArgumentsMismatch` | `ConfigurationError` | library | startup | no | n/a | `78` | `worker_config_error` log line |
 | `swarmq.exceptions.BrokerConnectionError` | `SwarmQError` | library | startup, schedule, run | no | n/a | `1` | `stderr line` |
 | `swarmq.exceptions.PublishIndeterminate` | `BrokerConnectionError` | library | schedule, run | no | n/a | `1` | `stderr line` |
 | `swarmq.exceptions.SettleFailedAfterPublish` | `BrokerConnectionError` | library | run | no | n/a | `1` | `stderr line` |
 | `swarmq.exceptions.MessageHeadersTooLarge` | `BrokerConnectionError` | library | schedule, run | no | n/a | `1` | `stderr line` |
 | `swarmq.exceptions.UnroutableMessage` | `BrokerConnectionError` | library | schedule, run | no | n/a | `1` | `stderr line` |
+| `swarmq.exceptions.BrokerPublishBlocked` | `BrokerConnectionError` | library | schedule, run | yes | n/a | `1` | `stderr line` |
+| `swarmq.exceptions.PublishRejected` | `BrokerConnectionError` | library | schedule, run | yes | n/a | `1` | `stderr line` |
 | `swarmq.exceptions.BackendConnectionError` | `SwarmQError` | library | startup, schedule, run | no | n/a | `1` | `stderr line` |
 | `swarmq.exceptions.BackendResponseError` | `BackendConnectionError` | library | startup, schedule, run | no | n/a | `1` | `stderr line` |
 | `swarmq.exceptions.TaskNotFoundError` | `SwarmQError` | library | schedule | no | n/a | n/a | raised to caller |
 | `swarmq.exceptions.LockWaitExceeded` | `SwarmQError` | library | run | no | yes | n/a | `error_message`, `is_error=true` |
 | `swarmq.exceptions.RedeliveryLimitError` | `SwarmQError` | library | run | no | yes | n/a | `error_message`, `is_error=true` |
 | `swarmq.exceptions.TaskError` | `SwarmQError` | library | result | n/a (post-mortem) | n/a | n/a | `error_message`, `error_class`, `is_error=true` |
-| `swarmq.exceptions.TaskCancelledError` | `TaskError` | library | run, result | no | no (cancel bypasses DLQ) | n/a | `is_cancelled=true` |
+| `swarmq.exceptions.TaskCancelledError` | `TaskError` | library | result | no | no (cancel bypasses DLQ) | n/a | `is_cancelled=true` |
 | `swarmq.exceptions.ResultNotReadyError` | `SwarmQError` | library | result | no | n/a | n/a | raised to caller |
 | `swarmq.exceptions.ResultExpiredError` | `SwarmQError` | library | result | no | n/a | n/a | not raised (reserved) |
 | `swarmq.exceptions.ResultSerializationError` | `SwarmQError` | library | run | no | yes | n/a | `error_message`, `is_error=true` |
@@ -63,7 +66,7 @@ binary's contract:
 | `1` | Runtime error | `BrokerConnectionError`, `BackendConnectionError`; `ConfigurationError` outside `swarmq worker` |
 | `2` | Bad arguments (argparse) | — (printed by argparse) |
 | `3` | `dlq inspect` / `dlq retry <task_id>` not found | `_DLQNotFound` (internal sentinel) |
-| `78` | Configuration error of `swarmq worker` (`EX_CONFIG`) — in the parent process or in any worker child; the supervisor propagates it | `ConfigurationError`, `ModuleNotFoundError`, `ImportError` of the task module, a raising `--configure` hook |
+| `78` | Configuration error of `swarmq worker` (`EX_CONFIG`) — in the parent process or in any worker child; the supervisor propagates it | `ConfigurationError`, `ModuleNotFoundError`, `ImportError` or `SyntaxError` of the task module, a raising `--configure` hook |
 | `130` | Interrupted by Ctrl-C outside the command's own handling | `KeyboardInterrupt` |
 
 `75` (`EX_TEMPFAIL`) is used between a worker child and the supervisor
@@ -107,10 +110,13 @@ For agents that need a quick action table:
 | `PublishIndeterminate` | Do not blindly re-publish: the broker may already have the message. Check the result or make the task idempotent first. |
 | `MessageHeadersTooLarge` | Do not retry with the same headers: nothing was sent, and they fail again. Reduce the headers. |
 | `UnroutableMessage` | Do not retry until the queue exists: start (or fix) the worker that declares it, then publish again. Nothing was delivered. |
+| `BrokerPublishBlocked` | The broker blocked publishing (memory or disk alarm); nothing was sent. Retry later; free memory or disk on the broker. |
+| `PublishRejected` | The queue refused the message (full with `reject-publish`, or a quorum queue without quorum); nothing was stored. Fix the queue, then retry. |
 | `LockWaitExceeded` (DLQ `error_type`) | The wait for a task lock ended (stalled holder or `SWARMQ_LOCK_WAIT_MAX_S`). Check the holder named by `x-swarmq-lock-name`, `DEL` a wedged lock, then `swarmq dlq retry`. |
 | `RedeliveryLimitError` (DLQ `error_type`) | The worker handed the delivery back until the delivery limit. Fix the cause in the log before the DLQ entry, then `swarmq dlq retry`. |
 | `BackendResponseError` | Valkey answered with an error (`WRONGTYPE`, script error); waiting does not help. Inspect the key or script, then retry. |
 | `ConfigurationError` | Do not retry. Fix the config and restart. |
+| `QueueArgumentsMismatch` | Do not restart unchanged (exit `78`). Restore the previous setting or migrate the queue. |
 | `TaskNotFoundError` at `schedule()` | Report a bug; the task is not registered. |
 | `TaskError` at `get_result()` | Classify by `TaskError.error_class` (advisory), else by `error_message`. Retry may or may not help depending on upstream cause. |
 | `TaskCancelledError` at `get_result()` | User/operator cancelled. Do not retry unless you know the cancel was spurious. |

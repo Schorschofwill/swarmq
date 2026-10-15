@@ -33,7 +33,6 @@ def _documented_classes() -> list[str]:
 
 
 @pytest.mark.befund("F3-11")
-@pytest.mark.xfail(strict=True, reason="F3-11: offen - BrokerPublishBlocked/PublishRejected fehlen in swarmq.__all__")
 def test_documented_exceptions_are_exported_from_package() -> None:
     documented = _documented_classes()
     assert len(documented) > 20, "Voraussetzung: Tabelle in errors.md gefunden"
