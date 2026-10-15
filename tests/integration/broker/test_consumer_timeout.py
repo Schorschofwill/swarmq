@@ -341,7 +341,7 @@ async def _consumer_count(node: RabbitMQNode, queue: str) -> int:
 
 
 def _management_consumer_tags(node: RabbitMQNode, queue: str) -> set[str]:
-    response = httpx.get(f"{node.management_url}/consumers/%2F", auth=("guest", "guest"), timeout=5.0)
+    response = httpx.get(f"{node.management_url}/consumers/{node.vhost_api}", auth=("guest", "guest"), timeout=5.0)
     response.raise_for_status()
     return {c["consumer_tag"] for c in response.json() if c["queue"]["name"] == queue}
 

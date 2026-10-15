@@ -25,8 +25,11 @@ from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import TaskCancelledError
 from swarmq.keyspace import KeySpace
+from swarmq.locking import lock_key
 from swarmq.signals import Signal
 from swarmq.task import DeliveryMode, Task, TaskInfo
+from swarmq.worker import Worker, WorkerState
+from tests.support.wait import wait_until
 
 # E2E cancel tests start workers, schedule tasks, and observe both
 # happy-path results and cancel-flag propagation. The 30s inner
@@ -533,7 +536,14 @@ async def test_e2e_shutdown_during_running_cancel(
     rabbitmq_url: str,
     valkey_url: str,
 ):
-    """SIGTERM during a cancelled run: detached_releases drained, no lock leak."""
+    """SIGTERM during a cancelled run: detached_releases drained, no lock leak.
+
+    Der Shutdown laeuft ueber ``_request_shutdown`` (der SIGTERM-Pfad), nicht
+    ueber ``cancel()`` auf ``start_worker``: Das ist seit dem
+    cancel-sicheren Abbau der Abbruchpfad, der Locks bewusst ihrer TTL
+    ueberlaesst (``_abort_teardown``). Der Test wartete dort mit festen
+    Pausen auf den Cancel-Monitor und wurde unter Last rot.
+    """
     queue = _unique_queue()
     task_name = _task_name("shutdown_cancel")
     lock_name = f"shutdown-{uuid.uuid4().hex[:6]}"
@@ -568,27 +578,32 @@ async def test_e2e_shutdown_during_running_cancel(
 
     async with client_app:
         await client_broker.declare_queue(queue)
+        assert client_backend._client is not None
+        valkey = client_backend._client
 
         async with worker_app:
-            worker_task = asyncio.create_task(worker_app.start_worker())
+            worker = Worker(worker_broker, worker_backend, worker_app.registry, worker_app.config)
+            worker_task = asyncio.create_task(worker.start())
             try:
-                await asyncio.sleep(0.4)
-
+                assert await wait_until(lambda: worker._state is WorkerState.RUNNING, timeout=10)
                 task_id = await client_app.schedule(task_name)
-                await asyncio.sleep(0.5)  # lock acquired
 
-                # Cancel + immediate shutdown.
+                async def lock_held() -> bool:
+                    return await valkey.get(lock_key(lock_name)) is not None
+
+                assert await wait_until(lock_held, timeout=10), "task never acquired its lock"
+
+                # Cancel + immediate graceful shutdown.
                 await client_app.cancel(task_id)
-                await asyncio.sleep(0.05)  # microdelay so cancel lands first
+                worker._request_shutdown()
+                await asyncio.wait_for(worker_task, timeout=10)
             finally:
-                worker_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await worker_task
+                if not worker_task.done():
+                    worker_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await worker_task
 
         # Lock must be gone from Valkey even though shutdown cancelled
         # the handler mid-release.
-        from swarmq.locking import lock_key
-
-        assert client_backend._client is not None
-        raw = await client_backend._client.get(lock_key(lock_name))
+        raw = await valkey.get(lock_key(lock_name))
         assert raw is None, f"lock was not released during shutdown-cancel: {raw!r}"

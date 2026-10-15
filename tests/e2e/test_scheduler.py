@@ -27,6 +27,7 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.locking import SCHEDULER_LOCK_KEY
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
+from tests.support.known_leaks import aiormq_streamwriter_leak
 from tests.support.services import flush_valkey_db
 
 # Liveness safety-net for every "wait for an async event" below. It is NOT a
@@ -693,6 +694,9 @@ class TestCrashFailover:
     the successor emits SCHEDULER_LEADER_FAILOVER — not LEADER — and
     takes over pending work."""
 
+    # TS-01: A wird mitten im Start abgebrochen, die Leader-Wahl ist oft
+    # schneller als der Aufbau der Consume-Verbindung (tests/support/known_leaks.py).
+    @aiormq_streamwriter_leak
     @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_failover_signal_fires_on_crash_not_graceful(
         self,
@@ -1045,6 +1049,9 @@ async def _wait_definition_gone(
 
 
 class TestCronPruneAcrossApps:
+    # TS-01: B wird abgebrochen, sobald es online gemeldet ist, unter Last
+    # noch mitten im Aufbau der Consume-Verbindung (tests/support/known_leaks.py).
+    @aiormq_streamwriter_leak
     @pytest.mark.usefixtures("_cleanup_tasks")
     async def test_silent_cron_of_another_app_is_pruned_legacy_stays(
         self,

@@ -65,7 +65,7 @@ async def test_global_qos_on_quorum_consume(
 
     if version == "4.2":
         assert error == (
-            f"ConnectionNotImplemented: NOT_IMPLEMENTED - queue '{queues[0]}' in vhost '/' does not support global qos"
+            f"ConnectionNotImplemented: NOT_IMPLEMENTED - queue '{queues[0]}' in vhost '{node.vhost}' does not support global qos"
         )
         assert connection_closed
         assert received == []

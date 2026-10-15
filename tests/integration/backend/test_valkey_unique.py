@@ -109,6 +109,8 @@ async def test_release_unique_idempotent_after_release(valkey_url: str):
 # ---- ce-review P3 #24 / REL-005: NOSCRIPT recovery regression ----
 
 
+# exclusive: SCRIPT FLUSH leert den Skript-Cache aller Datenbanken.
+@pytest.mark.exclusive
 async def test_release_unique_survives_script_flush(valkey_url: str):
     """SCRIPT FLUSH between setnx and release must not break release.
 

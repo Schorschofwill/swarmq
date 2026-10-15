@@ -318,7 +318,10 @@ async def test_sigterm_while_waiting_for_the_recycle_ack_keeps_the_budget(
     assert task.cancelled(), "SIGTERM-Shutdown wartete die Recycling-Frist ab"
     # Das Drain-Ende ab SIGTERM ist bei Drain-Beginn verstrichen: sofortiger Abbruch.
     assert returned > sigterm + 2 * _EPS  # Vorbedingung: messbare Luecke
-    assert cancelled_at[0] < max(returned, sigterm + budget.drain_until) + _EPS
+    # Obergrenze: ein ab der Rueckkehr von ``request_recycle`` geankertes
+    # Drain-Ende brach erst bei ``returned + drain_until`` ab. Die Grenze
+    # davor laesst Planungsverzug unter Last zu (CI-Pipeline 2950202597).
+    assert cancelled_at[0] < returned + budget.drain_until
     first = _deadlines(broker)[0]
     assert first is not None
     assert abs(first - (sigterm + budget.drain_until)) < _EPS

@@ -81,6 +81,7 @@ darf nicht sinken, neue und geänderte Zeilen müssen zu 100 % abgedeckt sein
 (diff-cover). Auf `main` und bei Tags entfällt der Vergleich. Die Untergrenze
 hebt `uv run just ratchet` an (kleinster der letzten drei `main`-Werte minus
 0,5 Prozentpunkte, abgerundet; die Schwankung lag bei Einführung bei 0,01).
+Stand: `fail_under = 96` (2026-10-15).
 Örtlich misst `uv run just coverage`; örtliche Werte liegen tiefer als die der
 CI (kein zweiter Broker) und zählen für den Ratchet nicht.
 
@@ -265,10 +266,12 @@ Die Testcontainer `swarmq-test-rabbit` (5699, Management 15699) und
 die Ports selbst.
 
 ```bash
-# Dev-Loop
+# Dev-Loop (Unit-Suite auf 8 Prozessen per pytest-xdist; SWARMQ_TEST_WORKERS
+# aendert die Zahl, SWARMQ_TEST_WORKERS=0 laesst sie in einem Prozess laufen)
 uv run just unit
 
-# Integration und e2e gegen die Testcontainer (mit Sperre)
+# Integration und e2e gegen die Testcontainer (mit Sperre), ebenfalls auf
+# SWARMQ_TEST_WORKERS Prozessen; danach die exclusive-Tests allein
 uv run just integration
 uv run just e2e
 
@@ -292,6 +295,38 @@ SWARMQ_SOAK_HOURS=1 uv run --extra test pytest tests/soak -m soak
 # ohne eigenes Rezept, Sperre per Hand
 scripts/with-test-lock.sh uv run --extra test --extra reload pytest tests/compat -m compat -q
 ```
+
+### Parallele Dienst-Suiten
+
+Integration und e2e laufen per pytest-xdist auf mehreren Prozessen
+(`scripts/run-tests.sh --parallel N`, Standard 8, höchstens 15). Jeder Prozess
+`gwN` arbeitet in einem eigenen Namensraum (`tests/support/services.py`):
+
+- RabbitMQ-vhost `swarmq-test-gwN-<lauf>` auf dem Haupt- und dem 4.2-Broker,
+  zu Sitzungsbeginn über die Management-API angelegt und am Ende samt allen
+  Queues gelöscht. `<lauf>` sind die ersten 8 Zeichen der xdist-Laufkennung
+  (`PYTEST_XDIST_TESTRUNUID`): RabbitMQ löscht vhosts asynchron, ein
+  folgender Lauf mit demselben Namen geriete sonst in die noch laufende
+  Löschung;
+- Valkey-Datenbank N+1 (`FLUSHDB` trifft nur sie; ohne xdist bleibt es DB 0
+  und vhost `/`).
+
+Unterprozesse erben `PYTEST_XDIST_WORKER` und landen im selben Namensraum.
+Was der Namensraum nicht trennt, regelt `tests/support/xdist_isolation.py`:
+
+- Tests mit Fixture `toxiproxy` (feste Proxy-Namen und -Ports) bekommen die
+  xdist-Gruppe `toxiproxy` und laufen unter `--dist loadgroup` nacheinander
+  auf einem Prozess; feste Ports anderer Art tragen eine eigene Gruppe
+  (`metrics-ports` in `test_cli_worker_recycle.py`).
+- Tests, die einen Dienst als Ganzes verändern (Speicheralarm des Brokers,
+  `SCRIPT FLUSH` in Valkey), tragen `@pytest.mark.exclusive`. Der parallele
+  Durchgang wählt sie ab (`SWARMQ_TEST_EXCLUSIVE=skip`), ein zweiter,
+  serieller Durchgang führt nur sie aus (`only`); seine JUnit-Datei endet auf
+  `-serial.xml`. Ein leerer Durchgang (Exit 5) zählt nicht als Fehler.
+
+Wer einen neuen Service-Test schreibt, nimmt URLs aus `rabbitmq_url` /
+`valkey_url` bzw. `rabbitmq_amqp_url()` / `valkey_db_url()` (auch über einen
+Proxy: `rabbitmq_amqp_url(host, port)`), nie fest verdrahtet `/` oder `/0`.
 
 ## RabbitMQ-Versionen
 

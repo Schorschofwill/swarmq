@@ -46,6 +46,36 @@ RABBITMQ42_MGMT_PORT = int(os.environ.get("SWARMQ_TEST_RABBITMQ42_MGMT_PORT", "1
 VALKEY_HOST = os.environ.get("SWARMQ_TEST_VALKEY_HOST", "localhost")
 VALKEY_PORT = int(os.environ.get("SWARMQ_TEST_VALKEY_PORT", str(DEFAULT_VALKEY_PORT)))
 
+# Namensraum je pytest-xdist-Prozess (Beschleunigung Stufe 3): ``gwN`` bekommt
+# die vhost ``swarmq-test-gwN`` und die Valkey-Datenbank N+1, damit parallele
+# Prozesse weder Queues noch Schlüssel (Leader-Lock, Crons) teilen und
+# FLUSHDB nur die eigene Datenbank trifft. Ohne xdist: vhost ``/``, DB 0.
+# Unterprozesse erben PYTEST_XDIST_WORKER und landen im selben Namensraum.
+XDIST_WORKER = os.environ.get("PYTEST_XDIST_WORKER", "")
+# RabbitMQ löscht eine vhost asynchron, Queue für Queue. Ein Lauf direkt
+# danach fände unter demselben Namen die noch laufende Löschung vor: Sein
+# PUT bliebe wirkungslos, und die vhost verschwände mitten im Lauf. Darum
+# trägt der Name die Kennung des Testlaufs (von xdist je Lauf vergeben).
+XDIST_RUN = os.environ.get("PYTEST_XDIST_TESTRUNUID", "")
+# Valkey hat 16 Datenbanken; DB 0 bleibt dem Lauf ohne xdist.
+MAX_PARALLEL_WORKERS = 15
+
+
+def worker_namespace(worker: str, run_id: str = "") -> tuple[str, int]:
+    """vhost und Valkey-Datenbank für den xdist-Prozess ``worker`` (leer: keiner)
+    im Testlauf ``run_id``."""
+    if not worker:
+        return "/", 0
+    index = int(worker.removeprefix("gw"))
+    if index >= MAX_PARALLEL_WORKERS:
+        msg = f"xdist worker {worker}: at most {MAX_PARALLEL_WORKERS} parallel workers (Valkey has 16 databases)"
+        raise RuntimeError(msg)
+    vhost = f"swarmq-test-{worker}-{run_id[:8]}" if run_id else f"swarmq-test-{worker}"
+    return vhost, index + 1
+
+
+RABBITMQ_VHOST, VALKEY_DB = worker_namespace(XDIST_WORKER, XDIST_RUN)
+
 
 ALLOW_DEFAULT_PORTS_VAR = "SWARMQ_TEST_ALLOW_DEFAULT_PORTS"
 # Standardports, auf denen örtlich fremde Stacks laufen (etwa phoenix):
@@ -127,12 +157,19 @@ def port_is_open(host: str, port: int, timeout: float = 1.0) -> bool:
         return False
 
 
-def rabbitmq_amqp_url() -> str:
-    return f"amqp://guest:guest@{RABBITMQ_HOST}:{RABBITMQ_PORT}/"
+def _vhost_path(vhost: str) -> str:
+    """URL-Pfad einer vhost; ``/`` bleibt ``/`` wie bisher."""
+    return "" if vhost == "/" else quote(vhost, safe="")
 
 
-def valkey_db_url() -> str:
-    return f"valkey://{VALKEY_HOST}:{VALKEY_PORT}/0"
+def rabbitmq_amqp_url(host: str | None = None, port: int | None = None) -> str:
+    """AMQP-URL in der vhost dieses Prozesses; ``host``/``port`` etwa für Toxiproxy."""
+    return f"amqp://guest:guest@{host or RABBITMQ_HOST}:{port or RABBITMQ_PORT}/{_vhost_path(RABBITMQ_VHOST)}"
+
+
+def valkey_db_url(host: str | None = None, port: int | None = None) -> str:
+    """Valkey-URL auf der Datenbank dieses Prozesses; ``host``/``port`` etwa für Toxiproxy."""
+    return f"valkey://{host or VALKEY_HOST}:{port or VALKEY_PORT}/{VALKEY_DB}"
 
 
 @dataclass(frozen=True)
@@ -142,10 +179,16 @@ class RabbitMQNode:
     host: str
     port: int
     management_port: int
+    vhost: str = "/"
 
     @property
     def amqp_url(self) -> str:
-        return f"amqp://guest:guest@{self.host}:{self.port}/"
+        return f"amqp://guest:guest@{self.host}:{self.port}/{_vhost_path(self.vhost)}"
+
+    @property
+    def vhost_api(self) -> str:
+        """vhost als Pfadsegment der Management-API (``/`` ist ``%2F``)."""
+        return quote(self.vhost, safe="")
 
     @property
     def management_url(self) -> str:
@@ -170,7 +213,7 @@ class RabbitMQNode:
         Auf 4.2 prüft der Channel den Timeout nur je ``channel_tick_interval``,
         deshalb startet der 4.2-Dienst mit 1000 ms statt 60 s.
         """
-        url = f"{self.management_url}/policies/%2F/{quote(f'swarmq-test-ct-{queue}', safe='')}"
+        url = f"{self.management_url}/policies/{self.vhost_api}/{quote(f'swarmq-test-ct-{queue}', safe='')}"
         body = {
             "pattern": f"^{re.escape(queue)}$",
             "definition": {"consumer-timeout": timeout_ms},
@@ -185,8 +228,8 @@ class RabbitMQNode:
                 await client.delete(url)
 
 
-RABBITMQ_MAIN = RabbitMQNode(RABBITMQ_HOST, RABBITMQ_PORT, RABBITMQ_MGMT_PORT)
-RABBITMQ_42 = RabbitMQNode(RABBITMQ42_HOST, RABBITMQ42_PORT, RABBITMQ42_MGMT_PORT)
+RABBITMQ_MAIN = RabbitMQNode(RABBITMQ_HOST, RABBITMQ_PORT, RABBITMQ_MGMT_PORT, RABBITMQ_VHOST)
+RABBITMQ_42 = RabbitMQNode(RABBITMQ42_HOST, RABBITMQ42_PORT, RABBITMQ42_MGMT_PORT, RABBITMQ_VHOST)
 
 
 def require_rabbitmq(node: RabbitMQNode, version_prefix: str) -> RabbitMQNode:
@@ -238,13 +281,27 @@ def check_docker() -> None:
 
 
 def _queue_names(client: httpx.Client) -> set[str] | None:
-    """Namen aller Queues im Vhost ``/``; None ohne Management-API."""
+    """Namen aller Queues der vhost dieses Prozesses; None ohne Management-API."""
     try:
-        response = client.get("/queues/%2F", params={"columns": "name"})
+        response = client.get(f"/queues/{RABBITMQ_MAIN.vhost_api}", params={"columns": "name"})
         response.raise_for_status()
     except httpx.HTTPError:
         return None
     return {entry["name"] for entry in response.json()}
+
+
+@contextlib.contextmanager
+def worker_vhost(node: RabbitMQNode) -> Iterator[None]:
+    """Legt ``node.vhost`` mit Rechten für guest an und löscht sie danach."""
+    with httpx.Client(base_url=node.management_url, auth=("guest", "guest"), timeout=10.0) as client:
+        client.put(f"/vhosts/{node.vhost_api}").raise_for_status()
+        permissions = {"configure": ".*", "write": ".*", "read": ".*"}
+        client.put(f"/permissions/{node.vhost_api}/guest", json=permissions).raise_for_status()
+        try:
+            yield
+        finally:
+            with contextlib.suppress(httpx.HTTPError):  # Aufräumen ist best effort
+                client.delete(f"/vhosts/{node.vhost_api}")
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -259,6 +316,14 @@ def delete_session_queues() -> Iterator[None]:
     ein Broker ohne Plugin) entfällt das Aufräumen; die CI startet je Job
     einen frischen Broker.
     """
+    if RABBITMQ_VHOST != "/":
+        # xdist-Prozess: eigene vhost je erreichbarem Dienst, am Ende samt Queues weg.
+        with contextlib.ExitStack() as stack:
+            for node in (RABBITMQ_MAIN, RABBITMQ_42):
+                if not node.missing():
+                    stack.enter_context(worker_vhost(node))
+            yield
+        return
     with httpx.Client(base_url=RABBITMQ_MAIN.management_url, auth=("guest", "guest"), timeout=10.0) as client:
         before = _queue_names(client)
         yield
@@ -268,7 +333,7 @@ def delete_session_queues() -> Iterator[None]:
 
         def delete(name: str) -> None:
             with contextlib.suppress(httpx.HTTPError):  # Aufräumen ist best effort
-                client.delete(f"/queues/%2F/{quote(name, safe='')}")
+                client.delete(f"/queues/{RABBITMQ_MAIN.vhost_api}/{quote(name, safe='')}")
 
         with ThreadPoolExecutor(max_workers=8) as pool:
             list(pool.map(delete, sorted(after - before)))

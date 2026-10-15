@@ -67,6 +67,7 @@ from swarmq.middleware import MessageContext, Middleware
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 from tests.support.known_leaks import aiormq_streamwriter_leak
+from tests.support.wait import wait_until
 
 from ._invariants import (
     FAFStageObservation,
@@ -273,9 +274,21 @@ class TestDLQUniqueForCombo:
             ):
                 tid = await app.schedule(task_name, 1)
 
-                # Wait for the task to fail and land in DLQ.
+                # Wait for the task to fail and land in DLQ. TASK_FAILED fires
+                # during execution, the DLQ move and the unique release come
+                # after it -- wait for the release itself, not a fixed pause
+                # (0.1 s was too short under CI load).
                 await asyncio.wait_for(failed_event.wait(), timeout=8.0)
-                await asyncio.sleep(0.1)  # brief settle for DLQ routing
+                valkey = backend._client
+                assert valkey is not None
+
+                async def unique_flag_released() -> bool:
+                    async for key in valkey.scan_iter(match="*unique:*"):
+                        if await valkey.get(key) == tid.encode():
+                            return False
+                    return True
+
+                assert await wait_until(unique_flag_released, timeout=10), "unique flag never released"
 
                 # Identical enqueue after the terminal DLQ move: the unique
                 # flag was released, so this is a fresh task, not a duplicate.

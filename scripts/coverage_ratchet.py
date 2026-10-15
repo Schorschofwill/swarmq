@@ -46,7 +46,8 @@ def with_floor(text: str, floor: int) -> str:
     if re.search(r"(?m)^fail_under\s*=", section):
         section = re.sub(r"(?m)^fail_under\s*=.*$", line, section)
     else:
-        section = section.rstrip("\n") + f"\n{line}\n" + ("\n" if end < len(text) else "")
+        # Der folgende Abschnitt beginnt mit "\n[": genau eine Leerzeile davor.
+        section = section.rstrip("\n") + f"\n{line}\n"
     return text[:start] + section + text[end:]
 
 

@@ -16,6 +16,13 @@ Test-Liste:
 - [x] Standardports der Testinfrastruktur sind 5699/15699/6399
 - [x] require_safe_target schlägt mit pytest.fail fehl, erlaubt sonst
 - [x] require_safe_valkey_url liest Host/Port aus der URL
+- [x] ohne xdist: vhost ``/`` und Valkey-DB 0
+- [x] xdist-Prozess gwN: vhost ``swarmq-test-gwN`` und DB N+1
+- [x] mehr als 15 xdist-Prozesse -> Fehler (Valkey hat 16 Datenbanken)
+- [x] vhost-Name je Testlauf eindeutig (RabbitMQ löscht vhosts asynchron; ein
+      neuer Lauf darf nicht in die noch laufende Löschung des alten geraten)
+- [x] RabbitMQNode: AMQP-URL und API-Pfad mit vhost; ``/`` bleibt ``/`` bzw. ``%2F``
+- [x] URLs über einen anderen Host/Port (Toxiproxy) behalten vhost und DB des Prozesses
 """
 
 from __future__ import annotations
@@ -165,3 +172,44 @@ class TestRequireSafeServices:
         monkeypatch.setattr(services, "VALKEY_HOST", "valkey")
         monkeypatch.setattr(services, "VALKEY_PORT", 6379)
         services.require_safe_services()
+
+
+class TestWorkerNamespace:
+    def test_without_xdist_uses_default_vhost_and_db_zero(self) -> None:
+        assert services.worker_namespace("") == ("/", 0)
+
+    @pytest.mark.parametrize(
+        ("worker", "expected"), [("gw0", ("swarmq-test-gw0", 1)), ("gw14", ("swarmq-test-gw14", 15))]
+    )
+    def test_xdist_worker_gets_own_vhost_and_db(self, worker: str, expected: tuple[str, int]) -> None:
+        assert services.worker_namespace(worker) == expected
+
+    def test_vhost_name_carries_the_test_run(self) -> None:
+        first, _ = services.worker_namespace("gw2", run_id="0a1b2c3d4e5f")
+        second, _ = services.worker_namespace("gw2", run_id="9f8e7d6c5b4a")
+        assert first == "swarmq-test-gw2-0a1b2c3d"
+        assert first != second
+
+    def test_more_workers_than_valkey_databases_is_refused(self) -> None:
+        with pytest.raises(RuntimeError, match="at most 15"):
+            services.worker_namespace("gw15")
+
+
+class TestRabbitMQNodeVhost:
+    def test_default_vhost_keeps_root_paths(self) -> None:
+        node = services.RabbitMQNode("h", 1, 2)
+        assert node.amqp_url == "amqp://guest:guest@h:1/"
+        assert node.vhost_api == "%2F"
+
+    def test_worker_vhost_appears_in_url_and_api_path(self) -> None:
+        node = services.RabbitMQNode("h", 1, 2, "swarmq-test-gw3")
+        assert node.amqp_url == "amqp://guest:guest@h:1/swarmq-test-gw3"
+        assert node.vhost_api == "swarmq-test-gw3"
+
+
+class TestUrlsThroughProxy:
+    def test_proxy_urls_keep_the_worker_namespace(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(services, "RABBITMQ_VHOST", "swarmq-test-gw2")
+        monkeypatch.setattr(services, "VALKEY_DB", 3)
+        assert services.rabbitmq_amqp_url("p", 9) == "amqp://guest:guest@p:9/swarmq-test-gw2"
+        assert services.valkey_db_url("p", 8) == "valkey://p:8/3"
