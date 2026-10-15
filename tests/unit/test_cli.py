@@ -1086,12 +1086,13 @@ class TestDlqParser:
         assert ns.all is True
 
     @pytest.mark.parametrize("raw", ["inf", "nan"])
-    def test_worker_rejects_infinite_burst_idle_timeout(self, raw):
+    def test_worker_rejects_infinite_burst_idle_timeout(self, raw, capsys):
         """F3-04 (E-063): argparse lehnt ``inf`` vor dem Start ab (Exit 2)."""
         parser = cli._build_parser()
         with pytest.raises(SystemExit) as excinfo:
             parser.parse_args(["worker", "--module=x", "--burst-idle-timeout", raw])
         assert excinfo.value.code == 2
+        assert "finite" in capsys.readouterr().err
 
     def test_dlq_retry_rejects_zero_limit(self):
         parser = cli._build_parser()
