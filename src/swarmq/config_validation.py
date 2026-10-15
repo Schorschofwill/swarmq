@@ -22,6 +22,7 @@ class ConfigValidation:
         broker_url: str
         backend_url: str
         result_ttl: int
+        shutdown_timeout: int
         concurrency: int
         log_level: str
         log_lifecycle_level: str
@@ -76,10 +77,16 @@ class ConfigValidation:
             )
             raise ConfigurationError(msg)
 
-    # ``shutdown_timeout`` steht bewusst NICHT hier: 0 bedeutet "sofort
-    # abbrechen" und wird so auch genutzt. Dass ein knapper Wert dem
-    # Herunterfahren kein Publish-Budget mehr laesst, faengt stattdessen die
-    # anteilige Reserve in ``WorkerLifecycle._shutdown_publish_budget`` ab.
+    # ``shutdown_timeout`` steht bewusst NICHT in der ``> 0``-Pruefung: 0
+    # bedeutet "sofort abbrechen" und wird so auch genutzt (E-018). Dass ein
+    # knapper Wert dem Herunterfahren kein Publish-Budget mehr laesst, faengt
+    # die anteilige Reserve in ``WorkerLifecycle._shutdown_publish_budget`` ab.
+    # Negativ ist dagegen ein Konfigurationsfehler (F3-42).
+
+    def _validate_shutdown_timeout(self) -> None:
+        if self.shutdown_timeout < 0:
+            msg = f"shutdown_timeout must be >= 0, got {self.shutdown_timeout}"
+            raise ConfigurationError(msg)
 
     def _validate_result_ttl(self) -> None:
         # E-055: float-Sekunden werden int (aufgerundet); inf/nan sind ein
@@ -99,6 +106,7 @@ class ConfigValidation:
         # Bereich und Endlichkeit vor jeder Relationspruefung, damit die
         # Meldung das ursaechliche Feld nennt (E-063).
         self._validate_positive()
+        self._validate_shutdown_timeout()
         self._validate_finite()
         self._validate_pool()
         if not self.broker_url:

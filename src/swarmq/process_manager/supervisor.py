@@ -154,10 +154,12 @@ class ProcessManager(RestartBudget):
         # whole sequence from SIGTERM, not only phase 1). Without this, any
         # task running longer than the class default was killed
         # mid-execution regardless of SwarmQConfig.shutdown_timeout.
+        # E-018/F3-42: 0 heisst "sofort abbrechen" -- ``shutdown_budget`` legt
+        # dann alle Phasen auf 0, SIGTERM und SIGKILL folgen ohne Wartezeit.
         if shutdown_grace_s is not None:
-            if shutdown_grace_s <= 0:
+            if shutdown_grace_s < 0:
                 raise ValueError(
-                    f"shutdown_grace_s must be > 0 (got {shutdown_grace_s})",
+                    f"shutdown_grace_s must be >= 0 (got {shutdown_grace_s})",
                 )
             self.shutdown_grace_s = float(shutdown_grace_s)
         else:
@@ -463,9 +465,11 @@ class ProcessManager(RestartBudget):
             self._escalate_terminating()
             self._check_dead_workers()
             self._unlock_expired_slots()
-            if self._config_error:
+            if self._config_error and not self._reload:
                 # R20: derselbe Code wie das Kind. Mit 1 sah eine
                 # Orchestrierung nur "irgendein Fehler" und startete neu.
+                # Unter --reload wartet der Loop stattdessen auf die naechste
+                # Dateiaenderung (E-057), siehe unten.
                 self._shutdown_all_workers()
                 return CONFIG_ERROR_EXIT_CODE
 
@@ -510,6 +514,12 @@ class ProcessManager(RestartBudget):
                 self._shutting_down = True
                 self.shutdown_event.set()
                 break
+            if self._config_error:
+                # E-057 (--reload): kein Nachfuellen und kein Skalieren, bis
+                # die naechste Dateiaenderung den Reload ausloest; der
+                # startet alle Worker neu.
+                time.sleep(self.MONITOR_INTERVAL)
+                continue
             setpoint.tick(self)  # Kontrollkanal: vor Nachfuellen und Autoskalierer (KTD3)
             # Backfill to the current target (initial count without
             # autoscale; between min..max with autoscale).
@@ -599,7 +609,11 @@ class ProcessManager(RestartBudget):
                 worker_id=info.worker_id,
                 pid=pid,
                 exitcode=exitcode,
-                hint="fix the configuration and start again; no restart attempted",
+                hint=(
+                    "fix the code; workers restart after the next file change (--reload)"
+                    if self._reload
+                    else "fix the configuration and start again; no restart attempted"
+                ),
             )
             self._config_error = True
             return True

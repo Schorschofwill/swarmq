@@ -27,6 +27,9 @@ Testliste:
 # [x] Modul mit ``IndentationError`` (Unterklasse) → SystemExit 78
 # [x] Modul mit ``raise ValueError`` auf Modulebene → kein 78, die Ausnahme verlässt das Entry
 # [x] ``--configure``-Hook-Modul mit Syntaxfehler → SystemExit 78
+# [x] ``ImportError`` nach abgeschlossener Importphase (zur Laufzeit) → kein 78,
+#     die Ausnahme verlässt das Entry (Exit 1, normaler Neustart; E-057,
+#     Nachtrag „Reichweite des Fangs“)
 """
 
 from __future__ import annotations
@@ -182,3 +185,28 @@ def test_syntax_error_in_the_configure_hook_module_exits_with_config_code(
     assert code == CONFIG_ERROR_EXIT_CODE
     entry = next(e for e in events if e["event"] == "worker_config_error")
     assert entry["error_type"] == "SyntaxError"
+
+
+@pytest.mark.entscheidung("E-057")
+def test_import_error_after_the_import_phase_leaves_the_entry(
+    module_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ein fauler Import zur Laufzeit ist kein Konfigurationsfehler: Exit 1
+    und Neustart statt 78 und Ende des Supervisors."""
+    from swarmq.app import SwarmQ
+
+    (module_dir / f"{_TASKS_MODULE}.py").write_text(_TASK_SOURCE, encoding="utf-8")
+    monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://guest:guest@f3-05.invalid:5699/")
+    monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://f3-05.invalid:6399/0")
+
+    async def _late_import(_self: object) -> None:
+        raise ModuleNotFoundError("No module named 'f3_05_lazy_optional'", name="f3_05_lazy_optional")
+
+    monkeypatch.setattr(SwarmQ, "__aenter__", _late_import)
+    events = _capture_config_errors(monkeypatch)
+    shutdown_event = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
+
+    with pytest.raises(ModuleNotFoundError, match="f3_05_lazy_optional"):
+        worker_subprocess_entry(0, shutdown_event, _make_test_cfg(module=_TASKS_MODULE))
+
+    assert not [e for e in events if e["event"] == "worker_config_error"]

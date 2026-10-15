@@ -22,7 +22,7 @@ Testliste:
 #     heartbeat_timeout_s=60 -> kein SIGTERM, kein worker_hung_during_drain
 # [x] Scale-down (mark_draining), Gnade 10 s, Beat vor 16 s -> SIGTERM,
 #     worker_hung_during_drain mit deadline_s=15
-# [x] shutdown_grace_s=1 (kleinstes Budget; ``ProcessManager`` lehnt 0 ab),
+# [x] shutdown_grace_s=1 (kleines Budget; 0 nimmt ``ProcessManager`` seit F3-42 an),
 #     Recycler, Beat vor 30 s -> kein SIGTERM
 # [x] shutdown_grace_s=1, Recycler, Beat vor 61 s -> SIGTERM, deadline_s=60
 # [x] shutdown_grace_s=100, heartbeat_timeout_s=60, Recycler, Beat vor 70 s

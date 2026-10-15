@@ -1319,6 +1319,97 @@ class TestConfigErrorNoRestart:
         assert pm._config_error is False
 
 
+class TestConfigErrorUnderReload:
+    """E-057, Nachtrag „--reload“ (Georg 2026-10-15): Unter ``swarmq worker
+    --reload`` beendet Exit 78 eines Kindes den Supervisor nicht. Er loggt den
+    Fehler, startet den Slot nicht neu und wartet auf die naechste
+    Dateiaenderung (SIGHUP des FileWatchers), die alle Worker neu startet."""
+
+    @pytest.mark.entscheidung("E-057")
+    def test_config_error_waits_for_the_next_file_change(self, monkeypatch, swarmq_logs):
+        from types import SimpleNamespace
+
+        from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
+        pm = ProcessManager(num_workers=1, worker_entry=_entry_stub, worker_args=(_make_test_cfg(),), reload=True)
+        pm._ctx = MagicMock()
+        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=500))
+        dead = _fake_process(alive=False, exitcode=CONFIG_ERROR_EXIT_CODE, pid=5)
+        pm.workers = {5: WorkerInfo(process=dead, worker_id=0)}
+        shutdown_all = MagicMock()
+        monkeypatch.setattr(pm, "_shutdown_all_workers", shutdown_all)
+        ticks: list[float] = []
+
+        def _sleep(seconds: float) -> None:
+            ticks.append(seconds)
+            if len(ticks) == 3:  # die Dateiaenderung: der FileWatcher schickt SIGHUP
+                pm._on_reload_signal(signal.SIGHUP, None)
+
+        monkeypatch.setattr(
+            "swarmq.process_manager.supervisor.time",
+            SimpleNamespace(monotonic=time.monotonic, sleep=_sleep),
+        )
+
+        assert pm._monitor_loop() == 0
+        assert pm._reload_requested is True
+        assert len(ticks) == 3  # wartete bis zur Dateiaenderung
+        pm._ctx.Process.assert_not_called()  # kein Neustart vor der Aenderung
+        shutdown_all.assert_not_called()
+        entry = next(e for e in swarmq_logs if e["event"] == "worker_config_error")
+        assert "next file change" in entry["hint"]
+
+    @pytest.mark.entscheidung("E-057")
+    def test_the_file_watcher_trigger_restarts_via_reexec(self, monkeypatch):
+        """Ganze Kette in ``run``: Exit 78 -> warten -> FileWatcher-Trigger
+        (SIGHUP an die eigene PID) -> Reload per ``reexec``."""
+        from types import SimpleNamespace
+
+        from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
+        pm = ProcessManager(
+            num_workers=1,
+            worker_entry=_entry_stub,
+            worker_args=(_make_test_cfg(),),
+            reload=True,
+            watch_dirs=("/tmp",),
+        )
+        pm._ctx = MagicMock()
+        watcher = MagicMock()
+
+        def _start_all() -> None:
+            dead = _fake_process(alive=False, exitcode=CONFIG_ERROR_EXIT_CODE, pid=5)
+            pm.workers = {5: WorkerInfo(process=dead, worker_id=0)}
+
+        ticks: list[float] = []
+
+        def _sleep(seconds: float) -> None:
+            ticks.append(seconds)
+            if len(ticks) == 2:
+                trigger = fw_cls.call_args.kwargs["trigger"]
+                trigger()  # os.kill ist gepatcht und ruft den SIGHUP-Handler
+
+        monkeypatch.setattr(
+            "swarmq.process_manager.supervisor.time",
+            SimpleNamespace(monotonic=time.monotonic, sleep=_sleep),
+        )
+        with (
+            patch.object(pm, "_start_all_workers", side_effect=_start_all),
+            patch.object(pm, "_setup_signals"),
+            patch.object(pm, "_shutdown_all_workers"),
+            patch.object(pm, "_collect_zombies"),
+            patch("swarmq.hot_reload.FileWatcher", return_value=watcher) as fw_cls,
+            patch(
+                "swarmq.process_manager.supervisor.os.kill",
+                side_effect=lambda _pid, signum: pm._on_reload_signal(signum, None),
+            ),
+            patch("swarmq.process_manager.supervisor.reexec", return_value=0) as reexec,
+        ):
+            assert pm.run() == 0
+
+        reexec.assert_called_once_with(pm, 0)
+        pm._ctx.Process.assert_not_called()
+
+
 class TestCleanExitIsNotRefilled:
     """R20/KTD9 (Plan 2026-09-03-001): Exit 0 ohne expected_shutdown zieht den
     Slot aus dem Ziel; sind alle so beendet, endet der Supervisor mit 0."""

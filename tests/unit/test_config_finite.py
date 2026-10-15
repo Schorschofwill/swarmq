@@ -70,6 +70,14 @@ def test_zero_shutdown_timeout_stays_allowed() -> None:
     assert _cfg(shutdown_timeout=0).shutdown_timeout == 0
 
 
+@pytest.mark.parametrize("value", [-1, -0.5, float("-inf")])
+def test_negative_shutdown_timeout_is_a_configuration_error(value: float) -> None:
+    # Wie F3-42: ein negativer Wert scheiterte erst im Supervisor mit einem
+    # ValueError-Traceback statt mit Exit 78 (E-018: 0 ist das Minimum).
+    with pytest.raises(ConfigurationError, match=r"^shutdown_timeout must be >= 0"):
+        _cfg(shutdown_timeout=value)
+
+
 @pytest.mark.parametrize("value", [float("inf"), float("nan")])
 def test_infinite_bind_retry_budget_is_rejected(value: float) -> None:
     with pytest.raises(ConfigurationError, match=r"^bind_retry_budget_s must be a finite number"):

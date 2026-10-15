@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import dataclasses
 import os
 import signal as _signal
@@ -72,6 +73,60 @@ def _log_config_error(worker_id: int, exc: BaseException) -> None:
     )
 
 
+class _ImportPhase:
+    """E-057: ``ImportError``/``SyntaxError`` sind nur waehrend der Importphase
+    (Task-Modul, ``--configure``-Hook) ein Konfigurationsfehler.
+
+    ``run_worker_async`` meldet ihr Ende ueber :meth:`done` (Rueckruf
+    ``import_phase_done`` in der Namespace); bis dahin gilt sie als laufend --
+    auch fuer einen Ersatz von ``run_worker_async``, der ihn nie aufruft.
+    """
+
+    def __init__(self) -> None:
+        self.running = True
+
+    def done(self) -> None:
+        self.running = False
+
+    def reraise_after_import(self, exc: BaseException) -> None:
+        """Reicht einen ``ImportError``/``SyntaxError`` nach der Importphase
+        durch: zur Laufzeit (etwa ein fauler Import eines optionalen Pakets)
+        ist er ein Absturz wie jeder andere, Exit 1 und Neustart."""
+        if not self.running and not isinstance(exc, ConfigurationError):
+            raise exc
+
+
+def _worker_namespace(worker_id: int, cfg: WorkerConfig, import_phase: _ImportPhase) -> argparse.Namespace:
+    """Die Namespace fuer ``run_worker_async`` aus der geteilten ``cfg``."""
+    # Flach statt ``dataclasses.asdict``: das wandelte ``logging_settings``
+    # in ein Dict. Namespace callers expect list-typed queues.
+    kwargs: dict[str, Any] = {f.name: getattr(cfg, f.name) for f in dataclasses.fields(cfg)}
+    kwargs["queues"] = list(kwargs["queues"])
+    # reload/watch_dirs are supervisor-only state.
+    # They ride along on WorkerConfig for pipeline-uniformity (R4.6-H
+    # Unit 1), but the worker subprocess must not construct a watcher
+    # — that would spawn N reload pipelines, one per worker, each
+    # firing SIGHUP at its own PID (default action: terminate). Drop
+    # them explicitly so a future developer adding `if ns.reload: ...`
+    # inside run_worker_async cannot silently regress.
+    kwargs.pop("reload", None)
+    kwargs.pop("watch_dirs", None)
+    # KTD2: der Slot ist das Einzige, was dieses Kind von seinen Geschwistern
+    # unterscheidet — er reist ueber die Namespace in die ``SwarmQConfig``.
+    # ``WorkerConfig`` bleibt das geteilte, slot-unabhaengige Objekt.
+    kwargs["worker_slot"] = worker_id
+    # KTD4: Der Ersatz eines Slots bindet denselben Port wie sein Vorgaenger.
+    # Der haelt ihn bis zum SIGKILL nach SHUTDOWN_TERM_S, ein recycelnder bis
+    # zum Ende seines WORKER_SHUTDOWN-Dispatchs (gedeckelt auf
+    # _LIFECYCLE_DISPATCH_TIMEOUT_S). Beides plus Reserve, sonst laeuft der
+    # Ersatz in einen Bind-Fehler und damit ins Neustart-Budget.
+    from swarmq.worker.lifecycle import _LIFECYCLE_DISPATCH_TIMEOUT_S
+
+    kwargs["bind_retry_budget_s"] = max(SHUTDOWN_TERM_S, _LIFECYCLE_DISPATCH_TIMEOUT_S) + 2.0
+    kwargs["import_phase_done"] = import_phase.done
+    return argparse.Namespace(**kwargs)
+
+
 def worker_subprocess_entry(
     worker_id: int,
     shutdown_event: Any,  # multiprocessing.synchronize.Event (spawn-Kontext)
@@ -91,7 +146,6 @@ def worker_subprocess_entry(
     existing signal-driven shutdown flow without coupling to its
     private API.
     """
-    import argparse as _argparse
     import asyncio
 
     # Import a public symbol so a rename in
@@ -127,32 +181,8 @@ def worker_subprocess_entry(
             exit_if_log_thread_stuck(CONFIG_ERROR_EXIT_CODE)
         raise SystemExit(CONFIG_ERROR_EXIT_CODE) from None
 
-    # Flach statt ``dataclasses.asdict``: das wandelte ``logging_settings``
-    # in ein Dict. Namespace callers expect list-typed queues.
-    kwargs = {f.name: getattr(cfg, f.name) for f in dataclasses.fields(cfg)}
-    kwargs["queues"] = list(kwargs["queues"])
-    # reload/watch_dirs are supervisor-only state.
-    # They ride along on WorkerConfig for pipeline-uniformity (R4.6-H
-    # Unit 1), but the worker subprocess must not construct a watcher
-    # — that would spawn N reload pipelines, one per worker, each
-    # firing SIGHUP at its own PID (default action: terminate). Drop
-    # them explicitly so a future developer adding `if ns.reload: ...`
-    # inside run_worker_async cannot silently regress.
-    kwargs.pop("reload", None)
-    kwargs.pop("watch_dirs", None)
-    # KTD2: der Slot ist das Einzige, was dieses Kind von seinen Geschwistern
-    # unterscheidet — er reist ueber die Namespace in die ``SwarmQConfig``.
-    # ``WorkerConfig`` bleibt das geteilte, slot-unabhaengige Objekt.
-    kwargs["worker_slot"] = worker_id
-    # KTD4: Der Ersatz eines Slots bindet denselben Port wie sein Vorgaenger.
-    # Der haelt ihn bis zum SIGKILL nach SHUTDOWN_TERM_S, ein recycelnder bis
-    # zum Ende seines WORKER_SHUTDOWN-Dispatchs (gedeckelt auf
-    # _LIFECYCLE_DISPATCH_TIMEOUT_S). Beides plus Reserve, sonst laeuft der
-    # Ersatz in einen Bind-Fehler und damit ins Neustart-Budget.
-    from swarmq.worker.lifecycle import _LIFECYCLE_DISPATCH_TIMEOUT_S
-
-    kwargs["bind_retry_budget_s"] = max(SHUTDOWN_TERM_S, _LIFECYCLE_DISPATCH_TIMEOUT_S) + 2.0
-    ns = _argparse.Namespace(**kwargs)
+    import_phase = _ImportPhase()
+    ns = _worker_namespace(worker_id, cfg, import_phase)
 
     set_current_channel(channel)
     beat_interval = float(cfg.heartbeat_interval_s or 5.0)
@@ -204,6 +234,7 @@ def worker_subprocess_entry(
         # schon im Log. Der Supervisor startet ihn mit frischem Forkserver neu.
         raise SystemExit(FORK_SOURCE_REJECTED_EXIT_CODE) from None
     except (ConfigurationError, ImportError, SyntaxError) as exc:
+        import_phase.reraise_after_import(exc)  # E-057: zur Laufzeit Exit 1
         # R29: ein Konfigurationsfehler ist kein Absturz. Ein Neustart
         # aendert nichts, also meldet der Worker ihn mit eigenem Exit-Code
         # und der Supervisor beendet den Lauf statt fuenfmal neu zu starten.
@@ -214,7 +245,8 @@ def worker_subprocess_entry(
         # ``ModuleNotFoundError``) und jeder ``SyntaxError`` beim Import des
         # Task-Moduls oder eines ``--configure``-Hooks gehoert in dieselbe
         # Klasse; ``error_type`` bleibt der Klassenname. Andere Ausnahmen
-        # beim Import verlassen das Entry und bleiben Exit 1.
+        # beim Import und ``ImportError``/``SyntaxError`` nach der
+        # Importphase verlassen das Entry und bleiben Exit 1.
         _log_config_error(worker_id, exc)
         raise SystemExit(CONFIG_ERROR_EXIT_CODE) from None
     finally:
