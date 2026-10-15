@@ -59,7 +59,7 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> _FakeClock:
 
 
 @pytest.mark.befund("F3-09")
-@pytest.mark.xfail(strict=True, reason="F3-09: offen - get_results(timeout=0) macht keinen MGET")
+@pytest.mark.entscheidung("E-030")
 @pytest.mark.usefixtures("clock")
 async def test_get_results_with_zero_timeout_reads_once(client: Client, backend: AsyncMock) -> None:
     ready = [
@@ -75,7 +75,7 @@ async def test_get_results_with_zero_timeout_reads_once(client: Client, backend:
 
 
 @pytest.mark.befund("F3-09")
-@pytest.mark.xfail(strict=True, reason="F3-09: offen - kein letzter MGET nach Ablauf der Frist im sleep")
+@pytest.mark.entscheidung("E-030")
 @pytest.mark.usefixtures("clock")
 async def test_get_results_reads_once_more_when_deadline_passes_during_sleep(
     client: Client, backend: AsyncMock
