@@ -611,8 +611,13 @@ async def release_acquired_locks(
     (``_release_leftover_locks``), gaebe er denselben Token sonst ein zweites
     Mal frei -- Fehlalarm ``task_lock_lost``. Was hier nicht frei wird, heilt
     die Lock-TTL.
+
+    Freigegeben wird nur, wenn dieser Aufruf den Eintrag selbst entnommen hat
+    (F3-12): Fehlt er, hat der Shutdown die Tokens schon abgeraeumt -- aus dem
+    Keeper genommen und freigegeben. Nur der Besitzer gibt per Token frei.
     """
-    active_handler_locks.pop(handler_id, None)
+    if active_handler_locks.pop(handler_id, None) is None:
+        return
     for token in acquired_locks:
         kept = drop(token) if drop is not None else None
         # Task-Felder aus der Lease (Review MR 13, Hinweis); im Handler setzt

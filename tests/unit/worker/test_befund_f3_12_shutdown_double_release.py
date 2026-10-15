@@ -22,7 +22,9 @@ dem kompletten Shutdown. Das Mindestbudget je Schritt ist wie in
 nichts (Gegenpruefung G1: mit der Default-Untergrenze 1,0 s und > 1 s
 Aufraeumzeit dasselbe Ergebnis), es erspart dem Unit-Test nur die Sekunde.
 
-Erwartet: genau eine Freigabe je Token und kein ``task_lock_lost``. Ob der
+Erwartet: genau eine Freigabe je Token und kein ``task_lock_lost``. Behoben
+in 0.12.3: ``release_acquired_locks`` gibt nur frei, wenn es den
+Registry-Eintrag selbst entnommen hat. Ob der
 Shutdown den Lock eines noch laufenden Handlers ueberhaupt freigeben soll,
 ist die offene Produktfrage F3-32 und wird hier bewusst NICHT geprueft.
 
@@ -90,9 +92,6 @@ class _CountingLockStore(InMemoryLockStore):
 
 
 @pytest.mark.befund("F3-12")
-@pytest.mark.xfail(
-    strict=True, reason="F3-12: offen - Handler-finally gibt den vom Shutdown freigegebenen Token erneut frei"
-)
 async def test_shutdown_then_handler_finally_releases_each_token_once(
     broker: MagicMock, backend: MagicMock, swarmq_logs: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
