@@ -18,6 +18,9 @@ Testliste:
 # [x] Herunterfahren mit shutdown_grace_s=0: SIGTERM und SIGKILL sofort,
 #     ohne Wartezeit (virtuelle Uhr)
 # [x] negatives shutdown_grace_s bleibt ValueError
+# [x] Review cc1782e: shutdown_grace_s=0 mit --reload -- ein per SIGKILL
+#     beendetes Kind, das nach join(timeout=0) noch lebt, bricht den Reload
+#     nicht ab; reexec sammelt es begrenzt ein und ruft execvpe
 """
 
 from __future__ import annotations
@@ -114,3 +117,54 @@ def test_zero_grace_escalates_to_sigkill_without_waiting(monkeypatch: pytest.Mon
 def test_negative_grace_is_still_rejected() -> None:
     with pytest.raises(ValueError, match="shutdown_grace_s must be >= 0"):
         ProcessManager(num_workers=1, worker_entry=_entry_stub, shutdown_grace_s=-1)
+
+
+@pytest.mark.entscheidung("E-018")
+def test_zero_grace_reload_reaps_killed_children_before_the_reexec() -> None:
+    """Review cc1782e: Mit Budget 0 joint der Stopp mit ``timeout=0``; ein
+    gerade per SIGKILL beendetes Kind ist dann oft noch nicht abgeraeumt.
+    Der Orphan-Guard in ``reexec`` darf den Reload deshalb nicht verwerfen,
+    sondern sammelt das Kind erst begrenzt ein."""
+    proc = MagicMock()
+    proc.pid = 7
+    state = {"dead": False}
+    proc.is_alive.side_effect = lambda: not state["dead"]
+    joins: list[float | None] = []
+
+    def _join(timeout: float | None = None) -> None:
+        joins.append(timeout)
+        if timeout is None or timeout > 0:  # der Kernel braucht Millisekunden
+            state["dead"] = True
+
+    proc.join.side_effect = _join
+    pm = ProcessManager(
+        num_workers=1,
+        worker_entry=_entry_stub,
+        shutdown_grace_s=0,
+        reload=True,
+        watch_dirs=("/tmp",),
+    )
+    pm._ctx = MagicMock()
+
+    def _start_all() -> None:
+        pm.workers = {7: WorkerInfo(process=proc, worker_id=0)}
+
+    def _loop() -> int:
+        pm._reload_requested = True  # Dateiaenderung: Reload beschlossen
+        return 0
+
+    with (
+        patch.object(pm, "_start_all_workers", side_effect=_start_all),
+        patch.object(pm, "_setup_signals"),
+        patch.object(pm, "_monitor_loop", side_effect=_loop),
+        patch("swarmq.hot_reload.FileWatcher"),
+        patch("swarmq.process_manager.reload.shutdown_logging"),
+        patch("swarmq.process_manager.reload.os.execvpe") as execvpe,
+    ):
+        pm.run()
+
+    execvpe.assert_called_once()
+    proc.kill.assert_called_once()
+    last = joins[-1]
+    assert last is not None
+    assert 0 < last <= 2.0  # begrenzt

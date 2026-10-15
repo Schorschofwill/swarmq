@@ -70,6 +70,7 @@ def test_zero_shutdown_timeout_stays_allowed() -> None:
     assert _cfg(shutdown_timeout=0).shutdown_timeout == 0
 
 
+@pytest.mark.entscheidung("E-018")
 @pytest.mark.parametrize("value", [-1, -0.5, float("-inf")])
 def test_negative_shutdown_timeout_is_a_configuration_error(value: float) -> None:
     # Wie F3-42: ein negativer Wert scheiterte erst im Supervisor mit einem

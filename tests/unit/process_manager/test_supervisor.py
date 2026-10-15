@@ -15,6 +15,12 @@ Reload (execvpe mit eingefrorenem argv/env), Orphan-Guard, FileWatcher."""
 # 5. Ein SIGTERM, das ein anderer Thread annimmt, dessen Handler also erst
 #    nach der letzten Pruefung in ``reexec`` laeuft, bleibt ueber ``execve``
 #    anhaengig, statt verloren zu gehen.
+# Review cc1782e (E-057 unter --reload):
+# 6. Der Hinweis zu Exit 78 unter --reload nennt Code oder Konfiguration und
+#    SIGHUP als zweiten Ausloeser (ein Umgebungsfehler, E-005/E-016, heilt
+#    keine Dateiaenderung).
+# 7. SIGTERM waehrend des Wartens nach Exit 78 unter --reload: Ende mit 0,
+#    kein Re-Exec.
 
 from __future__ import annotations
 
@@ -1407,6 +1413,67 @@ class TestConfigErrorUnderReload:
             assert pm.run() == 0
 
         reexec.assert_called_once_with(pm, 0)
+        pm._ctx.Process.assert_not_called()
+
+    def test_config_error_hint_under_reload_names_configuration_and_sighup(self, swarmq_logs):
+        from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
+        pm = ProcessManager(num_workers=1, worker_entry=_entry_stub, worker_args=(_make_test_cfg(),), reload=True)
+        pm._ctx = MagicMock()
+        dead = _fake_process(alive=False, exitcode=CONFIG_ERROR_EXIT_CODE, pid=5)
+        pm.workers = {5: WorkerInfo(process=dead, worker_id=0)}
+
+        pm._check_dead_workers()
+
+        entry = next(e for e in swarmq_logs if e["event"] == "worker_config_error")
+        assert entry["hint"] == (
+            "fix the code or configuration; workers restart after the next file change or SIGHUP (--reload)"
+        )
+
+    @pytest.mark.entscheidung("E-057")
+    @pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGINT])
+    def test_shutdown_signal_while_waiting_ends_with_zero_without_reexec(self, monkeypatch, signum):
+        """Waehrend der Supervisor nach Exit 78 auf die Dateiaenderung wartet,
+        beendet SIGTERM bzw. Strg-C ihn regulaer: 0 wie jeder Shutdown per
+        Signal, kein Re-Exec, kein Neustart."""
+        from types import SimpleNamespace
+
+        from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
+        pm = ProcessManager(
+            num_workers=1,
+            worker_entry=_entry_stub,
+            worker_args=(_make_test_cfg(),),
+            reload=True,
+            watch_dirs=("/tmp",),
+        )
+        pm._ctx = MagicMock()
+
+        def _start_all() -> None:
+            dead = _fake_process(alive=False, exitcode=CONFIG_ERROR_EXIT_CODE, pid=5)
+            pm.workers = {5: WorkerInfo(process=dead, worker_id=0)}
+
+        ticks: list[float] = []
+
+        def _sleep(seconds: float) -> None:
+            ticks.append(seconds)
+            if len(ticks) == 2:
+                pm._on_shutdown_signal(signum, None)
+
+        monkeypatch.setattr(
+            "swarmq.process_manager.supervisor.time",
+            SimpleNamespace(monotonic=time.monotonic, sleep=_sleep),
+        )
+        with (
+            patch.object(pm, "_start_all_workers", side_effect=_start_all),
+            patch.object(pm, "_setup_signals"),
+            patch("swarmq.hot_reload.FileWatcher"),
+            patch("swarmq.process_manager.supervisor.reexec") as reexec,
+        ):
+            assert pm.run() == 0
+
+        assert len(ticks) == 2  # endete beim Signal, nicht vorher
+        reexec.assert_not_called()
         pm._ctx.Process.assert_not_called()
 
 

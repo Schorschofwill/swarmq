@@ -610,7 +610,7 @@ class ProcessManager(RestartBudget):
                 pid=pid,
                 exitcode=exitcode,
                 hint=(
-                    "fix the code; workers restart after the next file change (--reload)"
+                    "fix the code or configuration; workers restart after the next file change or SIGHUP (--reload)"
                     if self._reload
                     else "fix the configuration and start again; no restart attempted"
                 ),

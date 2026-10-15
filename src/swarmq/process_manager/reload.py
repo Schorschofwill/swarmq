@@ -25,6 +25,13 @@ logger = get_logger(__name__)
 #: einem blockierenden Aufruf.
 PROBE_TIMEOUT_S = 30.0
 
+#: Einsammeln vor dem Re-Exec (E-018, Nachtrag F3-42): Mit
+#: ``shutdown_timeout=0`` joint der Stopp nach dem SIGKILL ohne Wartezeit, ein
+#: gerade getoetetes Kind ist dann womoeglich noch nicht abgeraeumt. Gemeinsame
+#: Frist fuer alle Kinder; ein D-State-Prozess haelt sie aus und bricht den
+#: Reload weiter ab.
+REAP_BEFORE_REEXEC_S = 2.0
+
 
 class ReloadController:
     """Ausstehender Reload und laufende Probe; getrieben vom Monitor-Loop."""
@@ -131,7 +138,7 @@ def reexec(pm: Any, retcode: int) -> int:
     # Orphan-guard: if any child survived Phase-3 SIGKILL (typically D-state:
     # NFS stall, dying disk), os.execvp would replace the parent image and
     # orphan the child to init/systemd. Prefer clean no-reload exit over orphan.
-    alive = [w for w in pm.workers.values() if w.process.is_alive()]
+    alive = _reap_killed(pm)
     if alive:
         logger.warning(
             "reload_aborted_alive_children",
@@ -175,6 +182,16 @@ def reexec(pm: Any, retcode: int) -> int:
     except OSError as exc:
         logger.error("reload_execvp_failed", **_error_fields(exc))
         return 1
+
+
+def _reap_killed(pm: Any) -> list[Any]:
+    """Noch lebende Kinder (nach Phase 3 alle per SIGKILL beendet) bis
+    :data:`REAP_BEFORE_REEXEC_S` einsammeln; liefert die Ueberlebenden."""
+    alive = [w for w in pm.workers.values() if w.process.is_alive()]
+    deadline = time.monotonic() + REAP_BEFORE_REEXEC_S
+    for info in alive:
+        info.process.join(timeout=max(0.0, deadline - time.monotonic()))
+    return [w for w in alive if w.process.is_alive()]
 
 
 _SHUTDOWN_SIGNALS = (signal.SIGTERM, signal.SIGINT)
