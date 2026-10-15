@@ -10,5 +10,5 @@
     "messages/schedule-definition.schema.json",
     "messages/task-message.schema.json"
   ],
-  "swarmq_version": "0.12.1"
+  "swarmq_version": "0.12.2rc1"
 }
