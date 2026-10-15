@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock
 
@@ -210,6 +211,26 @@ async def test_get_times_out_while_running():
     h = _handle(be)
     with pytest.raises(ResultNotReadyError):
         await h.get(timeout=0.1)
+
+
+class _EndlessWaitError(Exception):
+    """Bricht die Probe ab, falls ``get`` weiter pollt statt aufzugeben."""
+
+
+@pytest.mark.befund("F3-43")
+@pytest.mark.entscheidung("E-030")
+@pytest.mark.parametrize("timeout", [math.nan, -1.0])
+async def test_get_with_nan_or_negative_timeout_reads_once_then_raises(timeout: float) -> None:
+    # F3-43: Eine nan-Frist galt nie als abgelaufen (``remaining <= 0`` ist
+    # bei nan falsch); ``get`` pollte endlos. Wie ``get_results``: einmal
+    # lesen, dann ResultNotReadyError.
+    be = _backend_with_state(build_initial_workflow_state("wf-1", {}))
+    be.wait_for_workflow = AsyncMock(side_effect=_EndlessWaitError)
+    h = _handle(be)
+    with pytest.raises(ResultNotReadyError):
+        await h.get(timeout=timeout)
+    assert be.get_workflow_state.await_count == 1
+    be.wait_for_workflow.assert_not_awaited()
 
 
 async def test_get_raises_cancelled_when_flag_set_while_running(monkeypatch):

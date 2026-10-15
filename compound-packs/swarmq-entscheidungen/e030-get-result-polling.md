@@ -19,6 +19,7 @@ quelle:
   - src/swarmq/backend/valkey/results.py:229-284 (wait_for_result), :498-526 (wait_for_workflow)
   - docs/plans/2026-04-15-005-feat-pubsub-batch-performance-plan.md:72 (get_results mit MGET-Polling, kein Pub/Sub), :250 (timeout=0 ein GET)
 tests:
+  - 'tests/unit/test_workflow_handle.py::test_get_with_nan_or_negative_timeout_reads_once_then_raises'
   - tests/unit/backend/test_valkey_results.py::TestWaitForResult::test_pubsub_miss_falls_back_to_polling
   - tests/unit/backend/test_befund_fs15_result_wait_polling.py::test_hanging_subscribe_does_not_outlast_the_timeout
   - tests/unit/backend/test_befund_fs15_result_wait_polling.py::test_hanging_subscribe_still_finds_an_existing_result_within_the_pubsub_window
@@ -52,3 +53,5 @@ tests:
 **Nachtrag 2026-10-15 (Fehlersuche Runde 3, F3-43).** Dasselbe gilt für `get_result` und `ValkeyResults.wait_for_result`: Ein `timeout` ohne positive Restfrist (negativ, `nan`) ist abgelaufen, es folgt genau ein GET ohne Abonnement (wie `timeout=0`), dann `ResultNotReadyError`, falls kein Ergebnis da ist. `wait_for_workflow` meldet in diesem Fall sofort `False` ohne Abonnement. Keine der Fristen im FS-15-Pfad (GET, Abonnement-Fenster, Teardown-Grace) wird damit je `nan`. Bis 0.12.2 gab `wait_for_result` bei `nan` die Frist an `asyncio.wait_for` weiter; hing das GET, stürzte die Event-Loop mit `ValueError: cannot convert float NaN to integer` ab, und ein negatives `timeout` las gar nicht (Befund F3-43, Test `tests/unit/backend/test_befund_f3_43_result_wait_nan.py`). `inf` wartet weiter unbegrenzt.
 
 **Überdenken nur mit neuem Argument.** Offen: FS-15 Teil 1 (Fehlersuche Runde 2). Nach 1 s liest der Client Pub/Sub gar nicht mehr, obwohl das Abonnement gesund bleibt. Für jeden Task über 1 s Laufzeit ist das 5-ms-Polling damit der Normalpfad und kein Rückfall. Die Last bei langen Wartezeiten hat die Entscheidung nicht betrachtet (Produktfrage, Plan 2026-10-14-0748 „Offene Produktfragen“). Bis U20 blockierte ein `subscribe()` ohne Frist den Aufrufer über `timeout` hinaus (FS-15 Teil 3); das war ein Fehler gegen den Docstring von `wait_for_result`, nicht von dieser Entscheidung gedeckt, und ist behoben (Nachtrag oben).
+
+**Nachtrag 2026-10-15 (F3-43, WorkflowHandle.get):** Auch `WorkflowHandle.get(timeout=nan)` bzw. eine negative Frist liest den Zustand genau einmal und wirft dann `ResultNotReadyError` (vorher endloses Pollen).
