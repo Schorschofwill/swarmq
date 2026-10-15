@@ -13,10 +13,12 @@ quelle:
   - Commit 9cf72c7 (Ausführungsschutz U8, SettleFailedAfterPublish)
   - src/swarmq/worker/gates/__init__.py:304-308 (dead_letter_copy)
   - website/explanation/delivery-semantics.md:316-320
+  - Commit b69dd89 (U16, FS-17: Expiry-Gate nutzt dead_letter_copy)
 tests:
   - tests/unit/worker/test_retry.py::test_dead_letter_with_failed_ack_after_publish_is_terminal
   - tests/unit/worker/gates/test_lock_dlq_ack_failed.py::test_render_error_with_failed_ack_after_publish_is_terminal
   - tests/unit/worker/gates/test_lock_dlq_ack_failed.py::test_wait_limit_with_failed_ack_after_publish_is_terminal
+  - tests/unit/worker/gates/test_befund_fs17_expiry_ack_failed.py::test_fs17_expired_copy_with_failed_ack_is_terminal
 ---
 
 **Entscheidung.** Hat der Broker die DLQ-Kopie bestätigt und scheitert danach nur das Ack des Originals (`SettleFailedAfterPublish`, etwa bis RabbitMQ 4.2 nach einem Consumer-Timeout), behandelt der Worker das wie einen erfolgreichen Dead-Letter: Warnung `dlq_ack_failed_after_publish`, Unique-Freigabe und `TASK_DLQ`. Die Neuzustellung des Originals überspringt der Ausführungsschutz als `done`.
@@ -25,4 +27,6 @@ tests:
 
 **Bewusste Folgen.** Ein `TASK_DLQ` und eine Unique-Freigabe trotz gescheitertem Ack sind kein Fehler. Mit `SWARMQ_EXECUTION_GUARD=false` kann die Neuzustellung erneut verarbeitet werden.
 
-**Überdenken nur mit neuem Argument.** Offen: FS-17. Das Expiry-Gate (`expiry.py:118-132`) hält sich nicht an diese Regel und wertet den Fall als Fehlschlag; das Unique-Flag hängt dann bis `unique_for`. Das ist ein Fehler gegen diese Entscheidung.
+**Nachtrag 2026-10-14 (FS-17, U16).** Behoben. Das Expiry-Gate publiziert die DLQ-Kopie seit U16 über `dead_letter_copy` (`src/swarmq/worker/gates/expiry.py`) und wertet `SettleFailedAfterPublish` damit wie die übrigen Gates als terminal: Warnung `dlq_ack_failed_after_publish`, Unique-Freigabe, kein `redeliver`; die Neuzustellung des Originals überspringt der Ausführungsschutz. Festgeschrieben in `tests/unit/worker/gates/test_befund_fs17_expiry_ack_failed.py::test_fs17_expired_copy_with_failed_ack_is_terminal`.
+
+**Überdenken nur mit neuem Argument.** Bis U16 hielt sich das Expiry-Gate nicht an diese Regel (FS-17): Es wertete den Fall als gescheiterten Publish, stellte das Original per `redeliver` zurück, und das Unique-Flag hing bis `unique_for`. Das war ein Fehler gegen diese Entscheidung, keine offene Frage. Keine offenen Einwände bekannt.

@@ -10,9 +10,10 @@ Spike 2026-04-17). Die heutigen Methodennamen bleiben als Aliase (KTD10).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, override
 
 import valkey.asyncio
 from valkey.exceptions import ValkeyError
@@ -31,6 +32,15 @@ _FALLBACK_POLL_S = 0.005
 # Höchstens so lange wird pro Wartevorgang auf Pub/Sub gesetzt, bevor auf
 # Polling umgeschaltet wird (Client-Erbe: ``min(1.0, remaining)``).
 _PUBSUB_WINDOW_S = 1.0
+# FS-15: So lange wartet der Aufrufer mindestens auf den Pub/Sub-Teardown,
+# auch wenn die Deadline schon erreicht ist; danach laeuft er im Hintergrund.
+_TEARDOWN_GRACE_S = 0.05
+# Hoechstdauer je Schritt (``unsubscribe``, ``aclose``) eines im Hintergrund
+# weiterlaufenden Teardowns, damit keine Task ewig haengen bleibt.
+_BACKGROUND_CLOSE_LIMIT_S = 5.0
+# So lange wartet ``close()`` auf noch laufende Hintergrund-Teardowns, bevor
+# es sie abbricht.
+_CLOSE_DRAIN_S = 0.1
 
 
 class ValkeyResults(ValkeyConnection):
@@ -50,6 +60,21 @@ class ValkeyResults(ValkeyConnection):
         self._unique_release_script: Any = None
         # KTD11: Compare-and-Set des Workflow-Zustands, ebenfalls lazy.
         self._workflow_cas_script: Any = None
+        # FS-15: Referenzen auf Pub/Sub-Teardowns, die nach der Frist im
+        # Hintergrund weiterlaufen (sonst raeumt der GC die Task weg).
+        self._pubsub_closers: set[asyncio.Task[None]] = set()
+
+    @override
+    async def close(self) -> None:
+        """Noch laufende Pub/Sub-Teardowns kurz abwarten, den Rest abbrechen
+        und einsammeln, dann den Client schliessen (FS-15)."""
+        closers = set(self._pubsub_closers)
+        if closers:
+            _, pending = await asyncio.wait(closers, timeout=_CLOSE_DRAIN_S)
+            for closer in pending:
+                closer.cancel()
+            await asyncio.gather(*closers, return_exceptions=True)
+        await super().close()
 
     # ------------------------------------------------------------------
     # Keys und Kanäle (Wire-Format, KTD12 — unverändert)
@@ -153,14 +178,64 @@ class ValkeyResults(ValkeyConnection):
         except Exception:  # noqa: BLE001, S110 - Teardown best effort
             pass
 
+    @staticmethod
+    async def _close_pubsub_bounded(pubsub: Any, channel: str, *, subscribed: bool) -> None:
+        """Teardown mit Hoechstdauer je Schritt; ``aclose`` laeuft auch dann,
+        wenn ``unsubscribe`` haengt, damit die Verbindung geschlossen wird.
+        Ohne erfolgreiches Abonnement entfaellt ``unsubscribe``: valkey-py
+        wuerde dafuer eine getrennte Verbindung neu aufbauen."""
+        if subscribed:
+            with contextlib.suppress(Exception):
+                async with asyncio.timeout(_BACKGROUND_CLOSE_LIMIT_S):
+                    await pubsub.unsubscribe(channel)
+        with contextlib.suppress(Exception):
+            async with asyncio.timeout(_BACKGROUND_CLOSE_LIMIT_S):
+                await pubsub.aclose()
+
+    def _discard_pubsub(self, pubsub: Any, channel: str, *, subscribed: bool) -> asyncio.Task[None]:
+        """FS-15: Den PubSub nicht blockierend schliessen. Ein abgebrochenes
+        ``subscribe`` kann ``SUBSCRIBE`` schon gesendet haben; die Verbindung
+        darf darum nicht wiederverwendet werden, ``aclose`` trennt sie (und
+        beendet damit auch ein serverseitig schon bestehendes Abonnement)."""
+        closer = asyncio.get_running_loop().create_task(
+            self._close_pubsub_bounded(pubsub, channel, subscribed=subscribed)
+        )
+        self._pubsub_closers.add(closer)
+        closer.add_done_callback(self._pubsub_closers.discard)
+        return closer
+
+    async def _subscribe_within(self, pubsub: Any, channel: str, limit: float) -> bool:
+        """FS-15: ``subscribe`` mit Frist. ``False`` (PubSub verworfen), wenn
+        es scheitert oder *limit* ueberschreitet; auch beim Abbruch des
+        Aufrufers wird der PubSub geschlossen."""
+        try:
+            await asyncio.wait_for(pubsub.subscribe(channel), timeout=limit)
+        except asyncio.CancelledError:
+            _ = self._discard_pubsub(pubsub, channel, subscribed=False)
+            raise
+        except Exception:  # noqa: BLE001 - Pub/Sub nicht verfuegbar oder zu langsam
+            _ = self._discard_pubsub(pubsub, channel, subscribed=False)
+            return False
+        return True
+
+    async def _close_pubsub_within(self, pubsub: Any, channel: str, deadline: float) -> None:
+        """FS-15: Teardown bis zur Deadline (mindestens ``_TEARDOWN_GRACE_S``)
+        abwarten; was dann noch laeuft, schliesst im Hintergrund weiter."""
+        closer = self._discard_pubsub(pubsub, channel, subscribed=True)
+        grace = max(deadline - asyncio.get_running_loop().time(), _TEARDOWN_GRACE_S)
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(asyncio.shield(closer), timeout=grace)
+
     async def wait_for_result(self, task_id: str, *, timeout: float) -> bytes | None:
         """Liefert das Ergebnis, sobald vorhanden; ``None`` bei Ablauf.
 
         Ablauf (Client-Erbe): Pub/Sub zuerst abonnieren
         (schließt das Rennen zwischen Erst-GET und Abonnement), dann Erst-GET,
-        dann ein Pub/Sub-Fenster, dann Polling. Jeder GET ist an die
+        dann ein Pub/Sub-Fenster, dann Polling. Jeder GET, das Abonnement
+        (hoechstens ein Pub/Sub-Fenster) und der Teardown (bis zur Deadline,
+        mindestens ``_TEARDOWN_GRACE_S``, Rest im Hintergrund) sind an die
         Rest-Deadline gebunden, damit ein hängendes Valkey den Aufrufer nicht
-        über ``timeout`` hinaus blockiert.
+        über ``timeout`` hinaus blockiert (FS-15).
         """
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
@@ -176,10 +251,12 @@ class ValkeyResults(ValkeyConnection):
 
         channel = self.notify_channel_name(task_id)
         pubsub: Any = self._pubsub()
-        try:
-            await pubsub.subscribe(channel)
-        except Exception:  # noqa: BLE001 - Pub/Sub nicht verfuegbar, weiter mit Polling
-            pubsub = None  # Pub/Sub unavailable, fall through to polling
+        # FS-15: Auch das Abonnement ist an die Rest-Deadline gebunden, und
+        # zwar hoechstens an das Pub/Sub-Fenster, damit ein haengendes Valkey
+        # die Frist nicht vor dem Erst-GET aufbraucht. Ohne Abonnement geht es
+        # mit Polling weiter.
+        if not await self._subscribe_within(pubsub, channel, min(_PUBSUB_WINDOW_S, deadline - loop.time())):
+            pubsub = None
 
         try:
             raw = await _get_within_deadline()
@@ -197,7 +274,7 @@ class ValkeyResults(ValkeyConnection):
             return None
         finally:
             if pubsub is not None:
-                await self._close_pubsub(pubsub, channel)
+                await self._close_pubsub_within(pubsub, channel, deadline)
 
     # ------------------------------------------------------------------
     # R3.7 Fortschritt — HASH-Zustand + Pub/Sub-Fan-out
@@ -413,11 +490,14 @@ class ValkeyResults(ValkeyConnection):
     async def wait_for_workflow(self, wf_id: str, *, timeout: float) -> bool:
         """``True`` bei Benachrichtigung vor Ablauf, sonst ``False``."""
         channel = self.workflow_notify_channel(wf_id)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
         pubsub: Any = self._pubsub()
+        # FS-15: Das Abonnement zaehlt zur Frist; ohne Abonnement keine
+        # Benachrichtigung.
+        if not await self._subscribe_within(pubsub, channel, timeout):
+            return False
         try:
-            await pubsub.subscribe(channel)
-            loop = asyncio.get_running_loop()
-            deadline = loop.time() + timeout
             while loop.time() < deadline:
                 msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.05)
                 if msg is not None:
@@ -429,11 +509,7 @@ class ValkeyResults(ValkeyConnection):
         else:
             return False
         finally:
-            try:
-                await pubsub.unsubscribe(channel)
-                await pubsub.aclose()
-            except Exception:  # noqa: BLE001, S110 - Teardown best effort
-                pass
+            await self._close_pubsub_within(pubsub, channel, deadline)
 
     # ------------------------------------------------------------------
     # R3.5 Unique Tasks — Dedup-Flags

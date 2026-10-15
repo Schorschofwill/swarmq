@@ -11,6 +11,7 @@ der Logger kommt vom Aufrufer (Q17: ``RetryHandler`` reicht den von
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from swarmq.exceptions import BackendConnectionError, WorkflowStateConflict
@@ -30,6 +31,7 @@ async def fail_workflow_step(
     redeliver: bool,
     log: Any,
     error_class: str | None = None,
+    redeliver_with: Callable[[BaseException], Awaitable[None]] | None = None,
 ) -> bool:
     """Markiert den Workflow der Zustellung als fehlgeschlagen.
 
@@ -40,7 +42,10 @@ async def fail_workflow_step(
     per ``redeliver`` zurueckgegeben, der Aufrufer endet nicht-terminal. Das
     Zustelllimit begrenzt die Schleife.
 
-    *error_class* (P9, T13) geht nur mit Wert als Keyword an ``fail``."""
+    *error_class* (P9, T13) geht nur mit Wert als Keyword an ``fail``.
+    *redeliver_with* ersetzt den Requeue an derselben Stelle: es bekommt die
+    voruebergehende Ausnahme und gibt die Zustellung selbst zurueck (das
+    Cancel-Gate stellt ueber die Delay-Queue zurueck, FS-12)."""
     wf_id = deps.extract_valid_workflow_id(delivery)
     if wf_id is None:
         headers: dict[str, Any] = delivery.headers or {}
@@ -66,7 +71,10 @@ async def fail_workflow_step(
         log.error("workflow_fail_mark_failed", workflow_id=wf_id, **_error_fields(wf_exc), redelivered=redeliver)
         if redeliver:
             try:
-                await redeliver_in_place(deps, delivery, ctx)
+                if redeliver_with is None:
+                    await redeliver_in_place(deps, delivery, ctx)
+                else:
+                    await redeliver_with(wf_exc)
             except Exception:  # noqa: BLE001, S110 - Redeliver best effort, Fehler schon geloggt
                 pass
             return False

@@ -29,6 +29,7 @@ from swarmq.contracts.coordination import (
 )
 from swarmq.exceptions import SettleFailedAfterPublish
 from swarmq.headers import (
+    BROKER_DELIVERY_COUNTERS,
     HEADER_BACKEND_DEFER_COUNT,
     HEADER_GUARD_DEFER_COUNT,
     HEADER_SCHEDFIRE_CLAIM,
@@ -127,6 +128,27 @@ class GateContext:
     # Schedfire-Claim, den diese Zustellung gewonnen hat; jede Kopie traegt
     # sein Owner-Token als ``x-swarmq-schedfire-claim`` weiter.
     schedfire_claim: SchedfireClaim | None = None
+    # FS-13 (KTD12): die Zustellung hat den Startpunkt erreicht (Freigabe des
+    # Unique-Flags im start-Modus ist gelaufen, unabhaengig vom Modus und vom
+    # Erfolg). Erst dann ist die terminale Freigabe im start-Modus ein No-op.
+    start_release_reached: bool = False
+
+
+class FailWorkflow(Protocol):
+    """``GateDeps.fail_workflow`` (``RetryHandler.fail_workflow``).
+    *redeliver_with* ersetzt den Requeue an derselben Stelle, wenn die
+    Markierung voruebergehend scheitert (Cancel-Gate, FS-12)."""
+
+    def __call__(
+        self,
+        delivery: Any,
+        ctx: GateContext,
+        error_message: str,
+        may_redeliver: bool,
+        /,
+        *,
+        redeliver_with: Callable[[BaseException], Awaitable[None]] | None = None,
+    ) -> Awaitable[bool]: ...
 
 
 @dataclass
@@ -147,7 +169,8 @@ class GateDeps:
     # (ctx, terminal) -> ``True``, wenn kein Claim gehalten wurde oder die
     # Finalisierung gelang; ``False``, wenn der Claim stehen blieb.
     finalize_schedfire: Callable[[GateContext, bool], Awaitable[bool]]
-    maybe_release_unique: Callable[[Any, str, TaskInfo | None], Awaitable[None]]
+    # (delivery, ctx, task_info): Unique-Flag an einem terminalen Pfad freigeben (FS-13).
+    maybe_release_unique: Callable[[Any, GateContext, TaskInfo | None], Awaitable[None]]
     extract_valid_workflow_id: Callable[[Any], str | None]
     register_lock: Callable[[uuid.UUID, LockEntry], None]
     # BZ-29: Pause vor jedem ``redeliver`` (Sekunden -> Warten). Der Worker
@@ -157,26 +180,25 @@ class GateDeps:
     # (delivery, ctx, error_message, may_redeliver) -> ``False``, wenn die
     # Zustellung deshalb neu zugestellt wurde. Der Worker setzt es
     # (``RetryHandler.fail_workflow``); ``None`` = keine Markierung.
-    fail_workflow: Callable[[Any, GateContext, str, bool], Awaitable[bool]] | None = None
+    fail_workflow: FailWorkflow | None = None
     # BZ-25 (MR 13): erworbenen Lock dem Keeper uebergeben (token, ttl_ms, ctx);
     # der Worker setzt es (``LockKeeper.keep``); ``None`` = keine Verlaengerung.
     keep_lock: Callable[[LockToken, int, GateContext], None] | None = None
+    # FS-07 (KTD8): Aufraeumarbeit im Hintergrund starten, getrackt; der
+    # Shutdown wartet vor ``backend.close`` darauf. Der Worker setzt es;
+    # ``None`` = inline abwarten.
+    detach: Callable[[Awaitable[None]], object] | None = None
 
 
-# Zaehler, die der Broker je Zustellung fuehrt (Quorum-Queues). Eine Kopie
-# ueber ``retry_later`` ist eine neue Nachricht mit eigenem Zustellbudget:
-# mitkopiert hielte das Delivery-Count-Gate sie fuer haengend, obwohl der
-# Broker sie noch nie zugestellt hat (RabbitMQ 4 behaelt einen vom Publisher
-# gesetzten ``x-delivery-count`` bei, 3.13 zaehlt zudem Requeues).
-BROKER_DELIVERY_COUNTERS = frozenset({"x-delivery-count", "x-acquired-count"})
-
-# Nicht in Kopien uebernommen: die Broker-Zaehler (s. o.) und die Zaehler der
-# Zurueckstellungen bei Backend-Ausfall und durch den Ausfuehrungsschutz. Wer
-# eine Kopie macht, ohne am Backend gescheitert zu sein (Retry, Rate-Limit-/
-# Lock-Requeue), hat das Backend erreicht -- die Stoerung ist ueberstanden,
-# eine naechste beginnt wieder mit der Basiswartezeit. Die Zurueckstellung
-# selbst liest den bisherigen Stand vom Original und zaehlt weiter.
-_NOT_COPIED = BROKER_DELIVERY_COUNTERS | {HEADER_BACKEND_DEFER_COUNT, HEADER_GUARD_DEFER_COUNT}
+# Nicht in Kopien uebernommen: die Zaehler der Zurueckstellungen bei
+# Backend-Ausfall und durch den Ausfuehrungsschutz. Wer eine Kopie macht, ohne
+# am Backend gescheitert zu sein (Retry, Rate-Limit-/Lock-Requeue), hat das
+# Backend erreicht -- die Stoerung ist ueberstanden, eine naechste beginnt
+# wieder mit der Basiswartezeit. Die Zurueckstellung selbst liest den
+# bisherigen Stand vom Original und zaehlt weiter. Die Zustellzaehler des
+# Brokers (``BROKER_DELIVERY_COUNTERS``) entfernt schon ``copy_headers``
+# (FS-10).
+_NOT_COPIED = frozenset({HEADER_BACKEND_DEFER_COUNT, HEADER_GUARD_DEFER_COUNT})
 
 
 def republish_headers(delivery: Any, ctx: GateContext) -> dict[str, Any]:
@@ -206,7 +228,7 @@ def _as_count(raw: Any) -> int:
     """Nicht-negativer Zaehler; ein kaputter Header zaehlt wie keiner."""
     try:
         count = int(raw)
-    except TypeError, ValueError:
+    except TypeError, ValueError, OverflowError:
         return 0
     return max(count, 0)
 
@@ -390,6 +412,7 @@ async def fail_workflow_best_effort(
 
 
 __all__ = [
+    "FailWorkflow",
     "Gate",
     "GateContext",
     "GateDeps",

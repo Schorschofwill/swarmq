@@ -128,6 +128,16 @@ HEADER_LOCK_HOLDER_TTL_MS = "x-swarmq-lock-holder-ttl-ms"
 # eine neue Wartezeit; fehlt der Header, gilt ``"0:"``.
 HEADER_LOCK_WAIT_GEN = "x-swarmq-lock-wait-gen"
 
+# Zustellzaehler, die der Broker je Zustellung fuehrt (Quorum-Queues; Spike S4).
+# Keine Kopie, die swarmq publiziert (Retry, Zurueckstellung, DLQ-Stempel,
+# ``dlq retry``), traegt sie weiter: eine Kopie ist eine neue Nachricht mit
+# eigenem Zustellbudget. RabbitMQ 4 behaelt einen vom Publisher gesetzten
+# ``x-delivery-count`` bei der ersten Zustellung bei (3.13 zaehlt zudem
+# Requeues) -- mitkopiert hielte das Delivery-Count-Gate die Kopie fuer
+# haengend, und ein Replay per UI/Shovel landete sofort wieder in der DLQ
+# (FS-10).
+BROKER_DELIVERY_COUNTERS = frozenset({"x-delivery-count", "x-acquired-count"})
+
 # Zustands-Header einer Lock-Wartezeit (ohne ``x-swarmq-lock-name``). Eine
 # Kopie einer vom Broker neu zugestellten Nachricht traegt sie nicht weiter
 # (Review MR 13, P2-4): die Wartezeit endete mit dem Acquire.

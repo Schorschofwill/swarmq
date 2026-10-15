@@ -30,7 +30,7 @@ from swarmq.exceptions import (
     TaskNotFoundError,
 )
 from swarmq.header_text import bounded_header_text
-from swarmq.headers import HEADER_RETRY_COUNT, LOOP_STATE_HEADERS
+from swarmq.headers import HEADER_RETRY_COUNT, HEADER_SCHEDFIRE_DEFER_COUNT, LOOP_STATE_HEADERS
 from swarmq.logging import _error_fields, get_logger
 from swarmq.serialization import encode_result
 from swarmq.signals import Signal
@@ -39,6 +39,7 @@ from swarmq.worker.compute.pool import SlotUnavailable
 from swarmq.worker.error_info import error_class_of, gate_error_class
 from swarmq.worker.execution import ExecutionResult
 from swarmq.worker.gates import GateContext, GateDeps, dead_letter_copy, redeliver_in_place, republish_headers
+from swarmq.worker.gates.execution_guard import retry_count_of
 from swarmq.worker.outcome import DeliveryOutcome, Redelivered
 from swarmq.worker.terminal import fail_workflow_step
 
@@ -112,8 +113,9 @@ class RetryHandler:
         ):
             return await self._terminal_failure(delivery, ctx, exc, error_message)
 
-        # 3. Read retry count from message headers
-        retry_count = delivery.headers.get(HEADER_RETRY_COUNT, 0)
+        # 3. Read retry count from message headers; ein nicht ganzzahliger
+        # Wert zaehlt wie kein Header (FS-19, KTD15).
+        retry_count = retry_count_of(delivery.headers)
 
         # 4. Check if retries exhausted
         if retry_count >= task_info.max_retries:
@@ -152,6 +154,10 @@ class RetryHandler:
         # frischer Frist.
         for state_header in LOOP_STATE_HEADERS:
             headers.pop(state_header, None)
+        # Review U5: die Retry-Kopie ist keine Neuzustellung des Fires; mit
+        # dem Defer-Zaehler wuerde sie bei fremdem Claim zurueckgestellt statt
+        # als Duplikat bestaetigt, der Deckel startete mit altem Stand.
+        headers.pop(HEADER_SCHEDFIRE_DEFER_COUNT, None)
         headers[HEADER_RETRY_COUNT] = retry_count + 1
         headers["x-swarmq-traceback"] = bounded_header_text(error_message)
         try:
@@ -199,10 +205,12 @@ class RetryHandler:
         may_redeliver: bool = True,
         *,
         error_class: str | None = None,
+        redeliver_with: Callable[[BaseException], Awaitable[None]] | None = None,
     ) -> bool:
         """Workflow der Zustellung fehlmarkieren (BZ-13, ``GateDeps.fail_workflow``).
         ``False``: voruebergehend gescheitert und neu zugestellt -- nur bei
-        *may_redeliver* und AT_LEAST_ONCE (bzw. unregistriertem Task)."""
+        *may_redeliver* und AT_LEAST_ONCE (bzw. unregistriertem Task);
+        *redeliver_with* siehe ``fail_workflow_step``."""
         try:
             task_info = self._deps.registry.get(ctx.task_name).task_info
         except TaskNotFoundError:
@@ -217,6 +225,7 @@ class RetryHandler:
             redeliver=may_redeliver and at_least_once,
             log=logger,
             error_class=error_class,
+            redeliver_with=redeliver_with,
         )
 
     async def dead_letter(
@@ -315,7 +324,7 @@ class RetryHandler:
             # Original). If it raises, the except branch redelivers and
             # the redelivery's terminal path must still be able to
             # release the flag.
-            await deps.maybe_release_unique(delivery, task_id, task_info_for_release)
+            await deps.maybe_release_unique(delivery, ctx, task_info_for_release)
             # Emit the terminal dead-letter signal
             # AFTER a successful publish+ack so operators get a metric
             # (outcome="dlq") and any custom handler fires exactly once

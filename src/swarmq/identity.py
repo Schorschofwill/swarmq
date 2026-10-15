@@ -12,7 +12,7 @@ import uuid
 from collections.abc import Mapping
 from typing import Any, cast
 
-from swarmq.headers import HEADER_DLQ_GENERATION, HEADER_REPLAY_ID, HEADER_XDEATH_BASE
+from swarmq.headers import BROKER_DELIVERY_COUNTERS, HEADER_DLQ_GENERATION, HEADER_REPLAY_ID, HEADER_XDEATH_BASE
 from swarmq.queue_names import is_delay_queue
 
 #: Broker-Header mit der DLX-Historie (RabbitMQ).
@@ -80,14 +80,23 @@ def execution_identity(headers: Mapping[str, Any] | None, task_id: str) -> str:
     return f"{task_id}{identity_suffix(headers)}"
 
 
+# Nicht in eine Kopie uebernommen: ``x-death`` (wird zur Base), die alte Base
+# und die Zustellzaehler des Brokers (FS-10).
+_NOT_COPIED = frozenset({HEADER_X_DEATH, HEADER_XDEATH_BASE}) | BROKER_DELIVERY_COUNTERS
+
+
 def copy_headers(headers: Mapping[str, Any] | None) -> dict[str, Any]:
     """Header einer Kopie, die swarmq selbst publiziert (Retry, Zurueck-
     stellung, DLQ-Stempel, ``dlq retry``): ``x-death`` wird entfernt und sein
     Stand in ``x-swarmq-xdeath-base`` festgehalten -- der Broker baut
     ``x-death`` beim naechsten Dead-Lettern neu auf (Spike S5), die Identitaet
-    bleibt so stabil. Bei n = 0 traegt die Kopie keine Base (wie 0.11)."""
+    bleibt so stabil. Bei n = 0 traegt die Kopie keine Base (wie 0.11).
+
+    Die Zustellzaehler des Brokers (``BROKER_DELIVERY_COUNTERS``) entfallen:
+    die Kopie ist eine neue Nachricht (FS-10). Die Identitaet liest sie
+    nicht, Replay-ID und Generation bleiben dieselben (E-009)."""
     count = xdeath_count(headers)
-    copied = {k: v for k, v in (headers or {}).items() if k not in (HEADER_X_DEATH, HEADER_XDEATH_BASE)}
+    copied = {k: v for k, v in (headers or {}).items() if k not in _NOT_COPIED}
     if count > 0:
         copied[HEADER_XDEATH_BASE] = count
     return copied

@@ -19,6 +19,7 @@ tests:
   - tests/unit/worker/gates/test_unknown_task_grace.py::test_deferred_cron_fire_keeps_claim_open_and_unique_flag_held
   - tests/unit/worker/gates/test_unknown_task_grace.py::test_grace_zero_dead_letters_at_first_contact
   - tests/unit/test_config_unknown_task_grace.py::test_default_is_fifteen_minutes
+  - tests/unit/worker/test_finalize.py::test_start_mode_unknown_task_dlx_fallback_releases_the_flag
 ---
 
 **Entscheidung.** Eine Nachricht mit unbekanntem Task-Namen wird mit Backoff (1 s bis 60 s, Header `x-swarmq-unknown-since`) zurückgestellt und als `Redelivered` behandelt; das Signal `TASK_UNKNOWN_DEFERRED` zählt die Rückstellungen. Erst nach der Gnadenfrist `unknown_task_grace_s` (Default 900 s; 0 schaltet sie ab) geht sie in die DLQ: Log `task_not_found`, Fehlerergebnis, Workflow-Fail, Unique-Freigabe, `TASK_DLQ`, `TASK_REJECTED(unregistered_task)`.

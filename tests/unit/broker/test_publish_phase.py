@@ -7,6 +7,8 @@ lesbares ``drain_future`` hat.
 
 Test-Liste:
 - [x] ``basic_publish`` ohne ``drain_future`` -> gilt als gesendet (unbestimmt)
+- [x] ``drain_future`` noch nicht gebunden (Abbruch in der Sperren-
+      Warteschlange) -> nicht gesendet (FS-08, KTD9)
 """
 
 from __future__ import annotations
@@ -22,6 +24,15 @@ _CHANGED_AIORMQ = """
 def basic_publish():
     written = object()
     raise ConnectionError("Server connection unexpectedly closed")
+"""
+
+
+# aiormqs ``basic_publish``, abgebrochen vor ``drain_future = self.create_future()``:
+# Der Name steht in ``co_varnames``, ist aber nicht gebunden.
+_WAITING_FOR_THE_LOCK = """
+def basic_publish():
+    raise ConnectionError("cancelled while waiting for the channel lock")
+    drain_future = object()
 """
 
 
@@ -42,3 +53,10 @@ def test_an_unreadable_drain_future_counts_as_sent() -> None:
     exc = _raised_in("aiormq.channel", _CHANGED_AIORMQ)
 
     assert sent_before_failure(exc) is True
+
+
+def test_an_unbound_drain_future_counts_as_not_sent() -> None:
+    """FS-08: Vor ``drain_future`` legt aiormq nichts in die ``write_queue``."""
+    exc = _raised_in("aiormq.channel", _WAITING_FOR_THE_LOCK)
+
+    assert sent_before_failure(exc) is False

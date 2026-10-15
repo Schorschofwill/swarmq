@@ -46,6 +46,17 @@ field and fires under a new ID: while such a leader holds the role,
 `get_result()` on the returned ID times out and `cancel()` has no
 effect. Each cron fire gets a new ID.
 
+Dedup of a deferred task is settled when you call `schedule()`. With
+`unique_for=` the producer claims the flag right away. With
+`unique_for=None` dedup is off for this call: the one-shot entry
+records the opt-out, and the leader fires without a dedup claim. If you
+leave out `unique_for`, the leader resolves it from its own `TaskInfo`
+at fire time and skips the task if another run with the same arguments
+holds the flag. The opt-out needs a producer and a leader after 0.12.1.
+A producer up to 0.12.1 does not record it, and a leader up to 0.12.1
+falls back to its own `TaskInfo`; producers often live in other
+services, so update them too.
+
 ## Cron scheduling
 
 For recurring work, set `cron` on `TaskInfo`:
@@ -671,9 +682,20 @@ task_info = TaskInfo(
 )
 ```
 
-- **Soft timeout.** The worker raises `SoftTimeoutError` inside
-  `run()` so your task can checkpoint and wrap up.
-- **Hard timeout.** The worker cancels the coroutine outright.
+- **Soft timeout.** The worker cancels `run()` (it runs under
+  `asyncio.wait_for`). Inside the task this arrives as
+  `asyncio.CancelledError`, not as `SoftTimeoutError`. To checkpoint,
+  clean up in `finally` or in `except asyncio.CancelledError:` and
+  re-raise. The worker then stores `SoftTimeoutError` as a retriable
+  error result and skips `post_execution`. A task that swallows the
+  `CancelledError` and returns normally produces a success result.
+  Only the expiry of `soft_timeout` becomes `SoftTimeoutError`; a
+  `TimeoutError` raised by the task itself keeps its class and is
+  matched by `retry_exceptions=[TimeoutError]`. See
+  [`SoftTimeoutError`](../reference/errors.md#softtimeouterror).
+- **Hard timeout.** The worker cancels the coroutine outright. It
+  only matters when the task ignores or delays the soft-timeout
+  cancellation.
 
 `hard_timeout` must be strictly greater than `soft_timeout` when
 both are set. `hard_timeout` is also required when a task declares

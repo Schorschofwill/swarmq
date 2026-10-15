@@ -12,11 +12,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from swarmq.exceptions import is_backend_outage
 from swarmq.limits import parse_rate_limit
 from swarmq.logging import _error_fields, get_logger
 from swarmq.signals import Signal
-from swarmq.worker.gates import GateContext, GateDeps, redeliver_in_place, republish_headers
-from swarmq.worker.gates.backend_defer import bounded_backend_call, defer_backend_unavailable, is_backend_outage
+from swarmq.worker.gates import GateContext, GateDeps, _as_count, redeliver_in_place, republish_headers
+from swarmq.worker.gates.backend_defer import bounded_backend_call, defer_backend_unavailable
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered
 
 logger = get_logger(__name__)
@@ -83,7 +84,8 @@ class RateLimitGate:
         # here — that decision belongs to the operator and is documented
         # as a Non-Goal in plan 005. The header is the visible knob.
         original_headers = republish_headers(delivery, ctx)
-        rl_count = int(original_headers.get("x-swarmq-rate-limit-count", 0)) + 1
+        # Nur Diagnose: ein kaputter Zaehler zaehlt wie keiner (FS-19, KTD15).
+        rl_count = _as_count(original_headers.get("x-swarmq-rate-limit-count", 0)) + 1
         original_headers["x-swarmq-rate-limit-count"] = rl_count
 
         logger.info(

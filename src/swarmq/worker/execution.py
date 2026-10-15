@@ -23,6 +23,7 @@ from swarmq.signals import Signal
 from swarmq.task import DeliveryMode
 from swarmq.worker.error_info import mark_worker_error
 from swarmq.worker.gates import GateContext, GateDeps
+from swarmq.worker.soft_timeout import run_with_soft_timeout
 
 if TYPE_CHECKING:
     from swarmq.config import SwarmQConfig
@@ -139,7 +140,9 @@ class TaskExecutor:
             # bliebe die Nachricht unbestaetigt haengen.
             run_coro = task_instance.run(*ctx.args, **ctx.kwargs)
             if task_info.soft_timeout is not None:
-                run_coro = asyncio.wait_for(run_coro, timeout=task_info.soft_timeout)
+                # Nur der Ablauf der eigenen Frist wird ``SoftTimeoutError``; eine
+                # ``TimeoutError`` des Tasks bleibt, was sie ist (E-045, FS-05).
+                run_coro = run_with_soft_timeout(run_coro, task_info.soft_timeout)
             run_task = asyncio.create_task(run_coro)
         except Exception as exc:  # noqa: BLE001 - Task-Fehler darf die Pipeline nicht verlassen
             fail(exc, str(exc))
@@ -182,8 +185,7 @@ class TaskExecutor:
         assert task_info is not None
         try:
             result.result_value = await run_task
-        except TimeoutError:
-            soft_err = SoftTimeoutError(f"soft timeout after {task_info.soft_timeout}s")
+        except SoftTimeoutError as soft_err:
             fail(soft_err, f"SoftTimeoutError: {soft_err}")
         except asyncio.CancelledError:
             # Discriminate user-cancel vs hard-timeout via the

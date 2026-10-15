@@ -15,6 +15,7 @@ quelle:
   - website/guides/scheduling-and-retries.md:220-228 (Definition ohne unique_for/unique_until nutzt die TaskInfo des Leaders)
 tests:
   - tests/unit/scheduler/test_fire.py::test_old_definition_takes_both_unique_values_from_the_registry
+  - tests/unit/client/test_schedule.py::TestClientUniqueDeferred::test_deferred_without_registry_and_unique_for_stays_cli
 ---
 
 **Entscheidung.** Trägt eine Schedule-Definition keine eigenen Werte für `unique_for`/`unique_until` (statischer Cron vor 0.12, CLI-Schedule, `source != "cli_unique"`), löst der Leader beim Fire die `TaskInfo` aus seiner eigenen Registry auf und setzt den Unique-Claim danach. Beide Werte kommen dann gemeinsam aus der Registry, nicht gemischt mit Defaults der Definition.
@@ -23,4 +24,6 @@ tests:
 
 **Bewusste Folgen.** Ein Cron-Fire, das wegen eines laufenden Duplikats übersprungen wird, obwohl die Definition selbst kein `unique_for` nennt, ist kein Fehler. Kennt der Leader den Task nicht, gibt es keine Dedup (nur die Warnung `scheduler_task_not_in_local_registry`).
 
-**Überdenken nur mit neuem Argument.** Offen: FS-14. Der Client speichert bei `schedule(delay=/eta=, unique_for=None)` den ausdrücklichen Opt-out nicht in der Definition (`source="cli"`), sodass dieser Rückfall den Opt-out aushebelt. Das ist ein Fehler gegen E-033, keine Frage dieser Entscheidung: Der Fix muss den Opt-out in der Definition persistieren, statt den Rückfall zu entfernen. Die Produktfrage, ob CLI-Definitionen überhaupt auf die Leader-TaskInfo zurückfallen sollen, ist offen.
+**Nachtrag 2026-10-14 (FS-14, U13):** Behoben. Der Opt-out wird als `cli_unique` ohne Hash gespeichert; der Rückfall bleibt für `source="cli"` unverändert.
+
+**Überdenken nur mit neuem Argument.** Bis U13 speicherte der Client bei `schedule(delay=/eta=, unique_for=None)` den ausdrücklichen Opt-out nicht in der Definition (`source="cli"`), sodass dieser Rückfall den Opt-out aushebelte. Das war ein Fehler gegen E-033, keine Frage dieser Entscheidung: Der Fix persistiert den Opt-out in der Definition, statt den Rückfall zu entfernen. Die Produktfrage, ob CLI-Definitionen überhaupt auf die Leader-TaskInfo zurückfallen sollen, ist offen.

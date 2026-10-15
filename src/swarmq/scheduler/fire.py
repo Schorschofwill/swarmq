@@ -13,7 +13,7 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from swarmq.exceptions import BackendConnectionError, PublishIndeterminate, UnroutableMessage
+from swarmq.exceptions import BackendConnectionError, PublishIndeterminate, UnroutableMessage, is_backend_outage
 from swarmq.logging import _error_fields
 from swarmq.scheduler.definition import ScheduleDefinition, make_schedfire_key
 from swarmq.serialization import compute_dedup_hash, encode_json
@@ -102,7 +102,7 @@ class SchedulerFire:
             return
 
         # Build the task message body — same shape as Client.schedule.
-        task_id = _fire_task_id(schedule_name, definition)
+        task_id, fresh_task_id = _fire_task_id(schedule_name, definition)
         body = encode_json(
             {
                 "task": {
@@ -129,14 +129,10 @@ class SchedulerFire:
         # BZ-09/B7: Hash eines Unique-Claims, den genau dieses Fire genommen hat.
         own_claim: str | None = None
 
-        if definition.source == "cli_unique" and definition.dedup_hash:
-            # Client already SETNX'd this task at schedule(delay=/eta=) time.
-            # Propagate the hash + intended mode so the worker releases
-            # at the right point. unique_until is persisted on the
-            # definition so post-deploy TaskInfo
-            # changes cannot silently flip release semantics.
-            headers["x-swarmq-unique-hash"] = definition.dedup_hash
-            headers["x-swarmq-unique-until"] = definition.unique_until
+        if definition.source == "cli_unique":
+            # Client already decided on dedup at schedule(delay=/eta=) time;
+            # never fall back to the registry (FS-14, E-033).
+            headers.update(_producer_unique_headers(definition))
         else:
             # Static cron or plain CLI — resolve TaskInfo and SETNX here.
             task_info = self._resolve_task_info(definition.task_name)
@@ -184,9 +180,24 @@ class SchedulerFire:
                         schedule_name=schedule_name,
                         **_error_fields(exc),
                     )
+                    # FS-07: Der Timeout kann ein schon gesetztes Flag verdecken.
+                    # Unter frischer task_id ist es sicher nur dieses Fire;
+                    # owner-geprueft freigeben, sonst blockiert es den naechsten
+                    # Poll bis ``unique_for``. Eine stabile ID (Oneshot) bleibt
+                    # unangetastet: ihr Flag kann aus einem Poll mit
+                    # ``PublishIndeterminate`` stammen (E-011, KTD8). Eine
+                    # Fehlerantwort heisst: der Claim lief nicht (wie Lock-Gate).
+                    if fresh_task_id and is_backend_outage(exc):
+                        await self._release_own_claim(schedule_name, dedup_hash, task_id)
                     return  # Retry on next poll; commit not called.
 
-                if existing is not None:
+                # FS-06b: Unter frischer task_id (Cron, Oneshot ohne stabile
+                # ID) ist "existing == task_id" der eigene Claim, den die
+                # Transport-Wiederholung meldet. Unter stabiler ID (Oneshot aus
+                # ``schedule()``) ist der Selbsttreffer nicht von einem echten
+                # Duplikat zu unterscheiden (Folge-Poll nach
+                # ``PublishIndeterminate``) und bleibt Duplikat (KTD7, E-011-Nachtrag).
+                if existing is not None and not (fresh_task_id and existing == task_id):
                     await self._emit_duplicate_detected(
                         existing_task_id=existing,
                         task_name=definition.task_name,
@@ -374,13 +385,30 @@ class SchedulerFire:
 _ONESHOT_PREFIX = "oneshot:"
 
 
-def _fire_task_id(schedule_name: str, definition: ScheduleDefinition) -> str:
-    """task_id eines Fires (BZ-02): ein Oneshot (delay/eta) feuert unter der
-    ID, die ``schedule()`` geliefert hat (Feld ``task_id``, sonst Suffix von
-    ``oneshot:<id>`` für Einträge eines 0.11-Producers); ein Cron bekommt je
-    Fire eine neue."""
+def _producer_unique_headers(definition: ScheduleDefinition) -> dict[str, str]:
+    """Unique-Header eines ``cli_unique``-Oneshots, dessen Producer ueber die
+    Dedup entschieden hat.
+
+    Mit Hash hat der Client das Flag gesetzt: Hash und Modus reisen mit, damit
+    der Worker zum richtigen Zeitpunkt freigibt; ``unique_until`` steht in der
+    Definition, damit eine spaetere TaskInfo-Aenderung die Freigabe nicht
+    umdreht. Ohne Hash ist es der ausdrueckliche Opt-out ``unique_for=None``
+    (FS-14, E-033): keine Header, kein Claim, kein Rueckfall auf die Registry
+    (E-032 gilt nur fuer ``source="cli"``).
+    """
+    if not definition.dedup_hash:
+        return {}
+    return {"x-swarmq-unique-hash": definition.dedup_hash, "x-swarmq-unique-until": definition.unique_until}
+
+
+def _fire_task_id(schedule_name: str, definition: ScheduleDefinition) -> tuple[str, bool]:
+    """task_id eines Fires (BZ-02) und ob sie frisch erzeugt ist: ein Oneshot
+    (delay/eta) feuert unter der ID, die ``schedule()`` geliefert hat (Feld
+    ``task_id``, sonst Suffix von ``oneshot:<id>`` für Einträge eines
+    0.11-Producers); ein Cron und ein Oneshot ohne beides bekommen je Fire
+    eine neue."""
     if definition.cron is None and definition.task_id:
-        return definition.task_id
+        return definition.task_id, False
     if definition.cron is None and schedule_name.startswith(_ONESHOT_PREFIX):
-        return schedule_name.removeprefix(_ONESHOT_PREFIX)
-    return str(uuid.uuid7())
+        return schedule_name.removeprefix(_ONESHOT_PREFIX), False
+    return str(uuid.uuid7()), True

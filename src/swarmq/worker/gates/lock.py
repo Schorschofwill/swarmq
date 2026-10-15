@@ -46,8 +46,8 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-from swarmq.contracts.coordination import LockObservation
-from swarmq.exceptions import LockWaitExceeded
+from swarmq.contracts.coordination import LockObservation, LockToken
+from swarmq.exceptions import LockWaitExceeded, is_backend_outage
 from swarmq.header_text import bounded_header_text
 from swarmq.headers import (
     HEADER_LOCK_CONFLICTS,
@@ -71,12 +71,12 @@ from swarmq.worker.gates import (
     republish_headers,
     route_via_dlx,
 )
-from swarmq.worker.gates.backend_defer import bounded_backend_call, defer_backend_unavailable, is_backend_outage
+from swarmq.worker.gates.backend_defer import bounded_backend_call, defer_backend_unavailable
 from swarmq.worker.lock_wait_tracker import LockWaitTracker
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered
 
 if TYPE_CHECKING:
-    from swarmq.contracts.coordination import LockStore, LockToken
+    from swarmq.contracts.coordination import LockStore
 
 logger = get_logger(__name__)
 
@@ -119,7 +119,7 @@ def _as_int(raw: Any, default: int) -> int:
     """Nicht-negativer Header-Wert; ein kaputter Header zaehlt wie keiner."""
     try:
         value = int(raw)
-    except TypeError, ValueError:
+    except TypeError, ValueError, OverflowError:
         return default
     return value if value >= 0 else default
 
@@ -267,6 +267,17 @@ class LockGate:
             # limit ends a persistent failure in the DLQ). Runs BEFORE
             # FIRE_AND_FORGET ack — no data loss.
             if is_backend_outage(exc):
+                # FS-07 (KTD8): Der Timeout kann einen schon geschriebenen Lock
+                # verdecken; owner-geprueft freigeben, im Hintergrund, damit
+                # ein haengendes Valkey die Zurueckstellung nicht verzoegert.
+                release = self._release_unconfirmed(
+                    lock_manager,
+                    LockToken(name=lock_name, owner=owner_token, max_concurrency=task_info.max_concurrency),
+                )
+                if deps.detach is not None:
+                    deps.detach(release)
+                else:
+                    await release
                 # Backend weg: zurueckstellen statt per Requeue das
                 # Zustellbudget zu verbrauchen (kein Lock-Konflikt); die
                 # Zurueckstellung loggt die eine WARNING-Zeile. Eine
@@ -507,7 +518,7 @@ class LockGate:
             task_name=ctx.task_name,
             error=str(exc),
         )
-        await self._deps.maybe_release_unique(delivery, ctx.task_id, ctx.task_info)
+        await self._deps.maybe_release_unique(delivery, ctx, ctx.task_info)
 
     async def _render_dlx_fallback(self, delivery: Any, ctx: GateContext, exc: Exception, *, empty: bool) -> None:
         """Render-Fehler/leerer Render, DLQ-Publish gescheitert: der terminale
@@ -534,7 +545,19 @@ class LockGate:
             task_name=ctx.task_name,
             error=str(exc),
         )
-        await deps.maybe_release_unique(delivery, ctx.task_id, ctx.task_info)
+        await deps.maybe_release_unique(delivery, ctx, ctx.task_info)
+
+    async def _release_unconfirmed(self, lock_manager: LockStore, token: LockToken) -> None:
+        """Freigabe eines Locks, dessen Acquire ohne Antwort blieb (FS-07).
+        Owner-geprueft: ohne eigenen Lock ein No-op, ein fremder bleibt.
+        Scheitert sie, heilt die Lock-TTL. Scheitert sie am Ausfall, nur
+        DEBUG: ``task_deferred_backend_unavailable`` ist die eine Zeile je
+        Zurueckstellung."""
+        try:
+            await bounded_backend_call(self._deps, lock_manager.release(token), what=f"lock release for {token.name!r}")
+        except Exception as exc:  # noqa: BLE001 - best effort, die Lock-TTL heilt den Fall
+            log = logger.debug if is_backend_outage(exc) else logger.warning
+            log("lock_release_failed", lock_name=token.name, stage="acquire_timeout", **_error_fields(exc))
 
     async def _acquire_and_register(
         self, lock_manager: Any, ctx: GateContext, lock_name: str, owner_token: str, ttl_ms: int, max_concurrency: int

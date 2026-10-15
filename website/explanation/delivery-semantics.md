@@ -157,9 +157,16 @@ not in `x-delivery-count`. The worker's delivery-count check counts
 both and dead-letters the delivery one round before the limit, as
 `RedeliveryLimitError` when only `x-acquired-count` reached it.
 
-Retry copies and the copies after a rate-limit hit or a lock conflict
-drop the broker's delivery counters the same way, so an inherited
-`x-delivery-count` cannot send them to `{queue}.XQ` as a hung message.
+Retry copies, the copies after a rate-limit hit or a lock conflict and
+the worker's DLQ copies drop the broker's delivery counters the same
+way, so an inherited `x-delivery-count` cannot send them to
+`{queue}.XQ` as a hung message. A DLQ copy can therefore also be
+replayed with "Move messages" in the RabbitMQ UI or with a shovel. The
+exceptions are messages the broker itself put into `.XQ` through the
+dead-letter exchange (`route_via_dlx`) and DLQ copies made by workers
+up to 0.12.1: they may still carry the counters, and a replay at the
+delivery limit then goes straight back to the DLQ. Use `swarmq dlq retry`
+for them; it drops the counters.
 
 A schedule fire (`x-swarmq-schedfire`) is claimed in Valkey before it
 runs, so a second publish of the same fire is dropped. A copy of a
@@ -295,8 +302,26 @@ from `SIGTERM`, so a slow `WORKER_SHUTDOWN` handler (at most 10 s)
 shortens it. Every cleanup step has a time limit (the rest of the budget,
 at least 1 s); a step that exceeds it is logged
 (`shutdown_step_timeout`) and skipped, the lock TTL and the leader-lock
-TTL heal what it left. A recycling worker (`SWARMQ_RECYCLE_*`) keeps its
-own drain (largest `hard_timeout`).
+TTL heal what it left.
+
+**Recycling.** A recycling worker (`SWARMQ_RECYCLE_*`) keeps its own
+drain without forced cancellation: the largest `hard_timeout` of all
+registered tasks plus 30 s (a task sent with `schedule(..., queue=...)`
+can run on any worker). If a task without `hard_timeout` can run on this
+worker (declared on a queue it consumes, or already started there), it
+waits at least `SWARMQ_CONSUMER_TIMEOUT_S` (default 30 min); otherwise,
+with no `hard_timeout` anywhere, the drain falls back to
+`SWARMQ_SHUTDOWN_TIMEOUT`. By then RabbitMQ has taken back every delivery the worker held,
+so waiting longer could not ack anything. A task that runs past that
+limit is cancelled like a drain cancellation on shutdown. Keep
+`SWARMQ_CONSUMER_TIMEOUT_S` equal to the broker's `consumer_timeout`;
+on a broker without a consumer timeout a healthy long runner is still
+cancelled after `SWARMQ_CONSUMER_TIMEOUT_S`. A `SIGTERM` during a
+recycling drain (deploy, supervisor shutdown) puts the shutdown budget
+into force from that signal: the drain ends at the latest at the drain
+deadline of the table above, counted from the `SIGTERM`, and locks,
+leader handover and connections are done within the budget. A second
+`SIGTERM` (the supervisor's escalation) does not restart that clock.
 
 **Set the orchestrator's grace period to at least
 `SWARMQ_SHUTDOWN_TIMEOUT + 15 s`**: Kubernetes
@@ -355,7 +380,10 @@ An `ack` that fails because the channel is gone (RabbitMQ up to 4.2
 after a consumer timeout) still sets the done marker. A retry or
 dead-letter publish that the broker confirmed but whose ack failed
 raises `SettleFailedAfterPublish` and sets its marker as after
-success; the redelivered original is then skipped.
+success; the redelivered original is then skipped. Every dead-letter
+path of the worker, including the one for expired tasks (`max_age`),
+treats this case as terminal: warning `dlq_ack_failed_after_publish`,
+unique release, no `nack`.
 
 **On redelivery** the claim decides:
 

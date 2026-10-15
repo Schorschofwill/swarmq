@@ -64,7 +64,6 @@ class _FlagStore:
 
 
 @pytest.mark.befund("FS-07")
-@pytest.mark.xfail(strict=True, reason="FS-07: offen - Unique-Claim des Leaders nach Timeout nicht freigegeben")
 async def test_unique_claim_written_before_timeout_does_not_block_the_next_poll(
     backend: MagicMock,
     broker: MagicMock,

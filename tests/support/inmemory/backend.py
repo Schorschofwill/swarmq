@@ -324,10 +324,14 @@ class InMemoryLockStore:
         if ttl_ms <= 0 or max_concurrency < 1:
             return None
         if max_concurrency == 1:
-            if not self._mutex.set_if_absent(name, owner, ttl_ms):
+            # Wie ``lock_acquire.lua`` (FS-06b): der eigene Token gilt als
+            # erworben, die Frist bleibt.
+            if self._mutex.get(name) != owner and not self._mutex.set_if_absent(name, owner, ttl_ms):
                 return None
         else:
             slots = self._semaphore.setdefault(name, _TTLDict(self._clock))
+            if slots.get(owner) is not None:
+                return LockToken(name=name, owner=owner, max_concurrency=max_concurrency)
             if len(slots.keys()) >= max_concurrency:
                 return None
             slots.set(owner, "1", ttl_ms)

@@ -85,7 +85,7 @@ async def finalize_schedfire(
 
 async def maybe_release_unique(
     message: Any,
-    task_id: str,
+    ctx: GateContext,
     task_info: TaskInfo | None = None,
     *,
     unique_hash: str | None,
@@ -98,8 +98,12 @@ async def maybe_release_unique(
       * No-op when the message lacks a valid ``x-swarmq-unique-hash``
         header (missing, wrong type, not a 64-char lowercase hex
         digest).
-      * No-op in ``start``-mode at terminal paths — Unit 10 already
-        released at pickup (owner-check would fail here anyway).
+      * No-op in ``start``-mode once the delivery reached its start point
+        (``ctx.start_release_reached``) — the release at start already
+        happened, there is exactly one (E-034). Ends the message
+        terminally BEFORE its start (expiry, pre-start cancel, lock/
+        unknown-task DLQ, delivery limit), the flag is released like in
+        completion-mode (FS-13, E-008).
       * ``completion``-mode (default): call ``backend.release_unique``;
         owner-check protects against TTL-expiry-race (first task's
         flag was reclaimed by a second task before first finished).
@@ -122,10 +126,10 @@ async def maybe_release_unique(
     headers: dict[str, Any] = message.headers or {}
     header_mode = headers.get(HEADER_UNIQUE_UNTIL)
     mode = header_mode or (task_info.unique_until if task_info is not None else "completion")
-    if mode == "start":
-        return  # Release already happened at pickup (Unit 10).
+    if mode == "start" and ctx.start_release_reached:
+        return  # FS-13: Freigabe beim Start ist schon gelaufen (E-034).
     await backend.release_unique(
         unique_hash,
-        task_id,
+        ctx.task_id,
         op_timeout=config.backend_op_timeout,
     )

@@ -21,13 +21,28 @@ Test-Liste:
        40 Zeichen, verschieden je Identitaet.
 9. [x] ``task_id_of(body)``: Task-ID aus dem Body, None bei kaputtem Body.
 10. [x] ``is_replay``: True, sobald H gesetzt oder n > 0.
+
+FS-10 (KTD13): DLQ-Kopien tragen keine Broker-Zustellzaehler.
+11. [x] ``copy_headers`` entfernt ``x-delivery-count`` und ``x-acquired-count``.
+12. [x] Replay-ID (Generation) der DLQ-Kopie mit und ohne Zaehler im
+        Original gleich (Mischbetrieb, E-009).
+13. [x] Der Defer-Header ``x-swarmq-schedfire-defer-count`` (FS-03) bleibt.
 """
 
 from __future__ import annotations
 
 import hashlib
 
-from swarmq.identity import copy_headers, execution_identity, generation_id, is_replay, task_id_of, xdeath_count
+from swarmq.headers import HEADER_SCHEDFIRE_DEFER_COUNT
+from swarmq.identity import (
+    copy_headers,
+    dead_letter_generation,
+    execution_identity,
+    generation_id,
+    is_replay,
+    task_id_of,
+    xdeath_count,
+)
 
 
 def test_without_headers_n_is_zero() -> None:
@@ -89,6 +104,29 @@ def test_copy_headers_moves_x_death_into_the_base_and_keeps_the_rest() -> None:
     assert copy_headers({"x-swarmq-xdeath-base": 1, "x-death": [_death("tasks", 1)]}) == {"x-swarmq-xdeath-base": 2}
     assert copy_headers({"x-swarmq-xdeath-base": 0, "x-death": [_death("tasks.DQ", 1, "expired")]}) == {}
     assert copy_headers(None) == {}
+
+
+def test_copy_headers_drops_the_broker_delivery_counters() -> None:
+    original = {"x-delivery-count": 19, "x-acquired-count": 19, "x-keep": "k"}
+    assert copy_headers(original) == {"x-keep": "k"}
+    assert original["x-delivery-count"] == 19, "das Original bleibt unberuehrt"
+
+
+def test_dead_letter_generation_is_the_same_with_and_without_broker_counters() -> None:
+    body = b'{"task": {"id": "t-1", "name": "n"}}'
+    base = {"x-death": [_death("tasks", 2)], "x-swarmq-replay-id": "r1"}
+    with_counters = {**base, "x-delivery-count": 7, "x-acquired-count": 9}
+
+    stamped = dead_letter_generation(with_counters, body, 1_000)
+
+    assert stamped == dead_letter_generation(base, body, 1_000)
+    assert stamped["x-swarmq-replay-id"] == generation_id("t-1|r1#2")
+    assert execution_identity(with_counters, "t-1") == execution_identity(base, "t-1")
+
+
+def test_copy_headers_keeps_the_schedfire_defer_header() -> None:
+    copied = copy_headers({HEADER_SCHEDFIRE_DEFER_COUNT: 0, "x-delivery-count": 1})
+    assert copied == {HEADER_SCHEDFIRE_DEFER_COUNT: 0}
 
 
 def test_generation_id_is_a_deterministic_sha1_of_the_identity() -> None:

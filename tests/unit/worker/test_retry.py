@@ -372,6 +372,34 @@ async def test_retry_copy_drops_backend_defer_count(broker, backend, config):
     assert "x-swarmq-backend-defer-count" not in broker.retry_later.await_args.kwargs["headers"]
 
 
+@pytest.mark.timeout(5)
+@pytest.mark.entscheidung("E-046")
+async def test_retry_copy_drops_schedfire_defer_count(broker, backend, config):
+    """Review U5 (P2): der Schedfire-Defer-Zaehler gehoert zur Zurueckstellung
+    einer Neuzustellung. Die fachliche Retry-Kopie eines gelaufenen Fires ist
+    keine Neuzustellung -- traegt sie den Zaehler, wird sie bei fremdem Claim
+    zurueckgestellt statt als Duplikat bestaetigt, und der Deckel startet mit
+    dem alten Stand."""
+    from swarmq.headers import HEADER_SCHEDFIRE_DEFER_COUNT
+    from swarmq.middleware import MiddlewareChain
+
+    class RetryingTask(Task):
+        task_info = TaskInfo(name="retrying-task", queues=["default"], max_retries=3)
+
+    handler, _ = _handler(broker, backend, config, RetryingTask)
+    msg = make_message(
+        _default_payload(name="retrying-task"),
+        headers={HEADER_SCHEDFIRE_DEFER_COUNT: 4, "x-swarmq-schedfire": "cron:a:1"},
+    )
+    await handler.evaluate(
+        msg, _ctx(RetryingTask), RuntimeError("task boom"), "task boom", {"retry_count": 0}, MiddlewareChain([])
+    )
+
+    headers = broker.retry_later.await_args.kwargs["headers"]
+    assert HEADER_SCHEDFIRE_DEFER_COUNT not in headers
+    assert headers["x-swarmq-schedfire"] == "cron:a:1"
+
+
 class _NoDlqTask(Task):
     task_info = TaskInfo(name="no-dlq-task", queues=["default"], max_retries=0, result_ttl=120, dead_letter=False)
 

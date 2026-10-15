@@ -123,13 +123,18 @@ class ResultTail:
         assert task_info is not None
         wf_id_faf = self._extract_workflow_id(delivery, ctx)
         if wf_id_faf is not None and advancer is not None:
+            # Meldung nach Ursache (FS-28): FIRE_AND_FORGET oder kein Ergebnis.
+            if task_info.delivery is DeliveryMode.FIRE_AND_FORGET:
+                cause = "is FIRE_AND_FORGET"
+            else:
+                cause = "stores no result (result_ttl=0)"
             outcome = await self._fail_workflow(
                 delivery,
                 ctx,
                 wf_id_faf,
                 advancer,
                 "WorkflowValidationError",
-                f"task {ctx.task_name!r} is FIRE_AND_FORGET and cannot advance a workflow",
+                f"task {ctx.task_name!r} {cause} and cannot advance a workflow",
                 event="workflow_faf_fail_mark_error",
             )
             if outcome is not None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import multiprocessing
 from typing import Any
 
@@ -10,6 +11,7 @@ import pytest
 
 from swarmq import supervision as sv
 from swarmq.signals import Signal
+from swarmq.task import Task, TaskInfo
 from swarmq.worker import recycling
 from swarmq.worker.lifecycle import WorkerState
 
@@ -81,7 +83,9 @@ async def test_task_count_threshold_recycles_with_ack(worker, channel, monkeypat
     assert events[0]["kind"] == "worker"
     assert events[0]["reason"] == "tasks"
     assert events[0]["value"] == 2.0
-    assert worker._drain_timeout_override == float(worker._config.shutdown_timeout)
+    # E-038/FS-30: ``add`` hat keinen hard_timeout -> Frist consumer_timeout_s,
+    # nicht mehr der Rueckfall auf shutdown_timeout.
+    assert worker._drain_timeout_override == float(worker._config.consumer_timeout_s)
 
 
 @pytest.mark.timeout(10)
@@ -118,14 +122,98 @@ async def test_rss_threshold_wins_over_task_count(worker, channel, monkeypatch):
     assert events[0]["value"] == 320.0
 
 
+class _LongHard(Task):
+    task_info = TaskInfo(name="long_hard", queues=["q"], hard_timeout=120)
+
+
+class _ShortHard(Task):
+    task_info = TaskInfo(name="short_hard", queues=["default"], hard_timeout=10)
+
+
+class _NoHardElsewhere(Task):
+    task_info = TaskInfo(name="no_hard_elsewhere", queues=["other"])
+
+
+class _HugeHardElsewhere(Task):
+    task_info = TaskInfo(name="huge_hard_elsewhere", queues=["other"], hard_timeout=5000)
+
+
 def test_drain_timeout_uses_largest_hard_timeout_plus_buffer(worker):
-    from swarmq.task import Task, TaskInfo
-
-    class Long(Task):
-        task_info = TaskInfo(name="long_hard", queues=["q"], hard_timeout=120)
-
-    worker._registry.register(Long)
+    worker._config.queues = ["q"]  # nur ``long_hard`` wird konsumiert (``add`` liegt auf default)
+    worker._registry.register(_LongHard)
     assert recycling.recycle_drain_timeout(worker) == 120 + recycling.RECYCLE_DRAIN_BUFFER_S
+
+
+@pytest.mark.entscheidung("E-038")
+def test_mixed_registry_waits_at_least_consumer_timeout(worker):
+    # ``add`` (default, ohne hard_timeout) neben ``short_hard`` (hard_timeout=10).
+    worker._registry.register(_ShortHard)
+    assert recycling.recycle_drain_timeout(worker) == worker._config.consumer_timeout_s
+
+
+def test_mixed_registry_keeps_a_larger_hard_timeout_over_consumer_timeout(worker):
+    worker._config.consumer_timeout_s = 5.0
+    worker._registry.register(_ShortHard)
+    assert recycling.recycle_drain_timeout(worker) == 10 + recycling.RECYCLE_DRAIN_BUFFER_S
+
+
+def test_task_without_hard_timeout_on_a_foreign_queue_does_not_extend_the_drain(worker):
+    worker._config.queues = ["q"]
+    worker._registry.register(_LongHard)
+    worker._registry.register(_NoHardElsewhere)
+    assert recycling.recycle_drain_timeout(worker) == 120 + recycling.RECYCLE_DRAIN_BUFFER_S
+
+
+def test_hard_timeout_on_a_foreign_queue_still_counts(worker):
+    # Konservativ wie vor FS-30: ``schedule(queue=...)`` kann jeden registrierten
+    # Task auf eine konsumierte Queue umleiten, ein noch nicht gestarteter
+    # (vorab zugestellter) Lauf ist aber nicht sichtbar. Der groesste
+    # hard_timeout aller registrierten Tasks bleibt deshalb Teil der Frist; der
+    # Drain endet ohnehin, sobald keine Tasks mehr laufen.
+    worker._registry.register(_HugeHardElsewhere)
+    assert recycling.recycle_drain_timeout(worker) == 5000 + recycling.RECYCLE_DRAIN_BUFFER_S
+
+
+@pytest.mark.timeout(5)
+async def test_task_routed_by_queue_override_extends_the_drain(worker):
+    # ``schedule(..., queue="q")`` leitet ``no_hard_elsewhere`` (deklariert auf
+    # ``other``, ohne hard_timeout) auf die konsumierte Queue um: der Worker
+    # fuehrt ihn aus, also gilt fuer ihn die Grenze consumer_timeout_s.
+    _arm(worker, queues=["q"], recycle_max_tasks=1000)
+    worker._registry.register(_LongHard)
+    worker._registry.register(_NoHardElsewhere)
+    worker._start_recycle_monitor()
+    try:
+        await worker._signal_dispatcher.dispatch(
+            Signal.TASK_STARTED, task_id="t", task_name="no_hard_elsewhere", queue="q"
+        )
+        assert recycling.recycle_drain_timeout(worker) == worker._config.consumer_timeout_s
+    finally:
+        worker._recycle_monitor_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await worker._recycle_monitor_task
+
+
+class _NoHardOnLowPriority(Task):
+    task_info = TaskInfo(name="no_hard_low", queues=["q.low"])
+
+
+def test_priority_queues_count_only_when_priorities_are_on(worker):
+    # Mit priorities konsumiert der Worker q.high/q/q.low (``consumed_queues``),
+    # ohne nur q: ein Task ohne hard_timeout auf q.low zaehlt nur im ersten Fall.
+    worker._config.queues = ["q"]
+    worker._registry.register(_LongHard)
+    worker._registry.register(_NoHardOnLowPriority)
+    worker._config.priorities = True
+    assert recycling.recycle_drain_timeout(worker) == worker._config.consumer_timeout_s
+    worker._config.priorities = False
+    assert recycling.recycle_drain_timeout(worker) == 120 + recycling.RECYCLE_DRAIN_BUFFER_S
+
+
+def test_without_any_task_that_can_run_here_the_drain_keeps_shutdown_timeout(worker):
+    worker._config.queues = ["q"]  # ``add`` (default, ohne hard_timeout) laeuft hier nicht
+    worker._config.shutdown_timeout = 7
+    assert recycling.recycle_drain_timeout(worker) == 7.0
 
 
 @pytest.mark.timeout(5)

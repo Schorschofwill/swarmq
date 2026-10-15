@@ -83,9 +83,7 @@ class Fs01RecyclingLongRunner(Task):
 
 
 @pytest.mark.befund("FS-30")
-@pytest.mark.xfail(
-    strict=True, reason="FS-30: offen - Recycling-Drain ohne hard_timeout bricht nach shutdown_timeout ab"
-)
+@pytest.mark.entscheidung("E-038")
 async def test_recycling_drain_does_not_abort_a_long_runner_without_hard_timeout(broker: Any, backend: Any) -> None:
     probe = _Fs01RecyclingProbe()
     _PROBES[:] = [probe]

@@ -28,7 +28,7 @@ from swarmq.dishka import (
 from swarmq.exceptions import (
     BackendConnectionError,
 )
-from swarmq.headers import HEADER_RETRY_COUNT, HEADER_UNIQUE_UNTIL
+from swarmq.headers import HEADER_UNIQUE_UNTIL
 from swarmq.logging import _error_fields, _task_log_context, get_logger
 from swarmq.middleware import (
     MessageContext,
@@ -51,7 +51,7 @@ from swarmq.worker.gates import (
 )
 from swarmq.worker.gates.cancel import CancelGate
 from swarmq.worker.gates.delivery_count import DeliveryCountGate
-from swarmq.worker.gates.execution_guard import ExecutionGuard
+from swarmq.worker.gates.execution_guard import ExecutionGuard, retry_count_of
 from swarmq.worker.gates.expiry import ExpiryGate
 from swarmq.worker.gates.lock import (  # noqa: F401  # Re-Export der Konstanten (Tests)
     LOCK_CONFLICT_BACKOFF_BASE_MS,  # pyright: ignore[reportUnusedImport]  # Re-Export fuer Tests
@@ -142,6 +142,7 @@ class Worker(WorkerLifecycle, WorkerShutdown):
             register_lock=lambda handler_id, entry: self._active_handler_locks.setdefault(handler_id, []).append(entry),
             # BZ-29: Pause vor ``redeliver``, endet beim Shutdown sofort.
             redeliver_pause=lambda delay_s: redelivery.wait_unless_shutdown(delay_s, self._shutdown_event),
+            detach=self._track,  # FS-07: der Shutdown wartet ueber _detached_releases
         )
         # BZ-25 (Plan 0.12.0, MR 13): verlaengert gehaltene Locks, solange der
         # Handler lebt; endet mit der letzten Lease oder beim Schliessen.
@@ -267,16 +268,11 @@ class Worker(WorkerLifecycle, WorkerShutdown):
     def _extract_valid_workflow_id(message: Any) -> str | None:
         return decode.valid_workflow_id(message)
 
-    async def _maybe_release_unique(
-        self,
-        message: Any,
-        task_id: str,
-        task_info: TaskInfo | None = None,
-    ) -> None:
+    async def _maybe_release_unique(self, message: Any, ctx: GateContext, task_info: TaskInfo | None = None) -> None:
         """Siehe ``finalize.maybe_release_unique``."""
         unique_hash = self._extract_valid_unique_hash(message)
         await maybe_release_unique(
-            message, task_id, task_info, unique_hash=unique_hash, backend=self._backend, config=self._config
+            message, ctx, task_info, unique_hash=unique_hash, backend=self._backend, config=self._config
         )
 
     @override
@@ -387,7 +383,7 @@ class Worker(WorkerLifecycle, WorkerShutdown):
 
     @staticmethod
     def _build_message_dict(ctx: GateContext, message: Any) -> MessageContext:
-        """Canonical middleware payload + retry_count from the headers."""
+        """Canonical middleware payload + retry_count from the headers (kaputt = 0, FS-19)."""
         assert ctx.task_info is not None
         return {
             "task_id": ctx.task_id,
@@ -396,7 +392,7 @@ class Worker(WorkerLifecycle, WorkerShutdown):
             "args": ctx.args,
             "kwargs": ctx.kwargs,
             "delivery_mode": ctx.task_info.delivery.value,
-            "retry_count": message.headers.get(HEADER_RETRY_COUNT, 0),
+            "retry_count": retry_count_of(message.headers),
         }
 
     async def _resolve_chain_or_route(
@@ -494,15 +490,15 @@ class Worker(WorkerLifecycle, WorkerShutdown):
         laufen mit ``release_unique=True`` hier durch; nicht-terminale
         Pfade (Requeues) erhalten den ``x-swarmq-unique-hash``-Header in
         der Kopie und melden ``Redelivered`` — die nächste Zustellung
-        durchläuft die Owner-Check-Pipeline erneut. Start-mode ist beim
-        Pickup bereits freigegeben (No-op), ebenso Nachrichten ohne Header."""
+        durchläuft die Owner-Check-Pipeline erneut. Start-mode nach dem Startpunkt
+        (``ctx.start_release_reached``) und Nachrichten ohne Header: No-op."""
         terminal = outcome if isinstance(outcome, Terminal) else None
         await self._finalize_schedfire(
             ctx,
             terminal=terminal is not None and terminal.finalize_schedfire,
         )
         if terminal is not None and terminal.release_unique:
-            await self._maybe_release_unique(message, ctx.task_id, task_info)
+            await self._maybe_release_unique(message, ctx, task_info)
 
     async def _resolve_error_path(
         self,
@@ -651,6 +647,7 @@ class Worker(WorkerLifecycle, WorkerShutdown):
                 outcome = Terminal.release_in_finally()
 
             await self._release_unique_on_start(message, task_id, task_info)
+            ctx.start_release_reached = True  # FS-13: keine zweite Freigabe
 
             # 5d. FIRE_AND_FORGET: ack immediately before execution — ab hier
             # ist kein Broker-Verb mehr zulässig (acked_before_execute).

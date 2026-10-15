@@ -69,6 +69,7 @@ class _Child:
     last_rss_mb: float | None = None
     ending: bool = False  # Ende-Signal gesendet (Recycling/Close)
     finalized: bool = False  # Tod verarbeitet (EOF oder Sentinel-Gnade)
+    group_killed: bool = False  # SIGKILL an die Prozessgruppe gesendet (FS-16)
 
 
 @dataclass(slots=True)
@@ -213,12 +214,17 @@ class SlotPool:
         Slot frei wird (KTD3/KTD4) — auch waehrend Spawn und Handshake.
         """
         assert self._free is not None
-        if self._usable_slots() == 0:
-            raise SlotUnavailable("every compute slot is blocked by an unreapable child")
-        index = await self._free.get()
-        if index < 0:  # Poison: der letzte Slot wurde blockiert, waehrend wir warteten
-            self._free.put_nowait(index)
-            raise SlotUnavailable("every compute slot is blocked by an unreapable child")
+        while True:
+            if self._usable_slots() == 0:
+                raise SlotUnavailable("every compute slot is blocked by an unreapable child")
+            index = await self._free.get()
+            if index < 0:  # Poison: der letzte Slot wurde blockiert, waehrend wir warteten
+                self._free.put_nowait(index)
+                raise SlotUnavailable("every compute slot is blocked by an unreapable child")
+            if not self._slots[index].blocked:
+                break
+            # FS-23: im Hintergrund (Recycling) gesperrt, nachdem der Index schon frei war:
+            # verwerfen, nicht zuruecklegen (E-035, die Sperre bleibt).
         slot = self._slots[index]
         child: _Child | None = None
         fut: asyncio.Future[ResultEnvelope] = asyncio.get_running_loop().create_future()
@@ -400,13 +406,24 @@ class SlotPool:
             self.recent_spawn_ms.append((spawn_ms, (time.monotonic() - spawn_t0) * 1000))
         except (TimeoutError, ChildDied) as exc:
             self._note_unavailable()
+            self._abandon_handshake(child)
             await self._kill_child(child, reason="handshake", by_pid_only=True)
             raise SlotUnavailable(f"compute child for slot {slot.index} sent no ready signal") from exc
         except asyncio.CancelledError:
             # Abbruch im Handshake: das gestartete Kind darf nicht verwaist weiterrechnen.
+            self._abandon_handshake(child)
             await self._kill_child_uninterruptible(child, reason="cancelled")
             raise
         return child
+
+    @staticmethod
+    def _abandon_handshake(child: _Child) -> None:
+        """FS-24: den Handshake vor dem Kill aufgeben. Ein abgebrochenes ``ready``
+        meldet der Shield nicht als unabgeholte Ausnahme, und ohne ``pending``
+        zaehlt ``_finalize`` keinen Kindtod: der Fehler ist schon ``unavailable``."""
+        if child.ready is not None and not child.ready.done():
+            child.ready.cancel()
+        child.pending = None
 
     # ------------------------------------------------------------------ Rueckkanal
 
@@ -502,17 +519,26 @@ class SlotPool:
         self._children.pop(child.pid or -1, None)
         self._threads.pop(child.pid or -1, None)
         slot = self._slots[child.slot]
+        idle_death = slot.reuse_child is child and child.pending is None and not child.ending
         if slot.reuse_child is child:
             slot.reuse_child = None  # lazy Ersatz beim naechsten Dispatch
         if child.ready is not None and not child.ready.done():
             child.ready.set_exception(ChildDied("child exited before ready"))
+            child.pending = None  # FS-24: der Handshake-Pfad meldet SlotUnavailable, kein Kindtod
+        # R9: Nachkommen eines ohne Ergebnis oder ohne Ende-Signal (warmes DI-Kind)
+        # gestorbenen Kindes beenden -- erst zuletzt, damit ein Signalfehler weder
+        # ``run`` warten laesst noch die Pipes offen haelt.
+        sweep = idle_death
         if child.pending is not None and not child.pending.done():
             self.stats.died += 1
+            sweep = True
             child.pending.set_exception(ChildDied(f"compute child pid={child.pid} exited without result"))
         for c in (child.conn, child.job_conn):
             if c is not None:
                 with contextlib.suppress(Exception):
                     c.close()
+        if sweep:
+            self._sweep_group(child)
 
     def _forward_progress(self, msg: tuple[Any, ...]) -> None:
         if self._progress_sink is None or self._loop is None:
@@ -587,12 +613,18 @@ class SlotPool:
         await self._kill_child(child, reason="forced")
 
     async def _kill_child(self, child: _Child, *, reason: str, by_pid_only: bool = False) -> None:
-        """SIGTERM → Gnade → SIGKILL → auf den Tod warten (synchron, KTD3)."""
-        if child.pid is None or not child.process.is_alive():
+        """SIGTERM → Gnade → SIGKILL → auf den Tod warten (synchron, KTD3).
+
+        Nur fuer gestartete Kinder (``pid`` gesetzt)."""
+        if not child.process.is_alive():
+            if not by_pid_only:
+                self._sweep_group(child)
             return
         self.stats.killed += 1
         self._signal(child, signal.SIGTERM, by_pid_only)
         if await self._wait_dead(child, self.kill_grace_s):
+            if not by_pid_only:
+                self._sweep_group(child)  # Enkel, die SIGTERM ignorieren, ueberleben sonst
             return
         self._signal(child, signal.SIGKILL, by_pid_only)
         if await self._wait_dead(child, self.reap_timeout_s):
@@ -613,15 +645,39 @@ class SlotPool:
             for _ in range(self.size):  # Wartende in run() aufwecken: SlotUnavailable statt ewig warten
                 self._free.put_nowait(-1)
 
+    def _sweep_group(self, child: _Child) -> None:
+        """FS-16 (E-036): nach dem Kindtod genau ein SIGKILL an seine Prozessgruppe.
+
+        Nur mit eigener Gruppe (``pgid_ready``) und nur, wenn die Gruppe noch
+        kein SIGKILL bekam. Synchron, also ohne Cancel-Fenster; die PGID bleibt
+        reserviert, solange ein Enkel in ihr lebt."""
+        if child.pid is None or not child.pgid_ready or child.group_killed:
+            return
+        self._signal(child, signal.SIGKILL, by_pid_only=False)
+
     def _signal(self, child: _Child, sig: signal.Signals, by_pid_only: bool) -> None:
         assert child.pid is not None
+        group = child.pgid_ready and not by_pid_only
         try:
-            if child.pgid_ready and not by_pid_only:
+            if group:
+                if sig == signal.SIGKILL:
+                    child.group_killed = True
                 os.killpg(child.pid, sig)
             else:
                 os.kill(child.pid, sig)
         except ProcessLookupError:
             pass
+        except PermissionError as exc:
+            # EPERM: in der Gruppe lebt nur noch ein fremder (setuid-)Prozess oder die
+            # PGID wurde wiederverwendet. Nicht signalisierbar darf nicht blockieren.
+            logger.warning(
+                "compute_signal_denied",
+                slot=child.slot,
+                pid=child.pid,
+                signal=sig.name,
+                group=group,
+                **_error_fields(exc),
+            )
 
     async def _wait_dead(self, child: _Child, timeout: float) -> bool:
         deadline = time.monotonic() + timeout

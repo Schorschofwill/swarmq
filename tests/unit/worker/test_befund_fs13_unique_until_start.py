@@ -104,9 +104,6 @@ _CASES = {
 
 
 @pytest.mark.befund("FS-13")
-@pytest.mark.xfail(
-    strict=True, reason="FS-13: offen - start-Modus gibt das Flag an terminalen Pfaden vor dem Start nicht frei"
-)
 @pytest.mark.parametrize("case", _CASES.values(), ids=_CASES.keys())
 async def test_start_mode_releases_unique_flag_when_terminal_before_start(
     broker: Any, backend: Any, config: SwarmQConfig, case: _Case

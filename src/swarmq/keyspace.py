@@ -42,8 +42,10 @@ def validate_namespace(value: str | None) -> str | None:
             f"invalid namespace {value!r}: use 1-64 characters a-z, 0-9, '_', '.', '-' (lowercase only), "
             "starting with a letter or digit, not 'sq'"
         )
-        if value != value.lower() and _NAMESPACE_RE.fullmatch(value.lower()):
-            msg += f"; write it in lowercase: {value.lower()!r}"
+        lowered = value.lower()
+        # FS-27: kein Vorschlag, der selbst verboten waere (``SQ`` -> ``sq``).
+        if lowered not in (value, "sq") and _NAMESPACE_RE.fullmatch(lowered):
+            msg += f"; write it in lowercase: {lowered!r}"
         raise ValueError(msg)
     return value
 

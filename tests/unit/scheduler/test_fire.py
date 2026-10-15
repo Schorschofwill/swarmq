@@ -18,17 +18,40 @@ Unique beim Fire (Plan 0.12.0, MR 9, BZ-09):
 - [x] unroutbarer Cron-Fire nach eigenem Claim → Flag frei
 - [x] unroutbarer Oneshot (Claim des Leaders aus der Registry) → Flag frei vor dem Zurückstellen
 - [x] Freigabe scheitert oder fehlt (MagicMock-Backend, Q15) → geloggt, Fire endet normal
+
+Eigener Claim nach Transport-Retry (Plan 2026-10-14-0748, U11, KTD7, FS-06b):
+- [x] Cron mit ``existing == task_id`` (frische ID je Fire) → Publish, kein Dup-Signal
+- [x] Oneshot mit ``existing == task_id`` (stabile ID) → bleibt Duplikat (KTD7)
+- [x] Oneshot ohne stabile ID (``--at`` ohne Präfix/Feld) mit ``existing == task_id``
+      → Publish, kein Dup-Signal (frische ID wie beim Cron, Review U11)
+
+Claim-Freigabe nach Timeout (Plan 2026-10-14-0748, U12, KTD8, FS-07):
+- [x] Cron: Timeout nach gesetztem Flag → Freigabe, der naechste Poll feuert
+      (Nachweis ``test_befund_fs07_unique_claim_after_timeout.py``)
+- [x] Oneshot mit stabiler ID: Timeout → keine Freigabe (E-011)
+- [x] Freigabe nach Timeout scheitert am Ausfall (echtes ``release_unique``:
+      ``False`` und ``unique_release_backend_error``) → kein Publish, kein
+      Commit, keine zweite Zeile ``scheduler_unique_release_failed``
+- [x] Freigabe nach Timeout wirft unerwartet → ``scheduler_unique_release_failed``
+- [x] Fehlerantwort beim Claim (``BackendResponseError``, kein Ausfall) →
+      keine Freigabe, wie im Lock-Gate (Review U12)
+
+Unique-Opt-out (Plan 2026-10-14-0748, U13, KTD10, FS-14):
+- [x] ``cli_unique`` ohne Hash, Registry mit ``unique_for`` → kein Claim, keine
+      Unique-Header, Publish (Nachweis ``test_befund_fs14_oneshot_unique_none.py``)
 """
 
 from __future__ import annotations
 
 from typing import override
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import msgspec
 import pytest
+from valkey.exceptions import ConnectionError as ValkeyConnectionError
 
-from swarmq.exceptions import PublishIndeterminate, UnroutableMessage
+from swarmq.backend.valkey import ValkeyBackend
+from swarmq.exceptions import BackendConnectionError, BackendResponseError, PublishIndeterminate, UnroutableMessage
 from swarmq.locking import SCHEDULER_LOCK_NAME
 from swarmq.scheduler import ScheduleDefinition, ScheduleStore
 from swarmq.serialization import compute_dedup_hash
@@ -242,3 +265,149 @@ async def test_failed_release_is_logged_and_the_lost_cron_fire_still_commits(loo
     assert entry["logger"] == "swarmq.scheduler.loop"
     assert entry["schedule_name"] == "nightly"
     assert entry["error_type"] == "TypeError"
+
+
+async def _own_claim(_dedup_hash: str, task_id: str, _ttl_ms: int, **_kwargs: object) -> str:
+    return task_id
+
+
+async def test_cron_fire_publishes_when_the_claim_holds_its_own_task_id(loop, backend, broker):
+    """FS-06b: valkey-py wiederholt ``SET NX GET`` nach verlorener Antwort; die
+    Wiederholung meldet die frische task_id dieses Fires als "existing"."""
+    backend.claim_unique = AsyncMock(side_effect=_own_claim)
+    definition = _definition("nightly", cron="*/5 * * * *", unique_for=3600)
+
+    await loop._fire_one("nightly", 1_700_000_000_000, definition)
+
+    (task_id,) = _published_task_ids(broker)
+    assert task_id == backend.claim_unique.await_args.args[1]
+
+
+@pytest.mark.entscheidung("E-011")
+async def test_oneshot_fire_stays_duplicate_when_the_claim_holds_its_task_id(loop, backend, broker, store):
+    """KTD7 (E-011-Nachtrag): Der Oneshot feuert unter der stabilen ID aus ``schedule()``; nach
+    ``PublishIndeterminate`` trifft der naechste Poll den eigenen Claim und
+    muss Duplikat bleiben, sonst wird doppelt publiziert."""
+    backend.claim_unique = AsyncMock(side_effect=_own_claim)
+    definition = _definition("oneshot:fixed-id", cron=None, task_id="fixed-id", unique_for=3600)
+
+    await loop._fire_one("oneshot:fixed-id", 1_700_000_000_000, definition)
+
+    broker.publish.assert_not_awaited()
+
+
+@pytest.mark.entscheidung("E-011")
+async def test_oneshot_without_stable_id_publishes_when_the_claim_holds_its_own_task_id(loop, backend, broker):
+    """Review U11: Ein einmaliger Schedule ohne ``task_id``-Feld und ohne
+    ``oneshot:``-Praefix (CLI ``--at``) feuert unter einer frischen ID wie ein
+    Cron; meldet die Transport-Wiederholung sie als "existing", ist es der
+    eigene Claim, kein Duplikat."""
+    backend.claim_unique = AsyncMock(side_effect=_own_claim)
+    duplicates: list[dict[str, object]] = []
+    loop._signals.dispatch = AsyncMock(side_effect=lambda _sig, **kw: duplicates.append(kw))
+    definition = _definition("report-at-noon", cron=None, unique_for=3600)
+
+    await loop._fire_one("report-at-noon", 1_700_000_000_000, definition)
+
+    (task_id,) = _published_task_ids(broker)
+    assert task_id == backend.claim_unique.await_args.args[1]
+    assert duplicates == []
+
+
+@pytest.mark.entscheidung("E-011")
+async def test_oneshot_claim_timeout_keeps_a_flag_of_its_stable_task_id(loop, backend, broker, store):
+    """KTD8 (E-011): Unter der stabilen ID eines Oneshots kann das Flag aus
+    einem frueheren Poll mit ``PublishIndeterminate`` stammen; nach einem
+    Claim-Timeout bleibt es stehen."""
+    backend.claim_unique = AsyncMock(side_effect=BackendConnectionError("setnx_unique timed out"))
+    backend.release_unique = AsyncMock(return_value=True)
+    definition = _definition("oneshot:fixed-id", cron=None, task_id="fixed-id", unique_for=3600)
+
+    await loop._fire_one("oneshot:fixed-id", 1_700_000_000_000, definition)
+
+    backend.release_unique.assert_not_awaited()
+    broker.publish.assert_not_awaited()
+    store.commit_fire.assert_not_awaited()
+
+
+def _release_unique_failing_on_an_outage():
+    """Das echte ``ValkeyResults.release_unique`` ueber einem gestoerten Client:
+    es faengt den Ausfall selbst, loggt ``unique_release_backend_error`` und
+    liefert ``False``."""
+    client = AsyncMock()
+    client.register_script = Mock(return_value=AsyncMock(side_effect=ValkeyConnectionError("valkey down")))
+    return ValkeyBackend(client=client).release_unique
+
+
+async def test_cron_claim_timeout_with_release_failing_on_the_outage(loop, backend, broker, store, swarmq_logs):
+    """KTD8: Die Freigabe nach dem Timeout ist best effort; scheitert sie am
+    Ausfall, meldet das Backend ``unique_release_backend_error`` (mit
+    ``dedup_hash``/``task_id``) und das Flag laeuft ueber seine TTL ab. Der
+    Termin bleibt fuer den naechsten Poll offen (kein Publish, kein Commit)."""
+    backend.claim_unique = AsyncMock(side_effect=BackendConnectionError("setnx_unique timed out"))
+    backend.release_unique = AsyncMock(side_effect=_release_unique_failing_on_an_outage())
+    definition = _definition("nightly", cron="*/5 * * * *", unique_for=3600)
+
+    await loop._fire_one("nightly", 1_700_000_000_000, definition)
+
+    claimed_by = backend.claim_unique.await_args.args[1]
+    broker.publish.assert_not_awaited()
+    store.commit_fire.assert_not_awaited()
+    [entry] = [e for e in swarmq_logs if e["event"] == "unique_release_backend_error"]
+    assert entry["task_id"] == claimed_by
+    assert entry["dedup_hash"] == backend.claim_unique.await_args.args[0]
+    assert [e for e in swarmq_logs if e["event"] == "scheduler_unique_release_failed"] == []
+
+
+async def test_cron_claim_timeout_with_unexpected_release_error_is_logged(loop, backend, broker, store, swarmq_logs):
+    """KTD8: Ein unerwarteter Fehler der Freigabe (kein vom Backend
+    abgefangener Ausfall) loggt ``scheduler_unique_release_failed``."""
+    backend.claim_unique = AsyncMock(side_effect=BackendConnectionError("setnx_unique timed out"))
+    backend.release_unique = AsyncMock(side_effect=RuntimeError("bug"))
+    definition = _definition("nightly", cron="*/5 * * * *", unique_for=3600)
+
+    await loop._fire_one("nightly", 1_700_000_000_000, definition)
+
+    claimed_by = backend.claim_unique.await_args.args[1]
+    backend.release_unique.assert_awaited_once()
+    assert backend.release_unique.await_args.args[1] == claimed_by
+    broker.publish.assert_not_awaited()
+    store.commit_fire.assert_not_awaited()
+    [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_unique_release_failed"]
+    assert entry["schedule_name"] == "nightly"
+    assert entry["error_type"] == "RuntimeError"
+
+
+async def test_cron_claim_error_reply_releases_nothing(loop, backend, broker, store, swarmq_logs):
+    """Eine Fehlerantwort (WRONGTYPE) heisst: der Claim lief nicht; wie im
+    Lock-Gate wird nur nach einem Ausfall freigegeben (Review U12)."""
+    backend.claim_unique = AsyncMock(side_effect=BackendResponseError("WRONGTYPE Operation against a key"))
+    backend.release_unique = AsyncMock(return_value=False)
+    definition = _definition("nightly", cron="*/5 * * * *", unique_for=3600)
+
+    await loop._fire_one("nightly", 1_700_000_000_000, definition)
+
+    backend.release_unique.assert_not_awaited()
+    broker.publish.assert_not_awaited()
+    store.commit_fire.assert_not_awaited()
+    [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_unique_setnx_failed"]
+    assert entry["error_type"] == "BackendResponseError"
+
+
+@pytest.mark.entscheidung("E-033")
+@pytest.mark.usefixtures("_cleanup_tasks")
+async def test_cli_unique_oneshot_without_hash_publishes_without_unique_claim(loop, backend, broker, store):
+    """FS-14: ``cli_unique`` ohne Hash ist der ausdrueckliche Opt-out des
+    Producers (E-033); der Leader faellt nicht auf seine TaskInfo zurueck."""
+    _register_ping(unique_for=3600)
+    backend.claim_unique = AsyncMock(return_value="other-run")
+    definition = _definition("oneshot:abc", cron=None, source="cli_unique")
+
+    await loop._fire_one("oneshot:abc", 1_700_000_000_000, definition)
+
+    backend.claim_unique.assert_not_awaited()
+    assert _published_task_ids(broker) == ["abc"]
+    headers = broker.publish.await_args.kwargs["headers"]
+    assert "x-swarmq-unique-hash" not in headers
+    assert "x-swarmq-unique-until" not in headers
+    store.commit_fire.assert_awaited_once()

@@ -169,10 +169,17 @@ zählt beide und schickt die Zustellung eine Runde vor dem Limit in die
 DLQ, als `RedeliveryLimitError`, wenn nur `x-acquired-count` es
 erreicht hat.
 
-Retry-Kopien und die Kopien nach einem Rate-Limit-Treffer oder
-Lock-Konflikt lassen die Zustellzähler des Brokers genauso weg; ein
-geerbter `x-delivery-count` kann sie also nicht als hängende Nachricht
-nach `{queue}.XQ` schicken.
+Retry-Kopien, die Kopien nach einem Rate-Limit-Treffer oder
+Lock-Konflikt und die DLQ-Kopien des Workers lassen die Zustellzähler
+des Brokers genauso weg; ein geerbter `x-delivery-count` kann sie also
+nicht als hängende Nachricht nach `{queue}.XQ` schicken. Eine
+DLQ-Kopie lässt sich deshalb auch per "Move messages" in der
+RabbitMQ-UI oder per Shovel zurückspielen. Ausgenommen sind Nachrichten,
+die der Broker selbst über den Dead-Letter-Exchange ins `.XQ` gelegt
+hat (`route_via_dlx`), und DLQ-Kopien von Workern bis 0.12.1: Sie
+können die Zähler noch tragen, und ein Replay am Zustelllimit landet
+dann sofort wieder in der DLQ. Für sie `swarmq dlq retry` verwenden; es entfernt
+die Zähler.
 
 Ein Schedule-Fire (`x-swarmq-schedfire`) wird vor dem Lauf in Valkey
 beansprucht, damit ein zweites Publish desselben Fires verworfen wird.
@@ -316,9 +323,27 @@ Drain zählt ab `SIGTERM`, ein langsamer `WORKER_SHUTDOWN`-Handler
 (höchstens 10 s) verkürzt ihn also. Jeder Aufräumschritt hat ein
 Zeitlimit (der Rest des Budgets, mindestens 1 s); ein Schritt darüber
 wird geloggt (`shutdown_step_timeout`) und übersprungen, Lock-TTL und
-Leader-Lock-TTL heilen, was er hinterlässt. Ein recycelnder Worker
-(`SWARMQ_RECYCLE_*`) behält seinen eigenen Drain (größter
-`hard_timeout`).
+Leader-Lock-TTL heilen, was er hinterlässt.
+
+**Recycling.** Ein recycelnder Worker (`SWARMQ_RECYCLE_*`) behält seinen
+eigenen Drain ohne erzwungenen Abbruch: größter `hard_timeout` aller
+registrierten Tasks plus 30 s (ein per `schedule(..., queue=...)`
+umgeleiteter Task kann auf jedem Worker laufen). Kann auf diesem Worker
+ein Task ohne `hard_timeout` laufen (deklariert auf einer Queue, die er
+konsumiert, oder dort bereits gestartet), wartet er mindestens
+`SWARMQ_CONSUMER_TIMEOUT_S` (Default 30 min); gibt es nirgends einen
+`hard_timeout`, bleibt es sonst bei `SWARMQ_SHUTDOWN_TIMEOUT`. Bis dahin hat RabbitMQ jede Zustellung des Workers
+zurückgenommen, längeres Warten könnte nichts mehr bestätigen. Ein Task,
+der über diese Grenze hinaus läuft, wird abgebrochen wie beim Drain im
+Shutdown. `SWARMQ_CONSUMER_TIMEOUT_S` gleich dem `consumer_timeout` des
+Brokers halten; bei einem Broker ohne Consumer-Timeout wird auch ein
+gesunder Langläufer nach `SWARMQ_CONSUMER_TIMEOUT_S` abgebrochen. Ein
+`SIGTERM` während eines Recycling-Drains (Deploy, Abbau durch den
+Supervisor) setzt ab diesem Signal das Shutdown-Budget in Kraft: Der
+Drain endet spätestens zum Drain-Ende der Tabelle oben, gezählt ab dem
+`SIGTERM`, und Sperren, Leader-Übergabe und Verbindungen sind im Budget
+erledigt. Ein zweites `SIGTERM` (Eskalation des Supervisors) startet
+diese Uhr nicht neu.
 
 **Die Frist der Orchestrierung auf mindestens
 `SWARMQ_SHUTDOWN_TIMEOUT + 15 s` setzen**: Kubernetes
@@ -381,7 +406,9 @@ nach einem Consumer-Timeout), setzt trotzdem den Done-Marker. Ein
 Retry- oder Dead-Letter-Publish, den der Broker bestätigt hat, dessen
 Ack aber scheitert, wirft `SettleFailedAfterPublish` und setzt seinen
 Marker wie nach Erfolg; das neu zugestellte Original wird dann
-übersprungen.
+übersprungen. Jeder Dead-Letter-Pfad des Workers, auch der für
+abgelaufene Tasks (`max_age`), wertet diesen Fall als terminal: Warnung
+`dlq_ack_failed_after_publish`, Unique-Freigabe, kein `nack`.
 
 **Bei einer Neuzustellung** entscheidet der Claim:
 

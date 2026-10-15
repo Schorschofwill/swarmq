@@ -41,7 +41,7 @@ except SwarmQError as exc:
 | `ResultSerializationError` | `SwarmQError` | Result cannot be msgpack-serialised |
 | `Retry` | `SwarmQError` | Control flow — raised by task code to request a retry |
 | `NoRetry` | `SwarmQError` | Control flow — raised by task code to bypass retries |
-| `SoftTimeoutError` | `SwarmQError` | Task exceeded `soft_timeout`, asked to wrap up |
+| `SoftTimeoutError` | `SwarmQError` | Task exceeded `soft_timeout`; `run()` was cancelled (the task sees `CancelledError`) |
 | `WorkflowValidationError` | `SwarmQError` | Workflow topology invalid, or fan-in results incomplete |
 | `WorkflowNotFound` | `SwarmQError` | `app.workflow(id)` or a handle call found no workflow state |
 | `WorkflowResultExpired` | `SwarmQError` | A step or final workflow result expired before it was used |
@@ -413,17 +413,29 @@ The task lands in `{queue}.XQ` immediately. Recover it with
 ## `SoftTimeoutError`
 
 **When raised.** The task body is still running when `soft_timeout`
-elapses. The worker cancels the task with this class as the cause so
-the task can wrap up gracefully before `hard_timeout` kills it.
+elapses. The worker runs `run()` under `asyncio.wait_for`: when the
+time is up, it cancels `run()`, so the task sees an
+`asyncio.CancelledError`, not a `SoftTimeoutError`. The worker then
+stores `SoftTimeoutError` as the error result. It is retriable like
+any other task error and skips `post_execution`. `SoftTimeoutError`
+is not a `TimeoutError`, so `retry_exceptions=[TimeoutError]` does
+not cover it.
+
+Only the expiry of `soft_timeout` itself becomes `SoftTimeoutError`.
+A `TimeoutError` that the task raises on its own (`asyncio.timeout`,
+`socket.timeout`, `aiohttp.ServerTimeoutError`) stays what it is: it
+keeps its class and message and is matched by
+`retry_exceptions=[TimeoutError]`.
 
 **Cause.** The task is taking longer than `TaskInfo(soft_timeout=N)`
 allowed.
 
-**Recovery.** Make the task faster, raise `soft_timeout`, or catch
-and checkpoint:
+**Recovery.** Make the task faster or raise `soft_timeout`. To save
+partial work, clean up in `finally` or catch the cancellation and
+re-raise it:
 
 ```python
-from swarmq import SoftTimeoutError
+import asyncio
 
 class LongJob(Task):
     task_info = TaskInfo(
@@ -434,11 +446,17 @@ class LongJob(Task):
     async def run(self) -> None:
         try:
             await process_items()
-        except SoftTimeoutError:
+        except asyncio.CancelledError:
             # Commit whatever is done, then let the worker finalise.
             await checkpoint()
             raise
 ```
+
+The `raise` is required. A task that swallows the `CancelledError`
+and returns normally produces a **success** result with whatever it
+returned; the worker records no `SoftTimeoutError`. `hard_timeout`
+only comes into play when the task ignores or delays the
+cancellation.
 
 ## `PublishIndeterminate`
 

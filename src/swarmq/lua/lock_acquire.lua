@@ -25,10 +25,13 @@
 -- Edge cases:
 --   ttl_ms <= 0           -> return 0 (refuse — programming error in caller)
 --   max_concurrency < 1   -> return 0 (refuse — programming error in caller)
---   owner_token already   -> mutex: SET NX returns nil -> 0;
---   in semaphore set         semaphore: ZADD treats it as no-op (already member),
---                            count check still applies — caller should not retry
---                            with the same token.
+--   owner_token already   -> 1 without touching the TTL (mutex: GET equals
+--   held                     the token; semaphore: live ZSCORE). valkey-py
+--                            re-sends EVALSHA with identical ARGV after a lost
+--                            reply (FS-06b); the token is a fresh uuid4 per
+--                            acquire, so only that retry can hit it. The
+--                            scheduler leader (stable token) re-wins its own
+--                            key at once instead of waiting for the TTL.
 
 local lock_key = KEYS[1]
 local owner_token = ARGV[1]
@@ -42,6 +45,11 @@ end
 
 if max_concurrency == 1 then
     -- Mutex: single-holder string key with owner_token as value.
+    -- Own token already in the key -> acquired (FS-06b): the client's
+    -- transport retry after a lost reply re-sends this call; the TTL stays.
+    if redis.call('GET', lock_key) == owner_token then
+        return 1
+    end
     local ok = redis.call('SET', lock_key, owner_token, 'NX', 'PX', ttl_ms)
     if ok then
         return 1
@@ -52,6 +60,13 @@ end
 -- Semaphore: SortedSet, score = acquire-time-ms, member = owner_token.
 -- Step 1: clean up members that expired (score < now - ttl).
 redis.call('ZREMRANGEBYSCORE', lock_key, '-inf', '(' .. (now_ms - ttl_ms))
+
+-- Step 1b: own token still live -> acquired (FS-06b), before the count so
+-- a full set including the own token does not refuse the transport retry.
+-- Score and TTL stay as they are.
+if redis.call('ZSCORE', lock_key, owner_token) then
+    return 1
+end
 
 -- Step 2: count remaining live holders.
 local held = redis.call('ZCARD', lock_key)

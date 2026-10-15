@@ -226,9 +226,13 @@ kwargs)` die task_id des ersten Tasks zurück, ohne zu enqueuen.
   Terminalzustand (Success, DLQ, Cancel oder Ablauf über `max_age`)
   erreicht. Das blockiert erneute Schedules während des gesamten
   Ausführungsfensters.
-- `"start"` — das Flag wird in dem Moment freigegeben, in dem ein
-  Worker die Nachricht aufnimmt. Ein Folge-`schedule()` während
-  der Task läuft, enqueued einen neuen.
+- `"start"` — das Flag wird einmal freigegeben, unmittelbar bevor der
+  Task startet: nach der Rate-Limit- und der Lock-Prüfung. Wird die
+  Nachricht vorher zurückgestellt (Rate-Limit, Lock-Wartezeit), bleibt
+  das Flag gesetzt. Endet die Nachricht vor dem Start (Cancel, Ablauf
+  über `max_age`, Ende einer Lock-Wartezeit, Delivery-Limit, Task nicht
+  registriert), wird das Flag ebenfalls freigegeben. Ein
+  Folge-`schedule()` während der Task läuft, enqueued einen neuen.
 
 Wähle `"completion"` für idempotente Arbeit („Welcome-E-Mail an
 User 42 senden") und `"start"` für Arbeit, bei der überlappende

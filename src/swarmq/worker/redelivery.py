@@ -31,7 +31,7 @@ _MAX_EXPONENT = 16
 def _as_count(raw: Any) -> int:
     try:
         return max(int(raw), 0)
-    except TypeError, ValueError:
+    except TypeError, ValueError, OverflowError:
         return 0
 
 

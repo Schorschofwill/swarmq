@@ -20,6 +20,12 @@ Test-Liste:
       zurück und stoppt; der Arbeitsstand deklariert neu und führt Versuch 2 aus
 - [x] Der 0.12.0-Producer läuft wirklich aus dem venv, nicht aus ``REPO_ROOT/src``
       (Review U2, P3)
+- [x] U16 (FS-10): eine DLQ-Kopie des Arbeitsstands (am Zustelllimit) läuft nach
+      einem Replay per Shovel/"Move messages" auf einem 0.12.0-Worker
+- [x] U13 (FS-14): ``schedule(delay=, unique_for=None)`` bei gehaltenem Flag,
+      Matrix Producer x Leader (0.12.0 und Arbeitsstand): nur mit beiden aus dem
+      Arbeitsstand laeuft der Oneshot; in den Mischfaellen verwirft der Leader
+      ihn wie bisher als Duplikat (dokumentierte Rollout-Grenze), ohne Fehler
 """
 
 from __future__ import annotations
@@ -358,4 +364,188 @@ async def test_rollback_runs_a_deferred_schedfire_copy_on_0_12_0_once_the_claim_
     assert runs == [(task_id, _OLD_RUNTIME)]
     assert await app.backend.schedules.is_fire_completed(fire_key) is True
     assert await message_count(rabbitmq_url, tier) == 0
+    assert await message_count(rabbitmq_url, f"{queue}.XQ") == 0
+
+
+# ---------------------------------------------------------------------------
+# U16 (FS-10, KTD13/KTD19): DLQ-Kopien des Arbeitsstands tragen keine
+# Broker-Zustellzaehler. Ein Replay per Shovel/"Move messages" einer solchen
+# Kopie laeuft auch auf einem 0.12.0-Worker (dessen Delivery-Count-Gate sieht
+# keinen Zaehler).
+# ---------------------------------------------------------------------------
+
+_AT_DELIVERY_LIMIT = 19  # delivery_limit 20 (Default) -> Gate ab 19
+
+
+async def _shovel(rabbitmq_url: str, source: str, target: str) -> None:
+    """Eine Nachricht mit allen Headern von *source* nach *target* legen --
+    wie "Move messages" in der RabbitMQ-UI bzw. ein Shovel."""
+    connection = await aio_pika.connect(rabbitmq_url)
+    try:
+        channel = await connection.channel()
+        message = await (await channel.get_queue(source)).get(no_ack=True)
+        assert message is not None, f"no message in {source}"
+        await channel.default_exchange.publish(
+            aio_pika.Message(message.body, headers=dict(message.headers or {})), routing_key=target
+        )
+    finally:
+        await connection.close()
+
+
+async def _result_is(app: SwarmQ, task_id: str, expected: str) -> bool:
+    from swarmq.exceptions import TaskError
+
+    try:
+        result: object = await app.get_result(task_id, timeout=1)
+    except TaskError:  # Fehlerergebnis des Dead-Letterns, noch nicht ueberschrieben
+        return False
+    return result == expected
+
+
+async def test_shovel_replay_of_a_new_dlq_copy_runs_on_0_12_0(
+    start_worker: StartWorker,
+    python_0120: str,
+    python_repo: str,
+    app: SwarmQ,
+    rabbitmq_url: str,
+    valkey_url: str,
+    queue: str,
+) -> None:
+    import uuid
+
+    from swarmq.serialization import encode_json
+
+    new = start_worker(python_repo, "repo")
+    await _wait_consumers(rabbitmq_url, queue, 1)
+    await _allow_poison(valkey_url, queue)
+    task_id = uuid.uuid4().hex
+    body = encode_json({"task": {"id": task_id, "queue": queue, "name": "compat_poison"}, "args": [], "kwargs": {}})
+    counters = {"x-delivery-count": _AT_DELIVERY_LIMIT, "x-acquired-count": _AT_DELIVERY_LIMIT}
+    await app.broker.publish(queue, body, headers=counters)
+
+    async def dead_lettered() -> bool:
+        return await message_count(rabbitmq_url, f"{queue}.XQ") == 1
+
+    assert await wait_until(dead_lettered, timeout=_EVENT_TIMEOUT), "the new worker never dead-lettered the message"
+    assert await recorded_runs(valkey_url, queue) == [], "at the delivery limit: dead-lettered before running"
+    new.stop()
+    await _wait_consumers(rabbitmq_url, queue, 0)
+    await _shovel(rabbitmq_url, f"{queue}.XQ", queue)
+    start_worker(python_0120, BASE_012_VERSION)
+
+    async def replay_done() -> bool:
+        # Das Fehlerergebnis des Dead-Letterns steht schon; erst der Lauf auf
+        # 0.12.0 ueberschreibt es.
+        return await message_count(rabbitmq_url, queue) == 0 and bool(await recorded_runs(valkey_url, queue))
+
+    assert await wait_until(replay_done, timeout=_EVENT_TIMEOUT), "0.12.0 never ran the replayed copy"
+    runs = [(tid, runtime) for _, tid, _, runtime in await recorded_runs(valkey_url, queue)]
+    assert runs == [(task_id, _OLD_RUNTIME)]
+    assert await wait_until(lambda: _result_is(app, task_id, _OLD_RUNTIME), timeout=_EVENT_TIMEOUT)
+    assert await message_count(rabbitmq_url, queue) == 0
+    assert await message_count(rabbitmq_url, f"{queue}.XQ") == 0
+
+
+# ---------------------------------------------------------------------------
+# U13 (FS-14, KTD10/KTD19): Der Opt-out ``unique_for=None`` eines verzoegerten
+# Oneshots reist als ``source="cli_unique"`` ohne Hash. 0.12.0 kennt den Wert
+# (gleiches ``Literal``), faellt als Leader aber auf seine TaskInfo zurueck;
+# ein 0.12.0-Producer schreibt weiter ``source="cli"``. Wirksam ist der
+# Opt-out also erst mit Producer und Leader aus dem Arbeitsstand.
+# ---------------------------------------------------------------------------
+
+_UNIQUE_TASK = "compat_unique"
+
+# Laeuft im 0.12.0-venv: plant einen verzoegerten Oneshot mit Opt-out ein.
+_OLD_OPT_OUT_PRODUCER = """
+import asyncio, json, sys
+from swarmq.app import SwarmQ
+from swarmq.backend.valkey import ValkeyBackend
+from swarmq.broker.rabbitmq import RabbitMQBroker
+from swarmq.client import Client
+
+async def main(broker_url, backend_url, queue):
+    async with SwarmQ(RabbitMQBroker(broker_url), ValkeyBackend(backend_url), queues=[queue]) as app:
+        producer = Client(app.broker, app.backend)
+        task_id = await producer.schedule("compat_unique", queue=queue, delay=1.0, unique_for=None)
+    print(json.dumps({"task_id": task_id}))
+
+asyncio.run(main(sys.argv[1], sys.argv[2], sys.argv[3]))
+"""
+
+
+async def _schedule_opt_out(
+    producer: str, python_0120: str, app: SwarmQ, rabbitmq_url: str, valkey_url: str, queue: str
+) -> str:
+    if producer == "new":
+        return await Client(app.broker, app.backend).schedule(_UNIQUE_TASK, queue=queue, delay=1.0, unique_for=None)
+    with tempfile.TemporaryDirectory() as cwd:  # nie das Repo im Pfad des 0.12.0-venv
+        result = await asyncio.to_thread(
+            subprocess.run,
+            [python_0120, "-c", _OLD_OPT_OUT_PRODUCER, rabbitmq_url, valkey_url, queue],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+            cwd=cwd,
+        )
+    assert result.returncode == 0, result.stderr[-2000:]
+    task_id: str = json.loads(result.stdout.strip().splitlines()[-1])["task_id"]
+    return task_id
+
+
+async def _wait_oneshot_committed(valkey_url: str, task_id: str) -> None:
+    import valkey.asyncio as aio_valkey
+
+    from swarmq.keyspace import KeySpace
+
+    zset = KeySpace(None).sched_zset()
+    client = aio_valkey.Valkey.from_url(valkey_url)
+    try:
+
+        async def committed() -> bool:
+            return await client.zscore(zset, f"oneshot:{task_id}") is None
+
+        assert await wait_until(committed, timeout=_EVENT_TIMEOUT), "the leader never fired the oneshot"
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.parametrize("leader", ["old", "new"], ids=["leader-0.12.0", "leader-new"])
+@pytest.mark.parametrize("producer", ["old", "new"], ids=["producer-0.12.0", "producer-new"])
+async def test_deferred_opt_out_between_0_12_0_and_new(
+    producer: str,
+    leader: str,
+    start_worker: StartWorker,
+    python_0120: str,
+    python_repo: str,
+    app: SwarmQ,
+    rabbitmq_url: str,
+    valkey_url: str,
+    queue: str,
+) -> None:
+    from swarmq.serialization import compute_dedup_hash
+
+    worker = start_worker(python_repo, "repo") if leader == "new" else start_worker(python_0120, BASE_012_VERSION)
+    await _wait_consumers(rabbitmq_url, queue, 1)
+    # Ein anderer Lauf mit denselben Argumenten haelt das Flag.
+    dedup_hash = compute_dedup_hash(_UNIQUE_TASK, (), {})
+    assert await app.backend.claim_unique(dedup_hash, "fs14-other-run", 600_000) is None
+
+    task_id = await _schedule_opt_out(producer, python_0120, app, rabbitmq_url, valkey_url, queue)
+    await _wait_oneshot_committed(valkey_url, task_id)
+
+    if producer == leader == "new":
+        assert await app.get_result(task_id, timeout=_EVENT_TIMEOUT) == "repo"
+        runs = [(tid, runtime) for _, tid, _, runtime in await recorded_runs(valkey_url, queue)]
+        assert runs == [(task_id, "repo")]
+    else:
+        # Rollout-Grenze (Doku): der Leader dedupliziert nach seiner TaskInfo.
+        async def dropped_as_duplicate() -> bool:
+            return any("dedup_detected" in line for line in worker.lines)
+
+        assert await wait_until(dropped_as_duplicate, timeout=_EVENT_TIMEOUT), "leader never logged dedup_detected"
+        assert await recorded_runs(valkey_url, queue) == []
+    assert not [line for line in worker.lines if "Traceback" in line]
+    assert await message_count(rabbitmq_url, queue) == 0
     assert await message_count(rabbitmq_url, f"{queue}.XQ") == 0

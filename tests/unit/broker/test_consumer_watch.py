@@ -395,34 +395,72 @@ class TestShutdown:
 
 
 class TestHangingRpc:
-    async def test_hanging_own_cancel_gives_up_after_timeout(self, swarmq_logs):
+    """FS-09 (KTD16): Der Wächter bricht ``basic.cancel``/``basic.consume`` nicht
+    ab -- ein abgebrochenes RPC schlösse in aiormq den Consume-Kanal. Er gibt
+    aiormq eine eigene, große Frist (Notbremse) mit und wartet auf die Antwort."""
+
+    async def test_slow_own_cancel_is_awaited_then_the_consumer_is_reregistered(self):
         channel = FakeChannel(FakeUnderlay("tag-1"))
         queue = FakeQueue("q1", channel)
         watch = ConsumerWatch(timeout_s=0.01)
         watch.add("q1", queue, object(), "tag-1")
         await watch.tick()
+        entered, answer = asyncio.Event(), asyncio.Event()
+        plain_cancel = queue.cancel
+
+        async def slow_cancel(tag: str, timeout: float | None = None) -> None:
+            entered.set()
+            await answer.wait()
+            await plain_cancel(tag, timeout)
+
+        queue.cancel = slow_cancel  # type: ignore[method-assign]
+        channel.underlay.consumers.pop("tag-1")
+
+        tick = asyncio.create_task(watch.tick())
+        await asyncio.wait_for(entered.wait(), 1.0)
+        # Weit über die 0,01 s des Kanalbezugs: der Takt wartet weiter.
+        _done, pending = await asyncio.wait({tick}, timeout=0.05)
+        assert pending == {tick}
+        answer.set()
+        await tick
+
+        assert watch.self_cancelled_tags == frozenset({"tag-1"})
+        assert watch.tags() == [("q1", "q1-new-1")]
+
+    async def test_hanging_own_cancel_ends_at_the_emergency_timeout(self, swarmq_logs):
+        channel = FakeChannel(FakeUnderlay("tag-1"))
+        queue = FakeQueue("q1", channel)
+        watch = ConsumerWatch(timeout_s=0.001, rpc_timeout_s=0.02)
+        watch.add("q1", queue, object(), "tag-1")
+        await watch.tick()
+        timeouts: list[float | None] = []
 
         async def hanging_cancel(tag: str, timeout: float | None = None) -> None:
-            await asyncio.Event().wait()
+            # wie aiormq: die mitgegebene Frist beendet das RPC
+            timeouts.append(timeout)
+            await asyncio.wait_for(asyncio.Event().wait(), timeout)
 
         queue.cancel = hanging_cancel  # type: ignore[method-assign]
         channel.underlay.consumers.pop("tag-1")
 
         await watch.tick()
 
+        assert timeouts == [0.02]
         [failed] = [e for e in swarmq_logs if e["event"] == "consumer_cancel_failed"]
         assert failed["error_type"] == "TimeoutError"
         assert queue.consumed == []
 
-    async def test_hanging_reregistration_gives_up_after_timeout(self, swarmq_logs):
+    async def test_hanging_reregistration_ends_at_the_emergency_timeout(self, swarmq_logs):
         channel = FakeChannel(FakeUnderlay("tag-1"))
         queue = FakeQueue("q1", channel)
-        watch = ConsumerWatch(timeout_s=0.01)
+        watch = ConsumerWatch(timeout_s=0.001, rpc_timeout_s=0.02)
         watch.add("q1", queue, object(), "tag-1")
         await watch.tick()
+        timeouts: list[float | None] = []
 
         async def hanging_consume(callback: Any, timeout: float | None = None) -> str:
-            await asyncio.Event().wait()
+            timeouts.append(timeout)
+            await asyncio.wait_for(asyncio.Event().wait(), timeout)
             return "never"
 
         queue.consume = hanging_consume  # type: ignore[method-assign]
@@ -430,8 +468,29 @@ class TestHangingRpc:
 
         await watch.tick()
 
+        assert timeouts == [0.02]
         [failed] = [e for e in swarmq_logs if e["event"] == "consumer_reregister_failed"]
         assert failed["error_type"] == "TimeoutError"
+
+    async def test_default_emergency_timeout_is_far_above_the_channel_timeout(self):
+        channel = FakeChannel(FakeUnderlay("tag-1"))
+        queue = FakeQueue("q1", channel)
+        watch = ConsumerWatch()
+        watch.add("q1", queue, object(), "tag-1")
+        await watch.tick()
+        timeouts: list[float | None] = []
+        plain_cancel = queue.cancel
+
+        async def recording_cancel(tag: str, timeout: float | None = None) -> None:
+            timeouts.append(timeout)
+            await plain_cancel(tag, timeout)
+
+        queue.cancel = recording_cancel  # type: ignore[method-assign]
+        channel.underlay.consumers.pop("tag-1")
+
+        await watch.tick()
+
+        assert timeouts == [60.0]
 
 
 def _broker_with(*queues: FakeQueue) -> RabbitMQBroker:

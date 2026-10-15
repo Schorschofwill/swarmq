@@ -41,18 +41,28 @@ ReregisteredHook = Callable[[str, str], None]
 # ``RobustChannel.get_underlay_channel`` wartet auf ``connection.ready()`` und
 # kehrt bei getrennter Verbindung nie zurück. Der Takt gibt dann auf; die
 # Wiederverbindung ist Sache von aio-pika, ``/ready`` meldet sie über den
-# Broker-Ping.
+# Broker-Ping. Begrenzt wird nur dieser Kanalbezug (im Takt und vor jedem
+# RPC, ``_channel_ready``), nicht das RPC selbst.
 _RPC_TIMEOUT_S = 2.0
-# So lange darf ein laufender Takt beim Stoppen noch zu Ende kommen. Ein
-# mitten im RPC abgebrochener Cancel oder Consume hinterließe einen Tag, von
-# dem niemand weiß, ob der Broker ihn noch kennt.
+# Notbremse für ``basic.cancel``/``basic.consume`` (FS-09, KTD16). Ein
+# abgebrochenes RPC beantwortet aiormq mit ``Channel.Close(504)`` -- auf diesem
+# Kanal liegen alle Consumer des Workers (E-019), alle unbestätigten
+# Zustellungen kämen zurück, während sie hier noch laufen. Deshalb kein
+# ``wait_for`` um das RPC, sondern aiormqs eigene Frist: Sie schließt den Kanal
+# erst, wenn der Broker so lange stumm war, dass der Kanal ohnehin verloren ist.
+# Eine Frist, die noch vor dem Senden (Kanalsperre) abläuft, schließt nichts.
+_RPC_EMERGENCY_TIMEOUT_S = 60.0
+# So lange wartet ``stop()`` auf einen laufenden Takt. Danach koppelt es ihn
+# ab, statt ihn abzubrechen (FS-09): Ein mitten im RPC abgebrochener Cancel
+# oder Consume schlösse den Consume-Kanal und hinterließe einen Tag, von dem
+# niemand weiß, ob der Broker ihn noch kennt.
 _STOP_TIMEOUT_S = 5.0
 # Fehlt ein Tag auf geschlossenem oder ersetztem Channel so viele Takte, meldet
 # der Waechter ihn selbst neu an (aio-pikas Restore bekommt den ersten Takt).
 _REREGISTER_AFTER_MISSING_TICKS = 2
 
 
-@dataclass
+@dataclass(eq=False)  # Identität: ``cancel_all`` vergisst genau diese Einträge
 class _Watched:
     queue_name: str
     queue: Any
@@ -79,9 +89,11 @@ class ConsumerWatch:
         self,
         *,
         timeout_s: float = _RPC_TIMEOUT_S,
+        rpc_timeout_s: float = _RPC_EMERGENCY_TIMEOUT_S,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._timeout_s = timeout_s
+        self._rpc_timeout_s = rpc_timeout_s
         self._clock = clock
         self._entries: list[_Watched] = []
         self.on_reregistered: ReregisteredHook | None = None
@@ -90,6 +102,10 @@ class ConsumerWatch:
         self._cancelled_event = asyncio.Event()
         self._wake = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
+        # Abgekoppelte Takte (``stop()``), bis ihr RPC endet: Antwort, Notbremse
+        # oder Schließen des Kanals (Kanalbezug: ``timeout_s``). Die Referenz
+        # hält sie bis dahin am Leben.
+        self._detached: set[asyncio.Task[None]] = set()
         self._stopping = False
 
     def add(self, queue_name: str, queue: Any, callback: Any, tag: str) -> None:
@@ -115,9 +131,13 @@ class ConsumerWatch:
     async def stop(self) -> None:
         """Beendet den Takt; danach meldet der Wächter nichts mehr neu an.
 
-        Ein laufender Takt darf seinen Cancel noch abschließen (gebunden
-        durch ``_STOP_TIMEOUT_S``), damit ``cancel_consume`` danach mit
-        bekannten Tags arbeitet.
+        Ein laufender Takt darf seinen Cancel noch abschließen (bis
+        ``_STOP_TIMEOUT_S``), damit ``cancel_consume`` danach mit bekannten
+        Tags arbeitet. Hängt sein RPC länger, wird der Takt abgekoppelt, nicht
+        abgebrochen (FS-09, KTD16): Sein RPC endet mit der Antwort, der
+        Notbremse (``rpc_timeout_s``) oder dem Schließen des Kanals
+        (``broker.close()``); ein Kanalbezug davor endet nach ``timeout_s``.
+        Danach meldet er keinen weiteren Eintrag mehr an.
         """
         self._stopping = True
         task, self._task = self._task, None
@@ -126,7 +146,10 @@ class ConsumerWatch:
         self._wake.set()
         _done, pending = await asyncio.wait({task}, timeout=_STOP_TIMEOUT_S)
         if pending:
-            task.cancel()
+            self._detached.add(task)
+            task.add_done_callback(self._detached.discard)
+            logger.warning("consumer_watch_detached", timeout_s=_STOP_TIMEOUT_S)
+            return
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
@@ -134,7 +157,8 @@ class ConsumerWatch:
         """Stoppt den Wächter und meldet jeden aktuellen Tag ab (``cancel_consume``).
 
         Fehler je Consumer isoliert: Ein scheiternder Cancel hält die übrigen
-        nicht auf. Danach ist die Registrierung leer; zurück kommen die
+        nicht auf. Der Kanalbezug endet nach ``timeout_s``, das RPC spätestens
+        mit der Notbremse ``rpc_timeout_s``. Danach ist die Registrierung leer; zurück kommen die
         gescheiterten Tags mit ihrem Fehler.
         """
         await self.stop()
@@ -143,7 +167,7 @@ class ConsumerWatch:
             if entry.tag is None:
                 continue
             try:
-                await entry.queue.cancel(entry.tag)
+                await self._cancel(entry.queue, entry.tag)
             except Exception as exc:  # noqa: BLE001 - Fehler je Tag sammeln und zurueckgeben
                 errors.append((entry.tag, exc))
                 continue
@@ -208,6 +232,10 @@ class ConsumerWatch:
     async def tick(self) -> None:
         """Ein Prüfdurchgang über alle angemeldeten Consumer."""
         for entry in self._entries:
+            if self._stopping:
+                # Ein abgekoppelter Takt (``stop()``) meldet keinen weiteren
+                # Eintrag mehr an: der Worker drainiert schon (Review U10).
+                return
             try:
                 underlay = await asyncio.wait_for(entry.queue.channel.get_underlay_channel(), timeout=self._timeout_s)
             except TimeoutError:
@@ -238,10 +266,26 @@ class ConsumerWatch:
             if entry.missing_ticks >= _REREGISTER_AFTER_MISSING_TICKS:
                 await self._reregister(entry, underlay, "channel_replaced")
 
+    async def _channel_ready(self, queue: Any) -> None:
+        """Kanalbezug begrenzt auf ``timeout_s`` (Review U10).
+
+        aio-pikas ``cancel``/``consume`` holen den Kanal vor dem RPC selbst
+        über ``get_underlay_channel`` -- ohne Frist; bei getrennter Verbindung
+        (auch nach ``broker.close()``) kehrt das nie zurück. Ist der Kanal hier
+        bereit, kehrt der innere Bezug ohne Suspendierung zurück, die
+        Verbindung kann dazwischen nicht wegfallen. Ein Abbruch an dieser
+        Stelle schließt nichts: gesendet ist noch nichts.
+        """
+        await asyncio.wait_for(queue.channel.get_underlay_channel(), timeout=self._timeout_s)
+
+    async def _cancel(self, queue: Any, tag: str) -> None:
+        await self._channel_ready(queue)
+        await queue.cancel(tag, timeout=self._rpc_timeout_s)
+
     async def _reregister(self, entry: _Watched, underlay: Any, reason: str) -> None:
         assert entry.tag is not None
         try:
-            await asyncio.wait_for(entry.queue.cancel(entry.tag), timeout=self._timeout_s)
+            await self._cancel(entry.queue, entry.tag)
         except Exception as exc:  # noqa: BLE001 - geloggt, naechster Takt versucht erneut
             # Ohne erfolgreichen Cancel bliebe der tote Tag in
             # ``RobustQueue._consumers`` und ein Restore legte ihn
@@ -261,7 +305,8 @@ class ConsumerWatch:
 
     async def _consume(self, entry: _Watched, underlay: Any) -> None:
         try:
-            tag = await asyncio.wait_for(entry.queue.consume(entry.callback), timeout=self._timeout_s)
+            await self._channel_ready(entry.queue)
+            tag = await entry.queue.consume(entry.callback, timeout=self._rpc_timeout_s)
         except Exception as exc:  # noqa: BLE001 - geloggt, Waechter laeuft weiter
             logger.warning(
                 "consumer_reregister_failed",
@@ -269,6 +314,12 @@ class ConsumerWatch:
                 reason=entry.reason,
                 **_error_fields(exc),
             )
+            return
+        if self._stopping or entry not in self._entries:
+            # FS-09: Die Antwort eines abgekoppelten Takts kam nach ``stop()``
+            # bzw. ``cancel_all``. Den Tag kennt sonst niemand mehr, er bekäme
+            # im Drain neue Zustellungen -- sofort wieder abmelden.
+            await self._cancel_late(entry, tag)
             return
         entry.tag = tag
         entry.seen_on = underlay
@@ -283,3 +334,16 @@ class ConsumerWatch:
         )
         if self.on_reregistered is not None:
             self.on_reregistered(entry.queue_name, entry.reason)
+
+    async def _cancel_late(self, entry: _Watched, tag: str) -> None:
+        try:
+            await self._cancel(entry.queue, tag)
+        except Exception as exc:  # noqa: BLE001 - geloggt; der Verbindungsschluss beendet den Consumer
+            logger.warning(
+                "consumer_cancel_failed",
+                queue=entry.queue_name,
+                consumer_tag=tag,
+                **_error_fields(exc),
+            )
+            return
+        self._mark_cancelled(tag)

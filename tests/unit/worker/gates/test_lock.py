@@ -4,7 +4,8 @@ Test-Liste 0.9.0 (Kopie und Broker-Zaehler):
 - [x] die Rueckstellungs-Kopie bei Lock-Konflikt traegt weder
       ``x-delivery-count`` noch ``x-acquired-count`` des Originals
 - [x] Backend-Fehler beim Acquire -> genau eine Zeile (WARNING
-      ``task_deferred_backend_unavailable``, ``stage=acquire``, ``lock_name``)
+      ``task_deferred_backend_unavailable``, ``stage=acquire``, ``lock_name``),
+      auch wenn die Hintergrund-Freigabe (FS-07) am selben Ausfall scheitert
 - [x] anderer Fehler beim Acquire -> weiter ERROR ``lock_acquire_failed``
 
 Test-Liste 0.9.0 (Zeitlimit):
@@ -761,7 +762,10 @@ class TestLockGateLogging:
     async def test_acquire_backend_error_logs_one_deferral_line(self, worker, swarmq_logs):
         worker._lock_manager = MagicMock()
         worker._lock_manager.acquire = AsyncMock(side_effect=BackendConnectionError("valkey down"))
+        # FS-07: die Hintergrund-Freigabe scheitert am selben Ausfall
+        worker._lock_manager.release = AsyncMock(side_effect=BackendConnectionError("valkey down"))
         await worker._lock_gate.apply(make_message(_default_payload()), self._ctx())
+        await asyncio.gather(*worker._detached_releases)
 
         [entry] = [e for e in swarmq_logs if e["log_level"] in ("warning", "error")]
         assert entry["event"] == "task_deferred_backend_unavailable"
@@ -781,8 +785,11 @@ class TestLockGateLogging:
 
         worker._lock_manager = MagicMock()
         worker._lock_manager.acquire = _hang
+        # FS-07: die Hintergrund-Freigabe scheitert am selben Ausfall
+        worker._lock_manager.release = AsyncMock(side_effect=BackendConnectionError("valkey down"))
         ctx = self._ctx()
         outcome = await worker._lock_gate.apply(make_message(_default_payload()), ctx)
+        await asyncio.gather(*worker._detached_releases)
 
         assert outcome is Redelivered
         broker.retry_later.assert_awaited_once()

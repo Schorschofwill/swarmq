@@ -48,6 +48,18 @@ solcher Leader die Rolle hat, läuft `get_result()` auf die gelieferte ID
 in den Timeout, und `cancel()` wirkt nicht. Jeder Cron-Fire bekommt eine
 neue ID.
 
+Über die Deduplizierung eines verzögerten Tasks entscheidet der Aufruf
+von `schedule()`. Mit `unique_for=` setzt der Producer das Flag sofort.
+Mit `unique_for=None` ist die Dedup für diesen Aufruf aus: Der
+Oneshot-Eintrag hält den Opt-out fest, und der Leader feuert ohne
+Dedup-Claim. Fehlt `unique_for`, löst der Leader den Wert beim Fire aus
+seiner eigenen `TaskInfo` auf und überspringt den Task, solange ein
+anderer Lauf mit denselben Argumenten das Flag hält. Der Opt-out braucht
+Producer und Leader neuer als 0.12.1. Ein Producer bis 0.12.1 hält ihn
+nicht fest, und ein Leader bis 0.12.1 fällt auf seine eigene `TaskInfo`
+zurück; Producer laufen oft in anderen Diensten, also auch diese
+aktualisieren.
+
 ## Cron-Scheduling
 
 Für wiederkehrende Arbeit setze `cron` auf `TaskInfo`:
@@ -698,9 +710,21 @@ task_info = TaskInfo(
 )
 ```
 
-- **Soft Timeout.** Der Worker raist `SoftTimeoutError` innerhalb
-  `run()`, damit dein Task checkpointen und aufräumen kann.
-- **Hard Timeout.** Der Worker bricht die Coroutine ab.
+- **Soft Timeout.** Der Worker bricht `run()` ab (es läuft unter
+  `asyncio.wait_for`). Im Task kommt das als `asyncio.CancelledError`
+  an, nicht als `SoftTimeoutError`. Zum Checkpointen in `finally` oder
+  in `except asyncio.CancelledError:` aufräumen und erneut werfen.
+  Der Worker speichert danach `SoftTimeoutError` als retry-fähiges
+  Fehlerergebnis, `post_execution` entfällt. Ein Task, der die
+  `CancelledError` verschluckt und normal zurückkehrt, liefert ein
+  Erfolgsergebnis. Nur der Ablauf von `soft_timeout` wird zu
+  `SoftTimeoutError`; ein `TimeoutError`, den der Task selbst wirft,
+  behält seine Klasse und greift bei
+  `retry_exceptions=[TimeoutError]`. Siehe
+  [`SoftTimeoutError`](../reference/errors.md#softtimeouterror).
+- **Hard Timeout.** Der Worker bricht die Coroutine ab. Das greift
+  nur, wenn der Task den Abbruch durch den Soft Timeout ignoriert
+  oder hinauszögert.
 
 `hard_timeout` muss strikt größer als `soft_timeout` sein, wenn
 beides gesetzt ist. `hard_timeout` ist auch pflicht, wenn ein Task
