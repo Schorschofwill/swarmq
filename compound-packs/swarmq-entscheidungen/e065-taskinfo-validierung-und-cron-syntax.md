@@ -21,6 +21,7 @@ tests:
   - tests/unit/test_task.py::test_taskinfo_cron_extended_hash_syntax_rejected
   - tests/unit/test_task.py::test_taskinfo_cron_invalid_syntax_raises
   - tests/unit/scheduler/test_reports.py::TestAdoptReportedCrons::test_invalid_report_is_not_adopted_and_logged
+  - tests/unit/test_befund_f3_08_cron_without_next_fire.py::test_taskinfo_rejects_cron_that_never_fires
 ---
 
 **Entscheidung.** `TaskInfo.__post_init__` prüft jedes Feld beim Klassenbau; ein falscher Wert wirft `ValueError` beim Import des Task-Moduls, nicht beim ersten `schedule()`. Ein Cron ist ein Standard-Ausdruck mit 5 Feldern; erweiterte Syntax (`L`, `W`, `#`) wird abgelehnt. Der Leader prüft jeden gemeldeten Cron noch einmal (Quelle `static`, Ausdruck vorhanden, nächster Termin in der Zone berechenbar) und verwirft ihn sonst mit `scheduler_cron_report_invalid`.
@@ -29,4 +30,4 @@ tests:
 
 **Bewusste Folgen.** Ein `ValueError` beim Import endet nach E-057 mit Exit 1, nicht 78. Ein Cron mit `L`/`W`/`#` lässt sich nicht nutzen; das ist kein Fehler.
 
-**Überdenken nur mit neuem Argument.** Dass `TaskInfo` Crons ohne nächsten Termin (`0 0 30 2 *`) annimmt und der Leader sie still verwirft, ist der Befund F3-08 (Fix in 0.12.3). Offen ist F3-35: `croniter` nimmt 6- und 7-feldrige Ausdrücke an, obwohl die Doku 5 Felder nennt.
+**Überdenken nur mit neuem Argument.** Dass `TaskInfo` Crons ohne nächsten Termin (`0 0 30 2 *`) annimmt und der Leader sie still verwirft, war der Befund F3-08, behoben in 0.12.3: `TaskInfo` berechnet den nächsten Termin wie der Leader und wirft sonst `ValueError` („has no next fire time“). Offen ist F3-35: `croniter` nimmt 6- und 7-feldrige Ausdrücke an, obwohl die Doku 5 Felder nennt.

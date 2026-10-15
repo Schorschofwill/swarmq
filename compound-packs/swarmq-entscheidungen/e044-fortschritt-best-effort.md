@@ -19,6 +19,8 @@ tests:
   - tests/unit/test_task.py::TestUpdateProgress::test_final_update_always_flushes
   - tests/unit/test_task.py::TestUpdateProgress::test_backend_hset_failure_swallowed
   - tests/unit/test_task.py::TestUpdateProgress::test_publish_failure_swallowed
+  - tests/unit/worker/test_befund_f3_15_progress_started_at.py::test_io_progress_started_at_is_wall_clock
+  - tests/unit/worker/test_befund_f3_15_progress_started_at.py::test_cpu_child_progress_started_at_is_wall_clock
 ---
 
 **Entscheidung.** `update_progress()` ist best effort. Je Task-Instanz geht höchstens eine Meldung pro 500 ms an Valkey; die Endmeldung (`current == total`) geht immer, genau einmal. Valkey-Fehler beim Schreiben oder Veröffentlichen werden geloggt und geschluckt, damit der Task-Körper nicht abstürzt. HSET und Publish laufen außerhalb der Sperre. Im CPU-Modus drosselt das Kind gleich und schickt die Meldungen über den Rückkanal an den Loop-Prozess.
@@ -27,6 +29,6 @@ tests:
 
 **Bewusste Folgen.** Fehlende Zwischenstände, eine gedrosselte Meldung und eine Umordnung (eine langsame Zwischenmeldung landet nach der Endmeldung, etwa bei einem Valkey-Stall) sind keine Fehler. Das Ergebnis des Tasks ist davon nicht betroffen.
 
-**Nachtrag 2026-10-15 (Fehlersuche Runde 3, F3-15): Zeitfelder.** `ProgressInfo` führt `updated_at` und `started_at` als `str` und `eta_seconds` als `int | None`; die Startzeit stammt aus der Wanduhr (`time.time()`). Für `elapsed`/`eta_seconds` darf daneben die monotone Uhr laufen. Dass `started_at` heute aus `time.monotonic()` stammt und als Datum von 1970 erscheint, ist der Befund F3-15 (Fix in 0.12.3, IO und CPU-Kind); `api.md:756-757` nennt fälschlich `datetime`.
+**Nachtrag 2026-10-15 (Fehlersuche Runde 3, F3-15): Zeitfelder.** `ProgressInfo` führt `updated_at` und `started_at` als `str` und `eta_seconds` als `int | None`; die Startzeit stammt aus der Wanduhr (`time.time()`). Für `elapsed`/`eta_seconds` darf daneben die monotone Uhr laufen. Dass `started_at` aus `time.monotonic()` stammte und als Datum von 1970 erschien, war der Befund F3-15, behoben in 0.12.3 (IO und CPU-Kind): Der Task führt zwei Zeitwerte, die Wanduhr-Startzeit für `started_at` und die monotone für `elapsed`/`eta_seconds`. `api.md:756-757` nennt fälschlich `datetime` (Doku-Teil, U17).
 
 **Überdenken nur mit neuem Argument.** FS-25 (Fehlersuche Runde 2): Reihenfolge als LÜCKE eingestuft, „unbegrenzt viele Tasks“ als nicht haltbar. Eine Reihenfolgezusage gab es nie; sie wäre eine neue Anforderung.

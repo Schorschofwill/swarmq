@@ -96,6 +96,7 @@ class TaskExecutor:
         task_instance._task_id = ctx.task_id
         task_instance._backend = deps.backend
         task_instance._task_start_time = time.monotonic()
+        task_instance._task_started_wall = time.time()  # started_at als Wanduhr (F3-15)
         task_instance._result_ttl_ms = progress_result_ttl * 1000
         return task_instance
 

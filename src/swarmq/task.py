@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, override
 
-from croniter import CroniterBadCronError, croniter
+from croniter import CroniterBadCronError, CroniterBadDateError, croniter
 
 from swarmq.config import normalize_timezone
 from swarmq.limits import parse_rate_limit
@@ -240,8 +240,13 @@ class TaskInfo:
                 raise ValueError(
                     f"cron uses unsupported extended syntax (L/W/#): {self.cron!r}; use a standard 5-field expression"
                 )
+            # F3-08 (E-065): wie der Leader den nächsten Termin berechnen;
+            # ein Ausdruck ohne Termin (``0 0 30 2 *``) feuerte sonst still nie.
+            # CroniterBadDateError erbt von ValueError, muss also vorher stehen.
             try:
-                croniter(self.cron, datetime.now(UTC))
+                croniter(self.cron, datetime.now(UTC)).get_next(datetime)
+            except CroniterBadDateError as exc:
+                raise ValueError(f"cron never fires: {self.cron!r} has no next fire time") from exc
             except (CroniterBadCronError, ValueError) as exc:
                 raise ValueError(f"cron is not a valid expression: {self.cron!r} ({exc})") from exc
 
@@ -287,7 +292,8 @@ class Task:
     # scalars so there is no shared-state hazard.
     _task_id: str | None = None
     _backend: ResultBackend | None = None
-    _task_start_time: float | None = None
+    _task_start_time: float | None = None  # time.monotonic(): elapsed/ETA
+    _task_started_wall: float | None = None  # time.time(): started_at (F3-15)
     _result_ttl_ms: int = 86_400_000  # 24h fallback
     _last_progress_update: float = 0.0  # instance write shadows on first update
     _progress_final_flushed: bool = False  # single final flush per instance
@@ -411,8 +417,8 @@ class Task:
 
         percent = (current / total * 100.0) if total > 0 else 0.0
         started_at_iso = (
-            datetime.fromtimestamp(self._task_start_time, tz=UTC).isoformat()
-            if self._task_start_time is not None
+            datetime.fromtimestamp(self._task_started_wall, tz=UTC).isoformat()
+            if self._task_started_wall is not None
             else ""
         )
         elapsed = (loop_time - self._task_start_time) if self._task_start_time is not None else 0.0

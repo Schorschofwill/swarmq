@@ -161,6 +161,7 @@ async def _run_job(job: ComputeJob, channel: Any, slot: int | None) -> ResultEnv
     instance._task_id = job.task_id
     instance._backend = ProgressBackend(channel)
     instance._task_start_time = time.monotonic()
+    instance._task_started_wall = time.time()  # started_at als Wanduhr (F3-15)
     instance._result_ttl_ms = job.result_ttl_ms
 
     scope: Any = None

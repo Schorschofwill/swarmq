@@ -368,6 +368,29 @@ def test_taskinfo_cron_extended_hash_syntax_rejected():
         TaskInfo(name="task", queues=["q"], cron="0 3 * * 1#2")
 
 
+# F3-08: Cron ohne nächsten Termin scheitert beim Bau (E-065). Testliste:
+# - [x] 29. Februar (Schaltjahr) und 31. jeden Monats bleiben gültig
+# - [x] Meldung nennt den Grund „no next fire time“
+# - [x] mit Zeitzone scheitert der Cron vor der Zonenprüfung
+# Keine 6/7-feldrigen Ausdrücke: die Feldzahl ist die offene Frage F3-35.
+
+
+@pytest.mark.parametrize("cron", ["0 0 29 2 *", "0 0 31 * *"])
+def test_taskinfo_cron_with_rare_but_real_fire_time_accepted(cron: str):
+    info = TaskInfo(name="task", queues=["q"], cron=cron)
+    assert info.cron == cron
+
+
+def test_taskinfo_cron_without_next_fire_names_the_reason():
+    with pytest.raises(ValueError, match="no next fire time"):
+        TaskInfo(name="task", queues=["q"], cron="0 0 30 2 *")
+
+
+def test_taskinfo_cron_without_next_fire_fails_before_timezone_check():
+    with pytest.raises(ValueError, match="no next fire time"):
+        TaskInfo(name="task", queues=["q"], cron="0 0 30 2 *", timezone="Europe/Atlantis")
+
+
 def test_taskinfo_catchup_true_raises_value_error():
     """catchup=True is reserved for a future release; fail fast at
     construction (Review-Finding P2-3). ValueError (not
@@ -889,3 +912,67 @@ class TestUpdateProgress:
         await t.update_progress(3, 100)  # must flush
 
         assert t._backend.set_progress.await_count == 2
+
+    # F3-15: ``started_at`` ist die Wanduhr-Startzeit, ``elapsed`` und
+    # ``eta_seconds`` rechnen monoton (E-044, Nachtrag 2026-10-15). Testliste:
+    # - [x] nur die monotone Startzeit gesetzt -> started_at leer, ETA berechnet
+    # - [x] Wanduhr nach dem Start verstellt -> started_at unverändert, ETA wie ohne Sprung
+    # - [x] mehrere Meldungen eines Laufs -> gleiches started_at
+
+    @pytest.mark.timeout(5)
+    async def test_started_at_empty_without_wall_clock_start(self):
+        import time as _time
+        from unittest.mock import AsyncMock
+
+        t = Task()
+        t._task_id = "x"
+        t._backend = AsyncMock()
+        t._task_start_time = _time.monotonic() - 2.0
+
+        await t.update_progress(1, 2)
+
+        fields = t._backend.set_progress.await_args.args[1]
+        assert fields["started_at"] == ""
+        assert int(fields["eta_seconds"]) in {2, 3}
+
+    @pytest.mark.timeout(5)
+    async def test_started_at_ignores_wall_clock_jump(self, monkeypatch: pytest.MonkeyPatch):
+        import time as _time
+        from datetime import UTC, datetime
+        from unittest.mock import AsyncMock
+
+        started_wall = _time.time()
+        t = Task()
+        t._task_id = "x"
+        t._backend = AsyncMock()
+        t._task_started_wall = started_wall
+        t._task_start_time = _time.monotonic() - 2.0
+        real_time = _time.time
+        monkeypatch.setattr(_time, "time", lambda: real_time() + 3600)
+
+        await t.update_progress(1, 2)
+
+        fields = t._backend.set_progress.await_args.args[1]
+        assert fields["started_at"] == datetime.fromtimestamp(started_wall, tz=UTC).isoformat()
+        assert int(fields["eta_seconds"]) in {2, 3}
+
+    @pytest.mark.timeout(5)
+    async def test_started_at_is_the_same_across_reports(self):
+        import time as _time
+        from unittest.mock import AsyncMock
+
+        t = Task()
+        t._task_id = "x"
+        t._backend = AsyncMock()
+        t._task_started_wall = _time.time()
+        t._task_start_time = _time.monotonic()
+
+        await t.update_progress(1, 10)
+        t._last_progress_update = _time.monotonic() - 1.0
+        await t.update_progress(2, 10)
+        await t.update_progress(10, 10)
+
+        started = [c.args[1]["started_at"] for c in t._backend.set_progress.await_args_list]
+        assert len(started) == 3
+        assert started[0] != ""
+        assert len(set(started)) == 1

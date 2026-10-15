@@ -26,7 +26,7 @@ from swarmq.task import TaskInfo
 
 
 @pytest.mark.befund("F3-08")
-@pytest.mark.xfail(strict=True, reason="F3-08: offen - TaskInfo nimmt Cron ohne naechsten Termin an")
+@pytest.mark.entscheidung("E-065")
 @pytest.mark.parametrize("cron", ["0 0 30 2 *", "0 0 31 4 *"])
 def test_taskinfo_rejects_cron_that_never_fires(cron: str) -> None:
     with pytest.raises(ValueError, match="cron"):

@@ -39,7 +39,6 @@ from tests.unit.worker._helpers import _default_payload
 
 pytestmark = pytest.mark.timeout(5)
 
-_REASON = "F3-15: offen - started_at aus time.monotonic() (Datum um 1970)"
 # Grosszuegig: der Test laeuft in Millisekunden, die Uhrzeit von 1970 liegt
 # Jahrzehnte daneben.
 _TOLERANCE = timedelta(minutes=5)
@@ -64,7 +63,7 @@ class F315ProgressTask(Task):
 
 
 @pytest.mark.befund("F3-15")
-@pytest.mark.xfail(strict=True, reason=_REASON)
+@pytest.mark.entscheidung("E-044")
 async def test_io_progress_started_at_is_wall_clock(
     broker: MagicMock, backend: MagicMock, config: SwarmQConfig
 ) -> None:
@@ -103,7 +102,7 @@ class _Channel:
 
 
 @pytest.mark.befund("F3-15")
-@pytest.mark.xfail(strict=True, reason=_REASON)
+@pytest.mark.entscheidung("E-044")
 @pytest.mark.usefixtures("_clean_task_registry")
 async def test_cpu_child_progress_started_at_is_wall_clock() -> None:
     class F315ProgressCpu(Task):
