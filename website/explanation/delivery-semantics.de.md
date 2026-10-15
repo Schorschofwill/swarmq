@@ -933,10 +933,25 @@ die Queue migrieren:
    einfach löschen; die Nachrichten gingen verloren.
 3. Die Worker stoppen.
 4. Den Inhalt von `{queue}.XQ` verschieben oder behalten.
-5. Die Queues der Familie löschen (`{queue}`, `{queue}.DQ`, die Stufen
+5. Unmittelbar vor dem Löschen prüfen, ob `{queue}` leer ist. Der
+   Scheduler-Leader läuft auch in Workern anderer Queues; verzögerte
+   Tasks, die nach dem Leeren fällig wurden, landen deshalb noch in
+   `{queue}`, und der Scheduler-Store zählt sie als zugestellt. Sie wie
+   den Inhalt von `{queue}.XQ` per Shovel in die Zwischen-Queue
+   verschieben.
+6. Die Queues der Familie löschen (`{queue}`, `{queue}.DQ`, die Stufen
    und `{queue}.XQ`) und die Worker mit der neuen Einstellung starten.
    Sie legen die Queues neu an; danach die verschobenen Nachrichten per
    Shovel zurückholen.
+
+Alternativ alle Worker auf demselben Valkey und Namespace für die
+Migration mit
+[`SWARMQ_SCHEDULER=off`](../guides/scheduling-and-retries.md#scheduler-auf-einzelnen-workern-abschalten)
+(oder `--no-scheduler`) betreiben. Dann gibt es keinen Leader: Kein
+verzögerter Task erreicht `{queue}`, aber es feuert auch kein Cron,
+Oneshot oder `delay`/`eta`-Task für irgendeine Queue, bis wieder ein
+Worker mit eingeschaltetem Scheduler startet. Fällige Tasks warten bis
+dahin im Scheduler-Store.
 
 ## Was SwarmQ nicht tut
 

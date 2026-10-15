@@ -217,7 +217,8 @@ gehört es stattdessen in den `yield`-Finalizer des Providers; er
 bekommt auch die Ausnahme, für Commit oder Rollback. Für
 Querschnittsthemen, die auf **jeden** Task wirken sollen, nutze
 stattdessen [Middleware](middleware.md); ihr `on_error` läuft bei
-jedem Fehlschlag.
+jedem Fehlschlag, nicht bei einem Cancel (dafür das Signal
+`TASK_CANCELLED` behandeln).
 
 ## Progress-Reporting
 

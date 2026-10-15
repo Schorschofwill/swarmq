@@ -878,9 +878,22 @@ queue at-least-once dead-lettering without a policy, migrate it:
    that still holds messages; they would be lost.
 3. Stop the workers.
 4. Move or keep what is in `{queue}.XQ`.
-5. Delete the queues of the family (`{queue}`, `{queue}.DQ`, the tiers
+5. Right before deleting, check that `{queue}` is empty. The scheduler
+   leader also runs in workers of other queues, so deferred tasks that
+   fell due after the drain still land in `{queue}`; the scheduler store
+   counts them as delivered. Move them to the temporary queue with a
+   shovel, like the content of `{queue}.XQ`.
+6. Delete the queues of the family (`{queue}`, `{queue}.DQ`, the tiers
    and `{queue}.XQ`) and start the workers with the new setting.
    They create the queues anew; then shovel the moved messages back.
+
+Alternatively, run every worker on the same Valkey and namespace with
+[`SWARMQ_SCHEDULER=off`](../guides/scheduling-and-retries.md#turning-the-scheduler-off-on-single-workers)
+(or `--no-scheduler`) for the migration. Then there is no leader: no
+deferred task reaches `{queue}`, but no cron, oneshot or
+`delay`/`eta` task fires for any queue either until a worker with the
+scheduler on starts again. Due tasks wait in the scheduler store until
+then.
 
 ## What SwarmQ will not do
 

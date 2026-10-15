@@ -211,7 +211,8 @@ With [dependency injection](../reference/api.md#dependency-injection-dishka),
 put it in the provider's `yield` finalizer instead; it also receives
 the exception, for commit or rollback. For cross-cutting concerns that
 should apply to **every** task, use [middleware](middleware.md)
-instead; its `on_error` runs on every failure.
+instead; its `on_error` runs on every failure, but not on a cancel
+(handle the `TASK_CANCELLED` signal for that).
 
 ## Progress reporting
 
