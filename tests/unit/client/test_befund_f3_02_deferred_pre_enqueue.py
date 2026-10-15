@@ -9,7 +9,7 @@ Register: docs/befunde/fehlersuche-runde-3-2026-10.md (F3-02; Quelle R3D-04).
 Veto der Middleware (Auth, Tenant, Validierung) laesst sich so mit jedem
 ``delay>0`` umgehen; der Oneshot wird trotzdem gespeichert.
 
-Erwartet laut Entscheidung 5 (Georg, 2026-10-15): ``pre_enqueue`` laeuft im
+Erwartet laut E-059 (Georg, 2026-10-15): ``pre_enqueue`` laeuft im
 Producer VOR dem Speichern und vor dem Unique-Claim (ein Veto wirkt),
 ``TASK_ENQUEUED`` feuert nach dem Speichern, und Aenderungen der Middleware
 an der Nachricht werden mit der Definition gespeichert, damit der Leader sie
@@ -91,7 +91,7 @@ def _deferral(kind: str) -> dict[str, Any]:
 
 
 @pytest.mark.befund("F3-02")
-@pytest.mark.xfail(strict=True, reason="F3-02: offen - pre_enqueue-Veto greift bei delay/eta nicht")
+@pytest.mark.entscheidung("E-059")
 @pytest.mark.parametrize("kind", ["delay", "eta"])
 async def test_pre_enqueue_veto_blocks_deferred_schedule(
     broker: AsyncMock, backend: AsyncMock, dispatcher: MagicMock, schedule_store: MagicMock, kind: str
@@ -106,7 +106,7 @@ async def test_pre_enqueue_veto_blocks_deferred_schedule(
 
 
 @pytest.mark.befund("F3-02")
-@pytest.mark.xfail(strict=True, reason="F3-02: offen - pre_enqueue laeuft bei delay nicht vor dem Unique-Claim")
+@pytest.mark.entscheidung("E-059")
 async def test_pre_enqueue_veto_precedes_unique_claim_on_deferred_schedule(
     broker: AsyncMock, backend: AsyncMock, dispatcher: MagicMock, schedule_store: MagicMock
 ) -> None:
@@ -121,7 +121,7 @@ async def test_pre_enqueue_veto_precedes_unique_claim_on_deferred_schedule(
 
 
 @pytest.mark.befund("F3-02")
-@pytest.mark.xfail(strict=True, reason="F3-02: offen - TASK_ENQUEUED fehlt bei delay/eta")
+@pytest.mark.entscheidung("E-059")
 async def test_task_enqueued_fires_after_store_on_deferred_schedule(
     broker: AsyncMock, backend: AsyncMock, dispatcher: MagicMock, schedule_store: MagicMock
 ) -> None:
@@ -145,7 +145,7 @@ async def test_task_enqueued_fires_after_store_on_deferred_schedule(
 
 
 @pytest.mark.befund("F3-02")
-@pytest.mark.xfail(strict=True, reason="F3-02: offen - Middleware-Aenderung fehlt in der gespeicherten Definition")
+@pytest.mark.entscheidung("E-059")
 async def test_middleware_kwargs_change_is_stored_with_deferred_definition(
     broker: AsyncMock, backend: AsyncMock, dispatcher: MagicMock, schedule_store: MagicMock
 ) -> None:
