@@ -207,6 +207,38 @@ recycling, the scheduler leader and the DLQ behave differently.
   instead of acked as a duplicate while another claim was held, and its
   defer cap started from the old count.
 
+## [0.12.1] — 2026-10-15
+
+0.12.1 is 0.12.1rc1 plus the fixes below. Read
+[0.12.1rc1](#0121rc1-2026-10-14) for the main changes and the upgrade
+notes (surge deploy, grace period, mixed operation with 0.12.0); they
+apply unchanged. Install with `pip install 'swarmq==0.12.*'`; `--pre`
+is no longer needed.
+
+### Fixed
+
+- **`ValkeyBackend.close()` no longer leaves connections open.** Locks,
+  the execution guard and other stores keep the client beyond
+  `close()`, for example when handlers finish only after a worker was
+  aborted. Their commands opened new connections that nobody closed.
+  After `close()` the pool now refuses new connections, and a
+  connection returned to it is disconnected.
+- **An aborted worker lets the retries of the execution guard run out
+  as the orderly shutdown does:** one last bounded attempt, then none.
+  Before, they kept running against the closed backend until the event
+  loop closed.
+- **CPU mode: no more "Event loop is closed" traceback on stderr when a
+  worker ends.** If the end of a child's channel arrived only after the
+  event loop had closed (a grandchild still held the descriptor, or the
+  reader thread ran late under load), its reader thread failed. It now
+  ends quietly.
+- **`SCHEDULER_CRON_UNOWNED` with `held=True` is sent only after the
+  leader has committed the postponed fire time** of the held cron.
+  Before, a receiver that read the schedule saw the old time.
+- **A successful reload of the logging configuration (`SIGHUP`) no
+  longer leaks a file descriptor in the supervisor.** The stderr pipe of
+  the `dictConfig` probe stayed open on every valid reload.
+
 ## [0.12.1rc1] — 2026-10-14
 
 Release candidate for 0.12.1 (install with `pip install --pre`). It
