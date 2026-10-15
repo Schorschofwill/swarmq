@@ -129,6 +129,7 @@ async def _fs09_callback(_message: Any) -> None:
 
 
 @pytest.mark.befund("FS-09")
+@pytest.mark.entscheidung("E-053")
 async def test_fs09_slow_basic_cancel_does_not_close_the_consume_channel(
     fs09_channel: tuple[Fs09Connector, Channel],
 ) -> None:
@@ -148,6 +149,7 @@ async def test_fs09_slow_basic_cancel_does_not_close_the_consume_channel(
 
 
 @pytest.mark.befund("FS-09")
+@pytest.mark.entscheidung("E-053")
 async def test_fs09_slow_basic_consume_does_not_close_the_consume_channel(
     fs09_channel: tuple[Fs09Connector, Channel],
 ) -> None:

@@ -23,4 +23,4 @@ tests:
 
 **Nachtrag 2026-10-14 (FS-06b, U11).** Ein Standby, dessen eigener Token noch im Leader-Key steht, wird seit FS-06b sofort wieder Leader (Nachtrag in E-048). Solange der Key den eigenen Token trägt, kann kein anderer ihn halten. Ein Restfenster bleibt, wenn die Verlängerung direkt nach der Wiederwahl wirft: Der Key lebt dann nur noch seine Rest-TTL, und läuft sie ab, kann ein anderer ihn erwerben, während dieser Prozess noch Leader ist. Das Fenster ist auf höchstens einen Heartbeat begrenzt, weil der nächste Renew-Fehler sofort zum Rücktritt führt und ein Renew gegen einen fremden Token `False` liefert (E-048). Die Wirkung fällt unter dieses Risiko.
 
-**Überdenken nur mit neuem Argument.** FS-31 (Leader-Renew ohne `op_timeout`) fällt in der Wirkung unter dieses Risiko, verletzt aber die Zeitgrenze aus E-048.
+**Überdenken nur mit neuem Argument.** FS-31 (Leader-Renew ohne `op_timeout`) fiel in der Wirkung unter dieses Risiko und verletzte bis U14 die Zeitgrenze aus E-048; behoben in U14 (E-048, Nachtrag FS-31: zeitbasierter Auslöser). Keine offenen Einwände bekannt.

@@ -48,6 +48,7 @@ class Fs12Step(Task):
 
 
 @pytest.mark.befund("FS-12")
+@pytest.mark.entscheidung("E-040")
 async def test_pre_start_task_cancel_of_a_workflow_step_fails_the_workflow(
     broker: Any, backend: Any, config: Any
 ) -> None:

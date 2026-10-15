@@ -22,6 +22,6 @@ tests:
 
 **Begründung.** Ein terminaler Fehler soll für Aufrufer und Diagnose sichtbar sein. Die Nutzer-Doku sagt ohne Ausnahme zu, dass auf diesem Pfad ein Fehlerergebnis entsteht.
 
-**Bewusste Folgen.** Ein Fehlerergebnis trotz `result_ttl=0` oder FIRE_AND_FORGET ist kein Fehler (FS-18 ist als ENTSCHEIDUNG eingestuft). Abgrenzung: Im Expiry-Gate überspringt eine **globale** `result_ttl=0` der Konfiguration das Speichern weiterhin (Härtung R2 P2, vermeidet `SET … PX 0`; festgeschrieben durch `test_expired_skips_result_store_when_ttl_zero`). Der Kommentar in `src/swarmq/worker/gates/expiry.py:81-83` („mirrors the main-path semantics“) beschreibt den Code ungenau und ist zu korrigieren, nicht das Verhalten.
+**Bewusste Folgen.** Ein Fehlerergebnis trotz `result_ttl=0` oder FIRE_AND_FORGET ist kein Fehler (FS-18 ist als ENTSCHEIDUNG eingestuft). Abgrenzung: Im Expiry-Gate überspringt eine **globale** `result_ttl=0` der Konfiguration das Speichern weiterhin (Härtung R2 P2, vermeidet `SET … PX 0`; festgeschrieben durch `test_expired_skips_result_store_when_ttl_zero`). Der früher ungenaue Kommentar in `src/swarmq/worker/gates/expiry.py` („mirrors the main-path semantics“) ist mit U16 (Commit b69dd89) korrigiert und verweist jetzt auf diese Regel; das Verhalten blieb.
 
 **Überdenken nur mit neuem Argument.** Ein Test, der ausdrücklich FIRE_AND_FORGET bzw. `result_ttl=0` am Task auf dem Dead-Letter-Pfad prüft, fehlt noch. Kleiner Rest: Expiry nutzt `config.result_ttl`, `dead_letter` `DEFAULT_RESULT_TTL_S`; bei Default-Konfiguration ist beides gleich.

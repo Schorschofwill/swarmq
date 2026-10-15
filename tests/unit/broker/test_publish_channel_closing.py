@@ -411,6 +411,7 @@ class _AioPikaChannel(FakePublishChannel):
 aio_pika.abc.AbstractChannel.register(_AioPikaChannel)
 
 
+@pytest.mark.entscheidung("E-042")
 async def test_an_unreadable_closing_falls_back_with_one_warning_per_broker(
     swarmq_logs: list[dict[str, Any]],
 ) -> None:

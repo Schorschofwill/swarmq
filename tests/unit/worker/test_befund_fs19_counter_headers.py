@@ -122,6 +122,7 @@ def _fs19_handler_failures(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 @pytest.mark.befund("FS-19")
+@pytest.mark.entscheidung("E-051")
 async def test_fs19_string_retry_count_still_settles_the_failed_task(
     broker: Any, backend: Any, config: Any, swarmq_logs: list[dict[str, Any]]
 ) -> None:
@@ -208,6 +209,7 @@ async def test_fs19_compute_executor_builds_the_job_despite_a_non_numeric_retry_
     assert _fs19_broker_verbs(broker) == ["ack"]
 
 
+@pytest.mark.entscheidung("E-051")
 async def test_fs19_numeric_string_rate_limit_count_is_read_leniently(broker: Any, backend: Any, config: Any) -> None:
     """KTD15: der Rate-Limit-Zaehler dient nur der Diagnose und zaehlt ``"4"`` weiter."""
     worker = _fs19_rate_limited_worker(broker, backend, config)
@@ -228,6 +230,7 @@ async def test_fs19_integer_retry_count_keeps_counting(broker: Any, backend: Any
     assert broker.retry_later.await_args.kwargs["headers"][HEADER_RETRY_COUNT] == 3
 
 
+@pytest.mark.entscheidung("E-051")
 async def test_fs19_infinite_rate_limit_count_counts_like_no_header(
     broker: Any, backend: Any, config: Any, swarmq_logs: list[dict[str, Any]]
 ) -> None:
@@ -245,6 +248,7 @@ def test_fs19_infinite_retry_count_gives_the_first_lock_generation() -> None:
     assert wait_generation({HEADER_RETRY_COUNT: float("inf")}) == "0:"
 
 
+@pytest.mark.entscheidung("E-051")
 async def test_fs19_bool_retry_count_counts_like_no_header(broker: Any, backend: Any, config: Any) -> None:
     """Review U17: ``bool`` ist eine ``int``-Unterklasse; ``True`` ist trotzdem
     kein Zaehler -- Middleware sieht 0, die Kopie ist Versuch 1."""

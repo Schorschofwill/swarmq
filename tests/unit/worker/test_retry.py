@@ -373,6 +373,7 @@ async def test_retry_copy_drops_backend_defer_count(broker, backend, config):
 
 
 @pytest.mark.timeout(5)
+@pytest.mark.entscheidung("E-046")
 async def test_retry_copy_drops_schedfire_defer_count(broker, backend, config):
     """Review U5 (P2): der Schedfire-Defer-Zaehler gehoert zur Zurueckstellung
     einer Neuzustellung. Die fachliche Retry-Kopie eines gelaufenen Fires ist

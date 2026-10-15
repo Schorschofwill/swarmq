@@ -96,6 +96,7 @@ def _events(logs: list[dict[str, Any]], event: str) -> list[dict[str, Any]]:
 
 
 @pytest.mark.befund("FS-17")
+@pytest.mark.entscheidung("E-043")
 async def test_fs17_expired_copy_with_failed_ack_is_terminal(
     broker: Any, backend: Any, config: Any, swarmq_logs: list[dict[str, Any]]
 ) -> None:

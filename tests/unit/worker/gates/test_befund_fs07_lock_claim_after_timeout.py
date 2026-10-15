@@ -76,6 +76,7 @@ def _ctx() -> GateContext:
 
 
 @pytest.mark.befund("FS-07")
+@pytest.mark.entscheidung("E-052")
 async def test_lock_written_before_acquire_timeout_is_released(worker: Worker, broker: MagicMock) -> None:
     worker._gate_deps.config.backend_op_timeout = 0.01
     held: dict[str, LockToken] = {}
@@ -142,6 +143,7 @@ def _install(worker: Worker, store: _LockStore) -> None:
 
 
 @pytest.mark.befund("FS-07")
+@pytest.mark.entscheidung("E-052")
 async def test_shutdown_waits_for_the_background_release_before_closing_the_backend(
     worker: Worker, backend: MagicMock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -168,6 +170,7 @@ async def test_shutdown_waits_for_the_background_release_before_closing_the_back
 
 
 @pytest.mark.befund("FS-07")
+@pytest.mark.entscheidung("E-052")
 async def test_release_after_timeout_never_touches_a_foreign_lock(worker: Worker) -> None:
     """Haelt ein anderer Worker den Lock schon, schrieb das Acquire nichts; die
     Freigabe mit dem Token dieses Versuchs laesst den fremden Lock stehen."""
@@ -184,6 +187,7 @@ async def test_release_after_timeout_never_touches_a_foreign_lock(worker: Worker
 
 
 @pytest.mark.befund("FS-07")
+@pytest.mark.entscheidung("E-052")
 async def test_release_failing_on_the_outage_adds_no_warning_and_still_defers(
     worker: Worker, swarmq_logs: list[dict[str, Any]]
 ) -> None:
@@ -223,6 +227,7 @@ async def test_release_failing_otherwise_is_a_warning(worker: Worker, swarmq_log
 
 
 @pytest.mark.befund("FS-07")
+@pytest.mark.entscheidung("E-052")
 async def test_error_reply_of_the_acquire_releases_nothing(worker: Worker) -> None:
     """Eine Fehlerantwort heisst: das Skript lief nicht; es gibt nichts
     freizugeben (der Fall geht wie bisher per Requeue zurueck)."""

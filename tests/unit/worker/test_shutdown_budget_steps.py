@@ -261,6 +261,7 @@ async def test_exhausted_budget_still_gives_each_step_the_floor(worker: Any, mon
     assert stopped.is_set()
 
 
+@pytest.mark.entscheidung("E-053")
 async def test_hanging_cancel_consume_is_bounded_without_aborting_it(
     worker: Any, broker: Any, short_steps: None, swarmq_logs: list[dict[str, Any]]
 ) -> None:
@@ -318,6 +319,7 @@ async def test_cancel_consume_failing_after_the_drain_gave_up_is_still_logged(
     assert event["late"] is True
 
 
+@pytest.mark.entscheidung("E-050")
 async def test_a_delivery_after_the_drain_snapshot_is_drained_too(worker: Any, broker: Any, short_steps: None) -> None:
     """Review U10: Ein spaet angemeldeter Consumer (oder ein aufgegebenes
     ``cancel_consume``) startet waehrend des Drains noch einen Handler. Der
@@ -355,6 +357,7 @@ async def test_a_delivery_after_the_drain_snapshot_is_drained_too(worker: Any, b
     assert late_done_at_close == [True]
 
 
+@pytest.mark.entscheidung("E-050")
 async def test_a_late_delivery_beside_a_long_runner_is_cancelled_at_the_drain_end(
     worker: Any, broker: Any, short_steps: None
 ) -> None:

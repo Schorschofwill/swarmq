@@ -11,9 +11,12 @@ status: gilt
 quelle:
   - docs/plans/2026-09-03-001-feat-cpu-worker-modus-plan.md:259 (KTD3, „Bleibt das Kind unreapbar (D-State), bleibt der Slot blockiert“)
   - docs/plans/2026-09-03-001-feat-cpu-worker-modus-plan.md:388 (Risikotabelle)
-  - src/swarmq/worker/compute/pool.py:602 (Hinweis „slot stays blocked“, Log compute_child_unreaped)
+  - src/swarmq/worker/compute/pool.py:626-634 (Hinweis „slot stays blocked“, Log compute_child_unreaped)
+  - docs/plans/2026-10-14-0748-fix-fehlersuche-runde-2-plan.md:180-183 (KTD17, FS-23: gesperrten Index verwerfen)
+  - Commit 13472d9 (U19, FS-23) und Review 30e536c
 tests:
   - tests/unit/worker/compute/test_pool.py::test_immortal_child_blocks_the_slot
+  - tests/unit/worker/compute/test_befund_fs23_blocked_slot.py::test_a_slot_blocked_by_background_recycling_is_never_handed_out_again
 ---
 
 **Entscheidung.** Überlebt ein Rechenkind auch SIGKILL und die Sentinel-Wartezeit (etwa im D-State), bleibt sein Slot für die Lebensdauer des Pools gesperrt. Der Pool loggt `compute_child_unreaped`. Die Nachricht wird trotzdem bewertet, also nicht durch den hängenden Slot blockiert. Sind alle Slots gesperrt, gilt der Pool als ungesund.
@@ -22,4 +25,6 @@ tests:
 
 **Bewusste Folgen.** Dass eine Sperre nie aufgehoben wird, ist kein Fehler. BZ-27 („Abkühlzeit statt Dauersperre“) betrifft die Supervisor-Slots im `process_manager`, nicht den Rechen-Pool.
 
-**Überdenken nur mit neuem Argument.** Offen: FS-23. Wird der Kill im Hintergrund ausgelöst (Recycling, `aclose`), nachdem `run()` den Index schon in die Free-Queue zurückgegeben hat, bleibt der Index dort, und der gesperrte Slot wird weiter vergeben. Das widerspricht dieser Entscheidung und ist ein Fehler. Ein Nachweis soll nur „Index nicht mehr frei“ prüfen, nicht die Aufhebung der Sperre.
+**Nachtrag 2026-10-14 (FS-23, U19).** Behoben. `SlotPool.run` verwirft einen Index, dessen Slot nach `_free.get()` als gesperrt gilt, statt ihn zurückzulegen; die Sperre selbst bleibt. Damit wird auch ein Slot, den ein Kill im Hintergrund (Recycling, `aclose`) erst nach der Rückgabe des Index gesperrt hat, nicht mehr vergeben. Sind alle Slots gesperrt, endet `run` mit `SlotUnavailable`, auch ein schon wartender Aufruf. Festgeschrieben in `tests/unit/worker/compute/test_befund_fs23_blocked_slot.py`.
+
+**Überdenken nur mit neuem Argument.** Bis U19 blieb ein im Hintergrund gesperrter Index in der Free-Queue, und der gesperrte Slot wurde weiter vergeben (FS-23). Das war ein Fehler gegen diese Entscheidung, keine offene Frage. Keine offenen Einwände bekannt.

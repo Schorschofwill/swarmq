@@ -99,6 +99,7 @@ def schedule_store(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
 
 
 @pytest.mark.befund("FS-07")
+@pytest.mark.entscheidung("E-052")
 async def test_schedule_releases_a_claim_whose_reply_timed_out(
     broker: AsyncMock, backend: AsyncMock, registry: MagicMock
 ) -> None:
@@ -172,6 +173,7 @@ async def test_schedule_many_rollback_releases_an_own_claim_reported_by_the_retr
 
 
 @pytest.mark.befund("FS-07")
+@pytest.mark.entscheidung("E-052")
 async def test_release_after_timeout_never_touches_a_foreign_flag(
     broker: AsyncMock, backend: AsyncMock, registry: MagicMock
 ) -> None:
@@ -234,6 +236,7 @@ async def test_unexpected_release_error_keeps_the_claim_error_visible(
 
 
 @pytest.mark.befund("FS-07")
+@pytest.mark.entscheidung("E-052")
 async def test_claim_error_reply_releases_nothing(broker: AsyncMock, backend: AsyncMock, registry: MagicMock) -> None:
     """Eine Fehlerantwort (WRONGTYPE) heisst: der Claim lief nicht; wie im
     Lock-Gate wird nur nach einem Ausfall freigegeben (Review U12)."""
@@ -248,6 +251,7 @@ async def test_claim_error_reply_releases_nothing(broker: AsyncMock, backend: As
 
 
 @pytest.mark.befund("FS-07")
+@pytest.mark.entscheidung("E-052")
 async def test_schedule_many_rollback_skips_an_entry_whose_claim_got_an_error_reply(
     broker: AsyncMock, backend: AsyncMock, registry: MagicMock
 ) -> None:

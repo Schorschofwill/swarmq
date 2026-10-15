@@ -139,6 +139,7 @@ class LockStoreContract:
         assert await impl.acquire(name, owner="b", ttl_ms=60_000, max_concurrency=1) is None
         assert await impl.current_owner(name) == "a"
 
+    @pytest.mark.entscheidung("E-022")
     async def test_acquire_repeated_by_same_owner_returns_token_and_keeps_pttl(
         self,
         impl: LockStore,
@@ -157,6 +158,7 @@ class LockStoreContract:
         assert (await impl.observe(name, max_concurrency=1)).pttl_ms <= before
         assert await impl.acquire(name, owner="b", ttl_ms=60_000, max_concurrency=1) is None
 
+    @pytest.mark.entscheidung("E-022")
     async def test_semaphore_acquire_repeated_by_same_owner_returns_token_and_keeps_pttl(
         self,
         impl: LockStore,
@@ -174,6 +176,7 @@ class LockStoreContract:
         assert again == token
         assert (await impl.observe(name, max_concurrency=2)).pttl_ms <= before
 
+    @pytest.mark.entscheidung("E-022")
     async def test_full_semaphore_including_own_token_returns_token_on_repeat(self, impl: LockStore) -> None:
         """FS-06b: ist der Semaphor samt eigenem Slot voll, liefert die
         Wiederholung des eigenen Aufrufs trotzdem das Token; ein fremder

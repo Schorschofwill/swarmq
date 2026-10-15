@@ -132,6 +132,7 @@ def _fs10_assert_dlq_copy_without_counters(exchange: Fs10Exchange) -> None:
 
 
 @pytest.mark.befund("FS-10")
+@pytest.mark.entscheidung("E-054")
 async def test_fs10_delivery_limit_dlq_copy_drops_broker_counters(backend: Any, config: Any) -> None:
     worker, exchange = _fs10_worker(backend, config)
 
@@ -141,6 +142,7 @@ async def test_fs10_delivery_limit_dlq_copy_drops_broker_counters(backend: Any, 
 
 
 @pytest.mark.befund("FS-10")
+@pytest.mark.entscheidung("E-054")
 async def test_fs10_retry_exhausted_dlq_copy_drops_broker_counters(backend: Any, config: Any) -> None:
     worker, exchange = _fs10_worker(backend, config)
 
@@ -150,6 +152,7 @@ async def test_fs10_retry_exhausted_dlq_copy_drops_broker_counters(backend: Any,
 
 
 @pytest.mark.befund("FS-10")
+@pytest.mark.entscheidung("E-054")
 async def test_fs10_expired_dlq_copy_drops_broker_counters(backend: Any, config: Any) -> None:
     worker, exchange = _fs10_worker(backend, config)
     message = _fs10_message("fs10_expiring", _FS10_BELOW_LIMIT, **{HEADER_ENQUEUED_AT: int(time.time()) - 120})
@@ -160,6 +163,7 @@ async def test_fs10_expired_dlq_copy_drops_broker_counters(backend: Any, config:
 
 
 @pytest.mark.befund("FS-10")
+@pytest.mark.entscheidung("E-054")
 async def test_fs10_rejected_dlq_copy_drops_broker_counters(backend: Any, config: Any) -> None:
     worker, exchange = _fs10_worker(backend, config)
     message = make_message(body=b"fs10: kein JSON", headers=dict(_FS10_BELOW_LIMIT))

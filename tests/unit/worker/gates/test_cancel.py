@@ -721,6 +721,7 @@ class TestPreStartCancelFailsWorkflow:
         [BackendConnectionError("valkey down"), WorkflowStateConflict("cas rounds lost")],
         ids=["backend_down", "cas_conflict"],
     )
+    @pytest.mark.entscheidung("E-040")
     async def test_transient_fail_mark_defers_without_ack_result_or_flag_shortening(
         self, worker, broker, backend, swarmq_logs, error
     ):

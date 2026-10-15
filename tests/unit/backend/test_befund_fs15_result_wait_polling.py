@@ -127,6 +127,7 @@ def _backend(pubsub: _SilentPubSub) -> tuple[ValkeyBackend, AsyncMock]:
 
 
 @pytest.mark.befund("FS-15")
+@pytest.mark.entscheidung("E-030")
 def test_hanging_subscribe_does_not_outlast_the_timeout() -> None:
     async def _hang(_channel: str) -> None:
         await asyncio.Event().wait()
@@ -155,6 +156,7 @@ def _hang_forever() -> Callable[[str], Awaitable[None]]:
     return _hang
 
 
+@pytest.mark.entscheidung("E-030")
 def test_hanging_subscribe_still_finds_an_existing_result_within_the_pubsub_window() -> None:
     backend, get = _backend(_SilentPubSub(subscribe=_hang_forever()))
     get.return_value = b"ready"
@@ -170,6 +172,7 @@ def test_hanging_subscribe_still_finds_an_existing_result_within_the_pubsub_wind
     assert elapsed <= 1.5
 
 
+@pytest.mark.entscheidung("E-030")
 def test_hanging_unsubscribe_in_teardown_does_not_outlast_the_timeout() -> None:
     pubsub = _SilentPubSub(unsubscribe=_hang_forever())
     backend, _ = _backend(pubsub)
@@ -214,6 +217,7 @@ def test_pubsub_discarded_after_a_slow_subscribe_is_closed_in_the_background() -
     assert pubsub.closed
 
 
+@pytest.mark.entscheidung("E-030")
 def test_wait_for_workflow_with_hanging_subscribe_ends_at_the_timeout() -> None:
     pubsub = _SilentPubSub(subscribe=_hang_forever())
     backend, _ = _backend(pubsub)
@@ -341,6 +345,7 @@ def test_backend_close_lets_a_nearly_finished_closer_complete() -> None:
     assert pubsub.closed
 
 
+@pytest.mark.entscheidung("E-030")
 def test_hanging_subscribe_with_timeout_below_the_pubsub_window_ends_at_the_timeout() -> None:
     pubsub = _SilentPubSub(subscribe=_hang_forever())
     backend, _ = _backend(pubsub)
@@ -361,6 +366,7 @@ def test_hanging_subscribe_with_timeout_below_the_pubsub_window_ends_at_the_time
 
 
 @pytest.mark.parametrize("waiter", ["wait_for_result", "wait_for_workflow"])
+@pytest.mark.entscheidung("E-030")
 def test_teardown_after_the_timeout_still_gets_its_minimum_grace(waiter: str) -> None:
     # Auch wenn die Deadline schon erreicht ist, wartet der Aufrufer kurz auf
     # den Teardown: ein antwortendes Valkey ist danach sauber abgemeldet.

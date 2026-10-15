@@ -127,6 +127,7 @@ async def _next_sent(connector: _Connector, kind: type[Any]) -> list[Any]:
     return frames
 
 
+@pytest.mark.entscheidung("E-053")
 async def test_stop_during_a_running_rpc_sends_no_channel_close(
     channel: tuple[_Connector, Channel], short_stop: None, swarmq_logs: list[dict[str, Any]]
 ) -> None:
@@ -145,6 +146,7 @@ async def test_stop_during_a_running_rpc_sends_no_channel_close(
     assert detached["timeout_s"] == 0.01
 
 
+@pytest.mark.entscheidung("E-053")
 async def test_a_late_consume_answer_after_cancel_all_is_cancelled_at_once(
     channel: tuple[_Connector, Channel], short_stop: None
 ) -> None:
@@ -302,6 +304,7 @@ async def test_cancel_all_on_a_disconnected_channel_ends_after_the_channel_timeo
     assert queue.cancels == []
 
 
+@pytest.mark.entscheidung("E-053")
 async def test_cancel_all_gives_the_rpc_the_emergency_timeout() -> None:
     queue = _GatedQueue()
     watch = ConsumerWatch(rpc_timeout_s=7.5)

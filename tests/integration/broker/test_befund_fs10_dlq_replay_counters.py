@@ -120,6 +120,7 @@ async def _fs10_move(rabbitmq_url: str, source: str, target: str, extra_headers:
 
 @pytest.mark.befund("FS-10")
 @pytest.mark.usefixtures("_fs10_tasks")
+@pytest.mark.entscheidung("E-054")
 async def test_fs10_shovel_replay_of_a_delivery_limit_dead_letter_runs_the_task(
     rabbitmq_url: str, valkey_url: str, fs10_queue: str, fs10_runs: list[str]
 ) -> None:

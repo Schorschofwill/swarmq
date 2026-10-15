@@ -25,4 +25,4 @@ tests:
 
 **Bewusste Folgen.** Ein Workflow, der wegen eines AT_LEAST_ONCE-Schritts mit `result_ttl=0` zur Laufzeit scheitert, ist kein Fehler. `TaskInfo(result_ttl=0)` mit AT_LEAST_ONCE bleibt außerhalb von Workflows zulässig.
 
-**Überdenken nur mit neuem Argument.** FS-28 betrifft nur den Meldungstext: Bei `result_ttl=0` nennt `results.py:131` fälschlich „is FIRE_AND_FORGET“. Das Verhalten bleibt. Ob `result_ttl=0` schon bei `Task.s()` abgelehnt werden soll, ist eine offene Produktfrage.
+**Überdenken nur mit neuem Argument.** FS-28 betraf nur den Meldungstext: Bei `result_ttl=0` nannte `results.py` fälschlich „is FIRE_AND_FORGET“. Behoben in U17 (Commit 29f9a3e): Die Meldung nennt jetzt die Ursache („is FIRE_AND_FORGET“ bzw. „stores no result (result_ttl=0)“), Nachweis `tests/unit/worker/test_befund_fs28_no_store_step_message.py`. Das Verhalten blieb. Ob `result_ttl=0` schon bei `Task.s()` abgelehnt werden soll, ist eine offene Produktfrage.

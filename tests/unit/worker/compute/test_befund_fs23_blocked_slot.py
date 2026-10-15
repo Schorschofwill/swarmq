@@ -95,6 +95,7 @@ async def _run_fresh(p: SlotPool, tid: str) -> int:
 
 
 @pytest.mark.befund("FS-23")
+@pytest.mark.entscheidung("E-035")
 async def test_a_slot_blocked_by_background_recycling_is_never_handed_out_again(ctx, signals):
     p = await _make_pool(ctx, slots=2, recycle_max_tasks=1, end_grace_s=0.05)
     procs = await _block_in_background(p, "a", 0)
