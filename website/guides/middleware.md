@@ -161,9 +161,12 @@ operation, so newly added middleware is visible from the next call.
 **Which app.** Hooks run on the app that does the work:
 `pre_enqueue` and `post_enqueue` on the app that calls `schedule()`,
 `pre_execute`, `post_execute`, `on_error` and `on_retry` on the
-worker's app. `swarmq worker` builds its own app, so middleware added
-to a module-level `app` in `myapp/tasks.py` never runs in the worker.
-Add it in a `--configure` hook:
+worker's app. Workflow follow-up steps are published by the advancer
+in the worker, so their `pre_enqueue` and `post_enqueue` run on the
+worker's app too. `swarmq worker` builds its own app, so middleware
+added to a module-level `app` in `myapp/tasks.py` never runs in the
+worker. Add it in a `--configure` hook — this includes enqueue
+middleware that must see every workflow step:
 
 ```python title="myapp/hooks.py"
 from swarmq import Signal, SwarmQ

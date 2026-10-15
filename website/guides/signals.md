@@ -71,7 +71,11 @@ never does its job). New keys can appear in later releases.
     An embedded worker (`await app.start_worker()`) uses the app you
     built. `TASK_ENQUEUED`, `WORKFLOW_STEP_ENQUEUED` and
     `TASK_DUPLICATE_DETECTED` from a `client.*` source fire in the
-    process that publishes; register those on the producer's app. The
+    process that publishes; register those on the producer's app.
+    Workflow follow-up steps are published by the advancer in the
+    worker, so `TASK_ENQUEUED` and `WORKFLOW_STEP_ENQUEUED` for them
+    fire on the worker's app. Handlers that must see every step belong
+    on both apps — in the worker via `--configure`. The
     examples below write `app` for whichever app applies. See
     [`--configure`](../reference/cli.md#registering-middleware-with-configure).
 

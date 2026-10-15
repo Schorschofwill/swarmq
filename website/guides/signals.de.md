@@ -75,7 +75,11 @@ Releases können neue Schlüssel ergänzen.
     die du gebaut hast. `TASK_ENQUEUED`, `WORKFLOW_STEP_ENQUEUED` und
     `TASK_DUPLICATE_DETECTED` mit einer `client.*`-Quelle feuern in dem
     Prozess, der publiziert; diese registrierst du an der App des
-    Producers. Die Beispiele unten schreiben `app` für die jeweils
+    Producers. Workflow-Folgeschritte stellt der Advancer im Worker
+    ein; `TASK_ENQUEUED` und `WORKFLOW_STEP_ENQUEUED` für sie feuern
+    deshalb an der App des Workers. Handler, die jeden Schritt sehen
+    müssen, gehören an beide Apps – im Worker per `--configure`. Die
+    Beispiele unten schreiben `app` für die jeweils
     passende App. Siehe
     [`--configure`](../reference/cli.md#middleware-per-configure-registrieren).
 

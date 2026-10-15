@@ -165,9 +165,12 @@ sichtbar.
 **Welche App.** Hooks laufen an der App, die die Arbeit macht:
 `pre_enqueue` und `post_enqueue` an der App, die `schedule()` aufruft,
 `pre_execute`, `post_execute`, `on_error` und `on_retry` an der App des
-Workers. `swarmq worker` baut seine eigene App; Middleware an einer
-modulweiten `app` in `myapp/tasks.py` läuft im Worker also nie. Füge
-sie in einem `--configure`-Hook hinzu:
+Workers. Workflow-Folgeschritte stellt der Advancer im Worker ein;
+deren `pre_enqueue` und `post_enqueue` laufen deshalb ebenfalls an der
+App des Workers. `swarmq worker` baut seine eigene App; Middleware an
+einer modulweiten `app` in `myapp/tasks.py` läuft im Worker also nie.
+Füge sie in einem `--configure`-Hook hinzu – auch Enqueue-Middleware,
+die jeden Workflow-Schritt sehen muss:
 
 ```python title="myapp/hooks.py"
 from swarmq import Signal, SwarmQ
