@@ -4,6 +4,7 @@ applies_when:
   - Änderungen an Client.get_result, get_results oder ValkeyResults.wait_for_result
   - eine Fehlersuche meldet die GET-Last des 5-ms-Pollings oder das ignorierte polling-Argument als Fehler
   - ein Plan will das Warteverhalten auf Ergebnisse umbauen (Intervall, Backoff, Pub/Sub-Dauer)
+  - Änderungen an Client.get_results oder eine Fehlersuche meldet, dass get_results kein Pub/Sub nutzt
 tags: [client, results, pubsub, polling, valkey]
 id: E-030
 datum: 2026-04-15
@@ -16,6 +17,7 @@ quelle:
   - src/swarmq/backend/valkey/results.py:30 (_FALLBACK_POLL_S)
   - Commit 1b05cd9 (U20, FS-15: subscribe und Teardown an die Frist gebunden) und Review d2aa879 (verworfener PubSub ohne unsubscribe, close() räumt Hintergrund-Closer ab)
   - src/swarmq/backend/valkey/results.py:229-275 (wait_for_result), :490-512 (wait_for_workflow)
+  - docs/plans/2026-04-15-005-feat-pubsub-batch-performance-plan.md:72 (get_results mit MGET-Polling, kein Pub/Sub), :250 (timeout=0 ein GET)
 tests:
   - tests/unit/backend/test_valkey_results.py::TestWaitForResult::test_pubsub_miss_falls_back_to_polling
   - tests/unit/backend/test_befund_fs15_result_wait_polling.py::test_hanging_subscribe_does_not_outlast_the_timeout
@@ -33,5 +35,7 @@ tests:
 **Bewusste Folgen.** Ein Aufruf mit `polling=0.2` pollt trotzdem alle 5 ms. Kein Fehler ist auch, dass ein Wartender nach 1 s bis zu etwa 200 GET/s erzeugt.
 
 **Nachtrag 2026-10-14 (FS-15 Teil 3, U20).** Abonnement und Teardown zählen zur Frist. `wait_for_result` begrenzt das `subscribe` auf `min(_PUBSUB_WINDOW_S, Restfrist)`, also höchstens ein Pub/Sub-Fenster (1 s). Scheitert es oder dauert es länger, wird der PubSub verworfen (im Hintergrund geschlossen, ohne `unsubscribe`, weil valkey-py dafür eine getrennte Verbindung neu aufbauen würde) und ohne Pub/Sub-Fenster direkt gepollt. Der Teardown nach dem Warten läuft bis zur Deadline, mindestens aber `_TEARDOWN_GRACE_S` (50 ms); was dann noch läuft, schließt im Hintergrund weiter, und `close()` des Backends wartet darauf höchstens 0,1 s und bricht den Rest ab. `wait_for_workflow` rechnet das Abonnement auf das volle `timeout` an; ohne Abonnement meldet es keine Benachrichtigung (`False`). Bewusste Folge: Ein langsames, aber gesundes Valkey kann ein Ergebnis, das erst nach dem Abonnement-Versuch entsteht, nur noch per 5-ms-Polling finden. Ein Abbruch des Aufrufers während des Abonnements schließt den PubSub trotzdem.
+
+**Nachtrag 2026-10-15 (Fehlersuche Runde 3, F3-09): `get_results`.** `get_results()` nutzt bewusst kein Pub/Sub, sondern MGET-Polling im selben 5-ms-Intervall; N Abonnements bräuchten N Verbindungen (Skalierungsproblem bei großen Batches). Als Batch-Gegenstück zu `get_result` (wo `timeout=0` ein einzelnes GET ist) liest es bei `timeout=0` genau einmal per MGET, und eine Frist, die während des Wartens abläuft, endet erst nach einem letzten MGET. Dass `get_results(timeout=0)` heute gar nicht liest, ist der Befund F3-09 (Fix in 0.12.3, Test `tests/unit/client/test_befund_f3_09_get_results_timeout_zero.py`).
 
 **Überdenken nur mit neuem Argument.** Offen: FS-15 Teil 1 (Fehlersuche Runde 2). Nach 1 s liest der Client Pub/Sub gar nicht mehr, obwohl das Abonnement gesund bleibt. Für jeden Task über 1 s Laufzeit ist das 5-ms-Polling damit der Normalpfad und kein Rückfall. Die Last bei langen Wartezeiten hat die Entscheidung nicht betrachtet (Produktfrage, Plan 2026-10-14-0748 „Offene Produktfragen“). Bis U20 blockierte ein `subscribe()` ohne Frist den Aufrufer über `timeout` hinaus (FS-15 Teil 3); das war ein Fehler gegen den Docstring von `wait_for_result`, nicht von dieser Entscheidung gedeckt, und ist behoben (Nachtrag oben).
