@@ -20,13 +20,16 @@ def calculate_backoff(
         attempt: Current retry attempt (0-based).
         strategy: One of "fixed", "exponential", "linear".
         base_delay: Base delay in seconds.
-        max_delay: Maximum delay cap in seconds.
+        max_delay: Maximum delay cap in seconds. ``fixed`` waits exactly
+            ``base_delay``, at most ``max_delay``, without jitter (E-023);
+            ``exponential`` and ``linear`` above the cap wait
+            0.6 to 0.8 x ``max_delay``.
 
     Returns:
         Delay in seconds.
     """
     if strategy == "fixed":
-        return base_delay
+        return float(min(base_delay, max_delay))
 
     if strategy == "exponential":
         jitter = random.uniform(1.0, 2.0)  # noqa: S311 - Jitter, keine Kryptografie

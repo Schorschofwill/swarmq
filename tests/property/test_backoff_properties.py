@@ -6,7 +6,8 @@ The backoff API in ``src/swarmq/backoff.py`` is a single function
 ``calculate_backoff(attempt, strategy, base_delay, max_delay)`` with
 three strategies:
 
-- ``fixed``: returns ``base_delay`` unconditionally (no jitter, no cap).
+- ``fixed``: ``min(base_delay, max_delay)`` regardless of attempt (no
+  jitter; E-023, F3-16).
 - ``exponential``: ``min(base * 2**attempt * U(1, 2), max_delay)``.
 - ``linear``: ``min(base * (attempt + 1) * U(1, 2), max_delay)``.
 
@@ -129,11 +130,11 @@ def test_max_delay_upper_bound_respected_linear(attempt: int, base: float, max_d
 
 
 @given(attempt=_ATTEMPT, base=_BASE, max_delay=_MAX)
-def test_fixed_ignores_attempt_and_cap(attempt: int, base: float, max_delay: float) -> None:
-    """Fixed strategy returns base_delay verbatim, even above the cap.
+def test_fixed_ignores_attempt_and_respects_cap(attempt: int, base: float, max_delay: float) -> None:
+    """Fixed strategy returns base_delay, at most max_delay, for any attempt.
 
-    Pins the documented behavior from ``test_backoff.py`` — the fixed
-    strategy is intentionally un-capped (short-circuits before the cap).
+    E-023 (Nachtrag 2026-10-15, F3-16): ``fixed`` waits exactly
+    ``base_delay``, capped at ``max_delay``, without jitter.
     """
     d = calculate_backoff(attempt=attempt, strategy="fixed", base_delay=base, max_delay=max_delay)
-    assert d == base
+    assert d == min(base, max_delay)
