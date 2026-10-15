@@ -8,7 +8,8 @@ diese Events.
 
 ## Voraussetzungen
 
-- Eine `SwarmQ`-Instanz.
+- Die `SwarmQ`-Instanz, die das Signal auslöst; unter `swarmq worker`
+  bekommt sie ein `--configure`-Hook.
 - Eine async-Funktion, die du bei einem Event laufen lassen willst.
 
 ## Einen Handler registrieren
@@ -42,6 +43,42 @@ Dispatch mit `TypeError` (gefangen und als `signal_handler_error`
 geloggt; der Handler tut seine Arbeit also stillschweigend nie). Spätere
 Releases können neue Schlüssel ergänzen.
 
+!!! warning "An der App registrieren, die das Signal auslöst"
+    Ein Handler läuft an der `SwarmQ`-Instanz, die das Signal auslöst.
+    Worker-Signale (`TASK_STARTED`, `TASK_COMPLETED`, `TASK_FAILED`,
+    `TASK_DLQ`, `TASK_RATE_LIMITED`, `WORKER_*`, `SCHEDULER_*` und die
+    übrigen, die der Worker sendet) feuern an der App des Workers.
+    `swarmq worker` baut diese App selbst: Eine modulweite `app` in deinem
+    Task-Modul ist eine andere Instanz, und Handler darauf laufen nie,
+    ohne Warnung. Registriere sie in einer Funktion und übergib sie mit
+    `--configure`:
+
+    ```python title="myapp/hooks.py"
+    from swarmq import Signal, SwarmQ
+    from swarmq.logging import get_logger
+
+    log = get_logger("myapp.signals")
+
+
+    def setup(app: SwarmQ) -> None:
+        @app.on_signal(Signal.TASK_FAILED)
+        async def on_task_failed(task_id, task_name, exception, **kwargs):
+            log.error("myapp_task_attempt_failed", task_id=task_id,
+                      task_name=task_name, error=exception)
+    ```
+
+    ```bash
+    swarmq worker --module myapp.tasks --configure myapp.hooks:setup
+    ```
+
+    Ein eingebetteter Worker (`await app.start_worker()`) nutzt die App,
+    die du gebaut hast. `TASK_ENQUEUED`, `WORKFLOW_STEP_ENQUEUED` und
+    `TASK_DUPLICATE_DETECTED` mit einer `client.*`-Quelle feuern in dem
+    Prozess, der publiziert; diese registrierst du an der App des
+    Producers. Die Beispiele unten schreiben `app` für die jeweils
+    passende App. Siehe
+    [`--configure`](../reference/cli.md#middleware-per-configure-registrieren).
+
 `swarmq.logging.get_logger(name)` liefert einen Logger, der Events
 unter `name` an das Standard-`logging` übergibt, mit den
 Keyword-Argumenten als Record-Felder — derselbe Mechanismus, den SwarmQ
@@ -63,7 +100,7 @@ die nicht mit den eingebauten von SwarmQ kollidieren (`task_failed`,
 
 | Signal | Feuert | Kwargs |
 |---|---|---|
-| `TASK_ENQUEUED` | Nach erfolgreichem `schedule()` | `task_id`, `task_name`, `queue` |
+| `TASK_ENQUEUED` | Nach erfolgreichem `schedule()`; bei `delay`/`eta`, sobald der Task gespeichert ist, nicht beim Fire (Cron-Fires lösen es nicht aus) | `task_id`, `task_name`, `queue` |
 | `TASK_STARTED` | Vor Aufruf von `run()` | `task_id`, `task_name`, `queue` |
 | `TASK_COMPLETED` | Nach Erfolg von `run()` | `task_id`, `task_name`, `queue`, `duration_ms` |
 | `TASK_FAILED` | Nach **jedem** fehlgeschlagenen Versuch (`run()` hat geraist oder ist in einen Timeout gelaufen), vor der Entscheidung Retry oder DLQ | `task_id`, `task_name`, `queue`, `exception` (String) |
@@ -84,7 +121,7 @@ die nicht mit den eingebauten von SwarmQ kollidieren (`task_failed`,
 | `SCHEDULER_LEADER_HANDOVER` / `SCHEDULER_LEADER_FAILOVER` | Leader-Swap-Quellen | `worker_id` |
 | `SCHEDULER_FIRE_SKIPPED` | Catch-up nach Downtime hat Cron-Termine übersprungen | `worker_id`, `schedule_name`, `skipped_count` |
 | `SCHEDULER_CRON_CONFLICT` | Mehrere Definitionen eines statischen Crons leben länger als 10 Minuten (Leader, in jedem Übernahme-Takt, solange er besteht) | `worker_id`, `schedule_name`, `fingerprints` |
-| `SCHEDULER_LEADER_OUTDATED` | Der Scheduler-Leader führt ein swarmq ohne Zeitzonen-Unterstützung aus (`outdated=True`, einmal pro Leader), oder ein aktueller Leader folgt (`outdated=False`) | `worker_id`, `leader`, `leader_version` (`None` = vor 0.10.0), `outdated` |
+| `SCHEDULER_LEADER_OUTDATED` | Der Scheduler-Leader führt ein swarmq unter der Mindestversion für Leader aus (derzeit 0.12; `outdated=True`, einmal pro Leader), oder ein aktueller Leader folgt (`outdated=False`); siehe [Leader-Version](scheduling-and-retries.md#leader-version) | `worker_id`, `leader`, `leader_version` (`None` = vor 0.10.0), `outdated` |
 | `SCHEDULER_CRON_UNOWNED` | Der Leader beginnt, einen statischen Cron zurückzuhalten, den kein lebender Worker meldet und den er selbst nicht registriert (`held=True`), oder gibt ihn wieder frei (`held=False`); einmal je Übergang | `worker_id`, `schedule_name`, `task_name`, `held`, `held_count` |
 | `SCHEDULER_VALKEY_CHECKED` | Der Leader hat Eviction-Policy und Speicher von Valkey erneut geprüft, höchstens einmal je Stunde (seit 0.12) | `worker_id`, `status`, `policy`, `maxmemory`, `used_memory` |
 | `SCHEDULER_QUEUE_ORPHANED` | Der Leader hat eine gemeldete Queue mit Nachrichten, ohne Consumer und ohne lebenden Worker, der sie meldet, gefunden (`orphaned=True`), oder sie ist nicht mehr verwaist (`orphaned=False`); einmal je Übergang (seit 0.12) | `worker_id`, `queue`, `orphaned`, `message_count`, `orphaned_count` |
@@ -295,18 +332,22 @@ async def count(task_id, task_name, exception, **kwargs):
 
 ## Verifizieren
 
-Registriere einen Handler für `TASK_COMPLETED`, der ein eigenes Event
-loggt, plane einen Task, beobachte den Worker-Log:
+Registriere in einem `--configure`-Hook einen Handler für
+`TASK_COMPLETED`, der ein eigenes Event loggt, plane einen Task,
+beobachte den Worker-Log:
 
 ```bash
-swarmq worker --module myapp.tasks --log-level INFO --log-format human
+swarmq worker --module myapp.tasks --configure myapp.hooks:setup \
+  --log-level INFO --log-format human
 ```
 
 Die Zeile deines Handlers erscheint direkt nach der
 `task_succeeded`-Zeile des Workers für diesen Task, im selben
 Log-Stream. Signals selbst sind keine Logzeilen: `TASK_COMPLETED` ist
 der Hook, `task_succeeded` das Log-Event, das der Worker unmittelbar vor
-dem Dispatch schreibt.
+dem Dispatch schreibt. Erscheint die Zeile nicht, prüfe, ob der
+Handler im Hook registriert ist und nicht an einer modulweiten `app` in
+`myapp/tasks.py`.
 
 ## Siehe auch
 
