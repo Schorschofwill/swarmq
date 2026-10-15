@@ -14,14 +14,26 @@ Nur der Code-Teil: Exit 1 ist maßgeblich (``cli.md:33``, Code); die Angabe
 geprüft. Die Schlüsselliste steht ausdrücklich im Test (öffentlicher
 JSON-Vertrag), statt die private Konstante zu importieren.
 
+Auch der Fehlerpfad einer Prüfung ließ ``metrics_ports`` und
+``health_ports`` weg (nur der Erfolgspfad setzte sie); ``message-formats.md``
+führt beide als Teil des Payloads. Behoben in 0.12.3: alle Pfade bauen den
+Payload aus ``_WORKER_CHECK_PAYLOAD_KEYS``.
+
 Testliste:
 # [x] ``swarmq worker --check`` ohne ``--module`` → rc 1, ``ok: false``,
-#     alle Vertragsschlüssel vorhanden, ``slots`` und ``configure`` ``null``
+#     alle Vertragsschlüssel vorhanden, ``slots``, ``configure`` und die Ports ``null``
+# [x] ``ConfigurationError``-Pfad (Modul nicht auffindbar) → alle Vertragsschlüssel, Ports ``null``
+# [x] unerwartete Ausnahme → alle Vertragsschlüssel
+# [x] Erfolgspayload trägt genau die Vertragsschlüssel
 """
 
 from __future__ import annotations
 
 import json
+import sys
+from collections.abc import Iterator
+from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -41,12 +53,36 @@ _CONTRACT_KEYS = frozenset(
         "pool",
         "slots",
         "configure",
+        "metrics_ports",
+        "health_ports",
     }
 )
 
+_MODULE = "f3_19_check_tasks"
+
+_TASK_SOURCE = """\
+from swarmq import Task, TaskInfo
+
+
+class F319CheckTask(Task):
+    task_info = TaskInfo(name="f3_19_check_task", queues=["default"])
+
+    async def run(self) -> None:
+        return None
+"""
+
+
+@pytest.fixture
+def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fremde ``SWARMQ_*``-Werte der Umgebung verfälschen das Ergebnis nicht."""
+    import os
+
+    for name in [n for n in os.environ if n.startswith("SWARMQ_")]:
+        monkeypatch.delenv(name)
+
 
 @pytest.mark.befund("F3-19")
-@pytest.mark.xfail(strict=True, reason="F3-19: offen - Argparse-Payload von --check ohne pool/slots/configure")
+@pytest.mark.entscheidung("E-062")
 def test_argparse_error_payload_carries_every_contract_key(capsys: pytest.CaptureFixture[str]) -> None:
     code = main(["worker", "--check"])
 
@@ -58,3 +94,50 @@ def test_argparse_error_payload_carries_every_contract_key(capsys: pytest.Captur
     assert not missing, f"Argparse-Payload ohne Vertragsschlüssel: {sorted(missing)}"
     assert payload["slots"] is None
     assert payload["configure"] is None
+    assert payload["metrics_ports"] is None
+    assert payload["health_ports"] is None
+
+
+@pytest.mark.entscheidung("E-062")
+@pytest.mark.usefixtures("clean_env")
+def test_configuration_error_payload_carries_every_contract_key(capsys: pytest.CaptureFixture[str]) -> None:
+    code = main(["worker", "--module=f3_19_does_not_exist", "--check"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert payload["error_type"] == "ConfigurationError"
+    assert not _CONTRACT_KEYS - payload.keys()
+    assert payload["metrics_ports"] is None
+    assert payload["health_ports"] is None
+
+
+@pytest.mark.usefixtures("clean_env")
+def test_unexpected_exception_payload_carries_every_contract_key(capsys: pytest.CaptureFixture[str]) -> None:
+    with patch(
+        "swarmq.process_manager.check._validate_module_importable",
+        side_effect=PermissionError("f3_19 .pth lockout"),
+    ):
+        code = main(["worker", "--module=json", "--check"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert payload["error_type"] == "PermissionError"
+    assert not _CONTRACT_KEYS - payload.keys()
+
+
+@pytest.fixture
+def task_module(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: None) -> Iterator[str]:
+    (tmp_path / f"{_MODULE}.py").write_text(_TASK_SOURCE, encoding="utf-8")
+    monkeypatch.setattr(sys, "path", [str(tmp_path), *sys.path])
+    yield _MODULE
+    sys.modules.pop(_MODULE, None)
+
+
+def test_success_payload_carries_exactly_the_contract_keys(
+    task_module: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main(["worker", f"--module={task_module}", "--check"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0, payload["error"]
+    assert payload.keys() == _CONTRACT_KEYS

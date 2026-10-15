@@ -19,9 +19,12 @@ Abschnitte:
   ``off`` ist eine Warnung, ein ungueltiger Wert ein Fehler (Exit 78).
 
 Exit-Codes: 0 ohne Fehler (Warnungen erlaubt), 78, wenn ein Worker mit dieser
-Umgebung den Start verweigern wuerde (verdraengende Policy unter ``strict``),
-1 bei Laufzeitfehlern (Backend oder, mit ``SWARMQ_BROKER_URL``, Broker nicht
-erreichbar, ``SWARMQ_BACKEND_URL`` fehlt).
+Umgebung den Start verweigern wuerde (verdraengende Policy unter ``strict``;
+ungueltiger ``SWARMQ_SCHEDULER`` als Befund im Bericht; jeder andere
+``SWARMQ_*``-Wert, an dem ``SwarmQConfig`` scheitert, vor jeder Verbindung mit
+Meldung auf stderr und ohne Bericht, F3-18/E-006), 1 bei Laufzeitfehlern
+(Backend oder, mit ``SWARMQ_BROKER_URL``, Broker nicht erreichbar,
+``SWARMQ_BACKEND_URL`` fehlt).
 """
 
 from __future__ import annotations
@@ -380,16 +383,33 @@ def _render_table(report: dict[str, Any]) -> str:
 def run_env_check(args: argparse.Namespace) -> int:
     """Einstieg aus ``swarmq.cli.main``; liefert den Exit-Code."""
     from swarmq.config import env_valkey_eviction_check
+    from swarmq.process_manager.check import start_config
 
+    url = os.environ.get("SWARMQ_BACKEND_URL", "")
+    if not url:
+        sys.stderr.write(
+            "swarmq check: SWARMQ_BACKEND_URL is not set; export it or pass it via env, "
+            "e.g. SWARMQ_BACKEND_URL=valkey://localhost:6379/0\n"
+        )
+        return 1
+    broker_url = os.environ.get("SWARMQ_BROKER_URL", "")
     try:
-        url = os.environ.get("SWARMQ_BACKEND_URL", "")
-        if not url:
-            raise ConfigurationError(  # noqa: TRY301 - gleicher Fehlerpfad wie die übrigen Prüfungen
-                "SWARMQ_BACKEND_URL is not set; export it or pass it via env, "
-                "e.g. SWARMQ_BACKEND_URL=valkey://localhost:6379/0"
-            )
+        # F3-18 (E-006): jeder ``SWARMQ_*``-Wert, an dem der Worker-Start
+        # scheitert, endet hier mit 78 -- vor jeder Verbindung, also auch bei
+        # unerreichbarem Valkey. ``scheduler`` bleibt aussen vor: den meldet
+        # der Abschnitt ``scheduler`` als Befund im Bericht.
+        start_config(
+            broker_url=broker_url,
+            backend_url=url,
+            logging_settings=None,
+            scheduler="on",
+            resolved_fields=("scheduler",),
+        )
+    except ConfigurationError as exc:
+        sys.stderr.write(f"swarmq check: {exc}\n")
+        return CONFIG_ERROR_EXIT_CODE
+    try:
         described = asyncio.run(_describe_backend(url))
-        broker_url = os.environ.get("SWARMQ_BROKER_URL", "")
         queues = asyncio.run(_read_queue_state(url, broker_url)) if broker_url else None
         report = build_report(url, described, env_valkey_eviction_check(), queues=queues)
     except Exception as exc:  # noqa: BLE001 - CLI meldet jeden Fehler als eine Zeile

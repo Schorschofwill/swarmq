@@ -16,6 +16,10 @@ liefert einen Fake-Client mit sicherer Umgebung (``noeviction``).
 Testliste:
 # [x] SWARMQ_VALKEY_EVICTION_CHECK=bogus → Exit 78
 # [x] SWARMQ_SHUTDOWN_TIMEOUT=abc → Exit 78
+
+Behoben in 0.12.3: ``run_env_check`` baut die Konfiguration vor jeder
+Verbindung wie der Pre-Flight des Starts (``start_config``); Zusatzfälle in
+``test_cli_env_check.py``.
 """
 
 from __future__ import annotations
@@ -77,7 +81,7 @@ def safe_valkey(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.befund("F3-18")
-@pytest.mark.xfail(strict=True, reason="F3-18: offen - swarmq check meldet ungültige Konfiguration nicht mit 78")
+@pytest.mark.entscheidung("E-006")
 @pytest.mark.parametrize(
     ("variable", "value"),
     [

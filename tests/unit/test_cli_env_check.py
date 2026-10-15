@@ -22,6 +22,11 @@ Test-Liste:
   - [x] Tabellenausgabe enthaelt ``scheduler  scheduler  off``
   - [x] ``SWARMQ_SCHEDULER=no`` -> Befund ``scheduler_invalid`` (``error``),
     ``ok: false``, Exit 78
+- F3-18 (E-006): ungueltige Konfiguration endet wie beim Worker mit 78:
+  - [x] stderr nennt das Feld, kein Valkey-Client wird gebaut (vor jeder Verbindung)
+  - [x] ``SWARMQ_VALKEY_EVICTION_CHECK=bogus`` bei unerreichbarem Valkey -> 78, nicht 1
+  - [x] ``SWARMQ_VALKEY_EVICTION_CHECK=WARN`` (Grossschreibung) -> 0, Befund ``warning``
+  - [x] ``env_valkey_eviction_check()`` wertet ``bogus`` fuer Producer weiter als ``strict``
 """
 
 from __future__ import annotations
@@ -312,3 +317,73 @@ def test_invalid_scheduler_value_fails_like_the_worker(
     assert report["scheduler"] == {"scheduler": "no"}
     assert _codes(report, "error") == ["scheduler_invalid"]
     assert _codes(report, "warning") == []
+
+
+@pytest.mark.entscheidung("E-006")
+@pytest.mark.parametrize(
+    ("variable", "value", "named"),
+    [
+        ("SWARMQ_VALKEY_EVICTION_CHECK", "bogus", "valkey_eviction_check"),
+        ("SWARMQ_SHUTDOWN_TIMEOUT", "abc", "SWARMQ_SHUTDOWN_TIMEOUT"),
+    ],
+)
+def test_invalid_configuration_fails_before_any_connection(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, variable: str, value: str, named: str
+) -> None:
+    built: list[object] = []
+
+    def _from_url(_cls: object, /, *args: object, **kwargs: object) -> _FakeValkey:
+        built.append(args)
+        return _FakeValkey()
+
+    monkeypatch.setattr(valkey.asyncio.Valkey, "from_url", classmethod(_from_url))
+    monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://fake:6399/0")
+    monkeypatch.setenv(variable, value)
+
+    code = main(["check", "--format", "json"])
+
+    captured = capsys.readouterr()
+    assert code == 78
+    assert captured.out == ""
+    assert captured.err.startswith("swarmq check: ")
+    assert named in captured.err
+    assert built == []
+
+
+@pytest.mark.entscheidung("E-006")
+def test_invalid_eviction_mode_with_unreachable_valkey_exits_78(
+    fake: _FakeValkey, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _unreachable() -> bool:
+        raise ConnectionError("f3_18 valkey unreachable")
+
+    monkeypatch.setattr(fake, "ping", _unreachable)
+    monkeypatch.setenv("SWARMQ_VALKEY_EVICTION_CHECK", "bogus")
+
+    code = main(["check", "--format", "json"])
+
+    capsys.readouterr()
+    assert code == 78
+
+
+@pytest.mark.entscheidung("E-006")
+def test_eviction_mode_is_case_insensitive(
+    fake: _FakeValkey, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _evicting(fake)
+    monkeypatch.setenv("SWARMQ_VALKEY_EVICTION_CHECK", "WARN")
+
+    code, report = _run_json(capsys)
+
+    assert code == 0
+    assert report["valkey"]["eviction_check"] == "warn"
+    assert _codes(report, "warning") == ["eviction_policy"]
+
+
+@pytest.mark.entscheidung("E-006")
+def test_producers_treat_an_invalid_eviction_mode_as_strict(monkeypatch: pytest.MonkeyPatch) -> None:
+    from swarmq.config import env_valkey_eviction_check
+
+    monkeypatch.setenv("SWARMQ_VALKEY_EVICTION_CHECK", "bogus")
+
+    assert env_valkey_eviction_check() == "strict"

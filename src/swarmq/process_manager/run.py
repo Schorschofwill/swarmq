@@ -10,7 +10,7 @@ import socket
 from swarmq.exceptions import ConfigurationError
 from swarmq.logging import get_logger
 from swarmq.logging_settings import LoggingSettings, resolve_logging_settings
-from swarmq.process_manager.check import check_worker_config
+from swarmq.process_manager.check import check_worker_config, start_config
 from swarmq.process_manager.config import WorkerConfig
 from swarmq.process_manager.entry import worker_subprocess_entry
 from swarmq.process_manager.reload import ReloadController
@@ -142,12 +142,11 @@ def _run_multi_process_worker_configured(
     # Resolve SwarmQConfig.shutdown_timeout once in the parent and pass it
     # as the total shutdown budget from SIGTERM (BZ-18, Plan 0.12.0, MR 17);
     # the worker subprocess derives its drain from the same value.
-    from swarmq.config import SwarmQConfig
-
     # Mit den aufgeloesten Settings ueberspringt SwarmQConfig die Logging-Env:
     # ein ungueltiges SWARMQ_LOG_FORMAT, das ``--log-format`` schon
-    # ueberstimmt hat, braeche sonst hier mit 78 ab.
-    sq_config = SwarmQConfig(
+    # ueberstimmt hat, braeche sonst hier mit 78 ab. Derselbe Helfer baut
+    # die Konfiguration fuer ``--check`` und ``swarmq check`` (KTD15).
+    sq_config = start_config(
         broker_url=broker_url,
         backend_url=backend_url,
         logging_settings=logging_settings,

@@ -10,6 +10,8 @@ Test-Liste:
 - [x] Zaehlung gedeckelt: ab der Obergrenze "mindestens N"
 - [x] SCAN scheitert (ACL) -> ``unprefixed_keys`` null, Befund ``warning``, Exit 0
 - [x] ungueltiger Namensraum -> Exit 78 ohne Verbindung
+- [x] F3-24: ``schedule``, ``dlq`` und ``inspect`` enden bei ungueltigem
+      Namensraum ebenso mit 78, ohne Verbindung
 """
 
 from __future__ import annotations
@@ -129,3 +131,23 @@ def test_invalid_namespace_exits_78(monkeypatch: pytest.MonkeyPatch, capsys: pyt
 
     assert main(["check", "--format", "json"]) == 78
     assert "invalid namespace" in capsys.readouterr().err
+
+
+@pytest.mark.entscheidung("E-012")
+@pytest.mark.parametrize(
+    "argv",
+    [["schedule", "list"], ["dlq", "list"], ["inspect", "--module", "json"]],
+)
+def test_invalid_namespace_exits_78_for_every_command(
+    argv: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    built: list[object] = []
+    monkeypatch.setattr(valkey.asyncio.Valkey, "from_url", classmethod(lambda cls, *a, **kw: built.append(a)))
+    monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://fake:6399/0")
+    monkeypatch.setenv("SWARMQ_NAMESPACE", "a:b")
+
+    code = main(argv)
+
+    assert code == 78
+    assert f"swarmq {argv[0]}: " in capsys.readouterr().err
+    assert built == []

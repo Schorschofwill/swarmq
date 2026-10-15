@@ -203,16 +203,18 @@ def worker_subprocess_entry(
         # geordnet beendet; ``compute_fork_source_rejected`` (ERROR) steht
         # schon im Log. Der Supervisor startet ihn mit frischem Forkserver neu.
         raise SystemExit(FORK_SOURCE_REJECTED_EXIT_CODE) from None
-    except (ConfigurationError, ModuleNotFoundError) as exc:
+    except (ConfigurationError, ImportError, SyntaxError) as exc:
         # R29: ein Konfigurationsfehler ist kein Absturz. Ein Neustart
         # aendert nichts, also meldet der Worker ihn mit eigenem Exit-Code
         # und der Supervisor beendet den Lauf statt fuenfmal neu zu starten.
         # R21/U4: als strukturierter Logsatz im konfigurierten Format -- eine
         # rohe stderr-Zeile war in einer JSON-Pipeline eine kaputte Zeile,
-        # und zwar genau im Fehlerfall, wo sie gelesen werden muss. Ein
-        # ``ModuleNotFoundError`` (etwa eine fehlende Abhaengigkeit des
-        # Task-Moduls) gehoert in dieselbe Klasse: er endete bisher mit
-        # Traceback und fuenf Neustarts.
+        # und zwar genau im Fehlerfall, wo sie gelesen werden muss.
+        # E-057: jeder ``ImportError`` (einschliesslich
+        # ``ModuleNotFoundError``) und jeder ``SyntaxError`` beim Import des
+        # Task-Moduls oder eines ``--configure``-Hooks gehoert in dieselbe
+        # Klasse; ``error_type`` bleibt der Klassenname. Andere Ausnahmen
+        # beim Import verlassen das Entry und bleiben Exit 1.
         _log_config_error(worker_id, exc)
         raise SystemExit(CONFIG_ERROR_EXIT_CODE) from None
     finally:

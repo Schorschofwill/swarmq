@@ -149,7 +149,8 @@ def parse_env_value(kind: str, raw: str, env_name: str) -> object:
 def env_valkey_eviction_check() -> str:
     """``SWARMQ_VALKEY_EVICTION_CHECK`` fuer Backends ohne ``SwarmQConfig``
     (CLI, Producer; Plan 0.12.0, MR 14). Ungueltige Werte prueft erst
-    ``SwarmQConfig``; hier gelten sie als ``strict``, die Pruefung laeuft also."""
+    ``SwarmQConfig``; hier gelten sie als ``strict``, die Pruefung laeuft also.
+    ``swarmq check`` lehnt einen ungueltigen Wert vorher mit 78 ab (E-006)."""
     raw = os.environ.get("SWARMQ_VALKEY_EVICTION_CHECK", "")
     mode = cast("str", parse_env_value("mode", raw, "SWARMQ_VALKEY_EVICTION_CHECK"))
     return mode if mode in EVICTION_CHECK_MODES else "strict"

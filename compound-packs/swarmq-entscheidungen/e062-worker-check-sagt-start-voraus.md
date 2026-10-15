@@ -22,7 +22,10 @@ tests:
   - tests/unit/process_manager/test_port_guard.py::TestPreflightCommandAgrees::test_checks_the_effective_values_cli_over_environment
   - tests/unit/process_manager/test_port_guard.py::TestPreflightCommandAgrees::test_environment_port_is_named_in_the_error
   - tests/unit/process_manager/test_port_guard.py::TestPreflightCommandAgrees::test_reports_the_overlap_instead_of_ok
-ohne_test: Test entsteht mit dem Fix in 0.12.3 (F3-17, tests/unit/test_befund_f3_17_worker_check_env.py; F3-19, tests/unit/test_befund_f3_19_check_argparse_payload.py).
+  - tests/unit/test_befund_f3_17_worker_check_env.py::test_worker_check_rejects_env_values_the_start_rejects
+  - tests/unit/test_befund_f3_17_worker_check_env.py::test_worker_check_does_not_require_broker_and_backend_urls
+  - tests/unit/test_befund_f3_19_check_argparse_payload.py::test_argparse_error_payload_carries_every_contract_key
+  - tests/unit/test_befund_f3_19_check_argparse_payload.py::test_configuration_error_payload_carries_every_contract_key
 ---
 
 **Entscheidung.** `swarmq worker --check` sagt den Start voraus: Ein `ok: true` heißt, dass der Pre-Flight des Supervisors und die Konfigurationsprüfung des Workers bestehen. Geprüft werden dazu alle Env-Werte, die der Start mit 78 ablehnt (z. B. `SWARMQ_SCHEDULER`, `SWARMQ_CONCURRENCY`, `SWARMQ_SHUTDOWN_TIMEOUT`, `SWARMQ_VALKEY_EVICTION_CHECK`). Fehlende `SWARMQ_BROKER_URL`/`SWARMQ_BACKEND_URL` prüft `--check` nicht; die Doku sagt das. Ein argparse-Fehler unter `--check` kommt als JSON-Payload mit Exit 1 (nicht 2), mit demselben stabilen Feldsatz wie jeder andere `--check`-Fehler.
@@ -31,4 +34,4 @@ ohne_test: Test entsteht mit dem Fix in 0.12.3 (F3-17, tests/unit/test_befund_f3
 
 **Bewusste Folgen.** Ein `--check` ohne URLs besteht, der Start danach kann wegen der fehlenden URL mit 78 enden. Das ist kein Fehler. Exit 2 für argparse-Fehler gilt unter `--check` nicht; `message-formats.md:525-526` ist falsch (F3-19, Doku-Fix).
 
-**Überdenken nur mit neuem Argument.** Keine offenen Einwände bekannt. Dass `--check` heute vier abgelehnte Env-Werte durchlässt, ist der Befund F3-17; der unvollständige Payload bei argparse-Fehlern ist F3-19 (beide Fix in 0.12.3).
+**Überdenken nur mit neuem Argument.** Keine offenen Einwände bekannt. Dass `--check` bis 0.12.2 vier abgelehnte Env-Werte durchließ, war der Befund F3-17; der unvollständige Payload bei argparse-Fehlern war F3-19 (beide behoben in 0.12.3: `--check` baut die Konfiguration über denselben Helfer `start_config` wie der Pre-Flight des Starts, und jeder Payload, auch im Fehlerpfad, trägt `metrics_ports` und `health_ports`).

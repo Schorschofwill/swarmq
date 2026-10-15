@@ -26,6 +26,11 @@ tests:
   - tests/integration/test_cli_env_check.py::test_unreachable_broker_exits_1
   - tests/unit/backend/test_befund_bz04_eviction_policy.py::test_connect_warns_when_valkey_may_evict_swarmq_keys
   - tests/unit/backend/test_valkey_environment.py::test_check_off_queries_nothing_and_stays_silent
+  - tests/unit/test_befund_f3_18_check_invalid_config_exit78.py::test_check_reports_invalid_configuration_with_exit_78
+  - tests/unit/test_cli_env_check.py::test_invalid_configuration_fails_before_any_connection
+  - tests/unit/test_cli_env_check.py::test_invalid_eviction_mode_with_unreachable_valkey_exits_78
+  - tests/unit/test_cli_env_check.py::test_eviction_mode_is_case_insensitive
+  - tests/unit/test_cli_env_check.py::test_producers_treat_an_invalid_eviction_mode_as_strict
 ---
 
 **Entscheidung.** `swarmq check` endet mit Exit 78 nur bei Befunden, bei denen ein Worker den Start verweigern würde (verdrängende Policy unter `strict`, ungültige Konfiguration). AOF aus, Valkey < 8 und Cluster-Modus sind Warnungen (Exit 0). Abschnitt `queues`: ohne `SWARMQ_BROKER_URL` ungeprüft und befundfrei; mit URL und unerreichbarem Broker Exit 1 (wie bei Valkey); nicht lesbare Meldungen in Valkey ergeben die Warnung `queues_unchecked`. Producer und CLI-Befehle warnen bei unsicherer Policy einmal je Verbindung; `SWARMQ_VALKEY_EVICTION_CHECK=off` schaltet das ab.
@@ -34,6 +39,6 @@ tests:
 
 **Bewusste Folgen.** Eine Umgebung ohne AOF besteht `check` mit Exit 0 (nur Warnung). Ein Producer startet auch bei verdrängender Policy.
 
-**Nachtrag 2026-10-15 (Fehlersuche Runde 3, F3-18): Was „ungültige Konfiguration“ heißt.** Gemeint ist jeder Wert, an dem `SwarmQConfig` beim Worker-Start scheitert, auch ein ungültiger Modus (`SWARMQ_VALKEY_EVICTION_CHECK=bogus`) und ein nicht parsebarer Wert (`SWARMQ_SHUTDOWN_TIMEOUT=abc`). `swarmq check` endet dann mit 78. Dass es heute im ersten Fall 0 (der Modus wird still zu `strict`) und im zweiten 1 liefert, ist der Befund F3-18 (Fix in 0.12.3), keine Frage dieser Entscheidung. Unberührt bleibt die Nachsicht für Backends ohne `SwarmQConfig` (Producer, CLI-Befehle): `env_valkey_eviction_check()` wertet einen ungültigen Modus als `strict`, damit die Prüfung trotzdem läuft. Für die Startvorhersage von `check` gilt diese Nachsicht nicht. Der Test entsteht mit dem Fix (`tests/unit/test_befund_f3_18_check_invalid_config_exit78.py`).
+**Nachtrag 2026-10-15 (Fehlersuche Runde 3, F3-18): Was „ungültige Konfiguration“ heißt.** Gemeint ist jeder Wert, an dem `SwarmQConfig` beim Worker-Start scheitert, auch ein ungültiger Modus (`SWARMQ_VALKEY_EVICTION_CHECK=bogus`) und ein nicht parsebarer Wert (`SWARMQ_SHUTDOWN_TIMEOUT=abc`). `swarmq check` endet dann mit 78. Dass es bis 0.12.2 im ersten Fall 0 (der Modus wurde still zu `strict`) und im zweiten 1 lieferte, war der Befund F3-18 (behoben in 0.12.3: `swarmq check` baut die Konfiguration vor jeder Verbindung wie der Worker-Start; `SWARMQ_SCHEDULER` bleibt dem Abschnitt `scheduler` überlassen), keine Frage dieser Entscheidung. Unberührt bleibt die Nachsicht für Backends ohne `SwarmQConfig` (Producer, CLI-Befehle): `env_valkey_eviction_check()` wertet einen ungültigen Modus als `strict`, damit die Prüfung trotzdem läuft. Für die Startvorhersage von `check` gilt diese Nachsicht nicht. Festgehalten in `tests/unit/test_befund_f3_18_check_invalid_config_exit78.py` und, für die Nachsicht der Producer, `tests/unit/test_cli_env_check.py::test_producers_treat_an_invalid_eviction_mode_as_strict`.
 
 **Überdenken nur mit neuem Argument.** Keine offenen Einwände bekannt.

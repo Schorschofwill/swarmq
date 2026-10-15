@@ -17,13 +17,20 @@ quelle:
 tests:
   - tests/unit/process_manager/test_entry.py::TestConfigErrorExitCode::test_import_error_in_the_child_is_a_configuration_error
   - tests/unit/test_cli.py::TestMainErrorRendering::test_module_not_found_exits_with_the_config_code
-ohne_test: Test entsteht mit dem Fix in 0.12.3 (F3-05, tests/unit/process_manager/test_befund_f3_05_import_error_exit78.py).
+  - tests/unit/process_manager/test_befund_f3_05_import_error_exit78.py::test_import_error_in_the_task_module_exits_with_config_code
+  - tests/unit/process_manager/test_befund_f3_05_import_error_exit78.py::test_syntax_error_in_the_task_module_exits_with_config_code
+  - tests/unit/process_manager/test_befund_f3_05_import_error_exit78.py::test_indentation_error_in_the_task_module_exits_with_config_code
+  - tests/unit/process_manager/test_befund_f3_05_import_error_exit78.py::test_other_exceptions_while_importing_the_task_module_leave_the_entry
+  - tests/unit/process_manager/test_befund_f3_05_import_error_exit78.py::test_syntax_error_in_the_configure_hook_module_exits_with_config_code
+  - tests/unit/process_manager/test_check.py::TestSyntaxErrorInPackageInit::test_module_in_a_package_with_a_syntax_error_is_a_configuration_error
+  - tests/unit/process_manager/test_check.py::TestSyntaxErrorInPackageInit::test_configure_hook_in_a_package_with_a_syntax_error_is_a_configuration_error
+  - tests/unit/process_manager/test_check.py::TestSyntaxErrorInPackageInit::test_worker_start_ends_with_78_without_traceback
 ---
 
 **Entscheidung.** Jeder Konfigurationsfehler von `swarmq worker` endet nach einem einzigen Versuch mit Exit 78 (`EX_CONFIG`) und einem Logsatz `worker_config_error`, im Elternprozess wie im Kind. Dazu zählen `ConfigurationError`, jeder `ImportError` (einschließlich `ModuleNotFoundError`) und jeder `SyntaxError` beim Import des Task-Moduls. Andere Ausnahmen beim Import (etwa `TypeError` oder `ValueError` auf Modulebene, auch aus `TaskInfo(...)`) bleiben Exit 1. Verbindungsfehler zu Broker oder Backend bleiben Exit 1.
 
 **Begründung.** Ein deterministisch kaputtes Deployment soll nicht fünfmal neu starten und mit `worker_restart_limit_exceeded` enden; Orchestratoren sollen „nicht neu starten“ von „später wieder versuchen“ unterscheiden (B12, KTD8). `SyntaxError` ist genauso deterministisch und fällt unter „task module not importable“. Bei beliebigen Ausnahmen auf Modulebene lässt sich ein Code-Fehler nicht sicher von einem Konfigurationsfehler trennen.
 
-**Bewusste Folgen.** Ein Task-Modul, das beim Import `ValueError` wirft (z. B. eine ungültige `TaskInfo`, E-065), endet mit Exit 1 und Neustarts bis zum Restart-Limit. Das ist kein Fehler. Dass heute nur `ModuleNotFoundError` und nicht jeder `ImportError` 78 ergibt, ist der Befund F3-05 (Fix in 0.12.3).
+**Bewusste Folgen.** Ein Task-Modul, das beim Import `ValueError` wirft (z. B. eine ungültige `TaskInfo`, E-065), endet mit Exit 1 und Neustarts bis zum Restart-Limit. Das ist kein Fehler. Dass bis 0.12.2 nur `ModuleNotFoundError` und nicht jeder `ImportError` 78 ergibt, war der Befund F3-05 (behoben in 0.12.3: das Worker-Entry fängt `ImportError` und `SyntaxError`, der Pre-Flight im Elternprozess zusätzlich `SyntaxError` aus einem Paket-`__init__`; ein `SyntaxError` in einem `--configure`-Hook-Modul endet ebenso mit 78).
 
 **Überdenken nur mit neuem Argument.** Keine offenen Einwände bekannt.
