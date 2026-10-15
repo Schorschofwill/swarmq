@@ -695,18 +695,22 @@ class ClientScheduling(ClientScheduleResolve):
         # orphan window blocking re-schedule of the same args.
         store = self._ensure_schedule_store()
         try:
-            if await store.add_schedule(definition) is False:
-                # F3-01 (E-058): ``False`` heisst seit dem atomaren Speichern
-                # nur noch Konflikt mit einem fremden Eintrag; die frische
-                # ID wuerde sonst nie feuern. ``is False``: nur die
-                # ausdrueckliche Absage zaehlt.
-                raise BackendResponseError(  # noqa: TRY301 - Konflikt laeuft bewusst durch den Claim-Rollback
-                    f"schedule {schedule_name!r} already exists with different content"
-                )
-        except BaseException:
-            if dedup_hash is not None:
+            added = await store.add_schedule(definition)
+        except BaseException as exc:
+            # Ein Ausfall ist unbestimmt (``sched_add.lua`` ist atomar, der
+            # Eintrag kann feuern): Die Sperre bleibt stehen wie nach
+            # ``PublishIndeterminate`` (E-041, E-059-Nachtrag).
+            if dedup_hash is not None and not is_backend_outage(exc):
                 await self._rollback_unique_claim(dedup_hash, task_id)
             raise
+        if added is False:
+            # F3-01 (E-058): ``False`` heisst seit dem atomaren Speichern nur
+            # noch Konflikt mit einem abweichenden oder verschwundenen
+            # Eintrag; die frische ID wuerde sonst nie feuern. ``is False``:
+            # nur die ausdrueckliche Absage zaehlt. Nach verlorener Antwort
+            # kann das der eigene, schon gefeuerte Eintrag sein: Die Sperre
+            # bleibt stehen und laeuft ueber ihre TTL ab (E-059-Nachtrag).
+            raise BackendResponseError(f"schedule {schedule_name!r} already exists with different content")
         await chain.run_post_enqueue(message_dict)
         await self._signal_dispatcher.dispatch(
             Signal.TASK_ENQUEUED,
