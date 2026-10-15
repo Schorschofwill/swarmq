@@ -43,7 +43,8 @@ has_path_arg() {
         case "$previous" in
             -k | -m | -p | -o | -c | -W | -n | --dist | --deselect | --ignore | --ignore-glob | --rootdir \
                 | --confcutdir | --basetemp | --junitxml | --junit-xml | --maxfail | --tb | --durations \
-                | --timeout | --randomly-seed | --log-level | --log-file)
+                | --timeout | --randomly-seed | --log-level | --log-file | --config-file | --override-ini \
+                | --numprocesses | --pythonwarnings)
                 previous=""
                 continue
                 ;;

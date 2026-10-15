@@ -371,6 +371,28 @@ def test_an_ignored_path_keeps_the_suite(stub: dict[str, str], tmp_path: Path) -
     assert f"pytest tests/integration --ignore {ignored} --randomly-seed" in serial
 
 
+@pytest.mark.parametrize("option", ["--config-file", "--override-ini", "--numprocesses", "--pythonwarnings"])
+def test_a_long_option_value_naming_an_existing_file_keeps_the_suite(stub: dict[str, str], option: str) -> None:
+    result = _just(stub, "integration", option, "pyproject.toml")
+
+    assert result.returncode == 0, result.stderr
+    parallel, serial = _calls(stub)
+    assert f"tests/integration {option} pyproject.toml --randomly-seed" in parallel
+    assert f"pytest tests/integration {option} pyproject.toml --randomly-seed" in serial
+
+
+def test_a_path_after_an_option_value_still_narrows(stub: dict[str, str], tmp_path: Path) -> None:
+    target = tmp_path / "test_x.py"
+    target.touch()
+
+    result = _just(stub, "integration", "-k", "foo", str(target))
+
+    assert result.returncode == 0, result.stderr
+    parallel, serial = _calls(stub)
+    assert f"pytest -n 8 --dist loadgroup -k foo {target} --randomly-seed" in parallel
+    assert "tests/integration" not in parallel + serial
+
+
 def test_unit_with_a_path_runs_only_that_path_without_the_lock(stub: dict[str, str], tmp_path: Path) -> None:
     target = tmp_path / "test_x.py"
     target.touch()
