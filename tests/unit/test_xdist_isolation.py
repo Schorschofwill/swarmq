@@ -14,6 +14,11 @@ Test-Liste:
 - [x] unbekannter Wert: Abbruch mit Nutzungsfehler
 - [x] Test mit Fixture ``toxiproxy``: xdist-Gruppe ``toxiproxy``
 - [x] eigene xdist-Gruppe bleibt erhalten
+- [x] ``timing`` (enges Zeitbudget gegen die echte Uhr) wird wie
+      ``exclusive`` im parallelen Durchgang abgewählt
+- [x] ``timing`` läuft im seriellen Durchgang
+- [x] ``timing`` per Modul-``pytestmark`` wirkt wie der Dekorator
+- [x] ``exclusive`` und ``timing`` zugleich: genau einmal, im seriellen Durchgang
 """
 
 from __future__ import annotations
@@ -73,6 +78,82 @@ def test_an_unknown_value_is_a_usage_error(pytester: pytest.Pytester, monkeypatc
 
     assert result.ret == pytest.ExitCode.USAGE_ERROR
     result.stderr.fnmatch_lines(["*SWARMQ_TEST_EXCLUSIVE*onyl*"])
+
+
+_TIMING_TESTS = """
+import pytest
+
+@pytest.mark.timing
+def test_timed():
+    pass
+
+def test_shared():
+    pass
+"""
+
+
+def test_skip_deselects_timing_tests(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SWARMQ_TEST_EXCLUSIVE", "skip")
+    pytester.makepyfile(_TIMING_TESTS)
+
+    result = pytester.runpytest("-v", *_PLUGIN)
+
+    result.assert_outcomes(passed=1, deselected=1)
+    result.stdout.fnmatch_lines(["*test_shared PASSED*"])
+
+
+def test_only_keeps_the_timing_tests(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SWARMQ_TEST_EXCLUSIVE", "only")
+    pytester.makepyfile(_TIMING_TESTS)
+
+    result = pytester.runpytest("-v", *_PLUGIN)
+
+    result.assert_outcomes(passed=1, deselected=1)
+    result.stdout.fnmatch_lines(["*test_timed PASSED*"])
+
+
+_MODULE_TIMING = """
+import pytest
+
+pytestmark = [pytest.mark.timeout(5), pytest.mark.timing]
+
+def test_timed_by_module():
+    pass
+"""
+
+
+@pytest.mark.parametrize(("mode", "passed", "deselected"), [("skip", 0, 1), ("only", 1, 0)])
+def test_a_module_timing_mark_selects_like_the_decorator(
+    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, mode: str, passed: int, deselected: int
+) -> None:
+    monkeypatch.setenv("SWARMQ_TEST_EXCLUSIVE", mode)
+    pytester.makepyfile(_MODULE_TIMING)
+
+    result = pytester.runpytest(*_PLUGIN)
+
+    result.assert_outcomes(passed=passed, deselected=deselected)
+
+
+_BOTH_MARKS = """
+import pytest
+
+@pytest.mark.exclusive
+@pytest.mark.timing
+def test_both():
+    pass
+"""
+
+
+@pytest.mark.parametrize(("mode", "passed", "deselected"), [("skip", 0, 1), ("only", 1, 0)])
+def test_exclusive_and_timing_together_run_once_in_the_serial_pass(
+    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, mode: str, passed: int, deselected: int
+) -> None:
+    monkeypatch.setenv("SWARMQ_TEST_EXCLUSIVE", mode)
+    pytester.makepyfile(_BOTH_MARKS)
+
+    result = pytester.runpytest(*_PLUGIN)
+
+    result.assert_outcomes(passed=passed, deselected=deselected)
 
 
 _GROUP_PROBE = """

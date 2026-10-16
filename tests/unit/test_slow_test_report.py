@@ -16,6 +16,8 @@ Test-Liste:
 - [x] fehlschlagender langsamer Test: im Bericht, Exit-Code unverändert
 - [x] unter aktiver Coverage-Messung: kein Bericht, keine Datei
 - [x] langsamer Teardown: nicht im Bericht (R8 nennt Setup und Call)
+- [x] serieller Durchgang (``SWARMQ_TEST_EXCLUSIVE=only``): behält die
+      Einträge des parallelen Durchgangs und hängt seine an
 """
 
 from __future__ import annotations
@@ -159,3 +161,25 @@ def test_only_setup_and_call_phases_are_reported(pytester: pytest.Pytester) -> N
     pytester.runpytest(*_PLUGIN)
 
     assert _report(pytester) == []
+
+
+def test_the_serial_pass_keeps_the_entries_of_the_parallel_pass(
+    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    earlier = SlowPhase(nodeid="test_parallel.py::test_slow", phase="call", duration_s=0.2)
+    (pytester.path / "slow-unit-tests.json").write_text(json.dumps([earlier]), encoding="utf-8")
+    monkeypatch.setenv("SWARMQ_TEST_EXCLUSIVE", "only")
+    pytester.makepyfile(
+        """
+        import time
+
+        def test_slow():
+            time.sleep(0.15)
+        """
+    )
+
+    pytester.runpytest(*_PLUGIN)
+
+    first, second = _report(pytester)
+    assert first == earlier
+    assert second["nodeid"].endswith("::test_slow")

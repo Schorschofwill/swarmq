@@ -38,9 +38,10 @@ types:
     {{uv_run}} basedpyright
     {{uv_run}} python -m mypy.stubtest msgpack croniter --mypy-config-file pyproject.toml --ignore-missing-stub
 
-# Unit-Suite (ohne Dienste)
+# Unit-Suite (ohne Dienste): parallel auf SWARMQ_TEST_WORKERS Prozessen, danach
+# die ``timing``-Tests (enges Zeitbudget gegen die echte Uhr) allein
 unit *args:
-    scripts/run-tests.sh --no-services --suite tests/unit -n {{workers}} "$@"
+    scripts/run-tests.sh --no-services --parallel {{workers}} --suite tests/unit "$@"
 
 # Property-Tests (ohne Dienste)
 property *args:
@@ -81,7 +82,7 @@ coverage:
 
 _coverage:
     {{uv_run}} coverage erase
-    SWARMQ_TEST_COVERAGE=1 scripts/run-tests.sh --no-services tests/unit -n {{workers}}
+    SWARMQ_TEST_COVERAGE=1 scripts/run-tests.sh --no-services --parallel {{workers}} tests/unit
     SWARMQ_TEST_COVERAGE=1 scripts/run-tests.sh --parallel {{workers}} tests/integration
     SWARMQ_TEST_COVERAGE=1 scripts/run-tests.sh --parallel {{workers}} tests/e2e
     {{uv_run}} coverage combine

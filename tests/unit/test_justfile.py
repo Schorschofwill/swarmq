@@ -19,9 +19,12 @@ Test-Liste:
 - [x] mit ``CI=true`` sperrt kein Rezept
 - [x] ein verwaister Kindprozess hält die Sperre nicht
 - [x] ``just unit`` sperrt nicht (keine Dienste)
-- [x] ``just unit`` verteilt auf 8 Prozesse (pytest-xdist), ``SWARMQ_TEST_WORKERS`` ändert die Zahl
+- [x] ``just unit`` verteilt den parallelen Durchgang auf 8 Prozesse (pytest-xdist), ``SWARMQ_TEST_WORKERS`` ändert die Zahl
 - [x] ``just coverage`` misst Unit, Integration und e2e unter einer Sperre, parallel wie die Einzelrezepte
 - [x] ``just e2e``: paralleler Durchgang (8 Prozesse, loadgroup) ohne exclusive-Tests, dann serieller nur mit ihnen
+- [x] ``just unit``: ebenso paralleler, dann serieller Durchgang (``timing``-Tests), beide ohne Sperre
+- [x] abgebrochener paralleler Durchgang (Exit 2, Strg-C): kein serieller, Exit 2
+- [x] ``-n`` oder ``--numprocesses`` des Aufrufers gilt nur für den parallelen Durchgang
 - [x] beide Durchgänge unter einer Sperre
 - [x] junit-Datei des seriellen Durchgangs mit Endung ``-serial``
 - [x] ein roter Durchgang macht den Lauf rot, der andere läuft trotzdem
@@ -34,7 +37,7 @@ Eingrenzen per Pfad (Plan 2026-10-15-1138, U16, R33):
 - [x] ``just integration -k foo`` grenzt nicht ein
 - [x] ``just integration -k tests`` grenzt nicht ein, obwohl ``tests`` existiert
 - [x] ``just integration --ignore <pfad>`` grenzt nicht ein
-- [x] ``just unit <pfad>`` grenzt ein, ``-n`` bleibt, keine Sperre
+- [x] ``just unit <pfad>`` grenzt beide Durchgänge ein, keine Sperre
 - [x] ``just property <pfad>`` und ``just stress <pfad>`` grenzen ein, der Marker bleibt
 - [x] ein nicht existierender Pfad: die Suite bleibt davor
 """
@@ -167,6 +170,7 @@ def test_all_holds_the_lock_once_across_every_suite(stub: dict[str, str]) -> Non
     suites = [next(arg for arg in call.split("pytest ")[1].split() if arg.startswith("tests/")) for call in calls]
     assert suites == [
         "tests/unit",
+        "tests/unit",
         "tests/property",
         "tests/fuzz/test_parser_fuzz.py",
         "tests/integration",
@@ -200,8 +204,9 @@ def test_unit_runs_without_the_lock(stub: dict[str, str]) -> None:
     result = _just(stub, "unit")
 
     assert result.returncode == 0, result.stderr
-    [call] = _calls(stub)
-    assert "lockheld= lock=free" in call
+    calls = _calls(stub)
+    assert len(calls) == 2
+    assert all("lockheld= lock=free" in call for call in calls)
 
 
 def test_coverage_measures_every_suite_under_one_lock(stub: dict[str, str]) -> None:
@@ -210,15 +215,16 @@ def test_coverage_measures_every_suite_under_one_lock(stub: dict[str, str]) -> N
     assert result.returncode == 0, result.stderr
     calls = [call.split("reload ")[-1].split(" rmq=")[0] for call in _calls(stub)]
     assert calls[0] == "coverage erase"
-    measured = [call.split(" --randomly-seed")[0] for call in calls[1:6]]
+    measured = [call.split(" --randomly-seed")[0] for call in calls[1:7]]
     assert measured == [
-        "coverage run -m pytest tests/unit -n 8",
+        "coverage run -m pytest -n 8 --dist loadgroup tests/unit",
+        "coverage run -m pytest tests/unit",
         "coverage run -m pytest -n 8 --dist loadgroup tests/integration",
         "coverage run -m pytest tests/integration",
         "coverage run -m pytest -n 8 --dist loadgroup tests/e2e",
         "coverage run -m pytest tests/e2e",
     ]
-    assert calls[6:] == ["coverage combine", "coverage report"]
+    assert calls[7:] == ["coverage combine", "coverage report"]
     assert all("lockheld=1 lock=held" in call for call in _calls(stub))
 
 
@@ -255,8 +261,8 @@ def test_recipes_run_the_ci_commands(stub: dict[str, str], recipe: str, expected
 def test_unit_runs_on_eight_workers_by_default(stub: dict[str, str]) -> None:
     _just(stub, "unit")
 
-    [call] = _calls(stub)
-    assert "pytest tests/unit -n 8" in call
+    parallel, _serial = _calls(stub)
+    assert "pytest -n 8 --dist loadgroup tests/unit" in parallel
 
 
 def test_swarmq_test_workers_sets_the_worker_count(stub: dict[str, str]) -> None:
@@ -264,8 +270,8 @@ def test_swarmq_test_workers_sets_the_worker_count(stub: dict[str, str]) -> None
 
     _just(stub, "unit")
 
-    [call] = _calls(stub)
-    assert "pytest tests/unit -n 3" in call
+    parallel, _serial = _calls(stub)
+    assert "pytest -n 3 --dist loadgroup tests/unit" in parallel
 
 
 def test_e2e_runs_a_parallel_pass_then_the_exclusive_tests_alone(stub: dict[str, str]) -> None:
@@ -277,6 +283,37 @@ def test_e2e_runs_a_parallel_pass_then_the_exclusive_tests_alone(stub: dict[str,
     assert parallel.endswith("excl=skip")
     assert "pytest tests/e2e -q" in serial
     assert serial.endswith("excl=only")
+
+
+def test_unit_runs_a_parallel_pass_then_the_timing_tests_alone_without_the_lock(stub: dict[str, str]) -> None:
+    result = _just(stub, "unit", "-q")
+
+    assert result.returncode == 0, result.stderr
+    parallel, serial = _calls(stub)
+    assert "pytest -n 8 --dist loadgroup tests/unit -q" in parallel
+    assert parallel.endswith("lock=free excl=skip")
+    assert "pytest tests/unit -q" in serial
+    assert serial.endswith("lock=free excl=only")
+
+
+@pytest.mark.parametrize("workers", [["-n", "4"], ["-n4"], ["--numprocesses", "4"], ["--numprocesses=4"]])
+def test_a_worker_count_from_the_caller_stays_out_of_the_serial_pass(stub: dict[str, str], workers: list[str]) -> None:
+    result = _just(stub, "unit", *workers, "-q")
+
+    assert result.returncode == 0, result.stderr
+    parallel, serial = _calls(stub)
+    assert " ".join(workers) in parallel
+    assert "pytest tests/unit -q --randomly-seed" in serial
+
+
+def test_an_interrupted_parallel_pass_skips_the_serial_pass(stub: dict[str, str]) -> None:
+    stub["STUB_RC_skip"] = "2"
+
+    result = _just(stub, "unit")
+
+    assert result.returncode == 2
+    [parallel] = _calls(stub)
+    assert parallel.endswith("excl=skip")
 
 
 @pytest.mark.parametrize("junit", [["--junitxml=junit-e2e.xml"], ["--junitxml", "junit-e2e.xml"]])
@@ -378,7 +415,9 @@ def test_a_long_option_value_naming_an_existing_file_keeps_the_suite(stub: dict[
     assert result.returncode == 0, result.stderr
     parallel, serial = _calls(stub)
     assert f"tests/integration {option} pyproject.toml --randomly-seed" in parallel
-    assert f"pytest tests/integration {option} pyproject.toml --randomly-seed" in serial
+    # ``--numprocesses`` gilt nur parallel; die Suite bleibt in beiden Durchgängen.
+    kept = "" if option == "--numprocesses" else f" {option} pyproject.toml"
+    assert f"pytest tests/integration{kept} --randomly-seed" in serial
 
 
 def test_a_path_after_an_option_value_still_narrows(stub: dict[str, str], tmp_path: Path) -> None:
@@ -400,10 +439,11 @@ def test_unit_with_a_path_runs_only_that_path_without_the_lock(stub: dict[str, s
     result = _just(stub, "unit", str(target))
 
     assert result.returncode == 0, result.stderr
-    [call] = _calls(stub)
-    assert f"pytest -n 8 {target} --randomly-seed" in call
-    assert "tests/unit" not in call
-    assert "lockheld= lock=free" in call
+    parallel, serial = _calls(stub)
+    assert f"pytest -n 8 --dist loadgroup {target} --randomly-seed" in parallel
+    assert f"pytest {target} --randomly-seed" in serial
+    assert "tests/unit" not in parallel + serial
+    assert all("lockheld= lock=free" in call for call in (parallel, serial))
 
 
 @pytest.mark.parametrize(("recipe", "marker", "locked"), [("property", "property", False), ("stress", "stress", True)])

@@ -84,7 +84,9 @@ from swarmq.logging_fork import hold_handler_locks
 from swarmq.logging_settings import LoggingSettings
 from tests.unit._fork_child import run_in_forked_child
 
-pytestmark = pytest.mark.timeout(5)
+# Enge Zeitbudgets gegen die echte Uhr: unter paralleler Last gerissen
+# (CI und Stresslauf 2026-10-16), daher im seriellen Durchgang (``timing``).
+pytestmark = [pytest.mark.timeout(5), pytest.mark.timing]
 
 RECORDS: list[logging.LogRecord] = []
 """Ziel des ``RecordingHandler`` aus den dictConfig-Dateien der Tests; je

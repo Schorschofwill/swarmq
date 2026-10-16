@@ -44,7 +44,9 @@ from swarmq.supervision import SupervisorChannel, set_current_channel
 from swarmq.worker import WorkerState
 from swarmq.worker import lifecycle as _lc
 
-pytestmark = pytest.mark.timeout(5)
+# Enge Zeitbudgets gegen die echte Uhr: unter paralleler Last gerissen
+# (CI und Stresslauf 2026-10-16), daher im seriellen Durchgang (``timing``).
+pytestmark = [pytest.mark.timeout(5), pytest.mark.timing]
 
 
 def _hang(worker: Any) -> asyncio.Task[bool]:

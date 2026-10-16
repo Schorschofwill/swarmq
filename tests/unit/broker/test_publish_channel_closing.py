@@ -62,7 +62,9 @@ from swarmq.contracts import PublishReceipt
 from swarmq.exceptions import BrokerConnectionError, PublishIndeterminate
 from tests.support.aiormq_transport import FakePublishChannel, FakeTransport
 
-pytestmark = [pytest.mark.timeout(5)]
+# Enge Zeitbudgets gegen die echte Uhr: unter paralleler Last gerissen
+# (CI und Stresslauf 2026-10-16), daher im seriellen Durchgang (``timing``).
+pytestmark = [pytest.mark.timeout(5), pytest.mark.timing]
 
 _LOST = "Server connection unexpectedly closed. Read 0 bytes but 1 bytes expected"
 

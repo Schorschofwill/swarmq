@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Startet pytest fuer eine Suite (Plan 2026-10-13-0902, U7).
 #
-# Aufruf: run-tests.sh [--no-services | --parallel N] [--suite PFAD] <pytest-Argumente>.
+# Aufruf: run-tests.sh [--no-services] [--parallel N] [--suite PFAD] <pytest-Argumente>.
 # Ohne --no-services laeuft alles unter der Testsperre (with-test-lock.sh).
 #
 # --suite PFAD (Plan 2026-10-15-1138, U16): Standardpfad der Suite. Er
@@ -10,9 +10,9 @@
 # nicht.
 #
 # --parallel N (Beschleunigung Stufe 3): erst ein Durchgang auf N
-# xdist-Prozessen (--dist loadgroup) ohne die exclusive-Tests, dann ein
-# serieller nur mit ihnen (tests/support/xdist_isolation.py); beide unter
-# derselben Sperre.
+# xdist-Prozessen (--dist loadgroup) ohne die exclusive- und timing-Tests,
+# dann ein serieller nur mit ihnen (tests/support/xdist_isolation.py); beide
+# unter derselben Sperre, mit --no-services (Unit) ohne Sperre.
 #
 # Der Seed fuer pytest-randomly wird immer ausdruecklich gesetzt und
 # ausgegeben: pytest-randomly selbst zeigt ihn mit -q nicht, und ein roter
@@ -26,7 +26,8 @@ workers=""
 if [[ "${1:-}" == "--no-services" ]]; then
     services=""
     shift
-elif [[ "${1:-}" == "--parallel" ]]; then
+fi
+if [[ "${1:-}" == "--parallel" ]]; then
     workers="$2"
     shift 2
 fi
@@ -79,11 +80,15 @@ if [[ -z "$workers" ]]; then
     exit
 fi
 
-# Der serielle Durchgang schreibt seine junit-Datei daneben (x.xml -> x-serial.xml).
+# Der serielle Durchgang schreibt seine junit-Datei daneben (x.xml -> x-serial.xml)
+# und bleibt seriell: ``-n``/``--numprocesses`` des Aufrufers gilt nur parallel.
 serial=()
 previous=""
 for arg in "$@"; do
     case "$previous|$arg" in
+        -n\|* | --numprocesses\|*) ;;
+        *"|-n" | *"|--numprocesses") ;;
+        *"|-n"[0-9]* | *"|--numprocesses="*) ;;
         *"|--junitxml="*.xml | *"|--junit-xml="*.xml | --junitxml\|*.xml | --junit-xml\|*.xml)
             serial+=("${arg%.xml}-serial.xml") ;;
         *) serial+=("$arg") ;;
@@ -93,6 +98,9 @@ done
 
 parallel_rc=0
 SWARMQ_TEST_EXCLUSIVE=skip run -n "$workers" --dist loadgroup "$@" || parallel_rc=$?
+# Exit 2: pytest wurde abgebrochen (Strg-C) oder konnte nicht sammeln; der
+# serielle Durchgang braeuchte sonst ein zweites Strg-C.
+if [[ $parallel_rc -eq 2 ]]; then exit 2; fi
 serial_rc=0
 SWARMQ_TEST_EXCLUSIVE=only run "${serial[@]}" || serial_rc=$?
 # Exit 5 (keine Tests ausgewaehlt) ist normal fuer einen der Durchgaenge, etwa
