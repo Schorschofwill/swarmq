@@ -4,6 +4,16 @@ All notable changes to SwarmQ. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [0.12.3] — 2026-10-16
+
+0.12.3 is 0.12.3rc1 without code changes. Read
+[0.12.3rc1](#0123rc1-2026-10-16) for the fixes and the upgrade notes
+(crons without a next fire time, enqueue middleware for `delay`/`eta`,
+capped `fixed` backoff, CPU pool slots, deadline validation, exit `78`
+for checks and import errors, mixed operation, rollback, `unique_for`
+in `schedule()`); they apply unchanged. Install with
+`pip install 'swarmq==0.12.*'`; `--pre` is no longer needed.
+
 ## [0.12.3rc1] — 2026-10-16
 
 Release candidate for 0.12.3 (install with `pip install --pre`).
