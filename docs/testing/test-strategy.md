@@ -271,7 +271,8 @@ die Ports selbst.
 
 ```bash
 # Dev-Loop (Unit-Suite auf 8 Prozessen per pytest-xdist; SWARMQ_TEST_WORKERS
-# aendert die Zahl, SWARMQ_TEST_WORKERS=0 laesst sie in einem Prozess laufen)
+# aendert die Zahl, SWARMQ_TEST_WORKERS=0 laesst sie in einem Prozess laufen;
+# danach die timing-Tests allein)
 uv run just unit
 
 # Integration und e2e gegen die Testcontainer (mit Sperre), ebenfalls auf
@@ -331,6 +332,12 @@ Was der Namensraum nicht trennt, regelt `tests/support/xdist_isolation.py`:
   Durchgang wählt sie ab (`SWARMQ_TEST_EXCLUSIVE=skip`), ein zweiter,
   serieller Durchgang führt nur sie aus (`only`); seine JUnit-Datei endet auf
   `-serial.xml`. Ein leerer Durchgang (Exit 5) zählt nicht als Fehler.
+- Tests mit engem Zeitbudget gegen die echte Uhr (Abbruch auf 5 ms genau,
+  Loop-Lag, Fork-Budget) tragen `@pytest.mark.timing` und laufen ebenso im
+  seriellen Durchgang, auch in der Unit-Suite (`just unit`). Parallele Last
+  riss solche Budgets, ohne dass am Code etwas falsch war. Der Marker ersetzt
+  kein robustes Budget: Wo die Aussage es erlaubt, wird die Grenze zuerst an
+  der fachlichen Alternative ausgerichtet statt an Millisekunden.
 
 Wer einen neuen Service-Test schreibt, nimmt URLs aus `rabbitmq_url` /
 `valkey_url` bzw. `rabbitmq_amqp_url()` / `valkey_db_url()` (auch über einen

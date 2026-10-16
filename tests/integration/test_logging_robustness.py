@@ -579,6 +579,7 @@ asyncio.run(main())
 """
 
 
+@pytest.mark.timing  # Loop-Lag gegen die echte Uhr; riss unter CI-Last (0,19 s, 2026-10-16)
 def test_leaving_an_embedded_app_keeps_the_event_loop_responsive() -> None:
     proc = subprocess.run(
         [sys.executable, "-c", _AEXIT_CHILD],

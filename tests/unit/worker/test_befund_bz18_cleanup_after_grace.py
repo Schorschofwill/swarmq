@@ -36,7 +36,9 @@ import pytest
 from swarmq.contracts.coordination import LockToken
 from swarmq.worker import WorkerState
 
-pytestmark = pytest.mark.timeout(5)
+# Enge Zeitbudgets gegen die echte Uhr: unter paralleler Last gerissen
+# (CI und Stresslauf 2026-10-16), daher im seriellen Durchgang (``timing``).
+pytestmark = [pytest.mark.timeout(5), pytest.mark.timing]
 
 _GRACE_S = 0.08
 

@@ -1,7 +1,8 @@
 """Laufzeitbericht langsamer Unit-Tests (Plan 2026-10-13-0902, U5, KTD4).
 
 Meldet jede Setup- und Call-Phase eines Tests über ``THRESHOLD_S`` in der Zusammenfassung
-und in ``slow-unit-tests.json`` im Arbeitsverzeichnis des Laufs. Langsame
+und in ``slow-unit-tests.json`` im Arbeitsverzeichnis des Laufs; der
+serielle Durchgang (``SWARMQ_TEST_EXCLUSIVE=only``) hängt an. Langsame
 Tests bleiben, wie sie sind (lieber langsam und genau); der Bericht ändert
 den Exit-Code nicht. ``tests/unit/conftest.py`` holt ``pytest_configure``
 in seinen Namensraum.
@@ -43,12 +44,23 @@ class SlowTestReport:
             self.slow.append(SlowPhase(nodeid=report.nodeid, phase=report.when, duration_s=report.duration))
 
     def pytest_terminal_summary(self, terminalreporter: pytest.TerminalReporter) -> None:
-        Path(REPORT_FILE).write_text(json.dumps(self.slow, indent=2), encoding="utf-8")
+        report = Path(REPORT_FILE)
+        entries = [*_earlier_entries(report), *self.slow]
+        report.write_text(json.dumps(entries, indent=2), encoding="utf-8")
         if not self.slow:
             return
         terminalreporter.section("Unit-Tests über 100 ms")
         for entry in self.slow:
             terminalreporter.write_line(f"{entry['duration_s'] * 1000:6.0f} ms  {entry['phase']:5}  {entry['nodeid']}")
+
+
+def _earlier_entries(report: Path) -> list[SlowPhase]:
+    """Einträge des parallelen Durchgangs, wenn dies der serielle ist
+    (``scripts/run-tests.sh --parallel``); sonst beginnt der Bericht neu."""
+    if os.environ.get("SWARMQ_TEST_EXCLUSIVE") != "only" or not report.exists():
+        return []
+    entries: list[SlowPhase] = json.loads(report.read_text(encoding="utf-8"))
+    return entries
 
 
 def pytest_configure(config: pytest.Config) -> None:
