@@ -915,20 +915,43 @@ bestehenden Queue ohne Policy at-least-once-Dead-Lettering zu geben,
 die Queue migrieren:
 
 1. Die Producer der Queue stoppen (auch die Crons des Schedulers, die
-   an sie publizieren).
+   an sie publizieren). Verzögerte Tasks (`delay=`/`eta=`) liegen nicht
+   in der Queue: Sie warten im Scheduler-Store in Valkey, und der
+   Scheduler-Leader publiziert sie bei Fälligkeit weiter, auch während
+   der Migration. Wird einer fällig, während die Queue gelöscht ist,
+   versucht der Leader es alle 60 s erneut und verwirft ihn nach
+   `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S` (Default ein Tag; siehe
+   [Fehlende Queues](../guides/scheduling-and-retries.md#fehlende-queues)).
+   Die Lücke zwischen Löschen und Neuanlegen kurz halten oder das Limit
+   für die Migration auf den Workern erhöhen.
 2. Die Worker `{queue}`, `{queue}.DQ` und die
    [Delay-Stufen](#delay-stufen) `{queue}.DQ.*` leeren lassen. Sie
-   enthalten ausstehende Rückstellungen und verzögerte Tasks
-   (`delay`/`eta`), die womöglich erst viel später fällig sind: auf sie
-   warten oder sie per Shovel in eine Zwischen-Queue verschieben. Eine
-   Delay-Queue mit Nachrichten nie einfach löschen; die Nachrichten
-   gingen verloren.
+   enthalten ausstehende Retries und Rückstellungen (Lock-Konflikte,
+   Rate-Limits, nicht erreichbares Backend), die womöglich erst viel
+   später fällig sind: auf sie warten oder sie per Shovel in eine
+   Zwischen-Queue verschieben. Eine Delay-Queue mit Nachrichten nie
+   einfach löschen; die Nachrichten gingen verloren.
 3. Die Worker stoppen.
 4. Den Inhalt von `{queue}.XQ` verschieben oder behalten.
-5. Die Queues der Familie löschen (`{queue}`, `{queue}.DQ`, die Stufen
+5. Unmittelbar vor dem Löschen prüfen, ob `{queue}` leer ist. Der
+   Scheduler-Leader läuft auch in Workern anderer Queues; verzögerte
+   Tasks, die nach dem Leeren fällig wurden, landen deshalb noch in
+   `{queue}`, und der Scheduler-Store zählt sie als zugestellt. Sie wie
+   den Inhalt von `{queue}.XQ` per Shovel in die Zwischen-Queue
+   verschieben.
+6. Die Queues der Familie löschen (`{queue}`, `{queue}.DQ`, die Stufen
    und `{queue}.XQ`) und die Worker mit der neuen Einstellung starten.
    Sie legen die Queues neu an; danach die verschobenen Nachrichten per
    Shovel zurückholen.
+
+Alternativ alle Worker auf demselben Valkey und Namespace für die
+Migration mit
+[`SWARMQ_SCHEDULER=off`](../guides/scheduling-and-retries.md#scheduler-auf-einzelnen-workern-abschalten)
+(oder `--no-scheduler`) betreiben. Dann gibt es keinen Leader: Kein
+verzögerter Task erreicht `{queue}`, aber es feuert auch kein Cron,
+Oneshot oder `delay`/`eta`-Task für irgendeine Queue, bis wieder ein
+Worker mit eingeschaltetem Scheduler startet. Fällige Tasks warten bis
+dahin im Scheduler-Store.
 
 ## Was SwarmQ nicht tut
 

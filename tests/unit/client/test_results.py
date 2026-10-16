@@ -5,12 +5,24 @@ Test-Liste P9 (Plan 2026-10-12-1105, MR 3, Q2):
 
 - Fehlerergebnis mit ``error_class`` -> ``TaskError.error_class`` gesetzt,
   Text unveraendert; ohne Schluessel (0.12.0rc1-/0.11.1-Worker) -> ``None``.
+
+Test-Liste F3-09 (Plan 2026-10-15-1138, U4; Nachweise in
+``test_befund_f3_09_get_results_timeout_zero.py``):
+
+- [x] ``get_results(timeout=0)``, Ergebnis fehlt -> ein MGET, dann
+  ``ResultNotReadyError`` mit den fehlenden IDs.
+- [x] ``timeout=0.05``, ``poll_interval=1.0`` -> Schlaf ``0.05``, nicht ``1.0``.
+- [x] Teilergebnis ``[x, None]`` -> Meldung nennt nur die fehlende ID.
+- [x] ``timeout=nan`` -> ein MGET, dann ``ResultNotReadyError`` wie bei
+  ``get_result``; kein Endlos-Polling (Review U4, E-030 Nachtrag).
+- [x] negatives ``timeout`` -> ein MGET, dann ``ResultNotReadyError``.
 """
 
 from __future__ import annotations
 
 import json
-from typing import override
+from types import SimpleNamespace
+from typing import Any, override
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -99,6 +111,7 @@ async def test_get_result_error_exposes_error_class_when_present(client, backend
 
 
 @pytest.mark.asyncio
+@pytest.mark.entscheidung("E-068")
 async def test_get_result_cancelled_raises_task_cancelled_error(client, backend):
     result_data = encode_result(
         {
@@ -244,6 +257,99 @@ async def test_get_results_timeout_raises(client, backend):
 
     with pytest.raises(ResultNotReadyError):
         await client.get_results(["x", "y"], timeout=0.05, poll_interval=0.01)
+
+
+class _FakeClock:
+    """Gesteuerte Uhr fuer ``results.asyncio``: ``sleep`` stellt die Zeit
+    vor und protokolliert die Schlafdauer (Uhr ist eine Grenze, F3-09)."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.sleeps: list[float] = []
+
+    def time(self) -> float:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> _FakeClock:
+    from swarmq.client import results as results_mod
+
+    fake = _FakeClock()
+    namespace: Any = SimpleNamespace(get_running_loop=lambda: fake, sleep=fake.sleep)
+    monkeypatch.setattr(results_mod, "asyncio", namespace)
+    return fake
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(5)
+@pytest.mark.usefixtures("clock")
+async def test_get_results_with_zero_timeout_and_missing_result_reads_once_then_raises(client, backend):
+    backend.get_results = AsyncMock(return_value=[None, None])
+
+    with pytest.raises(ResultNotReadyError, match=r"\['x', 'y'\]"):
+        await client.get_results(["x", "y"], timeout=0)
+
+    backend.get_results.assert_awaited_once_with(["x", "y"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(5)
+async def test_get_results_wait_does_not_overshoot_the_deadline(client, backend, clock):
+    ready = encode_result({"result": "alpha", "is_error": False})
+    backend.get_results = AsyncMock(side_effect=[[None], [ready]])
+
+    results = await client.get_results(["a"], timeout=0.05, poll_interval=1.0)
+
+    assert results == ["alpha"]
+    assert clock.sleeps == [0.05]
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(5)
+@pytest.mark.usefixtures("clock")
+async def test_get_results_partial_result_names_only_the_missing_id(client, backend):
+    ready = encode_result({"result": "alpha", "is_error": False})
+    backend.get_results = AsyncMock(return_value=[ready, None])
+
+    with pytest.raises(ResultNotReadyError) as exc_info:
+        await client.get_results(["done", "pending"], timeout=0)
+
+    assert "'pending'" in str(exc_info.value)
+    assert "'done'" not in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(5)
+@pytest.mark.entscheidung("E-030")
+@pytest.mark.usefixtures("clock")
+async def test_get_results_with_nan_timeout_reads_once_then_raises(client, backend):
+    # Endlos-Polling erschoepft die drei Antworten (StopAsyncIteration)
+    # statt am Testtimeout zu haengen.
+    backend.get_results = AsyncMock(side_effect=[[None], [None], [None]])
+
+    with pytest.raises(ResultNotReadyError, match=r"\['x'\]"):
+        await client.get_results(["x"], timeout=float("nan"))
+
+    backend.get_results.assert_awaited_once_with(["x"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(5)
+@pytest.mark.entscheidung("E-030")
+@pytest.mark.usefixtures("clock")
+async def test_get_results_with_negative_timeout_reads_once_then_raises(client, backend):
+    """Charakterisierung: eine negative Frist ist sofort abgelaufen."""
+    backend.get_results = AsyncMock(side_effect=[[None], [None]])
+
+    with pytest.raises(ResultNotReadyError, match=r"\['x'\]"):
+        await client.get_results(["x"], timeout=-1.0)
+
+    backend.get_results.assert_awaited_once_with(["x"])
 
 
 @pytest.mark.asyncio

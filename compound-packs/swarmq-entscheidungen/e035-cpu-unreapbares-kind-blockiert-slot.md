@@ -12,7 +12,7 @@ quelle:
   - docs/plans/2026-09-03-001-feat-cpu-worker-modus-plan.md:259 (KTD3, „Bleibt das Kind unreapbar (D-State), bleibt der Slot blockiert“)
   - docs/plans/2026-09-03-001-feat-cpu-worker-modus-plan.md:388 (Risikotabelle)
   - src/swarmq/worker/compute/pool.py:626-634 (Hinweis „slot stays blocked“, Log compute_child_unreaped)
-  - docs/plans/2026-10-14-0748-fix-fehlersuche-runde-2-plan.md:180-183 (KTD17, FS-23: gesperrten Index verwerfen)
+  - 'docs/plans/2026-10-14-0748-fix-fehlersuche-runde-2-plan.md:180-183 (KTD17, FS-23: gesperrten Index verwerfen)'
   - Commit 13472d9 (U19, FS-23) und Review 30e536c
 tests:
   - tests/unit/worker/compute/test_pool.py::test_immortal_child_blocks_the_slot

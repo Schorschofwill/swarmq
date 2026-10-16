@@ -7,7 +7,8 @@ the in-process pub/sub layer for those events.
 
 ## Prerequisites
 
-- A `SwarmQ` instance.
+- The `SwarmQ` instance that dispatches the signal; under `swarmq worker`,
+  a `--configure` hook receives it.
 - An async function you want to run on some event.
 
 ## Registering a handler
@@ -40,6 +41,44 @@ handler with a fixed signature fails with `TypeError` on each dispatch
 (caught and logged as `signal_handler_error`, so the handler silently
 never does its job). New keys can appear in later releases.
 
+!!! warning "Register on the app that dispatches the signal"
+    A handler runs on the `SwarmQ` instance that dispatches the signal.
+    Worker-side signals (`TASK_STARTED`, `TASK_COMPLETED`, `TASK_FAILED`,
+    `TASK_DLQ`, `TASK_RATE_LIMITED`, `WORKER_*`, `SCHEDULER_*` and the
+    others the worker emits) fire on the worker's app. `swarmq worker`
+    builds that app itself: a module-level `app` in your task module is
+    a different instance, and handlers on it never run, without a
+    warning. Register them in a function and pass it with `--configure`:
+
+    ```python title="myapp/hooks.py"
+    from swarmq import Signal, SwarmQ
+    from swarmq.logging import get_logger
+
+    log = get_logger("myapp.signals")
+
+
+    def setup(app: SwarmQ) -> None:
+        @app.on_signal(Signal.TASK_FAILED)
+        async def on_task_failed(task_id, task_name, exception, **kwargs):
+            log.error("myapp_task_attempt_failed", task_id=task_id,
+                      task_name=task_name, error=exception)
+    ```
+
+    ```bash
+    swarmq worker --module myapp.tasks --configure myapp.hooks:setup
+    ```
+
+    An embedded worker (`await app.start_worker()`) uses the app you
+    built. `TASK_ENQUEUED`, `WORKFLOW_STEP_ENQUEUED` and
+    `TASK_DUPLICATE_DETECTED` from a `client.*` source fire in the
+    process that publishes; register those on the producer's app.
+    Workflow follow-up steps are published by the advancer in the
+    worker, so `TASK_ENQUEUED` and `WORKFLOW_STEP_ENQUEUED` for them
+    fire on the worker's app. Handlers that must see every step belong
+    on both apps — in the worker via `--configure`. The
+    examples below write `app` for whichever app applies. See
+    [`--configure`](../reference/cli.md#registering-middleware-with-configure).
+
 `swarmq.logging.get_logger(name)` returns a logger that hands events to
 stdlib `logging` under `name`, with the keyword arguments as record
 fields — the same mechanism SwarmQ uses for its own events (see
@@ -59,7 +98,7 @@ not collide with SwarmQ's built-in ones (`task_failed`,
 
 | Signal | Fires | Kwargs |
 |---|---|---|
-| `TASK_ENQUEUED` | After a successful `schedule()` | `task_id`, `task_name`, `queue` |
+| `TASK_ENQUEUED` | After a successful `schedule()`; with `delay`/`eta` once the task is stored, not at fire time (cron fires do not dispatch it) | `task_id`, `task_name`, `queue` |
 | `TASK_STARTED` | Before `run()` is called | `task_id`, `task_name`, `queue` |
 | `TASK_COMPLETED` | After `run()` succeeds | `task_id`, `task_name`, `queue`, `duration_ms` |
 | `TASK_FAILED` | After **every** failed attempt (`run()` raised or timed out), before the retry-or-DLQ decision | `task_id`, `task_name`, `queue`, `exception` (string) |
@@ -80,7 +119,7 @@ not collide with SwarmQ's built-in ones (`task_failed`,
 | `SCHEDULER_LEADER_HANDOVER` / `SCHEDULER_LEADER_FAILOVER` | Leader swap sources | `worker_id` |
 | `SCHEDULER_FIRE_SKIPPED` | Catch-up after downtime skipped cron occurrences | `worker_id`, `schedule_name`, `skipped_count` |
 | `SCHEDULER_CRON_CONFLICT` | Several definitions of one static cron live for more than 10 minutes (leader, every adoption tick while it lasts) | `worker_id`, `schedule_name`, `fingerprints` |
-| `SCHEDULER_LEADER_OUTDATED` | The scheduler leader runs a swarmq without time zone support (`outdated=True`, once per leader), or a current leader follows (`outdated=False`) | `worker_id`, `leader`, `leader_version` (`None` = before 0.10.0), `outdated` |
+| `SCHEDULER_LEADER_OUTDATED` | The scheduler leader runs a swarmq below the minimum leader version (currently 0.12; `outdated=True`, once per leader), or a current leader follows (`outdated=False`); see [leader version](scheduling-and-retries.md#leader-version) | `worker_id`, `leader`, `leader_version` (`None` = before 0.10.0), `outdated` |
 | `SCHEDULER_CRON_UNOWNED` | The leader starts holding a static cron that no live worker reports and it does not register itself (`held=True`), or releases it again (`held=False`); once per transition | `worker_id`, `schedule_name`, `task_name`, `held`, `held_count` |
 | `SCHEDULER_VALKEY_CHECKED` | The leader checked Valkey's eviction policy and memory again, at most once per hour (since 0.12) | `worker_id`, `status`, `policy`, `maxmemory`, `used_memory` |
 | `SCHEDULER_QUEUE_ORPHANED` | The leader found a reported queue with messages, no consumer and no live worker reporting it (`orphaned=True`), or it is no longer orphaned (`orphaned=False`); once per transition (since 0.12) | `worker_id`, `queue`, `orphaned`, `message_count`, `orphaned_count` |
@@ -284,16 +323,19 @@ async def count(task_id, task_name, exception, **kwargs):
 ## Verify
 
 Register one handler for `TASK_COMPLETED` that logs an event of its
-own, schedule a task, watch the worker log:
+own in a `--configure` hook, schedule a task, watch the worker log:
 
 ```bash
-swarmq worker --module myapp.tasks --log-level INFO --log-format human
+swarmq worker --module myapp.tasks --configure myapp.hooks:setup \
+  --log-level INFO --log-format human
 ```
 
 Your handler's line appears right after the worker's `task_succeeded`
 line for that task, in the same log stream. Signals themselves are not
 log lines: `TASK_COMPLETED` is the hook, `task_succeeded` is the log
-event the worker writes just before dispatching it.
+event the worker writes just before dispatching it. If the line does
+not appear, check that the handler is registered in the hook, not on a
+module-level `app` in `myapp/tasks.py`.
 
 ## See also
 

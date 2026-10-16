@@ -415,7 +415,8 @@ def _add_check_parser(subparsers: Any) -> None:
             "live worker) and missing .XQ dead-letter queues. Run it with the new swarmq "
             "version before an upgrade. Exit 0 when nothing blocks, 78 when a "
             "worker would refuse to start (evicting maxmemory-policy under "
-            "SWARMQ_VALKEY_EVICTION_CHECK=strict), 1 on errors. Not the same as "
+            "SWARMQ_VALKEY_EVICTION_CHECK=strict, or any SWARMQ_* value the worker "
+            "rejects, checked before connecting), 1 on errors. Not the same as "
             "'swarmq worker --check'."
         ),
     )

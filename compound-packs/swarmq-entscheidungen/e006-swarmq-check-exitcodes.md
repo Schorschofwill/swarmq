@@ -5,6 +5,7 @@ applies_when:
   - eine Fehlersuche meldet, dass swarmq check bei AOF aus, Valkey < 8 oder Cluster-Modus mit Exit 0 endet
   - eine Fehlersuche meldet, dass der Abschnitt queues ohne SWARMQ_BROKER_URL ungeprüft bleibt oder bei unerreichbarem Broker Exit 1 liefert
   - eine Fehlersuche meldet, dass Producer/CLI bei unsicherer Policy nur warnen
+  - eine Fehlersuche meldet, dass swarmq check bei SWARMQ_VALKEY_EVICTION_CHECK=bogus oder einem nicht parsebaren Wert 78 statt 0 oder 1 liefern soll
 tags: [cli, check, valkey, eviction, bz-04, bz-14]
 id: E-006
 datum: 2026-10-11
@@ -12,6 +13,8 @@ status: gilt
 quelle:
   - docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:78 (Nachtrag MR 14, von Georg am 2026-10-11 bestätigt)
   - docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:80 (Nachtrag MR 18, Abschnitt queues, 2026-10-11)
+  - docs/befunde/fehlersuche-runde-3-2026-10.md (F3-18, Gegenprüfung G3, Nachtrag 2026-10-15)
+  - src/swarmq/config.py:149-155 (env_valkey_eviction_check, ungültiger Modus gilt als strict)
 tests:
   - tests/unit/test_cli_env_check.py::test_evicting_policy_under_strict_fails_like_the_worker
   - tests/unit/test_cli_env_check.py::test_evicting_policy_without_strict_only_warns
@@ -23,6 +26,12 @@ tests:
   - tests/integration/test_cli_env_check.py::test_unreachable_broker_exits_1
   - tests/unit/backend/test_befund_bz04_eviction_policy.py::test_connect_warns_when_valkey_may_evict_swarmq_keys
   - tests/unit/backend/test_valkey_environment.py::test_check_off_queries_nothing_and_stays_silent
+  - tests/unit/test_befund_f3_18_check_invalid_config_exit78.py::test_check_reports_invalid_configuration_with_exit_78
+  - tests/unit/test_cli_env_check.py::test_invalid_configuration_fails_before_any_connection
+  - tests/unit/test_cli_env_check.py::test_invalid_eviction_mode_with_unreachable_valkey_exits_78
+  - tests/unit/test_cli_env_check.py::test_eviction_mode_is_case_insensitive
+  - tests/unit/test_cli_env_check.py::test_producers_treat_an_invalid_eviction_mode_as_strict
+  - tests/unit/test_cli_env_check.py::test_check_knows_no_worker_flags_and_rejects_an_overridable_variable
 ---
 
 **Entscheidung.** `swarmq check` endet mit Exit 78 nur bei Befunden, bei denen ein Worker den Start verweigern würde (verdrängende Policy unter `strict`, ungültige Konfiguration). AOF aus, Valkey < 8 und Cluster-Modus sind Warnungen (Exit 0). Abschnitt `queues`: ohne `SWARMQ_BROKER_URL` ungeprüft und befundfrei; mit URL und unerreichbarem Broker Exit 1 (wie bei Valkey); nicht lesbare Meldungen in Valkey ergeben die Warnung `queues_unchecked`. Producer und CLI-Befehle warnen bei unsicherer Policy einmal je Verbindung; `SWARMQ_VALKEY_EVICTION_CHECK=off` schaltet das ab.
@@ -30,5 +39,9 @@ tests:
 **Begründung.** `check` soll vor dem Upgrade genau das vorhersagen, was der Worker tut, und keine zusätzlichen harten Hürden aufstellen. Producer haben keine Startsperre, sollen das Risiko aber sehen.
 
 **Bewusste Folgen.** Eine Umgebung ohne AOF besteht `check` mit Exit 0 (nur Warnung). Ein Producer startet auch bei verdrängender Policy.
+
+**Nachtrag 2026-10-15 (Fehlersuche Runde 3, F3-18): Was „ungültige Konfiguration“ heißt.** Gemeint ist jeder Wert, an dem `SwarmQConfig` beim Worker-Start scheitert, auch ein ungültiger Modus (`SWARMQ_VALKEY_EVICTION_CHECK=bogus`) und ein nicht parsebarer Wert (`SWARMQ_SHUTDOWN_TIMEOUT=abc`). `swarmq check` endet dann mit 78. Dass es bis 0.12.2 im ersten Fall 0 (der Modus wurde still zu `strict`) und im zweiten 1 lieferte, war der Befund F3-18 (behoben in 0.12.3: `swarmq check` baut die Konfiguration vor jeder Verbindung wie der Worker-Start; `SWARMQ_SCHEDULER` bleibt dem Abschnitt `scheduler` überlassen), keine Frage dieser Entscheidung. Unberührt bleibt die Nachsicht für Backends ohne `SwarmQConfig` (Producer, CLI-Befehle): `env_valkey_eviction_check()` wertet einen ungültigen Modus als `strict`, damit die Prüfung trotzdem läuft. Für die Startvorhersage von `check` gilt diese Nachsicht nicht. Festgehalten in `tests/unit/test_befund_f3_18_check_invalid_config_exit78.py` und, für die Nachsicht der Producer, `tests/unit/test_cli_env_check.py::test_producers_treat_an_invalid_eviction_mode_as_strict`.
+
+**Nachtrag 2026-10-15 (Review U9): Bewusste Folgen der Startvorhersage.** `swarmq check` sagt den Worker-Start ohne Flags voraus; die Logging-Variablen löst es wie dieser Start auf (`SWARMQ_LOG_LEVEL=info` gilt, `SWARMQ_LOG_CONFIG` zusammen mit `SWARMQ_LOG_FORMAT` ergibt 78). `swarmq check` kennt keine Worker-Flags: Eine ungültige Variable, die ein Flag von `swarmq worker` überstimmen würde (etwa `SWARMQ_LOG_FORMAT=xml` unter `--log-format human`), ergibt bei `check` trotzdem 78. Das ist keine zusätzliche Hürde gegenüber dem Worker: Ohne das Flag verweigert er den Start ebenso. Festgehalten in `tests/unit/test_cli_env_check.py::test_check_knows_no_worker_flags_and_rejects_an_overridable_variable`; den Gleichlauf mit dem Start prüft `tests/unit/test_cli_env_check.py::test_check_and_worker_start_decide_alike_on_logging_env`.
 
 **Überdenken nur mit neuem Argument.** Keine offenen Einwände bekannt.

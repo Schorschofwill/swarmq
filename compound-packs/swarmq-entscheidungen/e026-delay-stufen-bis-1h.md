@@ -11,7 +11,7 @@ id: E-026
 datum: 2026-10-09
 status: gilt
 quelle:
-  - docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:58 (Abschnitt 1, technisch festgelegt: BZ-01 7 Stufen)
+  - 'docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:58 (Abschnitt 1, technisch festgelegt: BZ-01 7 Stufen)'
   - docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:422 (MR 10, BZ-01)
   - docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:707 (Abschnitt 7, BZ-01)
 tests:

@@ -92,7 +92,7 @@ def test_max_delay_cap_is_respected():
     result = calculate_backoff(attempt=100, strategy="linear", base_delay=1.0, max_delay=max_d)
     assert result <= max_d
 
-    # Fixed is always base_delay, even if base > max_delay the formula is just base
+    # Fixed is base_delay, at most max_delay (E-023, F3-16); here base < max_delay
     result = calculate_backoff(attempt=0, strategy="fixed", base_delay=5.0, max_delay=max_d)
     assert result == 5.0
 

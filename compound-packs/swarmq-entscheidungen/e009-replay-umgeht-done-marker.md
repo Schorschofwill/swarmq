@@ -12,7 +12,7 @@ datum: 2026-10-09
 status: gilt
 quelle:
   - docs/befunde/betrieb-ueber-zeit-2026-10.md:128 (Entscheidungen, BZ-08/BZ-12)
-  - docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:46 (Abschnitt 1, BZ-08 Cron: Replay eines Cron-Laufs läuft)
+  - 'docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:46 (Abschnitt 1, BZ-08 Cron: Replay eines Cron-Laufs läuft)'
   - docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:461 (MR 12, Ausführungsidentität)
   - docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:701 (Abschnitt 7, BZ-08 im Mischbetrieb)
 tests:

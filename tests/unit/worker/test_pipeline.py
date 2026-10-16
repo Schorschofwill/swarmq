@@ -165,6 +165,7 @@ _GATE_ORDER = [
 ]
 
 
+@pytest.mark.entscheidung("E-070")
 async def test_gates_run_in_fixed_order_and_ack_comes_last(broker, backend, rec) -> None:
     worker = _worker(broker, backend, rec, GatedTask)
     msg = make_message(
@@ -606,6 +607,7 @@ class _EnqueueRecorder(Middleware):
         self.calls.append(f"post_enqueue:{message['step_path']}")
 
 
+@pytest.mark.entscheidung("E-059")
 async def test_workflow_step_publisher_runs_middleware_then_signals():
     """R15/R16 (AE6): Ein Folgeschritt laeuft durch dieselbe Kette wie
     ``Client.schedule`` — pre_enqueue, Publish, post_enqueue, dann

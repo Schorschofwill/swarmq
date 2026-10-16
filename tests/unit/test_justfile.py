@@ -27,6 +27,16 @@ Test-Liste:
 - [x] ein roter Durchgang macht den Lauf rot, der andere läuft trotzdem
 - [x] ein leerer Durchgang (Exit 5) zählt nicht als Fehler, zwei leere schon
 - [x] ``lint``, ``types``, ``chaos``, ``stress``, ``coverage-report``, ``coverage-gate``, ``ratchet`` rufen die CI-Befehle
+
+Eingrenzen per Pfad (Plan 2026-10-15-1138, U16, R33):
+- [x] ``just integration <pfad>``: beide Durchgänge laufen nur den Pfad
+- [x] ``just e2e <pfad>::<test>`` grenzt auf die Node-ID ein
+- [x] ``just integration -k foo`` grenzt nicht ein
+- [x] ``just integration -k tests`` grenzt nicht ein, obwohl ``tests`` existiert
+- [x] ``just integration --ignore <pfad>`` grenzt nicht ein
+- [x] ``just unit <pfad>`` grenzt ein, ``-n`` bleibt, keine Sperre
+- [x] ``just property <pfad>`` und ``just stress <pfad>`` grenzen ein, der Marker bleibt
+- [x] ein nicht existierender Pfad: die Suite bleibt davor
 """
 
 from __future__ import annotations
@@ -303,3 +313,120 @@ def test_an_empty_pass_is_no_failure_unless_both_are_empty(
     result = _just(stub, "e2e")
 
     assert result.returncode == expected, result.stderr
+
+
+def test_integration_with_a_path_runs_only_that_path(stub: dict[str, str], tmp_path: Path) -> None:
+    target = tmp_path / "test_x.py"
+    target.touch()
+
+    result = _just(stub, "integration", str(target))
+
+    assert result.returncode == 0, result.stderr
+    parallel, serial = _calls(stub)
+    assert f"pytest -n 8 --dist loadgroup {target} --randomly-seed" in parallel
+    assert f"pytest {target} --randomly-seed" in serial
+    assert "tests/integration" not in parallel + serial
+
+
+def test_e2e_with_a_node_id_runs_only_that_test(stub: dict[str, str], tmp_path: Path) -> None:
+    target = tmp_path / "test_x.py"
+    target.touch()
+    node = f"{target}::test_y[a-b]"
+
+    result = _just(stub, "e2e", node)
+
+    assert result.returncode == 0, result.stderr
+    parallel, serial = _calls(stub)
+    assert f"pytest -n 8 --dist loadgroup {node} --randomly-seed" in parallel
+    assert f"pytest {node} --randomly-seed" in serial
+
+
+def test_integration_with_a_keyword_keeps_the_suite(stub: dict[str, str]) -> None:
+    result = _just(stub, "integration", "-k", "foo")
+
+    assert result.returncode == 0, result.stderr
+    parallel, serial = _calls(stub)
+    assert "pytest -n 8 --dist loadgroup tests/integration -k foo --randomly-seed" in parallel
+    assert "pytest tests/integration -k foo --randomly-seed" in serial
+
+
+def test_a_keyword_naming_an_existing_directory_keeps_the_suite(stub: dict[str, str]) -> None:
+    result = _just(stub, "integration", "-k", "tests")
+
+    assert result.returncode == 0, result.stderr
+    parallel, serial = _calls(stub)
+    assert "pytest -n 8 --dist loadgroup tests/integration -k tests --randomly-seed" in parallel
+    assert "pytest tests/integration -k tests --randomly-seed" in serial
+
+
+def test_an_ignored_path_keeps_the_suite(stub: dict[str, str], tmp_path: Path) -> None:
+    ignored = tmp_path / "x.py"
+    ignored.touch()
+
+    result = _just(stub, "integration", "--ignore", str(ignored))
+
+    assert result.returncode == 0, result.stderr
+    parallel, serial = _calls(stub)
+    assert f"pytest -n 8 --dist loadgroup tests/integration --ignore {ignored} --randomly-seed" in parallel
+    assert f"pytest tests/integration --ignore {ignored} --randomly-seed" in serial
+
+
+@pytest.mark.parametrize("option", ["--config-file", "--override-ini", "--numprocesses", "--pythonwarnings"])
+def test_a_long_option_value_naming_an_existing_file_keeps_the_suite(stub: dict[str, str], option: str) -> None:
+    result = _just(stub, "integration", option, "pyproject.toml")
+
+    assert result.returncode == 0, result.stderr
+    parallel, serial = _calls(stub)
+    assert f"tests/integration {option} pyproject.toml --randomly-seed" in parallel
+    assert f"pytest tests/integration {option} pyproject.toml --randomly-seed" in serial
+
+
+def test_a_path_after_an_option_value_still_narrows(stub: dict[str, str], tmp_path: Path) -> None:
+    target = tmp_path / "test_x.py"
+    target.touch()
+
+    result = _just(stub, "integration", "-k", "foo", str(target))
+
+    assert result.returncode == 0, result.stderr
+    parallel, serial = _calls(stub)
+    assert f"pytest -n 8 --dist loadgroup -k foo {target} --randomly-seed" in parallel
+    assert "tests/integration" not in parallel + serial
+
+
+def test_unit_with_a_path_runs_only_that_path_without_the_lock(stub: dict[str, str], tmp_path: Path) -> None:
+    target = tmp_path / "test_x.py"
+    target.touch()
+
+    result = _just(stub, "unit", str(target))
+
+    assert result.returncode == 0, result.stderr
+    [call] = _calls(stub)
+    assert f"pytest -n 8 {target} --randomly-seed" in call
+    assert "tests/unit" not in call
+    assert "lockheld= lock=free" in call
+
+
+@pytest.mark.parametrize(("recipe", "marker", "locked"), [("property", "property", False), ("stress", "stress", True)])
+def test_property_and_stress_with_a_path_keep_their_marker(
+    stub: dict[str, str], tmp_path: Path, recipe: str, marker: str, locked: bool
+) -> None:
+    target = tmp_path / "test_x.py"
+    target.touch()
+
+    result = _just(stub, recipe, str(target))
+
+    assert result.returncode == 0, result.stderr
+    [call] = _calls(stub)
+    assert f"pytest -m {marker} {target} --randomly-seed" in call
+    assert ("lock=held" in call) is locked
+
+
+def test_a_missing_path_keeps_the_suite_so_pytest_reports_it(stub: dict[str, str], tmp_path: Path) -> None:
+    missing = tmp_path / "test_tippfehler.py"
+
+    result = _just(stub, "integration", str(missing))
+
+    assert result.returncode == 0, result.stderr
+    parallel, serial = _calls(stub)
+    assert f"pytest -n 8 --dist loadgroup tests/integration {missing} --randomly-seed" in parallel
+    assert f"pytest tests/integration {missing} --randomly-seed" in serial

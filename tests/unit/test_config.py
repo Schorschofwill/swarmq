@@ -2,6 +2,7 @@
 
 import os
 import re
+from typing import cast
 
 import pytest
 
@@ -74,6 +75,29 @@ def test_negative_result_ttl_raises():
             backend_url="redis://localhost",
             result_ttl=-1,
         )
+
+
+@pytest.mark.entscheidung("E-055")
+def test_negative_fractional_result_ttl_raises():
+    """Bereichsprüfung auf dem Rohwert: ``ceil(-0.5) == 0`` darf nicht als 0 durchrutschen."""
+    with pytest.raises(ConfigurationError, match="result_ttl must be >= 0"):
+        SwarmQConfig(broker_url="redis://localhost", backend_url="redis://localhost", result_ttl=cast("int", -0.5))
+
+
+@pytest.mark.entscheidung("E-055")
+@pytest.mark.parametrize("value", [float("inf"), float("nan")])
+def test_non_finite_result_ttl_raises_configuration_error(value):
+    """E-055 mit E-063: Exit 78 statt ``OverflowError`` (Exit 1)."""
+    with pytest.raises(ConfigurationError, match="result_ttl must be a finite number"):
+        SwarmQConfig(broker_url="redis://localhost", backend_url="redis://localhost", result_ttl=value)
+
+
+@pytest.mark.entscheidung("E-055")
+def test_float_result_ttl_from_env_stays_a_configuration_error(monkeypatch):
+    """E-055 gilt fuer Argumente; ``SWARMQ_RESULT_TTL`` bleibt ganzzahlig."""
+    monkeypatch.setenv("SWARMQ_RESULT_TTL", "1.5")
+    with pytest.raises(ConfigurationError, match="SWARMQ_RESULT_TTL"):
+        SwarmQConfig(broker_url="redis://localhost", backend_url="redis://localhost")
 
 
 def test_zero_concurrency_raises():

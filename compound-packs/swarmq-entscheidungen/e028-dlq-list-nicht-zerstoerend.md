@@ -9,7 +9,7 @@ id: E-028
 datum: 2026-10-09
 status: gilt
 quelle:
-  - docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:580 (MR 16, BZ-21: Kopie ans Ende + Ack)
+  - 'docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:580 (MR 16, BZ-21: Kopie ans Ende + Ack)'
   - docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:723 (Abschnitt 7, parallele dlq list sehen Teilmengen)
 tests:
   - tests/unit/broker/test_dlq_read.py::test_list_reads_with_ack_and_acks_after_the_copy

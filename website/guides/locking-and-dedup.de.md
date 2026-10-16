@@ -323,6 +323,12 @@ async def on_dup(
 - `"scheduler.fire"` — der eingebettete Scheduler feuerte einen
   wiederkehrenden Task, der gegen einen vorherigen Run dedup'te.
 
+Die `client.*`-Quellen feuern an der App, die `schedule()` aufruft;
+dort registrierst du den Handler. `"scheduler.fire"` feuert am
+Scheduler-Leader, einem Worker: unter `swarmq worker` in einem
+`--configure`-Hook registrieren
+([Signals](signals.md#einen-handler-registrieren)).
+
 ## Locks und Dedup kombinieren
 
 Dedup auf Client-Layer, Lock auf Worker-Layer. Client-Retries

@@ -176,28 +176,49 @@ async def run(self, retry_delay: float) -> None:
     ...
 ```
 
+Weitere Schlüsselwörter gehören zu den Aufrufen, die einen Task
+starten, swarmq lehnt sie auf `run()` aber nicht ab:
+
+- `queue` — `app.schedule()` und `app.run()` lesen es als Ziel-Queue
+  und geben es nicht weiter. `schedule("export", queue="eu")` routet
+  den Task in die Queue `eu`: Gibt es sie nicht, scheitert der Publish
+  mit `UnroutableMessage`, sonst läuft der Task ohne das Argument
+  (`TypeError` bei einem Pflichtparameter).
+- `timeout`, `polling` — `app.run()` liest sie für das Warten auf das
+  Ergebnis und gibt sie nicht weiter.
+
+Benenne einen solchen Parameter um oder übergib den Wert positionell
+(`schedule("export", "eu")`).
+
 ## Lifecycle-Hooks
 
-Überschreibe `pre_execution` und `post_execution`, um auf dem
-Worker vor/nach dem Task-Body Code auszuführen:
+Überschreibe `pre_execution` und `post_execution`, um auf dem Worker
+vor und nach dem Task-Body Code auszuführen. `post_execution` läuft
+nur, wenn `pre_execution` und `run()` erfolgreich waren. Es läuft
+nicht, wenn eines davon wirft, nicht bei Soft- oder Hard-Timeout und
+nicht bei einem Cancel; eine Ausnahme darin macht den Versuch zum
+Fehlschlag. Nutze es für Folgearbeit nach Erfolg. Aufräumen, das bei
+jedem Ausgang laufen muss, gehört in `try/finally` in `run()`:
 
 ```python
 class WithSession(Task):
     task_info = TaskInfo(name="with_session", queues=["default"])
 
-    async def pre_execution(self) -> None:
-        self.session = await open_db_session()
-
     async def run(self, user_id: int) -> dict:
-        return await self.session.fetch(user_id)
-
-    async def post_execution(self) -> None:
-        await self.session.close()
+        session = await open_db_session()
+        try:
+            return await session.fetch(user_id)
+        finally:
+            await session.close()
 ```
 
-`post_execution` läuft bei Erfolg und Fehler. Nutze es für
-deterministisches Cleanup. Für Querschnittsthemen, die auf **jeden**
-Task wirken sollen, nutze stattdessen [Middleware](middleware.md).
+Mit [Dependency Injection](../reference/api.md#dependency-injection-dishka)
+gehört es stattdessen in den `yield`-Finalizer des Providers; er
+bekommt auch die Ausnahme, für Commit oder Rollback. Für
+Querschnittsthemen, die auf **jeden** Task wirken sollen, nutze
+stattdessen [Middleware](middleware.md); ihr `on_error` läuft bei
+jedem Fehlschlag, nicht bei einem Cancel (dafür das Signal
+`TASK_CANCELLED` behandeln).
 
 ## Progress-Reporting
 

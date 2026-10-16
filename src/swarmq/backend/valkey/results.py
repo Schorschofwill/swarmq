@@ -236,7 +236,15 @@ class ValkeyResults(ValkeyConnection):
         mindestens ``_TEARDOWN_GRACE_S``, Rest im Hintergrund) sind an die
         Rest-Deadline gebunden, damit ein hängendes Valkey den Aufrufer nicht
         über ``timeout`` hinaus blockiert (FS-15).
+
+        Ein ``timeout`` ohne positive Restfrist (negativ, ``nan``) ist schon
+        abgelaufen: genau ein GET ohne Abonnement, wie ``timeout=0`` am
+        Client und ``get_results`` (F3-43, E-030). ``not > 0`` statt
+        ``<= 0``, sonst gelangt ``nan`` als Frist in die Event-Loop und
+        bringt sie zum Absturz. ``inf`` wartet unbegrenzt.
         """
+        if not timeout > 0:
+            return await self.get_result(task_id)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
 
@@ -488,7 +496,13 @@ class ValkeyResults(ValkeyConnection):
             logger.warning("publish_workflow_notification_failed", workflow_id=wf_id, **_error_fields(exc))
 
     async def wait_for_workflow(self, wf_id: str, *, timeout: float) -> bool:
-        """``True`` bei Benachrichtigung vor Ablauf, sonst ``False``."""
+        """``True`` bei Benachrichtigung vor Ablauf, sonst ``False``.
+
+        Ein ``timeout`` ohne positive Restfrist (negativ, ``nan``) ist schon
+        abgelaufen: ``False`` ohne Abonnement, damit keine ``nan``-Frist in
+        die Event-Loop gelangt (F3-43, E-030)."""
+        if not timeout > 0:
+            return False
         channel = self.workflow_notify_channel(wf_id)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout

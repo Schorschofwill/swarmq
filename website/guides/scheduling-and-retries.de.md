@@ -52,9 +52,20 @@ neue ID.
 von `schedule()`. Mit `unique_for=` setzt der Producer das Flag sofort.
 Mit `unique_for=None` ist die Dedup für diesen Aufruf aus: Der
 Oneshot-Eintrag hält den Opt-out fest, und der Leader feuert ohne
-Dedup-Claim. Fehlt `unique_for`, löst der Leader den Wert beim Fire aus
-seiner eigenen `TaskInfo` auf und überspringt den Task, solange ein
-anderer Lauf mit denselben Argumenten das Flag hält. Der Opt-out braucht
+Dedup-Claim. Fehlt `unique_for` und kennt die Registry des Producers
+den Task, gilt sofort `TaskInfo.unique_for`: Der Producer setzt das
+Flag beim Aufruf von `schedule()`, für `unique_for` plus Verzögerung,
+und ein gleicher Aufruf in dieser Zeit ist ein Duplikat. Nur ein
+Producer ohne Registry überlässt es dem Leader.
+Der löst `unique_for` beim Fire aus seiner eigenen `TaskInfo` auf und
+überspringt den Task, solange ein anderer Lauf mit denselben Argumenten
+das Flag hält. Der Producer berechnet seinen Dedup-Hash aus den
+Argumenten, bevor die
+[Enqueue-Middleware](middleware.md#verzogerte-tasks-delayeta) läuft;
+der Leader hasht die gespeicherten Argumente. Beim Producer ohne
+Registry landen `kwargs`, die eine Middleware bei jedem Aufruf ergänzt
+(etwa eine `correlation_id`), deshalb im Hash, und solche verzögerten
+Aufrufe werden nicht mehr dedupliziert. Der Opt-out braucht
 Producer und Leader neuer als 0.12.1. Ein Producer bis 0.12.1 hält ihn
 nicht fest, und ein Leader bis 0.12.1 fällt auf seine eigene `TaskInfo`
 zurück; Producer laufen oft in anderen Diensten, also auch diese
@@ -616,7 +627,7 @@ class ChargeCard(Task):
 |---|---|
 | `exponential` (Default) | `retry_base_delay × 2^(n-1)` |
 | `linear` | `retry_base_delay × n` |
-| `fixed` | `retry_base_delay` |
+| `fixed` | `retry_base_delay`, höchstens `retry_max_delay` |
 
 `exponential` und `linear` multiplizieren den Delay mit einem
 Zufallsfaktor zwischen 1 und 2 (Jitter), damit sich die Retries vieler
@@ -624,9 +635,12 @@ gleichzeitig gescheiterter Nachrichten verteilen. `fixed` hat keinen
 Jitter.
 
 Globales Cap: `retry_max_delay` (Default 3600 s) begrenzt jeden
-berechneten Delay. Ein Delay über dem Cap wird zu 0,6 bis
-0,8 × `retry_max_delay`, aus demselben Jitter gezogen, damit auch
-Retries am Cap verteilt bleiben. Setze `SWARMQ_RETRY_MAX_DELAY=...`
+berechneten Delay. Bei `exponential` und `linear` wird ein Delay über
+dem Cap zu 0,6 bis 0,8 × `retry_max_delay`, aus demselben Jitter
+gezogen, damit auch Retries am Cap verteilt bleiben. `fixed` wartet
+`retry_base_delay`, aber nie länger als `retry_max_delay` (genau
+`retry_max_delay`, wenn der Basis-Delay größer ist; seit 0.12.3, vorher
+wartete es den vollen Basis-Delay). Setze `SWARMQ_RETRY_MAX_DELAY=...`
 oder übergib `retry_max_delay=...` als `SwarmQ`-kwarg.
 
 ### Selektive Retries
@@ -677,6 +691,12 @@ class SendEmail(Task):
   `max_retries`: Ist das Budget verbraucht, und immer bei
   `max_retries=0`, endet er terminal (DLQ bzw. Fehlerergebnis, wenn
   das Dead-Lettering abgeschaltet ist).
+- Ein negativer Delay, wie ihn ein berechnetes
+  `reset_at - time.time()` nach einem 429 leicht ergibt, gilt als `0`
+  (sofort wiederholen) und zählt wie jeder andere Retry. `inf` und
+  `nan` werfen beim Erzeugen von `Retry` einen `ValueError`; dieser
+  `ValueError` ist ein gewöhnlicher Task-Fehler und unterliegt
+  `retry_exceptions` und dem Backoff.
 - `NoRetry(reason)` — überspringt das Retry-Budget, routet sofort
   in die DLQ.
 
@@ -769,10 +789,19 @@ cancelled = await app.cancel(task_id)
 ```
 
 Der Aufruf ist Fire-and-forget — er setzt ein Flag in Valkey und
-kehrt zurück. Der Cancel-Monitor des Workers picks das Flag auf
-und raist `TaskCancelledError` innerhalb der Task-Coroutine. Siehe
-[`app.cancel()`](../reference/api.md#cancel) für den
-Stale-Flag-Caveat.
+kehrt zurück. Der Cancel-Monitor des Workers prüft das Flag alle
+`SWARMQ_CANCEL_POLL_INTERVAL` Sekunden (Default 1) und bricht die
+laufende `run()`-Coroutine ab: Im Task kommt der Cancel als
+`asyncio.CancelledError` an, nicht als `TaskCancelledError`.
+`finally`-Blöcke laufen; wer `CancelledError` zum Aufräumen fängt,
+wirft sie erneut. Der Task endet als abgebrochen: kein Retry, keine
+DLQ, kein `post_execution`, kein `on_error` oder `post_execute` der
+Middleware, nur das Signal `TASK_CANCELLED`. Im CPU-Modus beendet der
+Worker das Rechenkind (SIGTERM, nach einer Sekunde SIGKILL;
+[Verhaltensänderungen](cpu-mode.md#verhaltensanderungen-fur-task-autoren)).
+Der Client sieht `TaskCancelledError` aus `get_result()` oder
+`app.run()`. Siehe [`app.cancel()`](../reference/api.md#cancel) für
+den Stale-Flag-Caveat.
 
 ## Verifizieren
 

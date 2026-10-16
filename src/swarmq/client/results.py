@@ -57,7 +57,7 @@ class ClientResults:
             queue: str | None = None,
             delay: float | None = None,
             eta: datetime | None = None,
-            unique_for: int | _MissingType | None = _MISSING,
+            unique_for: float | _MissingType | None = _MISSING,
             unique_until: Literal["start", "completion"] | _MissingType = _MISSING,
             **kwargs: Any,
         ) -> str: ...
@@ -142,22 +142,30 @@ class ClientResults:
         """Retrieve results for multiple tasks using MGET-based batch polling.
 
         Polls every *poll_interval* seconds until all results are available
-        or *timeout* is exceeded.
+        or *timeout* is exceeded. Reads at least once (``timeout=0`` is a
+        single MGET) and once more when the deadline passes while waiting;
+        the wait never overshoots the deadline (F3-09, E-030).
         """
         if not task_ids:
             return []
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        raw_list: list[bytes | None] = [None] * len(task_ids)
 
-        while loop.time() < deadline:
+        while True:
             raw_list = await self._backend.get_results(task_ids)
             if all(r is not None for r in raw_list):
                 # ``all(... is not None)`` schließt None aus; mypy sieht das
                 # Narrowing über die Comprehension-Grenze nicht.
                 return [self._unpack(r) for r in raw_list if r is not None]
-            await asyncio.sleep(poll_interval)
+            # Erst lesen, dann die Restfrist prüfen: so liegt der letzte
+            # MGET an der Frist und nicht davor (F3-09). ``not > 0`` statt
+            # ``<= 0``: ``timeout=nan`` gilt wie bei ``get_result`` als
+            # abgelaufen, statt endlos zu pollen (E-030, Nachtrag).
+            remaining = deadline - loop.time()
+            if not remaining > 0:
+                break
+            await asyncio.sleep(min(poll_interval, remaining))
 
         missing = [
             tid

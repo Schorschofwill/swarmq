@@ -35,7 +35,7 @@ except SwarmQError as exc:
 | `LockWaitExceeded` | `SwarmQError` | Never raised: error type of a DLQ copy whose wait for a task lock ended (stalled holder or `SWARMQ_LOCK_WAIT_MAX_S`) |
 | `RedeliveryLimitError` | `SwarmQError` | Never raised: error type of a DLQ copy whose deliveries were handed back until the delivery limit |
 | `TaskError` | `SwarmQError` | The task body raised; propagated to `get_result()` |
-| `TaskCancelledError` | `TaskError` | `app.cancel(task_id)` tripped during execution |
+| `TaskCancelledError` | `TaskError` | `get_result()` or `app.run()` on a task cancelled with `app.cancel(task_id)`; the task itself sees `asyncio.CancelledError` |
 | `ResultNotReadyError` | `SwarmQError` | `get_result()` timed out before a result landed |
 | `ResultExpiredError` | `SwarmQError` | Currently never raised (reserved); an expired result raises `ResultNotReadyError` |
 | `ResultSerializationError` | `SwarmQError` | Result cannot be msgpack-serialised |
@@ -274,9 +274,14 @@ transient class is retried instead of DLQ'd.
 
 ## `TaskCancelledError`
 
-**When raised.** `get_result()` observes a cancel flag in the stored
-result. Also raised inside a task body when the worker's cancel
-monitor trips.
+**When raised.** On the client: `get_result()` and `app.run()` raise
+it when the stored result carries the cancel flag, and a workflow
+handle raises it for a cancelled workflow. Never inside the task body:
+the worker cancels the running `run()` coroutine, so the task sees
+`asyncio.CancelledError`. Clean up in `finally`, or catch
+`asyncio.CancelledError`, clean up and re-raise it. In CPU mode the
+compute child is killed instead
+([behaviour changes](../guides/cpu-mode.md#behaviour-changes-for-task-authors)).
 
 **Cause.** Somebody — the client, an operator, another service —
 called `app.cancel(task_id)` while the task was queued or running.
@@ -375,7 +380,10 @@ class SendEmail(Task):
 ```
 
 If `delay` is `None`, the worker applies the configured backoff
-strategy (`retry_backoff`, `retry_base_delay`).
+strategy (`retry_backoff`, `retry_base_delay`). A negative `delay` is
+treated as 0 (retry immediately) and still counts against
+`max_retries`; `inf` and `nan` raise `ValueError` when `Retry` is
+created.
 
 `Retry` retries even when the task sets `retry_exceptions` without
 listing it. It counts against `max_retries`: when the budget is used

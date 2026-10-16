@@ -10,7 +10,8 @@ Die Priorität hängt davon ab, wie SwarmQ läuft:
   Worker-Option. Der Supervisor löst die Werte einmal auf und gibt sie
   an seine Worker-Subprozesse und Rechenkinder weiter, die das
   Environment nicht noch einmal lesen; `swarmq worker --check` prüft
-  dieselben aufgelösten Werte.
+  dieselben aufgelösten Werte, außer fehlenden
+  `SWARMQ_BROKER_URL`/`SWARMQ_BACKEND_URL`.
 - **Eingebettetes `SwarmQ(...)`**: zuerst die Keyword-Argumente von
   `SwarmQConfig`, dann überschreiben `SWARMQ_*`-Env-Vars sie; Defaults
   füllen den Rest.
@@ -29,13 +30,19 @@ siehe [Fehlerkatalog](errors.md#configurationerror).
 
 ### Worker-Verhalten
 
+Jede Frist, TTL und Zeitangabe auf dieser Seite muss eine endliche Zahl
+sein (seit 0.12.3): `inf` und `nan`, als Env-Wert oder als
+`SwarmQConfig`-Argument, sind ein `ConfigurationError` (Exit `78`), der
+das Feld nennt. Wo „unbegrenzt“ vorgesehen ist, heißt der Wert `none`,
+nicht `inf` (derzeit `SWARMQ_DEAD_LETTER_TTL_S`).
+
 | Variable | Default | Beschreibung |
 |---|---|---|
 | `SWARMQ_QUEUES` | `default` | Komma-separierte Queue-Namen, aus denen der Worker konsumiert. |
-| `SWARMQ_CONCURRENCY` | `10` (io) / zugeteilte CPUs (cpu) | Maximale Tasks in Flight pro Worker-Prozess. Mit `SWARMQ_POOL=cpu` die Zahl der Rechenslots; siehe [`--concurrency`](cli.md#optionen). |
-| `SWARMQ_RESULT_TTL` | `86400` | Sekunden, die gespeicherte Ergebnisse in Valkey leben. |
+| `SWARMQ_CONCURRENCY` | `10` (io) / zugeteilte CPUs (cpu) | Maximale Tasks in Flight pro Worker-Prozess. Mit `SWARMQ_POOL=cpu` die Zahl der Rechenslots; siehe [`--concurrency`](cli.md#optionen). Die CPU-Voreinstellung (CPU-Affinität und cgroup-Quote, aufgerundet) gilt auch für ein eingebettetes `SwarmQConfig(pool="cpu")` ohne `concurrency` (seit 0.12.3; vorher 10); ein ausdrückliches `concurrency` gewinnt immer. |
+| `SWARMQ_RESULT_TTL` | `86400` | Sekunden, die gespeicherte Ergebnisse in Valkey leben. In der Umgebung eine ganze Zahl; das `SwarmQConfig`-Argument nimmt auch einen `float` an (etwa `timedelta(...).total_seconds()`), der auf ganze Sekunden aufgerundet wird. |
 | `SWARMQ_RETRY_MAX_DELAY` | `3600.0` | Obergrenze des Retry-Backoffs in Sekunden. |
-| `SWARMQ_SHUTDOWN_TIMEOUT` | `30` | Gesamtbudget des Herunterfahrens in Sekunden ab SIGTERM (seit 0.12; vorher nur der Drain): Drain der laufenden Tasks, Sperrenfreigabe, Leader-Übergabe, Verbindungsschluss und unter dem Supervisor dessen SIGTERM-/SIGKILL-Eskalation liegen darin. Der Drain endet 5 s (höchstens die Hälfte) vor dem Ende, unter dem Supervisor endet die Eskalation 2 s davor. Kubernetes `terminationGracePeriodSeconds` und Docker `stop_grace_period` auf mindestens diesen Wert plus 15 s setzen ([Shutdown-Budget](../explanation/delivery-semantics.de.md#shutdown-budget)). |
+| `SWARMQ_SHUTDOWN_TIMEOUT` | `30` | Gesamtbudget des Herunterfahrens in Sekunden ab SIGTERM (seit 0.12; vorher nur der Drain): Drain der laufenden Tasks, Sperrenfreigabe, Leader-Übergabe, Verbindungsschluss und unter dem Supervisor dessen SIGTERM-/SIGKILL-Eskalation liegen darin. Der Drain endet 5 s (höchstens die Hälfte) vor dem Ende, unter dem Supervisor endet die Eskalation 2 s davor. Kubernetes `terminationGracePeriodSeconds` und Docker `stop_grace_period` auf mindestens diesen Wert plus 15 s setzen ([Shutdown-Budget](../explanation/delivery-semantics.de.md#shutdown-budget)). `0` bricht sofort ab: Unter dem Supervisor folgen SIGTERM und SIGKILL ohne Wartezeit, Sperren und Leader-Rolle laufen über ihre TTL ab (unter `swarmq worker` zulässig seit 0.12.3; vorher brach es den Start mit Traceback ab). Ein negativer Wert ist ein `ConfigurationError` (Exit `78`). |
 | `SWARMQ_PUBLISH_TIMEOUT_S` | `120.0` | Obergrenze für einen kompletten Publish-Vorgang inklusive interner Wiederholversuche. Wird sie überschritten, scheitert der Publish mit einem Broker-Verbindungsfehler, statt unbegrenzt auf eine Bestätigung zu warten, die ein still toter Transport nie liefert. Beim Herunterfahren gilt die kürzere aus diesem Wert und der verbleibenden Gnadenfrist. |
 | `SWARMQ_DELIVERY_LIMIT` | `20` | Zustellbudget für Quorum-Queues (`x-delivery-limit`); bei klassischen Queues ohne Wirkung. Ist eine Nachricht so oft zugestellt worden, wirft der Broker sie selbst in die Dead-Letter-Queue — das Sicherheitsnetz gegen einen Task, der den Prozess zuverlässig abschießt (SIGSEGV/OOM) und deshalb ewig neu zugestellt würde, ohne je `max_retries` zu erreichen. Der Default deckt drei bis vier fachliche Wiederholungen je Zustellung plus Puffer für Broker-Schluckauf. Dieser Puffer ist seit dem Publish-Deckel schmaler: Bricht ein Publish im Worker an seiner Frist ab, wird die bearbeitete Nachricht neu zugestellt statt bestätigt, und jede Runde kostet eine Zustellung. Vor jeder solchen Rückgabe wartet der Worker bis zu 5 s (wachsend mit dem Zustellzähler), das Default-Budget reicht also mehr als eine Minute. Der Worker zählt auch `x-acquired-count` (RabbitMQ 4.3 zählt eine Rückgabe nicht in `x-delivery-count`). Höher setzen, wer längere Broker-Störungen aussitzen muss; niedriger, wer ein engeres Zustellfenster erzwingen will. Bestehende Queues behalten das Limit, mit dem sie angelegt wurden; der Worker dead-lettert dann beim kleineren der beiden Werte minus eins ([effektives Delivery-Limit](../explanation/delivery-semantics.md#effektives-delivery-limit)). |
 | `SWARMQ_QUEUE_TYPE` | `quorum` | `quorum` (empfohlen) oder `classic` RabbitMQ-Queue-Typ. Nur Quorum-Queues tragen `x-delivery-limit`; ohne wird eine Nachricht, die Worker zum Hängen bringt, unbegrenzt erneut zugestellt (der Worker warnt beim Start). Eine Änderung für bestehende Queues scheitert mit `QueueArgumentsMismatch` (Exit 78); stattdessen die Queues [migrieren](../explanation/delivery-semantics.md#queue-argumente-andern). |
@@ -45,7 +52,7 @@ siehe [Fehlerkatalog](errors.md#configurationerror).
 | `SWARMQ_RECYCLE_RSS_MB` | ungesetzt (`250` im CPU-Modus) | Prozess nach einem Task recyceln, sobald sein RSS diese MB überschreitet. IO-Worker: Opt-in-Selbst-Recycling; CPU-Modus: Schwelle für wiederverwendete DI-Kinder. |
 | `SWARMQ_RECYCLE_MAX_TASKS` | ungesetzt (`1000` im CPU-Modus) | Prozess nach so vielen Tasks recyceln (zweite Linie hinter der RSS-Schwelle). |
 | `SWARMQ_HEARTBEAT_INTERVAL_S` | `5` | Wie oft der Worker seinen Lebenszeichen-Zeitstempel für den Supervisor schreibt. |
-| `SWARMQ_HEARTBEAT_TIMEOUT_S` | `60` | Nach so langer Zeit ohne Lebenszeichen ersetzt der Supervisor den Worker (SIGTERM, dann SIGKILL). Muss über dem Intervall und jeder legitimen Loop-Blockade liegen; unter RabbitMQs Heartbeat-Erkennung bleiben. |
+| `SWARMQ_HEARTBEAT_TIMEOUT_S` | `60` | Nach so langer Zeit ohne Lebenszeichen ersetzt der Supervisor den Worker (SIGTERM, dann SIGKILL). Muss über dem Intervall und jeder legitimen Loop-Blockade liegen; unter RabbitMQs Heartbeat-Erkennung bleiben. Ein Worker, der sich selbst recycelt, bekommt zwischen zwei Lebenszeichen mindestens so lange (oder `SWARMQ_SHUTDOWN_TIMEOUT` + 5 s, falls das größer ist), bevor der Supervisor ihn beendet; ein Scale-down-Drain bekommt `SWARMQ_SHUTDOWN_TIMEOUT` + 5 s. |
 | `SWARMQ_CONSUMER_TIMEOUT_S` | `1800` | `consumer_timeout` des Brokers; der Worker warnt, wenn ein `hard_timeout` darüber liegt. |
 | `SWARMQ_CONSUMER_WATCH_INTERVAL_S` | `5.0` | Sekunden zwischen zwei Prüfungen des [Consumer-Wächters](../explanation/delivery-semantics.md#consumer-timeout): Einen vom Broker beendeten Consumer (`basic.cancel` ab RabbitMQ 4.3, Channel-Close bis 4.2) meldet er binnen zwei Takten ab und neu an. Muss `> 0` sein. |
 | `SWARMQ_CONSUMER_READY_GRACE_S` | `30.0` | `/ready` meldet den Worker als nicht bereit, sobald eine konsumierte Queue länger als diese Frist keinen aktiven Consumer hatte. Muss `> 0` sein. `/ready` nie als Liveness-Probe nutzen. |
@@ -57,8 +64,8 @@ siehe [Fehlerkatalog](errors.md#configurationerror).
 | `SWARMQ_DEAD_LETTER_TTL_S` | `604800` | Sekunden, die eine vom Worker dead-gelettete Nachricht in `{queue}.XQ` bleibt ([Aufbewahrungsfrist](../guides/dead-letter-queues.md#aufbewahrungsfrist-dead-gelettete-nachrichten-verfallen)); Lesen verlängert sie nicht. `none` hält Nachrichten unbegrenzt. Muss `> 0` sein. Die `swarmq dlq`-CLI behält die eigene Frist jeder Nachricht (`x-swarmq-dead-letter-ttl-ms`) und nutzt diese Variable nur für Altbestand ohne sie. |
 | `SWARMQ_DEAD_LETTER_TERMINAL_FAILURES` | `true` | `false` speichert bei einem terminalen Task-Fehler (`NoRetry`, Exception außerhalb von `retry_exceptions`, Retries erschöpft) das Fehlerergebnis und bestätigt die Nachricht, statt sie zu dead-lettern ([Details](../guides/dead-letter-queues.md#dead-lettering-von-task-fehlern-abschalten)). `TaskInfo.dead_letter` gewinnt. |
 | `SWARMQ_LOCK_WAIT_MAX_S` | `21600` | Obergrenze in Sekunden, wie lange eine Nachricht auf einen belegten Task-Lock wartet, gemessen ab ihrem ersten Konflikt (`x-swarmq-lock-wait-since`); danach geht sie mit `LockWaitExceeded` in die DLQ. Vorher beendet nur ein hängender Halter (derselbe Halter länger als seine TTL + 60 s) oder `max_age` die Wartezeit. Muss `> 0` und endlich sein ([Lock-Acquisition](../guides/locking-and-dedup.de.md#lock-acquisition-verhalten)). |
-| `SWARMQ_VALKEY_EVICTION_CHECK` | `strict` | Was ein Worker tut, wenn Valkey swarmq-Keys verdrängen kann ([Valkey-Anforderungen](#valkey-anforderungen)): `strict` verweigert unter einer verdrängenden `maxmemory-policy` (alles außer `noeviction` mit `maxmemory`-Grenze oder unbekannter Grenze) den Start mit Exit `78`, `warn` loggt `valkey_eviction_policy_unsafe` und startet, `off` prüft gar nicht (keine Abfrage, keine Warnung). Eine nicht lesbare Policy (ACL verbietet `CONFIG` und `INFO`) blockiert nie, sie loggt nur `valkey_eviction_policy_unknown`. Groß-/Kleinschreibung egal. Auch `swarmq check` und jedes andere `ValkeyBackend` (CLI, Producer) lesen die Variable; dort ändert nur `off` etwas. |
-| `SWARMQ_NAMESPACE` | *ungesetzt* | Namensraum dieser App auf einem gemeinsamen Valkey ([Namensraum](#namensraum-mehrere-apps-auf-einem-valkey)): Jeder Valkey-Key, jeder Pub/Sub-Kanal, der Scheduler-Leader und der Kontrollkanal wandern von `sq:…` nach `<namensraum>:sq:…`. 1–64 Zeichen `a-z 0-9 _ . -` (nur Kleinbuchstaben: Valkey-Keys unterscheiden Groß- und Kleinschreibung, `App1` und `app1` wären zwei Apps), beginnend mit Buchstabe oder Ziffer, nicht `sq`; alles andere ist ein Konfigurationsfehler (Exit `78`). Leer heißt ungesetzt. Queue-Namen bleiben unverändert. Jedes `ValkeyBackend` (Worker, Producer, CLI, Kontrollkanal) liest die Variable, außer es wird mit `namespace=` gebaut ([Herkunft des Namensraums](#herkunft-des-namensraums)). Nur für eine neue App oder nach dem [Umzug der App](#eine-app-in-einen-namensraum-umziehen) setzen, und erst, wenn alle Komponenten 0.12 fahren. |
+| `SWARMQ_VALKEY_EVICTION_CHECK` | `strict` | Was ein Worker tut, wenn Valkey swarmq-Keys verdrängen kann ([Valkey-Anforderungen](#valkey-anforderungen)): `strict` verweigert unter einer verdrängenden `maxmemory-policy` (alles außer `noeviction` mit `maxmemory`-Grenze oder unbekannter Grenze) den Start mit Exit `78`, `warn` loggt `valkey_eviction_policy_unsafe` und startet, `off` prüft gar nicht (keine Abfrage, keine Warnung). Eine nicht lesbare Policy (ACL verbietet `CONFIG` und `INFO`) blockiert nie, sie loggt nur `valkey_eviction_policy_unknown`. Groß-/Kleinschreibung egal. Jeder andere Wert ist für den Worker ein `ConfigurationError` (Exit `78`), und auch `swarmq check` lehnt ihn mit Exit `78` ab (seit 0.12.3; vorher wertete `check` ihn als `strict`). Jedes andere `ValkeyBackend` (CLI-Befehle, Producer) liest die Variable ebenfalls; dort gilt ein ungültiger Wert als `strict`, und nur `off` ändert etwas. |
+| `SWARMQ_NAMESPACE` | *ungesetzt* | Namensraum dieser App auf einem gemeinsamen Valkey ([Namensraum](#namensraum-mehrere-apps-auf-einem-valkey)): Jeder Valkey-Key, jeder Pub/Sub-Kanal, der Scheduler-Leader und der Kontrollkanal wandern von `sq:…` nach `<namensraum>:sq:…`. 1–64 Zeichen `a-z 0-9 _ . -` (nur Kleinbuchstaben: Valkey-Keys unterscheiden Groß- und Kleinschreibung, `App1` und `app1` wären zwei Apps), beginnend mit Buchstabe oder Ziffer, nicht `sq`; alles andere ist ein Konfigurationsfehler (Exit `78`, bei jedem Befehl, auch `swarmq schedule`, `dlq`, `inspect` und `check`). Leer heißt ungesetzt. Queue-Namen bleiben unverändert. Jedes `ValkeyBackend` (Worker, Producer, CLI, Kontrollkanal) liest die Variable, außer es wird mit `namespace=` gebaut ([Herkunft des Namensraums](#herkunft-des-namensraums)). Nur für eine neue App oder nach dem [Umzug der App](#eine-app-in-einen-namensraum-umziehen) setzen, und erst, wenn alle Komponenten 0.12 fahren. |
 | `SWARMQ_UNKNOWN_TASK_GRACE_S` | `900.0` | Gnadenfrist in Sekunden für einen Task-Namen, den dieser Worker nicht registriert (Rolling Deploy: Producer vor den Workern). Innerhalb der Frist stellt der Worker die Nachricht mit Backoff zurück (1 s, dann so lang wie bisher gewartet, höchstens 60 s je Runde) und hält den ersten Kontakt in `x-swarmq-unknown-since` fest; danach dead-lettert er sie mit Fehlerergebnis und `TASK_REJECTED` (`unregistered_task`). `0` schaltet die Frist ab (Dead-Letter beim ersten Kontakt). Muss `>= 0` sein ([unregistrierte Tasks](../guides/dead-letter-queues.de.md#unregistrierte-tasks-und-rolling-deploys)). |
 | `SWARMQ_MALLOC_TRIM_THRESHOLD` | `131072` | `MALLOC_TRIM_THRESHOLD_` für Rechenkinder (glibc-Wachstum). |
 | `SWARMQ_MALLOC_ARENA_MAX` | `2` | `MALLOC_ARENA_MAX` für Rechenkinder. |
@@ -100,7 +107,10 @@ vor Env-Var) und gibt das Ergebnis an seine Worker-Subprozesse und
 Rechenkinder weiter, die das Environment nicht noch einmal lesen.
 Dieselbe Reihenfolge CLI > Env > Default gilt für jede andere
 Worker-Option mit Flag (siehe [CLI-Referenz](cli.md)). Ungültige Werte
-beenden `swarmq worker` mit Exit `78`.
+beenden `swarmq worker` mit Exit `78`. `swarmq check` sagt diesen Start
+voraus: Jeder `SWARMQ_*`-Wert, den der Worker ablehnen würde, beendet
+`check` vor jeder Verbindung mit Exit `78`, und `swarmq worker --check`
+meldet ihn mit `ok: false` (seit 0.12.3).
 
 ### Scheduler
 
@@ -474,7 +484,7 @@ mutiert werden.
 
 | Feld | Typ | Default | Beschreibung |
 |---|---|---|---|
-| `cron` | `str \| None` | `None` | Standard-5-Feld-Cron-Expression. Extended Syntax (`L`, `W`, `#`) wird abgelehnt. |
+| `cron` | `str \| None` | `None` | Standard-5-Feld-Cron-Expression mit einem nächsten Termin. Extended Syntax (`L`, `W`, `#`) wird abgelehnt, ebenso ein Ausdruck, der nie feuert, etwa `0 0 30 2 *` (seit 0.12.3; vorher verwarf der Scheduler-Leader ihn still). |
 | `catchup` | `bool` | `False` | Für ein künftiges Release reserviert. `True` raist `ValueError`. |
 | `timezone` | `str \| None` | `None` | IANA-Zone, in der `cron` ausgewertet wird, z. B. `"Europe/Berlin"`. `None` fällt auf `SWARMQ_SCHEDULER_TIMEZONE` zurück, sonst UTC; ein ausdrückliches `"UTC"` schlägt diesen Standard. Braucht `cron`; eine unbekannte Zone wirft `ValueError`. Siehe [Zeitzonen](../guides/scheduling-and-retries.md#zeitzonen). |
 
@@ -482,7 +492,7 @@ mutiert werden.
 
 | Feld | Typ | Default | Beschreibung |
 |---|---|---|---|
-| `unique_for` | `int \| None` | `None` | Sekunden; aktiviert Dedup auf `(task_name, args, kwargs)` innerhalb der TTL. `0` abgelehnt. |
+| `unique_for` | `int \| None` | `None` | Sekunden; aktiviert Dedup auf `(task_name, args, kwargs)` innerhalb der TTL. `0`, negative Werte, `inf` und `nan` abgelehnt. Ein `float` wie `timedelta(...).total_seconds()` wird angenommen und auf die nächste Sekunde aufgerundet. |
 | `unique_until` | `"start" \| "completion"` | `"completion"` | Wann der Dedup-Flag freigegeben wird. `"start"` bei Worker-Pickup; `"completion"` bei Terminalzustand. |
 
 ### Expiry
@@ -495,13 +505,14 @@ mutiert werden.
 
 | Feld | Typ | Default | Beschreibung |
 |---|---|---|---|
-| `result_ttl` | `int \| None` | `None` | Per-Task-Override von `SwarmQConfig.result_ttl`. |
+| `result_ttl` | `int \| None` | `None` | Per-Task-Override von `SwarmQConfig.result_ttl`. Ein `float` wird angenommen und auf die nächste Sekunde aufgerundet; `inf` und `nan` abgelehnt. |
 
 ## Validierungs-Verhalten
 
 `TaskInfo.__post_init__` validiert jedes Feld zur Klassendefinitions-
 zeit. Ein Bad Value raist `ValueError` beim Import deines Task-
-Moduls, nicht beim ersten `schedule()`-Aufruf. Das ist Absicht:
+Moduls, nicht beim ersten `schedule()`-Aufruf; `swarmq worker` endet
+dann mit Exit `1`, nicht `78` ([Exit-Codes](cli.md#exit-codes)). Das ist Absicht:
 Ein fehlkonfigurierter Task soll den Worker-Start scheitern lassen,
 nicht den Request des Nutzers drei Stunden später.
 
@@ -513,6 +524,7 @@ Beispiele für Fehler, die beim Import auftreten:
 - `catchup=True` → `ValueError("catchup=True is reserved for a future release")`.
 - `max_concurrency=2` ohne `lock` → `ValueError("max_concurrency requires lock to be set")`.
 - `unique_for=0` → `ValueError("unique_for=0 is invalid; use None to disable dedup")`.
+- `cron="0 0 30 2 *"` → `ValueError` („cron never fires: … has no next fire time“).
 
 Die betroffene `TaskInfo`-Zeile fixen und erneut laufen lassen —
 kein Worker-Reset nötig, weil der Fehler verhindert, dass der

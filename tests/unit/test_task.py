@@ -343,25 +343,52 @@ def test_taskinfo_cron_every_minute_accepted():
     assert info.cron == "* * * * *"
 
 
+@pytest.mark.entscheidung("E-065")
 def test_taskinfo_cron_invalid_syntax_raises():
     with pytest.raises(ValueError, match="cron"):
         TaskInfo(name="task", queues=["q"], cron="not-a-cron")
 
 
+@pytest.mark.entscheidung("E-065")
 def test_taskinfo_cron_extended_L_syntax_rejected():
     """Extended cron syntax (L, W, #) is rejected at construction."""
     with pytest.raises(ValueError, match="cron"):
         TaskInfo(name="task", queues=["q"], cron="0 3 L * *")
 
 
+@pytest.mark.entscheidung("E-065")
 def test_taskinfo_cron_extended_W_syntax_rejected():
     with pytest.raises(ValueError, match="cron"):
         TaskInfo(name="task", queues=["q"], cron="0 3 15W * *")
 
 
+@pytest.mark.entscheidung("E-065")
 def test_taskinfo_cron_extended_hash_syntax_rejected():
     with pytest.raises(ValueError, match="cron"):
         TaskInfo(name="task", queues=["q"], cron="0 3 * * 1#2")
+
+
+# F3-08: Cron ohne nächsten Termin scheitert beim Bau (E-065). Testliste:
+# - [x] 29. Februar (Schaltjahr) und 31. jeden Monats bleiben gültig
+# - [x] Meldung nennt den Grund „no next fire time“
+# - [x] mit Zeitzone scheitert der Cron vor der Zonenprüfung
+# Keine 6/7-feldrigen Ausdrücke: die Feldzahl ist die offene Frage F3-35.
+
+
+@pytest.mark.parametrize("cron", ["0 0 29 2 *", "0 0 31 * *"])
+def test_taskinfo_cron_with_rare_but_real_fire_time_accepted(cron: str):
+    info = TaskInfo(name="task", queues=["q"], cron=cron)
+    assert info.cron == cron
+
+
+def test_taskinfo_cron_without_next_fire_names_the_reason():
+    with pytest.raises(ValueError, match="no next fire time"):
+        TaskInfo(name="task", queues=["q"], cron="0 0 30 2 *")
+
+
+def test_taskinfo_cron_without_next_fire_fails_before_timezone_check():
+    with pytest.raises(ValueError, match="no next fire time"):
+        TaskInfo(name="task", queues=["q"], cron="0 0 30 2 *", timezone="Europe/Atlantis")
 
 
 def test_taskinfo_catchup_true_raises_value_error():
@@ -451,6 +478,7 @@ def test_taskinfo_explicit_utc_is_kept_as_utc():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.entscheidung("E-064")
 def test_task_subclass_with_delay_parameter_raises():
     """Task.run accepting 'delay' as a parameter would silently lose its
     payload once Client.schedule(delay=) is called. Guard at registration."""
@@ -465,6 +493,7 @@ def test_task_subclass_with_delay_parameter_raises():
                 return delay
 
 
+@pytest.mark.entscheidung("E-064")
 def test_task_subclass_with_eta_parameter_raises():
     Task._clear_registered_tasks()
     with pytest.raises(ValueError, match="eta"):
@@ -565,6 +594,7 @@ def test_taskinfo_unique_until_start_accepted():
     assert t.unique_until == "start"
 
 
+@pytest.mark.entscheidung("E-056")
 def test_taskinfo_unique_for_zero_raises():
     """origin CD6: unique_for=0 is a fail-fast, not silent normalize to None."""
     with pytest.raises(ValueError, match="unique_for=0"):
@@ -574,6 +604,50 @@ def test_taskinfo_unique_for_zero_raises():
 def test_taskinfo_unique_for_negative_raises():
     with pytest.raises(ValueError, match="unique_for must be > 0"):
         TaskInfo(name="t", queues=["q"], unique_for=-5)
+
+
+def test_taskinfo_unique_for_zero_float_raises_like_zero():
+    """E-055/E-056: ``0.0`` ist wie ``0`` ein Fehler, nicht still 0."""
+    with pytest.raises(ValueError, match="use None to disable dedup"):
+        TaskInfo(name="t", queues=["q"], unique_for=0.0)
+
+
+def test_taskinfo_negative_fraction_unique_for_is_checked_before_rounding():
+    """``ceil(-0.5) == 0``: die Meldung nennt den Rohwert, nicht ``unique_for=0``."""
+    with pytest.raises(ValueError, match=r"unique_for must be > 0 \(got -0.5\)"):
+        TaskInfo(name="t", queues=["q"], unique_for=-0.5)
+
+
+@pytest.mark.entscheidung("E-055")
+@pytest.mark.parametrize("value", [float("inf"), float("nan")])
+def test_taskinfo_non_finite_result_ttl_raises_naming_the_field(value: float):
+    """E-055 mit E-063: kein ``OverflowError`` aus ``ceil``, sondern ein
+    ``ValueError`` mit dem Feldnamen beim Import des Task-Moduls."""
+    with pytest.raises(ValueError, match="result_ttl must be a finite number"):
+        TaskInfo(name="t", queues=["q"], result_ttl=value)
+
+
+@pytest.mark.entscheidung("E-055")
+@pytest.mark.parametrize("value", [float("inf"), float("nan")])
+def test_taskinfo_non_finite_unique_for_raises_naming_the_field(value: float):
+    with pytest.raises(ValueError, match="unique_for must be a finite number"):
+        TaskInfo(name="t", queues=["q"], unique_for=value)
+
+
+def test_taskinfo_result_ttl_zero_float_becomes_int_zero():
+    t = TaskInfo(name="t", queues=["q"], result_ttl=0.0)
+
+    assert type(t.result_ttl) is int
+    assert t.result_ttl == 0
+
+
+@pytest.mark.entscheidung("E-055")
+def test_taskinfo_bool_seconds_stay_unchanged():
+    """E-055 regelt ``bool`` nicht; ``True`` bleibt ``True`` (wirkt als 1 s)."""
+    t = TaskInfo(name="t", queues=["q"], result_ttl=True, unique_for=True)
+
+    assert t.result_ttl is True
+    assert t.unique_for is True
 
 
 def test_taskinfo_unique_until_invalid_literal_raises():
@@ -595,6 +669,7 @@ def test_taskinfo_unique_until_without_unique_for_is_accepted():
     assert t.unique_until == "start"  # preserved but unused
 
 
+@pytest.mark.entscheidung("E-064")
 def test_task_subclass_reserved_unique_for_raises():
     Task._clear_registered_tasks()
 
@@ -608,6 +683,7 @@ def test_task_subclass_reserved_unique_for_raises():
                 return unique_for
 
 
+@pytest.mark.entscheidung("E-064")
 def test_task_subclass_reserved_unique_until_raises():
     Task._clear_registered_tasks()
 
@@ -836,3 +912,67 @@ class TestUpdateProgress:
         await t.update_progress(3, 100)  # must flush
 
         assert t._backend.set_progress.await_count == 2
+
+    # F3-15: ``started_at`` ist die Wanduhr-Startzeit, ``elapsed`` und
+    # ``eta_seconds`` rechnen monoton (E-044, Nachtrag 2026-10-15). Testliste:
+    # - [x] nur die monotone Startzeit gesetzt -> started_at leer, ETA berechnet
+    # - [x] Wanduhr nach dem Start verstellt -> started_at unverändert, ETA wie ohne Sprung
+    # - [x] mehrere Meldungen eines Laufs -> gleiches started_at
+
+    @pytest.mark.timeout(5)
+    async def test_started_at_empty_without_wall_clock_start(self):
+        import time as _time
+        from unittest.mock import AsyncMock
+
+        t = Task()
+        t._task_id = "x"
+        t._backend = AsyncMock()
+        t._task_start_time = _time.monotonic() - 2.0
+
+        await t.update_progress(1, 2)
+
+        fields = t._backend.set_progress.await_args.args[1]
+        assert fields["started_at"] == ""
+        assert int(fields["eta_seconds"]) in {2, 3}
+
+    @pytest.mark.timeout(5)
+    async def test_started_at_ignores_wall_clock_jump(self, monkeypatch: pytest.MonkeyPatch):
+        import time as _time
+        from datetime import UTC, datetime
+        from unittest.mock import AsyncMock
+
+        started_wall = _time.time()
+        t = Task()
+        t._task_id = "x"
+        t._backend = AsyncMock()
+        t._task_started_wall = started_wall
+        t._task_start_time = _time.monotonic() - 2.0
+        real_time = _time.time
+        monkeypatch.setattr(_time, "time", lambda: real_time() + 3600)
+
+        await t.update_progress(1, 2)
+
+        fields = t._backend.set_progress.await_args.args[1]
+        assert fields["started_at"] == datetime.fromtimestamp(started_wall, tz=UTC).isoformat()
+        assert int(fields["eta_seconds"]) in {2, 3}
+
+    @pytest.mark.timeout(5)
+    async def test_started_at_is_the_same_across_reports(self):
+        import time as _time
+        from unittest.mock import AsyncMock
+
+        t = Task()
+        t._task_id = "x"
+        t._backend = AsyncMock()
+        t._task_started_wall = _time.time()
+        t._task_start_time = _time.monotonic()
+
+        await t.update_progress(1, 10)
+        t._last_progress_update = _time.monotonic() - 1.0
+        await t.update_progress(2, 10)
+        await t.update_progress(10, 10)
+
+        started = [c.args[1]["started_at"] for c in t._backend.set_progress.await_args_list]
+        assert len(started) == 3
+        assert started[0] != ""
+        assert len(set(started)) == 1

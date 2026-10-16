@@ -12,6 +12,7 @@ import yaml
 _ID = re.compile(r"E-\d{3}")
 _REQUIRED = ("title", "applies_when", "id", "datum", "status", "quelle")
 _STATUS = ("gilt", "überholt")
+_TEXT_LISTS = ("applies_when", "quelle", "tests")
 
 
 def _frontmatter(path: Path) -> dict[str, Any] | None:
@@ -43,6 +44,23 @@ def _check_fields(rules: dict[str, dict[str, Any]]) -> list[str]:
         if rule_id in seen:
             problems.append(f"{name}: ID {rule_id} doppelt (auch in {seen[rule_id]})")
         seen.setdefault(rule_id, name)
+        problems.extend(_check_text_entries(name, front))
+    return problems
+
+
+def _check_text_entries(name: str, front: dict[str, Any]) -> list[str]:
+    """Listeneinträge müssen Text sein; ``a: b`` liest YAML als Mapping (dann in Anführungszeichen setzen)."""
+    problems: list[str] = []
+    for key in _TEXT_LISTS:
+        entries = front.get(key)
+        if not isinstance(entries, list):
+            continue
+        problems.extend(
+            f"{name}: Eintrag unter {key} ist kein Text (Doppelpunkt mit Leerzeichen? In Anführungszeichen setzen): "
+            f"{entry!r}"
+            for entry in cast("list[object]", entries)
+            if not isinstance(entry, str)
+        )
     return problems
 
 

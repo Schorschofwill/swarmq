@@ -147,7 +147,7 @@ Alle Werte sind auf der HASH-Ebene Strings. Clients dekodieren als:
 | `percent` | `float` | `0.0`–`100.0` |
 | `message` | `string` | Kann leer sein. |
 | `updated_at` | ISO-8601-Datetime, UTC | Immer vorhanden. |
-| `started_at` | ISO-8601-Datetime, UTC \| leer | Leer bis zum ersten Update. |
+| `started_at` | ISO-8601-Datetime, UTC \| leer | Wanduhr-Start des Laufs (vor 0.12.3 stammte er aus der monotonen Uhr und erschien als Datum von 1970). Leer nur, wenn der Worker keine Startzeit festgehalten hat. |
 | `eta_seconds` | `int` \| leer | Leer bei `current=0` und beim finalen Flush. |
 
 Ein HASH, dem `current`, `total` oder `updated_at` fehlt, wird
@@ -307,9 +307,11 @@ Anwesenheit ist das Signal.
 
 Der Cancel-Monitor des Workers macht periodisch
 `EXISTS`-Checks auf diesen Key (`cancel_poll_interval`, Default
-1.0 s) und an jeder Valkey-Operationsgrenze. Wird gesetzt, während
-der Task läuft, raist der Worker `TaskCancelledError` innerhalb
-der Task-Coroutine.
+1.0 s) und an jeder Valkey-Operationsgrenze. Wird es gesetzt, während
+der Task läuft, bricht der Worker die laufende Coroutine ab; der Task
+sieht `asyncio.CancelledError`, und das gespeicherte Ergebnis hat
+`is_cancelled=true`, das `get_result()` als `TaskCancelledError` wirft.
+`TaskCancelledError` kommt nie im Task an.
 
 ## Dedup-Flag
 
@@ -494,7 +496,11 @@ Emittiert für `SCHEDULER_LEADER`, `SCHEDULER_STANDBY`,
 
 `swarmq worker --check ...` druckt ein JSON-Objekt auf stdout und
 endet mit `0` (`ok: true`) oder `1` (`ok: false`). Nichts wird
-gestartet, keine Verbindung geöffnet.
+gestartet, keine Verbindung geöffnet. `ok: true` sagt den Start voraus:
+Die Prüfung baut die Worker-Konfiguration aus den `SWARMQ_*`-Variablen
+wie der Start, jeder Wert, den der Start mit Exit `78` ablehnt, ergibt
+also `ok: false`. Fehlende `SWARMQ_BROKER_URL`/`SWARMQ_BACKEND_URL`
+prüft sie nicht.
 
 ```jsonc
 {
@@ -528,8 +534,12 @@ gestartet, keine Verbindung geöffnet.
 | `configure` | `str \| null` | Die `--configure`-Angabe nach Syntax- und `find_spec`-Prüfung; das Callable selbst wird erst im Worker aufgelöst. |
 | `metrics_ports`, `health_ports` | `list[int] \| null` | Die genauen Ports, die die Slots `0..N-1` binden, `N` ist `--processes` oder die Obergrenze von `--autoscale`; `null`, wenn der Basisport ungesetzt ist. |
 
-Bei einem argparse-Fehler (Exit `2`) hat das Payload `error_type:
-"ArgparseError"`, die übrigen Felder sind `null`.
+Jedes Payload trägt den vollen Feldsatz oben, auch bei einer
+gescheiterten Prüfung; Felder, die an der Stelle noch unbekannt sind,
+sind `null`. Bei einem argparse-Fehler (Exit `1`, nicht das bei
+argparse übliche `2`) hat das Payload `ok: false`, `error_type:
+"ArgparseError"`, die Meldung in `error`, `warnings: []`, und alle
+übrigen Felder sind `null`.
 
 ## Siehe auch
 

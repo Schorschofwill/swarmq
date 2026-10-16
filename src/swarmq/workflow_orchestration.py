@@ -179,7 +179,7 @@ class WorkflowHandle:
             if await self._backend.is_workflow_cancelled(self.workflow_id):
                 raise TaskCancelledError(self.workflow_id)
             remaining = deadline - loop.time()
-            if remaining <= 0:
+            if not remaining > 0:  # nan zählt als abgelaufen (F3-43)
                 raise ResultNotReadyError(f"workflow {self.workflow_id} did not complete within {timeout}s")
             # Vertragsmethode (U15): wartet bis zur Benachrichtigung
             # oder zum Slice-Ende; der Poll oben trägt die Liveness.

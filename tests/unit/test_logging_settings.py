@@ -303,6 +303,7 @@ class TestValidation:
             resolve_logging_settings(_cli(), {"SWARMQ_LOG_QUEUE_SIZE": raw}, None)
 
     @pytest.mark.parametrize("raw", ["0", "-1", "abc", "nan", "inf", "1e10"])
+    @pytest.mark.entscheidung("E-063")
     def test_non_positive_non_numeric_or_infinite_drain_timeout_is_a_configuration_error(
         self,
         raw: str,

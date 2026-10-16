@@ -309,6 +309,7 @@ def lua_contract() -> str:
     multi = {
         "guard_claim": ["sq:guard:{golden-task-0001}:run", "sq:guard:{golden-task-0001}:state"],
         "guard_finish": ["sq:guard:{golden-task-0001}:run", "sq:guard:{golden-task-0001}:state"],
+        "sched_add": ["sq:{sched}:defs", "sq:{sched}:zset"],
         "sched_commit": ["sq:{sched}:zset", "sq:{sched}:defs", "sq:lock:{sched}:leader"],
         "sched_disable": ["sq:{sched}:defs", "sq:{sched}:zset"],
         "sched_poll": ["sq:{sched}:zset", "sq:{sched}:defs"],

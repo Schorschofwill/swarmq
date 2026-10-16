@@ -775,13 +775,11 @@ class Worker(WorkerLifecycle, WorkerShutdown):
         """Nachlauf nach einem abgebrochenen DI-Teardown: erst dessen Ende
         abwarten (seine Ausnahme bleibt geschluckt wie bisher -- ``shield``
         holt sie ab), dann Lock und Semaphor freigeben. Hat der Shutdown die
-        Locks inzwischen selbst abgeraeumt (Registry-Eintrag weg), nicht noch
-        einmal freigeben -- sonst Fehlalarm ``task_lock_lost``."""
+        Locks inzwischen selbst abgeraeumt, gibt ``release_acquired_locks``
+        nichts mehr frei (F3-12)."""
         try:
             await asyncio.wait([teardown])
         finally:
-            if handler_id not in self._active_handler_locks:
-                acquired_locks = []
             await self._release_locks_and_slot(handler_id, acquired_locks)
 
     async def _release_locks_and_slot(self, handler_id: uuid.UUID, acquired_locks: list[LockToken]) -> None:

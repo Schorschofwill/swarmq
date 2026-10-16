@@ -361,7 +361,6 @@
       "retriable": "no",
       "transport_field": "is_cancelled=true",
       "when": [
-        "run",
         "result"
       ]
     },

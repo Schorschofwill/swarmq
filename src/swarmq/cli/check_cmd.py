@@ -13,11 +13,14 @@ import json
 import os
 import sys
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from swarmq.cli.pool import resolve_pool
 from swarmq.cli.worker_options import cli_value, resolve_worker_options
 from swarmq.exceptions import ConfigurationError
+
+if TYPE_CHECKING:
+    from swarmq.logging_settings import LoggingSettings
 
 #: Keys that ``--check`` always emits on its JSON payload, regardless of
 #: which validation step fails. Callers may rely on ``dict.get(key)`` +
@@ -36,6 +39,9 @@ _WORKER_CHECK_PAYLOAD_KEYS = (
     "slots",
     # U5 (R11): der geprüfte ``--configure``-Hook, oder ``None``.
     "configure",
+    # U3 (R7): die belegten Portbereiche; F3-19: auch im Fehlerfall da.
+    "metrics_ports",
+    "health_ports",
 )
 
 
@@ -46,25 +52,31 @@ def _seed_check_payload(args: argparse.Namespace) -> dict[str, Any]:
     the JSON contract stays shape-stable regardless of where the
     validation terminates.
     """
-    return {
-        "ok": False,
-        "module": getattr(args, "module", None),
-        "module_origin": None,
-        "reload": bool(getattr(args, "reload", False)),
-        "watch_dirs": None,
-        "warnings": [],
-        "error": None,
-        "error_type": None,
+    payload = _empty_check_payload()
+    payload.update(
+        module=getattr(args, "module", None),
+        reload=bool(getattr(args, "reload", False)),
         # Ohne Validierung: ein ungueltiger Wert wird im try von _run_worker_check
         # (resolve_pool) zum JSON-Fehler, nicht zum Traceback.
-        "pool": getattr(args, "pool", None) or os.environ.get("SWARMQ_POOL", "").strip() or "io",
-        "slots": None,
-        "configure": getattr(args, "configure", None),
-    }
+        pool=getattr(args, "pool", None) or os.environ.get("SWARMQ_POOL", "").strip() or "io",
+        configure=getattr(args, "configure", None),
+    )
+    return payload
 
 
-def _check_logging_settings(args: argparse.Namespace) -> None:
-    """Logging-Einstellungen wie beim Start pruefen (R14).
+def _empty_check_payload() -> dict[str, Any]:
+    """Jeder Vertragsschluessel mit ``None``, ``ok`` falsch, ``warnings`` leer.
+
+    Die eine Quelle des Feldsatzes fuer Erfolgs-, Fehler- und Argparse-Pfad
+    (F3-19): keiner kann einen Schluessel verlieren.
+    """
+    payload: dict[str, Any] = dict.fromkeys(_WORKER_CHECK_PAYLOAD_KEYS)
+    payload.update(ok=False, warnings=[])
+    return payload
+
+
+def _check_logging_settings(args: argparse.Namespace) -> LoggingSettings:
+    """Logging-Einstellungen wie beim Start pruefen (R14) und zurueckgeben.
 
     Dieselbe Aufloesung wie im Worker-Zweig (``_setup_worker_logging``),
     nur ohne ``configure_logging``: ``--check`` richtet nichts ein. Die
@@ -87,6 +99,7 @@ def _check_logging_settings(args: argparse.Namespace) -> None:
         # wie vor dem Hot-Reload, in einem eigenen Interpreter, damit --check
         # sein eigenes Logging nicht umbaut.
         probe_dict_config(path, load_log_config(path))
+    return settings
 
 
 def _check_task_injection(module: str) -> None:
@@ -133,13 +146,13 @@ def _run_worker_check(args: argparse.Namespace) -> int:
     traceback or the stdout-JSON contract is violated for agents
     that parse the output.
     """
-    from swarmq.process_manager.check import check_worker_config
+    from swarmq.process_manager.check import check_worker_config, start_config
 
     payload = _seed_check_payload(args)
     try:
         # R14: ohne diese Pruefung meldete --check "in Ordnung" fuer eine
         # Logging-Einstellung, an der der Start danach mit Exit 78 scheitert.
-        _check_logging_settings(args)
+        logging_settings = _check_logging_settings(args)
         # BZ-10: der Start lehnt einen ungueltigen Namensraum ab (Exit 78).
         from swarmq.config import env_namespace
 
@@ -169,6 +182,10 @@ def _run_worker_check(args: argparse.Namespace) -> int:
             # Kontrollkanal (U3): derselbe Spielraum-Check wie beim Start.
             max_processes=getattr(args, "max_processes", None),
         )
+        # F3-17/E-062: die Konfiguration wie im Pre-Flight des Starts, vor
+        # dem teuren Import. Fehlende URLs prueft --check nicht (Platzhalter;
+        # gesetzte ``SWARMQ_*_URL`` greifen wie im Start ueber das Env).
+        start_config(logging_settings=logging_settings)
         # E8 A (Plan 2026-10-12-1105, T18): die DI-Pruefung des Starts. Nur
         # hier wird das Modul importiert, nicht im Supervisor-Start.
         _check_task_injection(args.module)
@@ -291,19 +308,14 @@ def _is_check_invocation(argv: Sequence[str] | None) -> bool:
 def _emit_argparse_check_error(message: str) -> int:
     """Render an argparse failure as a ``--check`` JSON payload.
 
-    Keeps the stable field-set (ok, module, module_origin, reload,
-    watch_dirs, warnings, error, error_type) so agents consuming
-    ``--check`` can parse any failure uniformly.
+    Keeps the stable field-set (:data:`_WORKER_CHECK_PAYLOAD_KEYS`, every
+    unresolved field ``None``) so agents consuming ``--check`` can parse
+    any failure uniformly (F3-19, E-062).
     """
-    payload: dict[str, Any] = {
-        "ok": False,
-        "module": None,
-        "module_origin": None,
-        "reload": None,
-        "watch_dirs": None,
-        "warnings": [],
-        "error": message.strip() or "argparse rejected the invocation",
-        "error_type": "ArgparseError",
-    }
+    payload = _empty_check_payload()
+    payload.update(
+        error=message.strip() or "argparse rejected the invocation",
+        error_type="ArgparseError",
+    )
     sys.stdout.write(json.dumps(payload) + "\n")
     return 1

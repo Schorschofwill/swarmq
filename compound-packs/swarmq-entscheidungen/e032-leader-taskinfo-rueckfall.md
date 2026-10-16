@@ -9,7 +9,7 @@ id: E-032
 datum: 2026-04-17
 status: gilt
 quelle:
-  - docs/plans/2026-04-17-004-feat-phase3-5-unique-tasks-plan.md (Unit 9, Scheduler-seitige Dedup, Skizze „else: Static cron — resolve TaskInfo and SETNX“)
+  - 'docs/plans/2026-04-17-004-feat-phase3-5-unique-tasks-plan.md (Unit 9, Scheduler-seitige Dedup, Skizze „else: Static cron — resolve TaskInfo and SETNX“)'
   - docs/brainstorms/2026-04-17-phase3-5-unique-tasks-requirements.md:107-109 (unique_for greift auch bei Cron-/Delay-/ETA-Fires)
   - src/swarmq/scheduler/fire.py:141 („Static cron or plain CLI — resolve TaskInfo and SETNX here“)
   - website/guides/scheduling-and-retries.md:220-228 (Definition ohne unique_for/unique_until nutzt die TaskInfo des Leaders)

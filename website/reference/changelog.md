@@ -4,6 +4,268 @@ All notable changes to SwarmQ. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [0.12.3rc1] — 2026-10-16
+
+Release candidate for 0.12.3 (install with `pip install --pre`).
+
+Patch release for the third bug hunt, on top of 0.12.2. It fixes all
+27 findings classed as errors (F3-01 to F3-25, F3-42, F3-43), among
+them a deferred task that never fired after a lost Valkey reply
+(F3-01), enqueue middleware and `TASK_ENQUEUED` skipped by
+`delay`/`eta` (F3-02), a negative `Retry` delay that broke unrelated
+publishes (F3-03), `inf` in deadline settings (F3-04), import errors
+that restarted five times instead of ending with exit `78` (F3-05) and
+guides whose handlers never ran under `swarmq worker` (F3-06). It also
+normalises `float` seconds in `result_ttl` and `unique_for` (F3-31).
+No new configuration variables, no new message headers and no format
+change: 0.12.3 runs next to 0.12.0 to 0.12.2 on the same queues and
+keys, in both directions. Read the upgrade notes: some settings that
+used to start and some calls now end with an error, and middleware
+sees deferred calls.
+
+### Upgrade notes
+
+1. **A cron without a next fire time stops the import.** A `TaskInfo`
+   cron that never fires (`0 0 30 2 *`, `0 0 31 4 *`) now raises
+   `ValueError` when the task module is imported. Like any other
+   exception at module level this ends `swarmq worker` with exit `1`
+   and restarts up to the restart limit, not with `78`. Before, the
+   worker started and the leader dropped the cron silently
+   ([cron field](configuration.md#scheduling-cron)).
+2. **Enqueue middleware runs for `delay`/`eta`.** `schedule(delay=…)`
+   and `schedule(eta=…)` now call `pre_enqueue` before the one-shot is
+   stored and its `unique_for` flag claimed, then `post_enqueue` and
+   `TASK_ENQUEUED` once it is stored. A middleware that vetoes now also
+   blocks deferred calls, including a call that would be a duplicate
+   (it used to get the existing `task_id` back); a duplicate passes
+   `pre_enqueue` without `post_enqueue`. Counting middleware sees more
+   calls. The dedup hash is taken from the arguments before the
+   middleware, except on a producer without a registry: there the
+   leader hashes the stored `kwargs`, so a middleware that adds a
+   `kwargs` value on every call defeats the dedup of such deferred
+   calls ([deferred tasks](../guides/middleware.md#deferred-tasks-delayeta)).
+3. **`fixed` backoff is capped.** With `retry_backoff="fixed"` and
+   `retry_base_delay` above `retry_max_delay`, a retry now waits
+   `retry_max_delay`, so it comes earlier than before
+   ([backoff formulas](../guides/scheduling-and-retries.md#backoff-formulas)).
+4. **Fewer slots for an embedded CPU pool.** `SwarmQConfig(pool="cpu")`
+   or `SwarmQ(..., pool="cpu")` without `concurrency` now uses the CPUs
+   assigned to the process (affinity and cgroup quota), like
+   `swarmq worker --pool cpu`, instead of 10. Set `concurrency=` to keep
+   the old number ([sizing](../guides/cpu-mode.md#sizing)).
+5. **`inf`, `nan` and negative deadlines are configuration errors.**
+   `inf` or `nan` in a deadline, TTL or interval setting
+   (`SWARMQ_CONSUMER_TIMEOUT_S=inf`, `dead_letter_ttl_s=float("inf")`, …)
+   and a negative `shutdown_timeout` now end the start with a
+   `ConfigurationError` (exit `78`). Use `none` where unlimited is
+   supported. `SWARMQ_SHUTDOWN_TIMEOUT=0` stays allowed and now also
+   works under `swarmq worker`
+   ([worker behaviour](configuration.md#worker-behaviour)).
+6. **Checks fail earlier.** `swarmq check` now ends with exit `78`, and
+   `swarmq worker --check` with `ok: false`, for every `SWARMQ_*` value
+   the worker start rejects (for example
+   `SWARMQ_VALKEY_EVICTION_CHECK=bogus`, `SWARMQ_SCHEDULER=maybe`,
+   `SWARMQ_SHUTDOWN_TIMEOUT=abc`). A pipeline step that passed with such
+   a value now fails. `--check` still does not ask for the broker and
+   backend URLs ([`swarmq check`](cli.md#swarmq-check)).
+7. **Import and syntax errors end with exit `78`.** An `ImportError`
+   (also `cannot import name …`) or `SyntaxError` while importing the
+   task module, its package `__init__` or a `--configure` hook now ends
+   `swarmq worker` after one attempt with `78`, without restarts. Under
+   `--reload` the supervisor keeps running and starts the workers again
+   after the next file change. Other exceptions at module level stay
+   exit `1` ([exit codes](cli.md#exit-codes)).
+8. **Mixed operation.** The producer-side fixes (F3-01, F3-02, F3-07)
+   take effect only once the producer services run 0.12.3, as for FS-14
+   in 0.12.2. Producers and the `swarmq schedule add` CLI of 0.12.0 to
+   0.12.2 keep writing a one-shot in two commands and can leave an
+   entry without fire time after a lost reply; neither the leader nor a
+   0.12.3 producer repairs such an entry. A producer on 0.12.2 still
+   stores `delay`/`eta` calls without the enqueue middleware. While
+   0.12.2 and 0.12.3 workers report the same cron, a `float`
+   `unique_for` (`3600.0`) gives two fingerprints and
+   `SCHEDULER_CRON_CONFLICT` until all workers run 0.12.3. The new
+   Lua script `sched_add.lua` writes the same keys as before; entries
+   and messages keep their format.
+9. **Rollback.** `from swarmq import BrokerPublishBlocked` and
+   `from swarmq import PublishRejected` work only from 0.12.3; code
+   that must also run on 0.12.0 to 0.12.2 imports them from
+   `swarmq.exceptions`. Agents that read `spec/errors.json` see
+   `TaskCancelledError` with `when: ["result"]` instead of
+   `["run", "result"]`.
+10. **`unique_for` in `schedule()` must be positive and finite.**
+    `unique_for` of `schedule()` and `schedule_many()` must be `> 0`
+    and finite. `unique_for=0` or a negative value with `delay`/`eta`
+    used to be accepted silently and now raises `ValueError` at the
+    call, in the running producer and not at startup. Pass
+    `unique_for=None` to switch dedup off (E-056, E-033;
+    [`schedule()`](api.md#schedule)).
+
+### Changed
+
+- **F3-31: `result_ttl` and `unique_for` accept a `float`.** A value
+  such as `timedelta(hours=1).total_seconds()` made valkey-py raise
+  `DataError` on every message: nothing was acknowledged, the prefetch
+  filled up and a cron never fired. Now a whole `float` becomes `int`
+  and a fraction is rounded up to the next second, in `TaskInfo`,
+  `SwarmQConfig.result_ttl` and `unique_for` of
+  `schedule()`/`schedule_many()`; `inf` and `nan` raise `ValueError`
+  (`ConfigurationError` in `SwarmQConfig`). `SWARMQ_RESULT_TTL` from
+  the environment stays a whole number
+  ([`TaskInfo`](api.md#class-taskinfo)).
+
+### Fixed
+
+- **F3-01: a deferred task no longer gets an ID that never fires.**
+  When Valkey's reply to the store write was lost and the client
+  repeated it, `schedule(delay=/eta=)` returned the ID although the
+  fire time was missing; with `unique_for` the entry also blocked equal
+  calls. The one-shot entry and its fire time are now written in one
+  step (`sched_add.lua`, also for `swarmq schedule add`), and a
+  repeated write that finds its own byte-identical one-shot counts as
+  its own insert. A different entry under the name is a conflict:
+  `schedule()` raises `BackendResponseError` and keeps its `unique_for`
+  claim ([store contract](api.md#coordination-store-protocols)).
+- **F3-02: `delay`/`eta` run through the enqueue middleware.** A veto
+  in `pre_enqueue` did not stop a deferred call, and neither
+  `post_enqueue` nor `TASK_ENQUEUED` fired (upgrade note 2;
+  [`schedule()`](api.md#schedule)).
+- **F3-03: `Retry(delay<0)` no longer closes the publish channel.** A
+  negative delay (for example `reset_at - time.time()` after a 429) is
+  clamped to 0 and counts against `max_retries`; before, RabbitMQ
+  rejected the publish and closed the channel, parallel publishes
+  failed with `PublishIndeterminate`, and the message was redelivered
+  without counting. `Retry(delay=inf|nan)` now raises `ValueError` in
+  the task; before, the worker failed and left the message
+  unacknowledged ([`Retry`](errors.md#retry)).
+- **F3-04: `inf` and `nan` in deadline settings are rejected at
+  start.** `SWARMQ_CONSUMER_TIMEOUT_S=inf` broke every
+  `at_least_once` task with `OverflowError` before the claim,
+  `dead_letter_ttl_s=inf` broke every dead-lettering, and the recycling
+  drain had no end (upgrade note 5).
+- **F3-05: `ImportError` and `SyntaxError` in the task module end with
+  exit `78`.** Only `ModuleNotFoundError` did; any other import error
+  restarted five times and ended with `worker_restart_limit_exceeded`
+  and exit `1`. An `ImportError` raised later at runtime stays exit `1`
+  (upgrade note 7).
+- **F3-06 (docs): handlers and middleware under `swarmq worker` go
+  through `--configure`.** The signals, middleware, rate-limiting and
+  locking guides registered them on a module-level `app` that the
+  worker CLI never uses, so they never ran there
+  ([registering a handler](../guides/signals.md#registering-a-handler)).
+- **F3-07: `schedule()` and `schedule_many()` reject `unique_for <= 0`**
+  with `ValueError`, also `inf` and `nan`, like `TaskInfo`. It used to
+  fail in Valkey or, with `delay`/`eta`, be accepted silently
+  (upgrade note 10; [`schedule()`](api.md#schedule)).
+- **F3-08: a `TaskInfo` cron without a next fire time raises
+  `ValueError` at import** instead of being dropped silently by the
+  scheduler leader (upgrade note 1).
+- **F3-09: `get_results(timeout=0)` reads once** instead of reporting
+  every task as not ready, and a timeout that expires while waiting
+  ends after one last read ([`get_results()`](api.md#get_results)).
+- **F3-10 (docs): `queue`, `timeout` and `polling` as `run()`
+  parameters.** `schedule()`/`run()` take them as their own arguments;
+  the task guide now lists them with the way out
+  ([reserved parameter names](../guides/defining-tasks.md#reserved-parameter-names)).
+- **F3-11: `BrokerPublishBlocked` and `PublishRejected` can be
+  imported from `swarmq`.** The error catalog promised it; before, only
+  `swarmq.exceptions` had them (upgrade note 9;
+  [exceptions](api.md#exceptions)).
+- **F3-12: no false `task_lock_lost` at shutdown.** When a cancelled
+  handler with `lock=` cleaned up for longer than the shutdown waited,
+  the shutdown released its lock and the handler's own `finally`
+  released the same token again and warned `task_lock_lost`. Each token
+  is now released once.
+- **F3-13: a recycling worker is no longer killed between two
+  heartbeats.** With a heartbeat interval at or above
+  `shutdown_timeout + 5 s`, the supervisor took a healthy recycling
+  worker for hung and aborted its long runners. A recycling worker now
+  gets at least `heartbeat_timeout_s`, so a frozen recycler is killed
+  after up to 60 s (defaults) instead of 35 s
+  ([`SWARMQ_HEARTBEAT_TIMEOUT_S`](configuration.md#worker-behaviour)).
+- **F3-14: an embedded CPU pool takes the assigned CPUs** instead of
+  10 slots (upgrade note 4).
+- **F3-15: `ProgressInfo.started_at` shows the real start time.** It
+  came from the monotonic clock and read as a date in January 1970 (IO
+  and CPU workers). It is now the UTC wall-clock start; `eta_seconds`
+  still uses the monotonic run time. The API reference listed
+  `updated_at`/`started_at` as `datetime`; they are ISO 8601 strings
+  ([`ProgressInfo`](api.md#class-progressinfo)).
+- **F3-16: `retry_backoff="fixed"` respects `retry_max_delay`** (upgrade
+  note 3).
+- **F3-17: `swarmq worker --check` predicts the start.** It reported
+  `ok: true` for values the start rejects with exit `78`, for example
+  `SWARMQ_SCHEDULER=maybe` or `SWARMQ_CONCURRENCY=0`; now it builds the
+  worker configuration like the start and reports `ok: false`. Missing
+  broker and backend URLs stay unchecked ([`--check`](cli.md#options)).
+- **F3-18: `swarmq check` exits `78` for invalid configuration**, for
+  example `SWARMQ_VALKEY_EVICTION_CHECK=bogus` (was `0`, silently
+  treated as `strict`) or `SWARMQ_SHUTDOWN_TIMEOUT=abc` (was `1`)
+  ([`swarmq check`](cli.md#swarmq-check)).
+- **F3-19: every `--check` payload carries the full field set**,
+  including `pool`, `slots`, `configure`, `metrics_ports` and
+  `health_ports` (`null` when unknown), also on argparse errors and
+  failed checks. The message formats said argparse errors exit `2`;
+  under `--check` they exit `1`
+  ([payload](agent/message-formats.md#swarmq-worker-check-payload)).
+- **F3-20 (docs, agent spec): a cancel arrives in the task as
+  `asyncio.CancelledError`.** The error catalog, the cancellation guide
+  and the message formats said the worker raised `TaskCancelledError`
+  inside the task; a task catching it never caught anything. Only the
+  client raises `TaskCancelledError`
+  ([cancellation](../guides/scheduling-and-retries.md#cancellation)).
+- **F3-21 (docs): the queue migration names where deferred tasks
+  wait.** The step said the delay queues held `delay`/`eta` tasks; they
+  wait in the scheduler store and keep firing during the migration
+  ([changing queue arguments](../explanation/delivery-semantics.md#changing-queue-arguments)).
+- **F3-22 (docs): `SCHEDULER_LEADER_OUTDATED` means a leader below the
+  minimum leader version** (currently 0.12), not a leader without time
+  zone support ([leader version](../guides/scheduling-and-retries.md#leader-version)).
+- **F3-23 (docs): the machine-readable error catalog lists every
+  class.** `QueueArgumentsMismatch`, `BrokerPublishBlocked` and
+  `PublishRejected` were missing from the table; a test now compares
+  the table with the generated catalog
+  ([error catalog (machine)](agent/error-catalog-machine.md)).
+- **F3-24 (docs): an invalid `SWARMQ_NAMESPACE` ends `swarmq schedule`,
+  `dlq` and `inspect` with exit `78`**, not `1` as the CLI reference said
+  ([exit codes](cli.md#exit-codes)).
+- **F3-25 (docs): the German changelog lists `swarmq worker --check`
+  under 0.1.0.**
+- **F3-42: `SWARMQ_SHUTDOWN_TIMEOUT=0` starts `swarmq worker`.** The
+  supervisor rejected `0` with `ValueError` and a traceback. Now it
+  sends SIGTERM and SIGKILL without waiting; a negative value is a
+  `ConfigurationError` (exit `78`)
+  ([`SWARMQ_SHUTDOWN_TIMEOUT`](configuration.md#worker-behaviour)).
+- **F3-43: `get_result(timeout=nan)` no longer crashes the event
+  loop.** With a hanging `GET`, the `nan` deadline reached
+  `asyncio.wait_for`, and the loop failed with `ValueError: cannot
+  convert float NaN to integer`; a negative `timeout` read nothing. Now
+  both read once and then raise `ResultNotReadyError`.
+  `WorkflowHandle.get()` behaves alike; the backend's
+  `wait_for_workflow` returns `False` at once without subscribing.
+  `inf` still waits without limit ([`get_result()`](api.md#get_result)).
+
+### Documentation
+
+- **F3-28: `post_execution` runs only on success.** The task guide and
+  the API reference said it ran on success and failure and closed a
+  database session there, which leaked on every failure. Cleanup now
+  goes into `try/finally` or a Dishka `yield` finalizer
+  ([`class Task`](api.md#class-task)).
+- **F3-29: dedup of a deferred task without `unique_for`.** A producer
+  whose registry knows the task claims the flag at the call; only a
+  producer without a registry leaves it to the leader
+  ([immediate vs deferred execution](../guides/scheduling-and-retries.md#immediate-vs-deferred-execution)).
+- **F3-30: middleware cleanup on cancel.** A cancel runs neither
+  `on_error` nor `post_execute`; the middleware guide's per-task state
+  leaked one entry per cancelled task. The guide now also cleans up on
+  `TASK_CANCELLED` ([sharing state](../guides/middleware.md#sharing-state-between-hooks)).
+- **F3-33, F3-37:** the event catalog explains `task_lock_lost` after a
+  release the Valkey client repeated, and the rate-limiting guide says
+  that a lock conflict uses a rate-limit slot
+  ([event catalog](logging.md#event-catalog),
+  [rate limiting](../guides/rate-limiting.md#combining-with-retries-and-locks)).
+
 ## [0.12.2] — 2026-10-16
 
 0.12.2 is 0.12.2rc1 without code changes. Read

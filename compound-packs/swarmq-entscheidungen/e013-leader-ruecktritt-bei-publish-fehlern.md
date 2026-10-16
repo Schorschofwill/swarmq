@@ -10,7 +10,7 @@ id: E-013
 datum: 2026-10-09
 status: gilt
 quelle:
-  - docs/befunde/betrieb-ueber-zeit-2026-10.md:130 (Entscheidungen, BZ-10: Leader tritt nach wiederholten Publish-Fehlern zurück)
+  - 'docs/befunde/betrieb-ueber-zeit-2026-10.md:130 (Entscheidungen, BZ-10: Leader tritt nach wiederholten Publish-Fehlern zurück)'
   - docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:570 (MR 15, Rücktritt mit Abkühlzeit 2 × Lock-TTL)
   - docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:74 (Nachtrag Rücktritt nur bei Verbindungsfehlern)
   - docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:75 (Nachtrag PublishIndeterminate zählt nicht, Georg 2026-10-11)

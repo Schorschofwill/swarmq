@@ -147,7 +147,7 @@ All values are strings at the HASH layer. Clients decode as:
 | `percent` | `float` | `0.0`–`100.0` |
 | `message` | `string` | May be empty. |
 | `updated_at` | ISO 8601 datetime, UTC | Always present. |
-| `started_at` | ISO 8601 datetime, UTC \| empty | Empty until first update. |
+| `started_at` | ISO 8601 datetime, UTC \| empty | Wall-clock start of the run (before 0.12.3 it came from the monotonic clock and read as a date in 1970). Empty only when the worker recorded no start time. |
 | `eta_seconds` | `int` \| empty | Empty at `current=0` and on the final flush. |
 
 A HASH missing `current`, `total`, or `updated_at` is treated as
@@ -307,7 +307,10 @@ presence is the signal.
 The worker's cancel monitor `EXISTS`-checks this key periodically
 (`cancel_poll_interval`, default 1.0 s) and on every Valkey
 operation boundary. When set while the task is running, the worker
-raises `TaskCancelledError` inside the task coroutine.
+cancels the running coroutine; the task sees `asyncio.CancelledError`,
+and the stored result has `is_cancelled=true`, which `get_result()`
+raises as `TaskCancelledError`. `TaskCancelledError` never arrives
+inside the task.
 
 ## Dedup flag
 
@@ -488,7 +491,10 @@ Emitted for `SCHEDULER_LEADER`, `SCHEDULER_STANDBY`,
 
 `swarmq worker --check ...` prints one JSON object on stdout and exits
 `0` (`ok: true`) or `1` (`ok: false`). Nothing is started and no
-connection is opened.
+connection is opened. `ok: true` predicts the start: the check builds
+the worker configuration from the `SWARMQ_*` variables like the start,
+so every value the start rejects with exit `78` gives `ok: false`.
+Missing `SWARMQ_BROKER_URL`/`SWARMQ_BACKEND_URL` are not checked.
 
 ```jsonc
 {
@@ -522,8 +528,11 @@ connection is opened.
 | `configure` | `str \| null` | The `--configure` spec after syntax and `find_spec` validation; the callable itself is resolved only inside the worker. |
 | `metrics_ports`, `health_ports` | `list[int] \| null` | The exact ports the slots `0..N-1` will bind, `N` being `--processes` or the `--autoscale` upper bound; `null` when the base port is unset. |
 
-On an argparse error (exit `2`) the payload has `error_type:
-"ArgparseError"` and the other fields `null`.
+Every payload carries the full field set above, also on a failed
+check; fields not known at that point are `null`. On an argparse error
+(exit `1`, not argparse's usual `2`) the payload has `ok: false`,
+`error_type: "ArgparseError"`, the message in `error`, `warnings: []`
+and every other field `null`.
 
 ## See also
 

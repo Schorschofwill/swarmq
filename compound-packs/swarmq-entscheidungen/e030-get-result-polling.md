@@ -4,6 +4,7 @@ applies_when:
   - Änderungen an Client.get_result, get_results oder ValkeyResults.wait_for_result
   - eine Fehlersuche meldet die GET-Last des 5-ms-Pollings oder das ignorierte polling-Argument als Fehler
   - ein Plan will das Warteverhalten auf Ergebnisse umbauen (Intervall, Backoff, Pub/Sub-Dauer)
+  - Änderungen an Client.get_results oder eine Fehlersuche meldet, dass get_results kein Pub/Sub nutzt
 tags: [client, results, pubsub, polling, valkey]
 id: E-030
 datum: 2026-04-15
@@ -14,9 +15,11 @@ quelle:
   - Commit c18a144 (asyncio.sleep(polling) ersetzt durch festes 5-ms-Intervall)
   - website/reference/api.md:227-229 („5ms-interval polling as a fallback“)
   - src/swarmq/backend/valkey/results.py:30 (_FALLBACK_POLL_S)
-  - Commit 1b05cd9 (U20, FS-15: subscribe und Teardown an die Frist gebunden) und Review d2aa879 (verworfener PubSub ohne unsubscribe, close() räumt Hintergrund-Closer ab)
-  - src/swarmq/backend/valkey/results.py:229-275 (wait_for_result), :490-512 (wait_for_workflow)
+  - 'Commit 1b05cd9 (U20, FS-15: subscribe und Teardown an die Frist gebunden) und Review d2aa879 (verworfener PubSub ohne unsubscribe, close() räumt Hintergrund-Closer ab)'
+  - src/swarmq/backend/valkey/results.py:229-284 (wait_for_result), :498-526 (wait_for_workflow)
+  - docs/plans/2026-04-15-005-feat-pubsub-batch-performance-plan.md:72 (get_results mit MGET-Polling, kein Pub/Sub), :250 (timeout=0 ein GET)
 tests:
+  - 'tests/unit/test_workflow_handle.py::test_get_with_nan_or_negative_timeout_reads_once_then_raises'
   - tests/unit/backend/test_valkey_results.py::TestWaitForResult::test_pubsub_miss_falls_back_to_polling
   - tests/unit/backend/test_befund_fs15_result_wait_polling.py::test_hanging_subscribe_does_not_outlast_the_timeout
   - tests/unit/backend/test_befund_fs15_result_wait_polling.py::test_hanging_subscribe_still_finds_an_existing_result_within_the_pubsub_window
@@ -24,6 +27,15 @@ tests:
   - tests/unit/backend/test_befund_fs15_result_wait_polling.py::test_hanging_unsubscribe_in_teardown_does_not_outlast_the_timeout
   - tests/unit/backend/test_befund_fs15_result_wait_polling.py::test_teardown_after_the_timeout_still_gets_its_minimum_grace
   - tests/unit/backend/test_befund_fs15_result_wait_polling.py::test_wait_for_workflow_with_hanging_subscribe_ends_at_the_timeout
+  - tests/unit/client/test_befund_f3_09_get_results_timeout_zero.py::test_get_results_with_zero_timeout_reads_once
+  - tests/unit/client/test_befund_f3_09_get_results_timeout_zero.py::test_get_results_reads_once_more_when_deadline_passes_during_sleep
+  - tests/unit/client/test_results.py::test_get_results_with_nan_timeout_reads_once_then_raises
+  - tests/unit/client/test_results.py::test_get_results_with_negative_timeout_reads_once_then_raises
+  - tests/unit/backend/test_befund_f3_43_result_wait_nan.py::test_get_result_with_negative_timeout_reads_once_then_raises
+  - tests/unit/backend/test_befund_f3_43_result_wait_nan.py::test_get_result_with_nan_timeout_and_slow_get_reads_once_then_raises
+  - tests/unit/backend/test_befund_f3_43_result_wait_nan.py::test_wait_for_workflow_with_nan_timeout_returns_false_without_crash
+  - tests/unit/backend/test_befund_f3_43_result_wait_nan.py::test_get_result_with_nan_timeout_returns_an_existing_result
+  - tests/unit/backend/test_befund_f3_43_result_wait_nan.py::test_get_result_with_inf_timeout_waits_beyond_the_pubsub_window
 ---
 
 **Entscheidung.** `get_result()` abonniert den Benachrichtigungskanal, prüft einmal per GET und wartet dann etwa 1 s auf die Pub/Sub-Benachrichtigung. Kommt keine, fällt der Client auf Polling mit festem 5-ms-Intervall zurück, bis `timeout` abläuft. Das Argument `polling` bleibt aus Signatur-Kompatibilität (R4) bestehen, wirkt aber nicht.
@@ -34,4 +46,12 @@ tests:
 
 **Nachtrag 2026-10-14 (FS-15 Teil 3, U20).** Abonnement und Teardown zählen zur Frist. `wait_for_result` begrenzt das `subscribe` auf `min(_PUBSUB_WINDOW_S, Restfrist)`, also höchstens ein Pub/Sub-Fenster (1 s). Scheitert es oder dauert es länger, wird der PubSub verworfen (im Hintergrund geschlossen, ohne `unsubscribe`, weil valkey-py dafür eine getrennte Verbindung neu aufbauen würde) und ohne Pub/Sub-Fenster direkt gepollt. Der Teardown nach dem Warten läuft bis zur Deadline, mindestens aber `_TEARDOWN_GRACE_S` (50 ms); was dann noch läuft, schließt im Hintergrund weiter, und `close()` des Backends wartet darauf höchstens 0,1 s und bricht den Rest ab. `wait_for_workflow` rechnet das Abonnement auf das volle `timeout` an; ohne Abonnement meldet es keine Benachrichtigung (`False`). Bewusste Folge: Ein langsames, aber gesundes Valkey kann ein Ergebnis, das erst nach dem Abonnement-Versuch entsteht, nur noch per 5-ms-Polling finden. Ein Abbruch des Aufrufers während des Abonnements schließt den PubSub trotzdem.
 
+**Nachtrag 2026-10-15 (Fehlersuche Runde 3, F3-09): `get_results`.** `get_results()` nutzt bewusst kein Pub/Sub, sondern MGET-Polling im selben 5-ms-Intervall; N Abonnements bräuchten N Verbindungen (Skalierungsproblem bei großen Batches). Als Batch-Gegenstück zu `get_result` (wo `timeout=0` ein einzelnes GET ist) liest es bei `timeout=0` genau einmal per MGET, und eine Frist, die während des Wartens abläuft, endet erst nach einem letzten MGET; das Warten ist auf die Restfrist gekürzt und überzieht sie nicht. Dass `get_results(timeout=0)` bis 0.12.2 gar nicht las, war der Befund F3-09 (behoben in 0.12.3, Test `tests/unit/client/test_befund_f3_09_get_results_timeout_zero.py`).
+
+**Nachtrag 2026-10-15 (Review U4, Fehlersuche Runde 3, F3-09).** Ein `timeout`, der keine positive Restfrist ergibt, gilt in `get_results` als abgelaufen: Bei negativem Wert und bei `nan` liest `get_results` einmal per MGET und wirft dann `ResultNotReadyError` mit den fehlenden IDs, wie `get_result` (seit F3-43 unabhängig davon, wie schnell Valkey antwortet; Nachtrag unten). `nan` pollt nicht endlos (nach F3-09 war die Abbruchbedingung `remaining <= 0`, die `nan` nie erfüllt). `inf` bleibt in beiden Methoden ein unbegrenztes Warten; einen `ValueError` für nicht endliche Aufruf-Fristen gibt es nicht (E-063 gilt für Konfigurationsfelder).
+
+**Nachtrag 2026-10-15 (Fehlersuche Runde 3, F3-43).** Dasselbe gilt für `get_result` und `ValkeyResults.wait_for_result`: Ein `timeout` ohne positive Restfrist (negativ, `nan`) ist abgelaufen, es folgt genau ein GET ohne Abonnement (wie `timeout=0`), dann `ResultNotReadyError`, falls kein Ergebnis da ist. `wait_for_workflow` meldet in diesem Fall sofort `False` ohne Abonnement. Keine der Fristen im FS-15-Pfad (GET, Abonnement-Fenster, Teardown-Grace) wird damit je `nan`. Bis 0.12.2 gab `wait_for_result` bei `nan` die Frist an `asyncio.wait_for` weiter; hing das GET, stürzte die Event-Loop mit `ValueError: cannot convert float NaN to integer` ab, und ein negatives `timeout` las gar nicht (Befund F3-43, Test `tests/unit/backend/test_befund_f3_43_result_wait_nan.py`). `inf` wartet weiter unbegrenzt.
+
 **Überdenken nur mit neuem Argument.** Offen: FS-15 Teil 1 (Fehlersuche Runde 2). Nach 1 s liest der Client Pub/Sub gar nicht mehr, obwohl das Abonnement gesund bleibt. Für jeden Task über 1 s Laufzeit ist das 5-ms-Polling damit der Normalpfad und kein Rückfall. Die Last bei langen Wartezeiten hat die Entscheidung nicht betrachtet (Produktfrage, Plan 2026-10-14-0748 „Offene Produktfragen“). Bis U20 blockierte ein `subscribe()` ohne Frist den Aufrufer über `timeout` hinaus (FS-15 Teil 3); das war ein Fehler gegen den Docstring von `wait_for_result`, nicht von dieser Entscheidung gedeckt, und ist behoben (Nachtrag oben).
+
+**Nachtrag 2026-10-15 (F3-43, WorkflowHandle.get):** Auch `WorkflowHandle.get(timeout=nan)` bzw. eine negative Frist liest den Zustand genau einmal und wirft dann `ResultNotReadyError` (vorher endloses Pollen).

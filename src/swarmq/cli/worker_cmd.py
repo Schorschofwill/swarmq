@@ -147,6 +147,13 @@ async def run_worker_async(args: argparse.Namespace) -> None:
         # Import; gemeldet wird trotzdem nur einmal.
         react_to_app_logging(before_hook)
 
+    # E-057: Ende der Importphase (Task-Modul und ``--configure``-Hook). Das
+    # Worker-Entry wertet ``ImportError``/``SyntaxError`` danach nicht mehr
+    # als Konfigurationsfehler (Exit 78), sondern als Absturz (Exit 1).
+    import_phase_done = getattr(args, "import_phase_done", None)
+    if import_phase_done is not None:
+        import_phase_done()
+
     async with app:
         await app.start_worker()
 

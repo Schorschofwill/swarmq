@@ -47,7 +47,10 @@ The limit is a **2-period sliding window** implemented as a single
 Lua script on Valkey. Every worker that picks up a message checks
 the counter atomically:
 
-- **Under the limit** — the counter is incremented, `run()` runs.
+- **Under the limit** — the counter is incremented and the message
+  moves on to the lock check (if the task has one) and `run()`. The
+  slot counts from this moment, also when `run()` does not follow (see
+  [with a lock](#combining-with-retries-and-locks)).
 - **Over the limit** — the worker nacks the message into a delay
   queue and fires `TASK_RATE_LIMITED`. After the computed wait, the
   broker redelivers and the check runs again.
@@ -93,28 +96,35 @@ task.
 
 ## Observability
 
-Hook `Signal.TASK_RATE_LIMITED` to record when limits are active:
+Hook `Signal.TASK_RATE_LIMITED` to record when limits are active. The
+worker dispatches it, so under `swarmq worker` register the handler in
+a `--configure` hook (see [Signals](signals.md#registering-a-handler)):
 
-```python
-from swarmq import Signal
+```python title="myapp/hooks.py"
+from swarmq import Signal, SwarmQ
 from swarmq.logging import get_logger
 
 log = get_logger("myapp.rate_limit")
 
 
-@app.on_signal(Signal.TASK_RATE_LIMITED)
-async def on_rate_limit(
-    task_id, task_name, retry_after_ms, remaining, rate_limit_count,
-    **kwargs,
-):
-    # A message that keeps bouncing means the limit is far below demand.
-    if rate_limit_count >= 10:
-        log.warning(
-            "myapp_rate_limit_bouncing",
-            task_id=task_id, task_name=task_name,
-            retry_after_ms=retry_after_ms,
-            bounce_count=rate_limit_count,
-        )
+def setup(app: SwarmQ) -> None:
+    @app.on_signal(Signal.TASK_RATE_LIMITED)
+    async def on_rate_limit(
+        task_id, task_name, retry_after_ms, remaining, rate_limit_count,
+        **kwargs,
+    ):
+        # A message that keeps bouncing means the limit is far below demand.
+        if rate_limit_count >= 10:
+            log.warning(
+                "myapp_rate_limit_bouncing",
+                task_id=task_id, task_name=task_name,
+                retry_after_ms=retry_after_ms,
+                bounce_count=rate_limit_count,
+            )
+```
+
+```bash
+swarmq worker --module myapp.tasks --configure myapp.hooks:setup
 ```
 
 Payload fields:
@@ -149,8 +159,16 @@ Rate limiting composes naturally with retries and locks:
 
 - **With retries.** Retry attempts also count against the limit — a
   retry is a second `run()` of the same work.
-- **With a lock.** The lock is acquired *after* the rate-limit
-  check passes. A rate-limited message never attempts the lock.
+- **With a lock.** The rate-limit check runs first; the lock (`lock`,
+  `max_concurrency`) is tried only after it passes. A rate-limited
+  message never attempts the lock. The other way round, a message that
+  passes the rate limit and then finds the lock taken has used a slot,
+  although `run()` did not run: it goes back with the lock backoff
+  (100 ms, doubling up to 60 s) and passes the rate limit again on every
+  redelivery. With many copies waiting for one lock, a large part of
+  the budget goes to these attempts, and fewer tasks run than the limit
+  allows. Leave headroom in `rate_limit`, or keep the number of copies
+  that compete for one lock small (for example with `unique_for`).
 
 ## Verify
 

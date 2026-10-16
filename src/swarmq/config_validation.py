@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, ClassVar
 from swarmq.exceptions import ConfigurationError
 from swarmq.keyspace import validate_namespace
 from swarmq.logging_settings import VALID_LOG_LEVELS, valid_drain_timeout, validate_logger_levels
+from swarmq.seconds import whole_seconds
 from swarmq.valkey_policy import EVICTION_CHECK_MODES
 
 
@@ -21,6 +22,7 @@ class ConfigValidation:
         broker_url: str
         backend_url: str
         result_ttl: int
+        shutdown_timeout: int
         concurrency: int
         log_level: str
         log_lifecycle_level: str
@@ -52,6 +54,7 @@ class ConfigValidation:
         namespace: str | None
         scheduler_publish_stepdown_s: float | None
         _POSITIVE_FIELDS: ClassVar[tuple[str, ...]]
+        _FINITE_FIELDS: ClassVar[tuple[str, ...]]
         _VALID_POOLS: ClassVar[frozenset[str]]
         _VALID_PRUNE_MODES: ClassVar[tuple[str, ...]]
         _VALID_SCHEDULER_MODES: ClassVar[tuple[str, ...]]
@@ -74,13 +77,37 @@ class ConfigValidation:
             )
             raise ConfigurationError(msg)
 
-    # ``shutdown_timeout`` steht bewusst NICHT hier: 0 bedeutet "sofort
-    # abbrechen" und wird so auch genutzt. Dass ein knapper Wert dem
-    # Herunterfahren kein Publish-Budget mehr laesst, faengt stattdessen die
-    # anteilige Reserve in ``WorkerLifecycle._shutdown_publish_budget`` ab.
+    # ``shutdown_timeout`` steht bewusst NICHT in der ``> 0``-Pruefung: 0
+    # bedeutet "sofort abbrechen" und wird so auch genutzt (E-018). Dass ein
+    # knapper Wert dem Herunterfahren kein Publish-Budget mehr laesst, faengt
+    # die anteilige Reserve in ``WorkerLifecycle._shutdown_publish_budget`` ab.
+    # Negativ ist dagegen ein Konfigurationsfehler (F3-42).
+
+    def _validate_shutdown_timeout(self) -> None:
+        if self.shutdown_timeout < 0:
+            msg = f"shutdown_timeout must be >= 0, got {self.shutdown_timeout}"
+            raise ConfigurationError(msg)
+
+    def _validate_result_ttl(self) -> None:
+        # E-055: float-Sekunden werden int (aufgerundet); inf/nan sind ein
+        # ConfigurationError (Exit 78) statt eines Fehlers zur Laufzeit. Der
+        # Bereich wird auf dem Rohwert geprüft, sonst wird -0.5 still zu 0
+        # (nan passiert diese Prüfung und scheitert in whole_seconds).
+        if self.result_ttl < 0:
+            msg = f"result_ttl must be >= 0, got {self.result_ttl}"
+            raise ConfigurationError(msg)
+        try:
+            self.result_ttl = whole_seconds(self.result_ttl, "result_ttl")
+        except ValueError as exc:
+            raise ConfigurationError(str(exc)) from exc
 
     def _validate_core(self) -> None:
         self._apply_pool_defaults()
+        # Bereich und Endlichkeit vor jeder Relationspruefung, damit die
+        # Meldung das ursaechliche Feld nennt (E-063).
+        self._validate_positive()
+        self._validate_shutdown_timeout()
+        self._validate_finite()
         self._validate_pool()
         if not self.broker_url:
             msg = "broker_url must not be empty"
@@ -90,9 +117,7 @@ class ConfigValidation:
             msg = "backend_url must not be empty"
             raise ConfigurationError(msg)
 
-        if self.result_ttl < 0:
-            msg = f"result_ttl must be >= 0, got {self.result_ttl}"
-            raise ConfigurationError(msg)
+        self._validate_result_ttl()
 
         if self.concurrency < 1:
             msg = f"concurrency must be >= 1, got {self.concurrency}"
@@ -121,15 +146,6 @@ class ConfigValidation:
             # Review MR 8, H3: nur Quorum-Queues kennen at-least-once-Dead-Lettering.
             msg = "queue_dead_letter_strategy='at-least-once' requires queue_type='quorum'; use 'auto' or 'legacy'"
             raise ConfigurationError(msg)
-
-        for field_name in self._POSITIVE_FIELDS:
-            value = getattr(self, field_name)
-            # None nur bei optionalen Fristen (``dead_letter_ttl_s``: unbegrenzt).
-            if value is not None and value <= 0:
-                msg = f"{field_name} must be > 0, got {value}"
-                raise ConfigurationError(msg)
-
-        self._validate_finite()
 
         if self.backend_defer_max_delay < self.backend_defer_base_delay:
             msg = (
@@ -160,12 +176,23 @@ class ConfigValidation:
             )
             raise ConfigurationError(msg)
 
+    def _validate_positive(self) -> None:
+        for field_name in self._POSITIVE_FIELDS:
+            value = getattr(self, field_name)
+            # None nur bei optionalen Fristen (``dead_letter_ttl_s``: unbegrenzt).
+            if value is not None and value <= 0:
+                msg = f"{field_name} must be > 0, got {value}"
+                raise ConfigurationError(msg)
+
     def _validate_finite(self) -> None:
-        """Review MR 13, P2-3: ``inf``/``nan`` bestehen ``<= 0``; das Lock-Gate
-        rechnet ``lock_wait_max_s`` in ganze Millisekunden um."""
-        if not math.isfinite(self.lock_wait_max_s):
-            msg = f"lock_wait_max_s must be a finite number of seconds, got {self.lock_wait_max_s}"
-            raise ConfigurationError(msg)
+        """E-063: ``inf``/``nan`` bestehen ``<= 0``, werden aber in ganze
+        Millisekunden umgerechnet oder an Broker und Valkey gegeben (Review
+        MR 13, P2-3; F3-04). ``None`` heisst bei optionalen Fristen unbegrenzt."""
+        for field_name in self._FINITE_FIELDS:
+            value = getattr(self, field_name)
+            if value is not None and not math.isfinite(value):
+                msg = f"{field_name} must be a finite number, got {value}"
+                raise ConfigurationError(msg)
 
     def _validate_logging(self) -> None:
         """Logging-Felder pruefen (R13/R14); CRITICAL gilt ueberall (KTD8)."""

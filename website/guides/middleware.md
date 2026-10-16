@@ -24,8 +24,8 @@ every task.
 
 | Hook | Where it runs | Called | Exception behaviour |
 |---|---|---|---|
-| `pre_enqueue` | Client | Before `broker.publish` | Propagates — aborts the enqueue |
-| `post_enqueue` | Client | After the broker confirms | Swallowed — logged at ERROR |
+| `pre_enqueue` | Client | Before `broker.publish`, or before a `delay`/`eta` task is stored | Propagates — aborts the enqueue |
+| `post_enqueue` | Client | After the broker confirms, or after a `delay`/`eta` task is stored | Swallowed — logged at ERROR |
 | `pre_execute` | Worker | After delivery, before `Task.run()` | Swallowed — logged at ERROR |
 | `post_execute` | Worker | After `run()` succeeds | Swallowed — logged at ERROR |
 | `on_error` | Worker | When `run()` raises | Swallowed — logged at ERROR |
@@ -34,6 +34,21 @@ every task.
 Only `pre_enqueue` can veto the operation. Every other hook is
 observational: it can record, log, or augment state, but raising
 there will not change the task's path.
+
+### Deferred tasks (`delay`/`eta`)
+
+For `schedule(..., delay=...)` and `schedule(..., eta=...)` the enqueue
+hooks run when you call `schedule()`, not when the scheduler leader
+fires the task later. A veto in `pre_enqueue` aborts the call before
+anything is stored or a unique flag is claimed. Changes a middleware
+makes to `message["kwargs"]` in place are stored with the task and
+published by the leader at fire time. Cron fires run without the
+enqueue hooks.
+
+Unlike an immediate `schedule()`, a deferred call that turns out to be
+a duplicate (`unique_for`) has already passed `pre_enqueue`: the
+middleware sees `pre_enqueue` without a following `post_enqueue`. Do
+not rely on `post_enqueue` alone to clean up state you keep per call.
 
 ### Workflow steps
 
@@ -70,6 +85,10 @@ class TimingMiddleware(Middleware):
         # Per-task start times keyed by task_id. Middleware instances
         # are shared across tasks, so use task_id for isolation.
         self._starts: dict[str, float] = {}
+
+    def forget(self, task_id: str) -> None:
+        # A cancelled task gets neither post_execute nor on_error.
+        self._starts.pop(task_id, None)
 
     async def pre_execute(self, message: MessageContext) -> None:
         self._starts[message["task_id"]] = time.perf_counter()
@@ -139,6 +158,35 @@ Registration is safe at any time — before or after `start_worker()`
 and before or after `schedule()`. The chain is resolved per
 operation, so newly added middleware is visible from the next call.
 
+**Which app.** Hooks run on the app that does the work:
+`pre_enqueue` and `post_enqueue` on the app that calls `schedule()`,
+`pre_execute`, `post_execute`, `on_error` and `on_retry` on the
+worker's app. Workflow follow-up steps are published by the advancer
+in the worker, so their `pre_enqueue` and `post_enqueue` run on the
+worker's app too. `swarmq worker` builds its own app, so middleware
+added to a module-level `app` in `myapp/tasks.py` never runs in the
+worker. Add it in a `--configure` hook — this includes enqueue
+middleware that must see every workflow step:
+
+```python title="myapp/hooks.py"
+from swarmq import Signal, SwarmQ
+
+from myapp.middleware import TimingMiddleware
+
+
+def setup(app: SwarmQ) -> None:
+    timing = TimingMiddleware()
+    app.add_middleware(timing)
+
+    @app.on_signal(Signal.TASK_CANCELLED)
+    async def forget_cancelled(task_id, **kwargs):
+        timing.forget(task_id)  # see "Sharing state between hooks"
+```
+
+```bash
+swarmq worker --module myapp.tasks --configure myapp.hooks:setup
+```
+
 ## Execution order
 
 ```mermaid
@@ -153,13 +201,20 @@ flowchart LR
 On error, the forward chain still runs (`pre_execute` each), `run`
 raises, then `on_error` runs in reverse for every middleware.
 
+A cancel (`app.cancel()`) is not an error: after `pre_execute`,
+neither `on_error` nor `post_execute` runs; only the `TASK_CANCELLED`
+signal fires.
+
 ## Sharing state between hooks
 
 Three idioms, in order of preference:
 
 1. **Keyed dict on the middleware instance**, as in the timing
-   example above. Clean up on `post_execute` and `on_error`. Works
-   because middleware is singleton per `SwarmQ` app.
+   example above. Clean up on `post_execute` and `on_error`, and on
+   the `TASK_CANCELLED` signal for cancelled tasks (see the hook under
+   [registering middleware](#registering-middleware)); otherwise every
+   cancelled task leaves an entry behind. Works because middleware is
+   singleton per `SwarmQ` app.
 2. **Context vars.** Use `contextvars.ContextVar` for values that
    should propagate across `await` boundaries into the task body
    itself — OpenTelemetry trace IDs, request IDs.
@@ -206,17 +261,18 @@ so the hook must make the same change on every attempt.
 
 ## Verify
 
-Add your middleware, start the worker with `--log-level DEBUG` and
-`--log-format human`, and schedule one task:
+Add your middleware in a `--configure` hook, start the worker with
+`--log-level DEBUG` and `--log-format human`, and schedule one task:
 
 ```bash
-swarmq worker --module myapp.tasks --log-level DEBUG --log-format human
+swarmq worker --module myapp.tasks --configure myapp.hooks:setup \
+  --log-level DEBUG --log-format human
 ```
 
 You should see the hook emit log entries on every task. If nothing
-appears, confirm the middleware class was registered on the same
-`SwarmQ` instance the worker uses (usually the `app` in
-`myapp/tasks.py`).
+appears, check that the worker starts with `--configure` and that the
+hook adds the middleware. Middleware added to a module-level `app` in
+`myapp/tasks.py` is not on the worker's app.
 
 ## See also
 

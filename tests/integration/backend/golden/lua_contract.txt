@@ -5,6 +5,7 @@ lock_acquire	KEYS=1	ARGV=4
 lock_extend	KEYS=1	ARGV=4
 lock_release	KEYS=1	ARGV=2
 lock_renew	KEYS=1	ARGV=2
+sched_add	KEYS=2	ARGV=3
 sched_commit	KEYS=3	ARGV=6
 sched_disable	KEYS=2	ARGV=2
 sched_fire_claim	KEYS=1	ARGV=3
@@ -18,6 +19,7 @@ unique_release	KEYS=1	ARGV=1
 workflow_state_cas	KEYS=1	ARGV=3
 guard_claim	slots=equal	sq:guard:{golden-task-0001}:run sq:guard:{golden-task-0001}:state
 guard_finish	slots=equal	sq:guard:{golden-task-0001}:run sq:guard:{golden-task-0001}:state
+sched_add	slots=equal	sq:{sched}:defs sq:{sched}:zset
 sched_commit	slots=equal	sq:{sched}:zset sq:{sched}:defs sq:lock:{sched}:leader
 sched_disable	slots=equal	sq:{sched}:defs sq:{sched}:zset
 sched_poll	slots=equal	sq:{sched}:zset sq:{sched}:defs

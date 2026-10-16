@@ -1,5 +1,7 @@
 """SwarmQ exception hierarchy."""
 
+import math
+
 
 class SwarmQError(Exception):
     pass
@@ -256,6 +258,16 @@ class ResultSerializationError(SwarmQError):
 
 class Retry(SwarmQError):
     def __init__(self, delay: float | None = None) -> None:
+        # E-060 (F3-03): ``inf``/``nan`` gehen nicht an den Broker; eine
+        # negative Wartezeit (etwa ``reset_at - time.time()``) wiederholt
+        # sofort und zaehlt normal. Hier, damit ``delay_ms``, ``on_retry``,
+        # ``TASK_RETRYING`` und das Log denselben Wert sehen (KTD6).
+        if delay is not None:
+            if not math.isfinite(delay):
+                msg = f"Retry delay must be finite, got {delay!r}"
+                raise ValueError(msg)
+            if delay < 0:
+                delay = 0.0
         self.delay = delay
         super().__init__()
 

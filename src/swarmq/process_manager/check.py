@@ -6,12 +6,52 @@ from __future__ import annotations
 import importlib.util
 import sys
 from importlib.machinery import ModuleSpec
-from typing import TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict
 
 from swarmq.exceptions import ConfigurationError
 from swarmq.slots import effective_concurrency, resolve_default_slots, validate_pool_mode
 
+if TYPE_CHECKING:
+    from swarmq.config import SwarmQConfig
+    from swarmq.logging_settings import LoggingSettings
+
 _MAX_TCP_PORT = 65535
+
+#: Platzhalter fuer fehlende URLs: ``--check`` und ``swarmq check`` pruefen
+#: sie nicht (E-062), ``SwarmQConfig`` verlangt nur "nicht leer". ``.invalid``
+#: loest nie auf (RFC 6761); gebaut wird ohnehin keine Verbindung.
+_PLACEHOLDER_BROKER_URL = "amqp://check.invalid/"
+_PLACEHOLDER_BACKEND_URL = "valkey://check.invalid/0"
+
+
+def start_config(
+    *,
+    logging_settings: LoggingSettings | None,
+    broker_url: str = "",
+    backend_url: str = "",
+    **overrides: Any,
+) -> SwarmQConfig:
+    """``SwarmQConfig`` genau wie der Pre-Flight des Supervisors (KTD15).
+
+    Die eine Quelle fuer Start (``run_multi_process_worker``),
+    ``swarmq worker --check`` und ``swarmq check``: was der Start mit
+    ``ConfigurationError`` (Exit 78) ablehnt, lehnen beide Pruefungen
+    ebenso ab (E-062, E-006). Fehlende URLs ersetzt der Helfer durch
+    Platzhalter, weil die Pruefungen sie nicht verlangen; der Start prueft
+    sie vorher selbst. Mit ``logging_settings`` bleibt die Logging-Env
+    aussen vor wie im Start.
+
+    Raises:
+        ConfigurationError: ein Wert der Konfiguration ist ungueltig.
+    """
+    from swarmq.config import SwarmQConfig
+
+    return SwarmQConfig(
+        broker_url=broker_url or _PLACEHOLDER_BROKER_URL,
+        backend_url=backend_url or _PLACEHOLDER_BACKEND_URL,
+        logging_settings=logging_settings,
+        **overrides,
+    )
 
 
 def app_dir_hint() -> str:
@@ -58,10 +98,12 @@ def _validate_module_importable(module: str) -> ModuleSpec:
     """
     try:
         spec = importlib.util.find_spec(module)
-    except (ImportError, ValueError) as exc:
+    except (ImportError, SyntaxError, ValueError) as exc:
         # ImportError covers ModuleNotFoundError + the "no package
         # specified for '.relative'" case; ValueError handles some
-        # malformed dotted paths depending on Python version.
+        # malformed dotted paths depending on Python version. E-057:
+        # a SyntaxError in ``pkg/__init__.py`` is a configuration error
+        # in the parent as in the child.
         raise ConfigurationError(
             f"--module {module!r} cannot be imported: {exc}; {app_dir_hint()}",
         ) from exc

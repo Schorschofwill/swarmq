@@ -253,6 +253,7 @@ class TestMainErrorRendering:
         captured = capsys.readouterr()
         return rc, captured.err
 
+    @pytest.mark.entscheidung("E-057")
     def test_module_not_found_exits_with_the_config_code(self, capsys):
         """Bewusst geaenderter Test (U4/R19): vorher 1 mit stderr-Zeile, jetzt
         78 mit strukturiertem Logsatz. Der Text erscheint als
@@ -396,6 +397,7 @@ class TestRunWorkerAsync:
         return _FakeApp
 
     @pytest.mark.asyncio
+    @pytest.mark.entscheidung("E-069")
     async def test_configure_hook_runs_with_the_app_before_start(self, monkeypatch):
         """U5 (R9/R10): Der Hook sieht die fertige App und laeuft vor dem
         Start des Workers -- Middleware, die er registriert, muss den ersten
@@ -428,6 +430,7 @@ class TestRunWorkerAsync:
         assert sink["calls"] == ["hook", "enter", "start_worker"]
 
     @pytest.mark.asyncio
+    @pytest.mark.entscheidung("E-069")
     async def test_async_configure_hook_is_awaited(self, monkeypatch):
         class _Probe(Task):
             from swarmq.task import TaskInfo
@@ -1082,6 +1085,15 @@ class TestDlqParser:
         assert ns.task_id is None
         assert ns.all is True
 
+    @pytest.mark.parametrize("raw", ["inf", "nan"])
+    def test_worker_rejects_infinite_burst_idle_timeout(self, raw, capsys):
+        """F3-04 (E-063): argparse lehnt ``inf`` vor dem Start ab (Exit 2)."""
+        parser = cli._build_parser()
+        with pytest.raises(SystemExit) as excinfo:
+            parser.parse_args(["worker", "--module=x", "--burst-idle-timeout", raw])
+        assert excinfo.value.code == 2
+        assert "finite" in capsys.readouterr().err
+
     def test_dlq_retry_rejects_zero_limit(self):
         parser = cli._build_parser()
         with pytest.raises(SystemExit):
@@ -1119,6 +1131,19 @@ class TestDlqHandlerValidation:
         monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://guest:guest@localhost:5699/")
         monkeypatch.setenv("SWARMQ_DEAD_LETTER_TTL_S", "0")
         with pytest.raises(ConfigurationError, match="dead_letter_ttl_s must be > 0"):
+            await cli._broker_from_env()
+
+    @pytest.mark.timeout(5)
+    @pytest.mark.parametrize("raw", ["inf", "nan"])
+    async def test_broker_from_env_rejects_infinite_dead_letter_ttl(self, monkeypatch, raw):
+        """F3-04 (E-063): ``inf`` liesse das Zuruecklegen von Altbestand an
+        ``aio_pika.Message`` scheitern; unbegrenzt heisst ``none``."""
+        from swarmq.broker.rabbitmq import RabbitMQBroker
+
+        monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://guest:guest@localhost:5699/")
+        monkeypatch.setenv("SWARMQ_DEAD_LETTER_TTL_S", raw)
+        monkeypatch.setattr(RabbitMQBroker, "connect", AsyncMock())
+        with pytest.raises(ConfigurationError, match="dead_letter_ttl_s must be a finite number"):
             await cli._broker_from_env()
 
     @pytest.mark.timeout(5)

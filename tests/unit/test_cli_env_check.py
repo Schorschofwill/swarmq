@@ -22,11 +22,24 @@ Test-Liste:
   - [x] Tabellenausgabe enthaelt ``scheduler  scheduler  off``
   - [x] ``SWARMQ_SCHEDULER=no`` -> Befund ``scheduler_invalid`` (``error``),
     ``ok: false``, Exit 78
+- F3-18 (E-006): ungueltige Konfiguration endet wie beim Worker mit 78:
+  - [x] stderr nennt das Feld, kein Valkey-Client wird gebaut (vor jeder Verbindung)
+  - [x] ``SWARMQ_VALKEY_EVICTION_CHECK=bogus`` bei unerreichbarem Valkey -> 78, nicht 1
+  - [x] ``SWARMQ_VALKEY_EVICTION_CHECK=WARN`` (Grossschreibung) -> 0, Befund ``warning``
+  - [x] ``env_valkey_eviction_check()`` wertet ``bogus`` fuer Producer weiter als ``strict``
+- Review U9: die Logging-Env loest ``check`` wie der Start ohne Flags auf:
+  - [x] ``SWARMQ_LOG_LEVEL=info`` / ``SWARMQ_LOG_LIFECYCLE_LEVEL=info`` -> 0 (der Start akzeptiert sie)
+  - [x] ``SWARMQ_LOG_CONFIG`` mit ``SWARMQ_LOG_FORMAT`` -> 78 vor jeder Verbindung (der Start lehnt ab)
+  - [x] ``check`` kennt keine Worker-Flags: ``SWARMQ_LOG_FORMAT=xml`` -> 78 (E-006)
+  - [x] Gleichlauf: ``check`` und Worker-Start entscheiden bei Logging-Env gleich
 """
 
 from __future__ import annotations
 
 import json
+import sys
+from collections.abc import Iterator
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -312,3 +325,221 @@ def test_invalid_scheduler_value_fails_like_the_worker(
     assert report["scheduler"] == {"scheduler": "no"}
     assert _codes(report, "error") == ["scheduler_invalid"]
     assert _codes(report, "warning") == []
+
+
+@pytest.mark.entscheidung("E-006")
+@pytest.mark.parametrize(
+    ("variable", "value", "named"),
+    [
+        ("SWARMQ_VALKEY_EVICTION_CHECK", "bogus", "valkey_eviction_check"),
+        ("SWARMQ_SHUTDOWN_TIMEOUT", "abc", "SWARMQ_SHUTDOWN_TIMEOUT"),
+    ],
+)
+def test_invalid_configuration_fails_before_any_connection(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, variable: str, value: str, named: str
+) -> None:
+    built: list[object] = []
+
+    def _from_url(_cls: object, /, *args: object, **kwargs: object) -> _FakeValkey:
+        built.append(args)
+        return _FakeValkey()
+
+    monkeypatch.setattr(valkey.asyncio.Valkey, "from_url", classmethod(_from_url))
+    monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://fake:6399/0")
+    monkeypatch.setenv(variable, value)
+
+    code = main(["check", "--format", "json"])
+
+    captured = capsys.readouterr()
+    assert code == 78
+    assert captured.out == ""
+    assert captured.err.startswith("swarmq check: ")
+    assert named in captured.err
+    assert built == []
+
+
+@pytest.mark.entscheidung("E-006")
+def test_invalid_eviction_mode_with_unreachable_valkey_exits_78(
+    fake: _FakeValkey, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _unreachable() -> bool:
+        raise ConnectionError("f3_18 valkey unreachable")
+
+    monkeypatch.setattr(fake, "ping", _unreachable)
+    monkeypatch.setenv("SWARMQ_VALKEY_EVICTION_CHECK", "bogus")
+
+    code = main(["check", "--format", "json"])
+
+    capsys.readouterr()
+    assert code == 78
+
+
+@pytest.mark.entscheidung("E-006")
+def test_eviction_mode_is_case_insensitive(
+    fake: _FakeValkey, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _evicting(fake)
+    monkeypatch.setenv("SWARMQ_VALKEY_EVICTION_CHECK", "WARN")
+
+    code, report = _run_json(capsys)
+
+    assert code == 0
+    assert report["valkey"]["eviction_check"] == "warn"
+    assert _codes(report, "warning") == ["eviction_policy"]
+
+
+@pytest.mark.entscheidung("E-006")
+def test_producers_treat_an_invalid_eviction_mode_as_strict(monkeypatch: pytest.MonkeyPatch) -> None:
+    from swarmq.config import env_valkey_eviction_check
+
+    monkeypatch.setenv("SWARMQ_VALKEY_EVICTION_CHECK", "bogus")
+
+    assert env_valkey_eviction_check() == "strict"
+
+
+#: Logging-Variablen, die die Tests setzen oder deren Fremdwert sie verfälschen könnte.
+_LOGGING_ENV = (
+    "SWARMQ_LOG_LEVEL",
+    "SWARMQ_LOG_LIFECYCLE_LEVEL",
+    "SWARMQ_LOG_FORMAT",
+    "SWARMQ_LOG_JSON",
+    "SWARMQ_LOG_CONFIG",
+    "SWARMQ_LOG_CONFIGURE",
+)
+
+
+def _set_logging_env(monkeypatch: pytest.MonkeyPatch, values: dict[str, str]) -> None:
+    for name in _LOGGING_ENV:
+        monkeypatch.delenv(name, raising=False)
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+
+
+@pytest.mark.parametrize("variable", ["SWARMQ_LOG_LEVEL", "SWARMQ_LOG_LIFECYCLE_LEVEL"])
+def test_lowercase_log_level_passes_like_the_worker_start(
+    fake: _FakeValkey, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, variable: str
+) -> None:
+    _set_logging_env(monkeypatch, {variable: "info"})
+
+    code = main(["check", "--format", "json"])
+
+    captured = capsys.readouterr()
+    assert code == 0, f"{variable}=info: der Worker startet, check meldet {code}: {captured.err}"
+    assert json.loads(captured.out)["ok"] is True
+
+
+def _record_valkey_clients(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    """Jeder gebaute Valkey-Client landet in der Liste (Grenze gemockt)."""
+    built: list[object] = []
+
+    def _from_url(_cls: object, /, *args: object, **kwargs: object) -> _FakeValkey:
+        built.append(args)
+        return _FakeValkey()
+
+    monkeypatch.setattr(valkey.asyncio.Valkey, "from_url", classmethod(_from_url))
+    monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://fake:6399/0")
+    return built
+
+
+def test_log_config_with_log_format_fails_before_any_connection(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    built = _record_valkey_clients(monkeypatch)
+    _set_logging_env(monkeypatch, {"SWARMQ_LOG_CONFIG": str(tmp_path / "logging.json"), "SWARMQ_LOG_FORMAT": "json"})
+
+    code = main(["check", "--format", "json"])
+
+    captured = capsys.readouterr()
+    assert code == 78
+    assert captured.out == ""
+    assert "SWARMQ_LOG_CONFIG cannot be combined with SWARMQ_LOG_FORMAT" in captured.err
+    assert built == []
+
+
+@pytest.mark.entscheidung("E-006")
+def test_check_knows_no_worker_flags_and_rejects_an_overridable_variable(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``swarmq check`` kennt keine Worker-Flags: ``SWARMQ_LOG_FORMAT=xml``,
+    das ``swarmq worker --log-format human`` überstimmen würde, ergibt 78."""
+    built = _record_valkey_clients(monkeypatch)
+    _set_logging_env(monkeypatch, {"SWARMQ_LOG_FORMAT": "xml"})
+
+    code = main(["check", "--format", "json"])
+
+    captured = capsys.readouterr()
+    assert code == 78
+    assert captured.out == ""
+    assert "SWARMQ_LOG_FORMAT" in captured.err
+    assert built == []
+
+
+_GLEICHLAUF_MODULE = "env_check_gleichlauf_tasks"
+
+_GLEICHLAUF_TASK_SOURCE = """\
+from swarmq import Task, TaskInfo
+
+
+class EnvCheckGleichlaufTask(Task):
+    task_info = TaskInfo(name="env_check_gleichlauf_task", queues=["default"])
+
+    async def run(self) -> None:
+        return None
+"""
+
+
+class _StubProcessManager:
+    """Ersetzt den Supervisor: nach dem Pre-Flight startet nichts."""
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        self.reloader: object = None
+
+    def run(self) -> int:
+        return 0
+
+
+@pytest.fixture
+def gleichlauf_module(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
+    """Gültiges Task-Modul auf ``sys.path``; räumt ``sys.modules`` auf."""
+    (tmp_path / f"{_GLEICHLAUF_MODULE}.py").write_text(_GLEICHLAUF_TASK_SOURCE, encoding="utf-8")
+    monkeypatch.setattr(sys, "path", [str(tmp_path), *sys.path])
+    yield _GLEICHLAUF_MODULE
+    sys.modules.pop(_GLEICHLAUF_MODULE, None)
+
+
+@pytest.mark.parametrize(
+    "logging_env",
+    [
+        {"SWARMQ_LOG_LEVEL": "info"},
+        {"SWARMQ_LOG_LIFECYCLE_LEVEL": "debug"},
+        {"SWARMQ_LOG_FORMAT": "xml"},
+        {"SWARMQ_LOG_CONFIG": "logging.json", "SWARMQ_LOG_FORMAT": "json"},
+    ],
+    ids=["level-klein", "lifecycle-klein", "format-ungueltig", "config-und-format"],
+)
+def test_check_and_worker_start_decide_alike_on_logging_env(
+    fake: _FakeValkey,
+    gleichlauf_module: str,
+    logging_env: dict[str, str],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Gleichlauf (E-006): ``swarmq check`` sagt für die Logging-Env genau den
+    Exit 78 voraus, den der Worker-Start ohne Flags liefert."""
+    from swarmq.process_manager import run as run_module
+    from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
+    monkeypatch.setattr(run_module, "ProcessManager", _StubProcessManager)
+    monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://guest:guest@env-check.invalid:5699/")
+    for name in ("SWARMQ_SCHEDULER", "SWARMQ_NAMESPACE", "SWARMQ_CONCURRENCY", "SWARMQ_QUEUE_TYPE"):
+        monkeypatch.delenv(name, raising=False)
+    _set_logging_env(monkeypatch, logging_env)
+
+    check_code = main(["check", "--format", "json"])
+    capsys.readouterr()
+    start_code = main(["worker", f"--module={gleichlauf_module}"])
+    capsys.readouterr()
+
+    check_rejects = check_code == CONFIG_ERROR_EXIT_CODE
+    start_rejects = start_code == CONFIG_ERROR_EXIT_CODE
+    assert check_rejects == start_rejects, f"{logging_env}: check {check_code}, Start {start_code}"

@@ -231,6 +231,7 @@ class TestConfigErrorExitCode:
         assert entry["source"] == "worker"
         assert "never inject" in entry["error"]
 
+    @pytest.mark.entscheidung("E-057")
     def test_import_error_in_the_child_is_a_configuration_error(self, monkeypatch):
         """R19: Eine fehlende Abhaengigkeit im Task-Modul endete mit Traceback
         und fuenf Neustarts -- der Supervisor sah einen Absturz, nicht einen

@@ -36,7 +36,7 @@ except SwarmQError as exc:
 | `LockWaitExceeded` | `SwarmQError` | Wird nie geworfen: Fehlertyp einer DLQ-Kopie, deren Wartezeit auf einen Task-Lock endete (hängender Halter oder `SWARMQ_LOCK_WAIT_MAX_S`) |
 | `RedeliveryLimitError` | `SwarmQError` | Wird nie geworfen: Fehlertyp einer DLQ-Kopie, deren Zustellungen bis zum Zustelllimit zurückgegeben wurden |
 | `TaskError` | `SwarmQError` | Der Task-Body raiste; bis `get_result()` propagiert |
-| `TaskCancelledError` | `TaskError` | `app.cancel(task_id)` griff während der Ausführung |
+| `TaskCancelledError` | `TaskError` | `get_result()` oder `app.run()` für einen per `app.cancel(task_id)` abgebrochenen Task; der Task selbst sieht `asyncio.CancelledError` |
 | `ResultNotReadyError` | `SwarmQError` | `get_result()` lief in Timeout, bevor ein Ergebnis ankam |
 | `ResultExpiredError` | `SwarmQError` | Derzeit nie geworfen (reserviert); ein abgelaufenes Ergebnis wirft `ResultNotReadyError` |
 | `ResultSerializationError` | `SwarmQError` | Ergebnis ist nicht msgpack-serialisierbar |
@@ -292,9 +292,14 @@ DLQ't wird.
 
 ## `TaskCancelledError`
 
-**Wann geraist.** `get_result()` beobachtet ein Cancel-Flag im
-gespeicherten Ergebnis. Außerdem im Task-Body, wenn der Cancel-
-Monitor des Workers zuschlägt.
+**Wann geraist.** Beim Client: `get_result()` und `app.run()` werfen
+sie, wenn das gespeicherte Ergebnis das Cancel-Flag trägt, ein
+Workflow-Handle bei einem abgebrochenen Workflow. Nie im Task-Body:
+Der Worker bricht die laufende `run()`-Coroutine ab, der Task sieht
+`asyncio.CancelledError`. Räume in `finally` auf, oder fange
+`asyncio.CancelledError`, räume auf und wirf sie erneut. Im CPU-Modus
+wird stattdessen das Rechenkind beendet
+([Verhaltensänderungen](../guides/cpu-mode.md#verhaltensanderungen-fur-task-autoren)).
 
 **Ursache.** Jemand — der Client, ein Operator, ein anderer
 Service — rief `app.cancel(task_id)` auf, während der Task
@@ -396,7 +401,10 @@ class SendEmail(Task):
 ```
 
 Ist `delay` `None`, wendet der Worker die konfigurierte Backoff-
-Strategie an (`retry_backoff`, `retry_base_delay`).
+Strategie an (`retry_backoff`, `retry_base_delay`). Ein negatives
+`delay` gilt als 0 (sofortiger Retry) und zählt trotzdem gegen
+`max_retries`; `inf` und `nan` werfen beim Erzeugen von `Retry` einen
+`ValueError`.
 
 `Retry` wiederholt auch, wenn der Task `retry_exceptions` setzt, ohne
 ihn zu nennen. Er zählt gegen `max_retries`: Ist das Budget verbraucht,

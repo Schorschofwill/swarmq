@@ -13,12 +13,13 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, override
 
-from croniter import CroniterBadCronError, croniter
+from croniter import CroniterBadCronError, CroniterBadDateError, croniter
 
 from swarmq.config import normalize_timezone
 from swarmq.limits import parse_rate_limit
 from swarmq.locking import compute_lock_ttl_ms
 from swarmq.logging import _error_fields, get_logger
+from swarmq.seconds import validate_unique_for, whole_seconds
 
 if TYPE_CHECKING:
     # U11 (KTD7): Vertragstyp statt Implementierung — ``task`` liegt in der
@@ -127,7 +128,7 @@ class TaskInfo:
         soft_timeout: int | None = None,
         hard_timeout: int | None = None,
         delivery: DeliveryMode = DeliveryMode.AT_LEAST_ONCE,
-        result_ttl: int | None = None,
+        result_ttl: float | None = None,
         max_retries: int = 0,
         retry_backoff: str = "exponential",
         retry_exceptions: list[type[BaseException]] | None = None,
@@ -137,7 +138,7 @@ class TaskInfo:
         max_concurrency: int = 1,
         cron: str | None = None,
         catchup: bool = False,
-        unique_for: int | None = None,
+        unique_for: float | None = None,
         unique_until: UniqueUntil = "completion",
         max_age: int | None = None,
         priority: PriorityLevel = "normal",
@@ -172,6 +173,8 @@ class TaskInfo:
         self.__post_init__()
 
     def __post_init__(self) -> None:
+        # E-055: float-Sekunden (``timedelta(...).total_seconds()``) als int.
+        object.__setattr__(self, "result_ttl", whole_seconds(self.result_ttl, "result_ttl"))
         self._validate_identity_and_retry()
         self._validate_limits_and_locking()
         self._validate_scheduling()
@@ -237,8 +240,13 @@ class TaskInfo:
                 raise ValueError(
                     f"cron uses unsupported extended syntax (L/W/#): {self.cron!r}; use a standard 5-field expression"
                 )
+            # F3-08 (E-065): wie der Leader den nächsten Termin berechnen;
+            # ein Ausdruck ohne Termin (``0 0 30 2 *``) feuerte sonst still nie.
+            # CroniterBadDateError erbt von ValueError, muss also vorher stehen.
             try:
-                croniter(self.cron, datetime.now(UTC))
+                croniter(self.cron, datetime.now(UTC)).get_next(datetime)
+            except CroniterBadDateError as exc:
+                raise ValueError(f"cron never fires: {self.cron!r} has no next fire time") from exc
             except (CroniterBadCronError, ValueError) as exc:
                 raise ValueError(f"cron is not a valid expression: {self.cron!r} ({exc})") from exc
 
@@ -260,11 +268,9 @@ class TaskInfo:
         # - unique_until set without unique_for → silently ignored (no
         #   ValueError to avoid sentinel discrimination on the frozen
         #   dataclass "is the value default or explicit").
+        # - float wird nach den Rohwert-Prüfungen ganzzahlig (E-055).
         if self.unique_for is not None:
-            if self.unique_for == 0:
-                raise ValueError("unique_for=0 is invalid; use None to disable dedup")
-            if self.unique_for < 0:
-                raise ValueError(f"unique_for must be > 0 (got {self.unique_for})")
+            object.__setattr__(self, "unique_for", validate_unique_for(self.unique_for))
         if self.unique_until not in _VALID_UNIQUE_UNTIL:
             raise ValueError(f"unique_until must be one of {sorted(_VALID_UNIQUE_UNTIL)}, got {self.unique_until!r}")
 
@@ -286,7 +292,8 @@ class Task:
     # scalars so there is no shared-state hazard.
     _task_id: str | None = None
     _backend: ResultBackend | None = None
-    _task_start_time: float | None = None
+    _task_start_time: float | None = None  # time.monotonic(): elapsed/ETA
+    _task_started_wall: float | None = None  # time.time(): started_at (F3-15)
     _result_ttl_ms: int = 86_400_000  # 24h fallback
     _last_progress_update: float = 0.0  # instance write shadows on first update
     _progress_final_flushed: bool = False  # single final flush per instance
@@ -410,8 +417,8 @@ class Task:
 
         percent = (current / total * 100.0) if total > 0 else 0.0
         started_at_iso = (
-            datetime.fromtimestamp(self._task_start_time, tz=UTC).isoformat()
-            if self._task_start_time is not None
+            datetime.fromtimestamp(self._task_started_wall, tz=UTC).isoformat()
+            if self._task_started_wall is not None
             else ""
         )
         elapsed = (loop_time - self._task_start_time) if self._task_start_time is not None else 0.0

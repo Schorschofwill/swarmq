@@ -61,6 +61,54 @@ class TestValidateModuleImportable:
         _sys.modules.pop("my_namespace_pkg", None)
 
 
+class TestSyntaxErrorInPackageInit:
+    """F3-05/E-057: ``find_spec`` führt ``pkg/__init__.py`` im Elternprozess aus.
+
+    Ein ``SyntaxError`` dort ist ein Konfigurationsfehler (Exit 78), kein
+    Traceback mit Exit 1.
+    """
+
+    @pytest.fixture
+    def broken_pkg(self, tmp_path, monkeypatch):
+        import sys as _sys
+
+        pkg = tmp_path / "f3_05_broken_pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("def broken(:\n    pass\n", encoding="utf-8")
+        (pkg / "tasks.py").write_text("", encoding="utf-8")
+        monkeypatch.syspath_prepend(str(tmp_path))
+        yield "f3_05_broken_pkg"
+        for name in [n for n in _sys.modules if n.startswith("f3_05_broken_pkg")]:
+            _sys.modules.pop(name, None)
+
+    @pytest.mark.entscheidung("E-057")
+    def test_module_in_a_package_with_a_syntax_error_is_a_configuration_error(self, broken_pkg):
+        from swarmq.process_manager.check import _validate_module_importable
+
+        with pytest.raises(ConfigurationError, match="cannot be imported"):
+            _validate_module_importable(f"{broken_pkg}.tasks")
+
+    @pytest.mark.entscheidung("E-057")
+    def test_configure_hook_in_a_package_with_a_syntax_error_is_a_configuration_error(self, broken_pkg):
+        with pytest.raises(ConfigurationError, match="cannot be imported"):
+            check_worker_config(
+                module="swarmq.cli", reload=False, watch_dir=None, configure=f"{broken_pkg}.hooks:setup"
+            )
+
+    @pytest.mark.entscheidung("E-057")
+    def test_worker_start_ends_with_78_without_traceback(self, broken_pkg, monkeypatch, capsys):
+        from swarmq.cli import main
+        from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
+        monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://guest:guest@f3-05.invalid:5699/")
+        monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://f3-05.invalid:6399/0")
+
+        rc = main(["worker", f"--module={broken_pkg}.tasks"])
+
+        assert rc == CONFIG_ERROR_EXIT_CODE
+        assert "Traceback" not in capsys.readouterr().err
+
+
 class TestConfigureHookPreflight:
     """U5 (R11/KTD5): ``--check`` prueft Syntax und Auffindbarkeit des
     Hook-Moduls -- ohne es zu importieren.

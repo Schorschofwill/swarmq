@@ -24,6 +24,7 @@ from swarmq.contracts import Publisher, ResultBackend
 from swarmq.contracts.coordination import ScheduleStore as ContractScheduleStore
 from swarmq.exceptions import (
     BackendConnectionError,
+    BackendResponseError,
     PublishIndeterminate,
     TaskNotFoundError,
     is_backend_outage,
@@ -80,6 +81,7 @@ class ClientScheduling(ClientScheduleResolve):
         task_id: str,
         ttl_ms: int,
         source: str,
+        dedup_hash: str | None = None,
         **extra_signal_payload: Any,
     ) -> tuple[str, str | None]:
         """Attempt SETNX for the given (task_name, args, kwargs) tuple.
@@ -101,8 +103,13 @@ class ClientScheduling(ClientScheduleResolve):
         signal shape used by ``Client.schedule``, ``_schedule_deferred``,
         and ``schedule_many``. Changing the signal payload now requires
         exactly one edit.
+
+        ``dedup_hash`` (F3-02, KTD5): vorab aus den Argumenten vor der
+        Middleware berechnet; ohne ihn wird er hier aus ``args``/``kwargs``
+        gebildet.
         """
-        dedup_hash = compute_dedup_hash(task_name, args, kwargs)
+        if dedup_hash is None:
+            dedup_hash = compute_dedup_hash(task_name, args, kwargs)
         try:
             existing = await self._backend.claim_unique(
                 dedup_hash,
@@ -188,7 +195,7 @@ class ClientScheduling(ClientScheduleResolve):
         queue: str | None = None,
         delay: float | None = None,
         eta: datetime | None = None,
-        unique_for: int | _MissingType | None = _MISSING,
+        unique_for: float | _MissingType | None = _MISSING,
         unique_until: Literal["start", "completion"] | _MissingType = _MISSING,
         **kwargs: Any,
     ) -> str:
@@ -221,13 +228,14 @@ class ClientScheduling(ClientScheduleResolve):
         if (delay is not None and delay > 0) or eta is not None:
             # Resolve R3.5 dedup up here so deferred path + immediate path
             # apply the same precedence rules (_MISSING → TaskInfo default,
-            # None → dedup off, int → explicit).
+            # None → dedup off, Zahl → explizit, E-055 ganzzahlig).
             resolved_unique_for, resolved_unique_until = self._resolve_unique(task_name, unique_for, unique_until)
             return await self._schedule_deferred(
                 task_name,
                 list(args),
                 kwargs,
                 resolved_queue=resolved_queue,
+                delivery_mode=delivery_mode,
                 delay=delay,
                 eta=eta,
                 unique_for=resolved_unique_for,
@@ -468,7 +476,7 @@ class ClientScheduling(ClientScheduleResolve):
         tasks: list[tuple[str, tuple[Any, ...], dict[str, Any]]],
         queue: str | None = None,
         *,
-        unique_for: int | _MissingType | None = _MISSING,
+        unique_for: float | _MissingType | None = _MISSING,
         unique_until: Literal["start", "completion"] | _MissingType = _MISSING,
     ) -> list[str]:
         """Submit multiple tasks for execution and return their task_ids.
@@ -480,7 +488,7 @@ class ClientScheduling(ClientScheduleResolve):
         ``unique_until`` kwargs override TaskInfo defaults for every
         element (same precedence as the immediate path — _MISSING falls
         through to TaskInfo when a registry is available, None disables
-        dedup, int sets the TTL). Duplicates emit
+        dedup, a number sets the TTL, whole seconds per E-055). Duplicates emit
         ``TASK_DUPLICATE_DETECTED`` with ``batch_index=i`` in the
         payload and the returned list places the existing owner's
         task_id at index ``i`` — list length always equals
@@ -579,6 +587,7 @@ class ClientScheduling(ClientScheduleResolve):
         kwargs: dict[str, Any],
         *,
         resolved_queue: str,
+        delivery_mode: str,
         delay: float | None,
         eta: datetime | None,
         unique_for: int | None = None,
@@ -604,6 +613,11 @@ class ClientScheduling(ClientScheduleResolve):
         E-033) wird als ``source="cli_unique"`` ohne ``dedup_hash`` gespeichert:
         Der Producer hat ueber die Dedup entschieden, der Leader faellt nicht
         auf seine TaskInfo zurueck (E-032 gilt nur fuer ``source="cli"``).
+
+        F3-02 (E-059, KTD5): Reihenfolge Hash aus den Original-Argumenten,
+        ``pre_enqueue``, Claim, Speichern, ``post_enqueue``,
+        ``TASK_ENQUEUED``. Ein Duplikat sieht ``pre_enqueue`` ohne
+        ``post_enqueue``.
         """
         now_ms = int(time.time() * 1000)
         if eta is not None:
@@ -616,9 +630,29 @@ class ClientScheduling(ClientScheduleResolve):
             fire_ts_ms = now_ms + int(delay * 1000)
 
         task_id = str(uuid.uuid7())
+        # KTD5: Hash aus den Argumenten vor der Middleware, wie im sofortigen
+        # Pfad (Claim vor ``pre_enqueue``); eine je Aufruf ergaenzte
+        # ``correlation_id`` darf die Dedup nicht aushebeln.
+        dedup_hash: str | None = None
+        if unique_for is not None:
+            dedup_hash = compute_dedup_hash(task_name, tuple(args), kwargs)
+
+        # F3-02 (E-059): pre_enqueue vor Claim und Speichern; ein Veto
+        # propagiert, es gibt noch nichts zurueckzurollen. ``kwargs`` ist
+        # dasselbe Objekt wie in der Definition (In-place-Aenderungen werden
+        # gespeichert), ``args`` eine Kopie wie im sofortigen Pfad.
+        message_dict: MessageContext = {
+            "task_id": task_id,
+            "task_name": task_name,
+            "queue": resolved_queue,
+            "args": list(args),
+            "kwargs": kwargs,
+            "delivery_mode": delivery_mode,
+        }
+        chain = self._get_chain()
+        await chain.run_pre_enqueue(message_dict)
 
         # --- R3.5 Unit 7: producer-side SETNX before ScheduleStore insert ---
-        dedup_hash: str | None = None
         if unique_for is not None:
             # Fire offset: how long we wait before publish. Use ceiling
             # division so sub-second delays (e.g. delay=0.9) still contribute
@@ -628,13 +662,14 @@ class ClientScheduling(ClientScheduleResolve):
             fire_offset_ms = max(0, fire_ts_ms - now_ms)
             fire_offset_s = (fire_offset_ms + 999) // 1000  # ceiling division
             ttl_ms = (unique_for + int(fire_offset_s)) * 1000
-            dedup_hash, existing = await self._claim_unique_flag(
+            _, existing = await self._claim_unique_flag(
                 task_name,
                 tuple(args),
                 kwargs,
                 task_id,
                 ttl_ms=ttl_ms,
                 source="client.schedule_deferred",
+                dedup_hash=dedup_hash,
             )
             if existing is not None:
                 return existing
@@ -660,9 +695,27 @@ class ClientScheduling(ClientScheduleResolve):
         # orphan window blocking re-schedule of the same args.
         store = self._ensure_schedule_store()
         try:
-            await store.add_schedule(definition)
-        except BaseException:
-            if dedup_hash is not None:
+            added = await store.add_schedule(definition)
+        except BaseException as exc:
+            # Ein Ausfall ist unbestimmt (``sched_add.lua`` ist atomar, der
+            # Eintrag kann feuern): Die Sperre bleibt stehen wie nach
+            # ``PublishIndeterminate`` (E-041, E-059-Nachtrag).
+            if dedup_hash is not None and not is_backend_outage(exc):
                 await self._rollback_unique_claim(dedup_hash, task_id)
             raise
+        if added is False:
+            # F3-01 (E-058): ``False`` heisst seit dem atomaren Speichern nur
+            # noch Konflikt mit einem abweichenden oder verschwundenen
+            # Eintrag; die frische ID wuerde sonst nie feuern. ``is False``:
+            # nur die ausdrueckliche Absage zaehlt. Nach verlorener Antwort
+            # kann das der eigene, schon gefeuerte Eintrag sein: Die Sperre
+            # bleibt stehen und laeuft ueber ihre TTL ab (E-059-Nachtrag).
+            raise BackendResponseError(f"schedule {schedule_name!r} already exists with different content")
+        await chain.run_post_enqueue(message_dict)
+        await self._signal_dispatcher.dispatch(
+            Signal.TASK_ENQUEUED,
+            task_id=task_id,
+            task_name=task_name,
+            queue=resolved_queue,
+        )
         return task_id

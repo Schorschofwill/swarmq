@@ -246,7 +246,7 @@ _ERROR_SEMANTICS: dict[str, dict[str, Any]] = {
     },
     "TaskCancelledError": {
         "origin": "library",
-        "when": ["run", "result"],
+        "when": ["result"],
         "retriable": "no",
         "dlq_on_uncaught": "no",
         "exit_code_on_cli": None,

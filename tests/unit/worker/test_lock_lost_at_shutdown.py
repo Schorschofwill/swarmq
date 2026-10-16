@@ -8,6 +8,12 @@ Test-Liste:
       Meldung ``task_id`` und ``task_name`` (im Shutdown fehlt der
       Log-Kontext des Handlers); ebenso ``release_acquired_locks`` mit der
       vom Keeper zurueckgegebenen Lease
+- [x] F3-12: hat der Shutdown den Registry-Eintrag schon entnommen, gibt
+      ``release_acquired_locks`` nichts frei (kein ``release``, kein
+      ``drop``, kein Log)
+- [x] F3-12: Semaphor-Lock mit zwei Tokens desselben Handlers -- Shutdown
+      raeumt ab, danach der ``finally`` des Handlers -> je Token eine
+      Freigabe, kein ``task_lock_lost``
 """
 
 from __future__ import annotations
@@ -78,3 +84,58 @@ async def test_release_acquired_locks_names_the_task_from_the_lease(swarmq_logs)
     assert lost["task_id"] == "rl-1"
     assert lost["task_name"] == "locked"
     assert lost["stage"] == "release"
+
+
+async def test_release_acquired_locks_skips_tokens_the_shutdown_already_took(swarmq_logs) -> None:
+    from swarmq.logging import get_logger
+    from swarmq.worker.gates.lock import release_acquired_locks
+
+    token = LockToken(name="res-gone", owner="tok", max_concurrency=1)
+    store = MagicMock()
+    store.release = AsyncMock(return_value=False)
+    dropped: list[LockToken] = []
+
+    await release_acquired_locks(
+        store,
+        {},
+        uuid.uuid4(),
+        [token],
+        log=get_logger("swarmq.worker.pipeline"),
+        drop=dropped.append,
+    )
+
+    store.release.assert_not_called()
+    assert dropped == []
+    assert [e for e in swarmq_logs if e["event"] in {"task_lock_lost", "lock_release_failed"}] == []
+
+
+async def test_semaphore_tokens_taken_by_shutdown_are_released_once(worker, swarmq_logs) -> None:
+    from collections import Counter
+
+    from tests.support.inmemory.backend import InMemoryLockStore
+    from tests.support.inmemory.clock import FakeClock
+
+    store = InMemoryLockStore(FakeClock())
+    first = await store.acquire("res-sem", owner="tok-1", ttl_ms=60_000, max_concurrency=2)
+    second = await store.acquire("res-sem", owner="tok-2", ttl_ms=60_000, max_concurrency=2)
+    assert first is not None
+    assert second is not None
+    releases: list[str] = []
+    original_release = store.release
+
+    async def counting_release(token: LockToken) -> bool:
+        releases.append(token.owner)
+        return await original_release(token)
+
+    store.release = counting_release  # type: ignore[method-assign]  # Zaehler um den echten In-Memory-Store
+    handler_id = uuid.uuid4()
+    worker._state = WorkerState.RUNNING
+    worker._lock_manager = store
+    worker._active_handler_locks[handler_id] = [first, second]
+
+    worker._request_shutdown()
+    await worker._execute_shutdown()
+    await worker._release_acquired_locks(handler_id, [first, second])
+
+    assert Counter(releases) == {"tok-1": 1, "tok-2": 1}
+    assert [e for e in swarmq_logs if e["event"] == "task_lock_lost"] == []

@@ -94,6 +94,7 @@ class ValkeyScheduleStore:
         self._report_script = client.register_script(load_script("sched_report"))
         self._report_prune_script = client.register_script(load_script("sched_report_prune"))
         self._prune_script = client.register_script(load_script("sched_prune"))
+        self._add_script = client.register_script(load_script("sched_add"))
 
     def _fired(self, schedfire_key: str) -> str:
         return self._keys.sched_fired(schedfire_key)
@@ -118,13 +119,19 @@ class ValkeyScheduleStore:
     # ------------------------------------------------------------------
 
     async def add(self, name: str, payload: bytes, fire_ts_ms: int | None) -> bool:
-        """Insert-if-absent via HSETNX (Unit 8: kein TOCTOU zwischen
-        HGET und HSET); danach der Fire-Zeitpunkt im Index."""
-        if not await self.hsetnx_schedule_def(name, payload):
-            return False
-        if fire_ts_ms is not None:
-            await self.zadd_schedule(name, fire_ts_ms)
-        return True
+        """Insert-if-absent per ``sched_add.lua``: HSETNX und bei Erfolg der
+        Fire-Zeitpunkt im Index in einem EVAL (F3-01, KTD4). Nach einer
+        verlorenen Antwort ist der Eintrag damit vollständig; die
+        Wiederholung meldet ``False`` (Oneshot-Idempotenz: E-058,
+        ``scheduler.definition``)."""
+        result = await self._run(
+            f"sched_add for {name!r}",
+            self._add_script(
+                keys=[self._defs, self._zset],
+                args=[name, payload, "" if fire_ts_ms is None else fire_ts_ms],
+            ),
+        )
+        return int(result) == 1
 
     async def put(self, name: str, payload: bytes, fire_ts_ms: int | None) -> None:
         await self.hset_schedule_def(name, payload)

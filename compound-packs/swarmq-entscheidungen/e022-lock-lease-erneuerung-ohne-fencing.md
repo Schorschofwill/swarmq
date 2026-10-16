@@ -12,7 +12,7 @@ datum: 2026-10-09
 status: gilt
 quelle:
   - docs/befunde/betrieb-ueber-zeit-2026-10.md:139 (Entscheidungen, BZ-25)
-  - docs/befunde/betrieb-ueber-zeit-2026-10.md:112 (Nachweis BZ-25: behoben bis auf blockierten Event-Loop)
+  - 'docs/befunde/betrieb-ueber-zeit-2026-10.md:112 (Nachweis BZ-25: behoben bis auf blockierten Event-Loop)'
   - docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:54 (Abschnitt 1, BZ-25 weiter erneuern)
   - docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:510 (MR 13, BZ-25)
   - docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:730 (Abschnitt 7, BZ-25/05 gemischte hard_timeout)

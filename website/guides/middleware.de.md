@@ -24,8 +24,8 @@ jeden Task wrappen musst.
 
 | Hook | Wo er läuft | Wird aufgerufen | Exception-Verhalten |
 |---|---|---|---|
-| `pre_enqueue` | Client | Vor `broker.publish` | Propagiert — bricht das Enqueue ab |
-| `post_enqueue` | Client | Nach Broker-Confirm | Geschluckt — auf ERROR geloggt |
+| `pre_enqueue` | Client | Vor `broker.publish` oder bevor ein `delay`/`eta`-Task gespeichert wird | Propagiert — bricht das Enqueue ab |
+| `post_enqueue` | Client | Nach Broker-Confirm oder nachdem ein `delay`/`eta`-Task gespeichert ist | Geschluckt — auf ERROR geloggt |
 | `pre_execute` | Worker | Nach Zustellung, vor `Task.run()` | Geschluckt — auf ERROR geloggt |
 | `post_execute` | Worker | Nach `run()`-Erfolg | Geschluckt — auf ERROR geloggt |
 | `on_error` | Worker | Wenn `run()` raist | Geschluckt — auf ERROR geloggt |
@@ -34,6 +34,22 @@ jeden Task wrappen musst.
 Nur `pre_enqueue` kann die Operation vetoen. Jeder andere Hook ist
 beobachtend: Er kann aufzeichnen, loggen oder State erweitern,
 aber Raisen dort ändert den Task-Pfad nicht.
+
+### Verzögerte Tasks (`delay`/`eta`)
+
+Bei `schedule(..., delay=...)` und `schedule(..., eta=...)` laufen die
+Enqueue-Hooks beim Aufruf von `schedule()`, nicht erst, wenn der
+Scheduler-Leader den Task später feuert. Ein Veto in `pre_enqueue`
+bricht den Aufruf ab, bevor etwas gespeichert oder ein Unique-Flag
+gesetzt wird. Änderungen, die eine Middleware in place an
+`message["kwargs"]` macht, werden mit dem Task gespeichert und vom
+Leader beim Fire publiziert. Cron-Fires laufen ohne die Enqueue-Hooks.
+
+Anders als bei einem sofortigen `schedule()` hat ein verzögerter
+Aufruf, der sich als Duplikat herausstellt (`unique_for`), `pre_enqueue`
+schon durchlaufen: Die Middleware sieht `pre_enqueue` ohne folgendes
+`post_enqueue`. Räume Zustand je Aufruf deshalb nicht allein in
+`post_enqueue` auf.
 
 ### Workflow-Schritte
 
@@ -71,6 +87,10 @@ class TimingMiddleware(Middleware):
         # Per-Task-Startzeiten, gekeyt auf task_id. Middleware-Instanzen
         # sind über Tasks geteilt, daher task_id für Isolation nutzen.
         self._starts: dict[str, float] = {}
+
+    def forget(self, task_id: str) -> None:
+        # Ein abgebrochener Task bekommt weder post_execute noch on_error.
+        self._starts.pop(task_id, None)
 
     async def pre_execute(self, message: MessageContext) -> None:
         self._starts[message["task_id"]] = time.perf_counter()
@@ -142,6 +162,35 @@ und vor oder nach `schedule()`. Die Kette wird pro Operation
 aufgelöst, neu hinzugefügte Middleware ist ab dem nächsten Aufruf
 sichtbar.
 
+**Welche App.** Hooks laufen an der App, die die Arbeit macht:
+`pre_enqueue` und `post_enqueue` an der App, die `schedule()` aufruft,
+`pre_execute`, `post_execute`, `on_error` und `on_retry` an der App des
+Workers. Workflow-Folgeschritte stellt der Advancer im Worker ein;
+deren `pre_enqueue` und `post_enqueue` laufen deshalb ebenfalls an der
+App des Workers. `swarmq worker` baut seine eigene App; Middleware an
+einer modulweiten `app` in `myapp/tasks.py` läuft im Worker also nie.
+Füge sie in einem `--configure`-Hook hinzu – auch Enqueue-Middleware,
+die jeden Workflow-Schritt sehen muss:
+
+```python title="myapp/hooks.py"
+from swarmq import Signal, SwarmQ
+
+from myapp.middleware import TimingMiddleware
+
+
+def setup(app: SwarmQ) -> None:
+    timing = TimingMiddleware()
+    app.add_middleware(timing)
+
+    @app.on_signal(Signal.TASK_CANCELLED)
+    async def forget_cancelled(task_id, **kwargs):
+        timing.forget(task_id)  # siehe „State zwischen Hooks teilen“
+```
+
+```bash
+swarmq worker --module myapp.tasks --configure myapp.hooks:setup
+```
+
 ## Ausführungsreihenfolge
 
 ```mermaid
@@ -157,13 +206,20 @@ Bei Fehler läuft die Vorwärtskette trotzdem (`pre_execute` jeweils),
 `run` raist, dann läuft `on_error` in Rückwärtsreihenfolge für
 jede Middleware.
 
+Ein Cancel (`app.cancel()`) ist kein Fehler: Nach `pre_execute` läuft
+weder `on_error` noch `post_execute`; nur das Signal `TASK_CANCELLED`
+feuert.
+
 ## State zwischen Hooks teilen
 
 Drei Idiome, in Präferenzreihenfolge:
 
 1. **Keyed Dict auf der Middleware-Instanz**, wie im Timing-Beispiel
-   oben. Cleanup bei `post_execute` und `on_error`. Funktioniert,
-   weil Middleware singleton pro `SwarmQ`-App ist.
+   oben. Cleanup bei `post_execute` und `on_error`, für abgebrochene
+   Tasks zusätzlich beim Signal `TASK_CANCELLED` (siehe den Hook unter
+   [Middleware registrieren](#middleware-registrieren)); sonst bleibt
+   je abgebrochenem Task ein Eintrag liegen. Funktioniert, weil
+   Middleware singleton pro `SwarmQ`-App ist.
 2. **Context Vars.** Nutze `contextvars.ContextVar` für Werte, die
    über `await`-Grenzen in den Task-Body selbst propagieren sollen
    — OpenTelemetry-Trace-IDs, Request-IDs.
@@ -213,17 +269,19 @@ machen.
 
 ## Verifizieren
 
-Füge deine Middleware hinzu, starte den Worker mit `--log-level
-DEBUG` und `--log-format human`, und plane einen Task:
+Füge deine Middleware in einem `--configure`-Hook hinzu, starte den
+Worker mit `--log-level DEBUG` und `--log-format human`, und plane
+einen Task:
 
 ```bash
-swarmq worker --module myapp.tasks --log-level DEBUG --log-format human
+swarmq worker --module myapp.tasks --configure myapp.hooks:setup \
+  --log-level DEBUG --log-format human
 ```
 
-Du solltest bei jedem Task Log-Einträge des Hooks sehen. Wenn
-nichts erscheint, prüfe, ob die Middleware-Klasse an derselben
-`SwarmQ`-Instanz registriert ist, die der Worker nutzt (normalerweise
-die `app` in `myapp/tasks.py`).
+Du solltest bei jedem Task Log-Einträge des Hooks sehen. Wenn nichts
+erscheint, prüfe, ob der Worker mit `--configure` startet und der Hook
+die Middleware hinzufügt. Middleware an einer modulweiten `app` in
+`myapp/tasks.py` hängt nicht an der App des Workers.
 
 ## Siehe auch
 

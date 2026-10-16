@@ -4,6 +4,7 @@ schedule/schedule_many, Delay/ETA, Unique/Dedup, Middleware+Signale."""
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock
 
@@ -11,10 +12,13 @@ import pytest
 
 from swarmq.client import Client
 from swarmq.exceptions import (
+    BackendConnectionError,
+    BackendResponseError,
     TaskNotFoundError,
 )
+from swarmq.middleware import MessageContext, Middleware, MiddlewareChain
 from swarmq.registry import TaskRegistry
-from swarmq.serialization import decode_json
+from swarmq.serialization import compute_dedup_hash, decode_json
 from swarmq.signals import Signal, SignalDispatcher
 from swarmq.task import DeliveryMode, Task, TaskInfo
 
@@ -437,7 +441,7 @@ class TestClientMiddlewareAndSignals:
         bug: before the fix, Client captured a MiddlewareChain snapshot at
         __init__ time and appending to the source list had no effect.
         """
-        from swarmq.middleware import MessageContext, Middleware, MiddlewareChain
+        from swarmq.middleware import Middleware, MiddlewareChain
 
         # Live list — tests mutate this after Client construction.
         live_middlewares: list[Middleware] = []
@@ -491,7 +495,7 @@ class TestClientMiddlewareAndSignals:
         registry,
     ):
         """A real MiddlewareChain instance is wrapped in a lambda internally."""
-        from swarmq.middleware import MessageContext, Middleware, MiddlewareChain
+        from swarmq.middleware import Middleware, MiddlewareChain
 
         class Spy(Middleware):
             def __init__(self) -> None:
@@ -540,7 +544,7 @@ class TestClientMiddlewareAndSignals:
 @pytest.mark.asyncio
 async def test_schedule_resolves_delivery_mode_from_registry(broker, backend):
     """Registered task with FIRE_AND_FORGET -> message_dict has that value."""
-    from swarmq.middleware import MessageContext, Middleware, MiddlewareChain
+    from swarmq.middleware import Middleware, MiddlewareChain
 
     captured: list[dict[str, Any]] = []
 
@@ -577,7 +581,7 @@ async def test_schedule_resolves_delivery_mode_from_registry(broker, backend):
 @pytest.mark.asyncio
 async def test_schedule_default_delivery_mode_without_registry(broker, backend):
     """No registry + explicit queue -> default delivery_mode is 'at_least_once'."""
-    from swarmq.middleware import MessageContext, Middleware, MiddlewareChain
+    from swarmq.middleware import Middleware, MiddlewareChain
 
     captured: list[dict[str, Any]] = []
 
@@ -1060,6 +1064,7 @@ class TestClientUniqueDeferred:
         assert definition.source == "cli"
         assert definition.dedup_hash is None
 
+    @pytest.mark.entscheidung("E-066")
     async def test_deferred_with_unique_for_sets_flag_and_persists_hash(
         self,
         client_setnx,
@@ -1090,6 +1095,7 @@ class TestClientUniqueDeferred:
         assert definition.source == "cli_unique"
         assert definition.dedup_hash == dedup_hash
 
+    @pytest.mark.entscheidung("E-066")
     async def test_deferred_duplicate_returns_existing_and_skips_store(
         self,
         client_setnx,
@@ -1147,6 +1153,7 @@ class TestClientUniqueDeferred:
         assert received[0]["task_name"] == "add"
 
     @pytest.mark.usefixtures("patched_schedule_store")
+    @pytest.mark.entscheidung("E-066")
     async def test_deferred_with_eta_ttl_covers_fire_plus_unique_for(
         self,
         client_setnx,
@@ -1753,3 +1760,328 @@ class TestClientUniqueOwnClaimAfterRetry:
         assert broker.publish.await_count == 2
         assert [decode_json(call.args[1])["task"]["id"] for call in broker.publish.await_args_list] == ids
         assert duplicates == []
+
+
+class _RecordingMiddleware(Middleware):
+    """Zeichnet Enqueue-Hooks samt ``message``-Objekt in ``events`` auf."""
+
+    def __init__(self, events: list[tuple[str, MessageContext | None]]) -> None:
+        self.events = events
+
+    @override
+    async def pre_enqueue(self, message: MessageContext) -> None:
+        self.events.append(("pre_enqueue", message))
+
+    @override
+    async def post_enqueue(self, message: MessageContext) -> None:
+        self.events.append(("post_enqueue", message))
+
+
+class _CorrelationMiddleware(Middleware):
+    """Ergänzt je Aufruf eine eigene ``corr`` in ``kwargs`` (in place)."""
+
+    @override
+    async def pre_enqueue(self, message: MessageContext) -> None:
+        message["kwargs"]["corr"] = uuid.uuid4().hex
+
+
+class TestClientDeferredEnqueueMiddleware:
+    """F3-02 (Plan 2026-10-15-1138, U15, KTD5; E-059): ``schedule(delay=/eta=)``
+    läuft durch dieselbe Enqueue-Middleware wie der sofortige Pfad.
+
+    Test-Liste:
+    - [x] ``post_enqueue`` nach dem Speichern genau einmal, mit demselben ``message_dict``
+    - [x] Dedup-Hash aus den Original-Argumenten, stabil gegen ``kwargs``-Ergänzungen
+    - [x] ``add_schedule`` meldet ``False`` (Konflikt, F3-01) → ``BackendResponseError``, Claim bleibt (ohne Claim: nichts freizugeben)
+    - [x] Duplikat: ``pre_enqueue`` ohne ``post_enqueue`` und ohne ``TASK_ENQUEUED``
+    - [x] Veto: kein ``post_enqueue``
+    - [x] Veto bei einem Duplikat: Veto statt bestehender ``task_id`` (E-066-Nachtrag)
+    - [x] ``message_dict``: ``task_id`` der Rückgabe, Queue mit Prioritätssuffix, ``delivery_mode``
+    - [x] ``eta`` in der Vergangenheit, ``unique_for=0``: ``ValueError`` ohne ``pre_enqueue``
+    - [x] ``add_schedule`` wirft: kein ``post_enqueue``, kein ``TASK_ENQUEUED``
+    - [x] Fehlerantwort oder anderer Fehler beim Speichern: Claim frei
+    - [x] Backend-Ausfall beim Speichern (unbestimmt): Claim bleibt
+    - [x] Änderung an ``args`` durch die Middleware wirkt nicht (wie sofortiger Pfad)
+    """
+
+    @pytest.fixture
+    def events(self) -> list[tuple[str, MessageContext | None]]:
+        return []
+
+    @pytest.fixture
+    def dispatcher(self) -> MagicMock:
+        d = MagicMock()
+        d.dispatch = AsyncMock()
+        return d
+
+    @pytest.fixture
+    def client_mw(self, broker, backend, registry, events, dispatcher):
+        return Client(
+            broker=broker,
+            backend=backend,
+            registry=registry,
+            middleware_chain=MiddlewareChain([_RecordingMiddleware(events)]),
+            signal_dispatcher=dispatcher,
+        )
+
+    @staticmethod
+    def _enqueued(dispatcher: MagicMock) -> list[Any]:
+        return [c for c in dispatcher.dispatch.await_args_list if c.args[0] is Signal.TASK_ENQUEUED]
+
+    @pytest.mark.entscheidung("E-059")
+    @pytest.mark.timeout(5)
+    async def test_post_enqueue_runs_once_after_store_with_the_same_message(
+        self, client_mw, patched_schedule_store, events
+    ):
+        def _stored(_definition: object) -> bool:
+            events.append(("store", None))
+            return True
+
+        patched_schedule_store.add_schedule = AsyncMock(side_effect=_stored)
+
+        await client_mw.schedule("add", 1, queue="math", delay=30)
+
+        assert [name for name, _ in events] == ["pre_enqueue", "store", "post_enqueue"]
+        assert events[2][1] is events[0][1]
+
+    @pytest.mark.entscheidung("E-059")
+    @pytest.mark.timeout(5)
+    async def test_dedup_hash_comes_from_the_arguments_before_the_middleware(
+        self, broker, backend, registry, patched_schedule_store
+    ):
+        owners: dict[str, str] = {}
+        claims: list[str] = []
+
+        async def _setnx(dedup_hash: str, task_id: str, _ttl_ms: int, **_kw: Any) -> str | None:
+            claims.append(dedup_hash)
+            existing = owners.get(dedup_hash)
+            if existing is None:
+                owners[dedup_hash] = task_id
+            return existing
+
+        backend.claim_unique = AsyncMock(side_effect=_setnx)
+        client = Client(
+            broker=broker,
+            backend=backend,
+            registry=registry,
+            middleware_chain=MiddlewareChain([_CorrelationMiddleware()]),
+        )
+
+        first = await client.schedule("add", 1, queue="math", delay=30, unique_for=60, user="u-1")
+        second = await client.schedule("add", 1, queue="math", delay=30, unique_for=60, user="u-1")
+        immediate = await client.schedule("add", 1, queue="math", unique_for=60, user="u-1")
+
+        expected = compute_dedup_hash("add", (1,), {"user": "u-1"})
+        assert claims == [expected, expected, expected]
+        assert second == first
+        assert immediate == first
+        patched_schedule_store.add_schedule.assert_awaited_once()
+
+    @pytest.mark.entscheidung("E-059")
+    @pytest.mark.timeout(5)
+    async def test_store_conflict_raises_and_keeps_the_own_claim(
+        self, client_mw, backend, patched_schedule_store, events
+    ):
+        # Ein Konflikt beim Oneshot mit frischer UUID kann nach verlorener
+        # Antwort nur heissen, dass der eigene Eintrag schon gefeuert wurde
+        # (E-058): Die Sperre bleibt stehen, ein Wiederholversuch laeuft
+        # nicht doppelt.
+        backend.claim_unique = AsyncMock(return_value=None)
+        backend.release_unique = AsyncMock()
+        patched_schedule_store.add_schedule = AsyncMock(return_value=False)
+
+        with pytest.raises(BackendResponseError, match="oneshot:"):
+            await client_mw.schedule("add", 1, queue="math", delay=30, unique_for=60)
+
+        backend.release_unique.assert_not_awaited()
+        assert [name for name, _ in events] == ["pre_enqueue"]
+
+    @pytest.mark.entscheidung("E-059")
+    @pytest.mark.timeout(5)
+    async def test_duplicate_sees_pre_enqueue_without_post_enqueue_or_signal(
+        self, client_mw, backend, patched_schedule_store, events, dispatcher
+    ):
+        backend.claim_unique = AsyncMock(return_value="existing-id")
+
+        result = await client_mw.schedule("add", 1, queue="math", delay=30, unique_for=60)
+
+        assert result == "existing-id"
+        assert [name for name, _ in events] == ["pre_enqueue"]
+        assert self._enqueued(dispatcher) == []
+        patched_schedule_store.add_schedule.assert_not_awaited()
+
+    @pytest.mark.entscheidung("E-059")
+    @pytest.mark.timeout(5)
+    async def test_veto_skips_post_enqueue(self, broker, backend, registry, patched_schedule_store, events):
+        class _RecordingVeto(_RecordingMiddleware):
+            @override
+            async def pre_enqueue(self, message: MessageContext) -> None:
+                raise PermissionError("veto")
+
+        client = Client(
+            broker=broker,
+            backend=backend,
+            registry=registry,
+            middleware_chain=MiddlewareChain([_RecordingVeto(events)]),
+        )
+
+        with pytest.raises(PermissionError, match="veto"):
+            await client.schedule("add", 1, queue="math", delay=30)
+
+        assert events == []
+        patched_schedule_store.add_schedule.assert_not_awaited()
+
+    @pytest.mark.entscheidung("E-066")
+    @pytest.mark.timeout(5)
+    async def test_veto_on_a_deferred_duplicate_propagates_instead_of_the_existing_id(
+        self, broker, backend, registry, patched_schedule_store
+    ):
+        class _Veto(Middleware):
+            @override
+            async def pre_enqueue(self, message: MessageContext) -> None:
+                raise PermissionError("veto")
+
+        backend.claim_unique = AsyncMock(return_value="existing-id")
+        client = Client(
+            broker=broker,
+            backend=backend,
+            registry=registry,
+            middleware_chain=MiddlewareChain([_Veto()]),
+        )
+
+        with pytest.raises(PermissionError, match="veto"):
+            await client.schedule("add", 1, queue="math", delay=30, unique_for=60)
+
+        backend.claim_unique.assert_not_awaited()
+        patched_schedule_store.add_schedule.assert_not_awaited()
+
+    @pytest.mark.timeout(5)
+    async def test_message_carries_task_id_priority_queue_and_delivery_mode(
+        self, broker, backend, patched_schedule_store, events
+    ):
+        registry = MagicMock()
+        registry.has = MagicMock(return_value=True)
+        entry = MagicMock()
+        entry.task_info = TaskInfo(
+            name="fire",
+            queues=["ff"],
+            delivery=DeliveryMode.FIRE_AND_FORGET,
+            priority="high",
+        )
+        registry.get_entry = MagicMock(return_value=entry)
+        client = Client(
+            broker=broker,
+            backend=backend,
+            registry=registry,
+            middleware_chain=MiddlewareChain([_RecordingMiddleware(events)]),
+        )
+
+        task_id = await client.schedule("fire", 1, delay=30)
+
+        message = events[0][1]
+        assert message is not None
+        assert (message["task_id"], message["task_name"], message["queue"], message["delivery_mode"]) == (
+            task_id,
+            "fire",
+            "ff.high",
+            "fire_and_forget",
+        )
+        assert patched_schedule_store.add_schedule.await_args.args[0].queue == "ff.high"
+
+    @pytest.mark.entscheidung("E-059")
+    @pytest.mark.timeout(5)
+    @pytest.mark.parametrize(
+        "call_kwargs",
+        [
+            pytest.param({"eta": datetime.now(UTC) - timedelta(hours=1)}, id="eta-past"),
+            pytest.param({"delay": 30, "unique_for": 0}, id="unique_for-0"),
+        ],
+    )
+    async def test_validation_errors_come_before_pre_enqueue(
+        self, client_mw, backend, patched_schedule_store, events, call_kwargs
+    ):
+        backend.claim_unique = AsyncMock(return_value=None)
+
+        with pytest.raises(ValueError, match="eta is in the past|unique_for"):
+            await client_mw.schedule("add", 1, queue="math", **call_kwargs)
+
+        assert events == []
+        backend.claim_unique.assert_not_awaited()
+        patched_schedule_store.add_schedule.assert_not_awaited()
+
+    @pytest.mark.entscheidung("E-059")
+    @pytest.mark.timeout(5)
+    async def test_store_outage_keeps_the_claim(self, client_mw, backend, patched_schedule_store, events, dispatcher):
+        # ``sched_add.lua`` ist atomar: Ein Timeout kann einen gespeicherten
+        # Eintrag verdecken, der feuert. Wie bei ``PublishIndeterminate``
+        # (E-041) bleibt die Sperre stehen.
+        backend.claim_unique = AsyncMock(return_value=None)
+        backend.release_unique = AsyncMock()
+        patched_schedule_store.add_schedule = AsyncMock(side_effect=BackendConnectionError("timeout"))
+
+        with pytest.raises(BackendConnectionError, match="timeout"):
+            await client_mw.schedule("add", 1, queue="math", delay=30, unique_for=60)
+
+        assert [name for name, _ in events] == ["pre_enqueue"]
+        assert self._enqueued(dispatcher) == []
+        backend.release_unique.assert_not_awaited()
+
+    @pytest.mark.entscheidung("E-059")
+    @pytest.mark.timeout(5)
+    @pytest.mark.parametrize(
+        "error",
+        [
+            pytest.param(BackendResponseError("WRONGTYPE"), id="error-reply"),
+            pytest.param(RuntimeError("store down"), id="other-error"),
+        ],
+    )
+    async def test_store_error_reply_skips_post_enqueue_and_signal_and_releases_the_claim(
+        self, client_mw, backend, patched_schedule_store, events, dispatcher, error
+    ):
+        # Eine Fehlerantwort heisst: nichts gespeichert (E-052). Die eigene
+        # Sperre wird owner-geprueft freigegeben.
+        backend.claim_unique = AsyncMock(return_value=None)
+        backend.release_unique = AsyncMock()
+        patched_schedule_store.add_schedule = AsyncMock(side_effect=error)
+
+        with pytest.raises(type(error)):
+            await client_mw.schedule("add", 1, queue="math", delay=30, unique_for=60)
+
+        definition = patched_schedule_store.add_schedule.await_args.args[0]
+        assert [name for name, _ in events] == ["pre_enqueue"]
+        assert self._enqueued(dispatcher) == []
+        backend.release_unique.assert_awaited_once()
+        assert backend.release_unique.await_args.args == (definition.dedup_hash, definition.task_id)
+
+    @pytest.mark.entscheidung("E-059")
+    @pytest.mark.timeout(5)
+    async def test_middleware_change_to_args_is_not_stored(self, broker, backend, registry, patched_schedule_store):
+        class _ArgsChanger(Middleware):
+            @override
+            async def pre_enqueue(self, message: MessageContext) -> None:
+                message["args"].append("extra")
+
+        client = Client(
+            broker=broker,
+            backend=backend,
+            registry=registry,
+            middleware_chain=MiddlewareChain([_ArgsChanger()]),
+        )
+
+        await client.schedule("add", 1, queue="math", delay=30)
+
+        assert patched_schedule_store.add_schedule.await_args.args[0].args == (1,)
+
+    @pytest.mark.entscheidung("E-059")
+    @pytest.mark.timeout(5)
+    async def test_store_conflict_without_unique_for_raises_without_release(
+        self, client_mw, backend, patched_schedule_store, dispatcher
+    ):
+        backend.release_unique = AsyncMock()
+        patched_schedule_store.add_schedule = AsyncMock(return_value=False)
+
+        with pytest.raises(BackendResponseError, match="oneshot:"):
+            await client_mw.schedule("add", 1, queue="math", delay=30)
+
+        backend.release_unique.assert_not_awaited()
+        assert self._enqueued(dispatcher) == []

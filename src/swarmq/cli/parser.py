@@ -368,7 +368,11 @@ def _add_worker_parser(subparsers: Any) -> None:
             "all worker processes stay <= 65535 and do not overlap, the "
             "logging settings and --log-config (dictConfig probe), pool "
             "constraints (--pool cpu with --autoscale) and the "
-            "--max-processes headroom. Prints a JSON summary to "
+            "--max-processes headroom, and builds the worker configuration "
+            "from the SWARMQ_* variables like the supervisor's pre-flight, "
+            "so every value the start rejects with exit 78 fails here too "
+            "(missing SWARMQ_BROKER_URL/SWARMQ_BACKEND_URL are not checked). "
+            "Prints a JSON summary to "
             "stdout, exits 0 on success or 1 on any validation error. "
             "Does NOT connect to broker or backend."
         ),

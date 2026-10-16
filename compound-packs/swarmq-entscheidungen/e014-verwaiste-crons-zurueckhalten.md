@@ -13,7 +13,7 @@ quelle:
   - docs/befunde/betrieb-ueber-zeit-2026-10.md:131 (Entscheidungen, BZ-11)
   - docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:48 (Abschnitt 1, BZ-11 zurückhalten, nicht verwerfen)
   - docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:437 (MR 11, BZ-11)
-  - docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:670 (Abschnitt 6, MR 11: terminaler Pfad für unbekannte Tasks ist dead_letter, Georg 2026-10-10)
+  - 'docs/plans/2026-10-09-2314-fix-betrieb-ueber-zeit-plan.md:670 (Abschnitt 6, MR 11: terminaler Pfad für unbekannte Tasks ist dead_letter, Georg 2026-10-10)'
 tests:
   - tests/unit/scheduler/test_unowned.py::test_unowned_cron_is_held_instead_of_fired
   - tests/unit/scheduler/test_unowned.py::test_hold_logs_and_signals_only_on_the_transition

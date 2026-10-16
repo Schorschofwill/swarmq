@@ -19,7 +19,7 @@
           "type": "str"
         }
       ],
-      "help": "Read-only check of the environment swarmq runs in: Valkey eviction policy, maxmemory, memory, AOF, version and cluster mode, and the grace period the shutdown timeout needs. With SWARMQ_BROKER_URL also the queues workers report: orphaned queues (messages, no consumer, no live worker) and missing .XQ dead-letter queues. Run it with the new swarmq version before an upgrade. Exit 0 when nothing blocks, 78 when a worker would refuse to start (evicting maxmemory-policy under SWARMQ_VALKEY_EVICTION_CHECK=strict), 1 on errors. Not the same as 'swarmq worker --check'.",
+      "help": "Read-only check of the environment swarmq runs in: Valkey eviction policy, maxmemory, memory, AOF, version and cluster mode, and the grace period the shutdown timeout needs. With SWARMQ_BROKER_URL also the queues workers report: orphaned queues (messages, no consumer, no live worker) and missing .XQ dead-letter queues. Run it with the new swarmq version before an upgrade. Exit 0 when nothing blocks, 78 when a worker would refuse to start (evicting maxmemory-policy under SWARMQ_VALKEY_EVICTION_CHECK=strict, or any SWARMQ_* value the worker rejects, checked before connecting), 1 on errors. Not the same as 'swarmq worker --check'.",
       "path": "check"
     },
     {
@@ -570,7 +570,7 @@
           "flags": [
             "--check"
           ],
-          "help": "Dry-run validation mode. Verify --module is importable (--check imports --module and validates the dependency injection of its tasks like the worker start), (with --reload) that 'watchfiles' is installed + watch-dirs resolve, that the --metrics-port/--health-port ranges across all worker processes stay <= 65535 and do not overlap, the logging settings and --log-config (dictConfig probe), pool constraints (--pool cpu with --autoscale) and the --max-processes headroom. Prints a JSON summary to stdout, exits 0 on success or 1 on any validation error. Does NOT connect to broker or backend.",
+          "help": "Dry-run validation mode. Verify --module is importable (--check imports --module and validates the dependency injection of its tasks like the worker start), (with --reload) that 'watchfiles' is installed + watch-dirs resolve, that the --metrics-port/--health-port ranges across all worker processes stay <= 65535 and do not overlap, the logging settings and --log-config (dictConfig probe), pool constraints (--pool cpu with --autoscale) and the --max-processes headroom, and builds the worker configuration from the SWARMQ_* variables like the supervisor's pre-flight, so every value the start rejects with exit 78 fails here too (missing SWARMQ_BROKER_URL/SWARMQ_BACKEND_URL are not checked). Prints a JSON summary to stdout, exits 0 on success or 1 on any validation error. Does NOT connect to broker or backend.",
           "name": "--check",
           "nargs": 0,
           "positional": false,
