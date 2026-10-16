@@ -261,6 +261,12 @@ async def test_a_deadline_while_waiting_cancels_and_collects_the_child(unretriev
     assert unretrieved == []
 
 
+#: Frist fuer Tests, in denen sie erst am zweiten, nie bereiten Kanalaufbau
+#: reissen soll. Langsamer Unit-Test mit Absicht (je 0.25 s): kuerzer
+#: rissen sie unter CI-Last schon vorher und verfehlten ihre Voraussetzung.
+_DEADLINE_AT_SECOND_READY_S = 0.25
+
+
 async def _never_ready() -> None:
     """``connection.ready()`` einer Verbindung, die nicht wiederkommt."""
     await asyncio.Event().wait()
@@ -291,7 +297,9 @@ async def test_a_deadline_while_reconnecting_after_an_unsent_attempt_is_not_inde
             await _never_ready()
 
     broker = _broker(dead, ready=AsyncMock(side_effect=_ready_once))
-    broker.publish_timeout_s = 0.02
+    # Die Frist reisst ohnehin am haengenden zweiten Kanalaufbau; 0.25 s
+    # laesst den Schritten davor Luft (20 ms rissen unter CI-Last vorher).
+    broker.publish_timeout_s = _DEADLINE_AT_SECOND_READY_S
     publish = asyncio.create_task(broker.publish("tasks", b"{}"))
     await dead.next_frame()  # eingereiht, nie geschrieben
     dead.lose_connection(AMQPConnectionError(_LOST))
@@ -317,7 +325,9 @@ async def test_a_deadline_after_a_nacked_then_an_unsent_attempt_stays_indetermin
             await _never_ready()
 
     broker = _broker(transport, ready=AsyncMock(side_effect=_ready_once))
-    broker.publish_timeout_s = 0.02
+    # Die Frist reisst ohnehin am haengenden zweiten Kanalaufbau; 0.25 s
+    # laesst den Schritten davor Luft (20 ms rissen unter CI-Last vorher).
+    broker.publish_timeout_s = _DEADLINE_AT_SECOND_READY_S
     publish = asyncio.create_task(broker.publish("tasks", b"{}"))
     frame = await transport.next_frame()
     frame.drain()
