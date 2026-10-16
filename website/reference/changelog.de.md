@@ -4,6 +4,14 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 [Keep a Changelog](https://keepachangelog.com/) und
 [Semantic Versioning](https://semver.org/).
 
+## [0.12.2] — 2026-10-16
+
+0.12.2 ist 0.12.2rc1 ohne Codeänderungen. Die Korrekturen und die
+Upgrade-Hinweise (Recycling-Drain, `unique_for=None` bei `delay`/`eta`,
+DLQ-Einträge älterer Worker, Scheduler-Leader) stehen unter
+[0.12.2rc1](#0122rc1-2026-10-15) und gelten unverändert. Installation
+mit `pip install 'swarmq==0.12.*'`; `--pre` ist nicht mehr nötig.
+
 ## [0.12.2rc1] — 2026-10-15
 
 Release-Candidate für 0.12.2 (Installation mit `pip install --pre`).
