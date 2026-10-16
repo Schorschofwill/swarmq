@@ -146,6 +146,11 @@ filterwarnings = [
 ]
 testpaths = ["tests"]
 timeout = 30
+# Hängt ein Test über alle Timeouts hinaus (größtes Marker-Timeout 300 s),
+# schreibt faulthandler die Stacks aller Threads ins Log, auch wenn
+# pytest-timeout schon gefeuert hat oder SIGALRM nicht greift. Anlass: ein
+# Unit-Job hing am 2026-10-16 eine Stunde ohne Ausgabe bei CPU nahe 0.
+faulthandler_timeout = 600
 # Default-Ausschluss der opt-in-Suiten (E2E-Hardening U1.2). Chaos,
 # Stress, Soak, Property, Fuzz, Mutation, Compat laufen nur explizit via
 # `pytest -m chaos` o.ä. — der Dev-Loop bleibt schnell (Regel in AGENTS.md:
