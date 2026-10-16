@@ -48,8 +48,13 @@ def _cleanup_tasks():
     Task._clear_registered_tasks()
 
 
-async def _start_worker(app: SwarmQ) -> asyncio.Task[None]:
-    """Start the worker as a background Task; returns the Task."""
+async def _start_worker(app: SwarmQ, queue: str) -> asyncio.Task[None]:
+    """Start the worker as a background Task; returns the Task.
+
+    Declares ``queue`` first: a publish right after the start must not race
+    the worker's own declare (NO_ROUTE under CI load).
+    """
+    await app.broker.declare_queue(queue)
     worker_task = asyncio.create_task(app.start_worker())
     # Give the worker a moment to connect + declare + consume.
     await asyncio.sleep(0.2)
@@ -106,7 +111,7 @@ class TestPreStartCancelIntegration:
             task_id = await app.schedule("slow_q")
             assert await app.cancel(task_id) is True
 
-            worker_task = await _start_worker(app)
+            worker_task = await _start_worker(app, queue)
             try:
                 # Result should be written quickly — no 5s wait.
                 with pytest.raises(TaskCancelledError):
@@ -168,7 +173,7 @@ class TestPreStartCancelIntegration:
 
         async with SwarmQ(broker, backend, queues=[queue], concurrency=1) as app:
             await app.broker.declare_queue(queue)
-            worker_task = await _start_worker(app)
+            worker_task = await _start_worker(app, queue)
             try:
                 # Schedule + wait for real completion; keep the task_id.
                 task_id = await app.schedule("fast")
@@ -236,7 +241,7 @@ class TestPreStartCancelIntegration:
             task_id = await app.schedule("trace")
             await app.cancel(task_id)
 
-            worker_task = await _start_worker(app)
+            worker_task = await _start_worker(app, queue)
             try:
                 with pytest.raises(TaskCancelledError):
                     await app.get_result(task_id, timeout=3)
@@ -276,7 +281,7 @@ class TestPreStartCancelIntegration:
         backend = ValkeyBackend(valkey_url)
 
         async with SwarmQ(broker, backend, queues=[queue], concurrency=1) as app:
-            worker_task = await _start_worker(app)
+            worker_task = await _start_worker(app, queue)
             try:
                 task_id = await app.schedule("fail_once")
                 # Let the task fail + land in the delay queue.
@@ -327,7 +332,7 @@ class TestRunningCancelIntegration:
         ) as app:
             await app.broker.declare_queue(queue)
 
-            worker_task = await _start_worker(app)
+            worker_task = await _start_worker(app, queue)
             try:
                 task_id = await app.schedule("long_run")
                 # Let the worker dequeue and start run().
@@ -375,7 +380,7 @@ class TestRunningCancelIntegration:
         ) as app:
             await app.broker.declare_queue(queue)
 
-            worker_task = await _start_worker(app)
+            worker_task = await _start_worker(app, queue)
             try:
                 task_id = await app.schedule("timeout_task")
                 # Expect a TaskError (NOT TaskCancelledError).
@@ -440,7 +445,7 @@ class TestRunningCancelIntegration:
         ) as app:
             await app.broker.declare_queue(queue)
 
-            worker_task = await _start_worker(app)
+            worker_task = await _start_worker(app, queue)
             try:
                 long_id = await app.schedule("locked_long")
                 await asyncio.sleep(0.4)  # let it acquire the lock

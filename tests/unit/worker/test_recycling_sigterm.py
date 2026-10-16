@@ -224,7 +224,8 @@ def _cancel_times(task: asyncio.Task[Any]) -> list[float]:
 
 
 async def test_a_late_sigterm_never_extends_a_short_recycling_drain(worker: Any, broker: Any) -> None:
-    worker._config.shutdown_timeout = 0.08  # drain_until 0.04 s
+    worker._config.shutdown_timeout = 0.08
+    drain_until = shutdown_budget(0.08, supervised=False).drain_until  # 0.04 s
     worker._drain_timeout_override = 0.05  # Recycling-Frist endet vor SIGTERM + drain_until
     worker._state = WorkerState.RUNNING
     worker._request_shutdown()  # wie request_recycle
@@ -238,14 +239,18 @@ async def test_a_late_sigterm_never_extends_a_short_recycling_drain(worker: Any,
 
     assert sigterms
     assert task.cancelled()
-    assert started + 0.05 - _EPS <= cancelled_at[0] < started + 0.05 + _EPS
+    # Obergrenze ist das Ende, das ein verlaengernder SIGTERM ergaebe; die
+    # genaue Frist pruefen die berechneten Endfristen unten (CI-Last verzoegert
+    # den Abbruch selbst um mehr als _EPS).
+    assert started + 0.05 - _EPS <= cancelled_at[0] < sigterms[0] + drain_until
     deadlines = [d for d in _deadlines(broker) if d is not None]
     assert abs(deadlines[0] - (started + 0.05)) < _EPS
     assert max(deadlines) == deadlines[0], "die Endfrist darf nie spaeter werden"
 
 
 async def test_sigterm_before_a_short_recycling_drain_keeps_the_earlier_end(worker: Any, broker: Any) -> None:
-    worker._config.shutdown_timeout = 0.08  # drain_until 0.04 s
+    worker._config.shutdown_timeout = 0.08
+    drain_until = shutdown_budget(0.08, supervised=False).drain_until  # 0.04 s
     worker._drain_timeout_override = 0.02  # endet vor SIGTERM + drain_until
     worker._state = WorkerState.RUNNING
     worker._request_shutdown()  # wie request_recycle
@@ -257,7 +262,9 @@ async def test_sigterm_before_a_short_recycling_drain_keeps_the_earlier_end(work
     await asyncio.wait_for(worker._execute_shutdown(), 2.0)
 
     assert task.cancelled()
-    assert started + 0.02 - _EPS <= cancelled_at[0] < started + 0.02 + _EPS
+    # Obergrenze wie oben: das Ende ab SIGTERM; die genaue Frist pruefen die
+    # berechneten Endfristen.
+    assert started + 0.02 - _EPS <= cancelled_at[0] < started + drain_until
     first = _deadlines(broker)[0]
     assert first is not None
     assert abs(first - (started + 0.02)) < _EPS
