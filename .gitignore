@@ -35,6 +35,10 @@ htmlcov/
 .pytest_cache/
 .mypy_cache/
 
+# Mutmut: Arbeitsverzeichnis und mit `just mutation-holen` geholte Läufe
+mutants/
+mutants-*/
+
 # Claude
 .claude/
 

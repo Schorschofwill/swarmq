@@ -47,9 +47,10 @@ unit *args:
 property *args:
     scripts/run-tests.sh --no-services --suite tests/property -m property "$@"
 
-# Parser-Fuzz (ohne Dienste)
+# Fuzz-Ziele ohne Dienste: alle Dateien unter tests/fuzz ausser
+# test_external_publish_fuzz.py, die chaos_stack braucht (Plan 2026-10-17-0941, R21)
 fuzz *args:
-    scripts/run-tests.sh --no-services tests/fuzz/test_parser_fuzz.py -m fuzz "$@"
+    scripts/run-tests.sh --no-services --suite tests/fuzz --ignore tests/fuzz/test_external_publish_fuzz.py -m fuzz "$@"
 
 # Integration gegen RabbitMQ und Valkey: parallel auf SWARMQ_TEST_WORKERS Prozessen,
 # je in eigener vhost und Valkey-Datenbank (tests/support/services.py), danach
@@ -101,3 +102,39 @@ coverage-gate:
 # fail_under aus drei main-Laeufen anheben (ohne Werte per GitLab-API; scripts/coverage_ratchet.py)
 ratchet *values:
     {{uv_run}} python scripts/coverage_ratchet.py "$@"
+
+# --- Mutation im Container (Plan 2026-10-17-0941, U2; docker/mutation/README.md) ---
+# Docker-Kontext je Aufruf (nie `docker context use`); Standard ist der Lastserver.
+mutation_ctx := env("SWARMQ_MUTATION_CONTEXT", "lastserver")
+mutation_docker := "docker --context " + quote(mutation_ctx)
+mutation_compose := mutation_docker + " compose -f docker/mutation/compose.yml"
+
+# Mutmut-Lauf a (tests/unit) oder b (zusaetzlich tests/integration/backend) bauen und abgekoppelt starten
+mutation-starten lauf:
+    case "$1" in a|b) ;; *) echo "LAUF muss a oder b sein" >&2; exit 2 ;; esac
+    {{mutation_docker}} info > /dev/null || { echo "Kontext {{mutation_ctx}} nicht erreichbar" >&2; exit 1; }
+    if [ -n "$({{mutation_docker}} ps -aq --filter label=swarmq-mutation)$({{mutation_docker}} volume ls -q --filter label=swarmq-mutation)" ]; then echo "Kontext {{mutation_ctx}}: Container oder Volumes eines Mutmut-Laufs vorhanden; erst mutation-holen, dann mutation-abbauen" >&2; exit 1; fi
+    if [ -n "$({{mutation_docker}} ps -q --filter name=loadsuite-runner)" ]; then echo "Kontext {{mutation_ctx}}: ein Loadsuite-Lauf laeuft (KTD10)" >&2; exit 1; fi
+    MUTMUT_LAUF="$1" {{mutation_compose}} --profile "$1" up -d --build --force-recreate mutmut
+    {{mutation_compose}} --profile "$1" ps -a
+    @echo "Status: {{mutation_compose}} logs --tail 20 mutmut"
+
+# Ergebnisse eines Laufs nach mutants-LAUF/ holen und mit mutmut results lokal auswerten
+mutation-holen lauf:
+    case "$1" in a|b) ;; *) echo "LAUF muss a oder b sein" >&2; exit 2 ;; esac
+    rm -rf "mutants-$1.neu" && mkdir "mutants-$1.neu"
+    {{mutation_compose}} cp mutmut:/app/mutants "mutants-$1.neu/mutants"
+    # mutmut results liest pyproject.toml und mutants/<pfad>.meta relativ zum Arbeitsverzeichnis.
+    cp "mutants-$1.neu/mutants/pyproject.toml" "mutants-$1.neu/pyproject.toml"
+    ln -s mutants/src "mutants-$1.neu/src"
+    # Erst auswerten, dann die alte Kopie ersetzen: mutmut schreibt .meta nicht atomar.
+    cd "mutants-$1.neu" && {{uv_run}} --project "{{justfile_directory()}}" mutmut results --all true > ergebnisse.txt
+    rm -rf "mutants-$1" && mv "mutants-$1.neu" "mutants-$1"
+    @echo "mutants-$1/ergebnisse.txt:"
+    sed 's/.*: //' "mutants-$1/ergebnisse.txt" | sort | uniq -c
+
+# Container, Volumes, Netz und gebautes Abbild des Mutmut-Laufs entfernen und pruefen, dass nichts uebrig ist
+mutation-abbauen:
+    {{mutation_compose}} --profile a --profile b down -v --rmi local --remove-orphans
+    rest="$({{mutation_docker}} ps -aq --filter label=swarmq-mutation; {{mutation_docker}} volume ls -q --filter label=swarmq-mutation; {{mutation_docker}} network ls -q --filter label=swarmq-mutation; {{mutation_docker}} image ls -q --filter label=swarmq-mutation)"; if [ -n "$rest" ]; then echo "Uebrig mit Label swarmq-mutation:" >&2; echo "$rest" >&2; exit 1; fi
+    @echo "Kontext {{mutation_ctx}}: keine Objekte mit Label swarmq-mutation"

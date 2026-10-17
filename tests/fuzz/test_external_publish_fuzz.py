@@ -53,7 +53,9 @@ from swarmq.progress import ProgressInfo
 from swarmq.task import Task, TaskInfo
 from tests.chaos.conftest import ChaosStack
 
-pytestmark = [pytest.mark.timeout(300)]
+# Braucht chaos_stack: läuft mit ``just chaos`` (-m chaos), ``just fuzz`` ignoriert sie
+# (Plan 2026-10-17-0941, R21).
+pytestmark = [pytest.mark.timeout(300), pytest.mark.chaos]
 
 
 # ---------------------------------------------------------------------------

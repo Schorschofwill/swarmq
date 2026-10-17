@@ -328,24 +328,43 @@ max-complexity = 12
 # E2E-Hardening Phase 3 U3.10 — mutation testing.
 # Runner scores mutants against the fast unit-test suite.
 [tool.mutmut]
-# mutmut 3: Kernmodule (Zustellung, Gates, Retry, Scheduler, Schedules, Workflows).
+# mutmut 3, Welle 2 (Plan 2026-10-17-0941, R14): Valkey-Backend, Broker,
+# Client, Prozessmanager und CLI. Welle 1 (backoff, keyspace, locking, worker/,
+# broker delivery/publish_phase, scheduler/, Valkey schedules/results,
+# client/schedule, workflow_orchestration) ist gesichtet
+# (docs/befunde/fehlersuche-runde-2-2026-10.md). Läufe im Container:
+# docker/mutation/README.md.
 source_paths = [
-    "src/swarmq/backoff.py",
-    "src/swarmq/keyspace.py",
-    "src/swarmq/locking.py",
-    "src/swarmq/worker/",
-    "src/swarmq/broker/rabbitmq/delivery.py",
-    "src/swarmq/broker/rabbitmq/publish_phase.py",
-    "src/swarmq/scheduler/",
-    "src/swarmq/backend/valkey/schedules.py",
-    "src/swarmq/backend/valkey/results.py",
-    "src/swarmq/client/schedule.py",
-    "src/swarmq/workflow_orchestration.py",
+    "src/swarmq/backend/valkey/__init__.py",
+    "src/swarmq/backend/valkey/chords.py",
+    "src/swarmq/backend/valkey/connection.py",
+    "src/swarmq/backend/valkey/control.py",
+    "src/swarmq/backend/valkey/environment.py",
+    "src/swarmq/backend/valkey/execution_guard.py",
+    "src/swarmq/backend/valkey/locks.py",
+    "src/swarmq/backend/valkey/rate_limit.py",
+    "src/swarmq/backend/valkey/script_pipeline.py",
+    "src/swarmq/broker/rabbitmq/__init__.py",
+    "src/swarmq/broker/rabbitmq/admin.py",
+    "src/swarmq/broker/rabbitmq/arg_conflict.py",
+    "src/swarmq/broker/rabbitmq/blocked.py",
+    "src/swarmq/broker/rabbitmq/connection.py",
+    "src/swarmq/broker/rabbitmq/consumer_watch.py",
+    "src/swarmq/broker/rabbitmq/declarations.py",
+    "src/swarmq/broker/rabbitmq/header_guard.py",
+    "src/swarmq/broker/rabbitmq/redeclare.py",
+    "src/swarmq/broker/rabbitmq/topology.py",
+    "src/swarmq/client/workflows.py",
+    "src/swarmq/client/results.py",
+    "src/swarmq/process_manager/",
+    "src/swarmq/cli/",
 ]
 pytest_add_cli_args_test_selection = ["tests/unit"]
-# Abgewählt: Architektur-/Typ-Tests prüfen den (mutierten) Quelltext; zwei Tests erkennen Tasks am Coroutine-Namen.
-pytest_add_cli_args = ["-p", "no:randomly", "-q", "--no-header", "--ignore", "tests/unit/test_architecture_guards.py", "--ignore", "tests/unit/typing", "--ignore", "tests/unit/test_benchmark_guard.py", "--deselect", "tests/unit/worker/test_lifecycle.py::TestStartupAbortLeavesNoScheduler", "--ignore", "tests/unit/test_logging_architecture.py", "--deselect", "tests/unit/scheduler/test_loop_candidate.py::test_second_start_does_not_start_a_second_report_loop"]
-also_copy = ["tests", "typings", "src/swarmq", "website", "docs", "scripts", "benchmarks", "overrides", "README.md", "AGENTS.md", "mkdocs.yml", "docker-compose.yml", "docker-compose.chaos.yml", "docker-compose.swarmq-dev.yml", "uv.lock"]
+# Abgewählt: Architektur-/Typ-Tests prüfen den (mutierten) Quelltext; zwei Tests erkennen Tasks am Coroutine-Namen;
+# test_no_symbols_added sieht die Trampolin-Namen, die mutmut in swarmq.cli einfügt (Welle 2).
+pytest_add_cli_args = ["-p", "no:randomly", "-q", "--no-header", "--ignore", "tests/unit/test_architecture_guards.py", "--ignore", "tests/unit/typing", "--ignore", "tests/unit/test_benchmark_guard.py", "--deselect", "tests/unit/worker/test_lifecycle.py::TestStartupAbortLeavesNoScheduler", "--ignore", "tests/unit/test_logging_architecture.py", "--deselect", "tests/unit/scheduler/test_loop_candidate.py::test_second_start_does_not_start_a_second_report_loop", "--deselect", "tests/unit/test_cli_module_surface.py::TestPublicSurfaceEquality::test_no_symbols_added"]
+# justfile und compound-packs: tests/unit/test_justfile.py und test_entscheidungsregister.py lesen sie.
+also_copy = ["tests", "typings", "src/swarmq", "website", "docs", "scripts", "benchmarks", "overrides", "README.md", "AGENTS.md", "mkdocs.yml", "docker-compose.yml", "docker-compose.chaos.yml", "docker-compose.swarmq-dev.yml", "uv.lock", "justfile", "compound-packs"]
 # Kein Fork aus dem Hauptprozess: die Testsuite hinterlässt Modulzustand.
 process_isolation = "forkserver"
 forkserver_warmup = "none"

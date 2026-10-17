@@ -172,12 +172,14 @@ def test_all_holds_the_lock_once_across_every_suite(stub: dict[str, str]) -> Non
         "tests/unit",
         "tests/unit",
         "tests/property",
-        "tests/fuzz/test_parser_fuzz.py",
+        "tests/fuzz",
         "tests/integration",
         "tests/integration",
         "tests/e2e",
         "tests/e2e",
     ]
+    # Fuzz ohne Dienste: die Datei mit chaos_stack bleibt draussen (Plan 2026-10-17-0941, R21).
+    assert "--ignore tests/fuzz/test_external_publish_fuzz.py" in calls[3]
     assert all("lockheld=1 lock=held" in call for call in calls)
 
 
