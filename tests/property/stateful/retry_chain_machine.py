@@ -81,7 +81,7 @@ Erlaubte Abweichungen (KTD3):
 - E-009 (Bewusste Folgen): Ein UI-Move ohne Replay-ID (0.11-Altbestand)
   wird als Duplikat verworfen.
 
-Keine erlaubte Abweichung, sondern Teil von R4Z-04 (keine E-ID): Ein
+Keine erlaubte Abweichung, sondern Teil von F4-02 (R4Z-04): Ein
 Zustelllimit-Dead-Letter liegt vor dem Ausführungsschutz und setzt keinen
 Done-Marker (``gates/delivery_count.py``, kein Claim); eine weitere Kopie
 derselben Identität läuft danach. K7 zählt diese DLQ-Kopien deshalb nicht
@@ -90,18 +90,20 @@ mit (Kommentar in ``one_guarded_dead_letter_per_identity``).
 Nicht nachgebildet: Locks (Lock-Maschine U6), ``max_age``, Workflows,
 Unique-Flags, Drain-Abbruch (E-001), Backend-Ausfall.
 
-Verdachte (Bericht ``1-zustandsmodelle.md``, Abschnitt U9):
+Befunde und Entscheidungen (Register
+``docs/befunde/fehlersuche-runde-4-2026-10.md``; Bericht
+``1-zustandsmodelle.md``, Abschnitt U9):
 
-- R4Z-04 verletzt K10: Am Zustelllimit schickt das Delivery-Count-Gate, das
+- F4-02 (R4Z-04) verletzt K10: Am Zustelllimit schickt das Delivery-Count-Gate, das
   vor dem Ausführungsschutz liegt, die Neuzustellung einer abgeschlossenen
   oder überholten Ausführung in die DLQ und speichert ein Fehlerergebnis.
   Ausgeklammert an ``deliver_some`` über ``deliverable`` und die
-  Vorbedingung (Kommentar ``F4-offen (R4Z-04)``); Nachweis ``r4z_04_*`` in
+  Vorbedingung (Kommentar ``F4-02 (R4Z-04)``); Nachweis ``r4z_04_*`` in
   ``retry_chain_scenarios.py``.
-- R4Z-05 ist kein Widerspruch zum Modell, sondern zur Erwartung des Plans:
-  Das Modell folgt dem Code (eine per UI mit Text-Zähler neu publizierte
-  Retry-Kopie gilt als überholt und wird still bestätigt); Nachweis
-  ``r4z_05_*``.
+- R4Z-05 ist eine ENTSCHEIDUNG (E-051): Das Modell folgt dem Code (eine per
+  UI mit Text-Zähler neu publizierte Retry-Kopie gilt als überholt und wird
+  bestätigt); festgeschrieben in
+  ``republished_retry_copy_with_text_count_is_skipped_as_superseded``.
 
 Grenzen gegenüber dem Plan: ``Worker._handle_message`` und das Setzen von
 ``_rate_limiter``/``_guard_store``/``_executor`` sind privat; sie sind der
@@ -681,7 +683,7 @@ class RetryChainMachine(AsyncStateMachine[ChainEnv]):
             # Vor dem Ausführungsschutz: kein Claim, also auch kein Done-Marker.
             expect = self._dead(Expect("dead_letter", "delivery_limit"), None, copy_failure=copy_failure)
             if state.done or (state.sup is not None and rc < state.sup):
-                # R4Z-04: eine Neuzustellung einer abgeschlossenen bzw. überholten
+                # F4-02 (R4Z-04): eine Neuzustellung einer abgeschlossenen bzw. überholten
                 # Ausführung ist laut E-009/E-043 ein Duplikat; das Gate vor dem
                 # Ausführungsschutz schickt sie in die DLQ.
                 expect.suspect = "R4Z-04"
@@ -894,7 +896,7 @@ class RetryChainMachine(AsyncStateMachine[ChainEnv]):
     def deliverable(self) -> list[Pending]:
         """Wartende Zustellungen ohne bekannten Verdacht.
 
-        F4-offen (R4Z-04): die Neuzustellung einer abgeschlossenen oder
+        F4-02 (R4Z-04): die Neuzustellung einer abgeschlossenen oder
         überholten Ausführung am Zustelllimit bleibt liegen, statt die
         Maschine rot zu färben; Nachweis ``r4z_04_*`` in
         ``retry_chain_scenarios.py``. Ausgeklammert an der auslösenden Regel
@@ -1057,8 +1059,8 @@ class RetryChainMachine(AsyncStateMachine[ChainEnv]):
         for identity, reasons in self.dlq_by_identity.items():
             # Ausgenommen, nicht erlaubt: Zustelllimit-DLQs liegen vor dem
             # Ausführungsschutz und setzen keinen Done-Marker, eine weitere
-            # Kopie derselben Identität läuft danach. Teilaspekt von R4Z-04
-            # (F4-offen, keine E-ID); siehe Bericht 1-zustandsmodelle.md, U9.
+            # Kopie derselben Identität läuft danach. Teilaspekt von F4-02
+            # (R4Z-04); siehe Bericht 1-zustandsmodelle.md, U9.
             guarded = [reason for reason in reasons if reason != "delivery_limit"]
             assert len(guarded) <= 1, f"{identity}: DLQ-Kopien {reasons} (K7)"
 

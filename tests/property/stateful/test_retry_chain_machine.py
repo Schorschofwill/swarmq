@@ -5,6 +5,9 @@ Invarianten und erlaubte Abweichungen stehen im Docstring von
 ``tests/property/stateful/retry_chain_machine.py``. Profil ``quick`` (100
 Beispiele) mit 30 Schritten je Beispiel; die deterministischen Abläufe aus
 ``retry_chain_scenarios.py`` halten die Testszenarien der Einheit fest.
+Nachweise zu F4-02 (R4Z-04) laufen als ``xfail(strict=True)``; R4Z-05 ist
+eine ENTSCHEIDUNG (E-051) und hier festgeschrieben (Register
+``docs/befunde/fehlersuche-runde-4-2026-10.md``).
 """
 
 from __future__ import annotations
@@ -52,7 +55,19 @@ def test_lenient_count_model_is_caught(open_env: OpenEnv) -> None:
         machine.teardown()
 
 
-@pytest.mark.xfail(strict=True, reason="Verdacht R4Z-nn (Fehlersuche Runde 4), Gegenprüfung in U17")
-@pytest.mark.parametrize("suspect", retry_chain_scenarios.SUSPECTS.values(), ids=retry_chain_scenarios.SUSPECTS.keys())
-def test_suspect(machine: RetryChainMachine, suspect: Callable[[RetryChainMachine], None]) -> None:
-    suspect(machine)
+@pytest.mark.befund("F4-02")
+@pytest.mark.xfail(
+    strict=True, raises=AssertionError, reason="F4-02: offen - Zustelllimit-Gate liegt vor dem Ausfuehrungsschutz"
+)
+@pytest.mark.parametrize(
+    "nachweis", retry_chain_scenarios.F4_02_NACHWEISE.values(), ids=retry_chain_scenarios.F4_02_NACHWEISE.keys()
+)
+def test_f4_02_redelivery_at_the_limit_stays_a_duplicate(
+    machine: RetryChainMachine, nachweis: Callable[[RetryChainMachine], None]
+) -> None:
+    nachweis(machine)
+
+
+@pytest.mark.entscheidung("E-051")
+def test_republished_retry_copy_with_text_count_is_skipped_as_superseded(machine: RetryChainMachine) -> None:
+    retry_chain_scenarios.republished_retry_copy_with_text_count_is_skipped_as_superseded(machine)

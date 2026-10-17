@@ -284,13 +284,14 @@ def _handle_unchecked(machine: RetryChainMachine, pending: Pending) -> None:
 
 
 def r4z_04_completed_task_redelivered_at_the_limit_stays_a_duplicate(machine: RetryChainMachine) -> None:
-    """R4Z-04 (Verdacht): Der Task lief erfolgreich, das Ack ging verloren
+    """F4-02 (R4Z-04): Der Task lief erfolgreich, das Ack ging verloren
     (Kanal weg, Done-Marker gesetzt, ``GuardedBroker.ack``). Die
     Neuzustellungen werden als Duplikat bestätigt -- bis ``x-delivery-count``
     die Schwelle erreicht: dann schickt das Zustelllimit-Gate, das vor dem
     Ausführungsschutz liegt, die Nachricht in die DLQ und überschreibt das
     Erfolgsergebnis mit einem Fehler. Erwartet (E-009, E-043): Duplikat,
-    keine DLQ-Kopie, Ergebnis bleibt Erfolg."""
+    keine DLQ-Kopie, Ergebnis bleibt Erfolg. Deterministischer Nachweis ohne
+    Maschine: ``tests/unit/worker/test_befund_f4_02_delivery_limit_before_guard.py``."""
     machine.publish("t1")
     assert machine.deliver(only(machine), Act("ok"), lose_settle=True).reason == "success"
     redelivered = _redelivered_at_the_limit(machine)
@@ -304,7 +305,7 @@ def r4z_04_completed_task_redelivered_at_the_limit_stays_a_duplicate(machine: Re
 
 
 def r4z_04_superseded_attempt_redelivered_at_the_limit_stays_a_duplicate(machine: RetryChainMachine) -> None:
-    """R4Z-04, zweite Form: Der Versuch scheiterte, die Retry-Kopie liegt
+    """F4-02 (R4Z-04), zweite Form: Der Versuch scheiterte, die Retry-Kopie liegt
     (Superseded-Marker), nur das Ack des Originals ging verloren
     (``SettleFailedAfterPublish``). Am Zustelllimit geht das Original in die
     DLQ und schreibt ein Fehlerergebnis, während die Kette über die
@@ -319,26 +320,26 @@ def r4z_04_superseded_attempt_redelivered_at_the_limit_stays_a_duplicate(machine
     assert raw is None, "Fehlerergebnis, obwohl die Kette über die Retry-Kopie weiterläuft"
 
 
-def r4z_05_republished_retry_copy_with_text_count_still_runs(machine: RetryChainMachine) -> None:
-    """R4Z-05 (Verdacht): Eine Retry-Kopie (Zähler 1) wird über die
-    RabbitMQ-UI neu publiziert, die UI setzt den Header als Text ``"1"``.
-    Streng gelesen zählt er 0 (E-051), der Ausführungsschutz sieht einen vom
-    Retry überholten Versuch (``sup`` 1) und bestätigt die Nachricht still als
-    Duplikat: kein Lauf, kein Ergebnis, keine DLQ-Kopie, die Kette endet.
-    Offene Frage: Der Plan U9 erwartet „zählt als 0, Kette beginnt neu“; E-051
-    legt den strengen Vergleich ausdrücklich fest und nennt diese Folge nicht.
-    Soll die Kopie laufen, oder genügt ein Nachtrag zu E-051 („kein Lauf, kein
-    Ergebnis, keine DLQ-Kopie“)? Der Nachweis prüft die Plan-Erwartung."""
+def republished_retry_copy_with_text_count_is_skipped_as_superseded(machine: RetryChainMachine) -> None:
+    """E-051 (R4Z-05, ENTSCHEIDUNG; Nachtrag vorgeschlagen als PF-4): Eine
+    Retry-Kopie (Zähler 1) wird über die RabbitMQ-UI ohne neue Replay-ID neu
+    publiziert, die UI setzt den Header als Text ``"1"``. Streng gelesen
+    zählt er 0 (E-051), der Ausführungsschutz sieht einen vom Retry überholten
+    Versuch (Superseded-Marker 1, E-009, KTD5) und bestätigt die Nachricht als
+    Duplikat (``duplicate_delivery_skipped``, ``reason=superseded``): kein
+    Lauf, kein Ergebnis, keine DLQ-Kopie. Wiedereinspielen nur über
+    ``swarmq dlq retry`` (neue Identität)."""
     machine.reconfigure(ChainCfg(max_retries=3))
     machine.publish("t1")
     machine.deliver(only(machine), ERROR)
     machine.advance(2)
     moved = machine.set_retry_count(only(machine), "1")
     runs_before = len(machine.runs)
-    machine.deliver(moved, Act("ok"))
+    assert machine.deliver(moved, Act("ok")).reason == "superseded"
     assert machine.pending == []
-    assert len(machine.runs) > runs_before, "UI-Republish der Retry-Kopie still bestätigt: kein Lauf"
-    assert machine.run(machine.env.backend.get_result("t1")) is not None, "Kette beendet ohne Ergebnis"
+    assert len(machine.runs) == runs_before, "UI-Republish mit Text-Zähler lief, obwohl überholt (E-051)"
+    assert machine.run(machine.env.backend.get_result("t1")) is None
+    assert machine.broker.dead == []
 
 
 def lenient_model_is_caught(machine: RetryChainMachine) -> None:
@@ -369,12 +370,11 @@ SCENARIOS: dict[str, Callable[[RetryChainMachine], None]] = {
     )
 }
 
-# Nachweise der Verdachte (xfail strict, bis die Gegenprüfung U17 entscheidet).
-SUSPECTS: dict[str, Callable[[RetryChainMachine], None]] = {
+# Nachweise des Befunds F4-02 (R4Z-04; xfail strict, scheitern am heutigen Stand).
+F4_02_NACHWEISE: dict[str, Callable[[RetryChainMachine], None]] = {
     fn.__name__: fn
     for fn in (
         r4z_04_completed_task_redelivered_at_the_limit_stays_a_duplicate,
         r4z_04_superseded_attempt_redelivered_at_the_limit_stays_a_duplicate,
-        r4z_05_republished_retry_copy_with_text_count_still_runs,
     )
 }

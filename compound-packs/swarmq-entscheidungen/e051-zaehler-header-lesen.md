@@ -18,6 +18,8 @@ tests:
   - tests/unit/worker/test_befund_fs19_counter_headers.py::test_fs19_bool_retry_count_counts_like_no_header
   - tests/unit/worker/test_befund_fs19_counter_headers.py::test_fs19_numeric_string_rate_limit_count_is_read_leniently
   - tests/unit/worker/test_befund_fs19_counter_headers.py::test_fs19_infinite_rate_limit_count_counts_like_no_header
+  - tests/property/stateful/test_retry_chain_machine.py::test_republished_retry_copy_with_text_count_is_skipped_as_superseded
+  - tests/integration/stateful/test_retry_chain_machine_valkey.py::test_republished_retry_copy_with_text_count_is_skipped_as_superseded_against_valkey
 ---
 
 **Entscheidung.** Ein Zähler-Header, der sich nicht als Zähler lesen lässt, zählt wie kein Header; die Nachricht wird normal weiterverarbeitet statt unquittiert hängen zu bleiben. Der Retry-Zähler `x-swarmq-retry-count` wird streng gelesen: Nur ein echtes `int` größer 0 zählt; `bool`, Zeichenketten (auch `"3"`), Gleitkommazahlen und negative Werte zählen wie 0. Der Rate-Limit-Zähler `x-swarmq-rate-limit-count` dient nur der Diagnose und wird nachsichtig gelesen (`int()`, numerische Zeichenketten gelten, nicht lesbare Werte und `inf` zählen 0, negative werden auf 0 gehoben).

@@ -23,14 +23,17 @@ Zusagen:
 Allow-List: ``ValueError`` (samt croniter-Fehlern, die davon erben) für
 ``TaskInfo``; für ``next_fire_times`` mit angenommenem Ausdruck keine.
 
-Treffer (Bericht docs/befunde/fehlersuche-runde-4-recherche/5-fuzz.md):
+Treffer (Bericht docs/befunde/fehlersuche-runde-4-recherche/5-fuzz.md; IDs aus
+dem Register ``docs/befunde/fehlersuche-runde-4-2026-10.md``, F4-nn Befund,
+PF-nn Produktfrage):
 
-* F4-05 / R4F-05: croniters Zufallsfeld ``R`` wird angenommen; jeder Aufruf
+* PF-12 / R4F-05 (LÜCKE, Produktfrage B): croniters Zufallsfeld ``R`` wird angenommen; jeder Aufruf
   von ``next_fire_times`` würfelt neu. Ausgeklammert: kein ``R`` im Alphabet.
-* F4-06 / R4F-06: Namen in Großschreibung mit ``L``/``W`` (``JUL``,
+* F4-09 / R4F-06 (FEHLER): Namen in Großschreibung mit ``L``/``W`` (``JUL``,
   ``WED``, ``Wed``, ``@HOURLY``) lehnt ``TaskInfo`` als erweiterte Syntax
-  ab. Ausgeklammert: solche Namen nur klein.
-* F4-07 / R4F-07 (bestätigt F3-35): 6- und 7-feldrige Ausdrücke werden
+  ab. Ausgeklammert: solche Namen nur klein. Nachweis
+  ``tests/unit/test_befund_f4_09_cron_uppercase_names.py``.
+* PF-13 / R4F-07 (LÜCKE F3-35, Produktfrage B): 6- und 7-feldrige Ausdrücke werden
   angenommen (6. Feld = Sekunden, 7. = Jahr). Ausgeklammert: der Test auf
   "genau 5 Felder" erzeugt keine 6/7 Felder.
 
@@ -84,7 +87,7 @@ _ALIASES = ["@hourly", "@daily", "@midnight", "@weekly", "@monthly", "@yearly", 
 def _name(draw: st.DrawFn, names: list[str]) -> str:
     """Name in beliebiger Schreibweise ("case does not matter", crontab(5)).
 
-    F4-06 (R4F-06): Namen mit l/w nur klein; groß abgelehnt.
+    F4-09 (R4F-06): Namen mit l/w nur klein; groß abgelehnt.
     Treffer (geschrumpft): @example(cron="* * * * WED")
     """
     name = draw(st.sampled_from(names))
@@ -130,7 +133,7 @@ def _standard_cron(draw: st.DrawFn) -> str:
     )
 
 
-# F4-05 (R4F-05): ``R`` (croniter-Zufallsfeld) nicht im Alphabet.
+# PF-12 (R4F-05): ``R`` (croniter-Zufallsfeld) nicht im Alphabet.
 # Treffer (von Hand minimiert; Hypothesis schrumpfte auf "0 0 1 R 0"): @example(cron="R * * * *")
 _junk_token = st.one_of(
     st.sampled_from(["?", "L", "W", "#", "H"]),
@@ -225,7 +228,7 @@ def test_standard_cron_is_accepted_or_never_fires(cron: str) -> None:
     assert not error or "never fires" in error, f"{cron!r}: {error}"
 
 
-# F4-07 (R4F-07, F3-35): 6 und 7 Felder ausgeklammert (croniter nimmt sie als
+# PF-13 (R4F-07, F3-35): 6 und 7 Felder ausgeklammert (croniter nimmt sie als
 # Sekunden- und Jahresfeld an).
 # Treffer (geschrumpft): @example(cron="0 0 * * * *")
 @given(cron=st.one_of(_junk_cron([1, 2, 3, 4, 5, 8, 9]), _standard_cron()))

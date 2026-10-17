@@ -95,10 +95,24 @@ def test_scenario_against_valkey(machine: RetryChainMachine, scenario: Callable[
     scenario(machine)
 
 
-@pytest.mark.xfail(strict=True, reason="Verdacht R4Z-nn (Fehlersuche Runde 4), Gegenprüfung in U17")
-@pytest.mark.parametrize("suspect", retry_chain_scenarios.SUSPECTS.values(), ids=retry_chain_scenarios.SUSPECTS.keys())
-def test_suspect_against_valkey(machine: RetryChainMachine, suspect: Callable[[RetryChainMachine], None]) -> None:
-    suspect(machine)
+@pytest.mark.befund("F4-02")
+@pytest.mark.xfail(
+    strict=True, raises=AssertionError, reason="F4-02: offen - Zustelllimit-Gate liegt vor dem Ausfuehrungsschutz"
+)
+@pytest.mark.parametrize(
+    "nachweis", retry_chain_scenarios.F4_02_NACHWEISE.values(), ids=retry_chain_scenarios.F4_02_NACHWEISE.keys()
+)
+def test_f4_02_redelivery_at_the_limit_stays_a_duplicate_against_valkey(
+    machine: RetryChainMachine, nachweis: Callable[[RetryChainMachine], None]
+) -> None:
+    nachweis(machine)
+
+
+@pytest.mark.entscheidung("E-051")
+def test_republished_retry_copy_with_text_count_is_skipped_as_superseded_against_valkey(
+    machine: RetryChainMachine,
+) -> None:
+    retry_chain_scenarios.republished_retry_copy_with_text_count_is_skipped_as_superseded(machine)
 
 
 def test_lenient_count_model_is_caught_against_valkey(open_env: OpenEnv) -> None:

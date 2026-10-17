@@ -4,8 +4,9 @@ die Fakes, ``tests/integration/stateful/test_workflow_machine_valkey.py`` gegen
 Valkey.
 
 Jede Funktion bekommt eine frische Maschine und prüft alle Invarianten
-(``verify``). Die Nachweise der Verdachte (``NACHWEISE``) beschreiben das
-erwartete Verhalten und scheitern am heutigen Stand.
+(``verify``). Die Nachweise der Befunde (``NACHWEISE``, IDs aus
+``docs/befunde/fehlersuche-runde-4-2026-10.md``) beschreiben das erwartete
+Verhalten und scheitern am heutigen Stand.
 """
 
 from __future__ import annotations
@@ -82,8 +83,11 @@ def body_never_before_the_last_member(machine: WorkflowMachine) -> None:
 def two_advancers_on_the_last_member(machine: WorkflowMachine) -> None:
     """Zwei Advancer überlappend auf dasselbe letzte Mitglied: ein CAS
     gewinnt, der zweite merged, der Workflow endet richtig, der Body läuft
-    einmal. Publiziert wird er je nach Verschränkung ein- oder zweimal
-    (R4Z-03); die Kopie verwirft der Ausführungsschutz (E-009)."""
+    einmal. Publiziert wird er je nach Verschränkung ein- oder zweimal; die
+    Kopie verwirft der Ausführungsschutz (E-009). Beleg zu R4Z-03 (NICHT
+    HALTBAR): Zwei gleichzeitige Zustellungen derselben Nachricht verhindert
+    der Running-Marker, den die Maschine nicht nachbildet; das Doppel-Enqueue
+    im Crash-Fenster ist entschieden (Commit 4f8820d, Plan 2026-05-30-001)."""
     wf = machine.start(CHORD3)
     machine.deliver(_at(machine, wf, "/h/g0"))
     machine.deliver(_at(machine, wf, "/h/g1"))
@@ -101,19 +105,6 @@ def two_advancers_on_the_last_member(machine: WorkflowMachine) -> None:
     assert machine.discarded == discarded + copies  # keine Body-Kopie lief
     assert machine.status_of(wf) == STATUS_COMPLETED
     assert _final_value(machine, wf) == [[["a1"], ["a2"], ["a3"]], "b"]
-
-
-def overlapping_advancers_publish_the_body_once(machine: WorkflowMachine) -> None:
-    """R4Z-03: Zwei überlappende Advancer auf dasselbe letzte Mitglied lesen
-    beide den Zustand ohne ``/b``-Marker, beide melden ``record_member`` als
-    vollständig, beide publizieren den Body (Plan U8: „Callback einmal“).
-    Gegen die Fakes mit dieser Verschränkung deterministisch."""
-    wf = machine.start(CHORD3)
-    machine.deliver(_at(machine, wf, "/h/g0"))
-    machine.deliver(_at(machine, wf, "/h/g1"))
-    last = _at(machine, wf, "/h/g2")
-    machine.concurrent(last, _copy(machine, last), ([1] * 12, [1] * 12))
-    assert wf.publishes["/b"] == 1, f"Body {wf.publishes['/b']}-mal publiziert (R4Z-03)"
 
 
 def member_fails_while_another_completes(machine: WorkflowMachine) -> None:
@@ -210,23 +201,18 @@ def cancel_without_further_step_stays_running(machine: WorkflowMachine) -> None:
     assert "/b" not in wf.publishes
 
 
-def reference_off_is_caught(machine: WorkflowMachine) -> None:
-    """Selbsttest: W7 erkennt ein falsches Endergebnis."""
-    machine.start(CHORD3)
-    machine.drain()
-    with pytest.raises(AssertionError, match="Endergebnis"):
-        machine.verify()
-
-
-# -- Nachweise der Verdachte (xfail strict, scheitern am heutigen Stand) -------
-
-
-def unmarked_member_completing_first(machine: WorkflowMachine) -> None:
-    """R4Z-01: Der Advance von ``/g1/0`` publiziert ``/g1/1``, das
+def unmarked_member_completing_first_fails_the_workflow(machine: WorkflowMachine) -> None:
+    """Beleg zu R4Z-01 (ENTSCHEIDUNG, Plan 2026-08-30-002 KD1; Überdenken:
+    PF-3): Der Advance von ``/g1/0`` publiziert ``/g1/1``, das
     Compare-and-Set scheitert (Valkey kurz weg), die Zustellung geht zurück.
     ``/g1/1`` läuft vor der Neuzustellung: der Fan-in findet den Marker nicht
     und markiert den Workflow ``failed`` (``WorkflowValidationError``, „resolved
-    1 of 2 member results“), obwohl kein Schritt scheiterte."""
+    1 of 2 member results“), obwohl kein Schritt scheiterte. KD1 nimmt das
+    laute Scheitern bei einem im publish→mark-Fenster fehlenden Marker
+    ausdrücklich hin (Changelog 0.4.0,
+    ``test_workflow_advancer.py::test_guard_catches_lost_marker_of_composite_member``).
+    Ändert sich die Entscheidung, wird dieser Beleg zum Nachweis
+    (``completed``) und die Klammer ``deliverable`` entfällt."""
     wf = machine.start(("group", [("s", "a1"), ("chain", [("s", "a2"), ("s", "a3")])]))
     machine.deliver(_at(machine, wf, "/g0"))
     machine.backend_write_outage()
@@ -235,15 +221,31 @@ def unmarked_member_completing_first(machine: WorkflowMachine) -> None:
     machine.drain()
     state = machine.state_of(wf)
     assert state is not None
-    assert state["status"] == STATUS_COMPLETED, state["error"]
+    assert state["status"] == STATUS_FAILED, state
+    assert state["error"]["type"] == "WorkflowValidationError", state["error"]
+    assert "1 of 2" in state["error"]["message"], state["error"]
+
+
+def reference_off_is_caught(machine: WorkflowMachine) -> None:
+    """Selbsttest: W7 erkennt ein falsches Endergebnis."""
+    machine.start(CHORD3)
+    machine.drain()
+    with pytest.raises(AssertionError, match="Endergebnis"):
+        machine.verify()
+
+
+# -- Nachweise der Befunde (xfail strict, scheitern am heutigen Stand) --------
 
 
 def dead_letter_after_unadvanced_success(machine: WorkflowMachine) -> None:
-    """R4Z-02: Der Schritt speichert sein Erfolgsergebnis, der Advance
+    """F4-01 (R4Z-02): Der Schritt speichert sein Erfolgsergebnis, der Advance
     scheitert vorübergehend (Neuzustellung). Die Neuzustellung endet im
     Dead-Letter: ``fail_workflow_step`` sieht das alte Erfolgsergebnis und
     markiert nicht (E-040, Bewusste Folgen), ein Advance läuft nie mehr; der
-    Workflow bleibt ``running`` bis zur TTL."""
+    Workflow bleibt ``running`` bis zur TTL. Erwartet (E-040: „nie still in
+    den ``get()``-Timeout“): ein terminaler Status. Deterministischer
+    Nachweis ohne Maschine:
+    ``tests/unit/test_befund_f4_01_workflow_dead_letter_after_unadvanced_success.py``."""
     wf = machine.start(("s", "a1"))
     machine.backend_write_outage()
     machine.deliver(_at(machine, wf, ""))  # Erfolg gespeichert, Abschluss scheitert
@@ -325,6 +327,7 @@ SCENARIOS: dict[str, Scenario] = {
     "transient_fail_mark_is_redelivered": transient_fail_mark_is_redelivered,
     "lost_cas_rounds_redeliver_and_complete": lost_cas_rounds_redeliver_and_complete,
     "cancel_without_further_step_stays_running": cancel_without_further_step_stays_running,
+    "unmarked_member_completing_first_fails_the_workflow": unmarked_member_completing_first_fails_the_workflow,
 }
 
 SABOTAGES: dict[str, Scenario] = {
@@ -334,9 +337,7 @@ SABOTAGES: dict[str, Scenario] = {
 }
 
 NACHWEISE: dict[str, Scenario] = {
-    "R4Z-01": unmarked_member_completing_first,
-    "R4Z-02": dead_letter_after_unadvanced_success,
-    "R4Z-03": overlapping_advancers_publish_the_body_once,
+    "F4-01": dead_letter_after_unadvanced_success,
 }
 
 __all__ = ["NACHWEISE", "SABOTAGES", "SCENARIOS", "ReferenceOff", "reference_off_is_caught"]

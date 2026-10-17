@@ -3,8 +3,10 @@
 Invarianten und erlaubte Abweichungen stehen im Docstring von
 ``tests/property/stateful/workflow_machine.py``. Profil ``quick`` (100
 Beispiele) mit 30 Schritten je Beispiel; die deterministischen Abläufe aus
-``workflow_scenarios.py`` halten die Testszenarien der Einheit fest, die
-Nachweise der Verdachte R4Z-01 bis R4Z-03 laufen als ``xfail(strict=True)``.
+``workflow_scenarios.py`` halten die Testszenarien der Einheit fest. Der
+Nachweis zu F4-01 (R4Z-02) läuft als ``xfail(strict=True)``; R4Z-01
+(ENTSCHEIDUNG) ist ein Beleg unter den Szenarien, R4Z-03 (NICHT HALTBAR) hat
+keinen Nachweis (Register ``docs/befunde/fehlersuche-runde-4-2026-10.md``).
 """
 
 from __future__ import annotations
@@ -52,21 +54,12 @@ def test_wrong_reference_is_caught(open_env: OpenEnv) -> None:
         machine.teardown()
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="R4Z-01: Gruppenglied ohne persistierten Marker")
-def test_unmarked_member_completing_first(machine: WorkflowMachine) -> None:
-    workflow_scenarios.unmarked_member_completing_first(machine)
-
-
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="R4Z-02: Dead-Letter nach Erfolg ohne Advance")
+@pytest.mark.befund("F4-01")
+@pytest.mark.xfail(
+    strict=True, raises=AssertionError, reason="F4-01: offen - Dead-Letter nach Erfolg ohne Advance laesst running"
+)
 def test_dead_letter_after_unadvanced_success(machine: WorkflowMachine) -> None:
     workflow_scenarios.dead_letter_after_unadvanced_success(machine)
-
-
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="R4Z-03: Body bei überlappenden Advances zweimal publiziert"
-)
-def test_overlapping_advancers_publish_the_body_once(machine: WorkflowMachine) -> None:
-    workflow_scenarios.overlapping_advancers_publish_the_body_once(machine)
 
 
 @pytest.mark.parametrize("sabotage", workflow_scenarios.SABOTAGES.values(), ids=workflow_scenarios.SABOTAGES.keys())

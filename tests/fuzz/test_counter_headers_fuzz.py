@@ -25,16 +25,18 @@ Allow-List: leer. E-051 sagt zu: "Ein Zähler-Header, der sich nicht als
 Zähler lesen lässt, zählt wie kein Header; die Nachricht wird normal
 weiterverarbeitet." Jede Ausnahme aus einem Leser oder Gate ist ein Treffer.
 
-Treffer (Bericht docs/befunde/fehlersuche-runde-4-recherche/5-fuzz.md):
+Treffer (Bericht docs/befunde/fehlersuche-runde-4-recherche/5-fuzz.md; IDs aus
+dem Register ``docs/befunde/fehlersuche-runde-4-2026-10.md``):
 
-* F4-01 / R4F-01: ``DeliveryCountGate.apply`` wirft ``OverflowError`` für
+* F4-07 / R4F-01 (FEHLER): ``DeliveryCountGate.apply`` wirft ``OverflowError`` für
   ``x-delivery-count``/``x-acquired-count`` = ``float("inf")`` (``_count``
-  fängt nur ``TypeError``/``ValueError``). Ausgeklammert in ``_gate_counter``.
+  fängt nur ``TypeError``/``ValueError``). Ausgeklammert in ``_gate_counter``;
+  Nachweis ``tests/unit/worker/gates/test_befund_f4_07_delivery_count_inf.py``.
 
 Testliste:
 # [x] retry_count_of streng (E-051), auch ohne Mapping-Eintrag und mit None
 # [x] prior_deferrals / broker_redelivered / redeliver_pause_s nachsichtig, nie Ausnahme
-# [x] DeliveryCountGate: Continue oder Terminal, nie Ausnahme (Treffer F4-01 ausgeklammert)
+# [x] DeliveryCountGate: Continue oder Terminal, nie Ausnahme (Treffer F4-07 ausgeklammert)
 # [x] LockGate-Konflikt: Redelivered, Rückstellung mit gültiger Wartezeit oder DLQ, nie Ausnahme
 # [x] wait_generation: "<n>:<replay>" mit n >= 0
 # [x] execution_identity: nie Ausnahme, Zähler gedeckelt
@@ -199,7 +201,7 @@ def test_broker_counters_are_read_leniently(delivered: object, acquired: object)
 # DeliveryCountGate (öffentliche Gate-Schnittstelle)
 # ---------------------------------------------------------------------------
 
-# F4-01 (R4F-01): ``float("inf")`` (auch ``-inf``) als x-delivery-count oder
+# F4-07 (R4F-01): ``float("inf")`` (auch ``-inf``) als x-delivery-count oder
 # x-acquired-count wirft OverflowError aus DeliveryCountGate.apply. Bis zum
 # Fix ausgeklammert: nur ``±inf`` (``nan`` ist kein Treffer, ``int(nan)`` wirft ValueError).
 # Treffer (geschrumpft): @example(delivered=None, acquired=float("inf"), limit=0)

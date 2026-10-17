@@ -25,15 +25,18 @@ Zusagen:
 Allow-List: ``ValueError`` für ``render_lock_name``; ``LockGate.apply``
 darf nicht werfen.
 
-Treffer (Bericht docs/befunde/fehlersuche-runde-4-recherche/5-fuzz.md):
+Treffer (Bericht docs/befunde/fehlersuche-runde-4-recherche/5-fuzz.md; IDs aus
+dem Register ``docs/befunde/fehlersuche-runde-4-2026-10.md``):
 
-* F4-08 / R4F-08: Templates mit Index- oder Attributzugriff
+* F4-10 / R4F-08 (FEHLER): Templates mit Index- oder Attributzugriff
   (``{items[0]}``, ``{user.id}``) werfen ``IndexError``/``AttributeError``
   statt ``ValueError``; ``LockGate.apply`` reicht sie durch. Ausgeklammert:
-  keine Index-/Attributzugriffe im Template.
-* F4-09 / R4F-09: ein Argument ``"{sched}:leader"`` mit Template ``"{key}"``
+  keine Index-/Attributzugriffe im Template. Nachweis
+  ``tests/unit/worker/gates/test_befund_f4_10_lock_render_index_attr.py``.
+* PF-14 / R4F-09 (LÜCKE, Produktfrage C): ein Argument ``"{sched}:leader"`` mit Template ``"{key}"``
   ergibt den Key des Scheduler-Leader-Locks. Ausgeklammert: dieser Wert
   kommt in den Argumenten nicht vor.
+* R4F-10 (NICHT HALTBAR, Filter bleibt): Formatbreite aus den Nutzdaten.
 
 Testliste:
 # [x] render_lock_name: str oder ValueError
@@ -65,7 +68,7 @@ pytestmark = [pytest.mark.timeout(60)]
 
 _SCHEDULER_LOCK_NAME = KeySpace().scheduler_lock().removeprefix(KeySpace().lock_prefix)
 
-# F4-09 (R4F-09): der Name des Scheduler-Leader-Locks ist als Argument ausgeklammert.
+# PF-14 (R4F-09): der Name des Scheduler-Leader-Locks ist als Argument ausgeklammert.
 # Treffer (geschrumpft): @example(template="{key}", key="{sched}:leader", other=None)
 _text_args = st.one_of(
     st.text(max_size=12),
@@ -80,10 +83,10 @@ _payload = st.recursive(
     max_leaves=5,
 )
 
-# Platzhalter wie in Task-Definitionen; F4-08 (R4F-08): ohne ``[<int>]`` und ``.attr``.
+# Platzhalter wie in Task-Definitionen; F4-10 (R4F-08): ohne ``[<int>]`` und ``.attr``.
 # Treffer (geschrumpft): @example(template="{key[0]}", key=[], other=None)
 #                       @example(template="{key.id}", key=None, other=None)
-# F4-10 (R4F-10): eine Formatbreite aus den Nutzdaten (``{key:{other}}``) mit
+# R4F-10 (nicht haltbar, Filter bleibt): eine Formatbreite aus den Nutzdaten (``{key:{other}}``) mit
 # fünf und mehr Ziffern ist ausgeklammert; sie allokiert Gigabytes.
 # Treffer (geschrumpft): @example(template="{key:{other}}", key=0.0, other=98077398153.0)  -> MemoryError
 _other_payload = _payload.filter(lambda value: re.search(r"\d{5,}", str(value)) is None)
