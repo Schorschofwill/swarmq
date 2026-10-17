@@ -1,4 +1,4 @@
-"""Mischbetrieb-Suite (Q2): Fixtures und Helfer für Worker aus swarmq 0.11.x, 0.12.0 und dem Arbeitsstand.
+"""Mischbetrieb-Suite (Q2): Fixtures und Helfer für Worker aus swarmq 0.11.x, 0.12.x und dem Arbeitsstand.
 
 Umgebung: ein isoliertes venv mit ``swarmq==0.11.1`` von PyPI, Abhängigkeiten
 exakt wie im Lockfile des Tags (``constraints-0.11.1.txt``). Seit MR 8 ist
@@ -16,14 +16,21 @@ Zweite Basis seit der Fehlersuche Runde 2 (Plan 2026-10-14-0748, KTD19): ein
 venv mit ``swarmq==0.12.0`` (``constraints-0.12.0.txt``); die 0.12.x-Fixes
 laufen in beiden Richtungen neben 0.12.0 (R27).
 
+Dritte Basis seit der Fehlersuche Runde 4 (Plan 2026-10-17-2103, U1, R5): ein
+venv mit ``swarmq==0.12.3`` (``constraints-0.12.3.txt``), der letzten
+Version vor 0.12.4; Retry-Übergabe, Leader-Wechsel und DLQ-Replay laufen
+neben 0.12.0 und 0.12.3.
+
 Opt-in über den Marker ``compat`` (braucht Netz zu PyPI beim ersten Lauf).
 """
 
 from __future__ import annotations
 
+import importlib.metadata
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
@@ -33,11 +40,14 @@ import aio_pika
 import pytest
 import valkey.asyncio as aio_valkey
 
+from swarmq.keyspace import KeySpace
 from tests.support.queues import delete_queue_family
 from tests.support.services import flush_valkey_db, valkey_db_url
+from tests.support.wait import wait_until
 from tests.support.worker_subprocess import kill_subprocess, spawn_worker, wait_for_worker_started, worker_children
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+_KEYS = KeySpace(None)
 CONSTRAINTS = Path(__file__).with_name("constraints-0.11.1.txt")
 OLD_VERSION = "0.11.1"
 #: Rollback-Grenze (MR 8): 0.11.0 kann von 0.12 angelegte Queues nicht deklarieren.
@@ -46,6 +56,9 @@ ROLLBACK_LIMIT_CONSTRAINTS = Path(__file__).with_name("constraints-0.11.0.txt")
 #: Basis der 0.12.x-Reihe (KTD19): Rolling Deploy und Rollback neben 0.12.0.
 BASE_012_VERSION = "0.12.0"
 BASE_012_CONSTRAINTS = Path(__file__).with_name("constraints-0.12.0.txt")
+#: Letzte Version vor 0.12.4 (Plan 2026-10-17-2103, U1): Basis für den Rollout von 0.12.4.
+BASE_0123_VERSION = "0.12.3"
+BASE_0123_CONSTRAINTS = Path(__file__).with_name("constraints-0.12.3.txt")
 
 # Schnelle Leader-Übergabe, damit ein Wechsel Sekunden statt der Standard-TTL dauert.
 SCHEDULER_ENV = {
@@ -106,6 +119,12 @@ def python_0110(tmp_path_factory: pytest.TempPathFactory) -> str:
 def python_0120(tmp_path_factory: pytest.TempPathFactory) -> str:
     """Interpreter eines venv mit swarmq 0.12.0 von PyPI (Basis der 0.12.x-Reihe, KTD19)."""
     return _pypi_python(tmp_path_factory, BASE_012_VERSION, BASE_012_CONSTRAINTS)
+
+
+@pytest.fixture(scope="session")
+def python_0123(tmp_path_factory: pytest.TempPathFactory) -> str:
+    """Interpreter eines venv mit swarmq 0.12.3 von PyPI (Basis für 0.12.4, Plan 2026-10-17-2103)."""
+    return _pypi_python(tmp_path_factory, BASE_0123_VERSION, BASE_0123_CONSTRAINTS)
 
 
 @pytest.fixture(scope="session")
@@ -220,3 +239,61 @@ async def recorded_runs(valkey_url: str, queue: str) -> list[tuple[str, str, int
         name, task_id, attempt, runtime = item.decode().split("|")
         runs.append((name, task_id, int(attempt), runtime))
     return runs
+
+
+async def wait_runs(
+    valkey_url: str, queue: str, name: str, count: int, timeout: float = 20.0
+) -> list[tuple[str, str, int, str]]:
+    """Wartet, bis ``name`` mindestens ``count``-mal aufgezeichnet ist."""
+    runs: list[tuple[str, str, int, str]] = []
+
+    async def enough() -> bool:
+        nonlocal runs
+        runs = [run for run in await recorded_runs(valkey_url, queue) if run[0] == name]
+        return len(runs) >= count
+
+    assert await wait_until(enough, timeout=timeout), f"expected {count} runs of {name}, got {runs}"
+    return runs
+
+
+async def scheduler_leader(valkey_url: str) -> tuple[int, str] | None:
+    """``(pid, version)`` des Leaders aus ``sq:{sched}:leader_version``."""
+    client = aio_valkey.Valkey.from_url(valkey_url)
+    try:
+        raw = await client.get(_KEYS.sched_leader_version())
+    finally:
+        await client.aclose()
+    if raw is None:
+        return None
+    owner, _, version = raw.decode().rpartition("|")
+    return int(owner.split(":")[1]), version
+
+
+async def wait_leader(valkey_url: str, worker: CompatWorker, timeout: float = 20.0) -> None:
+    """Leader ist ein Kind von ``worker`` (PID im Owner); die gemeldete Version
+    passt zur Laufzeit des Workers (``pypi-<version>`` bzw. Arbeitsstand)."""
+    expected = (
+        importlib.metadata.version("swarmq") if worker.runtime == "repo" else worker.runtime.removeprefix("pypi-")
+    )
+
+    async def is_leader() -> bool:
+        leader = await scheduler_leader(valkey_url)
+        return leader is not None and leader[1] == expected and leader[0] in worker.child_pids()
+
+    assert await wait_until(is_leader, timeout=timeout), (
+        f"{worker.runtime} never became leader (current: {await scheduler_leader(valkey_url)})"
+    )
+
+
+async def force_cron_fire(valkey_url: str, cron: str, timeout: float = 20.0) -> None:
+    """Fire-Index des Crons auf "fällig" setzen, sobald der Leader ihn angelegt hat."""
+    client = aio_valkey.Valkey.from_url(valkey_url)
+    try:
+
+        async def adopted() -> bool:
+            return await client.zscore(_KEYS.sched_zset(), cron) is not None
+
+        assert await wait_until(adopted, timeout=timeout), "leader never adopted the cron"
+        await client.zadd(_KEYS.sched_zset(), {cron: int(time.time() * 1000) - 1000})
+    finally:
+        await client.aclose()

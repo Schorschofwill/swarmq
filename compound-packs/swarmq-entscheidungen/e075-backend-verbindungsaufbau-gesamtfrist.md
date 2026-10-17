@@ -13,7 +13,7 @@ quelle:
   - docs/befunde/fehlersuche-runde-4-2026-10.md (LÜCKE PF-16, R4M-D-02b; Vor dem Fix Punkt 11)
   - Commit 111983a (socket_connect_timeout, bound every hang path)
   - docs/solutions/spikes/2026-04-17-toxiproxy-reconnect-spike.md:44-47 (Befehls-Retry-Politik)
-ohne_test: Test folgt mit dem Fix (Bündel 3 des Fix-Plans 0.13 mit F4-12, F4-13, F4-14). Heute hat connect() keine Gesamtfrist (gemessen rund 2,9 min gegen einen Host, der Pakete verwirft); ein grüner Test ist erst nach dem Fix möglich. Die Nachweise F4-12 und F4-13 decken die Fehlerklasse und das Rücksetzen ab, nicht die Frist.
+ohne_test: Test folgt mit dem Fix (Bündel 3 des Fix-Plans 0.12.4 mit F4-12, F4-13, F4-14). Heute hat connect() keine Gesamtfrist (gemessen rund 2,9 min gegen einen Host, der Pakete verwirft); ein grüner Test ist erst nach dem Fix möglich. Die Nachweise F4-12 und F4-13 decken die Fehlerklasse und das Rücksetzen ab, nicht die Frist.
 ---
 
 **Entscheidung.** `ValkeyBackend.connect()` führt den `PING` beim Verbinden unter einer Gesamtfrist aus (Größenordnung 15–30 s, konfigurierbar; Name und Default legt der Fix-Plan fest). Reißt die Frist, wirft `connect()` `BackendConnectionError` (und schließt den eigenen Client, F4-13). Die Wiederholpolitik zur Laufzeit bleibt unverändert (`Retry(ExponentialBackoff(cap=2, base=0.05), retries=5)`). Ob Verbindungs- und Befehls-Wiederholung getrennt werden (PF-16 b), ist nicht entschieden: Prüfauftrag im Fix-Plan mit Toxiproxy-Test (`timeout`-Toxic), dabei F3-33 mitbetrachten.
