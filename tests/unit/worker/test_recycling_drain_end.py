@@ -34,7 +34,7 @@ from swarmq.shutdown_budget import shutdown_budget
 from swarmq.worker import WorkerState
 from swarmq.worker import lifecycle as _lc
 
-pytestmark = pytest.mark.timeout(5)
+pytestmark = [pytest.mark.timeout(5), pytest.mark.timing]
 
 
 def _until(worker: Any, seconds: float) -> asyncio.Task[bool]:
