@@ -77,7 +77,6 @@ def _assert_outage(error: BaseException | None, cause: BaseException) -> None:
 
 
 @pytest.mark.befund("F4-11")
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="F4-11: offen - ChordManager wandelt Treiberfehler nicht")
 @pytest.mark.parametrize("cause", _OUTAGES)
 async def test_record_member_reports_a_valkey_outage_as_backend_connection_error(cause: BaseException) -> None:
     error = await _error_of(_chords(cause).record_member("wf", "/h", "m1", expected=2, ttl_ms=60_000))
@@ -86,7 +85,6 @@ async def test_record_member_reports_a_valkey_outage_as_backend_connection_error
 
 
 @pytest.mark.befund("F4-11")
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="F4-11: offen - ChordManager wandelt Treiberfehler nicht")
 async def test_record_and_check_complete_reports_a_valkey_outage_as_backend_connection_error() -> None:
     cause = ValkeyConnectionError("Error 111 connecting to valkey:6379. Connection refused.")
 

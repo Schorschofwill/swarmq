@@ -19,6 +19,9 @@ Test-Liste:
 - [x] ``noeviction`` -> keine Eviction-Warnung (Schutz gegen Fehlalarm, grün)
 - [x] ``CONFIG`` per ACL verboten -> Verbinden gelingt trotzdem und
       hinterlässt einen Hinweis, dass die Policy nicht prüfbar war (behoben, MR 14)
+- [x] ``CONFIG`` verboten, ``INFO memory`` liefert die Policy -> Status ``unsafe``
+      mit Policy aus ``INFO`` (INFO-Rückfall, Testlücke Runde 4, 3c-sichtung-D)
+- [x] dasselbe unter ``strict`` -> Startsperre ``ConfigurationError`` (Exit 78, E-005)
 """
 
 from __future__ import annotations
@@ -30,6 +33,8 @@ import valkey.asyncio
 from valkey.exceptions import NoPermissionError
 
 from swarmq.backend.valkey import ValkeyBackend
+from swarmq.exceptions import ConfigurationError
+from swarmq.worker.eviction_gate import enforce_eviction_policy
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -129,3 +134,23 @@ async def test_connect_tolerates_forbidden_config_get_but_says_so(
         or "evict" in " ".join(str(v) for v in e.values()).lower()
     ]
     assert hints, "kein Hinweis, dass die Eviction-Policy nicht pruefbar war"
+    check = backend.eviction_check
+    assert check is not None
+    assert (check.status, check.policy) == ("unsafe", "volatile-lru"), (
+        f"INFO-Rückfall nicht genutzt: {check!r}; INFO memory meldet volatile-lru"
+    )
+
+
+@pytest.mark.entscheidung("E-005")
+async def test_strict_refuses_to_start_when_only_info_reveals_an_evicting_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Managed-Dienste sperren ``CONFIG`` per ACL: dann trägt der INFO-Rückfall
+    die Startsperre ``strict`` (E-005)."""
+    _install(monkeypatch, _FakeValkey("allkeys-lru", config_forbidden=True))
+    backend = ValkeyBackend("valkey://fake:6399/0", eviction_check="strict")
+
+    await backend.connect()
+
+    with pytest.raises(ConfigurationError, match="allkeys-lru"):
+        enforce_eviction_policy(backend, "strict")

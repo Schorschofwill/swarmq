@@ -69,7 +69,6 @@ async def _store_error(call: Any) -> BaseException | None:
 
 @pytest.mark.befund("F4-11")
 @pytest.mark.exclusive
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="F4-11: offen - ChordManager reicht OOM roh durch")
 async def test_chord_store_reports_oom_under_noeviction_as_an_outage(backend: ValkeyBackend) -> None:
     client = backend.client
     policy = _value(await client.config_get("maxmemory-policy"), "maxmemory-policy")
