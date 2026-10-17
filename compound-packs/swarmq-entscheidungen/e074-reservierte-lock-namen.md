@@ -13,7 +13,10 @@ quelle:
   - docs/befunde/fehlersuche-runde-4-2026-10.md (LÜCKE PF-14, Verdacht R4F-09)
   - src/swarmq/keyspace.py:121-125 (lock, scheduler_lock mit {sched}:leader)
   - src/swarmq/worker/gates/lock.py:229-250 (Leerprüfung, Muster für die Prüfung)
-ohne_test: Test folgt mit dem Fix (PF-14, Fix-Plan 0.12.4). Heute prüft swarmq gerenderte Lock-Namen nicht gegen reservierte Namen; ein grüner Test ist erst nach dem Fix möglich.
+tests:
+  - tests/unit/worker/gates/test_lock.py::TestReservedLockNames::test_scheduler_leader_name_from_payload_dead_letters
+  - tests/unit/worker/gates/test_lock.py::TestReservedLockNames::test_names_under_the_sched_hash_tag_are_reserved
+  - tests/unit/worker/gates/test_lock.py::TestReservedLockNames::test_names_containing_sched_elsewhere_are_allowed
 ---
 
 **Entscheidung.** Ein gerenderter Lock-Name, der mit `{sched}` beginnt oder einem internen Lock-Namen gleicht (heute `{sched}:leader`, `keyspace.scheduler_lock`), wird wie ein Render-Fehler behandelt: Dead-Letter mit `x-swarmq-lock-render-error`, kein Requeue (Weg wie F4-10 und die Leerprüfung). Der Guide `locking-and-dedup.md` bekommt den Satz: Lock-Templates beginnen mit einem Literal (`"order:{order_id}"`, nicht `"{order_id}"`). Die Präfixe bleiben gemeinsam (`sq:lock:`); getrennte Präfixe (Option a, BREAKING) erst, wenn weitere interne Lock-Namen dazukommen.

@@ -23,11 +23,21 @@ Test-Liste 0.9.0 (drittes Review):
 Test-Liste BZ-17 (Plan 0.12.0, MR 2):
 - [x] ``x-swarmq-lock-render-error`` ist hoechstens 8 KiB lang, auch wenn der
       Renderfehler einen riesigen Argumentnamen zitiert
+
+Test-Liste F4-10 und E-074 (Fix-Plan Runde 4, U2):
+- [x] ``{items[0]}`` mit ``[]``, ``{user.id}`` mit Dict und mit ``None``:
+      Dead-Letter mit ``x-swarmq-lock-render-error``, Unique-Flag frei, kein Requeue
+- [x] ``{key:{other}}`` mit riesiger Breite: ``ValueError`` statt ``MemoryError`` (R4F-10)
+- [x] ``KeyboardInterrupt``/``CancelledError`` beim Rendern bleiben, was sie sind
+- [x] E-074: gerenderter Name ``{sched}:leader`` -> ``ValueError``, Dead-Letter
+- [x] E-074: Name mit Präfix ``{sched}`` -> ``ValueError``
+- [x] E-074: Name, der ``sched`` nur als Teilstring enthält, ist erlaubt
 """
 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import uuid
 from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -36,7 +46,8 @@ import pytest
 
 from swarmq.contracts.coordination import LockToken
 from swarmq.exceptions import BackendConnectionError, BrokerConnectionError
-from swarmq.headers import HEADER_LOCK_CONFLICTS, HEADER_LOCK_WAIT_SINCE
+from swarmq.headers import HEADER_LOCK_CONFLICTS, HEADER_LOCK_WAIT_SINCE, HEADER_UNIQUE_HASH
+from swarmq.locking import SCHEDULER_LOCK_NAME
 from swarmq.registry import TaskRegistry
 from swarmq.signals import Signal
 from swarmq.task import DeliveryMode, Task, TaskInfo
@@ -602,6 +613,118 @@ class TestEmptyRenderedLock:
 
         broker.route_via_dlx.assert_awaited_once_with(msg)
         broker.ack.assert_not_awaited()
+
+
+class IndexAttrLockTask(Task):
+    task_info = TaskInfo(name="index_attr_lock", queues=["default"], lock="{key}", hard_timeout=60, unique_for=3600)
+
+    @override
+    async def run(self, key: object, other: object = None) -> None:
+        raise AssertionError("darf nicht laufen")
+
+
+_UNIQUE_HASH = "b" * 64
+
+
+class TestRenderFailureKinds:
+    """F4-10: jede Art von Render-Fehler geht in die DLQ, nicht nur
+    ``TypeError``/``KeyError``."""
+
+    @pytest.mark.befund("F4-10")
+    @pytest.mark.parametrize(
+        ("template", "key"),
+        [("{key[0]}", []), ("{key.id}", {"id": 1}), ("{key.id}", None)],
+        ids=["index-empty-list", "attr-json-dict", "attr-none"],
+    )
+    async def test_render_failure_dead_letters_releases_unique_and_never_requeues(
+        self, broker, backend, config, template, key
+    ):
+        task_class = type(
+            "IndexAttrLockVariant",
+            (IndexAttrLockTask,),
+            {"task_info": dataclasses.replace(IndexAttrLockTask.task_info, lock=template)},
+        )
+        reg = TaskRegistry()
+        reg.register(task_class)
+        w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+        w._lock_manager = MagicMock()
+        w._lock_manager.acquire = AsyncMock()
+        backend.release_unique = AsyncMock(return_value=True)
+        msg = make_message(
+            _default_payload(task_id="t-f410", name="index_attr_lock", args=[key], kwargs={}),
+            headers={HEADER_UNIQUE_HASH: _UNIQUE_HASH},
+        )
+
+        await w._handle_message(msg)
+
+        w._lock_manager.acquire.assert_not_called()
+        broker.dead_letter.assert_awaited_once()
+        assert (
+            "failed to render lock name" in broker.dead_letter.call_args.kwargs["headers"]["x-swarmq-lock-render-error"]
+        )
+        broker.retry_later.assert_not_awaited()
+        broker.redeliver.assert_not_awaited()
+        broker.route_via_dlx.assert_not_awaited()
+        assert [c.args[:2] for c in backend.release_unique.await_args_list] == [(_UNIQUE_HASH, "t-f410")]
+
+    def test_huge_format_width_from_payload_is_a_value_error(self):
+        """R4F-10: die Breite aus den Nutzdaten allokiert nicht; der
+        ``MemoryError`` kommt als ``ValueError`` an (Weg in die DLQ). Die
+        Breite 2**62 liegt jenseits jedes Adressraums, so scheitert die
+        Allokation auf jedem Rechner sofort (auch mit Overcommit)."""
+        with pytest.raises(ValueError, match="failed to render lock name") as info:
+            render_lock_name("lock-{key:{other}}", IndexAttrLockTask, [0.0], {"other": 2**62})
+        assert isinstance(info.value.__cause__, MemoryError)
+
+    @pytest.mark.parametrize("signal_exc", [KeyboardInterrupt, asyncio.CancelledError])
+    def test_base_exceptions_while_rendering_are_not_wrapped(self, signal_exc):
+        class _Raises:
+            @override
+            def __format__(self, spec: str) -> str:
+                raise signal_exc
+
+        with pytest.raises(signal_exc):
+            render_lock_name("lock-{key}", IndexAttrLockTask, [_Raises()], {})
+
+
+class TestReservedLockNames:
+    """E-074: ein gerenderter Lock-Name, der mit ``{sched}`` beginnt oder
+    einem internen Lock-Namen gleicht, geht wie ein Render-Fehler in die DLQ."""
+
+    @pytest.mark.entscheidung("E-074")
+    async def test_scheduler_leader_name_from_payload_dead_letters(self, broker, backend, config):
+        reg = TaskRegistry()
+        reg.register(IndexAttrLockTask)
+        w = Worker(broker=broker, backend=backend, registry=reg, config=config)
+        w._lock_manager = MagicMock()
+        w._lock_manager.acquire = AsyncMock()
+        backend.release_unique = AsyncMock(return_value=True)
+        msg = make_message(
+            _default_payload(task_id="t-e074", name="index_attr_lock", args=[SCHEDULER_LOCK_NAME], kwargs={}),
+            headers={HEADER_UNIQUE_HASH: _UNIQUE_HASH},
+        )
+
+        await w._handle_message(msg)
+
+        w._lock_manager.acquire.assert_not_called()
+        broker.dead_letter.assert_awaited_once()
+        assert "reserved" in broker.dead_letter.call_args.kwargs["headers"]["x-swarmq-lock-render-error"]
+        broker.retry_later.assert_not_awaited()
+        broker.redeliver.assert_not_awaited()
+        assert [c.args[:2] for c in backend.release_unique.await_args_list] == [(_UNIQUE_HASH, "t-e074")]
+        with pytest.raises(ValueError, match="reserved"):
+            render_lock_name("{key}", IndexAttrLockTask, [SCHEDULER_LOCK_NAME], {})
+
+    @pytest.mark.entscheidung("E-074")
+    @pytest.mark.parametrize("value", ["{sched}", "{sched}:zset", "{sched}:leader:x"])
+    def test_names_under_the_sched_hash_tag_are_reserved(self, value):
+        with pytest.raises(ValueError, match="reserved lock name"):
+            render_lock_name("{key}", IndexAttrLockTask, [value], {})
+
+    @pytest.mark.entscheidung("E-074")
+    @pytest.mark.parametrize("value", ["sched", "sched:leader", "user-{sched}:leader", " {sched}:leader"])
+    def test_names_containing_sched_elsewhere_are_allowed(self, value):
+        assert render_lock_name("{key}", IndexAttrLockTask, [value], {}) == value
 
 
 # ===========================================================================
