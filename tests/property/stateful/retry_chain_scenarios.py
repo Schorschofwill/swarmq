@@ -325,16 +325,20 @@ def r4z_05_republished_retry_copy_with_text_count_still_runs(machine: RetryChain
     Streng gelesen zählt er 0 (E-051), der Ausführungsschutz sieht einen vom
     Retry überholten Versuch (``sup`` 1) und bestätigt die Nachricht still als
     Duplikat: kein Lauf, kein Ergebnis, keine DLQ-Kopie, die Kette endet.
-    Erwartet laut Plan U9 („zählt als 0, Kette beginnt neu“) und E-051
-    („wird normal weiterverarbeitet“): der Task läuft."""
+    Offene Frage: Der Plan U9 erwartet „zählt als 0, Kette beginnt neu“; E-051
+    legt den strengen Vergleich ausdrücklich fest und nennt diese Folge nicht.
+    Soll die Kopie laufen, oder genügt ein Nachtrag zu E-051 („kein Lauf, kein
+    Ergebnis, keine DLQ-Kopie“)? Der Nachweis prüft die Plan-Erwartung."""
     machine.reconfigure(ChainCfg(max_retries=3))
     machine.publish("t1")
     machine.deliver(only(machine), ERROR)
     machine.advance(2)
     moved = machine.set_retry_count(only(machine), "1")
-    expect = machine.deliver(moved, Act("ok"))
+    runs_before = len(machine.runs)
+    machine.deliver(moved, Act("ok"))
     assert machine.pending == []
-    assert expect.runs, f"UI-Republish der Retry-Kopie still als {expect.reason} bestätigt, Kette beendet"
+    assert len(machine.runs) > runs_before, "UI-Republish der Retry-Kopie still bestätigt: kein Lauf"
+    assert machine.run(machine.env.backend.get_result("t1")) is not None, "Kette beendet ohne Ergebnis"
 
 
 def lenient_model_is_caught(machine: RetryChainMachine) -> None:

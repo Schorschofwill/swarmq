@@ -80,9 +80,12 @@ Erlaubte Abweichungen (KTD3):
   nie ab (E-010 nicht nachgebildet).
 - E-009 (Bewusste Folgen): Ein UI-Move ohne Replay-ID (0.11-Altbestand)
   wird als Duplikat verworfen.
-- Ein Zustelllimit-Dead-Letter liegt vor dem Ausführungsschutz und setzt
-  keinen Done-Marker (``gates/delivery_count.py``, kein Claim); eine weitere
-  Kopie derselben Identität läuft danach. Keine E-ID, Ablauf laut Code.
+
+Keine erlaubte Abweichung, sondern Teil von R4Z-04 (keine E-ID): Ein
+Zustelllimit-Dead-Letter liegt vor dem Ausführungsschutz und setzt keinen
+Done-Marker (``gates/delivery_count.py``, kein Claim); eine weitere Kopie
+derselben Identität läuft danach. K7 zählt diese DLQ-Kopien deshalb nicht
+mit (Kommentar in ``one_guarded_dead_letter_per_identity``).
 
 Nicht nachgebildet: Locks (Lock-Maschine U6), ``max_age``, Workflows,
 Unique-Flags, Drain-Abbruch (E-001), Backend-Ausfall.
@@ -92,7 +95,7 @@ Verdachte (Bericht ``1-zustandsmodelle.md``, Abschnitt U9):
 - R4Z-04 verletzt K10: Am Zustelllimit schickt das Delivery-Count-Gate, das
   vor dem Ausführungsschutz liegt, die Neuzustellung einer abgeschlossenen
   oder überholten Ausführung in die DLQ und speichert ein Fehlerergebnis.
-  Ausgeklammert an ``deliver_one`` über ``deliverable`` und die
+  Ausgeklammert an ``deliver_some`` über ``deliverable`` und die
   Vorbedingung (Kommentar ``F4-offen (R4Z-04)``); Nachweis ``r4z_04_*`` in
   ``retry_chain_scenarios.py``.
 - R4Z-05 ist kein Widerspruch zum Modell, sondern zur Erwartung des Plans:
@@ -166,6 +169,10 @@ STATE_TTL_S = 86_400.0
 MAX_CHAINS = 3
 RETRY_COUNT_VALUES: tuple[object, ...] = ("abc", "3", -2, True, 2.5, 1, 7, None)
 RETRY_DELAYS = (-5.0, 0.0, 2.5, 30.0)
+DELIVER_KINDS: tuple[Kind, ...] = ("ok", "error", "error", "noretry", "retry", "hang", "child_death", "crash")
+# Nebenregeln je Beispiel begrenzt, damit die Zustellregeln die Schritte bekommen.
+SIDE_STEP_CAP = 3
+FAULTS: tuple[str | None, ...] = (None, None, None, None, "copy_failure", "lose_settle")
 
 Kind = Literal["ok", "error", "noretry", "retry", "hang", "child_death", "crash"]
 Backoff = Literal["fixed", "linear", "exponential"]
@@ -517,9 +524,6 @@ class DyingPool:
         raise ChildDied("compute child pid=0 exited without result")
 
 
-_seq = itertools.count(1)
-
-
 async def _ignore_pause(_delay_s: float) -> None:
     """Pause vor ``redeliver`` (BZ-29): das Modell braucht keine Wartezeit."""
 
@@ -548,6 +552,8 @@ class RetryChainMachine(AsyncStateMachine[ChainEnv]):
                 dead_letter_ttl_s=STATE_TTL_S,
             )
             self.broker = ChainBroker(self.env.clock)
+            self.side_steps = {"duplicate": 0, "manipulate": 0, "reconfigure": 0}
+            self._seq = itertools.count(1)  # je Beispiel neu: D1, D2, ... im geschrumpften Ablauf
             self.pending: list[Pending] = []
             self.run(self.broker.connect())
             self.run(self.broker.consume(QUEUE, self._on_delivery, concurrency=1_000_000))
@@ -613,7 +619,7 @@ class RetryChainMachine(AsyncStateMachine[ChainEnv]):
         return worker
 
     async def _on_delivery(self, delivery: Delivery) -> None:
-        self.pending.append(Pending(next(_seq), delivery))
+        self.pending.append(Pending(next(self._seq), delivery))
 
     async def _flush(self) -> None:
         """Ein Durchlauf der Schleife: vom Broker angestoßene Zustellungs-Tasks
@@ -892,35 +898,39 @@ class RetryChainMachine(AsyncStateMachine[ChainEnv]):
         überholten Ausführung am Zustelllimit bleibt liegen, statt die
         Maschine rot zu färben; Nachweis ``r4z_04_*`` in
         ``retry_chain_scenarios.py``. Ausgeklammert an der auslösenden Regel
-        über Auswahl und Vorbedingung, nie mit ``assume()`` (KTD3)."""
+        über Auswahl und Vorbedingung an ``deliver_some``, nie mit ``assume()`` (KTD3)."""
         return [p for p in self.pending if self.predict(p, Act("ok"), copy_failure=False).suspect is None]
 
     @precondition(lambda self: bool(self.deliverable()))
-    @rule(
-        data=st.data(),
-        kind=st.sampled_from(("ok", "error", "error", "noretry", "retry", "hang", "child_death", "crash")),
-        delay=st.sampled_from(RETRY_DELAYS),
-        fault=st.sampled_from((None, None, None, None, "copy_failure", "lose_settle")),
-    )
-    def deliver_one(self, data: st.DataObject, kind: Kind, delay: float, fault: str | None) -> None:
-        pending = data.draw(st.sampled_from(self.deliverable()), label="delivery")
-        act = Act(kind, delay if kind == "retry" else None)
-        faulty = kind != "crash"
-        self.deliver(
-            pending,
-            act,
-            copy_failure=faulty and fault == "copy_failure",
-            lose_settle=faulty and fault == "lose_settle",
-        )
+    @rule(data=st.data(), count=st.integers(min_value=1, max_value=6))
+    def deliver_some(self, data: st.DataObject, count: int) -> None:
+        """Eine bis sechs Zustellungen nacheinander, jede mit eigener Wirkung
+        und Störung. Mehrere je Regel, damit Ketten (Waisen, Zustelllimit,
+        Rate-Limit) auch im Profil ``quick`` tief genug werden."""
+        for _ in range(count):
+            choices = self.deliverable()
+            if not choices:
+                return
+            pending = data.draw(st.sampled_from(choices), label="delivery")
+            kind = data.draw(st.sampled_from(DELIVER_KINDS), label="kind")
+            delay = data.draw(st.sampled_from(RETRY_DELAYS), label="delay") if kind == "retry" else None
+            fault = data.draw(st.sampled_from(FAULTS), label="fault") if kind != "crash" else None
+            self.deliver(
+                pending,
+                Act(kind, delay),
+                copy_failure=fault == "copy_failure",
+                lose_settle=fault == "lose_settle",
+            )
 
     def duplicate(self, pending: Pending) -> None:
         """Doppelte Kopie (``PublishIndeterminate``, E-041): dieselben Header."""
         self.run(self.broker.publish(QUEUE, pending.delivery.body, dict(pending.headers)))
         self.run(self._flush())
 
-    @precondition(lambda self: bool(self.pending))
+    @precondition(lambda self: bool(self.pending) and self.side_steps["duplicate"] < SIDE_STEP_CAP)
     @rule(data=st.data())
     def duplicate_one(self, data: st.DataObject) -> None:
+        self.side_steps["duplicate"] += 1
         self.duplicate(data.draw(st.sampled_from(self.pending), label="delivery"))
 
     def set_retry_count(self, pending: Pending, value: object) -> Pending:
@@ -937,9 +947,10 @@ class RetryChainMachine(AsyncStateMachine[ChainEnv]):
         assert len(self.pending) == known + 1
         return self.pending[-1]
 
-    @precondition(lambda self: bool(self.pending))
+    @precondition(lambda self: bool(self.pending) and self.side_steps["manipulate"] < SIDE_STEP_CAP)
     @rule(data=st.data(), value=st.sampled_from(RETRY_COUNT_VALUES))
     def manipulate_header(self, data: st.DataObject, value: object) -> None:
+        self.side_steps["manipulate"] += 1
         self.set_retry_count(data.draw(st.sampled_from(self.pending), label="delivery"), value)
 
     def advance(self, seconds: int) -> None:
@@ -950,11 +961,26 @@ class RetryChainMachine(AsyncStateMachine[ChainEnv]):
     def advance_time(self, seconds: int) -> None:
         self.advance(seconds)
 
+    @precondition(lambda self: bool(self.deliverable()))
+    @rule(data=st.data())
+    def crash_cycle(self, data: st.DataObject) -> None:
+        """Absturzzyklus in einem Schritt: Worker stirbt in der Ausführung,
+        die Neuzustellung kommt sofort (zurückgestellt, solange der
+        Running-Marker steht), danach läuft der Marker ab. Macht Waisen und
+        die Waisengrenze im Profil ``quick`` erreichbar."""
+        pending = data.draw(st.sampled_from(self.deliverable()), label="delivery")
+        known = set(map(id, self.pending))
+        self.deliver(pending, Act("crash"))
+        for back in [p for p in self.deliverable() if id(p) not in known]:
+            self.deliver(back, Act("ok"))
+        self.advance(GUARD_TTL_MS // 1000 + 1)
+
     def reconfigure(self, cfg: ChainCfg) -> None:
         """Deploy mit geänderter TaskInfo: Zustellungen danach sehen sie."""
         self.cfg = cfg
         self.task_class.task_info = cfg.task_info()
 
+    @precondition(lambda self: self.side_steps["reconfigure"] < SIDE_STEP_CAP)
     @rule(
         max_retries=st.integers(min_value=0, max_value=3),
         backoff=st.sampled_from(("fixed", "linear", "exponential")),
@@ -965,6 +991,7 @@ class RetryChainMachine(AsyncStateMachine[ChainEnv]):
     def reconfigure_task(
         self, max_retries: int, backoff: Backoff, base_delay: float, timeouts: Timeouts, rate_limited: bool
     ) -> None:
+        self.side_steps["reconfigure"] += 1
         self.reconfigure(ChainCfg(max_retries, backoff, base_delay, timeouts, rate_limited))
 
     def replay(self, task_id: str, mode: ReplayMode) -> None:
@@ -1028,6 +1055,10 @@ class RetryChainMachine(AsyncStateMachine[ChainEnv]):
     def one_guarded_dead_letter_per_identity(self) -> None:
         """K7: hinter dem Ausführungsschutz höchstens eine DLQ-Kopie je Identität."""
         for identity, reasons in self.dlq_by_identity.items():
+            # Ausgenommen, nicht erlaubt: Zustelllimit-DLQs liegen vor dem
+            # Ausführungsschutz und setzen keinen Done-Marker, eine weitere
+            # Kopie derselben Identität läuft danach. Teilaspekt von R4Z-04
+            # (F4-offen, keine E-ID); siehe Bericht 1-zustandsmodelle.md, U9.
             guarded = [reason for reason in reasons if reason != "delivery_limit"]
             assert len(guarded) <= 1, f"{identity}: DLQ-Kopien {reasons} (K7)"
 
