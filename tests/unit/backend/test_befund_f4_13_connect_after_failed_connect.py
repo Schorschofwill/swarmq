@@ -27,6 +27,7 @@ gesunden mit ``allkeys-lru``). Im heutigen Code wird der zweite nie gebaut.
 Testliste:
 # [x] Valkey weiter weg: zweites ``connect()`` wirft wieder ``BackendConnectionError``
 # [x] Valkey zurück mit ``allkeys-lru``: zweites ``connect()`` pingt und prüft die Policy (``unsafe``)
+# [x] dasselbe mit ``strict``: die Start-Sperre greift beim zweiten Versuch (Exit 78)
 """
 
 from __future__ import annotations
@@ -38,7 +39,8 @@ import pytest
 from valkey.exceptions import ConnectionError as ValkeyConnectionError
 
 from swarmq.backend.valkey import ValkeyBackend
-from swarmq.exceptions import BackendConnectionError
+from swarmq.exceptions import BackendConnectionError, ConfigurationError
+from swarmq.worker.eviction_gate import enforce_eviction_policy
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -87,9 +89,6 @@ async def _second_connect_error(backend: ValkeyBackend, *clients: _FakeValkey) -
 
 
 @pytest.mark.befund("F4-13")
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="F4-13: offen - zweites connect() meldet Erfolg ohne Valkey"
-)
 async def test_second_connect_after_a_failed_one_still_reports_the_outage() -> None:
     backend = ValkeyBackend("valkey://valkey.invalid:6379/0", eviction_check="warn")
 
@@ -105,9 +104,6 @@ async def test_second_connect_after_a_failed_one_still_reports_the_outage() -> N
 
 
 @pytest.mark.befund("F4-13")
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="F4-13: offen - zweites connect() überspringt die Eviction-Prüfung"
-)
 async def test_second_connect_after_valkey_returns_checks_the_eviction_policy() -> None:
     backend = ValkeyBackend("valkey://valkey.invalid:6379/0", eviction_check="warn")
     returned = _FakeValkey(reachable=True, policy="allkeys-lru")
@@ -119,5 +115,22 @@ async def test_second_connect_after_valkey_returns_checks_the_eviction_policy() 
         assert returned.pings == 1, "zweites connect() hat das zurückgekehrte Valkey nicht erreicht (kein PING)"
         assert backend.eviction_check is not None, "Eviction-Prüfung entfällt beim zweiten connect() (E-005)"
         assert backend.eviction_check.status == "unsafe"
+    finally:
+        await backend.close()
+
+
+@pytest.mark.befund("F4-13")
+async def test_second_connect_after_valkey_returns_blocks_a_strict_start_on_an_evicting_policy() -> None:
+    backend = ValkeyBackend("valkey://valkey.invalid:6379/0", eviction_check="strict")
+
+    try:
+        error = await _second_connect_error(
+            backend, _FakeValkey(reachable=False), _FakeValkey(reachable=True, policy="allkeys-lru")
+        )
+        assert error is None, f"zweites connect() gegen das zurückgekehrte Valkey scheitert: {error!r}"
+
+        # ConfigurationError endet an den Einstiegspunkten mit Exit 78.
+        with pytest.raises(ConfigurationError, match="allkeys-lru"):
+            enforce_eviction_policy(backend, "strict")
     finally:
         await backend.close()

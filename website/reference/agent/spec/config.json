@@ -175,6 +175,12 @@
       "type": "float"
     },
     {
+      "default": 30.0,
+      "env_var": "SWARMQ_BACKEND_CONNECT_TIMEOUT_S",
+      "name": "backend_connect_timeout_s",
+      "type": "float"
+    },
+    {
       "default": 1.0,
       "env_var": "SWARMQ_BACKEND_DEFER_BASE_DELAY",
       "name": "backend_defer_base_delay",

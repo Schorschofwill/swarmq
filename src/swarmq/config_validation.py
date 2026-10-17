@@ -8,6 +8,7 @@ von ``swarmq.config``; die Felder, die es liest, stehen als Stubs unter
 from __future__ import annotations
 
 import math
+import threading
 from typing import TYPE_CHECKING, ClassVar
 
 from swarmq.exceptions import ConfigurationError
@@ -15,6 +16,12 @@ from swarmq.keyspace import validate_namespace
 from swarmq.logging_settings import VALID_LOG_LEVELS, valid_drain_timeout, validate_logger_levels
 from swarmq.seconds import whole_seconds
 from swarmq.valkey_policy import EVICTION_CHECK_MODES
+
+
+def valid_backend_connect_timeout(seconds: float) -> bool:
+    """Gesamtfrist des Verbindungsaufbaus zum Backend (E-075): groesser 0 und
+    hoechstens ``threading.TIMEOUT_MAX``; ``nan`` und ``inf`` fallen durch."""
+    return 0 < seconds <= threading.TIMEOUT_MAX
 
 
 class ConfigValidation:
@@ -30,6 +37,7 @@ class ConfigValidation:
         configure_logging: bool
         logger_levels: tuple[tuple[str, str], ...]
         log_drain_timeout: float
+        backend_connect_timeout_s: float
         retry_max_delay: float
         queue_type: str
         queue_dead_letter_strategy: str
@@ -108,6 +116,13 @@ class ConfigValidation:
         self._validate_positive()
         self._validate_shutdown_timeout()
         self._validate_finite()
+        if not valid_backend_connect_timeout(self.backend_connect_timeout_s):
+            # E-075: ``asyncio.timeout`` braucht eine darstellbare Frist.
+            msg = (
+                "backend_connect_timeout_s must be > 0 and at most threading.TIMEOUT_MAX seconds, "
+                f"got {self.backend_connect_timeout_s}"
+            )
+            raise ConfigurationError(msg)
         self._validate_pool()
         if not self.broker_url:
             msg = "broker_url must not be empty"

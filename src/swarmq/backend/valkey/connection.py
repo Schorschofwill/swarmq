@@ -8,12 +8,16 @@ Koordinations-Stores bauen darauf auf.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import time
 from typing import Any
 
 import valkey.asyncio
 from valkey.asyncio.retry import Retry
 from valkey.backoff import ExponentialBackoff
 from valkey.exceptions import (
+    AuthenticationError,
+    AuthorizationError,
     ClusterDownError,
     OutOfMemoryError,
     ReadOnlyError,
@@ -25,7 +29,8 @@ from valkey.exceptions import ConnectionError as ValkeyConnectionError
 from valkey.exceptions import TimeoutError as ValkeyTimeoutError
 
 from swarmq.backend.valkey.environment import log_eviction_check, probe_eviction
-from swarmq.config import INJECTED_URL, env_namespace, env_valkey_eviction_check
+from swarmq.config import INJECTED_URL, env_backend_connect_timeout_s, env_namespace, env_valkey_eviction_check
+from swarmq.config_validation import valid_backend_connect_timeout
 from swarmq.exceptions import BackendConnectionError, BackendResponseError, ConfigurationError
 from swarmq.keyspace import KeySpace
 from swarmq.valkey_policy import EvictionCheck
@@ -86,6 +91,24 @@ def as_backend_error(message: str, exc: BaseException) -> BackendConnectionError
 _SOCKET_TIMEOUT_S = 10.0
 _SOCKET_CONNECT_TIMEOUT_S = 5.0
 
+# Befehls-Retry des eigenen Clients (2026-04-17 toxiproxy spike): Backoff
+# ``min(cap, base * 2**n)`` fuer n = 1..5, also 0,1 + 0,2 + 0,4 + 0,8 + 1,6 s.
+_RETRY_BACKOFF_CAP_S = 2.0
+_RETRY_BACKOFF_BASE_S = 0.05
+_RETRY_ATTEMPTS = 5
+
+# F4-14: Fenster der Handshake-Wiederholung, die nominelle Summe des
+# Befehls-Retry (3,1 s), gemessen ab dem ersten Fehlschlag. Ein Zeitdeckel
+# statt einer Zahl von Versuchen, damit sich die inneren TCP-Wiederholungen
+# eines Versuchs und die aeusseren nicht vervielfachen.
+_HANDSHAKE_RETRY_WINDOW_S = sum(
+    min(_RETRY_BACKOFF_CAP_S, _RETRY_BACKOFF_BASE_S * 2**failures) for failures in range(1, _RETRY_ATTEMPTS + 1)
+)
+
+# Uhr und Warten der Handshake-Wiederholung (Systemgrenze, in Tests ersetzbar).
+_monotonic = time.monotonic
+_sleep = asyncio.sleep
+
 # ``ping`` prüft mit derselben Schranke wie der bisherige HealthChecker.
 _PING_TIMEOUT_S = 2.0
 
@@ -105,6 +128,86 @@ async def _refuse_connection(*_args: Any, **_kwargs: Any) -> Any:
     """Ersatz fuer ``ConnectionPool.get_connection`` nach ``close()``."""
     msg = "ValkeyBackend is closed; no new connections"
     raise ValkeyConnectionError(msg)
+
+
+class _HandshakeReset(ValkeyConnectionError):
+    """Die Verbindung wurde im Handshake getrennt, nach erfolgreichem
+    TCP-Aufbau (Proxy oder Sidecar vor einem neu startenden Valkey; F4-14)."""
+
+
+def _mark_handshake_resets(connection: Any) -> Any:
+    """Markiert einen Transportfehler im Handshake von *connection* als
+    ``_HandshakeReset``, damit ``_retry_handshake`` ihn wiederholt.
+
+    Nicht markiert werden Anmeldefehler (Warten heilt sie nicht) und ein
+    Zeitablauf (``socket_timeout``; E-075: die Laufzeit bleibt). Ersetzt
+    ``on_connect`` der Instanz statt ``valkey_connect_func`` zu setzen: dafuer
+    ruft valkey-py 6.1.1 ``asyncio.iscoroutinefunction`` auf, das unter
+    Python 3.14 eine ``DeprecationWarning`` ausloest."""
+    on_connect = connection.on_connect
+
+    async def handshake() -> None:
+        # Kein Health-Check-PING im Handshake einer gerade aufgebauten
+        # Verbindung: valkey-py schickt ihn vor dem ersten Befehl, wenn die
+        # letzte Antwort ``health_check_interval`` zurueckliegt (bei einer
+        # neuen Verbindung immer), und wiederholt ihn mit der Retry-Politik
+        # samt erneutem TCP-Aufbau und Handshake. Innere und aeussere
+        # Wiederholungen vervielfachten sich sonst. Jede Antwort setzt die
+        # Frist danach wie gewohnt neu.
+        if connection.health_check_interval:
+            connection.next_health_check = asyncio.get_running_loop().time() + connection.health_check_interval
+        try:
+            await on_connect()
+        except AuthenticationError, AuthorizationError:
+            raise
+        except ValkeyConnectionError as exc:
+            raise _HandshakeReset(str(exc)) from exc
+
+    connection.on_connect = handshake
+    return connection
+
+
+def _retry_handshake(pool: Any) -> None:
+    """Wiederholt den Neuaufbau einer Pool-Verbindung, wenn der Handshake
+    getrennt wird (F4-14).
+
+    valkey-py holt die Verbindung in ``execute_command`` mit
+    ``pool.get_connection`` vor ``conn.retry.call_with_retry``; ein Neuaufbau
+    dort liegt ausserhalb der Befehls-Wiederholung. Wiederholt wird nur
+    ``_HandshakeReset``, mit dem Backoff des Befehls-Retry, solange seit dem
+    ersten Fehlschlag weniger als ``_HANDSHAKE_RETRY_WINDOW_S`` vergangen ist.
+    Die Wiederholung greift vor dem Senden des Befehls; ein nicht
+    idempotentes Skript laeuft dadurch nicht doppelt (F3-33 unveraendert)."""
+    get_connection = pool.get_connection
+    backoff = ExponentialBackoff(cap=_RETRY_BACKOFF_CAP_S, base=_RETRY_BACKOFF_BASE_S)
+
+    def make_marked_connection() -> Any:
+        # Ueber die Klasse erst beim Aufruf: ein Pool-Ersatz ohne
+        # ``make_connection`` laesst sich weiter bauen.
+        return _mark_handshake_resets(type(pool).make_connection(pool))
+
+    async def get_connection_with_retry(*args: Any, **kwargs: Any) -> Any:
+        first_failure: float | None = None
+        failures = 0
+        while True:
+            try:
+                return await get_connection(*args, **kwargs)
+            except _HandshakeReset:
+                now = _monotonic()
+                if first_failure is None:
+                    first_failure = now
+                if now - first_failure >= _HANDSHAKE_RETRY_WINDOW_S:
+                    raise
+                failures += 1
+                await _sleep(backoff.compute(failures))
+                if pool.get_connection is not get_connection_with_retry:
+                    # ``close()`` hat den Pool im Backoff versiegelt
+                    # (``_seal_pool``): mit dessen Fehler enden, statt die
+                    # Sperre mit der originalen ``get_connection`` zu umgehen.
+                    return await pool.get_connection(*args, **kwargs)
+
+    pool.make_connection = make_marked_connection
+    pool.get_connection = get_connection_with_retry
 
 
 def _seal_pool(pool: Any) -> None:
@@ -127,6 +230,13 @@ def _seal_pool(pool: Any) -> None:
     pool.release = release_and_disconnect
 
 
+async def _close_quietly(client: valkey.asyncio.Valkey) -> None:
+    """Schliesst einen Client, dessen ``connect()`` gescheitert ist (F4-13).
+    Ein Fehler beim Schliessen verdeckt nicht die eigentliche Ursache."""
+    with contextlib.suppress(Exception):
+        await client.aclose()
+
+
 class ValkeyConnection:
     def __init__(
         self,
@@ -137,6 +247,7 @@ class ValkeyConnection:
         keys: KeySpace | None = None,
         eviction_check: str | None = None,
         namespace: str | None = None,
+        connect_timeout_s: float | None = None,
     ) -> None:
         """Construct a backend from a URL, an existing client, or a pool.
 
@@ -179,6 +290,18 @@ class ValkeyConnection:
         self.eviction_check: EvictionCheck | None = None
         # Schalter der Pruefung; ohne Angabe aus der Umgebung (Q11, ueber ``config.py``).
         self._eviction_mode = eviction_check if eviction_check is not None else env_valkey_eviction_check()
+        # E-075: Gesamtfrist des PING beim Verbinden; ohne Angabe aus der
+        # Umgebung (Backends ohne ``SwarmQConfig``: CLI, Producer).
+        # Ausdruecklich uebergeben gewinnt vor der Konfiguration
+        # (``reconcile_connect_timeout``, Nachtrag E-075).
+        self._connect_timeout_explicit = connect_timeout_s is not None
+        if connect_timeout_s is None:
+            connect_timeout_s = env_backend_connect_timeout_s()
+        elif not valid_backend_connect_timeout(connect_timeout_s):
+            raise ConfigurationError(
+                f"connect_timeout_s must be > 0 and at most threading.TIMEOUT_MAX seconds, got {connect_timeout_s}"
+            )
+        self._connect_timeout_s = connect_timeout_s
         if not given:
             raise ConfigurationError("ValkeyBackend requires exactly one of: url, client, or pool")
         if len(given) > 1:
@@ -209,6 +332,18 @@ class ValkeyConnection:
             self._owns_client = True
 
     @property
+    def connect_timeout_s(self) -> float:
+        """Gesamtfrist des PING beim Verbinden in Sekunden (E-075)."""
+        return self._connect_timeout_s
+
+    def reconcile_connect_timeout(self, configured: float) -> None:
+        """Die Gesamtfrist mit der Konfiguration abgleichen (Nachtrag E-075):
+        ohne ausdruecklichen Parameter gilt *configured* (``SwarmQConfig``-Feld
+        bzw. ``SWARMQ_BACKEND_CONNECT_TIMEOUT_S``), sonst der Parameter."""
+        if not self._connect_timeout_explicit:
+            self._connect_timeout_s = configured
+
+    @property
     def namespace(self) -> str | None:
         """Der Namensraum aller Keys und Kanaele dieses Backends (BZ-10)."""
         return self._keys.namespace
@@ -237,28 +372,58 @@ class ValkeyConnection:
         # client/pool already exists, so swarmq builds nothing here.
         if self._client is not None:
             return
+        # F4-13: Der Client gilt erst nach PING und Eviction-Pruefung als
+        # verbunden; scheitert ein Schritt (auch durch Abbruch), wird der
+        # eigene Client geschlossen und ``connect()`` bleibt wiederholbar.
+        client = self._build_client()
+        connected = False
         try:
-            # Reliability hardening (2026-04-17 toxiproxy spike): command-
-            # level retry on transient transport errors with exponential
-            # backoff capped at 2s. health_check_interval=30 detects
-            # half-open connections before they surface to callers.
-            self._client = valkey.asyncio.Valkey.from_url(
-                self._url,
-                retry=Retry(ExponentialBackoff(cap=2.0, base=0.05), retries=5),
-                retry_on_error=_TRANSIENT_ERRORS,
-                health_check_interval=30,
-                # Bound every op at the socket so a
-                # half-open connection cannot wedge a read forever.
-                socket_timeout=_SOCKET_TIMEOUT_S,
-                socket_connect_timeout=_SOCKET_CONNECT_TIMEOUT_S,
-            )
-            await self._client.ping()
-        except (ValkeyConnectionError, OSError) as exc:
-            raise BackendConnectionError(str(exc)) from exc
-        # BZ-04 (Plan 0.12.0, MR 14): verdraengende Policy laut melden.
-        if self._eviction_mode != "off":
-            self.eviction_check = await probe_eviction(self._client)
-            log_eviction_check(self.eviction_check)
+            # E-075: Gesamtfrist nur um den PING; die Wiederholpolitik zur
+            # Laufzeit bleibt.
+            deadline = asyncio.timeout(self._connect_timeout_s)
+            try:
+                async with deadline:
+                    await client.ping()
+            except (ValkeyError, OSError) as exc:
+                if deadline.expired():
+                    msg = f"Valkey connect timed out after {self._connect_timeout_s}s"
+                    raise BackendConnectionError(msg) from exc
+                # F4-12: jeder Treiberfehler typisiert, auch Zeitablauf und
+                # Fehlerantwort auf PING (Vertrag ``ResultBackend.connect``).
+                raise as_backend_error(f"Valkey connect failed: {exc}", exc) from exc
+            # BZ-04 (Plan 0.12.0, MR 14): verdraengende Policy laut melden.
+            if self._eviction_mode != "off":
+                self.eviction_check = await probe_eviction(client)
+                log_eviction_check(self.eviction_check)
+            connected = True
+        finally:
+            if not connected:
+                await _close_quietly(client)
+        self._client = client
+
+    def _build_client(self) -> valkey.asyncio.Valkey:
+        # Reliability hardening (2026-04-17 toxiproxy spike): command-
+        # level retry on transient transport errors with exponential
+        # backoff capped at 2s. health_check_interval=30 detects
+        # half-open connections before they surface to callers.
+        client: valkey.asyncio.Valkey = valkey.asyncio.Valkey.from_url(
+            self._url,
+            retry=Retry(
+                ExponentialBackoff(cap=_RETRY_BACKOFF_CAP_S, base=_RETRY_BACKOFF_BASE_S), retries=_RETRY_ATTEMPTS
+            ),
+            retry_on_error=_TRANSIENT_ERRORS,
+            health_check_interval=30,
+            # Bound every op at the socket so a
+            # half-open connection cannot wedge a read forever.
+            socket_timeout=_SOCKET_TIMEOUT_S,
+            socket_connect_timeout=_SOCKET_CONNECT_TIMEOUT_S,
+        )
+        # F4-14: Neuaufbau mit getrenntem Handshake wiederholen. Ein Client
+        # ohne Pool (Ersatz an der Grenze ``from_url``) bleibt, wie er ist.
+        pool = getattr(client, "connection_pool", None)
+        if pool is not None:
+            _retry_handshake(pool)
+        return client
 
     async def recheck_eviction(self) -> EvictionCheck | None:
         """Erneute Pruefung (Leader, stuendlich; BZ-04) samt ``used_memory``;

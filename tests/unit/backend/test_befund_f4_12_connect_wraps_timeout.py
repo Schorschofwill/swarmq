@@ -58,7 +58,6 @@ async def _connect_error(cause: BaseException) -> BaseException | None:
 
 
 @pytest.mark.befund("F4-12")
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="F4-12: offen - connect() reicht TimeoutError roh durch")
 async def test_connect_reports_a_timeout_as_backend_connection_error() -> None:
     error = await _connect_error(ValkeyTimeoutError("Timeout connecting to server"))
 
@@ -70,9 +69,6 @@ async def test_connect_reports_a_timeout_as_backend_connection_error() -> None:
 
 
 @pytest.mark.befund("F4-12")
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="F4-12: offen - connect() reicht Fehlerantworten roh durch"
-)
 async def test_connect_reports_an_error_reply_to_ping_as_backend_connection_error() -> None:
     error = await _connect_error(NoPermissionError("this user has no permissions to run the 'ping' command"))
 

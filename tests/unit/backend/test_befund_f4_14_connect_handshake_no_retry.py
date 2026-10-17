@@ -141,11 +141,6 @@ async def fake_valkey() -> AsyncIterator[tuple[_FakeValkey, int]]:
 
 
 @pytest.mark.befund("F4-14")
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="F4-14: offen - Neuaufbau im Handshake liegt außerhalb der Befehls-Wiederholung",
-)
 async def test_store_result_retries_when_the_reconnect_is_reset_in_the_handshake(
     fake_valkey: tuple[_FakeValkey, int],
 ) -> None:

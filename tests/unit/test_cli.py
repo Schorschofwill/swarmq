@@ -397,6 +397,45 @@ class TestRunWorkerAsync:
         return _FakeApp
 
     @pytest.mark.asyncio
+    @pytest.mark.entscheidung("E-075")
+    async def test_worker_backend_takes_the_connect_deadline_from_the_environment(self, monkeypatch):
+        """Der Worker-Befehl baut das Backend ohne ``SwarmQConfig``; die Frist
+        des Verbindungsaufbaus kommt aus der Umgebung."""
+
+        class _Probe(Task):
+            from swarmq.task import TaskInfo
+
+            task_info = TaskInfo(name="cli_connect_deadline_probe", queues=["default"])
+
+            @override
+            async def run(self) -> None:
+                pass
+
+        monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://localhost:5672/")
+        monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://localhost:6379/0")
+        monkeypatch.setenv("SWARMQ_BACKEND_CONNECT_TIMEOUT_S", "4.5")
+        seen: list[Any] = []
+
+        class _FakeApp:
+            def __init__(self, broker, backend, **kwargs):
+                seen.append(backend)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def start_worker(self):
+                pass
+
+        monkeypatch.setattr("swarmq.app.SwarmQ", _FakeApp)
+
+        await cli.run_worker_async(self._hook_args(None))
+
+        assert [backend.connect_timeout_s for backend in seen] == [4.5]
+
+    @pytest.mark.asyncio
     @pytest.mark.entscheidung("E-069")
     async def test_configure_hook_runs_with_the_app_before_start(self, monkeypatch):
         """U5 (R9/R10): Der Hook sieht die fertige App und laeuft vor dem
