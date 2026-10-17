@@ -68,6 +68,7 @@ async def dlq(rabbitmq_url: str, monkeypatch: pytest.MonkeyPatch) -> AsyncIterat
     await setup.close()
 
 
+@pytest.mark.entscheidung("E-028")
 @pytest.mark.befund("F4-05")
 @pytest.mark.xfail(
     strict=True,
@@ -84,6 +85,7 @@ async def test_list_reports_truncation_when_expired_entries_used_up_the_limit(
     assert out["truncated"] is True, f"Limit 2 erreicht, t-1 und t-2 liegen noch in der XQ: {out}"
 
 
+@pytest.mark.entscheidung("E-028")
 @pytest.mark.befund("F4-05")
 @pytest.mark.xfail(
     strict=True,

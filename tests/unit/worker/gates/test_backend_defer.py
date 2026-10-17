@@ -269,6 +269,7 @@ async def test_deferral_logs_warning_with_attempt_delay_and_error(worker, broker
     assert entry["error"] == "valkey down"
 
 
+@pytest.mark.entscheidung("E-041")
 @pytest.mark.parametrize("publish_error", [BrokerConnectionError("rmq down"), PublishIndeterminate("deadline")])
 async def test_failed_deferral_publish_falls_back_to_redeliver(worker, broker, swarmq_logs, publish_error):
     """Broker auch weg: der alte Weg (``nack(requeue=True)``) -- die

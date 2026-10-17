@@ -280,6 +280,29 @@ async def test_retry_publish_failure_logs_error_with_error_fields(broker, backen
     assert entry["error"] == "broker gone"
 
 
+@pytest.mark.entscheidung("E-041")
+async def test_indeterminate_retry_publish_redelivers_the_original_without_ack(broker, backend, config):
+    """E-041 (Nachtrag 2026-10-17, Pfad Retry): endet der Publish der
+    Retry-Kopie unbestimmt, bleibt das Original unbestätigt und wird neu
+    zugestellt -- ein Zusatzlauf wird getragen."""
+    from swarmq.exceptions import PublishIndeterminate
+    from swarmq.middleware import MiddlewareChain
+
+    class RetryingTask(Task):
+        task_info = TaskInfo(name="retrying-task", queues=["default"], max_retries=1)
+
+    handler, _ = _handler(broker, backend, config, RetryingTask)
+    broker.retry_later = AsyncMock(side_effect=PublishIndeterminate("deadline"))
+    msg = make_message(_default_payload(name="retrying-task"))
+
+    await handler.evaluate(
+        msg, _ctx(RetryingTask), RuntimeError("task boom"), "task boom", {"retry_count": 0}, MiddlewareChain([])
+    )
+
+    broker.redeliver.assert_awaited_once_with(msg)
+    broker.ack.assert_not_awaited()
+
+
 async def test_task_sent_to_dlq_is_an_error(broker, backend, config, swarmq_logs):
     """KTD11: der Task ist endgueltig fehlgeschlagen -> ERROR (bisher WARNING)."""
     handler, _ = _handler(broker, backend, config)

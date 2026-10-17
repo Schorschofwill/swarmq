@@ -201,31 +201,6 @@ def cancel_without_further_step_stays_running(machine: WorkflowMachine) -> None:
     assert "/b" not in wf.publishes
 
 
-def unmarked_member_completing_first_fails_the_workflow(machine: WorkflowMachine) -> None:
-    """Beleg zu R4Z-01 (ENTSCHEIDUNG, Plan 2026-08-30-002 KD1; Überdenken:
-    PF-3): Der Advance von ``/g1/0`` publiziert ``/g1/1``, das
-    Compare-and-Set scheitert (Valkey kurz weg), die Zustellung geht zurück.
-    ``/g1/1`` läuft vor der Neuzustellung: der Fan-in findet den Marker nicht
-    und markiert den Workflow ``failed`` (``WorkflowValidationError``, „resolved
-    1 of 2 member results“), obwohl kein Schritt scheiterte. KD1 nimmt das
-    laute Scheitern bei einem im publish→mark-Fenster fehlenden Marker
-    ausdrücklich hin (Changelog 0.4.0,
-    ``test_workflow_advancer.py::test_guard_catches_lost_marker_of_composite_member``).
-    Ändert sich die Entscheidung, wird dieser Beleg zum Nachweis
-    (``completed``) und die Klammer ``deliverable`` entfällt."""
-    wf = machine.start(("group", [("s", "a1"), ("chain", [("s", "a2"), ("s", "a3")])]))
-    machine.deliver(_at(machine, wf, "/g0"))
-    machine.backend_write_outage()
-    machine.deliver(_at(machine, wf, "/g1/0"))  # publiziert /g1/1, Neuzustellung
-    machine.deliver(_at(machine, wf, "/g1/1"))  # an der Klammer ``deliverable`` vorbei
-    machine.drain()
-    state = machine.state_of(wf)
-    assert state is not None
-    assert state["status"] == STATUS_FAILED, state
-    assert state["error"]["type"] == "WorkflowValidationError", state["error"]
-    assert "1 of 2" in state["error"]["message"], state["error"]
-
-
 def reference_off_is_caught(machine: WorkflowMachine) -> None:
     """Selbsttest: W7 erkennt ein falsches Endergebnis."""
     machine.start(CHORD3)
@@ -252,6 +227,29 @@ def dead_letter_after_unadvanced_success(machine: WorkflowMachine) -> None:
     machine.deliver(_at(machine, wf, ""), "dlq")
     assert not machine.pending
     assert machine.status_of(wf) in TERMINAL
+
+
+def unmarked_member_completing_first_completes_the_workflow(machine: WorkflowMachine) -> None:
+    """F4-16 (R4Z-01; E-073, Georg 2026-10-17, PF-3 Option a): Der Advance von
+    ``/g1/0`` publiziert ``/g1/1``, das Compare-and-Set scheitert (Valkey kurz
+    weg), die Zustellung geht zurück. ``/g1/1`` läuft vor der Neuzustellung:
+    der Fan-in findet den Marker nicht und markiert den Workflow heute
+    ``failed`` (``WorkflowValidationError``, „resolved 1 of 2 member results“),
+    obwohl kein Schritt scheiterte. Erwartet (E-073): Der Fan-in leitet die
+    Kennung des Blatts ab (``workflow_step_task_id``), der Workflow wird
+    ``completed`` mit dem richtigen Endergebnis. Nach dem Fix entfällt die
+    Klammer ``deliverable``; ``test_guard_catches_lost_marker_of_composite_member``
+    (``tests/unit/test_workflow_advancer.py``, schreibt KD1 fest) ist anzupassen."""
+    wf = machine.start(("group", [("s", "a1"), ("chain", [("s", "a2"), ("s", "a3")])]))
+    machine.deliver(_at(machine, wf, "/g0"))
+    machine.backend_write_outage()
+    machine.deliver(_at(machine, wf, "/g1/0"))  # publiziert /g1/1, Neuzustellung
+    machine.deliver(_at(machine, wf, "/g1/1"))  # an der Klammer ``deliverable`` vorbei
+    machine.drain()
+    state = machine.state_of(wf)
+    assert state is not None
+    assert state["status"] == STATUS_COMPLETED, state
+    machine.verify()
 
 
 # -- Sabotage am Subjekt (Selbsttest der Invarianten, beide Stufen) -----------
@@ -327,7 +325,6 @@ SCENARIOS: dict[str, Scenario] = {
     "transient_fail_mark_is_redelivered": transient_fail_mark_is_redelivered,
     "lost_cas_rounds_redeliver_and_complete": lost_cas_rounds_redeliver_and_complete,
     "cancel_without_further_step_stays_running": cancel_without_further_step_stays_running,
-    "unmarked_member_completing_first_fails_the_workflow": unmarked_member_completing_first_fails_the_workflow,
 }
 
 SABOTAGES: dict[str, Scenario] = {
@@ -338,6 +335,7 @@ SABOTAGES: dict[str, Scenario] = {
 
 NACHWEISE: dict[str, Scenario] = {
     "F4-01": dead_letter_after_unadvanced_success,
+    "F4-16": unmarked_member_completing_first_completes_the_workflow,
 }
 
 __all__ = ["NACHWEISE", "SABOTAGES", "SCENARIOS", "ReferenceOff", "reference_off_is_caught"]

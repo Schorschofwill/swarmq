@@ -120,6 +120,7 @@ def _workers(namespace: str) -> list[dict[str, Any]]:
     return list(json.loads(result.stdout)["workers"])
 
 
+@pytest.mark.entscheidung("E-029")
 @pytest.mark.befund("F4-06")
 @pytest.mark.xfail(
     strict=True,

@@ -124,6 +124,7 @@ def _stored_errors(backend: MagicMock) -> list[str]:
     return errors
 
 
+@pytest.mark.entscheidung("E-043")
 @pytest.mark.befund("F4-02")
 @pytest.mark.xfail(
     strict=True,
@@ -146,6 +147,7 @@ async def test_completed_execution_redelivered_at_the_limit_stays_a_duplicate(
     assert broker.ack.await_count == 1
 
 
+@pytest.mark.entscheidung("E-043")
 @pytest.mark.befund("F4-02")
 @pytest.mark.xfail(
     strict=True,

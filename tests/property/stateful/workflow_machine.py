@@ -89,10 +89,10 @@ Bekannte Befunde und Entscheidungen (Register
 ``docs/befunde/fehlersuche-runde-4-2026-10.md``), ausgeklammert an der
 auslösenden Regel (KTD3, R8):
 
-- R4Z-01 (ENTSCHEIDUNG, Plan 2026-08-30-002 KD1; Überdenken: PF-3): Ein
-  Gruppenglied, dessen Marker der publizierende Advance nicht persistiert
-  hat, kippt den Workflow beim Fan-in auf ``failed``. Vorbedingung
-  ``deliverable``; Beleg ``unmarked_member_completing_first_fails_the_workflow``.
+- F4-16 (R4Z-01; E-073, KD1 für Blätter überholt): Ein Gruppenglied, dessen
+  Marker der publizierende Advance nicht persistiert hat, kippt den Workflow
+  beim Fan-in auf ``failed``. Vorbedingung ``deliverable``; Nachweis
+  ``test_unmarked_member_completing_first_completes_the_workflow``.
 - F4-01 (R4Z-02): Ein Dead-Letter nach gespeichertem, nicht
   weitergeschaltetem Erfolg lässt den Workflow ``running``. In
   ``deliver_pending`` wird ``dlq`` nach gespeichertem Erfolg zu ``ok``;
@@ -326,7 +326,7 @@ def predecessors(root: WorkflowNode, path: str) -> list[str]:
 
 def fan_in_above(root: WorkflowNode, path: str) -> bool:
     """Liegt über dem Schritt an *path* eine Gruppe (auch ein Chord-Header)?
-    Nur dann liest ein späterer Fan-in seinen Marker (R4Z-01)."""
+    Nur dann liest ein späterer Fan-in seinen Marker (F4-16, R4Z-01)."""
     node = root
     for seg in [s for s in path.split("/") if s]:
         if isinstance(node, Group):
@@ -734,12 +734,12 @@ class WorkflowMachine(AsyncStateMachine[WorkflowEnv]):
         assert status in TERMINAL, f"{wf}: {kind} von {msg} bestätigt, Status {status} (W4, E-040)"
 
     def deliverable(self, msg: Msg) -> bool:
-        """R4Z-01 (ENTSCHEIDUNG, KD1; PF-3): Ein Schritt, dessen Marker der publizierende
+        """F4-16 (R4Z-01; E-073): Ein Schritt, dessen Marker der publizierende
         Advance nicht persistiert hat (Neuzustellung nach Publish), läuft erst,
         wenn die Neuzustellung den Marker nachgetragen hat; sonst kippt der
-        Fan-in einer Gruppe den Workflow auf ``failed``. Klammer entfernen,
-        wenn die Entscheidung geändert und der Code angepasst ist (Beleg
-        ``unmarked_member_completing_first_fails_the_workflow``)."""
+        Fan-in einer Gruppe den Workflow heute auf ``failed``. Klammer mit dem
+        Fix von F4-16 entfernen (Nachweis
+        ``unmarked_member_completing_first_completes_the_workflow``)."""
         if not fan_in_above(msg.wf.node, msg.path):
             return True  # reine Kette: der Abschluss braucht keinen Marker
         state = self.state_of(msg.wf)
@@ -781,7 +781,7 @@ class WorkflowMachine(AsyncStateMachine[WorkflowEnv]):
                         wf.overlap_paths.add(path)
         self._settle(msg, kind, verbs, gate, status_before)
 
-    @precondition(lambda self: bool(self.deliverable_pending()))  # R4Z-01 (ENTSCHEIDUNG, PF-3)
+    @precondition(lambda self: bool(self.deliverable_pending()))  # F4-16 (R4Z-01, E-073)
     @rule(data=st.data(), kind=st.sampled_from(("ok", "ok", "ok", "ok", "ok", "ok", "error", "dlq")))
     def deliver_pending(self, data: st.DataObject, kind: Kind) -> None:
         msg = data.draw(st.sampled_from(self.deliverable_pending()), label="msg")
@@ -835,7 +835,7 @@ class WorkflowMachine(AsyncStateMachine[WorkflowEnv]):
 
     @precondition(
         lambda self: self.allow_concurrent and (bool(self.done) or bool(self.deliverable_pending()))
-    )  # R4Z-01 (ENTSCHEIDUNG, PF-3)
+    )  # F4-16 (R4Z-01, E-073)
     @rule(data=st.data())
     def concurrent_advance(self, data: st.DataObject) -> None:
         candidates = [*self.deliverable_pending(), *self.done]
@@ -909,7 +909,7 @@ class WorkflowMachine(AsyncStateMachine[WorkflowEnv]):
         for _ in range(2_000):
             if not self.pending:
                 break
-            ready = self.deliverable_pending()  # R4Z-01 (ENTSCHEIDUNG, PF-3)
+            ready = self.deliverable_pending()  # F4-16 (R4Z-01, E-073)
             assert ready, f"nur Schritte ohne persistierten Marker offen: {self.pending[:5]}"
             self.deliver(ready[0])
         assert not self.pending, f"Zustellungen enden nicht: {self.pending[:5]}"

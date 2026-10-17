@@ -6,6 +6,7 @@ applies_when:
   - eine Fehlersuche meldet, dass TASK_ENQUEUED bei delay/eta beim Speichern statt beim Fire feuert
   - eine Fehlersuche meldet, dass ein Veto aus pre_enqueue einen verzögerten Task schon vor dem Speichern verhindert
   - eine Fehlersuche meldet, dass Cron-Fires des Leaders die Enqueue-Middleware umgehen
+  - Änderungen an swarmq schedule add --unique-for (cli/schedule_cmd.py, Freigabe des Dedup-Claims)
 tags: [middleware, signals, client, scheduler, workflow, b9, f3-02]
 id: E-059
 datum: 2026-10-15
@@ -16,6 +17,8 @@ quelle:
   - docs/plans/2026-09-08-001-feat-debug-backlog-loadsuite-plan.md:16, 92 (B9 in 0.6.0 behoben)
   - website/reference/changelog.md:2468 (0.6.0, Workflow steps run through the enqueue middleware)
   - website/guides/middleware.md:12, 27 (every task; pre_enqueue aborts the enqueue)
+  - Georg 2026-10-17 (Fehlersuche Runde 4, PF-6, Option a)
+  - docs/befunde/fehlersuche-runde-4-2026-10.md (LÜCKE PF-6, Verdacht R4M-F-01)
 tests:
   - tests/unit/worker/test_pipeline.py::test_workflow_step_publisher_runs_middleware_then_signals
   - tests/unit/client/test_befund_f3_02_deferred_pre_enqueue.py::test_pre_enqueue_veto_blocks_deferred_schedule
@@ -32,6 +35,7 @@ tests:
   - tests/unit/client/test_schedule.py::TestClientDeferredEnqueueMiddleware::test_store_conflict_raises_and_keeps_the_own_claim
   - tests/unit/client/test_schedule.py::TestClientDeferredEnqueueMiddleware::test_store_outage_keeps_the_claim
   - tests/unit/client/test_schedule.py::TestClientDeferredEnqueueMiddleware::test_store_error_reply_skips_post_enqueue_and_signal_and_releases_the_claim
+  - tests/unit/test_cli_schedule_add_contract.py::test_error_reply_on_store_releases_the_own_claim
 ---
 
 **Entscheidung.** Jeder Enqueue über den Client (`schedule`, `schedule_many`, `apply`) und jeder Workflow-Folgeschritt läuft durch `pre_enqueue` und löst `TASK_ENQUEUED` aus. Bei `schedule(delay=…/eta=…)` läuft `pre_enqueue` im Producer vor dem Speichern im Scheduler-Store und vor dem Unique-Claim; ein Veto verhindert beides. `TASK_ENQUEUED` feuert nach dem Speichern, nicht erst beim Fire. Header- und Message-Änderungen der Middleware werden mit der Definition gespeichert, und der Leader publiziert sie beim Fire.
@@ -39,6 +43,8 @@ tests:
 **Begründung.** Middleware und Signale versprechen „every task“; ein Umweg an ihnen vorbei war schon bei den Workflow-Schritten ein Fehler (B9, 0.6.0). Beim Speichern ist der Enqueue aus Sicht des Aufrufers erledigt; der Fire liegt in einem anderen Prozess (Leader), der den Producer-Kontext nicht kennt.
 
 **Bewusste Folgen.** Ein Veto wirkt zum Zeitpunkt von `schedule()`, nicht zum Fire-Zeitpunkt. Middleware, die beim Fire neu entscheiden will, sieht den Fire nicht. Statische Crons und CLI-Crons, die der Leader feuert, laufen bis zur Klärung von F3-36 ohne Enqueue-Middleware; das ist kein Fehler gegen diese Regel.
+
+**Nachtrag 2026-10-17 (Fehlersuche Runde 4, Georg; PF-6, R4M-F-01): CLI-Pfad `swarmq schedule add --unique-for`.** Für den eigenen Dedup-Claim der CLI gilt dieselbe Regel wie im Client (Nachtrag Review U15): *Konflikt* (`add_schedule` liefert `False`): den Eintrag unter dem Namen lesen; trägt er nicht den eigenen `dedup_hash`, den Claim owner-geprüft freigeben (sonst hielte ein abgewiesener `add` den Claim bis `unique_for` plus Zeit bis zum Fire, ohne dass ein Schedule ihn trägt); trägt er ihn (möglicher eigener Insert nach verlorener Antwort, E-058), stehen lassen. *Backend-Ausfall* (`is_backend_outage`): stehen lassen, wie E-059 und E-041. *Fehlerantwort* (nichts gespeichert) und jeder andere Fehler: freigeben. Heute gibt die CLI den Claim bei jeder Ausnahme frei (`schedule_cmd.py:248-256`, `except BaseException`) und hält ihn bei `False`; festgeschrieben ist der Fall Fehlerantwort, die Tests für Konflikt und Ausfall folgen mit dem Fix (PF-6). Die Claim-vor-Insert-Reihenfolge bleibt (E-066).
 
 **Überdenken nur mit neuem Argument.** Offen: F3-36 (sollen Leader-Fires durch `pre_enqueue` und `TASK_ENQUEUED` laufen?). Dass `schedule(delay=/eta=)` bis 0.12.2 vor `pre_enqueue` zurückkehrte, war der Befund F3-02 (behoben in 0.12.3).
 

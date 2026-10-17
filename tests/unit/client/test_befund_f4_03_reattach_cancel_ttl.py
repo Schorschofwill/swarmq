@@ -72,6 +72,7 @@ def _ttl_ms(set_flag: AsyncMock) -> int:
     return int(call.kwargs["ttl_ms"])
 
 
+@pytest.mark.entscheidung("E-020")
 @pytest.mark.befund("F4-03")
 @pytest.mark.xfail(
     strict=True,

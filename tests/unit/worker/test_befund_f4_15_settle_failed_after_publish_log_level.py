@@ -73,6 +73,7 @@ def _retry_logs(logs: list[dict[str, Any]], event: str) -> list[dict[str, Any]]:
     return [e for e in logs if e["logger"] == "swarmq.worker.retry" and e["event"] == event]
 
 
+@pytest.mark.entscheidung("E-043")
 @pytest.mark.befund("F4-15")
 @pytest.mark.xfail(
     strict=True,

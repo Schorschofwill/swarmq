@@ -4,9 +4,8 @@ Invarianten und erlaubte Abweichungen stehen im Docstring von
 ``tests/property/stateful/workflow_machine.py``. Profil ``quick`` (100
 Beispiele) mit 30 Schritten je Beispiel; die deterministischen Abläufe aus
 ``workflow_scenarios.py`` halten die Testszenarien der Einheit fest. Der
-Nachweis zu F4-01 (R4Z-02) läuft als ``xfail(strict=True)``; R4Z-01
-(ENTSCHEIDUNG) ist ein Beleg unter den Szenarien, R4Z-03 (NICHT HALTBAR) hat
-keinen Nachweis (Register ``docs/befunde/fehlersuche-runde-4-2026-10.md``).
+Nachweise zu F4-01 (R4Z-02) und F4-16 (R4Z-01, E-073) laufen als
+``xfail(strict=True)``, R4Z-03 (NICHT HALTBAR) hat keinen Nachweis (Register ``docs/befunde/fehlersuche-runde-4-2026-10.md``).
 """
 
 from __future__ import annotations
@@ -60,6 +59,15 @@ def test_wrong_reference_is_caught(open_env: OpenEnv) -> None:
 )
 def test_dead_letter_after_unadvanced_success(machine: WorkflowMachine) -> None:
     workflow_scenarios.dead_letter_after_unadvanced_success(machine)
+
+
+@pytest.mark.entscheidung("E-073")
+@pytest.mark.befund("F4-16")
+@pytest.mark.xfail(
+    strict=True, raises=AssertionError, reason="F4-16: offen - Fan-in schlaegt den Schritt-Marker nach statt abzuleiten"
+)
+def test_unmarked_member_completing_first_completes_the_workflow(machine: WorkflowMachine) -> None:
+    workflow_scenarios.unmarked_member_completing_first_completes_the_workflow(machine)
 
 
 @pytest.mark.parametrize("sabotage", workflow_scenarios.SABOTAGES.values(), ids=workflow_scenarios.SABOTAGES.keys())

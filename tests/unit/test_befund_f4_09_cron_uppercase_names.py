@@ -30,6 +30,7 @@ from swarmq.task import TaskInfo
 pytestmark = pytest.mark.timeout(5)
 
 
+@pytest.mark.entscheidung("E-065")
 @pytest.mark.befund("F4-09")
 @pytest.mark.xfail(
     strict=True,
