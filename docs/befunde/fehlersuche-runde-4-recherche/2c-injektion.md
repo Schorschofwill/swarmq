@@ -1,5 +1,11 @@
 # Fehlersuche Runde 4 – Spur 2c: Auswertung der Störungsläufe (U14)
 
+> Nach der Gegenprüfung (`6-gegenpruefung-I.md`, U17) sind vier Stellen korrigiert, im Text als
+> *[Korrektur U17, Nr. n]* markiert. Maßgeblich sind Einstufung und Priorität der Gegenprüfung: F4-14
+> (R4I-01a, FEHLER P3), ENTSCHEIDUNG R4I-01b mit PF-17, PF-18 (R4I-02, LÜCKE P3), F4-15 (R4I-03, FEHLER P3),
+> PF-19 (R4I-04, LÜCKE P4; Kanalnummer-Teilthese NICHT HALTBAR). Register:
+> `docs/befunde/fehlersuche-runde-4-2026-10.md`.
+
 Stand 2026-10-17. Plan `docs/plans/2026-10-17-0941-test-fehlersuche-runde-4-plan.md` (R11, R13, KTD5, KTD9, U14).
 Eingaben: Erwartungstabelle `2b-erwartungen.md` (U11), Laufbericht der Loadsuite
 `docs/testlauf-stoerung-v0.12.3.md` (U13, Worktree `swarmq-loadsuite-stoerungen`, Branch `feat/stoerungsarten`),
@@ -70,7 +76,10 @@ in beiden Läufen (die Suite-Tasks nutzen keine Locks). `task_defer_failed_redel
 
 1. **`broker_alarm` im Smoke ohne `PublishIndeterminate`.** Kein Widerspruch zu E-025, die Tabelle ist zu
    absolut. Der Broker schickte dem Runner `connection.blocked` 0,6 ms nach dem Alarm, ohne dass ein Publish
-   dazwischen lag (Rate 23/s, nächster Publish erst 53 ms später, sah schon `blocked` und sendete nicht). Im
+   dazwischen lag (Rate 23/s, nächster Publish erst 53 ms später, sah schon `blocked` und sendete nicht).
+   *[Korrektur U17, Nr. 2: Ein Publish lag an der Alarmgrenze (`…cb0604`, begonnen 0,5 ms vor dem
+   Alarm-Logeintrag); er löste die Blockade aus und wurde 52,7 ms später bestätigt. „Ohne dass ein Publish
+   dazwischen lag“ trifft nicht zu; Formulierung siehe T-1 in `2b-erwartungen.md`.]* Im
    1-h-Lauf kamen die drei unbestimmten Runner-Publishes genau aus den 8 ms zwischen Alarm und Notifikation;
    die Worker-Verbindungen (zwischen Publishes ruhend) bekamen die Notifikation erst mit ihrem eigenen ersten
    Publish, der dann unbestimmt endete (io-2: 720 ms nach Alarmbeginn). Unbestimmt enden also die Publishes,
@@ -107,7 +116,10 @@ in beiden Läufen (die Suite-Tasks nutzen keine Locks). `task_defer_failed_redel
    antwortete: Mit Persistenz war Valkey laut eigenem Log nach 0,8 s (Smoke, SIGTERM 13:49:38.593 → „Ready
    to accept connections“ 13:49:39.427) bzw. 1,3 s (1 h) wieder bereit, die zweiten Läufe kamen 0,6 bzw. 0,3 s
    danach; ohne Persistenz nach Wiederanschluss des Proxys am Fensterende. Eine kurze Wiederholung des
-   Speicherns hätte alle 11 vermieden. **R4I-01** (Produktfrage, dazu Doku-Lücke in
+   Speicherns hätte alle 11 vermieden. *[Korrektur U17, Nr. 1: Eine Wiederholung existiert bereits (Client,
+   ~3,1 s). In den Fenstern mit Persistenz wurde sie übersprungen (Neuaufbau im Handshake getrennt, F4-14, 6
+   Duplikate), in den Fenstern ohne Persistenz lief sie ab und hätte bei 4,1–4,4 s Ausfall nicht gereicht
+   (R4I-01b, ENTSCHEIDUNG, 5 Duplikate).]* **R4I-01** (Produktfrage, dazu Doku-Lücke in
    `delivery-semantics.md`).
 5. **E-041-Belege ohne Duplikat.** Wie entschieden. Ablauf für beide task_ids: Task scheitert (Mock),
    Retry-Kopie bleibt im Alarm hängen, `PublishIndeterminate` nach 20 s, Original per `nack` zurück, läuft
@@ -193,6 +205,7 @@ DLQ-Einträge aus erschöpften Retries (Szenario, S-5).
   Netzaussetzer trifft die Tasks, die gerade fertig werden (begrenzt durch die Slots, hier 3 je Ausfall bei
   25/s). Die Neuausführung kommt erst, wenn Valkey wieder antwortet (Valkey-Log: mit Persistenz 0,8 bzw. 1,3 s
   Ausfall); eine Wiederholung des Speicherns über wenige Sekunden hätte alle 11 Fälle vermieden.
+  *[Korrektur U17, Nr. 1: siehe Beobachtung 4; Teil a ist F4-14, Teil b die ENTSCHEIDUNG R4I-01b mit PF-17.]*
 - **Konfidenz:** hoch (Mechanismus in Log und Code eindeutig). Priorität P3.
 - **Reproduktion im Repo:** `tests/chaos` (Chaos-Stack mit Toxiproxy für Valkey): Task-Körper zählt
   Ausführungen und wartet auf ein Event; Test schaltet den Valkey-Proxy ab, setzt das Event, schaltet den
@@ -225,7 +238,9 @@ DLQ-Einträge aus erschöpften Retries (Szenario, S-5).
   (ohne Retry-Zähler, ohne Backoff außer der `nack`-Pause) und belegt den Slot wieder bis zur Frist. Folgefrage
   ohne Messung: Bei langem Alarm zählt jede Runde auf `x-acquired-count`; nach rund 19 Runden (mit 120 s rund
   38 min) erreicht ein Task, der nur einmal gescheitert ist, das Zustelllimit und geht als
-  `RedeliveryLimitError` in die DLQ.
+  `RedeliveryLimitError` in die DLQ. *[Korrektur U17, Nr. 3: nicht ein Task, der nur einmal gescheitert ist,
+  sondern einer, der bei jedem Lauf scheitert; gelingt der erneute Lauf des Originals, wird er gespeichert
+  und bestätigt.]*
 - **Realismus:** Mittel. Speicher- oder Plattenalarme sind selten, dauern aber oft Minuten; jede Fehlerrate
   über null reicht, und die Wirkung wächst mit der Frist.
 - **Konfidenz:** hoch für den Mechanismus (Rechnung und Messung passen), mittel für die Bewertung.
@@ -283,7 +298,9 @@ DLQ-Einträge aus erschöpften Retries (Szenario, S-5).
   des verworfenen Kanals wiederverwendet werden, bevor dessen Close-Ok eintrifft. Folge wäre ein einzelner
   gescheiterter Kanal-Öffnungsversuch, den E-042 als „nicht gesendet“ wiederholt.
 - **Quelle der Erwartung:** E-042 Nachtrag FS-08 (Kanal verwerfen ist gewollt); `publish_channel_close_incomplete`
-  ist dokumentiert. Dass im Alarm ein ERROR einer Fremdbibliothek folgt, nicht.
+  ist dokumentiert. Dass im Alarm ein ERROR einer Fremdbibliothek folgt, nicht. *[Korrektur U17, Nr. 4:
+  `publish_channel_close_incomplete` steht nicht in `logging.md` (kein Treffer unter `website/`); der Katalog
+  ist ausdrücklich eine Auswahl (`logging.md:604-605`), also kein Widerspruch.]*
 - **Einstufung:** Log-Lärm, kein falscher Ausgang. Ein ERROR je unbestimmtem Publish im Alarm, ohne
   Task-Kontext. Möglicher Ansatz: Close im blockierten Zustand bis zur Aufhebung zurückstellen oder die
   aiormq-Zeile wie B11 abfangen.
@@ -371,8 +388,8 @@ DLQ-Einträge aus erschöpften Retries (Szenario, S-5).
   oder widerspricht einer Entscheidung; R4I-01 und R4I-02 sind als Produktfrage formuliert, R4I-03 und R4I-04
   betreffen nur Logs.
 - Keine Tests mit `entscheidung`-Marker berührt; keine Datei unter `src/swarmq/` geändert.
-- Querverweise: Loadsuite-Backlog B26 (R4I-01), B27 (R4I-02), B28 (R4I-03), B29 (R4I-04), jeweils
-  „F4-?? (nach Gegenprüfung)“; Abschnitt „Abgleich v0.12.3 Störungsläufe“ in
+- Querverweise: Loadsuite-Backlog B26 (R4I-01 → F4-14 und R4I-01b/PF-17), B27 (R4I-02 → PF-18), B28
+  (R4I-03 → F4-15), B29 (R4I-04 → PF-19), nach U18 eingetragen; Abschnitt „Abgleich v0.12.3 Störungsläufe“ in
   `swarmq-loadsuite-stoerungen/docs/debug-feature-backlog.md`. Die F4-IDs vergibt U17/U18.
 
 ## Offene Punkte
