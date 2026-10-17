@@ -4,6 +4,143 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 [Keep a Changelog](https://keepachangelog.com/) und
 [Semantic Versioning](https://semver.org/).
 
+## [0.12.4] — unreleased
+
+Patch-Release für die ersten Befunde der vierten Fehlersuche,
+aufbauend auf 0.12.3. Es behebt F4-10 bis F4-14: Lock-Templates, deren
+Rendern mit einem Index- oder Attributfehler scheiterte und die
+Nachricht unbestätigt ließ, statt sie in die DLQ zu leiten (F4-10),
+Gruppen- und Chord-Glieder, die einen Workflow mit lauter gelungenen
+Schritten scheitern ließen, wenn Valkey kurz nicht verfügbar war
+(F4-11), und drei Fehler des Valkey-Clients: untypisierte Fehler aus
+`connect()` (F4-12), ein halb verbundenes Backend nach einem
+gescheiterten `connect()` (F4-13) und eine fehlende Wiederholung, wenn
+eine Verbindung im Handshake getrennt wurde (F4-14). Neu sind die
+Konfigurationsvariable `SWARMQ_BACKEND_CONNECT_TIMEOUT_S` und die
+reservierten Lock-Namen (E-074, E-075). Keine neuen Nachrichten-Header,
+keine neuen Lua-Skripte und kein Formatwechsel: 0.12.4 läuft in beiden
+Richtungen neben 0.12.0 bis 0.12.3 auf denselben Queues und Keys. Die
+Upgrade-Hinweise lesen: Ein Worker, dessen Valkey nicht antwortet,
+beendet seinen Start jetzt nach 30 s, und ein Fehlerfall des
+Chord-Skripts lässt einen Workflow bis 0.13.0 auf `running`.
+
+### Upgrade-Hinweise
+
+1. **Das Verbinden zu Valkey hat eine Gesamtfrist.** Der `PING`, mit
+   dem sich `ValkeyBackend.connect()` verbindet (Worker-Start,
+   CLI-Befehle, Producer), endet jetzt nach
+   [`SWARMQ_BACKEND_CONNECT_TIMEOUT_S`](configuration.md#worker-verhalten)
+   (Vorgabe `30.0` s) mit `BackendConnectionError`
+   (`Valkey connect timed out after …s`). Bisher ließ ein Host, der
+   Pakete verwirft (Firewall-`DROP`, falsche VPC-Adresse, angehaltener
+   Container), den Start rund 3 Minuten warten. Den Wert erhöhen, wenn
+   Valkey beim Start berechtigt länger braucht. Ein an
+   `ValkeyBackend(...)` übergebenes `connect_timeout_s=` gewinnt vor dem
+   `SwarmQConfig`-Feld `backend_connect_timeout_s` und der Variable.
+   Werte `<= 0`, `inf` und `nan` sind ein `ConfigurationError` (Exit
+   `78` für den Worker und `swarmq check`). Befehle zur Laufzeit
+   behalten ihre Wiederholpolitik (E-075).
+2. **Release-Lücke bis 0.13.0: eine dauerhafte Fehlerantwort im
+   Chord-Skript.** Ein Ausfall, während ein Gruppen- oder Chord-Glied
+   seinen Workflow voranbringt, stellt den Schritt jetzt neu zu, statt
+   den Workflow scheitern zu lassen (F4-11). Denselben Weg nimmt jetzt
+   auch eine dauerhafte Fehlerantwort des Chord-Skripts, etwa
+   `WRONGTYPE`, nachdem jemand einen swarmq-Key von Hand verändert hat:
+   Der Schritt wird bis zum `delivery_limit` der Queue neu zugestellt
+   und läuft jedes Mal erneut, danach bleibt der Workflow bis zu seiner
+   TTL `running`, statt sofort `failed` zu werden
+   ([`workflow_advance_backend_error`](logging.md#event-katalog)).
+   0.13.0 behebt das (F4-01). Ohne Handarbeit an swarmq-Keys tritt der
+   Fall nicht auf.
+3. **Lock-Namen, die mit `{sched}` beginnen, sind reserviert.** Ein
+   Lock-Template, dessen gerenderter Name mit `{sched}` beginnt (dem
+   Hash-Tag des Scheduler-Leaders), leitet die Nachricht jetzt mit
+   `x-swarmq-lock-render-error` in die DLQ, wie jeder andere
+   Render-Fehler. Lock-Templates mit einem Literal beginnen
+   (`"order:{order_id}"`, nicht `"{order_id}"`), dann kann kein Wert
+   aus den Nutzdaten einen reservierten Namen ergeben
+   ([Lock-Render-Fehler](../guides/locking-and-dedup.md#lock-render-fehler)).
+4. **Mischbetrieb und Rollback.** Jede Korrektur wirkt auf den Workern
+   und Producern, die 0.12.4 fahren; ein Worker auf 0.12.3 lässt einen
+   Workflow bei einem kurzen Ausfall weiter scheitern (F4-11). Ältere
+   Versionen ignorieren `SWARMQ_BACKEND_CONNECT_TIMEOUT_S`; Code, der
+   `connect_timeout_s=` an `ValkeyBackend` übergibt, läuft nicht auf
+   0.12.3 und älter.
+
+### Behoben
+
+- **F4-10: Jeder Lock-Render-Fehler leitet die Nachricht in die DLQ.**
+  Ein Lock-Template mit Index- oder Attributzugriff (`"{items[0]}"`
+  mit leerer Liste, `"{user.id}"` auf einem JSON-Dict, das bei jeder
+  Nachricht des Tasks scheitert) warf `IndexError` oder
+  `AttributeError` am Lock-Gate vorbei. Die Nachricht blieb bis
+  `consumer_timeout` unbestätigt, der Kanal schloss mit den anderen
+  unbestätigten Nachrichten, und erst das Zustelllimit beendete die
+  Schleife mit einem irreführenden `WorkerHungError`. Jede Ausnahme
+  beim Rendern leitet die Nachricht jetzt wie dokumentiert mit
+  `x-swarmq-lock-render-error` in die DLQ, ebenso ein reservierter
+  Name (Upgrade-Hinweis 3).
+- **F4-11: Ein kurzer Valkey-Ausfall lässt einen Workflow mit
+  gelungenen Schritten nicht mehr scheitern.** Das Chord-Skript eines
+  Gruppen- oder Chord-Glieds gab Treiberfehler ungewandelt weiter,
+  anders als alle übrigen Koordinations-Stores. Ein Valkey-Neustart,
+  Failover oder `LOADING` im falschen Moment, ein hängender Server oder
+  `OOM` an der `maxmemory`-Grenze unter `noeviction` schrieb
+  `workflow_advance_failed`, markierte den Workflow `failed` und
+  bestätigte den Schritt; der Chord-Body lief nie. Solche
+  vorübergehenden Ausfälle stellen den Schritt jetzt neu zu, und das
+  idempotente Voranbringen läuft erneut
+  (`workflow_advance_backend_error`). Für eine dauerhafte
+  Fehlerantwort gilt Upgrade-Hinweis 2.
+- **F4-12: `connect()` wirft für jeden Treiberfehler
+  `BackendConnectionError`.** Ein Zeitablauf beim Verbinden oder beim
+  `PING` kam roh als `valkey.exceptions.TimeoutError` heraus, eine
+  Fehlerantwort wie ACL-`NOPERM` roh als `ResponseError`;
+  `except BackendConnectionError` fing sie nicht, und ein überwachter
+  Worker schrieb einen Traceback statt der strukturierten Zeile. Jetzt
+  ist ein Zeitablauf ein `BackendConnectionError` und eine
+  Fehlerantwort ein `BackendResponseError` (eine Unterklasse), beide
+  mit `Valkey connect failed: …`
+  ([`BackendConnectionError`](errors.md#backendconnectionerror)).
+- **F4-13: Ein gescheiterter `connect()` hinterlässt kein halb
+  verbundenes Backend.** Der Client blieb nach einem gescheiterten
+  `PING` gesetzt; ein zweiter `connect()` auf derselben Instanz meldete
+  Erfolg, ohne Valkey zu erreichen, und übersprang die
+  Eviction-Prüfung. In einer eingebetteten Wiederholschleife um
+  `async with app` konnte ein Worker so unter einer verdrängenden
+  Policy ohne die `strict`-Sperre starten (E-005). Der Client gilt
+  jetzt erst nach dem `PING` und der Eviction-Prüfung als verbunden;
+  scheitert einer der Schritte, schließt `connect()` den Client, den es
+  gebaut hat.
+- **F4-14: Eine im Handshake getrennte Verbindung wird wiederholt.**
+  Wurde eine tote Pool-Verbindung neu aufgebaut und die neue
+  Verbindung angenommen, aber im Handshake getrennt (Proxy oder Sidecar
+  vor einem neu startenden Valkey), scheiterte der Befehl nach 1–3 ms
+  statt im Wiederholfenster von rund 3,1 s. So scheiterte das
+  Ergebnis-Speichern bei Valkey-Neustarts mit Persistenz, und
+  erfolgreiche Tasks liefen ein zweites Mal. Der Neuaufbau wird jetzt
+  im selben Fenster wiederholt, gemessen ab dem ersten Fehlschlag und
+  bevor der Befehl gesendet wird; ein Skript läuft dadurch nicht
+  doppelt. Eine neu aufgebaute Pool-Verbindung sendet im Handshake
+  keinen Health-Check-`PING`; sonst baute der Treiber für diesen
+  `PING` TCP und Handshake unter seiner eigenen Wiederholpolitik neu
+  auf, und die Wiederholungen vervielfachten sich. Ein hängender
+  Handshake endet weiter nach dem Socket-Timeout (10 s) ohne
+  Wiederholung.
+
+### Dokumentation
+
+- **`SWARMQ_BACKEND_CONNECT_TIMEOUT_S`** in der
+  Konfigurationsreferenz ([Worker-Verhalten](configuration.md#worker-verhalten));
+  wann `connect()` `BackendConnectionError` wirft, wie lange es dauert
+  und wie der Handshake wiederholt wird
+  ([`BackendConnectionError`](errors.md#backendconnectionerror)).
+- **Reservierte Lock-Namen und Literal am Anfang** im Locking-Guide
+  ([Lock-Render-Fehler](../guides/locking-and-dedup.md#lock-render-fehler)).
+- **`workflow_advance_backend_error`** im Event-Katalog deckt auch
+  eine dauerhafte Fehlerantwort des Chord-Skripts ab
+  ([Event-Katalog](logging.md#event-katalog)).
+
 ## [0.12.3] — 2026-10-16
 
 0.12.3 ist 0.12.3rc1 ohne Codeänderungen. Die Korrekturen und die

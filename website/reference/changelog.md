@@ -4,6 +4,131 @@ All notable changes to SwarmQ. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [0.12.4] — unreleased
+
+Patch release for the first findings of the fourth bug hunt, on top
+of 0.12.3. It fixes F4-10 to F4-14: lock templates whose rendering
+failed with an index or attribute error and left the message
+unacknowledged instead of dead-lettering it (F4-10), group and chord
+members that failed a workflow whose steps had all succeeded when
+Valkey was briefly unavailable (F4-11), and three faults of the Valkey
+client: untyped errors from `connect()` (F4-12),
+a half-connected backend after a failed `connect()` (F4-13) and a
+missing retry when a connection was cut during its handshake (F4-14).
+New are the configuration variable `SWARMQ_BACKEND_CONNECT_TIMEOUT_S`
+and the reserved lock names (E-074, E-075). No new message headers, no
+new Lua scripts and no format change: 0.12.4 runs next to 0.12.0 to
+0.12.3 on the same queues and keys, in both directions. Read the
+upgrade notes: a worker whose Valkey does not answer now ends its
+start after 30 s, and one error case of the chord script keeps a
+workflow `running` until 0.13.0.
+
+### Upgrade notes
+
+1. **Connecting to Valkey has an overall deadline.** The `PING` with
+   which `ValkeyBackend.connect()` connects (worker start, CLI
+   commands, producers) now ends after
+   [`SWARMQ_BACKEND_CONNECT_TIMEOUT_S`](configuration.md#worker-behaviour)
+   (default `30.0` s) with `BackendConnectionError`
+   (`Valkey connect timed out after …s`). Before, a host that drops
+   packets (firewall `DROP`, wrong VPC address, paused container) kept
+   the start waiting for about 3 minutes. Raise the value if your
+   Valkey legitimately needs longer at start. A `connect_timeout_s=`
+   passed to `ValkeyBackend(...)` wins over the `SwarmQConfig` field
+   `backend_connect_timeout_s` and the variable. Values `<= 0`, `inf`
+   and `nan` are a `ConfigurationError` (exit `78` for the worker and
+   `swarmq check`). Commands at runtime keep their retry policy
+   (E-075).
+2. **Release gap until 0.13.0: a lasting error reply in the chord
+   script.** An outage while a group or chord member advances its
+   workflow now redelivers the step instead of failing the workflow
+   (F4-11). The same path now also takes a lasting error reply from
+   the chord script, for example `WRONGTYPE` after someone changed a
+   swarmq key by hand: the step is redelivered and runs again until the
+   queue's `delivery_limit`, then the workflow stays `running` until its
+   TTL instead of becoming `failed` at once
+   ([`workflow_advance_backend_error`](logging.md#event-catalog)).
+   0.13.0 fixes this (F4-01). Without manual changes to swarmq keys the
+   case does not occur.
+3. **Lock names that start with `{sched}` are reserved.** A lock
+   template whose rendered name starts with `{sched}` (the hash tag of
+   the scheduler leader) now dead-letters the message with
+   `x-swarmq-lock-render-error`, like any other render error. Start
+   lock templates with a literal (`"order:{order_id}"`, not
+   `"{order_id}"`); then no payload value can produce a reserved name
+   ([lock-render failures](../guides/locking-and-dedup.md#lock-render-failures)).
+4. **Mixed operation and rollback.** Each fix takes effect on the
+   workers and producers that run 0.12.4; a 0.12.3 worker still fails
+   a workflow on a brief outage (F4-11). Older versions ignore
+   `SWARMQ_BACKEND_CONNECT_TIMEOUT_S`; code that passes
+   `connect_timeout_s=` to `ValkeyBackend` does not run on 0.12.3 and
+   earlier.
+
+### Fixed
+
+- **F4-10: every lock-render error dead-letters the message.** A lock
+  template with index or attribute access (`"{items[0]}"` with an
+  empty list, `"{user.id}"` on a JSON dict, which fails for every
+  message of the task) raised `IndexError` or `AttributeError` past the
+  lock gate. The message stayed unacknowledged until
+  `consumer_timeout`, the channel closed with the other unacknowledged
+  messages, and only the delivery limit ended the loop with a
+  misleading `WorkerHungError`. Every exception while rendering now
+  routes the message to the DLQ with `x-swarmq-lock-render-error`, as
+  documented; so does a reserved name (upgrade note 3).
+- **F4-11: a brief Valkey outage no longer fails a workflow whose
+  steps succeeded.** The chord script of a group or chord member passed
+  driver errors through unwrapped, unlike every other coordination
+  store. A Valkey restart, failover or `LOADING` at the wrong moment, a
+  hanging server, or `OOM` at the `maxmemory` limit under `noeviction`
+  logged `workflow_advance_failed`, marked the workflow `failed` and
+  acknowledged the step, so the chord body never ran. Such transient
+  outages now redeliver the step and the idempotent advance runs again
+  (`workflow_advance_backend_error`). A lasting error reply is covered
+  by upgrade note 2.
+- **F4-12: `connect()` raises `BackendConnectionError` for every driver
+  error.** A timeout while connecting or on the `PING` came out as a
+  raw `valkey.exceptions.TimeoutError`, an error reply such as ACL
+  `NOPERM` as a raw `ResponseError`; `except BackendConnectionError`
+  did not catch them, and a supervised worker wrote a traceback instead
+  of the structured line. Now a timeout is a `BackendConnectionError`
+  and an error reply a `BackendResponseError` (a subclass), both with
+  `Valkey connect failed: …` ([`BackendConnectionError`](errors.md#backendconnectionerror)).
+- **F4-13: a failed `connect()` leaves no half-connected backend.** The
+  client stayed set after a failed `PING`, so a second `connect()` on
+  the same instance reported success without reaching Valkey and
+  skipped the eviction check. In an embedded retry loop around
+  `async with app`, a worker could then start under an evicting policy
+  without the `strict` block (E-005). The client now
+  counts as connected only after the `PING` and the eviction check; on
+  failure `connect()` closes the client it built.
+- **F4-14: a connection cut during its handshake is retried.** When a
+  dead pool connection was rebuilt and the new connection was accepted
+  but cut during the handshake (a proxy or sidecar in front of a
+  restarting Valkey), the command failed after 1–3 ms instead of
+  within the retry window of about 3.1 s. Storing a result failed this
+  way on Valkey restarts with persistence, and successful tasks ran a
+  second time. The rebuild is now retried within the same window,
+  measured from the first failure and before the command is sent, so a
+  script does not run twice because of it. A freshly built pool
+  connection sends no health-check `PING` in its handshake; otherwise
+  the driver would rebuild TCP and handshake for that `PING` under its
+  own retry policy, and the retries would multiply. A handshake that
+  hangs still ends after the socket timeout (10 s) without a retry.
+
+### Documentation
+
+- **`SWARMQ_BACKEND_CONNECT_TIMEOUT_S`** in the configuration reference
+  ([worker behaviour](configuration.md#worker-behaviour)); when
+  `connect()` raises `BackendConnectionError`, how long it takes and
+  how the handshake is retried
+  ([`BackendConnectionError`](errors.md#backendconnectionerror)).
+- **Reserved lock names and literal prefixes** in the locking guide
+  ([lock-render failures](../guides/locking-and-dedup.md#lock-render-failures)).
+- **`workflow_advance_backend_error`** in the event catalog also
+  covers a lasting error reply from the chord script
+  ([event catalog](logging.md#event-catalog)).
+
 ## [0.12.3] — 2026-10-16
 
 0.12.3 is 0.12.3rc1 without code changes. Read

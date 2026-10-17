@@ -16,7 +16,7 @@ unterschiedlichen Ausführungs-Stufen.
 | `tests/chaos/` | `chaos` | – | örtlich vor Releases | Toxiproxy + Container-Restart + Crash |
 | `tests/stress/` | `stress` | – | manuell in der Pipeline | hohe Parallelität (10 worker × 1000 tasks) |
 | `tests/soak/` | `soak` | – | manuell in der Pipeline | 1h Last-Test mit Leak-Detection |
-| `tests/compat/` | `compat` | – | örtlich, je MR des Plans 0.12.0 | Mischbetrieb mit swarmq 0.11.0 aus PyPI (Q2), braucht Netz zu PyPI |
+| `tests/compat/` | `compat` | – | örtlich, je MR des Plans 0.12.0 und vor Patch-Releases der 0.12-Reihe | Mischbetrieb mit swarmq aus PyPI (Q2): Basis 0.11.1, Rollback-Grenze 0.11.0, für die 0.12-Reihe die Basen 0.12.0 und 0.12.3; braucht Netz zu PyPI |
 | `tests/integration/spikes/` | `spike` (+ `integration`) | ✓ | pre-merge | Charakterisierung RabbitMQ 4.3.6 und 4.2.9 (Spikes S1–S9) |
 
 `addopts` in `pyproject.toml` schliesst opt-in-Marker per Default aus,
@@ -299,9 +299,10 @@ HYPOTHESIS_PROFILE=thorough uv run just property
 # Soak (default 60s; opt-in 1h via env); ohne eigenes Rezept
 SWARMQ_SOAK_HOURS=1 uv run --extra test pytest tests/soak -m soak
 
-# Mischbetrieb 0.11.0 / Arbeitsstand: legt pro Sitzung ein venv mit
-# swarmq==0.11.0 an (Abhängigkeiten aus tests/compat/constraints-0.11.0.txt);
-# ohne eigenes Rezept, Sperre per Hand
+# Mischbetrieb ältere Version / Arbeitsstand: legt pro Sitzung je ein venv
+# mit swarmq==0.11.1, 0.11.0, 0.12.0 und 0.12.3 an (Abhängigkeiten aus
+# tests/compat/constraints-<version>.txt); die Tests der 0.12-Reihe laufen
+# parametrisiert gegen 0.12.0 und 0.12.3; ohne eigenes Rezept, Sperre per Hand
 scripts/with-test-lock.sh uv run --extra test --extra reload pytest tests/compat -m compat -q
 ```
 
