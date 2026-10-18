@@ -18,6 +18,8 @@ quelle:
   - docs/befunde/fehlersuche-runde-4-2026-10.md (LÜCKE PF-18, PF-19; Vor dem Fix Punkt 15)
   - website/reference/errors.md:573-576 (Grenze der Blockade-Erkennung, D-1)
 tests:
+  - tests/unit/broker/test_rabbitmq.py::TestChannelCloseDuringAlarm::test_close_into_the_deadline_during_an_alarm_logs_without_traceback
+  - tests/unit/broker/test_rabbitmq.py::TestChannelCloseDuringAlarm::test_close_into_the_deadline_outside_an_alarm_keeps_the_traceback
   - tests/unit/broker/test_publish_blocked.py::test_blocked_until_the_deadline_raises_publish_blocked
   - tests/unit/broker/test_publish_blocked.py::test_unblocked_connection_publishes_without_waiting_or_roundtrip
   - tests/unit/broker/test_publish_blocked.py::test_unreadable_state_fails_open_with_one_warning_per_broker

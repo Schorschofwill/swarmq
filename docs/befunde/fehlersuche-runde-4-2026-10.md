@@ -262,6 +262,17 @@ Nur mit neuem Argument; nichts davon ist umgesetzt.
 
 ## Deferred und Verdachte
 
+Nachtrag aus dem Abschluss-Review 0.13.0 (ce-code-review, Lauf 20261018-114315-598a5f09, Verdikt „Ready with fixes“, 1 P3 behoben):
+
+- `fail_workflow` liefert `bool | StepDone` (vier Ausgänge), die drei Gates dekodieren das je für sich; Vorschlag: ein Enum (MARKED, REDELIVERED, ACK, DEAD_LETTER) oder gemeinsame Helfer (Refactor, kein Fehler).
+- Registry-Lookup des Zustellmodus ist in `gates/execution_guard.py` und `retry.py` doppelt (Helfer in `gates/__init__.py` möglich).
+- F4-15: nach `SettleFailedAfterPublish` der Retry-Kopie verhindert nur der Superseded-Marker aus `GuardedBroker.retry_later` den zweiten Lauf des Originals; mit `execution_guard=false` oder bei Ausfall des Marker-Schreibens läuft das Original neben der Kopie (keine Regression, alter Rückfall hatte dasselbe Duplikat); Kommentar in `retry.py` setzt den Guard voraus.
+- F4-01 über das Cancel-Gate: scheitert der Publish des nachgeholten Advance dauerhaft mit `BrokerConnectionError`, läuft die Zurückstellung über die Delay-Queue ohne Zähler bis zum Erfolg oder bis das Cancel-Flag (≥ 24 h) abläuft; der Result-Tail-Pfad ist über das Zustelllimit begrenzt. Verhalten wie bei anderen Backend-Zurückstellungen (FS-12), bewusst hingenommen.
+- `ExecutionGuardStore.peek` ist Pflichtmethode des Vertrags; eine fremde Implementierung ohne `peek` würde am Zustelllimit mit `AttributeError` enden statt in die DLQ zu fallen (nur Valkey und InMemory implementieren den Vertrag).
+- Abgeleitete Vorgaben `scheduler_dedup_ttl` und `execution_guard_done_ttl_s` (`retry_max_delay + 300`) können `MAX_DEADLINE_S` um 300 s überschreiten; nur Valkey `PX`, unkritisch.
+- Mischbetrieb: ein 0.12-Worker mit `|` in `SWARMQ_WORKER_ID` erscheint in `schedule status` bis zum Ablauf seines Schlüssels mit gekürzter Kennung (nur Anzeige).
+- `ResultTail._store` fängt `CancelledError` im Warten (E-072); ein künftiger `asyncio.timeout` um `finish()` würde dadurch unterlaufen.
+
 Nicht Teil von 0.12.4/0.13.0; kein Befund, solange nicht gegengeprüft (`docs/befunde/README.md`).
 
 - **`ValkeyLockStore.force_release`** (`backend/valkey/locks.py:174-183`): wandelt Fehler des `EXISTS` pauschal in `BackendConnectionError` statt über `as_backend_error`; `EXISTS` und Freigabe sind nicht atomar (läuft der Lock dazwischen ab, meldet es `True` ohne Freigabe); das Ergebnis der Freigabe wird ignoriert. Verdacht.

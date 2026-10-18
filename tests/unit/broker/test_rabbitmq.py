@@ -1107,7 +1107,7 @@ async def _close_record_after_timeout(*, alarm: bool) -> logging.LogRecord:
                 connection.transport.connection = SimpleNamespace(**{_UNBLOCKED_ATTR: unblocked})
                 raise TimeoutError
 
-            channel.close = close_into_the_deadline  # type: ignore[method-assign]
+            channel.close = close_into_the_deadline  # type: ignore[method-assign]  # Test ersetzt close durch einen Fake
             with pytest.raises(BrokerConnectionError):
                 await broker.publish("tasks", b"{}")
         await broker.close()  # sammelt den nebenläufigen Schließ-Task ein
@@ -1119,6 +1119,7 @@ async def _close_record_after_timeout(*, alarm: bool) -> logging.LogRecord:
 
 class TestChannelCloseDuringAlarm:
     @pytest.mark.timeout(5)
+    @pytest.mark.entscheidung("E-025")
     async def test_close_into_the_deadline_during_an_alarm_logs_without_traceback(self, swarmq_logs):
         record = await _close_record_after_timeout(alarm=True)
 
@@ -1128,6 +1129,7 @@ class TestChannelCloseDuringAlarm:
         assert record.error_type == "TimeoutError"  # type: ignore[attr-defined]  # Feld als LogRecord-Attribut
 
     @pytest.mark.timeout(5)
+    @pytest.mark.entscheidung("E-025")
     async def test_close_into_the_deadline_outside_an_alarm_keeps_the_traceback(self, swarmq_logs):
         record = await _close_record_after_timeout(alarm=False)
 
