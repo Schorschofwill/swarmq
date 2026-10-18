@@ -6,6 +6,7 @@ SIGHUP-Reload mit eingefrorenem argv/env) und der injizierte
 
 from __future__ import annotations
 
+import logging
 import multiprocessing
 import os
 import signal
@@ -398,13 +399,17 @@ class ProcessManager(RestartBudget):
                 break
             time.sleep(min(0.3, until - now))
 
-    def _signal_survivors(self, event: str, action: str) -> list[WorkerInfo]:
-        """SIGTERM/SIGKILL an noch lebende Worker; liefert die Adressaten."""
+    def _signal_survivors(self, event: str, action: str, level: int) -> list[WorkerInfo]:
+        """SIGTERM/SIGKILL an noch lebende Worker; liefert die Adressaten.
+
+        ``level`` ist die Stufe des Events (PF-8, E-018): Das SIGTERM am
+        geplanten Drain-Ende ist ein regulärer Schritt des Budgets (INFO),
+        erst das SIGKILL zeigt ein Hängen (ERROR).
+        """
         alive = [w for w in self.workers.values() if w.process.is_alive()]
         if not alive:
             return []
-        log = logger.warning if action == "terminate" else logger.error
-        log(event, count=len(alive))
+        logger.log(level, event, count=len(alive))
         for info in alive:
             try:
                 getattr(info.process, action)()
@@ -431,12 +436,12 @@ class ProcessManager(RestartBudget):
         self._wait_for_exit(list(self.workers.values()), started + budget.sigterm_at)
 
         # Phase 2: SIGTERM.
-        alive = self._signal_survivors("shutdown_sigterm_escalation", "terminate")
+        alive = self._signal_survivors("shutdown_sigterm_escalation", "terminate", logging.INFO)
         if alive:
             self._wait_for_exit(alive, started + budget.sigkill_at)
 
         # Phase 3: SIGKILL.
-        self._signal_survivors("shutdown_sigkill_escalation", "kill")
+        self._signal_survivors("shutdown_sigkill_escalation", "kill", logging.ERROR)
         self._join_all(timeout_per_worker=2.0)
 
     def _join_all(self, timeout_per_worker: float) -> None:
