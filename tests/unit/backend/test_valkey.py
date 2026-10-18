@@ -359,6 +359,7 @@ class TestValkeyBackendConnectError:
         with pytest.raises(BackendConnectionError, match="not connected"):
             _ = backend.client
 
+    @pytest.mark.timeout(5)
     async def test_cancelled_connect_closes_its_client(self):
         """F4-13: Auch ein Abbruch waehrend des PING (``BaseException``)
         schliesst den eigenen Client."""
@@ -376,7 +377,41 @@ class TestValkeyBackendConnectError:
         mock_client.aclose.assert_awaited_once()
         assert backend._client is None
 
+    @pytest.mark.timeout(5)
+    async def test_cancel_during_the_eviction_check_closes_its_client(self):
+        """F4-13: Ein Abbruch mitten in der Eviction-Prüfung (nach
+        erfolgreichem PING) schließt den eigenen Client genau einmal; der
+        Abbruch geht unverändert nach außen, und ``connect()`` bleibt
+        wiederholbar."""
+        backend = ValkeyBackend("valkey://localhost:6379/0", eviction_check="warn")
+        mock_client = AsyncMock()
+        mock_client.register_script = Mock()
+        probing = asyncio.Event()
+
+        async def hanging_probe(*_args: object, **_kwargs: object) -> None:
+            probing.set()
+            await asyncio.Event().wait()
+
+        with (
+            patch("swarmq.backend.valkey.connection.valkey.asyncio.Valkey.from_url", return_value=mock_client),
+            patch("swarmq.backend.valkey.connection.probe_eviction", side_effect=hanging_probe),
+        ):
+            connecting = asyncio.create_task(backend.connect())
+            await probing.wait()
+            connecting.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await connecting
+
+        mock_client.ping.assert_awaited_once()
+        mock_client.aclose.assert_awaited_once()
+        assert backend._client is None
+        assert backend.eviction_check is None
+
+    @pytest.mark.timeout(5)
     async def test_error_while_closing_does_not_hide_the_connect_error(self):
+        """F4-13: Wirft ``aclose()`` beim Aufräumen, kommt trotzdem die
+        ursprüngliche ``BackendConnectionError`` nach außen, nicht der
+        Folgefehler; das Backend bleibt unverbunden."""
         backend = ValkeyBackend("valkey://localhost:6379/0", eviction_check="off")
         mock_client = AsyncMock()
         mock_client.register_script = Mock()
@@ -385,9 +420,32 @@ class TestValkeyBackendConnectError:
 
         with (
             patch("swarmq.backend.valkey.connection.valkey.asyncio.Valkey.from_url", return_value=mock_client),
-            pytest.raises(BackendConnectionError, match="Connection refused"),
+            pytest.raises(BackendConnectionError, match="Connection refused") as raised,
         ):
             await backend.connect()
+
+        assert isinstance(raised.value.__cause__, ValkeyConnectionError)
+        mock_client.aclose.assert_awaited_once()
+        assert backend._client is None
+
+    @pytest.mark.timeout(5)
+    async def test_error_while_closing_does_not_hide_a_cancel(self):
+        """F4-13: Auch ein Abbruch bleibt ein Abbruch, wenn ``aclose()``
+        beim Aufräumen wirft."""
+        backend = ValkeyBackend("valkey://localhost:6379/0", eviction_check="off")
+        mock_client = AsyncMock()
+        mock_client.register_script = Mock()
+        mock_client.ping.side_effect = asyncio.CancelledError
+        mock_client.aclose.side_effect = OSError("already gone")
+
+        with (
+            patch("swarmq.backend.valkey.connection.valkey.asyncio.Valkey.from_url", return_value=mock_client),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await backend.connect()
+
+        mock_client.aclose.assert_awaited_once()
+        assert backend._client is None
 
 
 class TestValkeyBackendKeyFormat:

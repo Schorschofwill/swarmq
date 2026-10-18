@@ -23,6 +23,9 @@ Testliste:
 # [x] Anmeldefehler im Handshake -> keine Wiederholung
 # [x] Handshake hängt -> Abbruch nach ``socket_timeout``, eine einzige Verbindung
 # [x] ``close()`` während des Backoffs -> kein weiterer Verbindungsaufbau, Fehler des Siegels
+# [x] Anmelde- und Autorisierungsfehler (Fake-Pool) -> keine Wiederholung
+# [x] Handshake verschiebt den nächsten Health-Check um ``health_check_interval``
+#     (``health_check_interval == 0`` ist über ``_build_client`` nicht erreichbar: fest 30)
 """
 
 from __future__ import annotations
@@ -33,15 +36,19 @@ import struct
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
+from unittest.mock import patch
 
 import pytest
 import valkey.asyncio.retry
+from valkey.exceptions import AuthenticationError, AuthorizationError
 
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.backend.valkey import connection as connection_module
 from swarmq.exceptions import BackendConnectionError
 
 pytestmark = pytest.mark.timeout(5)
+
+_FROM_URL = "swarmq.backend.valkey.connection.valkey.asyncio.Valkey.from_url"
 
 # Nominelle Wartezeiten des Befehls-Retry: min(2, 0,05 * 2**n) für n = 1..5.
 _COMMAND_BACKOFFS = [0.1, 0.2, 0.4, 0.8, 1.6]
@@ -274,3 +281,95 @@ async def test_close_during_the_handshake_backoff_opens_no_further_connection(
         await backend.store_result("after-close", b"x", 60_000, op_timeout=5.0)
 
     assert fake.connections == connections_before + 1, "nach close() wurde weiter neu verbunden (Siegel umgangen)"
+
+
+@dataclass
+class _HandshakeConnection:
+    """Pool-Verbindung an der Grenze ``on_connect``: der Handshake wirft
+    *error* oder gelingt."""
+
+    health_check_interval: float
+    next_health_check: float = -1.0
+    error: Exception | None = None
+
+    async def on_connect(self) -> None:
+        if self.error is not None:
+            raise self.error
+
+    async def connect(self) -> None:
+        await self.on_connect()
+
+
+class _HandshakePool:
+    """Pool-Ersatz: ``get_connection`` baut über ``make_connection`` neu auf
+    und führt den Handshake aus (wie valkey-py beim Neuaufbau)."""
+
+    def __init__(self, *, health_check_interval: float, error: Exception | None) -> None:
+        self._health_check_interval = health_check_interval
+        self._error = error
+        self.connections: list[_HandshakeConnection] = []
+
+    def make_connection(self) -> _HandshakeConnection:
+        connection = _HandshakeConnection(self._health_check_interval, error=self._error)
+        self.connections.append(connection)
+        return connection
+
+    async def get_connection(self, *_args: object, **_kwargs: object) -> _HandshakeConnection:
+        connection = self.make_connection()
+        await connection.connect()
+        return connection
+
+    async def release(self, connection: _HandshakeConnection) -> None:
+        return None
+
+
+class _HandshakeClient:
+    """Client aus ``Valkey.from_url``: ``ping`` holt eine Pool-Verbindung."""
+
+    def __init__(self, pool: _HandshakePool) -> None:
+        self.connection_pool = pool
+
+    async def ping(self) -> bool:
+        await self.connection_pool.get_connection("PING")
+        return True
+
+    async def aclose(self) -> None:
+        return None
+
+
+# Gleiche Einstellung wie ``_build_client`` (``health_check_interval=30``).
+_HEALTH_CHECK_INTERVAL_S = 30.0
+
+
+# AuthorizationError erzeugt valkey-py nur in der OCSP-Prüfung, nicht über
+# eine Fehlerantwort; der Fake-Server kann sie nicht auslösen, die
+# Fake-Verbindung schon.
+@pytest.mark.parametrize("error_type", [AuthenticationError, AuthorizationError])
+async def test_credential_errors_in_the_handshake_are_not_retried(
+    error_type: type[Exception], clock: _FakeClock
+) -> None:
+    pool = _HandshakePool(health_check_interval=_HEALTH_CHECK_INTERVAL_S, error=error_type("not allowed"))
+    backend = ValkeyBackend("valkey://valkey.invalid:6379/0", eviction_check="off", connect_timeout_s=5.0)
+
+    with (
+        patch(_FROM_URL, return_value=_HandshakeClient(pool)),
+        pytest.raises(BackendConnectionError, match="not allowed"),
+    ):
+        await backend.connect()
+
+    assert clock.sleeps == [], "Anmeldefehler im Handshake wurde wiederholt"
+    assert len(pool.connections) == 1
+
+
+async def test_handshake_postpones_the_next_health_check_by_the_interval() -> None:
+    pool = _HandshakePool(health_check_interval=_HEALTH_CHECK_INTERVAL_S, error=None)
+    backend = ValkeyBackend("valkey://valkey.invalid:6379/0", eviction_check="off", connect_timeout_s=5.0)
+    before = asyncio.get_running_loop().time()
+
+    with patch(_FROM_URL, return_value=_HandshakeClient(pool)):
+        await backend.connect()
+    try:
+        (connection,) = pool.connections
+        assert connection.next_health_check >= before + _HEALTH_CHECK_INTERVAL_S
+    finally:
+        await backend.close()
