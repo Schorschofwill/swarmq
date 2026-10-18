@@ -261,19 +261,23 @@ class TestStatus:
             await client.set(SCHEDULER_LOCK_KEY, "w1:42:abcdef12")
             await schedules.set_leader_version("w1:42:abcdef12", "0.10.0", ttl_ms=60_000)
             await schedules.report_worker_version(worker, "0.10.0", ttl_ms=60_000)
+            # F4-06 (KTD12): ab 0.13 je Prozess ``<worker_identity>|<owner_token>``.
+            await schedules.report_worker_version(f"{worker}|w2:7:aa", "0.13.0", ttl_ms=60_000)
 
             buf = io.StringIO()
             with redirect_stdout(buf):
                 await cli._run_schedule_status(_ns_status(format="json"))
             data = json.loads(buf.getvalue())
             assert data["leader_version"] == "0.10.0"
-            assert {"worker_id": worker, "version": "0.10.0"} in data["workers"]
+            assert {"worker_id": worker, "version": "0.10.0", "process": None} in data["workers"]
+            assert {"worker_id": worker, "version": "0.13.0", "process": "w2:7:aa"} in data["workers"]
 
             buf = io.StringIO()
             with redirect_stdout(buf):
                 await cli._run_schedule_status(_ns_status(format="table"))
             assert "LEADER_VERSION: 0.10.0\n" in buf.getvalue()
             assert f"  {worker}  0.10.0\n" in buf.getvalue()
+            assert f"  {worker}  0.13.0  w2:7:aa\n" in buf.getvalue()
         finally:
             await client.delete(SCHEDULER_LOCK_KEY)
             await client.aclose()

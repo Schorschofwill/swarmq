@@ -417,7 +417,9 @@ class ValkeyScheduleStore:
 
     async def worker_versions(self) -> Mapping[str, str]:
         """SCAN über die Worker-Keys (nur für ``schedule status``), dann MGET;
-        zwischendurch abgelaufene Keys fehlen im Ergebnis."""
+        zwischendurch abgelaufene Keys fehlen im Ergebnis. Schlüssel ist das
+        rohe Suffix: ``<worker_identity>|<owner_token>`` ab 0.13, ohne ``|``
+        von älteren Workern (F4-06, KTD12)."""
         try:
             pattern = f"{self._keys.sched_worker_version_prefix}*"
             scan = cast("AsyncIterator[bytes]", self._client.scan_iter(match=pattern, count=100))

@@ -82,6 +82,7 @@ class ConfigValidation:
         lock_wait_max_s: float
         valkey_eviction_check: str
         namespace: str | None
+        worker_id: str | None
         scheduler_publish_stepdown_s: float | None
         _POSITIVE_FIELDS: ClassVar[tuple[str, ...]]
         _FINITE_FIELDS: ClassVar[tuple[str, ...]]
@@ -191,6 +192,7 @@ class ConfigValidation:
             raise ConfigurationError(msg)
         self._validate_eviction_check()
         self._validate_namespace()
+        self._validate_worker_id()
         self._validate_publish_connection()
         if self.queue_dead_letter_strategy == "at-least-once" and self.queue_type != "quorum":
             # Review MR 8, H3: nur Quorum-Queues kennen at-least-once-Dead-Lettering.
@@ -210,6 +212,14 @@ class ConfigValidation:
             self.namespace = validate_namespace(self.namespace)
         except ValueError as exc:
             raise ConfigurationError(f"SWARMQ_NAMESPACE/namespace: {exc}") from exc
+
+    def _validate_worker_id(self) -> None:
+        # F4-06 (KTD12, E-029): ``|`` trennt im Versionsschlüssel
+        # ``<worker_identity>|<owner_token>``; ``schedule status`` leitet die
+        # Worker-ID über das letzte ``|`` ab, das muss eindeutig bleiben.
+        if self.worker_id is not None and "|" in self.worker_id:
+            msg = f"SWARMQ_WORKER_ID/worker_id must not contain '|', got {self.worker_id!r}"
+            raise ConfigurationError(msg)
 
     def _validate_publish_connection(self) -> None:
         if self.broker_publish_connection not in ("separate", "shared"):

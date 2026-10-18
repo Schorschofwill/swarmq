@@ -327,11 +327,14 @@ class ScheduleStore(Protocol):
 
     async def report_worker_version(self, worker_id: str, version: str, *, ttl_ms: int) -> None:
         """Meldet die swarmq-Version eines Workers; die Meldung gilt *ttl_ms*
-        (KTD11, Anzeige in ``schedule status``)."""
+        (KTD11, Anzeige in ``schedule status``). Der Scheduler-Loop meldet
+        unter ``<worker_identity>|<owner_token>``, damit sich Prozesse mit
+        gleicher Worker-ID nicht überschreiben (F4-06, KTD12)."""
         ...
 
     async def worker_versions(self) -> Mapping[str, str]:
-        """Worker-ID → swarmq-Version aller noch gültigen Meldungen."""
+        """Gemeldete Worker-ID (rohes Suffix, ab 0.13 mit ``|<owner_token>``,
+        ältere Worker ohne) → swarmq-Version aller noch gültigen Meldungen."""
         ...
 
     async def set_leader_version(self, owner: str, version: str, *, ttl_ms: int) -> None:

@@ -351,3 +351,12 @@ class TestWorkerVersions:
         client.scan_iter = _scan(b"sq:{sched}:worker_version:w-1", b"sq:{sched}:worker_version:w-2")
         client.mget = AsyncMock(return_value=[b"0.10.0", None])
         assert await store.worker_versions() == {"w-1": "0.10.0"}
+
+    async def test_versions_are_keyed_by_the_raw_suffix_old_and_per_process(self) -> None:
+        """F4-06 (KTD12): Schlüssel je Prozess (``<worker_identity>|<owner_token>``)
+        und alte Schlüssel ohne ``|`` (Mischbetrieb) kommen roh zurück; die
+        Aufteilung macht ``schedule status``."""
+        store, client, _ = _store()
+        client.scan_iter = _scan(b"sq:{sched}:worker_version:h:0|h:11:aa", b"sq:{sched}:worker_version:h:0")
+        client.mget = AsyncMock(return_value=[b"0.13.0", b"0.12.3"])
+        assert await store.worker_versions() == {"h:0|h:11:aa": "0.13.0", "h:0": "0.12.3"}

@@ -367,6 +367,15 @@ def _leader_version_text(leader: str | None, version: str | None) -> str:
     return version or "(not reported: swarmq before 0.10.0)"
 
 
+def _worker_entry(key: str) -> tuple[str, str | None]:
+    """``<worker_identity>|<owner_token>`` → (Worker-ID, Prozess) (F4-06,
+    KTD12); ein alter Schlüssel ohne ``|`` (0.11/0.12) bleibt die Worker-ID."""
+    worker_id, _, process = key.rpartition("|")
+    if not worker_id:
+        return key, None
+    return worker_id, process
+
+
 async def _run_schedule_status(args: argparse.Namespace) -> None:
     backend = await _get_backend_factory()()
     try:
@@ -378,7 +387,10 @@ async def _run_schedule_status(args: argparse.Namespace) -> None:
         leader = await backend.get_scheduler_leader()
         # KTD11: Version des Leaders (None = vor 0.10.0, schreibt keine).
         leader_info = await backend.schedules.leader_info()
-        workers = sorted((await backend.schedules.worker_versions()).items())
+        workers = [
+            (*_worker_entry(key), version)
+            for key, version in sorted((await backend.schedules.worker_versions()).items())
+        ]
 
         store = ScheduleStore(backend)
         now_ms = int(time.time() * 1000)
@@ -403,7 +415,10 @@ async def _run_schedule_status(args: argparse.Namespace) -> None:
                     }
                     for name, score, defn in upcoming
                 ],
-                "workers": [{"worker_id": worker_id, "version": version} for worker_id, version in workers],
+                "workers": [
+                    {"worker_id": worker_id, "version": version, "process": process}
+                    for worker_id, process, version in workers
+                ],
             }
             sys.stdout.write(json.dumps(payload, indent=2) + "\n")
             return
@@ -423,8 +438,9 @@ async def _run_schedule_status(args: argparse.Namespace) -> None:
         sys.stdout.write("WORKERS:\n")
         if not workers:
             sys.stdout.write("  (none)\n")
-        for worker_id, version in workers:
-            sys.stdout.write(f"  {worker_id}  {version}\n")
+        for worker_id, process, version in workers:
+            column = f"  {process}" if process is not None else ""
+            sys.stdout.write(f"  {worker_id}  {version}{column}\n")
     finally:
         await backend.close()
 
