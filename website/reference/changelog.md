@@ -4,7 +4,9 @@ All notable changes to SwarmQ. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
-## [0.13.0] — unreleased
+## [0.13.0rc1] — 2026-10-18
+
+Release candidate for 0.13.0 (install with `pip install --pre`).
 
 Minor release for the remaining findings of the fourth bug hunt, on top
 of 0.12.4. It fixes F4-01 to F4-09, F4-15 and F4-16 and puts the
