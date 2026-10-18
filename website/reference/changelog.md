@@ -4,7 +4,9 @@ All notable changes to SwarmQ. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
-## [0.12.4] — unreleased
+## [0.12.4rc1] — 2026-10-18
+
+Release candidate for 0.12.4 (install with `pip install --pre`).
 
 Patch release for the first findings of the fourth bug hunt, on top
 of 0.12.3. It fixes F4-10 to F4-14: lock templates whose rendering

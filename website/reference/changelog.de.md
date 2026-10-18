@@ -4,7 +4,9 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 [Keep a Changelog](https://keepachangelog.com/) und
 [Semantic Versioning](https://semver.org/).
 
-## [0.12.4] — unreleased
+## [0.12.4rc1] — 2026-10-18
+
+Release-Candidate für 0.12.4 (Installation mit `pip install --pre`).
 
 Patch-Release für die ersten Befunde der vierten Fehlersuche,
 aufbauend auf 0.12.3. Es behebt F4-10 bis F4-14: Lock-Templates, deren
