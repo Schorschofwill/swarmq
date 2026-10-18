@@ -233,8 +233,13 @@ class SwarmQ:
         Returns True when the flag was newly set, False when it already
         existed.
         """
-        ttl_ms = max(_DEFAULT_CANCEL_FLAG_TTL_MS, self.config.result_ttl * 1000)
-        return await self.client.cancel(task_id, ttl_ms=ttl_ms)
+        return await self.client.cancel(task_id, ttl_ms=self._cancel_flag_ttl_ms())
+
+    def _cancel_flag_ttl_ms(self) -> int:
+        """Basis-Lebensdauer jedes Cancel-Flags: ``max(24 h, result_ttl)``
+        (E-020) — für Tasks wie für Workflows, gleich ob das Workflow-Handle
+        aus :meth:`apply` stammt oder per :meth:`workflow` neu gebaut ist."""
+        return max(_DEFAULT_CANCEL_FLAG_TTL_MS, self.config.result_ttl * 1000)
 
     async def apply(self, workflow: Signature | Chain | Group | Chord) -> WorkflowHandle:
         """Start a workflow (chain/group/chord) fire-and-forget; return a
@@ -244,8 +249,9 @@ class SwarmQ:
 
     async def workflow(self, workflow_id: str) -> WorkflowHandle:
         """Reattach to a workflow by id (R14); raises WorkflowNotFound when
-        absent."""
-        return await self.client.workflow(workflow_id)
+        absent. The handle's cancel flag lives ``max(24 h, result_ttl)``
+        like the one from :meth:`apply` (E-020, F4-03)."""
+        return await self.client.workflow(workflow_id, cancel_ttl_ms=self._cancel_flag_ttl_ms())
 
     async def start_worker(self) -> None:
         # Injected connection objects are producer-only. Worker subprocesses

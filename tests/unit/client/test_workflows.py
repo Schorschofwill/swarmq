@@ -205,3 +205,78 @@ async def test_apply_rejected_by_middleware_persists_nothing(broker, backend):
 
     backend.store_workflow_state.assert_not_awaited()
     broker.publish.assert_not_awaited()
+
+
+# E-020 (Nachtrag 2026-10-17, F4-03): Cancel-Flag-TTL der Workflow-Handles des
+# reinen Clients.
+# Testliste:
+# [x] apply mit state_ttl_ms über 24 h: Flag lebt state_ttl_ms
+# [x] apply mit state_ttl_ms unter 24 h: Flag 24 h, Zustands-TTL bleibt state_ttl_ms
+# [x] workflow ohne cancel_ttl_ms: Flag 24 h
+# [x] workflow mit cancel_ttl_ms: Flag lebt cancel_ttl_ms
+
+_DAY_MS = 86_400_000
+
+
+def _wf_backend(backend) -> None:
+    backend.store_workflow_state = AsyncMock()
+    backend.get_workflow_state = AsyncMock(return_value=encode_json({"status": STATUS_RUNNING, "version": 0}))
+    backend.set_workflow_cancel_flag = AsyncMock(return_value=True)
+    backend.notify_workflow = AsyncMock()
+
+
+def _flag_ttl_ms(backend) -> int:
+    call = backend.set_workflow_cancel_flag.await_args
+    assert call is not None
+    return int(call.kwargs["ttl_ms"])
+
+
+@pytest.mark.entscheidung("E-020")
+@pytest.mark.timeout(5)
+async def test_apply_cancel_flag_follows_state_ttl_above_24h(broker, backend):
+    _wf_backend(backend)
+    client = _client(broker, backend)
+
+    handle = await client.apply(group(WfA.s("a"), WfA.s("b")), state_ttl_ms=2 * _DAY_MS)
+    await handle.cancel()
+
+    assert _flag_ttl_ms(backend) == 2 * _DAY_MS
+
+
+@pytest.mark.entscheidung("E-020")
+@pytest.mark.timeout(5)
+async def test_apply_cancel_flag_lasts_24h_with_shorter_state_ttl(broker, backend):
+    _wf_backend(backend)
+    client = _client(broker, backend)
+
+    handle = await client.apply(group(WfA.s("a"), WfA.s("b")), state_ttl_ms=60_000)
+    await handle.cancel()
+
+    assert _flag_ttl_ms(backend) == _DAY_MS
+    store_call = backend.store_workflow_state.await_args
+    assert store_call is not None
+    assert store_call.kwargs["ttl_ms"] == 60_000
+
+
+@pytest.mark.entscheidung("E-020")
+@pytest.mark.timeout(5)
+async def test_reattached_handle_cancel_flag_defaults_to_24h(broker, backend):
+    _wf_backend(backend)
+    client = _client(broker, backend)
+
+    handle = await client.workflow("wf-x")
+    await handle.cancel()
+
+    assert _flag_ttl_ms(backend) == _DAY_MS
+
+
+@pytest.mark.entscheidung("E-020")
+@pytest.mark.timeout(5)
+async def test_reattached_handle_cancel_flag_uses_given_ttl(broker, backend):
+    _wf_backend(backend)
+    client = _client(broker, backend)
+
+    handle = await client.workflow("wf-x", cancel_ttl_ms=7 * _DAY_MS)
+    await handle.cancel()
+
+    assert _flag_ttl_ms(backend) == 7 * _DAY_MS

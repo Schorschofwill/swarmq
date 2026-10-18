@@ -74,11 +74,6 @@ def _ttl_ms(set_flag: AsyncMock) -> int:
 
 @pytest.mark.entscheidung("E-020")
 @pytest.mark.befund("F4-03")
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="F4-03: offen - Reattach-Handle setzt das Workflow-Cancel-Flag fest 24 h statt result_ttl",
-)
 async def test_reattached_handle_sets_the_cancel_flag_as_long_as_the_apply_handle() -> None:
     set_flag = AsyncMock(return_value=True)
     app = _app(set_flag, result_ttl=_WEEK_S)

@@ -27,6 +27,12 @@ tests:
   - tests/integration/test_worker_cancellation.py::TestRunningCancelIntegration::test_running_task_cancel_via_monitor
   - tests/e2e/test_befund_bz02_bz11_bz23_scheduler.py::test_bz23_cancelled_task_waiting_longer_than_result_ttl_does_not_run
   - tests/unit/client/test_befund_f4_03_reattach_cancel_ttl.py::test_reattached_handle_sets_the_cancel_flag_as_long_as_the_apply_handle
+  - tests/unit/test_app.py::TestSwarmQWorkflowCancelFlagTtl::test_apply_handle_cancel_flag_lives_max_of_24h_and_result_ttl
+  - tests/unit/test_app.py::TestSwarmQWorkflowCancelFlagTtl::test_reattached_handle_cancel_flag_lives_max_of_24h_and_result_ttl
+  - tests/unit/client/test_workflows.py::test_apply_cancel_flag_follows_state_ttl_above_24h
+  - tests/unit/client/test_workflows.py::test_apply_cancel_flag_lasts_24h_with_shorter_state_ttl
+  - tests/unit/client/test_workflows.py::test_reattached_handle_cancel_flag_defaults_to_24h
+  - tests/unit/client/test_workflows.py::test_reattached_handle_cancel_flag_uses_given_ttl
 ---
 
 **Entscheidung.** Das Cancel-Flag lebt `max(24 h, result_ttl)` + (Fälligkeit − jetzt) + `max_age + 300` s (falls bekannt). `cancel()` bekommt keinen `task_name`. Bei der stornierten Zustellung und beim Abbruch während des Laufs wird das Flag nicht gelöscht, sondern per `PEXPIRE … LT` auf höchstens 1 h verkürzt (LT verlängert ein kürzeres Flag nie).
