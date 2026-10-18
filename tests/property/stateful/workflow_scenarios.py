@@ -237,14 +237,15 @@ def unmarked_member_completing_first_completes_the_workflow(machine: WorkflowMac
     ``failed`` (``WorkflowValidationError``, „resolved 1 of 2 member results“),
     obwohl kein Schritt scheiterte. Erwartet (E-073): Der Fan-in leitet die
     Kennung des Blatts ab (``workflow_step_task_id``), der Workflow wird
-    ``completed`` mit dem richtigen Endergebnis. Nach dem Fix entfällt die
-    Klammer ``deliverable``; ``test_guard_catches_lost_marker_of_composite_member``
-    (``tests/unit/test_workflow_advancer.py``, schreibt KD1 fest) ist anzupassen."""
+    ``completed`` mit dem richtigen Endergebnis. Seit dem Fix (0.13.0) ist die
+    Klammer ``deliverable`` der Maschine entfallen; der Unit-Nachweis ist
+    ``test_lost_marker_of_composite_member_still_completes``
+    (``tests/unit/test_workflow_advancer.py``)."""
     wf = machine.start(("group", [("s", "a1"), ("chain", [("s", "a2"), ("s", "a3")])]))
     machine.deliver(_at(machine, wf, "/g0"))
     machine.backend_write_outage()
     machine.deliver(_at(machine, wf, "/g1/0"))  # publiziert /g1/1, Neuzustellung
-    machine.deliver(_at(machine, wf, "/g1/1"))  # an der Klammer ``deliverable`` vorbei
+    machine.deliver(_at(machine, wf, "/g1/1"))  # läuft vor der Neuzustellung von /g1/0
     machine.drain()
     state = machine.state_of(wf)
     assert state is not None

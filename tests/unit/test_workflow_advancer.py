@@ -127,7 +127,7 @@ class Driver:
         state = build_initial_workflow_state(self.wf_id, self.workflow.to_dict())
         step_tasks = {}
         for step_path, _sig in initial_frontier(self.workflow):
-            tid = f"seed-{step_path}"
+            tid = workflow_step_task_id(self.wf_id, step_path)
             step_tasks[step_path] = tid
         state["step_tasks"] = step_tasks
         await self.backend.store_workflow_state(self.wf_id, encode_json(state), 60_000)
@@ -432,7 +432,7 @@ async def test_expired_aggregate_of_composite_member_raises():
     d = Driver(group(group(Echo.s("b"), Echo.s("c")), Echo.s("a")))
     state = build_initial_workflow_state(d.wf_id, d.workflow.to_dict())
     frontier = initial_frontier(d.workflow)
-    state["step_tasks"] = {sp: f"seed-{sp}" for sp, _ in frontier}
+    state["step_tasks"] = {sp: workflow_step_task_id(d.wf_id, sp) for sp, _ in frontier}
     await d.backend.store_workflow_state(d.wf_id, encode_json(state), 60_000)
 
     for step_path, sig in frontier:
@@ -461,10 +461,13 @@ async def test_expired_aggregate_of_composite_member_raises():
 
 
 # --------------------------------------------------------------------------
-# B10 — Vollstaendigkeitsguard (Plan 2026-08-30-002, U3)
+# F4-16, E-073 — Fan-in ohne Schritt-Marker (vorher B10-Guard, Plan
+# 2026-08-30-002 U3, KD1 für Blätter überholt)
 #
-# Eine kuerzere Liste als die Gruppe Glieder hat ist ein Fehler, kein
-# Ergebnis — und zwar fuer JEDE Gruppe, nicht nur die verschachtelte.
+# Der Fan-in leitet die Ergebniskennung eines Blatts aus Workflow-Kennung und
+# Pfad ab. Ein verspäteter Marker kippt den Workflow nicht mehr; ein fehlendes
+# Ergebnis bleibt laut (``WorkflowResultExpired``), eine gekürzte Liste gibt
+# es weiterhin nicht.
 # --------------------------------------------------------------------------
 
 
@@ -492,59 +495,127 @@ async def _drop_step_marker(d, drop_path):
     await d.backend.store_workflow_state(d.wf_id, encode_json(state), 60_000)
 
 
-async def test_guard_rejects_truncated_list_for_flat_group():
-    # R5, AE10 — der Guard sitzt an der gemeinsamen Stelle und wirkt auch
-    # dort, wo B10 nie zuschlagen konnte.
-    from swarmq.exceptions import WorkflowValidationError
-
-    d = Driver(group(Echo.s("a"), Echo.s("b")))
+async def _seeded_flat(workflow) -> tuple[Driver, dict[str, str]]:
+    d = Driver(workflow)
     frontier = initial_frontier(d.workflow)
     state = build_initial_workflow_state(d.wf_id, d.workflow.to_dict())
-    state["step_tasks"] = {sp: f"seed-{sp}" for sp, _ in frontier}
+    state["step_tasks"] = {sp: workflow_step_task_id(d.wf_id, sp) for sp, _ in frontier}
     await d.backend.store_workflow_state(d.wf_id, encode_json(state), 60_000)
     await _seed_results(d, frontier, state["step_tasks"])
+    return d, state["step_tasks"]
 
-    await d.advancer.advance(d.wf_id, "/g0", state["step_tasks"]["/g0"], ["a"])
+
+@pytest.mark.entscheidung("E-073")
+async def test_flat_group_with_late_marker_completes():
+    # E-073 — auch die flache Gruppe: der Marker von /g0 fehlt beim Fan-in,
+    # sein Ergebnis liegt vor. Früher WorkflowValidationError („1 of 2“).
+    d, step_tasks = await _seeded_flat(group(Echo.s("a"), Echo.s("b")))
+
+    await d.advancer.advance(d.wf_id, "/g0", step_tasks["/g0"], ["a"])
     await _drop_step_marker(d, "/g0")
+    await d.advancer.advance(d.wf_id, "/g1", step_tasks["/g1"], ["b"])
 
-    with pytest.raises(WorkflowValidationError) as exc:
-        await d.advancer.advance(d.wf_id, "/g1", state["step_tasks"]["/g1"], ["b"])
-    assert "1 of 2" in str(exc.value)
+    assert (await d.state())["status"] == STATUS_COMPLETED
+    assert await d.final_value() == [["a"], ["b"]]
 
 
-async def test_guard_fires_before_chord_body_is_enqueued():
-    # R5 — beim Chord-Header waere die gekuerzte Liste die EINGABE des Bodys,
-    # nicht sein Rueckgabewert. Der Guard muss davor sitzen.
-    from swarmq.exceptions import WorkflowValidationError
+@pytest.mark.entscheidung("E-073")
+async def test_chord_header_with_late_marker_feeds_the_body_every_member():
+    # E-073 — beim Chord-Header ist die Liste die EINGABE des Bodys: sie muss
+    # vollständig sein, auch wenn ein Gliedmarker beim Fan-in fehlt.
+    d, step_tasks = await _seeded_flat(chord(group(Echo.s("a"), Echo.s("b")), Echo.s()))
 
-    d = Driver(chord(group(Echo.s("a"), Echo.s("b")), Echo.s()))
-    frontier = initial_frontier(d.workflow)
-    state = build_initial_workflow_state(d.wf_id, d.workflow.to_dict())
-    state["step_tasks"] = {sp: f"seed-{sp}" for sp, _ in frontier}
-    await d.backend.store_workflow_state(d.wf_id, encode_json(state), 60_000)
-    await _seed_results(d, frontier, state["step_tasks"])
-
-    await d.advancer.advance(d.wf_id, "/h/g0", state["step_tasks"]["/h/g0"], ["a"])
+    await d.advancer.advance(d.wf_id, "/h/g0", step_tasks["/h/g0"], ["a"])
     await _drop_step_marker(d, "/h/g0")
+    await d.advancer.advance(d.wf_id, "/h/g1", step_tasks["/h/g1"], ["b"])
 
-    with pytest.raises(WorkflowValidationError) as exc:
-        await d.advancer.advance(d.wf_id, "/h/g1", state["step_tasks"]["/h/g1"], ["b"])
-    assert "'/h'" in str(exc.value)
-    assert d.published == [], "Body wurde trotz unvollstaendiger Eingabe eingereiht"
+    assert [decode_json(body)["args"] for _q, body, _h in d.published] == [[[["a"], ["b"]]]]
 
 
-async def test_guard_catches_lost_marker_of_composite_member():
-    # R5 — der realitaetsnaechste Fall: der Abschlussschritt eines
-    # Kettenglieds verliert seinen Marker (publish-then-mark-Fenster).
-    from swarmq.exceptions import WorkflowValidationError
+@pytest.mark.entscheidung("E-073")
+async def test_missing_member_result_raises_expired_before_body_is_enqueued():
+    # E-073 — fehlt das Ergebnis eines Glieds (abgelaufen), meldet der Fan-in
+    # WorkflowResultExpired, nicht WorkflowValidationError; der Body bekommt
+    # keine gekürzte Liste, er wird gar nicht eingereiht.
+    from swarmq.exceptions import WorkflowResultExpired
 
+    d, step_tasks = await _seeded_flat(chord(group(Echo.s("a"), Echo.s("b")), Echo.s()))
+
+    await d.advancer.advance(d.wf_id, "/h/g0", step_tasks["/h/g0"], ["a"])
+    await _drop_step_marker(d, "/h/g0")
+    await d.backend.delete_result(step_tasks["/h/g0"])
+
+    with pytest.raises(WorkflowResultExpired):
+        await d.advancer.advance(d.wf_id, "/h/g1", step_tasks["/h/g1"], ["b"])
+    assert d.published == [], "Body wurde trotz fehlenden Gliedergebnisses eingereiht"
+
+
+@pytest.mark.entscheidung("E-073")
+async def test_lost_marker_of_composite_member_still_completes():
+    # F4-16, E-073 — der Abschlussschritt eines Kettenglieds endet, bevor sein
+    # Marker persistiert ist (publish-then-mark-Fenster). Der Fan-in leitet
+    # die Kennung des Blatts ab, statt sie in ``step_tasks`` nachzuschlagen:
+    # der Workflow wird ``completed`` mit vollständiger Liste.
     d = Driver(group(Echo.s("a"), chain(Echo.s("b"), Echo.s())))
     await d.seed()
     await _drop_step_marker(d, "/g1/1")
 
-    with pytest.raises(WorkflowValidationError) as exc:
-        await d.drain()
-    assert "1 of 2" in str(exc.value)
+    await d.drain()
+
+    assert (await d.state())["status"] == STATUS_COMPLETED
+    assert await d.final_value() == [["a"], [["b"]]]
+
+
+async def _drain_forgetting_markers(d: Driver) -> None:
+    """Wie ``Driver.drain``, aber nach jedem Advance verschwinden alle
+    persistierten Schritt-Marker: Jeder Fan-in muss jede Gliedkennung
+    ableiten. Ohne Neuzustellung bleibt das Doppel-Enqueue aus."""
+    while d.published:
+        _queue, body, headers = d.published.pop(0)
+        task_id = await d._run_step(body)
+        raw = await d.backend.get_result(task_id)
+        assert raw is not None
+        await d.advancer.advance(d.wf_id, headers["x-swarmq-workflow-step"], task_id, decode_result(raw)["result"])
+        state = await d.state()
+        state["step_tasks"] = {}
+        await d.backend.store_workflow_state(d.wf_id, encode_json(state), 60_000)
+
+
+@pytest.mark.entscheidung("E-073")
+@pytest.mark.parametrize(
+    ("workflow", "expected"),
+    [
+        (group(Echo.s("a"), chain(Echo.s("b"), Echo.s())), [["a"], [["b"]]]),
+        (group(Echo.s("a"), group(Echo.s("b"), chain(Echo.s("c"), Echo.s()))), [["a"], [["b"], [["c"]]]]),
+        (
+            chord(group(Echo.s("x"), chain(Echo.s("a"), group(Echo.si("b"), Echo.si("c")))), Echo.s()),
+            [[["x"], [["b"], ["c"]]]],
+        ),
+        (
+            group(Echo.s("x"), chord(group(Echo.si("h")), group(Echo.si("b1"), Echo.si("b2")))),
+            [["x"], [["b1"], ["b2"]]],
+        ),
+        (
+            chain(Echo.s("s"), chord(group(Echo.s(), chain(Echo.s(), Echo.s())), Echo.s())),
+            [[[["s"]], [[["s"]]]]],
+        ),
+    ],
+    ids=["chain-in-group", "nested-group", "chord-header-nested", "chord-body-group", "chord-behind-chain"],
+)
+async def test_derived_member_ids_match_the_enqueued_task_ids(workflow, expected):
+    # E-073 — die abgeleitete Kennung muss die des eingereihten Blatts sein,
+    # auch unter verschachtelten Gruppen, Ketten und Chord-Headern; sonst
+    # fände der Fan-in kein Ergebnis (WorkflowResultExpired).
+    d = Driver(workflow)
+    await d.seed()
+    state = await d.state()
+    state["step_tasks"] = {}
+    await d.backend.store_workflow_state(d.wf_id, encode_json(state), 60_000)
+
+    await _drain_forgetting_markers(d)
+
+    assert (await d.state())["status"] == STATUS_COMPLETED
+    assert await d.final_value() == expected
 
 
 # --------------------------------------------------------------------------
@@ -602,7 +673,7 @@ class MultiDriver:
     async def seed(self) -> dict[str, Any]:
         state = build_initial_workflow_state(self.wf_id, self.workflow.to_dict())
         frontier = initial_frontier(self.workflow)
-        state["step_tasks"] = {sp: f"seed-{sp}" for sp, _ in frontier}
+        state["step_tasks"] = {sp: workflow_step_task_id(self.wf_id, sp) for sp, _ in frontier}
         await self.backend.store_workflow_state(self.wf_id, encode_json(state), 60_000)
         for step_path, sig in frontier:
             await self._store(state["step_tasks"][step_path], sig.task_name, list(sig.args))
@@ -927,20 +998,21 @@ async def test_expired_member_result_raises_workflow_result_expired():
         ch,
         publisher=_NoopPublisher(),
         resolve_queue=lambda name: "default",
-        make_task_id=lambda wf_id, sp: "t-x",
+        make_task_id=workflow_step_task_id,
         unpack=_unpack,
         ttl_ms=60_000,
     )
     wf = chord(group(Echo.s("a"), Echo.s("b")), Echo.s())
     state = build_initial_workflow_state("wf", wf.to_dict())
-    state["step_tasks"] = {"/h/g0": "m0", "/h/g1": "m1"}
+    m0, m1 = workflow_step_task_id("wf", "/h/g0"), workflow_step_task_id("wf", "/h/g1")
+    state["step_tasks"] = {"/h/g0": m0, "/h/g1": m1}
     await be.store_workflow_state("wf", encode_json(state), 60_000)
     # Only m1's result exists; m0 expired before fan-in.
     await be.store_result(
-        "m1",
+        m1,
         encode_result(
             {
-                "task": {"id": "m1", "queue": "default", "name": "echo"},
+                "task": {"id": m1, "queue": "default", "name": "echo"},
                 "is_error": False,
                 "is_cancelled": False,
                 "error_message": "",
@@ -949,9 +1021,9 @@ async def test_expired_member_result_raises_workflow_result_expired():
         ),
         60_000,
     )
-    await adv.advance("wf", "/h/g0", "m0", ["a"])  # 1/2 — no gather yet
+    await adv.advance("wf", "/h/g0", m0, ["a"])  # 1/2 — no gather yet
     with pytest.raises(WorkflowResultExpired):
-        await adv.advance("wf", "/h/g1", "m1", ["b"])  # 2/2 — gathers, m0 gone
+        await adv.advance("wf", "/h/g1", m1, ["b"])  # 2/2 — gathers, m0 gone
 
 
 async def test_chain_with_embedded_chord():

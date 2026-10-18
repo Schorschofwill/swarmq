@@ -401,7 +401,7 @@ class WorkflowAdvancer(WorkflowFailure):
         # unordered chord set), R5. Der Zustand stammt vom Eintritt in
         # advance() und kann veraltet sein -- vor dem Bau der Liste nachziehen.
         await self._refresh_step_tasks(wf_id, state)
-        member_task_ids = self._ordered_member_ids(wf_id, state, group, group_path)
+        member_task_ids = self._ordered_member_ids(wf_id, group, group_path)
         ordered_results = await self._gather_results(member_task_ids)
 
         # Is this group a chord header? Then enqueue the chord body with the
@@ -568,11 +568,15 @@ class WorkflowAdvancer(WorkflowFailure):
         entstehen.
 
         Seit KTD11 schliesst das Compare-and-Set in :meth:`_persist` das
-        verlorene Zustands-Update; diese Lesung bleibt als Schutz gegen das
-        Publish-vor-Persistenz-Fenster: ein Schritt wird publiziert, BEVOR sein
-        Marker persistiert ist, und kann schneller enden als die Persistenz.
-        Sie honoriert einen frischen Terminalstatus (R24): dann endet der
-        Advance ohne Schreibung (:class:`_WorkflowAlreadyTerminal`).
+        verlorene Zustands-Update. Die Gliedkennungen des Fan-ins liest diese
+        Lesung nicht mehr: :meth:`_ordered_member_ids` leitet sie ab (E-073),
+        weil ein Schritt publiziert wird, BEVOR sein Marker persistiert ist,
+        und schneller enden kann als die Persistenz (F4-16). Die Lesung bleibt
+        für drei Dinge: Sie honoriert einen frischen Terminalstatus (R24),
+        dann endet der Advance ohne Schreibung
+        (:class:`_WorkflowAlreadyTerminal`); sie übernimmt die Version als
+        Erwartung des Compare-and-Set; und sie zieht die Marker nach, mit denen
+        :meth:`_enqueue_node` schon eingereihte Schritte überspringt.
         """
         raw = await self._backend.get_workflow_state(wf_id)
         if raw is None:
@@ -594,15 +598,19 @@ class WorkflowAdvancer(WorkflowFailure):
         wf_id: str,
         node: WorkflowNode,
         path: str,
-        step_tasks: dict[str, str],
         member_path: str | None = None,
-    ) -> str | None:
+    ) -> str:
         """Kennung des Ergebnisses, das *node* an *path* als Ganzes liefert.
 
         Spiegelt die beiden Zweige von :meth:`_materialise`: ein Blatt, eine
         Kette und ein Chord laufen auf die **echte** Schritt-Kennung ihres
         Abschlussschritts hinaus, eine Gruppe auf die Aggregatkennung (beide
         ueber :func:`aggregate_result_id`, damit sie nicht auseinanderdriften).
+        Die Schritt-Kennung eines Blatts wird abgeleitet
+        (``self._make_task_id(wf_id, path)``, dieselbe Funktion, mit der
+        :meth:`_enqueue_node` und ``apply()`` das Blatt einreihen), nicht in
+        ``step_tasks`` nachgeschlagen: Der Marker kann beim Fan-in noch fehlen,
+        das Ergebnis liegt dann trotzdem vor (F4-16, E-073).
 
         ``member_path`` ist der Pfad des GLIEDS, mit dem die Rekursion begann;
         sie reicht ihn unveraendert durch. Das ist load-bearing:
@@ -621,45 +629,32 @@ class WorkflowAdvancer(WorkflowFailure):
         if member_path is None:
             member_path = path
         if isinstance(node, Signature):
-            return step_tasks.get(path)
+            return self._make_task_id(wf_id, path)
         if isinstance(node, Chain):
             last = len(node.steps) - 1
-            return self._terminal_result_id(wf_id, node.steps[last], f"{path}/{last}", step_tasks, member_path)
+            return self._terminal_result_id(wf_id, node.steps[last], f"{path}/{last}", member_path)
         if isinstance(node, Chord):
-            return self._terminal_result_id(wf_id, node.body, f"{path}/b", step_tasks, member_path)
+            return self._terminal_result_id(wf_id, node.body, f"{path}/b", member_path)
         if isinstance(node, Group):  # pyright: ignore[reportUnnecessaryIsInstance]  # defensiv fuer ungetypte Aufrufer
             return aggregate_result_id(wf_id, member_path)
         raise WorkflowValidationError(f"unknown node type {type(node).__name__}")
 
-    def _ordered_member_ids(self, wf_id: str, state: dict[str, Any], group: Group, group_path: str) -> list[str]:
+    def _ordered_member_ids(self, wf_id: str, group: Group, group_path: str) -> list[str]:
         """Gliedkennungen in Definitionsreihenfolge (R5).
 
         Bis 0.3.0 wurde hier stur ``<gruppe>/g<i>`` in ``step_tasks``
         nachgeschlagen und ein fehlender Schluessel **wortlos uebersprungen**.
         Ein zusammengesetztes Glied legt dort nie einen Schluessel an, sodass
-        die Liste still kuerzer wurde, als die Gruppe Glieder hat: B10.
-        Deshalb Ableitung (:meth:`_terminal_result_id`) statt Nachschlagen --
-        und eine trotzdem unvollstaendige Liste ist ein **Fehler**, kein
-        Ergebnis: Ein Aufrufer kann sie nicht von einer vollstaendigen
-        unterscheiden, beim Chord-Header wandert sie in die Rechnung des Bodys
-        statt in einen pruefbaren Rueckgabewert. Der Guard gilt fuer **jede**
-        Gruppe, auch die flache -- er schliesst die Fehlerklasse, nicht nur
-        den bekannten Weg hinein. Wer ihn wegvereinfacht, stellt den stillen
-        Rechenfehler wieder her.
+        die Liste still kuerzer wurde, als die Gruppe Glieder hat: B10. Von
+        0.4.0 bis 0.12 schlug ein Guard bei unvollständiger Liste laut an --
+        auch dann, wenn nur der Marker eines Blatts verspätet war (F4-16).
+
+        Seit E-073 wird jede Gliedkennung abgeleitet
+        (:meth:`_terminal_result_id`), auch die eines Blatts. Die Liste hat
+        damit immer genau so viele Einträge, wie die Gruppe Glieder hat; die
+        Vollständigkeit der Ergebnisse belegt die Fan-in-Zählung
+        (``chord_complete.lua``). Fehlt ein Ergebnis trotzdem (abgelaufen,
+        verloren), meldet :meth:`_gather_results` ``WorkflowResultExpired`` --
+        kein Loch, keine gekürzte Liste.
         """
-        step_tasks: dict[str, str] = state["step_tasks"]
-        out: list[str] = []
-        for i, member in enumerate(group.members):
-            task_id = self._terminal_result_id(wf_id, member, f"{group_path}/g{i}", step_tasks)
-            if task_id is not None:
-                out.append(task_id)
-        expected_n = len(group.members)
-        if len(out) != expected_n:
-            raise WorkflowValidationError(
-                f"group at {group_path!r} resolved {len(out)} of {expected_n} "
-                "member results; refusing to deliver a truncated list. A member "
-                "step marker is missing from the workflow state (most likely a "
-                "step lost in the publish-then-mark window, or a workflow that "
-                "straddled an upgrade)"
-            )
-        return out
+        return [self._terminal_result_id(wf_id, member, f"{group_path}/g{i}") for i, member in enumerate(group.members)]
