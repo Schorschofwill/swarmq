@@ -197,6 +197,20 @@ class ScheduleStore:
             await self._store.replan_if_unchanged(name, payload, payload, fire_ts_ms)
         return True
 
+    async def get_definition(self, schedule_name: str) -> ScheduleDefinition | None:
+        """Die gespeicherte Definition unter ``schedule_name``; ``None`` ohne
+        Eintrag oder bei einem kaputten Eintrag (geloggt wie in
+        :meth:`list_schedules`). Für die Claim-Freigabe von ``swarmq
+        schedule add --unique-for`` (E-059, PF-6)."""
+        existing = await self._store.get(schedule_name)
+        if existing is None:
+            return None
+        try:
+            return msgspec.json.decode(existing, type=ScheduleDefinition)
+        except msgspec.DecodeError as exc:
+            logger.warning("schedule_def_malformed_skipped", schedule_name=schedule_name, **_error_fields(exc))
+            return None
+
     async def update_static_schedule(
         self,
         definition: ScheduleDefinition,

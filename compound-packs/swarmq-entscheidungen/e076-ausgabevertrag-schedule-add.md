@@ -15,12 +15,18 @@ quelle:
 tests:
   - tests/unit/test_cli_schedule_add_contract.py::test_inserted_schedule_reports_already_exists_false
   - tests/unit/test_cli_schedule_add_contract.py::test_taken_name_reports_already_exists_true
+  - tests/unit/test_cli_schedule_add_contract.py::test_dedup_duplicate_reports_already_exists_false_and_duplicate_of
+  - tests/unit/test_cli_schedule_add_contract.py::test_same_name_and_args_with_held_claim_reports_already_exists_true
+  - tests/unit/test_cli_schedule_add_contract.py::test_held_own_claim_after_fired_oneshot_reports_already_exists_false
+  - tests/unit/test_cli_schedule_add_contract.py::test_held_own_claim_without_entry_after_outage_reports_already_exists_false
+  - tests/unit/test_cli_schedule_add_contract.py::test_held_own_claim_after_schedule_remove_reports_already_exists_false
+  - tests/integration/test_cli_schedule.py::TestAddThenList::test_add_unique_duplicate_under_new_name_reports_no_existing_entry
 ---
 
 **Entscheidung.** In `swarmq schedule add --format json` heißt `already_exists`: Unter dem Namen existiert ein Eintrag (der Grund, warum nichts gespeichert wurde). Bei einem Dedup-Duplikat (`--unique-for`, Claim gehört einem anderen Schedule) ist `already_exists` `false`; den Grund nennt `duplicate_of`. `inserted` bleibt unverändert. Das Feld wird in `cli.md` dokumentiert, mit Changelog-Hinweis. Eine eigene Regel zur CLI-Ausgabe gab es bisher nicht (E-062 regelt nur `--check`, E-058 nur die Meldung „already exists“ bei gleichem Namen).
 
 **Begründung.** Agenten lesen die JSON-Ausgabe als Vertrag (R3.10 P3 #18). `already_exists = not inserted` (8971cbc) stammt aus der Zeit vor `duplicate_of` (0a2a8b6) und meldet heute `true`, obwohl unter dem Namen nichts gespeichert ist.
 
-**Bewusste Folgen.** Ein Aufrufer, der `already_exists` als „nicht gespeichert“ gelesen hat, muss `inserted` lesen. Festgeschrieben ist heute der Fall ohne Duplikat (neu angelegt, Name belegt); der Test für den Duplikatfall folgt mit dem Fix (PF-7, eine Zeile in `_render_add_result`).
+**Bewusste Folgen.** Ein Aufrufer, der `already_exists` als „nicht gespeichert“ gelesen hat, muss `inserted` lesen. Gehört der Claim dem eigenen Namen (gleicher Name, gleiche Argumente, Claim noch gehalten), wird nichts gespeichert; die CLI liest den Eintrag unter dem Namen, und `already_exists` ist genau dann `true`, wenn er existiert (Nacharbeit U18): nach einem gefeuerten Oneshot, nach einem Ausfall ohne gespeicherten Eintrag oder nach `schedule remove` ist es `false`. `duplicate_of` nennt in diesem Fall den eigenen Namen. Scheitert das Lesen, bleibt der Claim stehen (die CLI hat ihn nicht selbst gesetzt, E-059), und der Fehler geht an den Aufrufer. Festgeschrieben sind neu angelegt, Name belegt, der Duplikatfall (U18, 0.13.0) und der gehaltene eigene Claim mit und ohne Eintrag.
 
 **Überdenken nur mit neuem Argument.** Keine offenen Einwände bekannt.
