@@ -1,0 +1,29 @@
+# Build-Kontext des Mutmut-Abbilds (docker/mutation/, Plan 2026-10-17-0941,
+# KTD4): venv, Git und Caches bleiben draußen, damit der Kontext klein bleibt
+# und das Abbild sein venv selbst aus uv.lock baut.
+.git
+.venv
+**/.venv
+**/__pycache__
+*.py[cod]
+.mypy_cache
+.ruff_cache
+.pytest_cache
+.hypothesis
+.coverage
+.coverage.*
+coverage.xml
+coverage.json
+htmlcov
+slow-unit-tests.json
+.claude
+.context
+site
+dist
+build
+mutants
+mutants-*
+runs
+prototypes
+# benchmarks/ bleibt: tests/unit/test_benchmark_aggregate.py lädt benchmarks/bench.py.
+benchmarks/comparison/results

@@ -215,6 +215,24 @@ class TestExpiryErrorFields:
         assert entry["error_type"] == "BrokerConnectionError"
         assert entry["error"] == "publish nacked"
 
+    @pytest.mark.entscheidung("E-041")
+    async def test_indeterminate_dlq_publish_redelivers_the_expired_original(self):
+        """E-041 (Nachtrag 2026-10-17, Pfad Ablauf-DLQ): endet der Publish der
+        Ablauf-Kopie unbestimmt, bleibt das Original unbestätigt und wird neu
+        zugestellt (``task_expired_dlq_publish_failed``)."""
+        from swarmq.exceptions import PublishIndeterminate
+
+        w = _make_worker()
+        as_mock(w._broker).dead_letter = AsyncMock(side_effect=PublishIndeterminate("deadline"))
+        as_mock(w._broker).redeliver = AsyncMock()
+        ti = TaskInfo(name="t", queues=["q"], max_age=10)
+        msg = _expiry_message(int(time.time()) - 30)
+
+        await _apply(w, msg, ti, task_id="id")
+
+        as_mock(w._broker).redeliver.assert_awaited_once_with(msg)
+        as_mock(w._broker).ack.assert_not_awaited()
+
     async def test_double_failure_carries_error_fields_of_the_nack(self, swarmq_logs):
         from swarmq.exceptions import BrokerConnectionError
 

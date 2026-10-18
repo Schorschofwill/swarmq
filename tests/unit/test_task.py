@@ -368,6 +368,31 @@ def test_taskinfo_cron_extended_hash_syntax_rejected():
         TaskInfo(name="task", queues=["q"], cron="0 3 * * 1#2")
 
 
+# E-065, Nachtrag 2026-10-17 (Produktfrage B, Positivliste nach crontab(5)):
+# erlaubt sind genau 5 Felder mit Zahlen, ``*``, ``-``, ``,``, ``/``, Monats- und
+# Tagesnamen und die ``@``-Aliase. Grossgeschriebene Namen folgen mit F4-09
+# (Nachweis ``test_befund_f4_09_cron_uppercase_names.py``), die Ablehnung von
+# ``R``/``H`` und 6/7 Feldern mit dem Fix von PF-12/PF-13.
+@pytest.mark.entscheidung("E-065")
+@pytest.mark.parametrize(
+    "cron",
+    [
+        "*/15 * * * *",
+        "0 9 * * 1-5",
+        "0 9 * * mon-fri",
+        "0 0 1,15 * *",
+        "30 6 * jan,jul sun",
+        "@hourly",
+        "@daily",
+        "@weekly",
+        "@monthly",
+        "@yearly",
+    ],
+)
+def test_taskinfo_cron_accepts_the_crontab5_positive_list(cron: str):
+    assert TaskInfo(name="task", queues=["q"], cron=cron).cron == cron
+
+
 # F3-08: Cron ohne nächsten Termin scheitert beim Bau (E-065). Testliste:
 # - [x] 29. Februar (Schaltjahr) und 31. jeden Monats bleiben gültig
 # - [x] Meldung nennt den Grund „no next fire time“

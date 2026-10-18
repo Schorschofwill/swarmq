@@ -168,6 +168,29 @@ async def test_done_marker_acks_and_skips(
     assert skipped["task_id"] == "t-1"
 
 
+@pytest.mark.entscheidung("E-077")
+async def test_lost_valkey_data_lets_a_completed_execution_run_again(
+    deps: MagicMock, backend: InMemoryBackend, clock: FakeClock, dead_letter: AsyncMock
+) -> None:
+    """E-077: Verliert Valkey seine Daten (ohne Persistenz), ist der
+    Done-Marker weg; die Neuzustellung einer erledigten Ausführung läuft
+    erneut. swarmq rekonstruiert keine Marker (gemeldet wird der Verlust über
+    ``valkey_data_loss_detected``, ``tests/unit/scheduler/test_epoch.py``)."""
+    stores = [backend]
+    guard = ExecutionGuard(deps, store=lambda: stores[-1].execution_guard, dead_letter=dead_letter)
+    await _other_claim(backend)
+    await backend.execution_guard.mark_done("t-1", owner="other", state_ttl_ms=600_000)
+    assert await guard.apply(make_message(headers={}), _ctx()) != Continue  # vor dem Verlust: übersprungen
+
+    emptied = InMemoryBackend(clock)  # Valkey nach einem Neustart ohne Persistenz
+    await emptied.connect()
+    stores.append(emptied)
+    try:
+        assert await guard.apply(make_message(headers={}), _ctx()) is Continue
+    finally:
+        await emptied.close()
+
+
 async def test_attempt_overtaken_by_a_retry_acks_and_skips(
     guard: ExecutionGuard,
     backend: InMemoryBackend,

@@ -147,6 +147,22 @@ async def test_happy_path_stores_notifies_and_acks(broker, backend, config):
     broker.ack.assert_awaited_once_with(msg)
 
 
+@pytest.mark.entscheidung("E-072")
+async def test_ack_follows_the_stored_result(broker, backend, config):
+    """E-072 (Ack nach Ergebnis-Speichern): das Ack kommt erst, wenn das
+    Ergebnis gespeichert ist. Die begrenzte Wiederholung des Speicherns folgt
+    mit dem Fix von PF-17."""
+    order: list[str] = []
+    backend.store_result = AsyncMock(side_effect=lambda *_a, **_k: order.append("store"))
+    broker.ack = AsyncMock(side_effect=lambda *_a, **_k: order.append("ack"))
+    tail, _ = _tail(broker, backend, config)
+    msg = make_message(_default_payload(name="tail-task"))
+
+    await tail.finish(msg, _ctx(), _execution())
+
+    assert order == ["store", "ack"]
+
+
 @pytest.mark.entscheidung("E-039")
 async def test_result_ttl_zero_stores_nothing_and_fails_faf_workflow_step(broker, backend, config):
     tail, worker = _tail(broker, backend, config, TailFafTask)

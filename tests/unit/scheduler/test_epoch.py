@@ -54,6 +54,7 @@ def _losses(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [e for e in entries if e["event"] == "valkey_data_loss_detected"]
 
 
+@pytest.mark.entscheidung("E-077")
 async def test_report_tick_notices_a_vanished_epoch(memory: InMemoryBackend, swarmq_logs: list[dict[str, Any]]) -> None:
     loop = _loop(memory)
     await loop.start()  # meldet sofort, lernt den Epoch

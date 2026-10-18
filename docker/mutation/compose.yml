@@ -1,0 +1,79 @@
+# Mutmut-Läufe über den Docker-Kontext (Plan 2026-10-17-0941, U2/KTD4).
+# Aufruf nur über die justfile-Rezepte mutation-starten/-holen/-abbauen.
+# Lauf a: nur der Dienst mutmut (tests/unit, ohne Dienste).
+# Lauf b (Profil b): zusätzlich rabbitmq und valkey im selben Projekt, ohne
+# Host-Ports; der Entrypoint lenkt die Integrationstests auf sie.
+# Jedes Objekt trägt das Label swarmq-mutation, damit nach dem Abbau
+# nachprüfbar nichts übrig bleibt.
+name: swarmq-mutation
+
+services:
+  mutmut:
+    build:
+      context: ../..
+      dockerfile: docker/mutation/Dockerfile
+      labels:
+        swarmq-mutation: "1"
+    # Kein image-Name: so entfernt `down --rmi local` das gebaute Abbild.
+    labels:
+      swarmq-mutation: "1"
+    environment:
+      MUTMUT_LAUF: ${MUTMUT_LAUF:-}
+      MUTMUT_MUSTER: ${MUTMUT_MUSTER:-}
+      MUTMUT_MAX_CHILDREN: ${MUTMUT_MAX_CHILDREN:-}
+    cpus: 3
+    mem_limit: 8g
+    restart: "no"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+        required: false
+      valkey:
+        condition: service_healthy
+        required: false
+
+  # Wie docker-compose.yml (gepinnt 4.3.6), ohne Ports.
+  rabbitmq:
+    profiles: ["b"]
+    image: rabbitmq:4.3.6-management
+    labels:
+      swarmq-mutation: "1"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    mem_limit: 2g
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  valkey:
+    profiles: ["b"]
+    image: valkey/valkey:8
+    labels:
+      swarmq-mutation: "1"
+    volumes:
+      - valkey_data:/data
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  rabbitmq_data:
+    labels:
+      swarmq-mutation: "1"
+  valkey_data:
+    labels:
+      swarmq-mutation: "1"
+
+networks:
+  default:
+    labels:
+      swarmq-mutation: "1"
