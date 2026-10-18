@@ -2,6 +2,9 @@
 
 import asyncio
 import json
+import logging
+from types import SimpleNamespace
+from typing import override
 from unittest.mock import AsyncMock, Mock, patch
 
 import aio_pika
@@ -1015,6 +1018,10 @@ class TestDeadLetterTtl:
 # 2. Scheitert das entkoppelte Schliessen eines Publish-Kanals, loggt
 #    ``publish_channel_close_incomplete`` auf WARNING ueber
 #    ``swarmq.broker.rabbitmq.connection`` mit ``error_type`` und ``error``.
+# 3. Läuft das Schließen im Ressourcenalarm (Unblocked-Event nicht gesetzt) in
+#    die Frist, loggt ``publish_channel_close_incomplete`` WARNING ohne
+#    Traceback und mit ``blocked=True`` (PF-19 b, Nachtrag E-025); außerhalb
+#    des Alarms (Event gesetzt) bleibt der Traceback, ohne ``blocked``.
 
 
 class TestBrokerLogging:
@@ -1061,3 +1068,69 @@ class TestBrokerLogging:
         assert entry["log_level"] == "warning"
         assert entry["error_type"] == "RuntimeError"
         assert entry["error"] == "close failed"
+
+
+_UNBLOCKED_ATTR = "_Connection__connection_unblocked"
+
+
+class _RecordCollector(logging.Handler):
+    """Sammelt die rohen LogRecords, um ``exc_info`` prüfen zu können."""
+
+    def __init__(self) -> None:
+        super().__init__(logging.DEBUG)
+        self.records: list[logging.LogRecord] = []
+
+    @override
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+async def _close_record_after_timeout(*, alarm: bool) -> logging.LogRecord:
+    """Publish läuft in die Frist, das Schließen des verworfenen Kanals
+    ebenfalls; ``alarm`` sagt, ob die Verbindung dabei blockiert ist."""
+    broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+    connection = AsyncMock()
+    broker._connection = connection
+    broker.publish_timeout_s = 0.05
+    collector = _RecordCollector()
+    logger = logging.getLogger("swarmq.broker.rabbitmq.connection")
+    logger.addHandler(collector)
+    try:
+        with hanging_publish(broker) as channel:
+
+            async def close_into_the_deadline() -> None:
+                # Der Zustand wechselt erst, nachdem der Publish auf dem Socket
+                # lag; blockiert liest der Broker die Verbindung nicht mehr.
+                unblocked = asyncio.Event()
+                if not alarm:
+                    unblocked.set()
+                connection.transport.connection = SimpleNamespace(**{_UNBLOCKED_ATTR: unblocked})
+                raise TimeoutError
+
+            channel.close = close_into_the_deadline  # type: ignore[method-assign]
+            with pytest.raises(BrokerConnectionError):
+                await broker.publish("tasks", b"{}")
+        await broker.close()  # sammelt den nebenläufigen Schließ-Task ein
+    finally:
+        logger.removeHandler(collector)
+    [record] = [r for r in collector.records if r.msg == "publish_channel_close_incomplete"]
+    return record
+
+
+class TestChannelCloseDuringAlarm:
+    @pytest.mark.timeout(5)
+    async def test_close_into_the_deadline_during_an_alarm_logs_without_traceback(self, swarmq_logs):
+        record = await _close_record_after_timeout(alarm=True)
+
+        assert record.levelno == logging.WARNING
+        assert record.exc_info is None
+        assert record.blocked is True  # type: ignore[attr-defined]  # Feld als LogRecord-Attribut
+        assert record.error_type == "TimeoutError"  # type: ignore[attr-defined]  # Feld als LogRecord-Attribut
+
+    @pytest.mark.timeout(5)
+    async def test_close_into_the_deadline_outside_an_alarm_keeps_the_traceback(self, swarmq_logs):
+        record = await _close_record_after_timeout(alarm=False)
+
+        assert record.levelno == logging.WARNING
+        assert record.exc_info is not None
+        assert not hasattr(record, "blocked")

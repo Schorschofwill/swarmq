@@ -88,7 +88,11 @@ guarantee: if the worker crashes between `Run` and `Store`, RabbitMQ
 still holds the message and will redeliver it. If the worker crashes
 between `Store` and `Ack`, the result is already durable, but the
 redelivery runs the task again (see
-[Redelivery scenarios](#1-worker-crash-between-store-and-ack)).
+[Redelivery scenarios](#1-worker-crash-between-store-and-ack)). If
+storing the result fails (Valkey unreachable), the worker retries the
+store for a bounded time before it hands the message back; only then
+does the task run again
+([scenario 4](#4-result-store-fails-after-the-task-ran)).
 
 ## What aborts the ack
 
@@ -156,6 +160,17 @@ budget. RabbitMQ 4.3 counts such a requeue only in `x-acquired-count`,
 not in `x-delivery-count`. The worker's delivery-count check counts
 both and dead-letters the delivery one round before the limit, as
 `RedeliveryLimitError` when only `x-acquired-count` reached it.
+
+**Copies with an indeterminate outcome.** The worker publishes a copy
+on four paths: the retry copy, the dead-letter copy, the deferral copy
+during a backend outage and the dead-letter copy of an expired task
+(`max_age`). If such a publish fails, also when its outcome is unknown
+(`PublishIndeterminate`: the broker may hold the copy), the original
+stays unacknowledged and is handed back (`retry_publish_failed`,
+`dlq_publish_failed`, `task_defer_failed_redelivered`,
+`task_expired_dlq_publish_failed`). An extra run of the task, or an
+extra copy next to the run, is then accepted on every one of these
+paths; it is not a fault.
 
 Retry copies, the copies after a rate-limit hit or a lock conflict and
 the worker's DLQ copies drop the broker's delivery counters the same
@@ -230,7 +245,7 @@ lives for `hard_timeout + 30` s and outlasts every run.
 
 ## Redelivery scenarios
 
-Duplicates appear in three situations, in descending order of
+Duplicates appear in four situations, in descending order of
 frequency.
 
 ### 1. Worker crash between Store and Ack
@@ -279,6 +294,30 @@ with the same message body.
 
 **Mitigation.** Nothing required. This is the design.
 
+### 4. Result store fails after the task ran
+
+The task succeeded (or failed terminally without dead-lettering, or was
+cancelled), but Valkey does not take its result. Ack-after-store means
+the worker must not ack yet. Since 0.13.0 it retries the store itself
+for `AT_LEAST_ONCE` tasks: up to five attempts with waits of nominally
+1, 2, 4 and 8 s (±20 %, the backoff of `SWARMQ_BACKEND_DEFER_BASE_DELAY`),
+each attempt bounded by `SWARMQ_BACKEND_OP_TIMEOUT` (5 s). After the first
+failed attempt the retry therefore takes nominally about 35 s at most,
+with jitter at most 38 s. The next attempt only starts if it ends before
+`SWARMQ_CONSUMER_TIMEOUT_S`, counted from the delivery, and the drain
+end of a shutdown stops the retry. The task slot stays taken meanwhile.
+The worker logs `result_store_retrying` and, on success,
+`result_store_recovered`; the message is then acked without a second
+run. Only if every attempt fails does the worker log
+`backend_connection_error` and hand the message back, and the task runs
+**again**. `FIRE_AND_FORGET` tasks store once and lose the result.
+
+**What your task sees.** Usually nothing; after a Valkey outage longer
+than the retry, a second `run()` call with the same args.
+
+**Mitigation.** Idempotent task body; run Valkey so that restarts and
+failovers stay well below half a minute.
+
 ### Shutdown budget
 
 `SWARMQ_SHUTDOWN_TIMEOUT` (default 30 s) is the total budget from
@@ -297,7 +336,12 @@ orchestrator's `SIGKILL`.
 | Supervisor: `SIGKILL`, collect the processes | -- | at `T - 2 s`, done by `T` |
 
 `T` is `SWARMQ_SHUTDOWN_TIMEOUT`; with a short budget each reserve is at
-most half of the rest (`T = 5` embedded: drain 2.5 s). The drain counts
+most half of the rest (`T = 5` embedded: drain 2.5 s). The supervisor's
+`SIGTERM` at the drain end is a regular step of the budget: a worker
+whose task runs until then gets it and logs nothing alarming
+(`shutdown_sigterm_escalation`, INFO since 0.13.0). Only a worker that
+still lives at `T - 2 s` hangs; it is killed with
+`shutdown_sigkill_escalation` (ERROR), the event to alert on. The drain counts
 from `SIGTERM`, so a slow `WORKER_SHUTDOWN` handler (at most 10 s)
 shortens it. Every cleanup step has a time limit (the rest of the budget,
 at least 1 s); a step that exceeds it is logged
@@ -645,6 +689,19 @@ reaches the DLQ by one of five routes:
    loop guard; it protects the broker from a buggy worker. A backend
    outage does not count against it: the checks before execution defer
    the message as a new message instead of requeuing it (see above).
+   Since 0.13.0 the delivery-count check first reads the
+   [execution guard](#execution-guard): if the execution is already done
+   or superseded by a retry, the delivery is acknowledged and skipped
+   (`duplicate_delivery_skipped`) -- no `WorkerHungError` or
+   `RedeliveryLimitError`, no error result, no `TASK_DLQ`, no unique
+   release and no failed workflow. Without a marker, with
+   `SWARMQ_EXECUTION_GUARD=false`, for `FIRE_AND_FORGET` tasks or when
+   reading fails (`execution_guard_peek_failed`), the message is
+   dead-lettered as before. Remaining gaps: this route sets no done
+   marker, so a lost ack after the DLQ copy can produce a second DLQ
+   copy; and once the done marker has expired
+   (`SWARMQ_EXECUTION_GUARD_DONE_TTL_S`), the message is dead-lettered as
+   before 0.13 and the stored result is overwritten by the error result.
 4. **Expiry / lock-render / lock wait.** `max_age` exceeded,
    lock key cannot be rendered (e.g. missing kwarg), or the wait for
    a lock ended (stalled holder, `SWARMQ_LOCK_WAIT_MAX_S`). DLQ carries the message with diagnostic

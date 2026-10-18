@@ -24,6 +24,7 @@ from aio_pika.exceptions import (
 )
 
 from swarmq.broker.rabbitmq.arg_conflict import AdoptionLog
+from swarmq.broker.rabbitmq.blocked import unblocked_event
 from swarmq.broker.rabbitmq.consumer_watch import ConsumerWatch
 from swarmq.config import INJECTED_URL
 from swarmq.exceptions import BrokerConnectionError, ConfigurationError
@@ -72,8 +73,12 @@ _DEFAULT_DELIVERY_LIMIT = 20
 # Fallback fuer einen ohne App konstruierten Broker; kanonisch ist
 # ``SwarmQConfig.dead_letter_ttl_s`` (Plan 2026-10-08-1541, KTD6).
 _DEFAULT_DEAD_LETTER_TTL_S = 604800.0
-# Frist fuer das nebenlaeufige Schliessen eines verworfenen Kanals. Kurz:
-# gelingt es nicht, ist der Transport ohnehin tot und der Kanal verwaist.
+# Frist für das nebenläufige Schließen eines verworfenen Kanals. Kurz: Meist
+# ist der Transport tot, wenn es nicht gelingt. Im Ressourcenalarm lebt er
+# aber, der Broker liest nur nicht: Dann läuft das Close in die Frist, aiormq
+# entfernt den Kanal, und bei der Aufhebung beantwortet der Broker das Close
+# (aiormq loggt dann ERROR „Got frame for closed channel“). Kein Leck
+# (PF-19, Nachtrag E-025).
 _CHANNEL_CLOSE_TIMEOUT_S = 5.0
 
 # Bound for acquiring a connection from an injected
@@ -545,7 +550,17 @@ class RabbitMQConnection:
             # systematischer Fehlschlag bedeutet, dass aiormq die offene
             # Confirmation-Future nie freigibt, und das waere auf DEBUG genau
             # im Diagnosefall unsichtbar.
+            if self._publish_connection_blocked():
+                # Im Alarm ist das der erwartete Ausgang, kein Diagnosefall:
+                # ohne Traceback (PF-19 b, Nachtrag E-025).
+                logger.warning("publish_channel_close_incomplete", **_error_fields(exc), blocked=True)
+                return
             logger.warning("publish_channel_close_incomplete", **_error_fields(exc), exc_info=True)
+
+    def _publish_connection_blocked(self) -> bool:
+        """``True``, solange der Broker die Publish-Verbindung blockiert."""
+        event = unblocked_event(self._connection)
+        return isinstance(event, asyncio.Event) and not event.is_set()
 
     async def _ensure_publish_channel(self) -> aio_pika.abc.AbstractChannel:
         """Return a ready publish channel; recreate if dropped.

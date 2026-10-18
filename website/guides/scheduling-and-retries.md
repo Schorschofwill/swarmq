@@ -83,8 +83,15 @@ class DailyReport(Task):
         ...
 ```
 
-Standard 5-field cron only; extended syntax (`L`, `W`, `#`) is
-rejected at class definition. The worker's embedded scheduler picks
+Standard 5-field cron after crontab(5) only: numbers, `*`, `-`, `,`
+and `/`, month and weekday names in any case, weekday `7` for Sunday,
+and the aliases `@hourly` to `@annually` (`@midnight` too). Everything
+else is rejected at class definition (since 0.13.0, a positive list):
+`L`, `W`, `#`, `R`, `H`, `?`, `@reboot`, and six or seven fields. A
+Quartz or Spring style `0 0 9 * * *` ("09:00 daily", seconds first) is
+rejected because croniter would read it differently (every second from
+00:00:00 on the 9th of each month). See the
+[full list](../reference/configuration.md#scheduling-cron). The worker's embedded scheduler picks
 up the declaration automatically — no separate cron daemon.
 
 !!! info "Missed fires are skipped, not replayed"
