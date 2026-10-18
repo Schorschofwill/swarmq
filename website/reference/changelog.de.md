@@ -4,6 +4,318 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 [Keep a Changelog](https://keepachangelog.com/) und
 [Semantic Versioning](https://semver.org/).
 
+## [0.13.0] — unreleased
+
+Minor-Release für die übrigen Befunde der vierten Fehlersuche,
+aufbauend auf 0.12.4. Es behebt F4-01 bis F4-09, F4-15 und F4-16 und
+setzt die Entscheidungen vom 2026-10-17 im Code um: Cron-Ausdrücke
+folgen einer Positivliste nach crontab(5), Konfigurationswerte haben
+technische Obergrenzen, ein gescheitertes Ergebnis-Speichern wird vor
+der Neuzustellung wiederholt (E-072), ein Workflow-Schritt mit
+gespeichertem Erfolg, der im Dead-Letter endet, bringt seinen Workflow
+voran, statt ihn auf `running` zu lassen (F4-01), und eine Zustellung
+am Zustelllimit, deren Ausführung schon erledigt ist, wird bestätigt
+statt in die DLQ geleitet (F4-02). Keine neuen Nachrichten-Header,
+keine neuen Lua-Skripte und kein Wechsel des Nachrichtenformats; neu
+ist nur das additive Format des Versionsschlüssels für
+`swarmq schedule status` (F4-06). Die Upgrade-Hinweise lesen:
+Cron-Ausdrücke und Konfigurationswerte, die 0.12 annahm, können jetzt
+ein Deployment stoppen, und mehrere Log-Stufen haben sich geändert.
+
+### Upgrade-Hinweise
+
+1. **Cron-Ausdrücke folgen einer Positivliste nach crontab(5).**
+   Angenommen werden genau 5 Felder mit Zahlen, `*`, `-`, `,` und `/`,
+   Monats- und Tagesnamen in jeder Schreibweise (`WED`, `Jul`), die
+   Aliase `@hourly`, `@daily`, `@midnight`, `@weekly`, `@monthly`,
+   `@yearly` und `@annually` in jeder Schreibweise und Wochentag `7`
+   für Sonntag. Abgelehnt werden `L`, `W`, `#`, croniters Zufallsfeld
+   `R`, `H`, `?`, `@reboot` und Ausdrücke mit 6 oder 7 Feldern (Sekunden-
+   oder Jahresfeld). croniter las `0 0 9 * * *` mit dem Sekundenfeld am
+   Ende und feuerte am 9. jedes Monats um 00:00 sekündlich statt
+   täglich um 9 Uhr; richtig ist `0 9 * * *`. Ein `TaskInfo` mit einem
+   abgelehnten Ausdruck wirft beim Import des Task-Moduls `ValueError`,
+   `swarmq worker` endet deshalb mit Exit `1` und startet bis zum
+   Restart-Limit neu (E-057); `swarmq schedule add --cron` endet mit
+   Exit `1`, bevor es irgendeine Verbindung aufbaut, wie jeder
+   Konfigurationsfehler von `schedule`
+   ([angenommene Cron-Syntax](configuration.md#scheduling-cron),
+   [`swarmq schedule add`](cli.md#swarmq-schedule-add), E-065). Vor dem
+   Deployment `swarmq worker --module … --check` gegen die Task-Module
+   laufen lassen.
+2. **Mischbetrieb mit 0.12-Workern und Crons.** Ein 0.12-Worker meldet
+   einen Cron mit 6 Feldern (oder `R`, `H`, `?`) weiter. Ein
+   0.13-Leader feuert eine Definition, die ein früherer Leader schon
+   übernommen hat, weiter, auch mit 6 Feldern, übernimmt aber keine
+   neue oder geänderte Definition außerhalb der Positivliste. Er loggt
+   ERROR [`scheduler_cron_report_invalid`](logging.md#event-katalog)
+   einmal je Schedule-Name, Meldung und Amtszeit. Abhilfe: den Ausdruck
+   auf 5 Felder umstellen und die Worker deployen.
+3. **Konfigurationswerte haben Obergrenzen.** Jede Frist und TTL,
+   auch `result_ttl` und `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S`, darf
+   höchstens `315360000` s betragen (zehn Jahre; RabbitMQ lehnt eine
+   Per-Message-Expiration über `315360000000` ms ab), `concurrency`
+   höchstens `65535` (der AMQP-Prefetch ist ein Short),
+   `delivery_limit` höchstens `9223372036854775807` (2^63 − 1, geht als
+   `x-delivery-limit` an RabbitMQ), die übrigen Zählwerte höchstens
+   `sys.float_info.max`. Ein größerer Wert beendet den Worker jetzt mit
+   Exit `78` und dem Feldnamen (E-063, E-057); bisher scheiterte er
+   später zur Laufzeit, am Broker oder mit Exit `1` (pamqp-`TypeError`
+   bei `delivery_limit`). `swarmq check` meldet ihn vor dem Start mit
+   Exit `78`, `swarmq worker --check` mit `"ok": false`
+   ([Worker-Verhalten](configuration.md#worker-verhalten)). Ein
+   Zeitzonenname mit einem Pfadteil über 255 Byte ist jetzt ein
+   `ConfigurationError` (`SWARMQ_SCHEDULER_TIMEZONE`, Exit `78`) bzw.
+   ein `ValueError` (`TaskInfo.timezone`) statt eines `OSError` (F4-08).
+4. **Log-Stufen: Alarmregeln prüfen.** `shutdown_sigterm_escalation`
+   loggt jetzt INFO statt WARNING: Das SIGTERM am geplanten Drain-Ende
+   ist ein regulärer Schritt des Shutdown-Budgets (E-018). Alarmieren
+   auf ERROR `shutdown_sigkill_escalation`, das weiter einen hängenden
+   Worker anzeigt
+   ([Shutdown-Budget](../explanation/delivery-semantics.md#shutdown-budget)).
+   Eine Retry-Kopie, die der Broker bestätigt hat, während nur das Ack
+   des Originals scheiterte, loggt jetzt WARNING
+   `retry_ack_failed_after_publish` statt ERROR `retry_publish_failed`
+   (F4-15). `publish_channel_close_incomplete` loggt während eines
+   Ressourcenalarms des Brokers ohne Traceback und mit `blocked=True`
+   (PF-19 b).
+5. **Ein gescheitertes Ergebnis-Speichern belegt den Slot bis rund
+   35 s.** Für `AT_LEAST_ONCE`-Tasks wiederholt der Worker das
+   Speichern eines terminalen Ergebnisses (Erfolg, Fehler ohne
+   Dead-Letter, Abbruch) jetzt bis zu fünfmal mit Wartezeiten von 1, 2,
+   4 und 8 s, bevor er die Nachricht neu zustellt; mit dem Standardwert
+   von `SWARMQ_BACKEND_OP_TIMEOUT` sind das rund 35 s Wanduhrzeit (mit
+   Jitter höchstens 38 s), gedeckelt durch `SWARMQ_CONSUMER_TIMEOUT_S`
+   und das Drain-Ende. So lange bleibt der Slot belegt, und der Worker
+   konsumiert weniger. Ein Valkey-Ausfall innerhalb dieses Fensters
+   lässt einen erfolgreichen Task nicht mehr ein zweites Mal laufen.
+   Neue Events `result_store_retrying` (WARNING, gedrosselt) und
+   `result_store_recovered` (INFO); `FIRE_AND_FORGET` bleibt
+   unverändert
+   ([Ergebnis-Speichern scheitert nach dem Lauf](../explanation/delivery-semantics.md#4-ergebnis-speichern-scheitert-nach-dem-lauf),
+   E-072).
+6. **Das Workflow-Cancel-Flag lebt `max(24 h, result_ttl)`.** Das
+   Handle aus `app.apply()` und das mit `app.workflow(id)` neu gebaute
+   setzen `sq:wf:cancel:{workflow_id}` jetzt beide auf
+   `max(24 h, result_ttl)`. Bisher nahm `apply()` `result_ttl` (mit
+   `result_ttl = 60` lebte das Flag 60 s, und eingereihte Gruppenglieder
+   liefen doch), `app.workflow(id)` fest 24 h (F4-03). Mit einem
+   `result_ttl` unter 24 h bleibt das Flag eines abgebrochenen
+   Workflows jetzt 24 h in Valkey. `Client.workflow(workflow_id, *,
+   cancel_ttl_ms=None)` nimmt die Lebensdauer für einen Client ohne
+   `SwarmQ` entgegen (Vorgabe 24 h); `Client.apply()` nimmt
+   `max(24 h, state_ttl_ms)` (E-020).
+7. **Versionsschlüssel der Worker und `schedule status`.** Jeder
+   Worker-Prozess meldet seine Version jetzt unter
+   `sq:{sched}:worker_version:<worker_identity>|<owner_token>`; mehrere
+   Supervisoren auf einem Host ohne eigenes `SWARMQ_WORKER_ID`
+   überschreiben sich nicht mehr (F4-06). `swarmq schedule status`
+   liest alte und neue Schlüssel; der JSON-Eintrag unter `workers` hat
+   ein neues Feld `process` (`null` für Worker vor 0.13.0), die Tabelle
+   eine dritte Spalte. Nach einem Respawn bleibt der alte Prozess bis
+   zu drei Meldeintervalle sichtbar. Ein `schedule status` von 0.12 oder
+   älter zeigt einen 0.13-Worker mit dem ganzen
+   `<worker_identity>|<owner_token>` als Kennung. Ein
+   `SWARMQ_WORKER_ID`, das `|` enthält, ist jetzt ein
+   `ConfigurationError` (Exit `78`, E-029)
+   ([`swarmq schedule status`](cli.md#swarmq-schedule-status)).
+8. **`schedule add --format json`: `already_exists` heißt „unter dem
+   Namen existiert ein Eintrag“.** Es ist `true`, sobald unter dem
+   Namen ein Eintrag existiert, auch wenn dieser Aufruf nichts
+   gespeichert hat, weil derselbe Name mit denselben Argumenten seinen
+   Dedup-Claim noch hält. Ein Dedup-Duplikat unter einem anderen Namen
+   ergibt `already_exists: false` und den Halter in `duplicate_of`;
+   bisher ergab es `true`. Ob dieser Aufruf gespeichert hat, sagt
+   `inserted` (E-076). Der eigene `--unique-for`-Claim folgt jetzt den
+   Regeln des Clients: Er wird freigegeben, wenn ein fremder Eintrag den
+   Namen belegt oder der Store mit einer Fehlerantwort antwortet, und
+   bleibt bis zu seinem Ablauf stehen, wenn Valkey nicht erreichbar ist;
+   eine Wiederholung ist bis dahin ein Duplikat. Einen Claim, den
+   dieser Aufruf nicht gesetzt hat, gibt er nie frei (PF-6, E-059)
+   ([`swarmq schedule add`](cli.md#swarmq-schedule-add)).
+9. **DLQ-Lesebefehle liefern `DeadLetterScan`.**
+   `BrokerAdmin.list_dead_letters`, `inspect_dead_letter`,
+   `retry_dead_letter` und `retry_all_dead_letters` des
+   RabbitMQ-Brokers liefern ein `DeadLetterScan`, eine
+   Tupel-Unterklasse, die sich wie bisher als `(…, scanned)` entpacken
+   lässt und `hit_limit` ergänzt. Nur Code, der
+   `type(result) is tuple` prüft, merkt es. Eigene
+   `BrokerAdmin`-Implementierungen dürfen weiter schlichte Tupel
+   liefern; die CLI fällt dann auf `scanned >= limit` zurück.
+   `DeadLetterScan` liegt in `swarmq.contracts.broker` und wird nicht
+   aus `swarmq.contracts` reexportiert (E-028, [API](api.md)).
+10. **F4-01: Ein Schritt mit gespeichertem Erfolg bringt seinen
+    Workflow auch nach einem Dead-Letter voran.** Ist das
+    Erfolgsergebnis eines Workflow-Schritts gespeichert, scheiterte
+    aber sein Advance, und endet die Neuzustellung in einem
+    Dead-Letter-Pfad (der zweite Lauf scheitert, die Nachricht ist
+    abgelaufen, ein Gate leitet sie in die DLQ, das Zustelllimit), holt
+    der Worker den Advance jetzt mit dem gespeicherten Ergebnis nach:
+    Die Zustellung wird ohne DLQ-Kopie und ohne `TASK_DLQ`,
+    `TASK_EXPIRED` oder `TASK_CANCELLED` bestätigt, und der gespeicherte
+    Erfolg wird nie überschrieben. Scheitert auch der letzte Advance am
+    Zustelllimit vorübergehend, geht die Nachricht ohne Fehlerergebnis
+    in die DLQ, und der Workflow bleibt bis zu seiner TTL `running`
+    (E-040). Das ist weiter der Ausgang der Release-Lücke aus
+    Upgrade-Hinweis 2 von 0.12.4: Eine dauerhafte Fehlerantwort des
+    Chord-Skripts (`WRONGTYPE` nach einer Handänderung an einem
+    swarmq-Key) lässt jeden Advance scheitern, der Schritt läuft bis zum
+    `delivery_limit` erneut, und der Workflow bleibt `running`; neu ist,
+    dass der gespeicherte Erfolg bleibt und die DLQ-Kopie kein
+    Fehlerergebnis trägt. Den veränderten Key reparieren oder löschen;
+    ohne Handarbeit an swarmq-Keys tritt der Fall nicht auf.
+11. **F4-16: Ein fehlendes Glied-Ergebnis ist `WorkflowResultExpired`.**
+    Ist ein für das Fan-in nötiges Ergebnis eines Gruppen- oder
+    Chord-Header-Glieds abgelaufen oder verloren, wird der Workflow mit
+    dem gespeicherten Fehlertyp `WorkflowResultExpired` statt
+    `WorkflowValidationError` („resolved N of M“) `failed`; `get()` wirft
+    weiter `TaskError`. Code, der auf den gespeicherten Fehlertyp prüft,
+    muss den neuen Namen annehmen
+    ([Workflows](../guides/workflows.md), E-073).
+12. **Mischbetrieb und Rollback.** 0.13.0 läuft neben 0.12.x auf
+    denselben Queues und Keys. Jede Korrektur wirkt auf den Prozessen,
+    die 0.13.0 fahren; die Cron-Prüfung des Leaders gilt nur, wo der
+    Leader 0.13.0 fährt. Nach einem Rollback laufen die neuen
+    Versionsschlüssel von selbst ab; bis dahin listet ein
+    `schedule status` von 0.12 sie wie in Hinweis 7 beschrieben.
+
+### Behoben
+
+- **F4-01: Ein Workflow-Schritt mit gespeichertem Erfolg lässt seinen
+  Workflow nach einem Dead-Letter nicht mehr auf `running`.** Scheiterte
+  der Advance nach einem erfolgreichen Schritt vorübergehend
+  (Valkey-Ausfall, verlorene CAS-Runden, Broker-Fehler) und endete die
+  Neuzustellung danach in einem Dead-Letter-Pfad, brachte nichts den
+  Workflow mehr voran; auf dem Zustelllimit-Weg überschrieb zusätzlich
+  das Fehlerergebnis den Erfolg. `fail_workflow_step` wiederholt den
+  Advance jetzt mit dem gespeicherten Ergebnis
+  (`workflow_fail_skipped_step_done`, dann
+  `workflow_advance_caught_up`), stellt bei einem vorübergehenden
+  Fehler neu zu und loggt `workflow_advance_backend_error`/
+  `workflow_advance_broker_error` als ERROR, wo keine Neuzustellung
+  folgt (Upgrade-Hinweis 10).
+- **F4-02: Eine schon erledigte Ausführung wird am Zustelllimit
+  bestätigt.** Das Delivery-Count-Gate leitete die Neuzustellung einer
+  erledigten oder überholten Ausführung als `WorkerHungError` in die
+  DLQ, bevor der Ausführungsschutz sie als Duplikat überspringen
+  konnte: Das Fehlerergebnis überschrieb den Erfolg, `TASK_DLQ` und die
+  Unique-Freigabe liefen, ein Workflow-Glied konnte seinen Workflow
+  scheitern lassen, und ein Replay der DLQ-Kopie führte einen
+  erledigten Task erneut aus. Das Gate liest jetzt den Zustand des
+  Ausführungsschutzes (`HMGET`, kein Lua) und bestätigt eine solche
+  Zustellung als `duplicate_delivery_skipped`. Ohne Marker, mit
+  `SWARMQ_EXECUTION_GUARD=false`, bei `FIRE_AND_FORGET` und wenn das
+  Lesen scheitert (WARNING `execution_guard_peek_failed`), geht sie wie
+  bisher in die DLQ. Zwei Grenzen bleiben: Die Limit-DLQ setzt keinen
+  Done-Marker, ein verlorenes Ack ergibt also eine zweite DLQ-Kopie;
+  und ein abgelaufener Done-Marker
+  (`SWARMQ_EXECUTION_GUARD_DONE_TTL_S`) lässt das alte Verhalten
+  (E-043).
+- **F4-03: Ein wieder angehängtes Workflow-Handle bricht so lange ab
+  wie das ursprüngliche.** Siehe Upgrade-Hinweis 6.
+- **F4-04: `purge_dead_letters` schließt seinen DLQ-Kanal.** Seit 0.12.0
+  ließ jeder Purge einen AMQP-Kanal bis zum Verbindungsende offen, auch
+  wenn `purge()` warf; langlebige Prozesse, die `BrokerAdmin`
+  einbetten (ein Dashboard), sammelten Kanäle an. Der Kanal wird jetzt
+  in jedem Fall geschlossen.
+- **F4-05: `dlq list` und `dlq inspect`/`retry <id>` melden ein Lesen,
+  das am Limit endete.** Abgelaufene Einträge verbrauchten Lesungen,
+  zählten aber nicht in `scanned`; `truncated` war deshalb `false`, und
+  ein „not found“ kam ohne Hinweis auf das Scan-Limit
+  (`scan_exhausted: false`), obwohl das Lesen am Limit stoppte.
+  `truncated` und `scan_exhausted` folgen jetzt `hit_limit`; `scanned`
+  zählt weiter keine abgelaufenen Einträge
+  ([`swarmq dlq list`](cli.md#swarmq-dlq-list), E-028).
+- **F4-06: `schedule status` listet jeden lebenden Worker.** Siehe
+  Upgrade-Hinweis 7.
+- **F4-07: Ein unendlicher Zähler-Header hält keine Nachricht mehr
+  fest.** `x-delivery-count` oder `x-acquired-count` mit `±inf` (ein
+  vom Publisher gesetztes AMQP-Double, ein Shovel-Replay) warf im
+  Delivery-Count-Gate `OverflowError`; die Nachricht blieb bis
+  `consumer_timeout` unbestätigt. Ein solcher Header zählt jetzt wie
+  kein Header (E-051).
+- **F4-08: Ein überlanger Zeitzonenname ist ein Konfigurationsfehler.**
+  Siehe Upgrade-Hinweis 3.
+- **F4-09: Monats- und Tagesnamen werden in jeder Schreibweise
+  angenommen.** `TaskInfo` lehnte Namen mit `L` oder `W` in Groß- oder
+  gemischter Schreibweise (`WED`, `Jul`, `@HOURLY`) als „erweiterte
+  Syntax“ ab, klein geschrieben gingen sie durch. Die Positivliste
+  behandelt `L`, `W` und `#` jetzt nur als Operatoren
+  (Upgrade-Hinweis 1).
+- **F4-15: Eine bestätigte Retry-Kopie mit gescheitertem Ack ist kein
+  Fehler.** Hatte der Broker die Retry-Kopie bestätigt und scheiterte
+  nur das Ack des Originals, loggte der Worker ERROR
+  `retry_publish_failed` („the message is redelivered“) und stellte auf
+  einem toten Kanal neu zu, ohne `task_retrying`. Jetzt loggt er
+  WARNING `retry_ack_failed_after_publish` und `task_retrying` und
+  stellt nicht neu zu; das neu zugestellte Original überspringt der
+  Ausführungsschutz als überholt (E-043).
+- **F4-16: Ein Gruppenglied mit verspätetem Schrittmarker lässt den
+  Workflow nicht mehr scheitern.** Das Fan-in schlug die
+  Ergebnis-Kennung eines Blatts in den gespeicherten Schrittmarkern
+  nach; wurde ein Glied fertig, bevor der publizierende Advance seinen
+  Marker gespeichert hatte (Absturz, Valkey-Ausfall, 25 verlorene
+  CAS-Runden), wurde der Workflow mit `WorkflowValidationError`
+  `failed`, obwohl kein Schritt scheiterte. Das Fan-in leitet die
+  Ergebnis-Kennung eines Blatts jetzt aus Workflow-ID und Schrittpfad
+  ab; der Längen-Guard aus 0.4.0 entfällt für Blätter
+  (Upgrade-Hinweis 11, E-073).
+
+### Geändert
+
+- **Cron-Positivliste** für `TaskInfo`, den Leader-Sync und
+  `swarmq schedule add --cron` (Upgrade-Hinweise 1 und 2; PF-12,
+  PF-13, PF-15, E-065).
+- **Obergrenzen für Konfigurationswerte** (Upgrade-Hinweis 3; PF-10,
+  PF-11, F3-38, E-063).
+- **Log-Stufen** von `shutdown_sigterm_escalation`, dem Retry-Ack nach
+  dem Publish und `publish_channel_close_incomplete` im Alarm
+  (Upgrade-Hinweis 4; PF-8, F4-15, PF-19 b).
+- **Wiederholtes Ergebnis-Speichern vor der Neuzustellung** für
+  `AT_LEAST_ONCE`-Tasks (Upgrade-Hinweis 5, E-072).
+- **`already_exists` und der Dedup-Claim von `schedule add`**
+  (Upgrade-Hinweis 8; PF-6, PF-7, E-059, E-076).
+
+### Hinzugefügt
+
+- `Client.workflow(workflow_id, *, cancel_ttl_ms=None)`
+  (Upgrade-Hinweis 6).
+- `DeadLetterScan` mit `hit_limit` (Upgrade-Hinweis 9).
+- Feld `process` und eine dritte Tabellenspalte in
+  `swarmq schedule status` (Upgrade-Hinweis 7).
+- Events `scheduler_cron_report_invalid` (ERROR),
+  `result_store_retrying` (WARNING), `result_store_recovered` (INFO),
+  `retry_ack_failed_after_publish` (WARNING),
+  `execution_guard_peek_failed` (WARNING) und
+  `workflow_advance_caught_up` (INFO)
+  ([Event-Katalog](logging.md#event-katalog)).
+
+### Dokumentation
+
+- **Event-Katalog**: die neuen Events, beide Shutdown-Eskalationen, die
+  aiormq-Zeile „Got frame for closed channel“ und
+  `publish_channel_close_incomplete`; ein Hinweis zu logrotate
+  `copytruncate`: Es braucht die Ausgabe im Anhängemodus und verliert
+  die Zeilen zwischen Kopie und Kürzen (PF-9)
+  ([Event-Katalog](logging.md#event-katalog)).
+- **Zustellsemantik**: die vierte Duplikat-Situation
+  (Ergebnis-Speichern scheitert nach dem Lauf) mit ihrer
+  Wanduhr-Obergrenze, Route 3 am Zustelllimit nach F4-02, die vier
+  Pfade von E-041 (Retry, DLQ, Zurückstellung bei Backend-Ausfall,
+  Ablauf-DLQ) und das Shutdown-Budget
+  ([Zustellsemantik](../explanation/delivery-semantics.md)).
+- **Fehler**: welche Publishes als `PublishIndeterminate` enden, wenn
+  der Broker blockiert (D-1), sowie Slot-Belegung und Konsum während
+  eines Ressourcenalarms (PF-18 a) ([Fehler](errors.md)).
+- **Konfiguration und CLI**: die Cron-Positivliste, die
+  Konfigurationsgrenzen, `already_exists`, `process` in
+  `schedule status`, die DLQ-Kürzung,
+  `Client.workflow(cancel_ttl_ms=…)` und `DeadLetterScan`
+  ([Konfiguration](configuration.md), [CLI](cli.md), [API](api.md)).
+- **Guides**: Fehlerfälle von Workflows nach F4-01 und F4-16, die
+  Cron-Positivliste im Scheduling-Guide, die DLQ-Kürzung im
+  Dead-Letter-Guide.
+
 ## [0.12.4] — 2026-10-18
 
 0.12.4 ist 0.12.4rc1 ohne Codeänderungen. Die Korrekturen und die

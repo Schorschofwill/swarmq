@@ -4,6 +4,293 @@ All notable changes to SwarmQ. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [0.13.0] — unreleased
+
+Minor release for the remaining findings of the fourth bug hunt, on top
+of 0.12.4. It fixes F4-01 to F4-09, F4-15 and F4-16 and puts the
+decisions of 2026-10-17 into the code: cron expressions follow a
+crontab(5) positive list, configuration values have technical upper
+bounds, a failed result store is retried before the message is
+redelivered (E-072), a dead-lettered workflow step whose success is
+already stored advances its workflow instead of leaving it `running`
+(F4-01), and a delivery at the
+delivery limit whose execution already completed is acknowledged
+instead of dead-lettered (F4-02). No new message headers, no new Lua
+scripts and no message format change; the only new key format is the
+additive worker version key of `swarmq schedule status` (F4-06). Read
+the upgrade notes: cron expressions and configuration values that
+0.12 accepted can now stop a deploy, and several log levels changed.
+
+### Upgrade notes
+
+1. **Cron expressions follow a crontab(5) positive list.** Accepted are
+   exactly 5 fields with numbers, `*`, `-`, `,` and `/`, month and day
+   names in any case (`WED`, `Jul`), the aliases `@hourly`, `@daily`,
+   `@midnight`, `@weekly`, `@monthly`, `@yearly` and `@annually` in any
+   case, and day of week `7` for Sunday. Rejected are `L`, `W`, `#`,
+   croniter's random field `R`, `H`, `?`, `@reboot` and 6- or 7-field
+   expressions (a seconds or year field). croniter read `0 0 9 * * *` with
+   the seconds field last and fired every second at 00:00 on the 9th
+   of each month instead of daily at 9:00; write `0 9 * * *`. A `TaskInfo` with a rejected
+   expression raises `ValueError` when the task module is imported, so
+   `swarmq worker` ends with exit `1` and restarts until the restart
+   limit (E-057); `swarmq schedule add --cron` ends with exit `1` before
+   it connects to anything, like every configuration error of
+   `schedule`
+   ([accepted cron syntax](configuration.md#scheduling-cron),
+   [`swarmq schedule add`](cli.md#swarmq-schedule-add), E-065). Run
+   `swarmq worker --module … --check` against your task modules before
+   the deploy.
+2. **Mixed operation with 0.12 workers and crons.** A 0.12 worker still
+   reports a cron with 6 fields (or `R`, `H`, `?`). A 0.13 leader keeps
+   firing a definition that an earlier leader already adopted, also
+   with 6 fields, but takes over no new or changed definition outside
+   the positive list. It logs ERROR
+   [`scheduler_cron_report_invalid`](logging.md#event-catalog) once per
+   schedule name, report and leadership term. Remedy: switch the
+   expression to 5 fields and deploy the workers.
+3. **Configuration values have upper bounds.** Every deadline and TTL,
+   including `result_ttl` and `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S`,
+   must be at most `315360000` s (ten years; RabbitMQ rejects a
+   per-message expiration above `315360000000` ms), `concurrency` at
+   most `65535` (AMQP prefetch is a short), `delivery_limit` at most
+   `9223372036854775807` (2^63 − 1, sent as `x-delivery-limit`), and the
+   other counts at most `sys.float_info.max`. A larger value now ends
+   the worker with exit `78` and the field name (E-063, E-057); before,
+   it failed later at runtime, at the broker, or with exit `1` (pamqp
+   `TypeError` for `delivery_limit`). `swarmq check` reports it with
+   exit `78` before the start, `swarmq worker --check` with
+   `"ok": false`
+   ([worker behaviour](configuration.md#worker-behaviour)). A time zone
+   name with a path segment over 255 bytes is now a
+   `ConfigurationError` (`SWARMQ_SCHEDULER_TIMEZONE`, exit `78`) or a
+   `ValueError` (`TaskInfo.timezone`) instead of an `OSError` (F4-08).
+4. **Log levels: check your alert rules.**
+   `shutdown_sigterm_escalation` now logs INFO instead of WARNING: the
+   SIGTERM at the planned drain end is a regular step of the shutdown
+   budget (E-018). Alert on ERROR `shutdown_sigkill_escalation`, which
+   still marks a hanging worker
+   ([shutdown budget](../explanation/delivery-semantics.md#shutdown-budget)).
+   A retry copy that the broker confirmed while only the ack of the
+   original failed now logs WARNING `retry_ack_failed_after_publish`
+   instead of ERROR `retry_publish_failed` (F4-15).
+   `publish_channel_close_incomplete` during a broker resource alarm
+   logs without a traceback and with `blocked=True` (PF-19 b).
+5. **A failed result store holds the slot for up to about 35 s.**
+   For `AT_LEAST_ONCE` tasks the worker now retries storing a terminal
+   result (success, failure without dead-letter, cancellation) up to
+   five times with waits of 1, 2, 4 and 8 s before it redelivers the
+   message; with the default `SWARMQ_BACKEND_OP_TIMEOUT` that is about
+   35 s of wall clock (at most 38 s with jitter), capped by
+   `SWARMQ_CONSUMER_TIMEOUT_S` and the drain end. The slot stays
+   occupied meanwhile, and the worker consumes less. A Valkey outage
+   within the window no longer runs a successful task a second time.
+   New events `result_store_retrying` (WARNING, throttled) and
+   `result_store_recovered` (INFO); `FIRE_AND_FORGET` is unchanged
+   ([result store fails after the task ran](../explanation/delivery-semantics.md#4-result-store-fails-after-the-task-ran),
+   E-072).
+6. **The workflow cancel flag lives `max(24 h, result_ttl)`.** Both the
+   handle from `app.apply()` and the one rebuilt with
+   `app.workflow(id)` now set `sq:wf:cancel:{workflow_id}` to
+   `max(24 h, result_ttl)`. Before, `apply()` used `result_ttl` (with
+   `result_ttl = 60` the flag lived 60 s, and queued group members ran
+   after all), and `app.workflow(id)` a fixed 24 h (F4-03). With a
+   `result_ttl` under 24 h, the flag of a cancelled workflow now stays
+   in Valkey for 24 h. `Client.workflow(workflow_id, *,
+   cancel_ttl_ms=None)` takes the lifetime for a client without
+   `SwarmQ` (default 24 h); `Client.apply()` uses
+   `max(24 h, state_ttl_ms)` (E-020).
+7. **Worker version key and `schedule status`.** Each worker process
+   now reports its version under
+   `sq:{sched}:worker_version:<worker_identity>|<owner_token>`, so
+   several supervisors on one host without their own `SWARMQ_WORKER_ID`
+   no longer overwrite each other (F4-06). `swarmq schedule status`
+   reads old and new keys; the JSON entry under `workers` has a new
+   field `process` (`null` for workers before 0.13.0), the table a third
+   column. After a respawn the old process stays listed for up to three
+   report intervals. A `schedule status` from 0.12 or older shows a
+   0.13 worker with the full `<worker_identity>|<owner_token>` as its
+   id. A `SWARMQ_WORKER_ID` that contains `|` is now a
+   `ConfigurationError` (exit `78`, E-029)
+   ([`swarmq schedule status`](cli.md#swarmq-schedule-status)).
+8. **`schedule add --format json`: `already_exists` means "an entry
+   exists under the name".** It is `true` whenever an entry exists
+   under the name, also when this call stored nothing because the
+   same name and arguments still hold their dedup claim. A dedup
+   duplicate under another name gives `already_exists: false` and the
+   holder in `duplicate_of`; before, it gave `true`. Read `inserted` to
+   learn whether this call stored the entry (E-076). The own
+   `--unique-for` claim now follows the client rules: it is released
+   when another entry holds the name or the store answers with an error
+   reply, and kept until it expires when Valkey is unreachable, so a
+   repeat is a duplicate until then; a claim this call did not set is
+   never released (PF-6, E-059)
+   ([`swarmq schedule add`](cli.md#swarmq-schedule-add)).
+9. **DLQ read commands return `DeadLetterScan`.** `BrokerAdmin.list_dead_letters`,
+   `inspect_dead_letter`, `retry_dead_letter` and
+   `retry_all_dead_letters` of the RabbitMQ broker return a
+   `DeadLetterScan`, a tuple subclass that unpacks as
+   `(…, scanned)` like before and adds `hit_limit`. Only code that
+   checks `type(result) is tuple` notices it. Own `BrokerAdmin`
+   implementations may keep returning plain tuples; the CLI then falls
+   back to `scanned >= limit`. `DeadLetterScan` lives in
+   `swarmq.contracts.broker` and is not re-exported from
+   `swarmq.contracts` (E-028, [API](api.md)).
+10. **F4-01: a dead-lettered step with a stored success advances its
+    workflow.** When a workflow step's success is stored but its
+    advance failed and the redelivery ends in a dead-letter path (the
+    second run fails, the message expired, a gate dead-letters it, the
+    delivery limit), the worker now advances the workflow with the
+    stored result: the delivery is acknowledged without a DLQ copy and
+    without `TASK_DLQ`, `TASK_EXPIRED` or `TASK_CANCELLED`, and the
+    stored success is never overwritten. If the last advance at the
+    delivery limit also fails transiently, the message goes to the DLQ
+    without an error result and the workflow stays `running` until its
+    TTL (E-040). This is still the outcome of the release gap from
+    upgrade note 2 of 0.12.4: a lasting error reply of the chord script
+    (`WRONGTYPE` after a manual change of a swarmq key) fails every
+    advance, so the step reruns up to the `delivery_limit` and the
+    workflow stays `running`; what changes is that the stored success
+    is kept and the DLQ copy carries no error result. Repair or delete
+    the changed key; without manual changes to swarmq keys the case
+    does not occur.
+11. **F4-16: a missing member result is `WorkflowResultExpired`.** When
+    a group or chord-header member result needed for fan-in expired or
+    is lost, the workflow fails with the recorded error type
+    `WorkflowResultExpired` instead of `WorkflowValidationError`
+    ("resolved N of M"); `get()` still raises `TaskError`. Code that
+    matches on the stored error type must accept the new name
+    ([failure modes](../guides/workflows.md#failure-modes), E-073).
+12. **Mixed operation and rollback.** 0.13.0 runs next to 0.12.x on
+    the same queues and keys. Each fix takes effect on the processes
+    that run 0.13.0; the cron check of the leader applies only where the
+    leader runs 0.13.0. After a rollback the new worker version keys
+    expire on their own; until then a 0.12 `schedule status` lists them
+    as described in note 7.
+
+### Fixed
+
+- **F4-01: a dead-lettered workflow step with a stored success no
+  longer leaves its workflow `running`.** If the advance after a
+  successful step failed transiently (Valkey outage, lost CAS rounds,
+  broker error) and the redelivery then ended in the dead-letter path,
+  nothing advanced the workflow again; on the delivery-limit path the
+  error result also overwrote the success. `fail_workflow_step` now
+  repeats the advance with the stored result
+  (`workflow_fail_skipped_step_done`, then `workflow_advance_caught_up`),
+  redelivers on a transient failure and logs
+  `workflow_advance_backend_error`/`workflow_advance_broker_error` as
+  ERROR where no redelivery follows (upgrade note 10).
+- **F4-02: an execution that already completed is acknowledged at the
+  delivery limit.** The delivery-count gate dead-lettered a redelivery
+  of a completed or superseded execution as `WorkerHungError` before
+  the execution guard could skip it as a duplicate: the error result
+  overwrote the success, `TASK_DLQ` and the unique release ran, a
+  workflow member could fail its workflow, and a replay of the DLQ copy
+  ran a finished task again. The gate now reads the execution guard
+  state (`HMGET`, no Lua) and acknowledges such a delivery as
+  `duplicate_delivery_skipped`. Without a marker, with
+  `SWARMQ_EXECUTION_GUARD=false`, for `FIRE_AND_FORGET` and when the
+  read fails (WARNING `execution_guard_peek_failed`), it dead-letters
+  as before. Two limits remain: the limit DLQ sets no done marker, so a
+  lost ack of it gives a second DLQ copy; and an expired done marker
+  (`SWARMQ_EXECUTION_GUARD_DONE_TTL_S`) leaves the old behaviour (E-043).
+- **F4-03: a reattached workflow handle cancels as long as the
+  original.** See upgrade note 6.
+- **F4-04: `purge_dead_letters` closes its DLQ channel.** Since 0.12.0
+  every purge left an AMQP channel open until the connection closed,
+  also when `purge()` raised; long-running processes that embed
+  `BrokerAdmin` (a dashboard) accumulated channels. The channel is now
+  closed in every case.
+- **F4-05: `dlq list` and `dlq inspect`/`retry <id>` report a reading
+  stopped at the limit.** Expired entries consumed reads but were not
+  counted in `scanned`, so `truncated` was `false` and a "not found"
+  came without the scan-limit hint (`scan_exhausted: false`) although
+  reading stopped at the limit. `truncated` and `scan_exhausted` now
+  follow `hit_limit`; `scanned` still counts no expired entries
+  ([`swarmq dlq list`](cli.md#swarmq-dlq-list), E-028).
+- **F4-06: `schedule status` lists every live worker.** See upgrade
+  note 7.
+- **F4-07: an infinite counter header no longer stalls a message.**
+  `x-delivery-count` or `x-acquired-count` of `±inf` (a publisher-set
+  AMQP double, a shovel replay) raised `OverflowError` in the
+  delivery-count gate; the message stayed unacknowledged until
+  `consumer_timeout`. Such a header now counts as absent (E-051).
+- **F4-08: an overlong time zone name is a configuration error.** See
+  upgrade note 3.
+- **F4-09: month and day names are accepted in any case.** `TaskInfo`
+  rejected names that contain an `L` or `W` in upper or mixed case
+  (`WED`, `Jul`, `@HOURLY`) as "extended syntax", while lower case
+  passed. The positive list now treats `L`, `W` and `#` only as
+  operators (upgrade note 1).
+- **F4-15: a confirmed retry copy with a failed ack is no error.** When
+  the broker confirmed the retry copy and only the ack of the original
+  failed, the worker logged ERROR `retry_publish_failed` ("the message
+  is redelivered") and requeued on a dead channel, without
+  `task_retrying`. It now logs WARNING `retry_ack_failed_after_publish`
+  and `task_retrying` and does not redeliver; the execution guard skips
+  the redelivered original as superseded (E-043).
+- **F4-16: a group member with a late step marker no longer fails the
+  workflow.** Fan-in looked up a leaf member's result id in the stored
+  step markers; when a member finished before the publishing advance
+  had persisted its marker (crash, Valkey outage, 25 lost CAS rounds),
+  the workflow failed with `WorkflowValidationError` although no step
+  failed. Fan-in now derives the result id of a leaf from the workflow
+  id and the step path; the 0.4.0 length guard for leaves is gone
+  (upgrade note 11, E-073).
+
+### Changed
+
+- **Cron positive list** for `TaskInfo`, the leader sync and
+  `swarmq schedule add --cron` (upgrade notes 1 and 2; PF-12, PF-13,
+  PF-15, E-065).
+- **Upper bounds for configuration values** (upgrade note 3; PF-10,
+  PF-11, F3-38, E-063).
+- **Log levels** of `shutdown_sigterm_escalation`, the retry ack after
+  publish and `publish_channel_close_incomplete` in an alarm (upgrade
+  note 4; PF-8, F4-15, PF-19 b).
+- **Result store retry before redelivery** for `AT_LEAST_ONCE` tasks
+  (upgrade note 5, E-072).
+- **`already_exists` and the dedup claim of `schedule add`** (upgrade
+  note 8; PF-6, PF-7, E-059, E-076).
+
+### Added
+
+- `Client.workflow(workflow_id, *, cancel_ttl_ms=None)` (upgrade note 6).
+- `DeadLetterScan` with `hit_limit` (upgrade note 9).
+- Field `process` and a third table column in `swarmq schedule status`
+  (upgrade note 7).
+- Events `scheduler_cron_report_invalid` (ERROR),
+  `result_store_retrying` (WARNING), `result_store_recovered` (INFO),
+  `retry_ack_failed_after_publish` (WARNING),
+  `execution_guard_peek_failed` (WARNING) and
+  `workflow_advance_caught_up` (INFO)
+  ([event catalog](logging.md#event-catalog)).
+
+### Documentation
+
+- **Event catalog**: the new events, both shutdown escalations, the
+  aiormq line "Got frame for closed channel" and
+  `publish_channel_close_incomplete`; a note on logrotate
+  `copytruncate`: it needs the output opened in append mode and loses
+  the lines written between copy and truncate (PF-9)
+  ([event catalog](logging.md#event-catalog)).
+- **Delivery semantics**: the fourth duplicate situation (result store
+  fails after the task ran) with its wall-clock bound, route 3 at the
+  delivery limit after F4-02, the four paths of E-041 (retry, DLQ,
+  backend deferral, expiry DLQ) and the shutdown budget
+  ([delivery semantics](../explanation/delivery-semantics.md)).
+- **Errors**: which publishes end as `PublishIndeterminate` when the
+  broker blocks (D-1), and slot occupancy and consumption during a
+  resource alarm (PF-18 a) ([errors](errors.md)).
+- **Configuration and CLI**: the cron positive list, the configuration
+  bounds, `already_exists`, `process` in `schedule status`, DLQ
+  truncation, `Client.workflow(cancel_ttl_ms=…)` and `DeadLetterScan`
+  ([configuration](configuration.md), [CLI](cli.md), [API](api.md)).
+- **Guides**: workflow failure modes after F4-01 and F4-16, the cron
+  positive list in the scheduling guide, DLQ truncation in the
+  dead-letter guide.
+
 ## [0.12.4] — 2026-10-18
 
 0.12.4 is 0.12.4rc1 without code changes. Read
