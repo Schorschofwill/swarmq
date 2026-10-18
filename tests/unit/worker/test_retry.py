@@ -687,7 +687,9 @@ async def test_dead_letter_of_a_step_that_already_succeeded_does_not_fail_its_wo
     """Plan 0.12.0, MR 3 (BZ-13, Schutz): ein spaetes Duplikat eines
     erfolgreich erledigten Schritts (etwa am Zustelllimit) kippt den
     weiterlaufenden Workflow nicht -- auch nicht ueber das eigene
-    Fehlerergebnis, das der Dead-Letter-Pfad speichert."""
+    Fehlerergebnis, das der Dead-Letter-Pfad speichert. Seit F4-01 (U14,
+    KD6) holt der Pfad den Advance nach und bestaetigt ohne DLQ-Kopie; das
+    Erfolgsergebnis bleibt."""
     from swarmq.cancellation import build_result_dict
     from swarmq.serialization import encode_result
 
@@ -715,10 +717,35 @@ async def test_dead_letter_of_a_step_that_already_succeeded_does_not_fail_its_wo
     backend.get_result = AsyncMock(side_effect=get)
     msg = make_message(_default_payload(name="dlq-task"), headers={HEADER_WORKFLOW_ID: _WF_ID})
 
-    await handler.dead_letter(msg, _ctx(), "WorkerHungError: delivered 19 times", "WorkerHungError")
+    worker._workflow_advancer.advance = AsyncMock()
+
+    assert await handler.dead_letter(msg, _ctx(), "WorkerHungError: delivered 19 times", "WorkerHungError") is False
 
     worker._workflow_advancer.fail.assert_not_awaited()
+    worker._workflow_advancer.advance.assert_awaited_once()
+    assert worker._workflow_advancer.advance.await_args.args[3] == "ok"
+    broker.dead_letter.assert_not_awaited()
+    broker.ack.assert_awaited_once_with(msg)
+    backend.store_result.assert_not_awaited()
+
+
+async def test_dead_letter_of_a_simple_task_stores_its_error_result_over_a_stored_success(broker, backend, config):
+    """F4-01 (U14): der Schutz gilt nur fuer Workflow-Schritte; ein einfacher
+    Task folgt weiter E-031 (Fehlerergebnis, DLQ-Kopie)."""
+    from swarmq.cancellation import build_result_dict
+    from swarmq.serialization import decode_result, encode_result
+
+    handler, _worker = _handler(broker, backend, config)
+    success = build_result_dict(
+        task_id="abc-123", queue="default", task_name="dlq-task", is_error=False, is_cancelled=False, result="ok"
+    )
+    backend.get_result = AsyncMock(return_value=encode_result(success))
+    msg = make_message(_default_payload(name="dlq-task"))
+
+    assert await handler.dead_letter(msg, _ctx(), "boom", "RuntimeError") is True
+
     broker.dead_letter.assert_awaited_once()
+    assert decode_result(backend.store_result.await_args.args[1])["is_error"] is True
 
 
 @pytest.mark.timeout(5)

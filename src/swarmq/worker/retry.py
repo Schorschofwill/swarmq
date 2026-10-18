@@ -39,13 +39,21 @@ from swarmq.task import DeliveryMode
 from swarmq.worker.compute.pool import SlotUnavailable
 from swarmq.worker.error_info import error_class_of, gate_error_class
 from swarmq.worker.execution import ExecutionResult
-from swarmq.worker.gates import GateContext, GateDeps, dead_letter_copy, redeliver_in_place, republish_headers
+from swarmq.worker.gates import (
+    GateContext,
+    GateDeps,
+    StepDone,
+    dead_letter_copy,
+    redeliver_in_place,
+    republish_headers,
+)
 from swarmq.worker.gates.execution_guard import retry_count_of
 from swarmq.worker.outcome import DeliveryOutcome, Redelivered
 from swarmq.worker.terminal import fail_workflow_step
 
 if TYPE_CHECKING:
     from swarmq.middleware import MessageContext, MiddlewareChain
+    from swarmq.task import TaskInfo
 
 logger = get_logger(__name__)
 
@@ -213,10 +221,11 @@ class RetryHandler:
         *,
         error_class: str | None = None,
         redeliver_with: Callable[[BaseException], Awaitable[None]] | None = None,
-    ) -> bool:
+    ) -> bool | StepDone:
         """Workflow der Zustellung fehlmarkieren (BZ-13, ``GateDeps.fail_workflow``).
         ``False``: voruebergehend gescheitert und neu zugestellt -- nur bei
         *may_redeliver* und AT_LEAST_ONCE (bzw. unregistriertem Task);
+        ``StepDone``: Erfolg schon gespeichert, Advance nachgeholt (F4-01);
         *redeliver_with* siehe ``fail_workflow_step``."""
         try:
             task_info = self._deps.registry.get(ctx.task_name).task_info
@@ -250,8 +259,12 @@ class RetryHandler:
         """Store error result in backend, dead-letter, and ack the original.
 
         ``True``, wenn die DLQ-Kopie liegt (auch bei ``SettleFailedAfterPublish``);
-        ``False``, wenn die Zustellung stattdessen neu zugestellt wurde oder der
-        DLX-Fallback des Aufrufers lief (Plan 0.12.0, MR 11).
+        ``False``, wenn die Zustellung stattdessen neu zugestellt wurde, der
+        DLX-Fallback des Aufrufers lief (Plan 0.12.0, MR 11) oder ein schon
+        erfolgreicher Workflow-Schritt nach nachgeholtem Advance bestaetigt
+        wurde (F4-01, KD6: ohne Kopie und ``TASK_DLQ``, Freigabe inline wie
+        nach der Kopie). Ueber einem gespeicherten Erfolg entsteht nie ein
+        Fehlerergebnis.
 
         ``error_type`` ist der Klassenname der ausloesenden Ausnahme (R17):
         ``task_sent_to_dlq`` traegt damit dasselbe Fehlerschema wie
@@ -289,32 +302,22 @@ class RetryHandler:
         # nichts zurueckzuhalten. Vor dem Speichern des Fehlerergebnisses:
         # die Markierung prueft, ob der Schritt schon erfolgreich erledigt
         # ist (MR 3, BZ-13), und saehe sonst das eigene Fehlerergebnis.
-        if not await self.fail_workflow(delivery, ctx, error_message, may_redeliver, error_class=error_class):
+        marked = await self.fail_workflow(delivery, ctx, error_message, may_redeliver, error_class=error_class)
+        if marked is False:
+            return False
+        if marked is StepDone.ACK:
+            # F4-01 (E-040, KD6): der Erfolg ist gespeichert und der Advance
+            # nachgeholt -- bestaetigen ohne DLQ-Kopie und ohne ``TASK_DLQ``,
+            # das Unique-Flag wie nach einer DLQ-Kopie freigeben.
+            await deps.broker.ack(delivery)
+            await deps.maybe_release_unique(delivery, ctx, task_info_for_release)
             return False
 
-        # Store error result so callers of get_result() get a response
-        result_data = build_error_result_dict(
-            task_id=task_id, queue=queue, task_name=task_name, error_message=error_message, error_class=error_class
-        )
-        try:
-            result_bytes = encode_result(result_data)
-            # Wie jedes Ergebnis des Tasks: ``task_info.result_ttl`` vor der
-            # Konfiguration (Plan 2026-10-08-1541, U9).
-            task_ttl = task_info_for_release.result_ttl if task_info_for_release is not None else None
-            # Anders als der Erfolgspfad: kein FIRE_AND_FORGET-Zweig, und 0
-            # faellt hier auf DEFAULT_RESULT_TTL_S statt "nicht speichern".
-            result_ttl = (
-                resolve_result_ttl(task_ttl, deps.config.result_ttl, fire_and_forget=False) or DEFAULT_RESULT_TTL_S
-            )
-            await deps.backend.store_result(
-                task_id, result_bytes, result_ttl * 1000, op_timeout=deps.config.backend_op_timeout
-            )
-            try:
-                await deps.backend.notify_result(task_id)
-            except Exception as exc:  # noqa: BLE001 - Benachrichtigung best effort, wird geloggt
-                logger.warning("publish_notification_failed", **_error_fields(exc), task_id=task_id)
-        except Exception as store_exc:  # noqa: BLE001 - Ergebnis-Speicher best effort, wird geloggt
-            logger.warning("dlq_result_store_failed", **_error_fields(store_exc))
+        # Store error result so callers of get_result() get a response --
+        # nie ueber einem gespeicherten Erfolg (F4-01, E-040: am Zustelllimit
+        # scheiterte der letzte Advance, die DLQ-Kopie folgt ohne Fehlerergebnis).
+        if marked is not StepDone.DEAD_LETTER:
+            await self._store_error_result(ctx, error_message, error_class, task_info_for_release)
 
         # R3.5 Unit 11: preserve all inbound headers so a message that
         # reached DLQ via retry-exhaustion still carries its original
@@ -358,3 +361,36 @@ class RetryHandler:
         if placed or on_publish_failure is not None:
             logger.error("task_sent_to_dlq", error_type=error_type, error=error_message)
         return placed
+
+    async def _store_error_result(
+        self, ctx: GateContext, error_message: str, error_class: str | None, task_info: TaskInfo | None
+    ) -> None:
+        """Fehlerergebnis des Dead-Letters speichern (E-031), best effort."""
+        deps = self._deps
+        task_id = ctx.task_id
+        result_data = build_error_result_dict(
+            task_id=task_id,
+            queue=ctx.queue,
+            task_name=ctx.task_name,
+            error_message=error_message,
+            error_class=error_class,
+        )
+        try:
+            result_bytes = encode_result(result_data)
+            # Wie jedes Ergebnis des Tasks: ``task_info.result_ttl`` vor der
+            # Konfiguration (Plan 2026-10-08-1541, U9).
+            task_ttl = task_info.result_ttl if task_info is not None else None
+            # Anders als der Erfolgspfad: kein FIRE_AND_FORGET-Zweig, und 0
+            # faellt hier auf DEFAULT_RESULT_TTL_S statt "nicht speichern".
+            result_ttl = (
+                resolve_result_ttl(task_ttl, deps.config.result_ttl, fire_and_forget=False) or DEFAULT_RESULT_TTL_S
+            )
+            await deps.backend.store_result(
+                task_id, result_bytes, result_ttl * 1000, op_timeout=deps.config.backend_op_timeout
+            )
+            try:
+                await deps.backend.notify_result(task_id)
+            except Exception as exc:  # noqa: BLE001 - Benachrichtigung best effort, wird geloggt
+                logger.warning("publish_notification_failed", **_error_fields(exc), task_id=task_id)
+        except Exception as store_exc:  # noqa: BLE001 - Ergebnis-Speicher best effort, wird geloggt
+            logger.warning("dlq_result_store_failed", **_error_fields(store_exc))

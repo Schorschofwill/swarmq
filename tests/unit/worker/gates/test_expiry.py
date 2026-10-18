@@ -256,7 +256,50 @@ class TestExpiredWorkflowStep:
     Test-Liste:
     - [x] Markierung scheitert voruebergehend (Valkey weg) -> neu zugestellt,
           keine DLQ, kein ``TASK_EXPIRED`` (das Zustelllimit begrenzt das)
+    - [x] F4-01 (U14): Erfolg schon gespeichert -> Advance nachgeholt, Ack
+          ohne DLQ-Kopie, kein Fehlerergebnis, kein ``TASK_EXPIRED``,
+          Freigabe wie nach der DLQ-Kopie (``release_only``)
+    - [x] F4-01: ``StepDone.DEAD_LETTER`` -> DLQ-Kopie ohne Fehlerergebnis
     """
+
+    _WF_ID = "01890a5d-ac96-774b-bcce-b302099a8057"
+
+    def _step(self, w: Worker) -> MagicMock:
+        from swarmq.headers import HEADER_WORKFLOW_ID, HEADER_WORKFLOW_STEP
+
+        msg = _expiry_message(int(time.time()) - 120)
+        msg.headers[HEADER_WORKFLOW_ID] = self._WF_ID
+        msg.headers[HEADER_WORKFLOW_STEP] = "/1"
+        return msg
+
+    async def test_stored_success_catches_up_the_advance_and_acks_without_dead_letter(self):
+        from swarmq.cancellation import build_result_dict
+        from swarmq.exceptions import TaskNotFoundError
+        from swarmq.serialization import encode_result
+
+        w = _make_worker()
+        as_mock(w._registry).get = MagicMock(side_effect=TaskNotFoundError("t"))
+        success = build_result_dict(
+            task_id="id", queue="q", task_name="t", is_error=False, is_cancelled=False, result=7
+        )
+        as_mock(w._backend).get_result = AsyncMock(return_value=encode_result(success))
+        w._workflow_advancer = MagicMock(advance=AsyncMock(), fail=AsyncMock())
+        expired: list[dict[str, Any]] = []
+
+        @w._signal_dispatcher.on_signal(Signal.TASK_EXPIRED)
+        async def _cap(**kw):
+            expired.append(kw)
+
+        msg = self._step(w)
+        handled = await _apply(w, msg, TaskInfo(name="t", queues=["q"], max_age=60), task_id="id")
+
+        assert handled == Terminal.release_only()
+        w._workflow_advancer.advance.assert_awaited_once_with(self._WF_ID, "/1", "id", 7)
+        w._workflow_advancer.fail.assert_not_awaited()
+        as_mock(w._broker).ack.assert_awaited_once_with(msg)
+        as_mock(w._broker).dead_letter.assert_not_awaited()
+        as_mock(w._backend).store_result.assert_not_awaited()
+        assert expired == []
 
     async def test_fail_mark_outage_redelivers_instead_of_dead_lettering(self):
         from swarmq.exceptions import BackendConnectionError, TaskNotFoundError
@@ -284,6 +327,19 @@ class TestExpiredWorkflowStep:
         as_mock(w._broker).redeliver.assert_awaited_once_with(msg)
         as_mock(w._broker).dead_letter.assert_not_awaited()
         assert expired == []
+
+    async def test_unadvanced_success_dead_letters_without_an_error_result(self):
+        from swarmq.worker.gates import StepDone
+
+        w = _make_worker()
+        w._gate_deps.fail_workflow = AsyncMock(return_value=StepDone.DEAD_LETTER)
+        msg = self._step(w)
+
+        handled = await _apply(w, msg, TaskInfo(name="t", queues=["q"], max_age=60), task_id="id")
+
+        assert handled == Terminal.release_only()
+        as_mock(w._broker).dead_letter.assert_awaited_once()
+        as_mock(w._backend).store_result.assert_not_awaited()
 
 
 class TestExpiredUniqueRelease:

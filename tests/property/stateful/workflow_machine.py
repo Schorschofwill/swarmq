@@ -42,7 +42,11 @@ Invarianten (Quelle):
   Quelle: AE5, ``WorkflowAdvancer.mark_enqueued``.
 - W4 Terminales Scheitern ist synchron: Nach einem Fehlerergebnis oder
   Dead-Letter eines Schritts, der nicht neu zugestellt wurde, ist der
-  Workflow terminal. Quelle: E-040.
+  Workflow terminal. Quelle: E-040. Ausnahme (Nachtrag E-040, F4-01, KD6):
+  Ist das Erfolgsergebnis des Schritts schon gespeichert, holt der
+  Dead-Letter den Advance nach und bestätigt ohne DLQ-Kopie; das Modell
+  behandelt die Zustellung dann wie einen Erfolg, und das Erfolgsergebnis
+  bleibt unverändert.
 - W5 Unroutbarer Advance: Wirft ein Folge-Publish ``UnroutableMessage`` und
   wird die Zustellung bestätigt, ist der Workflow ``failed`` (Fehlertyp
   ``UnroutableMessage``); ein unroutbarer Start (``apply``) hinterlässt
@@ -85,14 +89,11 @@ Nicht nachgebildet: Ablauf von Ergebnissen und Zustand (TTL 24 h,
 ``sig()`` zur Laufzeit, die Zähler im Chord-Store (nur über ihre Wirkung, W1
 und W2, beobachtet; der Store hat keine Lese-API).
 
-Bekannte Befunde und Entscheidungen (Register
-``docs/befunde/fehlersuche-runde-4-2026-10.md``), ausgeklammert an der
-auslösenden Regel (KTD3, R8):
-
-- F4-01 (R4Z-02): Ein Dead-Letter nach gespeichertem, nicht
-  weitergeschaltetem Erfolg lässt den Workflow ``running``. In
-  ``deliver_pending`` wird ``dlq`` nach gespeichertem Erfolg zu ``ok``;
-  Nachweis ``test_dead_letter_after_unadvanced_success``.
+Bekannte Befunde (Register ``docs/befunde/fehlersuche-runde-4-2026-10.md``):
+keine Klammer mehr. F4-01 (R4Z-02) ist seit 0.13.0 behoben (Plan
+2026-10-17-2103, U14); die frühere Klammer ``dlq → ok`` in
+``deliver_pending`` ist entfallen, Nachweis
+``test_dead_letter_after_unadvanced_success``.
 """
 
 from __future__ import annotations
@@ -731,6 +732,9 @@ class WorkflowMachine(AsyncStateMachine[WorkflowEnv]):
 
     def _attempt(self, msg: Msg, kind: Kind, midway: Callable[[], Awaitable[object]] | None = None) -> None:
         status_before = self.status_of(msg.wf)
+        # W4, Nachtrag E-040 (F4-01, KD6): ein Dead-Letter nach gespeichertem
+        # Erfolg holt den Advance nach und bestätigt -- wie ein Erfolg.
+        succeeded_before = kind == "dlq" and self.succeeded(msg)
         unroutable = len(self.broker.unroutable)
         published = {wf.wf_id: dict(wf.publishes) for wf in self.wfs}
         verbs, gate = self.run(self.worker().process(msg, kind, midway))
@@ -742,18 +746,16 @@ class WorkflowMachine(AsyncStateMachine[WorkflowEnv]):
                 for path, count in wf.publishes.items():
                     if count > published.get(wf.wf_id, {}).get(path, 0):
                         wf.overlap_paths.add(path)
+        if succeeded_before:
+            assert self.succeeded(msg), f"{msg}: Dead-Letter überschrieb das Erfolgsergebnis (E-040)"
+            if verbs == ["ack"]:
+                kind = "ok"
         self._settle(msg, kind, verbs, gate, status_before)
 
     @precondition(lambda self: bool(self.pending))
     @rule(data=st.data(), kind=st.sampled_from(("ok", "ok", "ok", "ok", "ok", "ok", "error", "dlq")))
     def deliver_pending(self, data: st.DataObject, kind: Kind) -> None:
         msg = data.draw(st.sampled_from(self.pending), label="msg")
-        if kind == "dlq" and self.succeeded(msg):
-            # F4-01 (R4Z-02): ein Dead-Letter nach gespeichertem Erfolg
-            # markiert nicht (E-040, Bewusste Folgen) -- auch dann nicht, wenn
-            # der Advance dieses Erfolgs nie durchlief; der Workflow hängt.
-            # Nachweis ``test_dead_letter_after_unadvanced_success``.
-            kind = "ok"
         self.deliver(msg, kind)
 
     def redeliver(self, msg: Msg) -> None:

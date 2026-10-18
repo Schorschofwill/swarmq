@@ -61,9 +61,6 @@ def test_scenario_against_valkey(machine: WorkflowMachine, scenario: Scenario) -
 
 
 @pytest.mark.befund("F4-01")
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="F4-01: offen - Dead-Letter nach Erfolg ohne Advance laesst running"
-)
 def test_dead_letter_after_unadvanced_success_against_valkey(machine: WorkflowMachine) -> None:
     workflow_scenarios.dead_letter_after_unadvanced_success(machine)
 

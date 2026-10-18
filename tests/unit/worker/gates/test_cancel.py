@@ -27,6 +27,14 @@ Test-Liste FS-12 (Pre-Start-Cancel eines Workflow-Schritts, E-040):
       Kopie markiert erneut und speichert das Cancel-Ergebnis
 - [x] Workflow-Cancel-Pfad ruft ``fail`` nicht (FS-32)
 - [x] Schritt schon erfolgreich -> keine Markierung
+- [x] F4-01 (U14, KD6): Schritt schon erfolgreich -> Advance mit dem
+      gespeicherten Ergebnis nachgeholt, kein Cancel-Ergebnis ueber dem Erfolg,
+      kein ``TASK_CANCELLED``; Freigabe, Finalisierung und Ack wie im
+      Cancel-Pfad (``already_released``)
+- [x] F4-01: nachgeholter Advance scheitert voruebergehend -> Zurueckstellung
+      ueber die Delay-Queue wie die Markierung (FS-12)
+- [x] Review U14: Publish-Fehler des nachgeholten Advance
+      (``BrokerConnectionError``) -> ebenfalls ueber die Delay-Queue
 - [x] unbekannter Task als Schritt -> Markierung ohne Neuzustellung
 - [x] mit FS-13 im start-Modus: Reihenfolge ``fail -> store -> clear ->
       finalize -> release -> ack``; scheiterndes Ack -> Neuzustellung idempotent
@@ -815,6 +823,86 @@ class TestPreStartCancelFailsWorkflow:
         broker.ack.assert_awaited_once_with(msg)
         advancer.fail.assert_not_awaited()
         assert [e for e in swarmq_logs if e["event"] == "workflow_fail_skipped_step_done"]
+
+    async def test_step_that_already_succeeded_catches_up_its_advance_without_a_cancel_result(
+        self, worker, broker, backend
+    ):
+        backend.is_cancelled = AsyncMock(return_value=True)
+        backend.get_result = AsyncMock(
+            return_value=encode_result(
+                {"task_id": "step-1", "status": "success", "result": 3, "is_error": False, "is_cancelled": False}
+            )
+        )
+        backend.release_unique = AsyncMock(return_value=True)
+        advancer = self._advancer(worker)
+        cancelled: list[dict[str, Any]] = []
+
+        async def _cap(**kw: Any) -> None:
+            cancelled.append(kw)
+
+        worker._signal_dispatcher.connect(Signal.TASK_CANCELLED, _cap)
+        finalized: list[bool] = []
+
+        async def _finalize(_ctx: GateContext, terminal: bool) -> bool:
+            finalized.append(terminal)
+            return True
+
+        worker._gate_deps.finalize_schedfire = _finalize
+        msg = self._step_message(**{"x-swarmq-unique-hash": self.HASH})
+        ctx = GateContext(task_id="step-1", task_name="add", queue="default")
+
+        assert await worker._cancel_gate.apply(msg, ctx) == Terminal.already_released()
+
+        advancer.advance.assert_awaited_once_with(self.WF_ID, "", "step-1", 3)
+        advancer.fail.assert_not_awaited()
+        backend.store_result.assert_not_awaited()
+        assert cancelled == []
+        assert finalized == [True]
+        assert [c.args[:2] for c in backend.release_unique.await_args_list] == [(self.HASH, "step-1")]
+        broker.ack.assert_awaited_once_with(msg)
+
+    async def test_transient_catch_up_of_a_succeeded_step_defers_via_the_delay_queue(self, worker, broker, backend):
+        backend.is_cancelled = AsyncMock(return_value=True)
+        backend.get_result = AsyncMock(
+            return_value=encode_result(
+                {"task_id": "step-1", "status": "success", "result": 3, "is_error": False, "is_cancelled": False}
+            )
+        )
+        advancer = self._advancer(worker)
+        advancer.advance = AsyncMock(side_effect=WorkflowStateConflict("cas rounds lost"))
+        msg = self._step_message()
+        ctx = GateContext(task_id="step-1", task_name="add", queue="default")
+
+        assert await worker._cancel_gate.apply(msg, ctx) is Redelivered
+
+        broker.retry_later.assert_awaited_once()
+        broker.redeliver.assert_not_awaited()
+        broker.ack.assert_not_awaited()
+        backend.store_result.assert_not_awaited()
+        backend.clear_cancel_flag.assert_not_awaited()
+
+    async def test_broker_failure_in_the_catch_up_defers_via_the_delay_queue(self, worker, broker, backend):
+        """Review U14: ein Publish-Fehler des nachgeholten Advance (Nack ueber
+        dem Retry-Budget) heilt mit Wartezeit wie ein Backend-Ausfall -- kein
+        Requeue an derselben Stelle, das Cancel-Gate laeuft vor dem
+        Delivery-Count-Gate (FS-12)."""
+        backend.is_cancelled = AsyncMock(return_value=True)
+        backend.get_result = AsyncMock(
+            return_value=encode_result(
+                {"task_id": "step-1", "status": "success", "result": 3, "is_error": False, "is_cancelled": False}
+            )
+        )
+        advancer = self._advancer(worker)
+        advancer.advance = AsyncMock(side_effect=BrokerConnectionError("publisher confirm nack"))
+        msg = self._step_message()
+        ctx = GateContext(task_id="step-1", task_name="add", queue="default")
+
+        assert await worker._cancel_gate.apply(msg, ctx) is Redelivered
+
+        broker.retry_later.assert_awaited_once()
+        broker.redeliver.assert_not_awaited()
+        broker.ack.assert_not_awaited()
+        backend.store_result.assert_not_awaited()
 
     async def test_unknown_task_step_is_marked_without_redelivery(self, worker, broker, backend):
         backend.is_cancelled = AsyncMock(return_value=True)

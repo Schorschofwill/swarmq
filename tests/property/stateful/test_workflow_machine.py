@@ -3,9 +3,10 @@
 Invarianten und erlaubte Abweichungen stehen im Docstring von
 ``tests/property/stateful/workflow_machine.py``. Profil ``quick`` (100
 Beispiele) mit 30 Schritten je Beispiel; die deterministischen Abläufe aus
-``workflow_scenarios.py`` halten die Testszenarien der Einheit fest. Der
-Nachweis zu F4-01 (R4Z-02) läuft als ``xfail(strict=True)``; der zu F4-16
-(R4Z-01, E-073) ist seit 0.13.0 behoben und grün, R4Z-03 (NICHT HALTBAR) hat keinen Nachweis (Register ``docs/befunde/fehlersuche-runde-4-2026-10.md``).
+``workflow_scenarios.py`` halten die Testszenarien der Einheit fest. Die
+Nachweise zu F4-01 (R4Z-02) und F4-16 (R4Z-01, E-073) sind seit 0.13.0
+behoben und grün, R4Z-03 (NICHT HALTBAR) hat keinen Nachweis (Register
+``docs/befunde/fehlersuche-runde-4-2026-10.md``).
 """
 
 from __future__ import annotations
@@ -54,9 +55,6 @@ def test_wrong_reference_is_caught(open_env: OpenEnv) -> None:
 
 
 @pytest.mark.befund("F4-01")
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="F4-01: offen - Dead-Letter nach Erfolg ohne Advance laesst running"
-)
 def test_dead_letter_after_unadvanced_success(machine: WorkflowMachine) -> None:
     workflow_scenarios.dead_letter_after_unadvanced_success(machine)
 

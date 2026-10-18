@@ -209,17 +209,18 @@ def reference_off_is_caught(machine: WorkflowMachine) -> None:
         machine.verify()
 
 
-# -- Nachweise der Befunde (xfail strict, scheitern am heutigen Stand) --------
+# -- Nachweise der Befunde (seit 0.13.0 behoben) ------------------------------
 
 
 def dead_letter_after_unadvanced_success(machine: WorkflowMachine) -> None:
     """F4-01 (R4Z-02): Der Schritt speichert sein Erfolgsergebnis, der Advance
     scheitert vorübergehend (Neuzustellung). Die Neuzustellung endet im
-    Dead-Letter: ``fail_workflow_step`` sieht das alte Erfolgsergebnis und
-    markiert nicht (E-040, Bewusste Folgen), ein Advance läuft nie mehr; der
-    Workflow bleibt ``running`` bis zur TTL. Erwartet (E-040: „nie still in
-    den ``get()``-Timeout“): ein terminaler Status. Deterministischer
-    Nachweis ohne Maschine:
+    Dead-Letter. Bis 0.12.x sah ``fail_workflow_step`` das alte
+    Erfolgsergebnis und markierte nicht (E-040, Bewusste Folgen), ein Advance
+    lief nie mehr; der Workflow blieb ``running`` bis zur TTL. Seit 0.13.0
+    (U14, KD6) holt der Dead-Letter den Advance mit dem gespeicherten
+    Ergebnis nach und bestätigt ohne DLQ-Kopie: ``completed`` mit dem
+    Referenz-Ergebnis. Deterministischer Nachweis ohne Maschine:
     ``tests/unit/test_befund_f4_01_workflow_dead_letter_after_unadvanced_success.py``."""
     wf = machine.start(("s", "a1"))
     machine.backend_write_outage()
@@ -227,6 +228,8 @@ def dead_letter_after_unadvanced_success(machine: WorkflowMachine) -> None:
     machine.deliver(_at(machine, wf, ""), "dlq")
     assert not machine.pending
     assert machine.status_of(wf) in TERMINAL
+    assert machine.status_of(wf) == STATUS_COMPLETED
+    machine.verify()
 
 
 def unmarked_member_completing_first_completes_the_workflow(machine: WorkflowMachine) -> None:

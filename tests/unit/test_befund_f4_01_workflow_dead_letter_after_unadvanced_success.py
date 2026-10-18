@@ -25,14 +25,22 @@ nur einen terminalen Status (``completed`` über einen Neu-Advance oder
 ``failed``), kein Fail-Mark; er widerspricht damit nicht
 ``test_terminal.py::test_step_without_a_success_result_fails_its_workflow`` (E-040).
 
+Behoben in 0.13.0 (Plan 2026-10-17-2103, U14, KTD8, KD6): ``fail_workflow_step``
+holt im Schutzfall den Advance mit dem gespeicherten Ergebnis nach; gelingt
+er, bestätigt der Dead-Letter-Pfad die Zustellung ohne DLQ-Kopie und ohne
+``TASK_DLQ``, das Erfolgsergebnis bleibt.
+
 Testliste:
-# [x] Erfolg gespeichert, Advance scheitert (Neuzustellung), Neuzustellung im Dead-Letter -> Workflow terminal
+# [x] Erfolg gespeichert, Advance scheitert (Neuzustellung), Neuzustellung im
+#     Dead-Letter -> nachgeholter Advance, Ack ohne DLQ-Kopie und ohne
+#     ``TASK_DLQ``, Workflow ``completed``, Erfolgsergebnis unverändert
 """
 
 from __future__ import annotations
 
 import inspect
 from collections.abc import AsyncIterator, Mapping
+from dataclasses import dataclass, field
 from typing import Any, cast, override
 
 import pytest
@@ -44,7 +52,7 @@ from swarmq.exceptions import BackendConnectionError
 from swarmq.middleware import MiddlewareChain
 from swarmq.registry import TaskRegistry
 from swarmq.serialization import decode_json, decode_result
-from swarmq.signals import SignalDispatcher
+from swarmq.signals import Signal, SignalDispatcher
 from swarmq.task import Task, TaskInfo
 from swarmq.worker.decode import valid_workflow_id
 from swarmq.worker.execution import ExecutionResult
@@ -55,6 +63,7 @@ from swarmq.workflow_orchestration import (
     STATUS_CANCELLED,
     STATUS_COMPLETED,
     STATUS_FAILED,
+    STATUS_RUNNING,
     WorkflowAdvancer,
     WorkflowStepEnqueuer,
     workflow_step_task_id,
@@ -148,15 +157,43 @@ async def backend() -> AsyncIterator[InMemoryBackend]:
     await impl.close()
 
 
-@pytest.mark.befund("F4-01")
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="F4-01: offen - Dead-Letter nach gespeichertem, nicht weitergeschaltetem Erfolg laesst den Workflow running",
-)
-async def test_dead_letter_after_an_unadvanced_success_does_not_leave_the_workflow_running(
-    backend: InMemoryBackend,
-) -> None:
+@dataclass
+class _Scene:
+    """Ein Workflow aus einem Schritt; die erste Zustellung hat ihr
+    Erfolgsergebnis gespeichert, ihr Advance scheiterte vorübergehend
+    (Neuzustellung)."""
+
+    backend: InMemoryBackend
+    view: _CasOutage
+    broker: _RecordingBroker
+    retry: RetryHandler
+    ctx: GateContext
+    workflow_id: str
+    body: bytes
+    headers: dict[str, Any]
+    dlq_signals: list[dict[str, Any]] = field(default_factory=list)
+
+    def delivery(self) -> Delivery:
+        return Delivery(body=self.body, headers=dict(self.headers), queue=_QUEUE, handle=object())
+
+    async def dead_letter(self, *, may_redeliver: bool = True) -> bool:
+        return await self.retry.dead_letter(
+            self.delivery(), self.ctx, "boom", "RuntimeError", may_redeliver=may_redeliver
+        )
+
+    async def status(self) -> str:
+        raw = await self.backend.get_workflow_state(self.workflow_id)
+        assert raw is not None
+        return str(decode_json(raw)["status"])
+
+    async def stored_result(self) -> dict[str, Any]:
+        raw = await self.backend.get_result(self.ctx.task_id)
+        assert raw is not None
+        return cast("dict[str, Any]", decode_result(raw))
+
+
+@pytest.fixture
+async def scene(backend: InMemoryBackend) -> AsyncIterator[_Scene]:
     clock = FakeClock()
     broker = _RecordingBroker(clock)
     await broker.connect()
@@ -208,22 +245,65 @@ async def test_dead_letter_after_an_unadvanced_success_does_not_leave_the_workfl
         kwargs={},
         workflow_id=handle.workflow_id,
     )
+    result = _Scene(backend, view, broker, retry, ctx, handle.workflow_id, body, dict(headers))
+
+    async def _on_dlq(**kwargs: Any) -> None:
+        result.dlq_signals.append(kwargs)
+
+    signals.connect(Signal.TASK_DLQ, _on_dlq)
 
     # Erste Zustellung: Erfolg gespeichert, der Advance scheitert vorübergehend.
     view.outages = 1
     success = ExecutionResult(
         result_value=["a1"], is_error=False, is_cancelled=False, error_message="", task_exception=None
     )
-    await tail.finish(Delivery(body=body, headers=dict(headers), queue=_QUEUE, handle=object()), ctx, success)
+    await tail.finish(result.delivery(), ctx, success)
     assert broker.verbs == ["redeliver"]
+    broker.verbs.clear()
+    yield result
+    await broker.close()
 
+
+@pytest.mark.befund("F4-01")
+async def test_dead_letter_after_an_unadvanced_success_does_not_leave_the_workflow_running(scene: _Scene) -> None:
     # Die Neuzustellung endet im Dead-Letter.
-    await retry.dead_letter(
-        Delivery(body=body, headers=dict(headers), queue=_QUEUE, handle=object()), ctx, "boom", "RuntimeError"
-    )
-    assert broker.verbs[1:] == ["dead_letter"]
+    await scene.dead_letter()
 
-    raw = await backend.get_workflow_state(handle.workflow_id)
-    assert raw is not None
-    status = decode_json(raw)["status"]
+    status = await scene.status()
     assert status in _TERMINAL, f"Workflow nach dem Dead-Letter {status!r} (E-040: nie still in den get()-Timeout)"
+    assert status == STATUS_COMPLETED
+    # KD6: Ack ohne DLQ-Kopie und ohne ``TASK_DLQ``; das Erfolgsergebnis bleibt.
+    assert scene.broker.verbs == ["ack"]
+    assert scene.dlq_signals == []
+    assert (await scene.stored_result())["is_error"] is False
+
+
+@pytest.mark.entscheidung("E-040")
+async def test_at_the_limit_a_transient_last_advance_dead_letters_without_overwriting_the_success(
+    scene: _Scene,
+) -> None:
+    """Nachtrag E-040, Restfall: am Zustelllimit scheitert auch der letzte
+    Advance vorübergehend. Die Zustellung geht als DLQ-Kopie, das
+    Erfolgsergebnis bleibt, der Workflow bleibt ``running``."""
+    scene.view.outages = 1
+
+    assert await scene.dead_letter(may_redeliver=False) is True
+
+    assert scene.broker.verbs == ["dead_letter"]
+    assert len(scene.dlq_signals) == 1
+    assert (await scene.stored_result())["is_error"] is False
+    assert await scene.status() == STATUS_RUNNING
+
+
+@pytest.mark.entscheidung("E-040")
+async def test_at_the_limit_the_last_advance_completes_the_workflow_and_keeps_the_success(scene: _Scene) -> None:
+    """Nachtrag E-040 (2026-10-17): auch am Zustelllimit weiterschalten; das
+    Erfolgsergebnis bleibt und wird nie mit einem Fehlerergebnis
+    überschrieben. KD6: Ack ohne DLQ-Kopie und ohne ``TASK_DLQ``."""
+    assert await scene.dead_letter(may_redeliver=False) is False
+
+    assert await scene.status() == STATUS_COMPLETED
+    assert scene.broker.verbs == ["ack"]
+    assert scene.dlq_signals == []
+    stored = await scene.stored_result()
+    assert (stored["is_error"], stored["result"]) == (False, ["a1"])
