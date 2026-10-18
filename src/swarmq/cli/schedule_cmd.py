@@ -145,9 +145,12 @@ def _resolve_fire_time(args: argparse.Namespace) -> tuple[str | None, int]:
         # (no --tz before 0.10.1).
         from croniter import CroniterBadCronError
 
+        from swarmq.cron_syntax import validate_cron_syntax
         from swarmq.scheduler.cron_time import next_fire_ms
 
         try:
+            # E-065 (PF-15): dieselbe Positivliste nach crontab(5) wie TaskInfo.
+            validate_cron_syntax(cron)
             fire_ts_ms = next_fire_ms(cron, None, int(time.time() * 1000))
         except (CroniterBadCronError, ValueError) as exc:
             raise ConfigurationError(f"invalid cron expression: {cron!r} ({exc})") from exc

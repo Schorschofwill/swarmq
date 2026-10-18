@@ -34,6 +34,13 @@ eine gewählte Meldung."""
 # 15. Bestandsdefinition ohne ``unique_for``, Task mit ``unique_for`` →
 #     übernommen (Upgrade von 0.11).
 # 16. Geändertes ``unique_until`` bei gesetztem ``unique_for`` → übernommen.
+#
+# Test list (Fix-Plan 0.13, U15, KTD9, E-065): Cron-Positivliste im Leader.
+# 17. Meldung mit 6 Feldern → ``scheduler_cron_report_invalid``, nicht übernommen.
+# 18. Dieselbe ungültige Meldung in drei Sync-Zyklen → ein Log (Drossel je Name).
+# 19. Nach einem Leaderwechsel loggt dieselbe Meldung wieder einmal.
+# 20. Mischbetrieb: adoptierte 6-Feld-Definition feuert weiter, eine Änderung
+#     daran wird abgelehnt.
 
 from __future__ import annotations
 
@@ -46,12 +53,13 @@ import pytest
 
 from swarmq.config import SwarmQConfig
 from swarmq.exceptions import BackendConnectionError
+from swarmq.locking import SCHEDULER_LOCK_NAME
 from swarmq.scheduler import (
     ScheduleDefinition,
     ScheduleStore,
 )
 from swarmq.scheduler import sync as sync_module
-from swarmq.scheduler.reports import static_definitions
+from swarmq.scheduler.reports import cron_fingerprint, static_definitions
 from swarmq.task import Task, TaskInfo
 from tests.support.inmemory import InMemoryBackend
 from tests.support.inmemory.clock import FakeClock
@@ -710,3 +718,117 @@ class TestSyncInsertOrUpdate:
         stored, score = await self._stored(memory)
         assert (stored.source, stored.timezone, score) == ("cli", None, _LATER_MS)
         assert [e for e in swarmq_logs if e["event"] == "scheduler_static_cron_shadowed_by_cli"]
+
+
+class TestCronSyntaxInLeaderSync:
+    """U15 (KTD9, E-065): der Leader prüft gemeldete Crons gegen die
+    Positivliste nach crontab(5), wie ``TaskInfo``."""
+
+    @pytest.fixture(autouse=True)
+    def _fixed_clock(self, monkeypatch):
+        fake_time = SimpleNamespace(time=lambda: _NOW_MS / 1000)
+        monkeypatch.setattr("swarmq.scheduler.sync.time", fake_time)
+
+    @pytest.fixture
+    def clock(self):
+        return FakeClock(_NOW_MS)
+
+    @pytest.fixture
+    async def memory(self, clock):
+        be = InMemoryBackend(clock)
+        await be.connect()
+        return be
+
+    @pytest.fixture
+    def leader(self, memory, broker, config, lock_manager, signal_dispatcher):
+        return _make_loop(memory, broker, config, lock_manager, ScheduleStore(memory), signal_dispatcher)
+
+    @staticmethod
+    def _static(**fields: Any) -> ScheduleDefinition:
+        base: dict[str, Any] = {
+            "schedule_name": "nightly",
+            "task_name": "nightly",
+            "args": (),
+            "kwargs": {},
+            "queue": "default",
+            "cron": "0 1 * * *",
+            "fire_ts_ms": None,
+            "source": "static",
+        }
+        base.update(fields)
+        return ScheduleDefinition(**base)
+
+    @staticmethod
+    async def _report(memory, definition: ScheduleDefinition) -> None:
+        await memory.schedules.report_cron(
+            definition.schedule_name,
+            cron_fingerprint(definition),
+            msgspec.json.encode(definition),
+            live_window_ms=180_000,
+        )
+
+    @pytest.mark.entscheidung("E-065")
+    async def test_six_field_report_is_not_adopted_and_logged(self, memory, leader, swarmq_logs):
+        await self._report(memory, self._static(cron="0 0 9 * * *"))
+
+        await leader.adopt_reported_crons()
+
+        assert await memory.schedules.get("nightly") is None
+        [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_cron_report_invalid"]
+        assert entry["schedule_name"] == "nightly"
+        assert "got 6 fields" in entry["error"]
+
+    @pytest.mark.entscheidung("E-065")
+    async def test_same_invalid_report_logs_once_over_three_sync_cycles(self, memory, leader, swarmq_logs):
+        await self._report(memory, self._static(cron="0 0 9 * * *"))
+
+        for _ in range(3):
+            await leader.adopt_reported_crons()
+
+        assert [e["schedule_name"] for e in swarmq_logs if e["event"] == "scheduler_cron_report_invalid"] == ["nightly"]
+
+    @pytest.mark.entscheidung("E-065")
+    async def test_invalid_report_logs_again_after_a_leader_change(self, memory, leader, swarmq_logs):
+        await self._report(memory, self._static(cron="0 0 9 * * *"))
+        await leader.adopt_reported_crons()
+
+        leader._begin_term(_NOW_MS)  # neue Amtszeit, wie beim Erwerb der Leader-Rolle
+        await leader.adopt_reported_crons()
+        await leader.adopt_reported_crons()
+
+        assert len([e for e in swarmq_logs if e["event"] == "scheduler_cron_report_invalid"]) == 2
+
+    async def test_another_invalid_report_under_the_same_name_is_logged(self, memory, leader, clock, swarmq_logs):
+        await self._report(memory, self._static(cron="0 0 9 * * *"))
+        await leader.adopt_reported_crons()
+
+        await clock.advance(1)
+        await self._report(memory, self._static(cron="R * * * *"))
+        await leader.adopt_reported_crons()
+
+        errors = [e["error"] for e in swarmq_logs if e["event"] == "scheduler_cron_report_invalid"]
+        assert len(errors) == 2
+        assert "random field 'R'" in errors[1]
+
+    @pytest.mark.entscheidung("E-065")
+    async def test_adopted_six_field_definition_keeps_firing_and_a_change_is_rejected(
+        self, memory, leader, broker, swarmq_logs
+    ):
+        """Mischbetrieb (KTD9): ein 0.12-Leader hat ``0 0 9 * * *`` übernommen;
+        der 0.13-Leader feuert die gespeicherte Definition weiter, übernimmt
+        aber keine geänderte 6-Feld-Meldung."""
+        adopted = self._static(cron="0 0 9 * * *", fire_ts_ms=_EARLIER_MS)
+        await memory.schedules.add("nightly", msgspec.json.encode(adopted), _EARLIER_MS)
+        await memory.locks.acquire(SCHEDULER_LOCK_NAME, owner="test-owner", ttl_ms=60_000, max_concurrency=1)
+        await self._report(memory, self._static(cron="0 0 10 * * *"))
+
+        await leader.adopt_reported_crons()
+        leader._state = "leader"
+        await leader._poll_tick()
+
+        raw = await memory.schedules.get("nightly")
+        assert msgspec.json.decode(raw, type=ScheduleDefinition).cron == "0 0 9 * * *"
+        assert broker.publish.await_count == 1
+        assert (await memory.schedules.fire_ts("nightly")) > _EARLIER_MS
+        [entry] = [e for e in swarmq_logs if e["event"] == "scheduler_cron_report_invalid"]
+        assert "got 6 fields" in entry["error"]

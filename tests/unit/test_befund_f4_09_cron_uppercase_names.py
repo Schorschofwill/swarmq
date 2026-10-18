@@ -17,6 +17,9 @@ crontab(5) zu Namen („case does not matter“), Kommentar ``task.py:34-36``
 Operatoren (``0 3 L * *``, ``0 3 15W * *``, ``0 3 * * 1#2``) und bleiben bei
 einer operatorgenauen Prüfung grün.
 
+Behoben mit der Positivliste ``swarmq.cron_syntax`` (Fix-Plan 0.13, U15):
+Namen werden tokenweise und ohne Rücksicht auf die Schreibweise erkannt.
+
 Testliste:
 # [x] 0 0 * * WED / Wed, 0 0 * JUL *, @HOURLY, @DAILY, @Weekly -> angenommen wie kleingeschrieben
 """
@@ -32,11 +35,6 @@ pytestmark = pytest.mark.timeout(5)
 
 @pytest.mark.entscheidung("E-065")
 @pytest.mark.befund("F4-09")
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="F4-09: offen - grossgeschriebene Standard-Namen mit L/W gelten als erweiterte Syntax",
-)
 @pytest.mark.parametrize("cron", ["* * * * WED", "0 0 * * Wed", "0 0 * JUL *", "@HOURLY", "@DAILY", "@Weekly"])
 def test_standard_names_are_accepted_in_any_case(cron: str) -> None:
     TaskInfo(name="f4_09_lower", queues=["default"], cron=cron.lower())  # Gegenprobe: klein angenommen
