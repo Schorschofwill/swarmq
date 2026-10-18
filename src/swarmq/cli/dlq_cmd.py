@@ -81,6 +81,13 @@ def _normalise_headers_for_json(
 _DLQ_NOT_FOUND_EXIT_CODE = 3
 
 
+def _hit_limit(result: tuple[Any, int], limit: int) -> bool:
+    """Ob das Lesen am Limit endete (F4-05, E-028): aus ``hit_limit`` des
+    Ergebnisses (``DeadLetterScan``), sonst Rückfall auf ``scanned >= limit``
+    für Implementierungen, die nur das Tupel liefern."""
+    return bool(getattr(result, "hit_limit", result[1] >= limit))
+
+
 class _DLQNotFound(Exception):
     """Sentinel for not-found lookups so main() can exit 3 cleanly.
 
@@ -93,10 +100,12 @@ class _DLQNotFound(Exception):
 async def _run_dlq_list(args: argparse.Namespace) -> None:
     broker = await _get_broker_factory()()
     try:
-        entries, scanned = await broker.list_dead_letters(
+        listed = await broker.list_dead_letters(
             args.queue,
             limit=args.limit,
         )
+        entries, scanned = listed
+        truncated = _hit_limit(listed, args.limit)
         if args.format == "json":
             for e in entries:
                 e["headers"] = _normalise_headers_for_json(e.get("headers") or {})
@@ -106,13 +115,13 @@ async def _run_dlq_list(args: argparse.Namespace) -> None:
                 "entries": entries,
                 "scanned": scanned,
                 "limit": args.limit,
-                "truncated": scanned >= args.limit,
+                "truncated": truncated,
                 "queue": args.queue,
             }
             sys.stdout.write(json.dumps(envelope, indent=2, default=str) + "\n")
         else:
             sys.stdout.write(_format_dlq_list_table(entries) + "\n")
-            if scanned >= args.limit:
+            if truncated:
                 sys.stdout.write(f"(truncated at --limit {args.limit}; raise --limit to see more)\n")
     finally:
         await broker.close()
@@ -121,13 +130,14 @@ async def _run_dlq_list(args: argparse.Namespace) -> None:
 async def _run_dlq_inspect(args: argparse.Namespace) -> None:
     broker = await _get_broker_factory()()
     try:
-        result, scanned = await broker.inspect_dead_letter(
+        inspected = await broker.inspect_dead_letter(
             args.queue,
             args.task_id,
             scan_limit=args.scan_limit,
         )
+        result, scanned = inspected
         if result is None:
-            scan_exhausted = scanned >= args.scan_limit
+            scan_exhausted = _hit_limit(inspected, args.scan_limit)
             if args.format == "json":
                 sys.stdout.write(
                     json.dumps(
@@ -191,10 +201,11 @@ async def _run_dlq_retry(args: argparse.Namespace) -> None:
     broker = await _get_broker_factory()()
     try:
         if args.all:
-            moved, scanned = await broker.retry_all_dead_letters(
+            moved_all = await broker.retry_all_dead_letters(
                 args.queue,
                 limit=args.limit,
             )
+            moved, scanned = moved_all
             skipped = scanned - moved
             if args.format == "json":
                 sys.stdout.write(
@@ -203,7 +214,7 @@ async def _run_dlq_retry(args: argparse.Namespace) -> None:
                             "moved": moved,
                             "scanned": scanned,
                             "skipped_malformed": skipped,
-                            "truncated": scanned >= args.limit,
+                            "truncated": _hit_limit(moved_all, args.limit),
                             "queue": args.queue,
                             "all": True,
                         }
@@ -217,11 +228,13 @@ async def _run_dlq_retry(args: argparse.Namespace) -> None:
                 sys.stdout.write(f"republished {moved} message(s) from {args.queue}.XQ to {args.queue}{suffix}\n")
             return
 
-        found, scanned = await broker.retry_dead_letter(
+        retried = await broker.retry_dead_letter(
             args.queue,
             args.task_id,
             scan_limit=args.scan_limit,
         )
+        found, scanned = retried
+        scan_exhausted = _hit_limit(retried, args.scan_limit)
         if args.format == "json":
             sys.stdout.write(
                 json.dumps(
@@ -231,7 +244,7 @@ async def _run_dlq_retry(args: argparse.Namespace) -> None:
                         "task_id": args.task_id,
                         "found": found,
                         "scanned": scanned,
-                        "scan_exhausted": scanned >= args.scan_limit,
+                        "scan_exhausted": scan_exhausted,
                     }
                 )
                 + "\n"
@@ -239,7 +252,7 @@ async def _run_dlq_retry(args: argparse.Namespace) -> None:
         elif found:
             sys.stdout.write(f"republished task {args.task_id!r} from {args.queue}.XQ to {args.queue}\n")
         else:
-            hint = " — scan hit --scan-limit; raise it to keep looking" if scanned >= args.scan_limit else ""
+            hint = " — scan hit --scan-limit; raise it to keep looking" if scan_exhausted else ""
             sys.stdout.write(f"task {args.task_id!r} not found in {args.queue}.XQ (scanned {scanned} messages){hint}\n")
         if not found:
             raise _DLQNotFound

@@ -1,4 +1,4 @@
-"""Nachweis F4-05: ``dlq list`` meldet „nicht gekürzt“ und ``dlq inspect``
+"""Nachweis F4-05 (behoben in 0.13.0): ``dlq list`` meldete „nicht gekürzt“ und ``dlq inspect``
 „nicht gefunden“ ohne Scan-Limit-Hinweis, obwohl das Lesen am Limit stoppte.
 
 Register: docs/befunde/fehlersuche-runde-4-2026-10.md (F4-05; Verdacht
@@ -70,11 +70,6 @@ async def dlq(rabbitmq_url: str, monkeypatch: pytest.MonkeyPatch) -> AsyncIterat
 
 @pytest.mark.entscheidung("E-028")
 @pytest.mark.befund("F4-05")
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="F4-05: offen - abgelaufene DLQ-Eintraege verbrauchen Lesungen, die Kuerzung wird nicht gemeldet",
-)
 async def test_list_reports_truncation_when_expired_entries_used_up_the_limit(
     dlq: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -87,11 +82,6 @@ async def test_list_reports_truncation_when_expired_entries_used_up_the_limit(
 
 @pytest.mark.entscheidung("E-028")
 @pytest.mark.befund("F4-05")
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="F4-05: offen - abgelaufene DLQ-Eintraege verbrauchen Lesungen, die Kuerzung wird nicht gemeldet",
-)
 async def test_inspect_reports_the_scan_limit_when_expired_entries_used_it_up(
     dlq: str, capsys: pytest.CaptureFixture[str]
 ) -> None:

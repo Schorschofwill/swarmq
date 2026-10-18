@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from swarmq.contracts import Broker, BrokerAdmin, Delivery, DeliveryCallback, PublishReceipt
+from swarmq.contracts.broker import DeadLetterScan
 from swarmq.exceptions import BrokerConnectionError
 from swarmq.headers import (
     HEADER_DEAD_LETTERED_AT,
@@ -189,7 +190,7 @@ class InMemoryBroker:
         summaries = [
             {"task_id": _task_id(d.body), "headers": dict(d.headers), "reason": d.reason} for d in letters[:limit]
         ]
-        return summaries, len(letters)
+        return DeadLetterScan(summaries, len(letters), hit_limit=len(letters) >= limit)
 
     async def inspect_dead_letter(
         self, queue: str, task_id: str, scan_limit: int = 1000
@@ -198,8 +199,8 @@ class InMemoryBroker:
         for d in letters:
             if _task_id(d.body) == task_id:
                 found = {"task_id": task_id, "body": d.body, "headers": dict(d.headers), "reason": d.reason}
-                return found, len(letters)
-        return None, len(letters)
+                return DeadLetterScan(found, len(letters), hit_limit=False)
+        return DeadLetterScan(None, len(letters), hit_limit=len(letters) >= scan_limit)
 
     async def retry_dead_letter(self, queue: str, task_id: str, scan_limit: int = 1000) -> tuple[bool, int]:
         letters = self._dead.get(queue, [])
@@ -207,16 +208,17 @@ class InMemoryBroker:
             if _task_id(d.body) == task_id:
                 letters.pop(index)
                 await self.publish(queue, d.body, _replay_headers(d.headers, d.body, self._clock.now_ms() // 1000))
-                return True, len(letters) + 1
-        return False, len(letters)
+                return DeadLetterScan(True, len(letters) + 1, hit_limit=False)
+        return DeadLetterScan(False, len(letters), hit_limit=len(letters) >= scan_limit)
 
     async def retry_all_dead_letters(self, queue: str, limit: int = 10_000) -> tuple[int, int]:
         letters = self._dead.get(queue, [])
+        hit_limit = len(letters) >= limit
         movable = [d for d in letters[:limit] if _task_id(d.body) is not None]
         for d in movable:
             letters.remove(d)
             await self.publish(queue, d.body, _replay_headers(d.headers, d.body, self._clock.now_ms() // 1000))
-        return len(movable), len(letters) + len(movable)
+        return DeadLetterScan(len(movable), len(letters) + len(movable), hit_limit=hit_limit)
 
     async def purge_dead_letters(self, queue: str) -> int:
         count = len(self._dead.get(queue, []))
