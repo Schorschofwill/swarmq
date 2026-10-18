@@ -32,6 +32,12 @@ MAX_DEADLINE_MS = 315_360_000_000
 MAX_DEADLINE_S = MAX_DEADLINE_MS // 1000
 #: ``concurrency`` wird ``prefetch_count`` in ``basic.qos``, ein AMQP-short (F3-38).
 MAX_CONCURRENCY = 65535
+#: Zählfelder, die als Queue-Argument an RabbitMQ gehen, sind AMQP-``long long``
+#: (E-063): RabbitMQ nimmt ``x-delivery-limit`` bis 2**63-1 an, 2**63 lässt
+#: schon pamqp beim Kodieren mit ``TypeError`` scheitern (Exit 1 statt 78).
+MAX_BROKER_COUNT = 2**63 - 1
+#: Zählfelder mit einer engeren Grenze als ``sys.float_info.max``.
+_COUNT_BOUNDS: dict[str, int] = {"delivery_limit": MAX_BROKER_COUNT}
 
 
 def valid_backend_connect_timeout(seconds: float) -> bool:
@@ -244,8 +250,9 @@ class ConfigValidation:
                 msg = f"{field_name} must be a finite number, got {value}"
                 raise ConfigurationError(msg)
             if field_name in self._COUNT_FIELDS:
-                if value > sys.float_info.max:
-                    msg = f"{field_name} must be at most {sys.float_info.max}, got {value}"
+                bound = _COUNT_BOUNDS.get(field_name, sys.float_info.max)
+                if value > bound:
+                    msg = f"{field_name} must be at most {bound}, got {value}"
                     raise ConfigurationError(msg)
             elif value > MAX_DEADLINE_S:
                 msg = f"{field_name} must be at most {MAX_DEADLINE_S} seconds, got {value}"

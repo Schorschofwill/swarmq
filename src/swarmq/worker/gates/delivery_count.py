@@ -46,13 +46,16 @@ REDELIVERY_LIMIT_ERROR_TYPE = RedeliveryLimitError.__name__
 
 
 def _count(headers: Mapping[str, Any], name: str) -> int | None:
-    """Zaehler-Header als Zahl; fehlend oder unlesbar -> ``None``."""
+    """Zaehler-Header als Zahl; fehlend oder unlesbar -> ``None``.
+
+    Unlesbar ist auch ``±inf`` (``OverflowError``, F4-07, E-051): es zählt
+    wie kein Header, die Nachricht läuft normal weiter."""
     raw = headers.get(name)
     if raw is None:
         return None
     try:
         return int(raw)
-    except TypeError, ValueError:
+    except TypeError, ValueError, OverflowError:
         return None
 
 

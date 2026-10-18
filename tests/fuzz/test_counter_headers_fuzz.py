@@ -28,15 +28,16 @@ weiterverarbeitet." Jede Ausnahme aus einem Leser oder Gate ist ein Treffer.
 Treffer (Bericht docs/befunde/fehlersuche-runde-4-recherche/5-fuzz.md; IDs aus
 dem Register ``docs/befunde/fehlersuche-runde-4-2026-10.md``):
 
-* F4-07 / R4F-01 (FEHLER): ``DeliveryCountGate.apply`` wirft ``OverflowError`` für
-  ``x-delivery-count``/``x-acquired-count`` = ``float("inf")`` (``_count``
-  fängt nur ``TypeError``/``ValueError``). Ausgeklammert in ``_gate_counter``;
-  Nachweis ``tests/unit/worker/gates/test_befund_f4_07_delivery_count_inf.py``.
+* F4-07 / R4F-01 (FEHLER, behoben in 0.13.0, U16): ``DeliveryCountGate.apply``
+  warf ``OverflowError`` für ``x-delivery-count``/``x-acquired-count`` =
+  ``float("inf")``. Nachweis
+  ``tests/unit/worker/gates/test_befund_f4_07_delivery_count_inf.py``; der
+  geschrumpfte Treffer steht als ``@example`` am Gate-Test.
 
 Testliste:
 # [x] retry_count_of streng (E-051), auch ohne Mapping-Eintrag und mit None
 # [x] prior_deferrals / broker_redelivered / redeliver_pause_s nachsichtig, nie Ausnahme
-# [x] DeliveryCountGate: Continue oder Terminal, nie Ausnahme (Treffer F4-07 ausgeklammert)
+# [x] DeliveryCountGate: Continue oder Terminal, nie Ausnahme (auch ±inf, F4-07)
 # [x] LockGate-Konflikt: Redelivered, Rückstellung mit gültiger Wartezeit oder DLQ, nie Ausnahme
 # [x] wait_generation: "<n>:<replay>" mit n >= 0
 # [x] execution_identity: nie Ausnahme, Zähler gedeckelt
@@ -201,12 +202,6 @@ def test_broker_counters_are_read_leniently(delivered: object, acquired: object)
 # DeliveryCountGate (öffentliche Gate-Schnittstelle)
 # ---------------------------------------------------------------------------
 
-# F4-07 (R4F-01): ``float("inf")`` (auch ``-inf``) als x-delivery-count oder
-# x-acquired-count wirft OverflowError aus DeliveryCountGate.apply. Bis zum
-# Fix ausgeklammert: nur ``±inf`` (``nan`` ist kein Treffer, ``int(nan)`` wirft ValueError).
-# Treffer (geschrumpft): @example(delivered=None, acquired=float("inf"), limit=0)
-_gate_counter = _values.filter(lambda value: not (isinstance(value, float) and math.isinf(value)))
-
 
 def _run(coro: Coroutine[Any, Any, DeliveryOutcome]) -> DeliveryOutcome:
     return asyncio.run(coro)
@@ -218,7 +213,8 @@ class _Delivery:
         self.queue = queue
 
 
-@given(delivered=_gate_counter, acquired=_gate_counter, limit=st.integers(0, 50))
+@given(delivered=_values, acquired=_values, limit=st.integers(0, 50))
+@example(delivered=None, acquired=float("inf"), limit=0)  # F4-07 (geschrumpft)
 @example(delivered="19", acquired=None, limit=20)
 @example(delivered=None, acquired=2**70, limit=20)
 @settings(max_examples=500, deadline=None)

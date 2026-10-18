@@ -6,7 +6,8 @@ Jeder Wert über der Grenze ist ein ``ConfigurationError`` mit Feldnamen
 ``MAX_DEADLINE_S`` (gemessen gegen Valkey ``PX`` und RabbitMQ-``expiration``,
 siehe ``tests/integration/backend/test_deadline_bounds_valkey.py`` und
 ``tests/integration/broker/test_expiration_bounds_rabbitmq.py``), Zählfelder
-bis ``sys.float_info.max``, ``concurrency`` bis 65535 (AMQP short in
+bis ``sys.float_info.max`` (``delivery_limit`` als ``x-delivery-limit`` an
+RabbitMQ bis 2**63-1), ``concurrency`` bis 65535 (AMQP short in
 ``basic.qos``).
 
 Testliste:
@@ -19,6 +20,7 @@ Testliste:
 # [x] scheduler_publish_stepdown_s (nicht unter _FINITE_FIELDS) über der Grenze -> Fehler
 # [x] result_ttl über der Grenze -> Fehler (Valkey EX)
 # [x] swarmq worker --check und swarmq check melden den Wert vor dem Start
+# [x] delivery_limit (x-delivery-limit an RabbitMQ) bis 2**63-1, 2**63 abgelehnt (Argument und Env)
 """
 
 from __future__ import annotations
@@ -84,6 +86,25 @@ def test_count_field_above_float_max_names_the_field(monkeypatch: pytest.MonkeyP
 
     with pytest.raises(ConfigurationError, match=r"^delivery_limit must be at most"):
         _cfg()
+
+
+def test_delivery_limit_above_the_amqp_long_long_names_the_field() -> None:
+    # ``delivery_limit`` geht als ``x-delivery-limit`` an RabbitMQ: 2**63-1
+    # nimmt der Broker an, 2**63 ließ schon pamqp mit TypeError scheitern
+    # (Exit 1 statt 78).
+    with pytest.raises(ConfigurationError, match=rf"^delivery_limit must be at most {2**63 - 1}, got {2**63}$"):
+        _cfg(delivery_limit=2**63)
+
+
+@pytest.mark.parametrize(("raw", "valid"), [(str(2**63 - 1), True), (str(2**63), False)])
+def test_delivery_limit_bound_from_env(raw: str, valid: bool, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SWARMQ_DELIVERY_LIMIT", raw)
+
+    if valid:
+        assert _cfg().delivery_limit == 2**63 - 1
+    else:
+        with pytest.raises(ConfigurationError, match=r"^delivery_limit must be at most 9223372036854775807"):
+            _cfg()
 
 
 def test_lock_wait_max_s_far_above_the_bound_names_the_field() -> None:

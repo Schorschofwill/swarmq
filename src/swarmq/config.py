@@ -603,7 +603,8 @@ class SwarmQConfig(ConfigValidation):
         "execution_guard_done_ttl_s",
     )
     # E-063, Nachtrag 2026-10-17: Zählfelder unter ``_FINITE_FIELDS`` sind
-    # keine Fristen; ihre Grenze ist ``float_info.max`` (PF-10), die der
+    # keine Fristen; ihre Grenze ist ``float_info.max`` (PF-10), für
+    # ``delivery_limit`` ``MAX_BROKER_COUNT`` (``_COUNT_BOUNDS``), die der
     # übrigen ``MAX_DEADLINE_S``.
     _COUNT_FIELDS: ClassVar[frozenset[str]] = frozenset(
         {

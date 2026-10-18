@@ -30,6 +30,8 @@ tests:
   - tests/unit/test_config_bounds.py::test_count_field_above_float_max_names_the_field
   - tests/unit/test_config_bounds.py::test_deadline_exactly_at_the_bound_is_valid
   - tests/unit/test_config_bounds.py::test_deadline_just_above_the_bound_names_the_field
+  - tests/unit/test_config_bounds.py::test_delivery_limit_above_the_amqp_long_long_names_the_field
+  - tests/unit/test_config_bounds.py::test_delivery_limit_bound_from_env
   - tests/integration/broker/test_expiration_bounds_rabbitmq.py::test_expiration_one_millisecond_above_the_bound_is_rejected
   - tests/integration/backend/test_deadline_bounds_valkey.py::test_px_at_the_bound_is_accepted
 ---
@@ -42,6 +44,6 @@ tests:
 
 **Nachtrag 2026-10-17 (Fehlersuche Runde 4, Georg; Produktfrage A: PF-10, PF-11, F3-38): endlich und innerhalb der technischen Grenze des Ziels.** Jeder Wert der Konfiguration muss nicht nur endlich sein, sondern auch innerhalb der technischen Grenze seines Ziels liegen; sonst `ConfigurationError` mit dem Feldnamen (Exit 78, E-057), als Argument wie als Env-Wert. Grenzen: Fristen und TTLs als Millisekunden ≤ 2⁶³−1 (Valkey `PX`, gegen den Teststack prüfen, damit die Zahl in der Doku stimmt), `concurrency` ≤ 65535 (F3-38), Ganzzahlfelder ≤ `float_info.max` (sonst scheitert schon `math.isfinite`, PF-10). Vorbild ist `valid_drain_timeout` (`logging_settings.py:206-216`, `threading.TIMEOUT_MAX`), festgeschrieben in `tests/unit/test_logging_settings.py::TestValidation::test_non_positive_non_numeric_or_infinite_drain_timeout_is_a_configuration_error` (Fall `1e10`). Die Tests für die übrigen Felder folgen mit dem Fix (Bündel 10 des Fix-Plans 0.13: PF-10, PF-11, F3-38).
 
-Umgesetzt in 0.13.0 (U16): Gemessen gegen den Teststack ist die kleinere Grenze die von RabbitMQ (4.3.6): Per-Message-`expiration` bis 315 360 000 000 ms (zehn Jahre), eine Millisekunde mehr schließt den Kanal mit `PRECONDITION_FAILED`; Valkey nimmt `PX` bis 2⁶³−1 minus der Unix-Zeit an. Darum gilt für alle Fristen und TTLs `MAX_DEADLINE_S = 315 360 000` s (`config_validation.py`), auch für `result_ttl` und `scheduler_publish_stepdown_s`.
+Umgesetzt in 0.13.0 (U16): Gemessen gegen den Teststack ist die kleinere Grenze die von RabbitMQ (4.3.6): Per-Message-`expiration` bis 315 360 000 000 ms (zehn Jahre), eine Millisekunde mehr schließt den Kanal mit `PRECONDITION_FAILED`; Valkey nimmt `PX` bis 2⁶³−1 minus der Unix-Zeit an. Darum gilt für alle Fristen und TTLs `MAX_DEADLINE_S = 315 360 000` s (`config_validation.py`), auch für `result_ttl` und `scheduler_publish_stepdown_s`. Zählfelder, die an RabbitMQ gehen, höchstens 2⁶³−1 (AMQP `long long`; `MAX_BROKER_COUNT` in `config_validation.py`): das betrifft `delivery_limit` (`x-delivery-limit`); RabbitMQ nimmt 2⁶³−1 an, 2⁶³ ließ schon pamqp mit `TypeError` scheitern (Exit 1 statt 78). Die übrigen Zählfelder gehen nicht an den Broker und behalten `float_info.max`.
 
 **Überdenken nur mit neuem Argument.** Keine offenen Einwände bekannt.
