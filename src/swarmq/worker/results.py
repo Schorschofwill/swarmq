@@ -10,8 +10,12 @@ Fail-Mark + Ack. publish-then-mark ist seit U20 strukturell über den
 
 from __future__ import annotations
 
+import asyncio
+import time
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal
 
+from swarmq.backoff import backend_defer_delay
 from swarmq.cancellation import build_error_result_dict, build_result_dict
 from swarmq.config import resolve_result_ttl
 from swarmq.exceptions import (
@@ -33,6 +37,20 @@ if TYPE_CHECKING:
     from swarmq.worker.execution import ExecutionResult
 
 logger = get_logger(__name__)
+
+# E-072 (Plan 2026-10-17-2103, KTD7): Speicherversuche eines terminalen
+# Ergebnisses je Zustellung (AT_LEAST_ONCE), dazwischen die Wartezeiten der
+# Zurückstellung (nominell 1, 2, 4, 8 s).
+STORE_ATTEMPTS = 5
+# ``result_store_retrying`` als WARNING höchstens einmal je Intervall und
+# Worker, dazwischen DEBUG: ein Valkey-Ausfall trifft alle gerade fertigen
+# Tasks zugleich.
+RETRY_WARNING_INTERVAL_S = 10.0
+
+# Zeitquellen der Speicher-Wiederholung zur Laufzeit; Unit-Tests ersetzen sie
+# (``tests/unit/conftest.py``), damit keiner real wartet.
+_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+_monotonic: Callable[[], float] = time.monotonic
 
 _FailMarkEvent = Literal["workflow_faf_fail_mark_error", "workflow_fail_mark_failed", "workflow_fail_mark_error"]
 
@@ -57,6 +75,8 @@ class ResultTail:
     def __init__(self, deps: GateDeps, *, workflow_advancer: Any) -> None:
         self._deps = deps
         self._workflow_advancer = workflow_advancer
+        # Zeitpunkt der letzten ``result_store_retrying``-WARNING (Drossel).
+        self._retry_warned_at: float | None = None
 
     @staticmethod
     def _encode_with_fallback(ctx: GateContext, execution: ExecutionResult) -> bytes:
@@ -291,6 +311,69 @@ class ResultTail:
             )
         return None
 
+    async def _store_once(self, ctx: GateContext, result_bytes: bytes, result_ttl: int) -> None:
+        await self._deps.backend.store_result(
+            ctx.task_id,
+            result_bytes,
+            result_ttl * 1000,
+            op_timeout=self._deps.config.backend_op_timeout,
+        )
+
+    async def _store(self, ctx: GateContext, result_bytes: bytes, result_ttl: int) -> BackendConnectionError | None:
+        """Ergebnis speichern; liefert den letzten Fehler, wenn es nicht gelang.
+
+        E-072 (KTD7): bei AT_LEAST_ONCE bis zu ``STORE_ATTEMPTS`` Versuche mit
+        den Wartezeiten der Zurückstellung, gedeckelt durch
+        ``consumer_timeout_s`` ab ``ctx.received_at``; der Slot bleibt dabei
+        belegt. FIRE_AND_FORGET bleibt bei einem Versuch (KD8)."""
+        try:
+            await self._store_once(ctx, result_bytes, result_ttl)
+        except BackendConnectionError as exc:
+            task_info = ctx.task_info
+            assert task_info is not None
+            if task_info.delivery is not DeliveryMode.AT_LEAST_ONCE:
+                return exc
+            try:
+                return await self._retry_store(ctx, result_bytes, result_ttl, exc)
+            except asyncio.CancelledError:
+                # Drain-Ende (E-001) im Warten oder in einem wiederholten
+                # Versuch: nie propagieren -- der Terminal-Default im
+                # ``finally`` schriebe sonst Schedfire-Marker und
+                # Unique-Freigabe auf eine unbestätigte Nachricht.
+                return exc
+        return None
+
+    def _log_retrying(self, ctx: GateContext, store_attempt: int, delay_s: float, exc: BaseException) -> None:
+        fields = {"task_id": ctx.task_id, "store_attempt": store_attempt, "delay_s": delay_s, **_error_fields(exc)}
+        now = _monotonic()
+        if self._retry_warned_at is None or now - self._retry_warned_at >= RETRY_WARNING_INTERVAL_S:
+            self._retry_warned_at = now
+            logger.warning("result_store_retrying", **fields)
+        else:
+            logger.debug("result_store_retrying", **fields)
+
+    async def _retry_store(
+        self, ctx: GateContext, result_bytes: bytes, result_ttl: int, exc: BackendConnectionError
+    ) -> BackendConnectionError | None:
+        config = self._deps.config
+        deadline = ctx.received_at + config.consumer_timeout_s
+        for attempt in range(2, STORE_ATTEMPTS + 1):
+            delay_s = backend_defer_delay(attempt - 1, config.backend_defer_base_delay, config.backend_defer_max_delay)
+            # Der nächste Versuch muss vor ``consumer_timeout_s`` enden,
+            # sonst schlösse RabbitMQ den Kanal der unbestätigten Zustellung.
+            if _monotonic() + delay_s + config.backend_op_timeout > deadline:
+                return exc
+            self._log_retrying(ctx, attempt - 1, delay_s, exc)
+            await _sleep(delay_s)
+            try:
+                await self._store_once(ctx, result_bytes, result_ttl)
+            except BackendConnectionError as retry_exc:
+                exc = retry_exc
+                continue
+            logger.info("result_store_recovered", task_id=ctx.task_id, store_attempts=attempt)
+            return None
+        return exc
+
     async def finish(self, delivery: Any, ctx: GateContext, execution: ExecutionResult) -> DeliveryOutcome:
         deps = self._deps
         advancer = self._workflow_advancer()
@@ -303,23 +386,17 @@ class ResultTail:
             return await self._finish_without_store(delivery, ctx, execution, advancer)
 
         # Store result, then notify; ack comes last.
-        try:
-            await deps.backend.store_result(
-                ctx.task_id,
-                result_bytes,
-                result_ttl * 1000,
-                op_timeout=deps.config.backend_op_timeout,
-            )
-        except BackendConnectionError as exc:
+        store_error = await self._store(ctx, result_bytes, result_ttl)
+        if store_error is not None:
             if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
                 # Selbstheilend (KTD11): die Neuzustellung speichert erneut.
-                logger.warning("backend_connection_error", **_error_fields(exc))
+                logger.warning("backend_connection_error", **_error_fields(store_error))
                 # Non-terminal — redelivery will re-run the task from
                 # scratch; keep the flag so next terminal path can release.
                 await redeliver_in_place(deps, delivery, ctx)
                 return Redelivered
             # FIRE_AND_FORGET: keine Neuzustellung, das Ergebnis ist verloren.
-            logger.error("backend_connection_error", **_error_fields(exc))
+            logger.error("backend_connection_error", **_error_fields(store_error))
             return Terminal.release_in_finally()
 
         try:

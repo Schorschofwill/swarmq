@@ -29,8 +29,10 @@ sequence, retry logic):
 
   Combo 20 — backend-down + result-store (Tier 2):
       Toxiproxy drops the Valkey connection during result storage.  The ack
-      is withheld and the message redelivered (no TASK_FAILED — run()
-      succeeded); the rerun stores the result after the backend recovers.
+      is withheld; a short outage is bridged by the worker's store retry
+      (E-072: run once, no TASK_FAILED -- run() succeeded).  An outage
+      longer than that retry redelivers the message, and the rerun stores
+      the result after the backend recovers.
 
 Each class follows the same structure:
   test_happy_path       — both features work together (Tier 1, unmarked)
@@ -66,6 +68,7 @@ from swarmq.exceptions import BackendConnectionError, NoRetry, PublishIndetermin
 from swarmq.middleware import MessageContext, Middleware
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
+from swarmq.worker.results import STORE_ATTEMPTS
 from tests.support.known_leaks import aiormq_streamwriter_leak
 from tests.support.wait import wait_until
 
@@ -1338,26 +1341,27 @@ class TestBackendDownResultStoreCombo:
     and verify the documented contract (delivery-semantics: "SwarmQ acks
     after the task's terminal state is durably stored"):
 
-    - The failed store aborts the ack; the message goes back to the broker
-      (``nack(requeue=True)``) and is redelivered — no silent drop.
-    - ``run()`` itself succeeded, so ``TASK_COMPLETED`` fires and
-      ``TASK_FAILED`` does not (signals guide: TASK_FAILED is for a ``run()``
-      that raised or timed out).  The redelivery is not a retry, so it
-      neither consumes ``max_retries`` nor ends in the DLQ.
-    - Once Valkey is back, the redelivered run stores the result and
-      ``get_result`` returns it.
+    - E-072: a short outage is bridged by the worker's own store retry
+      (up to five attempts, waits of 1, 2, 4, 8 s, slot stays taken).  The
+      task runs once, the result is stored after recovery and the message
+      is acked — no second run, no TASK_FAILED, no DLQ.
+    - An outage longer than that retry (five failed stores, roughly 40 s
+      with the blackhole) still sends the message back to the broker
+      (``nack(requeue=True)``): at-least-once, no silent drop.  ``run()``
+      itself succeeded, so ``TASK_FAILED`` does not fire; the redelivery is
+      not a retry, so it neither consumes ``max_retries`` nor ends in the
+      DLQ, and the rerun stores the result after recovery.
 
     The scenarios are gated by events instead of sleeps (see
-    ``_BackendDropGates``).  The failed store takes ``backend_op_timeout``
-    (5 s by default) to surface; while Valkey is down the redelivered
-    message is deferred by the pre-start cancel check (delay queue,
-    growing backoff), so the rerun happens after the heal.
+    ``_BackendDropGates``).  Each failed store takes ``backend_op_timeout``
+    (5 s by default) to surface; the toxic is removed after the configured
+    number of failed stores.
 
-    Execution guard (0.11.0): the release of the first run's running
-    marker fails while Valkey is down; the worker retries it in the
-    background, so the rerun runs after the heal with the default
-    ``execution_guard_ttl_s`` of 60 s instead of waiting for the marker
-    to expire.
+    Execution guard (0.11.0): in the long outage the release of the first
+    run's running marker fails while Valkey is down; the worker retries it
+    in the background, so the rerun runs after the heal with the default
+    ``execution_guard_ttl_s`` of 60 s instead of waiting for the marker to
+    expire.
     """
 
     async def test_happy_path(
@@ -1397,9 +1401,16 @@ class TestBackendDownResultStoreCombo:
         task_name: str,
         arg: int,
         gates: _BackendDropGates,
+        *,
+        failed_stores: int = 1,
     ) -> str:
         """Schedule, blackhole Valkey before the first ``run()`` returns,
-        heal once that run's result store has failed. Returns the task id."""
+        heal once *failed_stores* result stores have failed, then wait for
+        the store that follows the heal.  Returns the task id.
+
+        Waiting for exactly that store keeps get_result from racing it —
+        the first SET may well have reached Valkey even though its reply
+        was dropped."""
         tid = await app.schedule(task_name, arg)
         await asyncio.wait_for(gates.first_run_started.wait(), timeout=8.0)
         toxic_name = await toxiproxy.add_toxic(
@@ -1409,16 +1420,13 @@ class TestBackendDownResultStoreCombo:
             stream="downstream",
         )
         try:
+            gates.heal_after(failed_stores)
             gates.toxic_active.set()
-            # The store blocks until backend_op_timeout and fails.
-            await asyncio.wait_for(gates.store_failed.wait(), timeout=20.0)
+            # Each store blocks until backend_op_timeout and fails.
+            await asyncio.wait_for(gates.heal_due.wait(), timeout=10.0 * failed_stores + 20.0)
         finally:
             await toxiproxy.remove_toxic("valkey", toxic_name)
-        # The message went back to the broker: the redelivered run stores
-        # the result.  Waiting for exactly that store keeps get_result from
-        # racing it — the first SET may well have reached Valkey even though
-        # its reply was dropped.
-        await asyncio.wait_for(gates.rerun_stored.wait(), timeout=25.0)
+        await asyncio.wait_for(gates.stored_after_failure.wait(), timeout=25.0)
         return tid
 
     @staticmethod
@@ -1431,30 +1439,31 @@ class TestBackendDownResultStoreCombo:
         ``run_count`` (that observation was circular).  Called after the
         worker shut down, so an unacked message would be ready again:
 
-        1. no silent drop and the requeue happened: the first store failed
-           and the result was stored by the redelivered run;
+        1. no silent drop: the first store failed and a later store
+           succeeded;
         2. the message was acked -- nothing left ready or delayed in the
            queue and its ``.DQ``;
         3. no silent dead-lettering -- ``.XQ`` is empty.
         """
         assert gates.store_failed.is_set()
-        assert gates.rerun_stored.is_set()
+        assert gates.stored_after_failure.is_set()
         assert await broker.queue_depth(queue) == 0
         assert await broker.dead_letter_depth(queue) == 0
 
+    @pytest.mark.entscheidung("E-072")
     @pytest.mark.chaos
     @pytest.mark.timeout(60)
-    async def test_backend_drop_during_result_store_redelivers_without_task_failed(
+    async def test_backend_drop_during_result_store_is_bridged_without_a_second_run(
         self,
         toxiproxy: Any,
         rabbitmq_url: str,
         valkey_proxied_url: str,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Valkey is blackholed while the worker stores the result.  The
-        failed store is not a task failure: no TASK_FAILED, no DLQ — the
-        message is redelivered even with ``max_retries=0`` and the rerun
-        stores the result after recovery."""
+        """E-072: Valkey is blackholed while the worker stores the result and
+        comes back after the first failed store.  The worker's own store
+        retry stores the result after recovery: the task runs once, the
+        message is acked, no TASK_FAILED, no retry, no DLQ."""
         queue = _uq("backend-drop-fail")
         task_name = _task_name("backend_drop_fail")
         gates = _BackendDropGates(monkeypatch)
@@ -1502,9 +1511,88 @@ class TestBackendDownResultStoreCombo:
                     gates,
                 )
                 result = await app.get_result(tid, timeout=15)
+            await self._assert_settled_on_the_broker(broker, queue, gates)
 
         assert result == 1
+        assert gates.run_count == 1, f"run() lief {gates.run_count}-mal; die Speicher-Wiederholung (E-072) fehlt"
+        assert not gates.redelivered.is_set()
+        emitted = recorder.emitted_signals
+        assert Signal.TASK_FAILED not in emitted, (
+            f"a failed result store after a successful run() is not a task failure; signals: {emitted}"
+        )
+        assert Signal.TASK_RETRYING not in emitted
+        assert Signal.TASK_DLQ not in emitted
+        assert emitted.count(Signal.TASK_COMPLETED) == 1
+
+    @pytest.mark.entscheidung("E-072")
+    @pytest.mark.chaos
+    @pytest.mark.timeout(150)
+    async def test_backend_drop_longer_than_the_store_retry_redelivers_without_task_failed(
+        self,
+        toxiproxy: Any,
+        rabbitmq_url: str,
+        valkey_proxied_url: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """E-072, bewusste Folge: Valkey bleibt über alle fünf
+        Speicherversuche weg (rund 40 s mit dem Blackhole).  Erst dann geht
+        die Nachricht zurück; sie läuft erneut, ohne TASK_FAILED und ohne
+        DLQ, auch mit ``max_retries=0``, und die Neuzustellung speichert das
+        Ergebnis nach der Erholung."""
+        queue = _uq("backend-drop-long")
+        task_name = _task_name("backend_drop_long")
+        gates = _BackendDropGates(monkeypatch)
+
+        class SlowResultTask(Task):
+            task_info = TaskInfo(
+                name=task_name,
+                queues=[queue],
+                max_retries=0,
+            )
+
+            @override
+            async def run(self, val: int) -> int:
+                await gates.enter_run()
+                return val
+
+        broker = RabbitMQBroker(rabbitmq_url)
+        backend = ValkeyBackend(valkey_proxied_url)
+        app = SwarmQ(broker, backend, queues=[queue])
+
+        recorder = SignalRecorder.attach(
+            app._signal_dispatcher,
+            signals=[
+                Signal.TASK_STARTED,
+                Signal.TASK_FAILED,
+                Signal.TASK_COMPLETED,
+                Signal.TASK_RETRYING,
+                Signal.TASK_DLQ,
+            ],
+        )
+
+        async with app:
+            await broker.declare_queue(queue)
+            async with _running_worker(
+                rabbitmq_url,
+                valkey_proxied_url,
+                queue,
+                mirror_to=app._signal_dispatcher,
+            ):
+                tid = await self._drop_backend_during_first_store(
+                    toxiproxy,
+                    app,
+                    task_name,
+                    1,
+                    gates,
+                    failed_stores=STORE_ATTEMPTS,
+                )
+                result = await app.get_result(tid, timeout=15)
+            await self._assert_settled_on_the_broker(broker, queue, gates)
+
+        assert result == 1
+        assert gates.failed_store_count == STORE_ATTEMPTS
         assert gates.run_count >= 2
+        assert gates.stored_by_rerun
         emitted = recorder.emitted_signals
         assert Signal.TASK_FAILED not in emitted, (
             f"a failed result store after a successful run() is not a task failure; signals: {emitted}"
@@ -1515,7 +1603,7 @@ class TestBackendDownResultStoreCombo:
 
     @pytest.mark.chaos
     @pytest.mark.timeout(60)
-    async def test_retry_after_backend_recovery(
+    async def test_store_recovers_after_backend_recovery(
         self,
         toxiproxy: Any,
         rabbitmq_url: str,
@@ -1523,9 +1611,10 @@ class TestBackendDownResultStoreCombo:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Backend drops during the first run's result store.  After Valkey
-        recovers, the redelivered attempt succeeds and the result is stored.
+        recovers, the worker's store retry (E-072) stores the result and the
+        message is acked; ``max_retries`` stays untouched.
 
-        FAF-4: no silent drop; message must be nacked and redelivered.
+        FAF-4: no silent drop.
         """
         queue = _uq("backend-retry")
         task_name = _task_name("backend_retry")
@@ -1568,6 +1657,7 @@ class TestBackendDownResultStoreCombo:
             await self._assert_settled_on_the_broker(broker, queue, gates)
 
         assert_at_least_once_held(gates.run_count, expected_min=1)
+        assert gates.run_count == 1
 
     @pytest.mark.chaos
     @pytest.mark.timeout(60)
@@ -1580,11 +1670,12 @@ class TestBackendDownResultStoreCombo:
     ) -> None:
         """Dedicated FAF-4 assertion block for backend-drop scenario.
 
-        Drops Valkey mid-run, heals it, and asserts all four invariants:
+        Drops Valkey mid-run, heals it, and asserts the invariants:
         1. No silent drop
-        2. nack+requeue after backend fault
+        2. the message is acked only after the result is stored (E-072:
+           the worker's store retry bridges the outage, no requeue needed)
         3. FAF context doesn't change the safety contract
-        4. Requeue count bounded
+        4. no second run
         """
         queue = _uq("backend-faf4")
         task_name = _task_name("backend_faf4")
@@ -1617,11 +1708,12 @@ class TestBackendDownResultStoreCombo:
                     1,
                     gates,
                 )
-                # The redelivered run completes — the result is durable.
+                # The result is durable once the store retry succeeded.
                 assert await app.get_result(tid, timeout=15) == 1
             await self._assert_settled_on_the_broker(broker, queue, gates)
 
         assert_at_least_once_held(gates.run_count, expected_min=1)
+        assert gates.run_count == 1
 
 
 class _BackendDropGates:
@@ -1629,20 +1721,25 @@ class _BackendDropGates:
 
     The first ``run()`` signals its start and returns only once the Valkey
     toxic is active, so its result store hits the dead backend.  A spy on
-    ``ValkeyBackend.store_result`` (the backend boundary) reports the failed
-    store, which is the moment to heal, and the successful store of the
-    redelivered run.  While Valkey is down the redelivered message cannot
-    pass the pre-start cancel check (it is deferred again), so the second
-    ``run()`` only happens after the heal.
+    ``ValkeyBackend.store_result`` (the backend boundary) counts the failed
+    stores, reports when the configured number has failed (the moment to
+    heal) and reports the first successful store after a failure -- by the
+    worker's own store retry or by a redelivered run.  While Valkey is down
+    a redelivered message cannot pass the pre-start cancel check (it is
+    deferred again), so a second ``run()`` only happens after the heal.
     """
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self.run_count = 0
+        self.failed_store_count = 0
+        self.stored_by_rerun = False
+        self._heal_after = 1
         self.first_run_started = asyncio.Event()
         self.toxic_active = asyncio.Event()
         self.store_failed = asyncio.Event()
+        self.heal_due = asyncio.Event()
         self.redelivered = asyncio.Event()
-        self.rerun_stored = asyncio.Event()
+        self.stored_after_failure = asyncio.Event()
 
         original = ValkeyBackend.store_result
         gates = self
@@ -1651,12 +1748,19 @@ class _BackendDropGates:
             try:
                 await original(backend, *args, **kwargs)
             except BackendConnectionError:
+                gates.failed_store_count += 1
                 gates.store_failed.set()
+                if gates.failed_store_count >= gates._heal_after:
+                    gates.heal_due.set()
                 raise
-            if gates.redelivered.is_set():
-                gates.rerun_stored.set()
+            if gates.store_failed.is_set():
+                gates.stored_by_rerun = gates.redelivered.is_set()
+                gates.stored_after_failure.set()
 
         monkeypatch.setattr(ValkeyBackend, "store_result", _spy)
+
+    def heal_after(self, failed_stores: int) -> None:
+        self._heal_after = failed_stores
 
     async def enter_run(self) -> None:
         self.run_count += 1

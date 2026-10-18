@@ -13,6 +13,7 @@ der Band-Erhalt beim Retry ist die benannte Verhaltenskorrektur (KTD2, U8).
 
 from __future__ import annotations
 
+import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -50,6 +51,15 @@ if TYPE_CHECKING:
 
 
 logger = get_logger(__name__)
+
+# Zeitquelle von ``GateContext.received_at``; Unit-Tests ersetzen sie
+# (``tests/unit/conftest.py``) durch dieselbe Fake-Uhr wie ``results._monotonic``.
+_monotonic: Callable[[], float] = time.monotonic
+
+
+def _received_now() -> float:
+    # Spät gebunden: liest ``_monotonic`` beim Aufruf (Tests ersetzen es).
+    return _monotonic()
 
 
 class WorkerBroker(Broker, BrokerAdmin, Protocol):
@@ -132,6 +142,10 @@ class GateContext:
     # Unique-Flags im start-Modus ist gelaufen, unabhaengig vom Modus und vom
     # Erfolg). Erst dann ist die terminale Freigabe im start-Modus ein No-op.
     start_release_reached: bool = False
+    # E-072 (KTD7): Zustellzeitpunkt (monotone Uhr), entsteht mit dem Kontext
+    # nach dem Decode; die Speicher-Wiederholung des Ergebnisses misst
+    # ``consumer_timeout_s`` daran.
+    received_at: float = field(default_factory=_received_now)
 
 
 class FailWorkflow(Protocol):

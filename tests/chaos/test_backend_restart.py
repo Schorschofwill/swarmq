@@ -14,6 +14,9 @@ contract four ways:
 5. F4-14: A worker whose task finishes while Valkey restarts behind a
    proxy that accepts and resets (``reset_peer`` toxic) stores the result
    within the client's retry window; the task runs exactly once.
+6. E-072: The same restart lasting 5 s -- longer than the client's retry
+   window -- is bridged by the worker's own store retry (1, 2, 4, 8 s); the
+   task still runs exactly once.
 
 All tests use the ``chaos_stack`` fixture; the container is restarted
 directly via ``docker restart {project}-valkey-1``.
@@ -198,6 +201,68 @@ class TestBackendRestart:
         assert runs == {task_id: 1}, (
             f"Task lief {runs.get(task_id, 0)}-mal; das Speichern während des Neustarts hinter dem Proxy "
             "hätte im Wiederholfenster gelingen müssen (F4-14)"
+        )
+
+    @pytest.mark.entscheidung("E-072")
+    @pytest.mark.usefixtures("_cleanup_tasks")
+    async def test_task_finishing_during_a_five_second_valkey_outage_runs_once(
+        self,
+        chaos_stack: ChaosStack,
+    ) -> None:
+        """E-072: Valkey ist 5 s weg, während der Task sein Ergebnis
+        speichert -- länger als das Wiederholfenster des Clients (rund 3,1 s).
+        Der Worker wiederholt das Speichern selbst (Wartezeiten 1, 2, 4 s ...),
+        statt die Nachricht zurückzugeben; der Task läuft genau einmal. Ohne
+        die Wiederholung speichert erst die Neuzustellung, die den Task ein
+        zweites Mal ausführt."""
+        queue = f"chaos-outage-{uuid.uuid4().hex[:10]}"
+        task_name = f"outage_counted_{uuid.uuid4().hex[:8]}"
+        runs: dict[str, int] = {}
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        class CountedTask(Task):
+            task_info = TaskInfo(name=task_name, queues=[queue])
+
+            @override
+            async def run(self) -> str:
+                assert self._task_id is not None
+                runs[self._task_id] = runs.get(self._task_id, 0) + 1
+                started.set()
+                await release.wait()
+                return "done"
+
+        client_broker = RabbitMQBroker(chaos_stack.rabbitmq_url)
+        client_app = SwarmQ(client_broker, ValkeyBackend(chaos_stack.valkey_url), queues=[queue])
+        async with client_app:
+            await client_broker.declare_queue(queue)
+            async with _running_worker(chaos_stack, queue):
+                task_id = await client_app.schedule(task_name)
+                await asyncio.wait_for(started.wait(), timeout=30.0)
+
+                async with _proxy_resets_valkey_connections(chaos_stack):
+                    await asyncio.sleep(0.2)
+                    release.set()
+                    await asyncio.sleep(5.0)
+
+                reader = ValkeyBackend(chaos_stack.valkey_url)
+                await reader.connect()
+                try:
+                    deadline = time.monotonic() + 40.0
+                    stored = None
+                    while stored is None and time.monotonic() < deadline:
+                        stored = await reader.get_result(task_id)
+                        if stored is None:
+                            await asyncio.sleep(0.2)
+                    assert stored is not None, "Ergebnis nach dem Ausfall nicht gespeichert"
+                    # Eine Neuzustellung liefe nach der Erholung; kurz nachsehen.
+                    await asyncio.sleep(1.5)
+                finally:
+                    await reader.close()
+
+        assert runs == {task_id: 1}, (
+            f"Task lief {runs.get(task_id, 0)}-mal; die Speicher-Wiederholung des Workers hätte den "
+            "Ausfall von 5 s überbrücken müssen (E-072)"
         )
 
     async def test_result_storage_survives_restart(

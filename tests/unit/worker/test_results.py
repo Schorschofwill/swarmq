@@ -176,12 +176,16 @@ async def test_result_ttl_zero_stores_nothing_and_fails_faf_workflow_step(broker
     assert "FIRE_AND_FORGET" in worker._workflow_advancer.fail.await_args.args[2]
 
 
-async def test_backend_store_error_is_redelivered(broker, backend, config):
+async def test_backend_store_error_is_redelivered(broker, backend, config, result_store_clock):
+    """E-072: erst nach der begrenzten Wiederholung (Fake-Uhr, keine reale
+    Wartezeit; Einzelheiten in ``test_result_store_retry.py``)."""
     backend.store_result = AsyncMock(side_effect=BackendConnectionError("down"))
     tail, _ = _tail(broker, backend, config)
     msg = make_message(_default_payload(name="tail-task"))
     outcome = await tail.finish(msg, _ctx(), _execution())
     assert outcome is Redelivered
+    assert backend.store_result.await_count == 5
+    assert len(result_store_clock.delays) == 4
     broker.redeliver.assert_awaited_once_with(msg)
     broker.ack.assert_not_awaited()
 
