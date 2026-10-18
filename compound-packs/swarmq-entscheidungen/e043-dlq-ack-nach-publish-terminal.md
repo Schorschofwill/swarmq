@@ -20,6 +20,7 @@ quelle:
   - docs/befunde/fehlersuche-runde-4-2026-10.md (FEHLER F4-02, F4-15; Vor dem Fix Punkte 2 und 13)
 tests:
   - tests/unit/worker/test_retry.py::test_dead_letter_with_failed_ack_after_publish_is_terminal
+  - tests/unit/worker/test_retry.py::test_retry_copy_with_failed_ack_after_publish_counts_as_retried
   - tests/unit/worker/gates/test_lock_dlq_ack_failed.py::test_render_error_with_failed_ack_after_publish_is_terminal
   - tests/unit/worker/gates/test_lock_dlq_ack_failed.py::test_wait_limit_with_failed_ack_after_publish_is_terminal
   - tests/unit/worker/gates/test_befund_fs17_expiry_ack_failed.py::test_fs17_expired_copy_with_failed_ack_is_terminal

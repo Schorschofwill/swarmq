@@ -27,6 +27,7 @@ from swarmq.config import DEFAULT_RESULT_TTL_S, resolve_result_ttl
 from swarmq.exceptions import (
     NoRetry,
     Retry,
+    SettleFailedAfterPublish,
     TaskNotFoundError,
 )
 from swarmq.header_text import bounded_header_text
@@ -162,6 +163,12 @@ class RetryHandler:
         headers["x-swarmq-traceback"] = bounded_header_text(error_message)
         try:
             await deps.broker.retry_later(delivery, delay_ms=delay_ms, headers=headers)
+        except SettleFailedAfterPublish as settle_exc:
+            # F4-15 (E-043): die Retry-Kopie liegt bestätigt, nur das Ack des
+            # Originals scheiterte. Der Retry ist erfolgt; die Neuzustellung
+            # des Originals überspringt der Ausführungsschutz als
+            # ``superseded`` -- kein ``redeliver``.
+            logger.warning("retry_ack_failed_after_publish", **_error_fields(settle_exc))
         except Exception as broker_exc:  # noqa: BLE001 - Broker gestoert, Rueckfall auf Redeliver
             logger.error("retry_publish_failed", **_error_fields(broker_exc))
             try:

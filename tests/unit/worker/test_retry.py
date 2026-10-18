@@ -97,6 +97,14 @@ Zusatzfaelle zum Nachweis ``test_befund_f3_03_retry_negative_delay.py``
     ``retry_exceptions=[ConnectionError]``: der Konstruktor wirft
     ``ValueError``, der Filter greift nicht -> terminal (Dead-Letter,
     Fehlerergebnis ``builtins.ValueError``), kein Retry, nichts an den Broker.
+
+F4-15 (Plan 2026-10-17-2103, U9, E-043) -- Zusatzfall zum Nachweis
+``test_befund_f4_15_settle_failed_after_publish_log_level.py``:
+
+43. ``retry_later`` wirft ``SettleFailedAfterPublish`` (Retry-Kopie liegt,
+    nur das Ack scheiterte) -> WARNING ``retry_ack_failed_after_publish`` mit
+    Fehlerfeldern, ``task_retrying``, Ausgang ``Redelivered``; kein
+    ``redeliver``, kein ``ack``, keine Unique-Freigabe, kein Dead-Letter.
 """
 
 from __future__ import annotations
@@ -301,6 +309,41 @@ async def test_indeterminate_retry_publish_redelivers_the_original_without_ack(b
 
     broker.redeliver.assert_awaited_once_with(msg)
     broker.ack.assert_not_awaited()
+
+
+@pytest.mark.timeout(5)
+@pytest.mark.entscheidung("E-043")
+async def test_retry_copy_with_failed_ack_after_publish_counts_as_retried(broker, backend, config, swarmq_logs):
+    """Liste 43 (F4-15): die Retry-Kopie liegt bestätigt; die Neuzustellung
+    des Originals überspringt der Ausführungsschutz als ``superseded``."""
+    from swarmq.middleware import MiddlewareChain
+    from swarmq.worker.outcome import Redelivered
+
+    class RetryingTask(Task):
+        task_info = TaskInfo(name="retrying-task", queues=["default"], max_retries=1)
+
+    handler, worker = _handler(broker, backend, config, RetryingTask)
+    broker.retry_later = AsyncMock(side_effect=SettleFailedAfterPublish("channel closed"))
+    worker._gate_deps.maybe_release_unique = AsyncMock()
+    msg = make_message(_default_payload(name="retrying-task"))
+
+    outcome = await handler.evaluate(
+        msg, _ctx(RetryingTask), RuntimeError("task boom"), "task boom", {"retry_count": 0}, MiddlewareChain([])
+    )
+
+    assert outcome is Redelivered
+    [entry] = _events(swarmq_logs, "retry_ack_failed_after_publish")
+    assert entry["log_level"] == "warning"
+    assert entry["error_type"] == "SettleFailedAfterPublish"
+    assert entry["error"] == "channel closed"
+    assert _events(swarmq_logs, "retry_publish_failed") == []
+    [retrying] = _events(swarmq_logs, "task_retrying")
+    assert retrying["retry_count"] == 1
+    broker.retry_later.assert_awaited_once()
+    broker.redeliver.assert_not_awaited()
+    broker.ack.assert_not_awaited()
+    broker.dead_letter.assert_not_awaited()
+    worker._gate_deps.maybe_release_unique.assert_not_awaited()
 
 
 async def test_task_sent_to_dlq_is_an_error(broker, backend, config, swarmq_logs):
