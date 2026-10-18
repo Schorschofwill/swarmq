@@ -52,8 +52,11 @@ Chord-Skripts lässt einen Workflow bis 0.13.0 auf `running`.
    und läuft jedes Mal erneut, danach bleibt der Workflow bis zu seiner
    TTL `running`, statt sofort `failed` zu werden
    ([`workflow_advance_backend_error`](logging.md#event-katalog)).
-   0.13.0 behebt das (F4-01). Ohne Handarbeit an swarmq-Keys tritt der
-   Fall nicht auf.
+   0.13.0 bewahrt in diesem Fall das gespeicherte Erfolgsergebnis
+   (F4-01), der Workflow bleibt aber weiter bis zur TTL `running`; ob
+   eine dauerhafte Fehlerantwort am Limit den Workflow `failed` setzen
+   soll, ist eine offene Entscheidung. Ohne Handarbeit an swarmq-Keys
+   tritt der Fall nicht auf.
 3. **Lock-Namen, die mit `{sched}` beginnen, sind reserviert.** Ein
    Lock-Template, dessen gerenderter Name mit `{sched}` beginnt (dem
    Hash-Tag des Scheduler-Leaders), leitet die Nachricht jetzt mit

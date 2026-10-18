@@ -50,8 +50,11 @@ workflow `running` until 0.13.0.
    queue's `delivery_limit`, then the workflow stays `running` until its
    TTL instead of becoming `failed` at once
    ([`workflow_advance_backend_error`](logging.md#event-catalog)).
-   0.13.0 fixes this (F4-01). Without manual changes to swarmq keys the
-   case does not occur.
+   0.13.0 keeps the stored success result in this case (F4-01) but
+   the workflow still stays `running` until its TTL; whether a lasting
+   error reply at the limit should mark the workflow `failed` is an open
+   decision. Without manual changes to swarmq keys the case does not
+   occur.
 3. **Lock names that start with `{sched}` are reserved.** A lock
    template whose rendered name starts with `{sched}` (the hash tag of
    the scheduler leader) now dead-letters the message with
