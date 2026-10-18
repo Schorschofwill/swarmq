@@ -43,6 +43,7 @@ from swarmq.exceptions import ConfigurationError
 _DEADLINE_FIELDS: tuple[tuple[str, str], ...] = (
     ("cancel_poll_interval", "SWARMQ_CANCEL_POLL_INTERVAL"),
     ("backend_op_timeout", "SWARMQ_BACKEND_OP_TIMEOUT"),
+    ("backend_connect_timeout_s", "SWARMQ_BACKEND_CONNECT_TIMEOUT_S"),
     ("backend_defer_base_delay", "SWARMQ_BACKEND_DEFER_BASE_DELAY"),
     ("backend_defer_max_delay", "SWARMQ_BACKEND_DEFER_MAX_DELAY"),
     ("scheduler_poll_interval", "SWARMQ_SCHEDULER_POLL_INTERVAL"),

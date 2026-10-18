@@ -1,9 +1,11 @@
 """Unit tests for ValkeyBackend."""
 
+import asyncio
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from valkey.exceptions import ConnectionError as ValkeyConnectionError
+from valkey.exceptions import TimeoutError as ValkeyTimeoutError
 from valkey.exceptions import ValkeyError
 
 from swarmq.backend.valkey import ValkeyBackend
@@ -324,6 +326,126 @@ class TestValkeyBackendConnectError:
         with patch("swarmq.backend.valkey.connection.valkey.asyncio.Valkey.from_url", return_value=mock_client):  # noqa: SIM117
             with pytest.raises(BackendConnectionError):
                 await backend.connect()
+
+    async def test_connect_error_names_the_step_and_the_cause(self):
+        """F4-12: Die Meldung sagt, dass der Verbindungsaufbau zu Valkey
+        scheiterte, und nennt die Ursache des Treibers."""
+        backend = ValkeyBackend("valkey://localhost:6379/0", eviction_check="off")
+        mock_client = AsyncMock()
+        mock_client.register_script = Mock()
+        mock_client.ping.side_effect = ValkeyTimeoutError("Timeout reading from localhost:6379")
+
+        with (
+            patch("swarmq.backend.valkey.connection.valkey.asyncio.Valkey.from_url", return_value=mock_client),
+            pytest.raises(BackendConnectionError, match=r"^Valkey connect failed: Timeout reading from"),
+        ):
+            await backend.connect()
+
+    async def test_failed_connect_closes_its_client_and_stays_unconnected(self):
+        """F4-13: Nach gescheitertem PING bleibt kein halber Client stehen;
+        der eigene Client wird geschlossen."""
+        backend = ValkeyBackend("valkey://localhost:6379/0", eviction_check="off")
+        mock_client = AsyncMock()
+        mock_client.register_script = Mock()
+        mock_client.ping.side_effect = ValkeyConnectionError("Connection refused")
+
+        with (
+            patch("swarmq.backend.valkey.connection.valkey.asyncio.Valkey.from_url", return_value=mock_client),
+            pytest.raises(BackendConnectionError),
+        ):
+            await backend.connect()
+
+        mock_client.aclose.assert_awaited_once()
+        with pytest.raises(BackendConnectionError, match="not connected"):
+            _ = backend.client
+
+    @pytest.mark.timeout(5)
+    async def test_cancelled_connect_closes_its_client(self):
+        """F4-13: Auch ein Abbruch waehrend des PING (``BaseException``)
+        schliesst den eigenen Client."""
+        backend = ValkeyBackend("valkey://localhost:6379/0", eviction_check="off")
+        mock_client = AsyncMock()
+        mock_client.register_script = Mock()
+        mock_client.ping.side_effect = asyncio.CancelledError
+
+        with (
+            patch("swarmq.backend.valkey.connection.valkey.asyncio.Valkey.from_url", return_value=mock_client),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await backend.connect()
+
+        mock_client.aclose.assert_awaited_once()
+        assert backend._client is None
+
+    @pytest.mark.timeout(5)
+    async def test_cancel_during_the_eviction_check_closes_its_client(self):
+        """F4-13: Ein Abbruch mitten in der Eviction-Prüfung (nach
+        erfolgreichem PING) schließt den eigenen Client genau einmal; der
+        Abbruch geht unverändert nach außen, und ``connect()`` bleibt
+        wiederholbar."""
+        backend = ValkeyBackend("valkey://localhost:6379/0", eviction_check="warn")
+        mock_client = AsyncMock()
+        mock_client.register_script = Mock()
+        probing = asyncio.Event()
+
+        async def hanging_probe(*_args: object, **_kwargs: object) -> None:
+            probing.set()
+            await asyncio.Event().wait()
+
+        with (
+            patch("swarmq.backend.valkey.connection.valkey.asyncio.Valkey.from_url", return_value=mock_client),
+            patch("swarmq.backend.valkey.connection.probe_eviction", side_effect=hanging_probe),
+        ):
+            connecting = asyncio.create_task(backend.connect())
+            await probing.wait()
+            connecting.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await connecting
+
+        mock_client.ping.assert_awaited_once()
+        mock_client.aclose.assert_awaited_once()
+        assert backend._client is None
+        assert backend.eviction_check is None
+
+    @pytest.mark.timeout(5)
+    async def test_error_while_closing_does_not_hide_the_connect_error(self):
+        """F4-13: Wirft ``aclose()`` beim Aufräumen, kommt trotzdem die
+        ursprüngliche ``BackendConnectionError`` nach außen, nicht der
+        Folgefehler; das Backend bleibt unverbunden."""
+        backend = ValkeyBackend("valkey://localhost:6379/0", eviction_check="off")
+        mock_client = AsyncMock()
+        mock_client.register_script = Mock()
+        mock_client.ping.side_effect = ValkeyConnectionError("Connection refused")
+        mock_client.aclose.side_effect = OSError("already gone")
+
+        with (
+            patch("swarmq.backend.valkey.connection.valkey.asyncio.Valkey.from_url", return_value=mock_client),
+            pytest.raises(BackendConnectionError, match="Connection refused") as raised,
+        ):
+            await backend.connect()
+
+        assert isinstance(raised.value.__cause__, ValkeyConnectionError)
+        mock_client.aclose.assert_awaited_once()
+        assert backend._client is None
+
+    @pytest.mark.timeout(5)
+    async def test_error_while_closing_does_not_hide_a_cancel(self):
+        """F4-13: Auch ein Abbruch bleibt ein Abbruch, wenn ``aclose()``
+        beim Aufräumen wirft."""
+        backend = ValkeyBackend("valkey://localhost:6379/0", eviction_check="off")
+        mock_client = AsyncMock()
+        mock_client.register_script = Mock()
+        mock_client.ping.side_effect = asyncio.CancelledError
+        mock_client.aclose.side_effect = OSError("already gone")
+
+        with (
+            patch("swarmq.backend.valkey.connection.valkey.asyncio.Valkey.from_url", return_value=mock_client),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await backend.connect()
+
+        mock_client.aclose.assert_awaited_once()
+        assert backend._client is None
 
 
 class TestValkeyBackendKeyFormat:

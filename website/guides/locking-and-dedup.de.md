@@ -190,6 +190,13 @@ die DLQ geroutet. Der Fehler wird dem Operator sichtbar gemacht,
 nicht still geschluckt, weil ein gebrochenes Lock-Template ein Bug
 ist — du willst ihn laut.
 
+Dasselbe gilt für jeden anderen Render-Fehler (`"{items[0]}"` mit
+leerer Liste, `"{user.id}"` auf einem Dict) und für einen gerenderten
+Namen, der mit `{sched}` beginnt: Der ist für interne Locks von swarmq
+reserviert, etwa den Scheduler-Leader. Beginne Lock-Templates mit
+einem Literal (`"order:{order_id}"`, nicht `"{order_id}"`), dann kann
+kein Wert aus den Nutzdaten einen reservierten Namen ergeben.
+
 ### Leere Lock-Namen
 
 Ein `lock` aus `""` oder Whitespace würde auf den bloßen

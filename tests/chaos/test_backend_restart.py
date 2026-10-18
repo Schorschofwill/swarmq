@@ -11,6 +11,9 @@ contract four ways:
    the :meth:`Client.watch_progress` fix shipped in Phase 0 and sees a
    post-restart publish — regression test for the toxiproxy-spike bug.
 4. The cancel flag survives the outage (``is_cancelled`` stays True).
+5. F4-14: A worker whose task finishes while Valkey restarts behind a
+   proxy that accepts and resets (``reset_peer`` toxic) stores the result
+   within the client's retry window; the task runs exactly once.
 
 All tests use the ``chaos_stack`` fixture; the container is restarted
 directly via ``docker restart {project}-valkey-1``.
@@ -24,12 +27,19 @@ import json
 import subprocess
 import time
 import uuid
+from collections.abc import AsyncIterator, Iterator
+from typing import Any, override
 
+import httpx
 import pytest
 
+from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
+from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.client import Client
 from swarmq.progress import ProgressInfo
+from swarmq.signals import Signal
+from swarmq.task import Task, TaskInfo
 from tests.chaos.conftest import ChaosStack
 
 pytestmark = [pytest.mark.timeout(120)]
@@ -63,10 +73,133 @@ async def _wait_valkey_reachable(url: str, timeout: float = 30.0) -> None:
     raise RuntimeError(f"valkey not reachable within {timeout}s: {last_exc!r}")
 
 
+@contextlib.asynccontextmanager
+async def _proxy_resets_valkey_connections(stack: ChaosStack) -> AsyncIterator[None]:
+    """Valkey-Neustart hinter einem Proxy, der annimmt und trennt (F4-14).
+
+    Der ``timeout``-Toxic mit ``timeout: 1`` (ms) laesst keine Daten durch
+    und schliesst jede bestehende und jede neue Verbindung über den
+    Valkey-Proxy nach 1 ms: wie Valkey beim Herunterfahren und ein Proxy
+    oder Sidecar, der den Neuaufbau annimmt, aber kein Ziel erreicht
+    (``reset_peer`` kennt das Image ``shopify/toxiproxy:latest`` nicht). Ein
+    ``docker restart`` allein bildet das hier nicht nach: der Compose-Proxy
+    hält neue Verbindungen während des Neustarts fest (gemessen 2026-10-17:
+    Lesen läuft 1 s in den Zeitablauf, danach PONG), statt sie zu trennen."""
+    async with httpx.AsyncClient(base_url=stack.toxi_admin_url, timeout=5.0) as admin:
+        response = await admin.post(
+            "/proxies/vkey/toxics",
+            json={"name": "valkey-restart", "type": "timeout", "stream": "downstream", "attributes": {"timeout": 1}},
+        )
+        response.raise_for_status()
+        try:
+            yield
+        finally:
+            await admin.delete("/proxies/vkey/toxics/valkey-restart")
+
+
+@contextlib.asynccontextmanager
+async def _running_worker(stack: ChaosStack, queue: str) -> AsyncIterator[None]:
+    """Worker im Prozess gegen die Proxy-URLs, bis ``WORKER_ONLINE``."""
+    broker = RabbitMQBroker(stack.rabbitmq_url)
+    backend = ValkeyBackend(stack.valkey_url)
+    app = SwarmQ(broker, backend, queues=[queue])
+    online = asyncio.Event()
+
+    @app.on_signal(Signal.WORKER_ONLINE)
+    async def _on_online(**_: Any) -> None:
+        online.set()
+
+    worker = asyncio.create_task(app.start_worker())
+    try:
+        await asyncio.wait_for(online.wait(), timeout=15.0)
+        yield
+    finally:
+        worker.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await worker
+        with contextlib.suppress(Exception):
+            await broker.close()
+        with contextlib.suppress(Exception):
+            await backend.close()
+
+
+@pytest.fixture
+def _cleanup_tasks() -> Iterator[None]:
+    yield
+    Task._clear_registered_tasks()
+
+
 # ---------------------------------------------------------------------------
 
 
 class TestBackendRestart:
+    @pytest.mark.befund("F4-14")
+    @pytest.mark.usefixtures("_cleanup_tasks")
+    async def test_task_finishing_while_valkey_restarts_behind_the_proxy_runs_once(
+        self,
+        chaos_stack: ChaosStack,
+    ) -> None:
+        """F4-14: Valkey startet hinter dem Proxy neu, während der Task sein
+        Ergebnis speichert. Die Pool-Verbindung ist tot, der Proxy nimmt den
+        Neuaufbau an und trennt ihn im Handshake; nach 1 s (Loadsuite: 0,8
+        bis 1,2 s) ist Valkey zurück. Der Client wiederholt den Neuaufbau im
+        Fenster von rund 3,1 s, das Ergebnis landet, der Task läuft genau
+        einmal. Ohne die Wiederholung scheitert das Speichern nach wenigen
+        Millisekunden und die Nachricht wird erneut zugestellt."""
+        queue = f"chaos-restart-{uuid.uuid4().hex[:10]}"
+        task_name = f"restart_counted_{uuid.uuid4().hex[:8]}"
+        runs: dict[str, int] = {}
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        class CountedTask(Task):
+            task_info = TaskInfo(name=task_name, queues=[queue])
+
+            @override
+            async def run(self) -> str:
+                assert self._task_id is not None
+                runs[self._task_id] = runs.get(self._task_id, 0) + 1
+                started.set()
+                await release.wait()
+                return "done"
+
+        client_broker = RabbitMQBroker(chaos_stack.rabbitmq_url)
+        client_app = SwarmQ(client_broker, ValkeyBackend(chaos_stack.valkey_url), queues=[queue])
+        async with client_app:
+            await client_broker.declare_queue(queue)
+            async with _running_worker(chaos_stack, queue):
+                task_id = await client_app.schedule(task_name)
+                await asyncio.wait_for(started.wait(), timeout=30.0)
+
+                async with _proxy_resets_valkey_connections(chaos_stack):
+                    # Erst sieht der Worker seine Pool-Verbindungen getrennt
+                    # (wie nach dem Herunterfahren), dann endet der Task: das
+                    # Speichern baut die Verbindung hinter dem Proxy neu auf.
+                    await asyncio.sleep(0.2)
+                    release.set()
+                    await asyncio.sleep(1.0)
+
+                reader = ValkeyBackend(chaos_stack.valkey_url)
+                await reader.connect()
+                try:
+                    deadline = time.monotonic() + 30.0
+                    stored = None
+                    while stored is None and time.monotonic() < deadline:
+                        stored = await reader.get_result(task_id)
+                        if stored is None:
+                            await asyncio.sleep(0.2)
+                    assert stored is not None, "Ergebnis nach dem Neustart nicht gespeichert"
+                    # Eine Neuzustellung käme nach dem gescheiterten
+                    # Speichern sofort; kurz nachsehen, ob sie lief.
+                    await asyncio.sleep(1.5)
+                finally:
+                    await reader.close()
+
+        assert runs == {task_id: 1}, (
+            f"Task lief {runs.get(task_id, 0)}-mal; das Speichern während des Neustarts hinter dem Proxy "
+            "hätte im Wiederholfenster gelingen müssen (F4-14)"
+        )
+
     async def test_result_storage_survives_restart(
         self,
         chaos_stack: ChaosStack,

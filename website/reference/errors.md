@@ -191,6 +191,20 @@ except BrokerConnectionError as exc:
 
 **When raised.** Worker startup when Valkey is not reachable, or at
 runtime when a backend operation exceeds `backend_op_timeout`.
+`ValkeyBackend.connect()` (worker start, CLI commands, producers)
+raises it for every driver error, also for a timeout and for an error
+reply to its `PING` (ACL `NOPERM` as `BackendResponseError`), with the
+message `Valkey connect failed: …`. The `PING` runs under an overall
+deadline, [`SWARMQ_BACKEND_CONNECT_TIMEOUT_S`](configuration.md#worker-behaviour)
+(default 30 s); when it expires, the message is
+`Valkey connect timed out after …s`. A failed `connect()` closes the
+client it built and leaves no half-connected backend behind; a later
+`connect()` reaches Valkey again and repeats the eviction check. When
+the connection is accepted but cut during the handshake (a proxy or
+sidecar in front of a restarting Valkey), the client rebuilds it
+within the same window as a command retry, about 3.1 s from the first
+failure, before the command is sent. A handshake that hangs ends after
+the socket timeout (10 s) without a retry.
 
 **Cause.** Valkey down, URL wrong, `AUTH` password mismatch, TLS
 mismatch.

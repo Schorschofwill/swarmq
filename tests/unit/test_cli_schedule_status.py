@@ -10,14 +10,17 @@
 # 5. Valkey-Ausfall beim Lesen von Leader-Version oder Worker-Versionen:
 #    wie beim Leader selbst propagiert ``BackendConnectionError`` (Exit 1 über
 #    ``_run_command``), keine halbe Ausgabe, das Backend wird geschlossen.
+# 6. E-075: ``SWARMQ_BACKEND_CONNECT_TIMEOUT_S`` begrenzt auch den
+#    Verbindungsaufbau des CLI-Backends (ohne ``SwarmQConfig``).
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import io
 import json
 from contextlib import redirect_stdout
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
@@ -114,3 +117,26 @@ async def test_backend_outage_propagates_without_partial_output(monkeypatch, fai
         await schedule_cmd._run_schedule_status(argparse.Namespace(format=fmt, limit=5))
     assert buf.getvalue() == ""
     backend.close.assert_awaited_once()
+
+
+@pytest.mark.entscheidung("E-075")
+async def test_connect_deadline_from_the_environment_bounds_the_cli_backend(monkeypatch) -> None:
+    """``schedule status`` baut das Backend ohne ``SwarmQConfig``; die Frist
+    kommt aus der Umgebung. Ein Valkey, das nie antwortet, endet nach ihr."""
+    client = AsyncMock()
+    client.register_script = Mock()
+
+    async def never_answers() -> bool:
+        await asyncio.Event().wait()
+        return True
+
+    client.ping.side_effect = never_answers
+    monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://valkey.invalid:6379/0")
+    monkeypatch.setenv("SWARMQ_BACKEND_CONNECT_TIMEOUT_S", "0.01")
+    monkeypatch.setenv("SWARMQ_VALKEY_EVICTION_CHECK", "off")
+
+    with (
+        patch("swarmq.backend.valkey.connection.valkey.asyncio.Valkey.from_url", return_value=client),
+        pytest.raises(BackendConnectionError, match=r"timed out after 0\.01s"),
+    ):
+        await schedule_cmd._run_schedule_status(argparse.Namespace(format="json", limit=5))

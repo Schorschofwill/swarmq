@@ -179,6 +179,13 @@ task is routed to the DLQ with an `x-swarmq-lock-render-error` header. The
 failure is surfaced to the operator, not silently swallowed, because
 a broken lock template is a bug — you want it loud.
 
+The same applies to any other render error (`"{items[0]}"` with an
+empty list, `"{user.id}"` on a dict) and to a rendered name that
+starts with `{sched}`, which is reserved for swarmq's internal locks
+such as the scheduler leader. Start lock templates with a literal
+(`"order:{order_id}"`, not `"{order_id}"`), then payload values can
+never produce a reserved name.
+
 ### Empty lock names
 
 A `lock` of `""` or whitespace would collapse to the bare Valkey

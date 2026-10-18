@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, cast
 
 import valkey.asyncio
 
+from swarmq.backend.valkey.connection import as_backend_error
+from swarmq.exceptions import BackendConnectionError
 from swarmq.keyspace import KeySpace
 from swarmq.lua import load_script
 
@@ -57,10 +59,21 @@ class ChordManager:
         here. That ordering guarantees the body is never lost under a crash
         in the completion→publish window (at worst a rare idempotent
         double-enqueue, absorbed by step idempotency).
+
+        Treiberfehler wandelt ``as_backend_error`` wie in den übrigen Stores
+        (F4-11): ein Ausfall (Transport, Zeitablauf, ``OOM``) wird
+        ``BackendConnectionError``, eine andere Fehlerantwort (``WRONGTYPE``,
+        Skriptfehler) ``BackendResponseError``.
         """
-        result = cast(
-            "int", await self._script(keys=[self._keys.chord(wf_id, chord_id)], args=[member_id, expected_n, ttl_ms])
-        )
+        try:
+            result = cast(
+                "int",
+                await self._script(keys=[self._keys.chord(wf_id, chord_id)], args=[member_id, expected_n, ttl_ms]),
+            )
+        except BackendConnectionError:
+            raise
+        except Exception as exc:
+            raise as_backend_error(f"chord record failed for {wf_id!r} {chord_id!r}: {exc}", exc) from exc
         return bool(result == 1)
 
     async def record_member(self, wf_id: str, chord_id: str, member_id: str, *, expected: int, ttl_ms: int) -> bool:

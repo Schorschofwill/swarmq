@@ -57,6 +57,11 @@ class SwarmQ:
             **config_kwargs,
         )
         self._reconcile_namespace()
+        # Nachtrag E-075: Gesamtfrist beim Verbinden; Backends ohne Abgleich
+        # (Fakes, fremde Implementierungen) bleiben unveraendert.
+        reconcile_connect_timeout = getattr(self.backend, "reconcile_connect_timeout", None)
+        if callable(reconcile_connect_timeout):
+            reconcile_connect_timeout(self.config.backend_connect_timeout_s)
         self.broker._queue_type = self.config.queue_type
         self.broker.publish_timeout_s = self.config.publish_timeout_s
         self.broker.delivery_limit = self.config.delivery_limit

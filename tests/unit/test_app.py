@@ -898,6 +898,42 @@ class TestPublishTimeoutWiring:
         assert broker.publish_timeout_s == 12.5
 
 
+@pytest.mark.entscheidung("E-075")
+class TestBackendConnectTimeoutWiring:
+    """E-075 (Nachtrag U4): Vorrang der Gesamtfrist beim Verbinden --
+    ausdruecklicher Backend-Parameter > ``SwarmQConfig``-Feld/Env > Vorgabe 30 s."""
+
+    def test_configured_deadline_reaches_the_backend(self, broker, monkeypatch):
+        monkeypatch.delenv("SWARMQ_BACKEND_CONNECT_TIMEOUT_S", raising=False)
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        SwarmQ(broker, backend, backend_connect_timeout_s=5)
+        assert backend.connect_timeout_s == 5
+
+    def test_explicit_backend_parameter_wins_over_the_configuration(self, broker):
+        backend = ValkeyBackend("valkey://localhost:6379/0", connect_timeout_s=7)
+        SwarmQ(broker, backend, backend_connect_timeout_s=5)
+        assert backend.connect_timeout_s == 7
+
+    def test_without_parameter_and_configuration_the_default_applies(self, broker, monkeypatch):
+        monkeypatch.delenv("SWARMQ_BACKEND_CONNECT_TIMEOUT_S", raising=False)
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        SwarmQ(broker, backend)
+        assert backend.connect_timeout_s == 30.0
+
+    def test_environment_reaches_a_backend_without_parameter(self, broker, monkeypatch):
+        monkeypatch.setenv("SWARMQ_BACKEND_CONNECT_TIMEOUT_S", "9")
+        backend = ValkeyBackend("valkey://localhost:6379/0")
+        SwarmQ(broker, backend)
+        assert backend.connect_timeout_s == 9
+
+    def test_backend_without_reconcile_is_left_alone(self, broker):
+        # Fremd-Backend ohne Abgleich: der Spec laesst nur ``_url`` zu.
+        backend = MagicMock(spec=["_url"])
+        backend._url = "valkey://localhost:6379/0"
+        SwarmQ(broker, backend, backend_connect_timeout_s=5)
+        assert not hasattr(backend, "connect_timeout_s")
+
+
 class TestDeliveryLimitWiring:
     """B5: die App reicht das konfigurierte Zustellbudget an den Broker
     durch — gleicher Weg wie queue_type und publish_timeout_s."""

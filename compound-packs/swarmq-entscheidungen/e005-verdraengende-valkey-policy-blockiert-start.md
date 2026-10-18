@@ -18,6 +18,7 @@ tests:
   - tests/unit/worker/test_eviction_gate.py::test_start_goes_on_unless_strict_meets_a_proven_evicting_policy
   - tests/unit/test_config_valkey_eviction.py::test_default_is_strict
   - tests/unit/scheduler/test_valkey_watch.py::test_recheck_at_most_once_per_hour
+  - tests/unit/backend/test_befund_bz04_eviction_policy.py::test_strict_refuses_to_start_when_only_info_reveals_an_evicting_policy
 ---
 
 **Entscheidung.** Default `SWARMQ_VALKEY_EVICTION_CHECK=strict`: Bei einer nachweislich verdrängenden Policy verweigert der Worker (und damit der Leader) den Start mit `ConfigurationError` (Exit 78), geprüft vor `_wire_coordination`. `warn` und `off` schalten ab. Ist die Policy nicht prüfbar, blockiert das nie, es gibt nur die WARNING `valkey_eviction_policy_unknown`. Der Leader prüft stündlich erneut und warnt.

@@ -17,10 +17,8 @@ Zusagen:
   leerer oder nur aus Leerraum bestehender Name erreicht ``acquire`` nie
   (Kommentar "Empty-rendered lock guard").
 * Ein Lock-Name aus Nutzdaten belegt keinen internen Key unter dem
-  Lock-Präfix (``KeySpace.scheduler_lock`` = ``sq:lock:{sched}:leader``);
-  Quelle der Erwartung: Namensraum-Trennung in ``swarmq.keyspace``
-  ("Hash-Tags legen zusammen genutzte Keys in einen Slot") und
-  ``locking.SCHEDULER_LOCK_KEY``.
+  Lock-Präfix (``KeySpace.scheduler_lock`` = ``sq:lock:{sched}:leader``):
+  ein gerenderter Name, der mit ``{sched}`` beginnt, geht in die DLQ (E-074).
 
 Allow-List: ``ValueError`` für ``render_lock_name``; ``LockGate.apply``
 darf nicht werfen.
@@ -28,20 +26,18 @@ darf nicht werfen.
 Treffer (Bericht docs/befunde/fehlersuche-runde-4-recherche/5-fuzz.md; IDs aus
 dem Register ``docs/befunde/fehlersuche-runde-4-2026-10.md``):
 
-* F4-10 / R4F-08 (FEHLER): Templates mit Index- oder Attributzugriff
-  (``{items[0]}``, ``{user.id}``) werfen ``IndexError``/``AttributeError``
-  statt ``ValueError``; ``LockGate.apply`` reicht sie durch. Ausgeklammert:
-  keine Index-/Attributzugriffe im Template. Nachweis
+* F4-10 / R4F-08 (FEHLER, behoben): Templates mit Index- oder Attributzugriff
+  (``{items[0]}``, ``{user.id}``) warfen ``IndexError``/``AttributeError``
+  statt ``ValueError``. Nachweis
   ``tests/unit/worker/gates/test_befund_f4_10_lock_render_index_attr.py``.
-* PF-14 / R4F-09 (LÜCKE, Produktfrage C): ein Argument ``"{sched}:leader"`` mit Template ``"{key}"``
-  ergibt den Key des Scheduler-Leader-Locks. Ausgeklammert: dieser Wert
-  kommt in den Argumenten nicht vor.
+* PF-14 / R4F-09 (LÜCKE, entschieden als E-074): ein Argument ``"{sched}:leader"``
+  mit Template ``"{key}"`` ergab den Key des Scheduler-Leader-Locks; heute DLQ.
 * R4F-10 (NICHT HALTBAR, Filter bleibt): Formatbreite aus den Nutzdaten.
 
 Testliste:
 # [x] render_lock_name: str oder ValueError
 # [x] LockGate.apply: nie Ausnahme; leer gerendert -> Dead-Letter, kein acquire
-# [x] LockGate.apply: acquire nie mit dem Namen des Scheduler-Leader-Locks
+# [x] LockGate.apply: acquire nie mit dem Namen des Scheduler-Leader-Locks oder unter ``{sched}``
 """
 
 from __future__ import annotations
@@ -68,12 +64,12 @@ pytestmark = [pytest.mark.timeout(60)]
 
 _SCHEDULER_LOCK_NAME = KeySpace().scheduler_lock().removeprefix(KeySpace().lock_prefix)
 
-# PF-14 (R4F-09): der Name des Scheduler-Leader-Locks ist als Argument ausgeklammert.
-# Treffer (geschrumpft): @example(template="{key}", key="{sched}:leader", other=None)
 _text_args = st.one_of(
     st.text(max_size=12),
-    st.sampled_from(["", " ", "\t", "\u200b", "{", "}", "{key}", "sched", "{sched}", "leader", "*", ":"]),
-).filter(lambda text: text != _SCHEDULER_LOCK_NAME)
+    st.sampled_from(
+        ["", " ", "\t", "\u200b", "{", "}", "{key}", "sched", "{sched}", "leader", "*", ":", _SCHEDULER_LOCK_NAME]
+    ),
+)
 _payload = st.recursive(
     st.one_of(st.none(), st.booleans(), st.integers(), st.floats(), _text_args),
     lambda inner: st.one_of(
@@ -83,12 +79,12 @@ _payload = st.recursive(
     max_leaves=5,
 )
 
-# Platzhalter wie in Task-Definitionen; F4-10 (R4F-08): ohne ``[<int>]`` und ``.attr``.
-# Treffer (geschrumpft): @example(template="{key[0]}", key=[], other=None)
-#                       @example(template="{key.id}", key=None, other=None)
+# Platzhalter wie in Task-Definitionen.
 # R4F-10 (nicht haltbar, Filter bleibt): eine Formatbreite aus den Nutzdaten (``{key:{other}}``) mit
-# fünf und mehr Ziffern ist ausgeklammert; sie allokiert Gigabytes.
-# Treffer (geschrumpft): @example(template="{key:{other}}", key=0.0, other=98077398153.0)  -> MemoryError
+# fünf und mehr Ziffern ist ausgeklammert. Ein ``MemoryError`` kommt seit F4-10 als ``ValueError``
+# an (Unit-Test ``test_huge_format_width_from_payload_is_a_value_error``), aber Breiten bis etwa
+# 10^10 allokieren tatsächlich Gigabytes; das soll der Fuzz-Lauf nicht tun.
+# Treffer (geschrumpft): @example(template="{key:{other}}", key=0.0, other=98077398153.0)
 _other_payload = _payload.filter(lambda value: re.search(r"\d{5,}", str(value)) is None)
 
 _placeholder = st.sampled_from(
@@ -99,6 +95,8 @@ _placeholder = st.sampled_from(
         "{key!r}",
         "{key[id]}",
         "{key[name]}",
+        "{key[0]}",
+        "{key.id}",
         "{key:>3}",
         "{key:d}",
         "{key:.2f}",
@@ -132,6 +130,8 @@ class _LockedTask(Task):
 @given(template=_templates(), key=_payload, other=_other_payload)
 @example(template="{key}", key="", other=None)
 @example(template="{key[id]}", key=[], other=None)
+@example(template="{key[0]}", key=[], other=None)
+@example(template="{key.id}", key=None, other=None)
 @settings(max_examples=500, deadline=None)
 def test_render_lock_name_returns_text_or_value_error(template: str, key: object, other: object) -> None:
     try:
@@ -166,6 +166,8 @@ class _Delivery:
 @given(template=_templates().filter(lambda text: text.strip()), key=_payload, other=_other_payload)
 @example(template="{key}", key="   ", other=None)
 @example(template="{key}{other}", key="", other="")
+@example(template="{key}", key="{sched}:leader", other=None)
+@example(template="{key[0]}", key=[], other=None)
 @settings(max_examples=500, deadline=None)
 def test_lock_gate_never_acquires_an_empty_or_internal_name(template: str, key: object, other: object) -> None:
     task_info = TaskInfo(name="fuzz_lock_template", queues=["q"], lock=template, hard_timeout=60)
@@ -189,6 +191,7 @@ def test_lock_gate_never_acquires_an_empty_or_internal_name(template: str, key: 
         (name,) = acquired
         assert name.strip()
         assert KeySpace().lock(name) != KeySpace().scheduler_lock()
+        assert not name.startswith("{sched}")
         dead_letter.assert_not_awaited()
     else:
         assert outcome is Redelivered

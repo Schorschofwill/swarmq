@@ -2,6 +2,7 @@
 
 import os
 import re
+import threading
 from typing import cast
 
 import pytest
@@ -556,6 +557,7 @@ _NUMERIC_ENV_VARS = [
     "SWARMQ_SHUTDOWN_TIMEOUT",
     "SWARMQ_CANCEL_POLL_INTERVAL",
     "SWARMQ_BACKEND_OP_TIMEOUT",
+    "SWARMQ_BACKEND_CONNECT_TIMEOUT_S",
     "SWARMQ_BACKEND_DEFER_BASE_DELAY",
     "SWARMQ_BACKEND_DEFER_MAX_DELAY",
     "SWARMQ_SCHEDULER_POLL_INTERVAL",
@@ -581,6 +583,30 @@ def test_numeric_env_garbage_raises_configuration_error(monkeypatch, env_var):
     monkeypatch.setenv(env_var, "abc")
     with pytest.raises(ConfigurationError, match=env_var):
         SwarmQConfig(broker_url="x", backend_url="x")
+
+
+# --- Gesamtfrist beim Verbinden zum Backend (E-075) ---
+
+
+@pytest.mark.entscheidung("E-075")
+def test_config_backend_connect_timeout_default_30(monkeypatch):
+    monkeypatch.delenv("SWARMQ_BACKEND_CONNECT_TIMEOUT_S", raising=False)
+    cfg = SwarmQConfig(broker_url="x", backend_url="x")
+    assert cfg.backend_connect_timeout_s == 30.0
+
+
+@pytest.mark.entscheidung("E-075")
+def test_config_backend_connect_timeout_from_env(monkeypatch):
+    monkeypatch.setenv("SWARMQ_BACKEND_CONNECT_TIMEOUT_S", "12.5")
+    cfg = SwarmQConfig(broker_url="x", backend_url="x")
+    assert cfg.backend_connect_timeout_s == 12.5
+
+
+@pytest.mark.entscheidung("E-075")
+@pytest.mark.parametrize("seconds", [0.0, -1.0, threading.TIMEOUT_MAX * 2])
+def test_config_backend_connect_timeout_out_of_range_raises(seconds):
+    with pytest.raises(ConfigurationError, match="backend_connect_timeout_s must be > 0"):
+        SwarmQConfig(broker_url="x", backend_url="x", backend_connect_timeout_s=seconds)
 
 
 # --- Publish-Deadline (Plan 2026-08-28-001, U1 / R3) ---

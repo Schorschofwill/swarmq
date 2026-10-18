@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import ClassVar, cast, override
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from swarmq.config_validation import ConfigValidation
+from swarmq.config_validation import ConfigValidation, valid_backend_connect_timeout
 from swarmq.exceptions import ConfigurationError
 from swarmq.keyspace import validate_namespace
 from swarmq.logging_settings import (
@@ -171,6 +171,23 @@ def env_valkey_eviction_check() -> str:
     return mode if mode in EVICTION_CHECK_MODES else "strict"
 
 
+#: E-075: Vorgabe der Gesamtfrist fuer den PING beim Verbinden zum Backend.
+DEFAULT_BACKEND_CONNECT_TIMEOUT_S = 30.0
+
+
+def env_backend_connect_timeout_s() -> float:
+    """``SWARMQ_BACKEND_CONNECT_TIMEOUT_S`` fuer Backends ohne ``SwarmQConfig``
+    (CLI, Producer; E-075). Ungesetzt oder leer: die Vorgabe von 30 s."""
+    raw = os.environ.get("SWARMQ_BACKEND_CONNECT_TIMEOUT_S", "")
+    if not raw:
+        return DEFAULT_BACKEND_CONNECT_TIMEOUT_S
+    seconds = cast("float", parse_env_value("float", raw, "SWARMQ_BACKEND_CONNECT_TIMEOUT_S"))
+    if not valid_backend_connect_timeout(seconds):
+        msg = f"SWARMQ_BACKEND_CONNECT_TIMEOUT_S must be > 0 and at most threading.TIMEOUT_MAX seconds, got {raw!r}"
+        raise ConfigurationError(msg)
+    return seconds
+
+
 def env_namespace() -> str | None:
     """``SWARMQ_NAMESPACE`` fuer Backends ohne ``SwarmQConfig`` (CLI, Producer,
     Kontrollkanal; Plan 0.12.0, MR 15, BZ-10). Leer oder ungesetzt: kein
@@ -276,6 +293,9 @@ class SwarmQConfig(ConfigValidation):
     # Valkey would otherwise wedge the cancel monitor at TCP-default
     # latency. 5s is conservative for a local Valkey deployment.
     backend_op_timeout: float = 5.0
+    # Gesamtfrist des PING beim Verbinden zum Backend (E-075): danach endet
+    # der Start mit ``BackendConnectionError``, statt minutenlang zu warten.
+    backend_connect_timeout_s: float = DEFAULT_BACKEND_CONNECT_TIMEOUT_S
     # Zurueckstellung, wenn ein Gate vor der Ausfuehrung am Backend scheitert:
     # die Nachricht geht als neue Nachricht ueber die Delay-Queue zurueck
     # (Wartezeit ``base * 2**(n-1)``, gedeckelt), statt per Requeue das
@@ -482,6 +502,7 @@ class SwarmQConfig(ConfigValidation):
         ("SWARMQ_BROKER_PUBLISH_CONNECTION", "broker_publish_connection", "str"),
         ("SWARMQ_CANCEL_POLL_INTERVAL", "cancel_poll_interval", "float"),
         ("SWARMQ_BACKEND_OP_TIMEOUT", "backend_op_timeout", "float"),
+        ("SWARMQ_BACKEND_CONNECT_TIMEOUT_S", "backend_connect_timeout_s", "float"),
         ("SWARMQ_BACKEND_DEFER_BASE_DELAY", "backend_defer_base_delay", "float"),
         ("SWARMQ_BACKEND_DEFER_MAX_DELAY", "backend_defer_max_delay", "float"),
         ("SWARMQ_SCHEDULER_POLL_INTERVAL", "scheduler_poll_interval", "float"),
@@ -537,6 +558,7 @@ class SwarmQConfig(ConfigValidation):
     _POSITIVE_FIELDS: ClassVar[tuple[str, ...]] = (
         "cancel_poll_interval",
         "backend_op_timeout",
+        "backend_connect_timeout_s",
         "backend_defer_base_delay",
         "backend_defer_max_delay",
         "max_message_body_bytes",

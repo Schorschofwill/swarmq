@@ -60,9 +60,6 @@ class _Delivery:
 
 
 @pytest.mark.befund("F4-10")
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="F4-10: offen - Index-/Attributzugriff im Lock-Template wirft roh"
-)
 @_CASES
 def test_render_failure_with_index_or_attribute_access_is_a_value_error(template: str, key: object) -> None:
     error: BaseException | None = None
@@ -75,9 +72,6 @@ def test_render_failure_with_index_or_attribute_access_is_a_value_error(template
 
 
 @pytest.mark.befund("F4-10")
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="F4-10: offen - Index-/Attributzugriff im Lock-Template wirft roh"
-)
 @_CASES
 async def test_lock_gate_dead_letters_a_render_failure_with_index_or_attribute_access(
     template: str, key: object

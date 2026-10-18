@@ -61,7 +61,7 @@ from swarmq.headers import (
     LOCK_WAIT_STATE_HEADERS,
 )
 from swarmq.keyspace import KeySpace
-from swarmq.locking import compute_lock_ttl_ms
+from swarmq.locking import SCHEDULER_LOCK_NAME, compute_lock_ttl_ms
 from swarmq.logging import _error_fields, get_logger
 from swarmq.signals import Signal
 from swarmq.worker.gates import (
@@ -97,6 +97,10 @@ LOCK_CONFLICT_BACKOFF_CAP_MS = 60_000
 
 #: PTTL-Antwort fuer einen fehlenden Key: kein Halter.
 _PTTL_KEY_MISSING = -2
+
+#: E-074: Lock-Namen unter diesem Hash-Tag (``keyspace``: ``{sched}:leader``
+#: u. a.) sind intern; ein gerenderter Nutzer-Name darf sie nicht treffen.
+RESERVED_LOCK_PREFIX = "{sched}"
 
 # Halter-Header der Wartezeit (entfallen, sobald kein Halter mehr da ist).
 LOCK_HOLDER_HEADERS = (HEADER_LOCK_HOLDER, HEADER_LOCK_HOLDER_SINCE, HEADER_LOCK_HOLDER_TTL_MS)
@@ -145,10 +149,15 @@ def render_lock_name(lock_template: str, task_class: type[Any], args: list[Any],
     task's run-method signature so positional and keyword args can
     both fill ``"user-{user_id}"``-style templates.
 
-    Raises ``ValueError`` (with a wrapped TypeError / KeyError as
-    cause) on render failure — caller routes the message to DLQ
-    with an explanatory header. Plain non-format strings short-
-    circuit before any inspect work, keeping the common case cheap.
+    Raises ``ValueError`` on render failure — caller routes the message
+    to DLQ with an explanatory header. Every ``Exception`` from binding
+    and ``format_map`` (``TypeError``, ``KeyError``, ``IndexError``,
+    ``AttributeError``, ``MemoryError``, ...) is wrapped as cause (F4-10);
+    ``BaseException`` such as ``CancelledError`` passes through. A
+    rendered name that starts with ``{sched}`` or equals an internal lock
+    name is reserved and raises ``ValueError`` as well (E-074). Plain
+    non-format strings short-circuit before any inspect work, keeping the
+    common case cheap.
     """
     if "{" not in lock_template:
         return lock_template
@@ -159,9 +168,15 @@ def render_lock_name(lock_template: str, task_class: type[Any], args: list[Any],
         # Drop the first parameter ('self') so {self} placeholders
         # don't accidentally pull in the bound None.
         bound.pop("self", None)
-        return lock_template.format_map(bound)
-    except (TypeError, KeyError) as exc:
+        name = lock_template.format_map(bound)
+    except Exception as exc:  # F4-10: jeder Render-Fehler ist ein Konfigurationsfehler (DLQ)
         raise ValueError(f"failed to render lock name {lock_template!r}: {exc}") from exc
+    if name.startswith(RESERVED_LOCK_PREFIX) or name == SCHEDULER_LOCK_NAME:
+        raise ValueError(
+            f"lock template {lock_template!r} rendered to reserved lock name {name!r}; "
+            "start lock templates with a literal, e.g. 'order:{order_id}'"
+        )
+    return name
 
 
 # Argumente delivery, ctx, error_message, error_type, extra_headers und
