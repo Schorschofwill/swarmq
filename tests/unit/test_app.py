@@ -17,7 +17,9 @@ from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import ConfigurationError
 from swarmq.middleware import MessageContext
+from swarmq.serialization import encode_json
 from swarmq.task import Task, TaskInfo
+from swarmq.workflow import group
 
 
 @pytest.fixture
@@ -881,6 +883,78 @@ class TestSwarmQCancel:
         with patch.object(app.client, "cancel", AsyncMock(return_value=False)):
             result = await app.cancel("task-ghi")
         assert result is False
+
+
+class WorkflowCancelStep(Task):
+    task_info = TaskInfo(name="app_wf_cancel_step", queues=["app_wf_cancel"])
+
+    @override
+    async def run(self, x: str) -> str:
+        return x
+
+
+class TestSwarmQWorkflowCancelFlagTtl:
+    """E-020, Nachtrag 2026-10-17 (F4-03, R4M-E-01b): das Workflow-Cancel-Flag
+    lebt ``max(24 h, result_ttl)`` — über das ``apply``-Handle wie über das
+    per ``app.workflow(id)`` neu gebaute Handle.
+
+    Testliste:
+    # [x] result_ttl 60 s: Apply-Handle setzt das Flag 24 h
+    # [x] Grenzfälle Apply-Handle: result_ttl 0, exakt 24 h, 24 h + 1 s, 7 d
+    # [x] Reattach-Handle: dieselben Werte wie das Apply-Handle
+    """
+
+    _CASES = (
+        (0, 86_400_000),
+        (60, 86_400_000),
+        (86_400, 86_400_000),
+        (86_401, 86_401_000),
+        (7 * 86_400, 7 * 86_400_000),
+    )
+
+    @staticmethod
+    def _app(broker, backend, result_ttl: int) -> SwarmQ:
+        broker.publish = AsyncMock()
+        backend.store_workflow_state = AsyncMock()
+        backend.get_workflow_state = AsyncMock(return_value=encode_json({"status": "running", "version": 0}))
+        backend.set_workflow_cancel_flag = AsyncMock(return_value=True)
+        backend.notify_workflow = AsyncMock()
+        app = SwarmQ(broker, backend, result_ttl=result_ttl)
+        if not app.registry.has("app_wf_cancel_step"):
+            app.registry.register(WorkflowCancelStep)
+        return app
+
+    @staticmethod
+    def _flag_ttl_ms(backend) -> int:
+        call = backend.set_workflow_cancel_flag.await_args
+        assert call is not None
+        return int(call.kwargs["ttl_ms"])
+
+    @pytest.mark.entscheidung("E-020")
+    @pytest.mark.timeout(5)
+    @pytest.mark.parametrize(("result_ttl", "expected_ms"), _CASES)
+    async def test_apply_handle_cancel_flag_lives_max_of_24h_and_result_ttl(
+        self, broker, backend, result_ttl: int, expected_ms: int
+    ):
+        app = self._app(broker, backend, result_ttl)
+
+        handle = await app.apply(group(WorkflowCancelStep.s("a"), WorkflowCancelStep.s("b")))
+        await handle.cancel()
+
+        assert self._flag_ttl_ms(backend) == expected_ms
+
+    @pytest.mark.entscheidung("E-020")
+    @pytest.mark.timeout(5)
+    @pytest.mark.parametrize(("result_ttl", "expected_ms"), _CASES)
+    async def test_reattached_handle_cancel_flag_lives_max_of_24h_and_result_ttl(
+        self, broker, backend, result_ttl: int, expected_ms: int
+    ):
+        app = self._app(broker, backend, result_ttl)
+
+        handle = await app.workflow("wf-reattach")
+        await handle.cancel()
+
+        assert self._flag_ttl_ms(backend) == expected_ms
 
 
 class TestPublishTimeoutWiring:

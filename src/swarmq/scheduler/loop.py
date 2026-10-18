@@ -342,8 +342,10 @@ class SchedulerLoop(
                     msgspec.json.encode(definition),
                     live_window_ms=live_window,
                 )
+            # F4-06 (KTD12, E-029): ``<worker_identity>|<owner_token>``; das
+            # Owner-Token trennt Supervisoren eines Hosts mit gleichen Slots.
             await self._backend.schedules.report_worker_version(
-                self._worker_id,
+                f"{self._worker_id}|{self._owner_token}",
                 self._version,
                 ttl_ms=live_window,
             )

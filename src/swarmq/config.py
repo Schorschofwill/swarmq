@@ -80,7 +80,9 @@ def normalize_timezone(value: str | None, field_name: str = "timezone") -> str |
         return None
     try:
         ZoneInfo(value)
-    except (ZoneInfoNotFoundError, ValueError) as exc:
+    except (ZoneInfoNotFoundError, ValueError, OSError) as exc:
+        # OSError: ``zoneinfo`` sucht den Namen als Datei; ein Pfadteil über
+        # 255 Byte ergibt ENAMETOOLONG (F4-08).
         msg = f"{field_name} is not a known IANA zone: {value!r}"
         raise ValueError(msg) from exc
     return None if value in _UTC_ALIASES else value
@@ -600,6 +602,21 @@ class SwarmQConfig(ConfigValidation):
         "scheduler_dedup_ttl",
         "execution_guard_done_ttl_s",
     )
+    # E-063, Nachtrag 2026-10-17: Zählfelder unter ``_FINITE_FIELDS`` sind
+    # keine Fristen; ihre Grenze ist ``float_info.max`` (PF-10), für
+    # ``delivery_limit`` ``MAX_BROKER_COUNT`` (``_COUNT_BOUNDS``), die der
+    # übrigen ``MAX_DEADLINE_S``.
+    _COUNT_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "max_message_body_bytes",
+            "delivery_limit",
+            "execution_guard_max_orphans",
+            "malloc_trim_threshold",
+            "malloc_arena_max",
+            "compute_thread_limit",
+            "log_queue_size",
+        }
+    )
     _VALID_POOLS: ClassVar[frozenset[str]] = frozenset({"io", "cpu"})
     _VALID_PRUNE_MODES: ClassVar[tuple[str, ...]] = ("off", "log", "on")
     _VALID_SCHEDULER_MODES: ClassVar[tuple[str, ...]] = ("on", "off")
@@ -701,6 +718,7 @@ class SwarmQConfig(ConfigValidation):
         self._apply_env_overrides()
         self._apply_logging_settings()
         self._apply_slot_port_offset()
+        self._validate_ranges()
 
         # dedup_ttl default: max(60, retry_max_delay + 300) to cover the
         # retry horizon and prevent retried schedule-fires from bypassing

@@ -10,8 +10,13 @@ Fail-Mark + Ack. publish-then-mark ist seit U20 strukturell über den
 
 from __future__ import annotations
 
+import asyncio
+import time
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
+from swarmq.backoff import backend_defer_delay
 from swarmq.cancellation import build_error_result_dict, build_result_dict
 from swarmq.config import resolve_result_ttl
 from swarmq.exceptions import (
@@ -34,6 +39,20 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+# E-072 (Plan 2026-10-17-2103, KTD7): Speicherversuche eines terminalen
+# Ergebnisses je Zustellung (AT_LEAST_ONCE), dazwischen die Wartezeiten der
+# Zurückstellung (nominell 1, 2, 4, 8 s).
+STORE_ATTEMPTS = 5
+# ``result_store_retrying`` als WARNING höchstens einmal je Intervall und
+# Worker, dazwischen DEBUG: ein Valkey-Ausfall trifft alle gerade fertigen
+# Tasks zugleich.
+RETRY_WARNING_INTERVAL_S = 10.0
+
+# Zeitquellen der Speicher-Wiederholung zur Laufzeit; Unit-Tests ersetzen sie
+# (``tests/unit/conftest.py``), damit keiner real wartet.
+_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+_monotonic: Callable[[], float] = time.monotonic
+
 _FailMarkEvent = Literal["workflow_faf_fail_mark_error", "workflow_fail_mark_failed", "workflow_fail_mark_error"]
 
 
@@ -48,6 +67,76 @@ def _log_fail_mark_error(event: _FailMarkEvent, **fields: Any) -> None:
         logger.error("workflow_fail_mark_error", **fields)
 
 
+@dataclass(frozen=True)
+class AdvanceFailure:
+    """Gescheiterter Advance (``advance_with_result``). ``transient``: der
+    Advance ist nicht fertig, nicht gescheitert (Backend weg, verlorene
+    CAS-Runden, Publish ohne Confirm) -- eine Neuzustellung wiederholt ihn.
+    Sonst (``UnroutableMessage``, unerwarteter Fehler) heilt keine
+    Wiederholung: den Workflow mit *error_type* und *reason* fehlmarkieren."""
+
+    transient: bool
+    error: Exception
+
+    @property
+    def error_type(self) -> str:
+        if isinstance(self.error, UnroutableMessage):
+            return "UnroutableMessage"
+        return type(self.error).__name__
+
+    @property
+    def reason(self) -> str:
+        return str(self.error)
+
+
+async def advance_with_result(
+    advancer: Any, wf_id: str, delivery: Any, result_value: Any, task_id: str, *, redeliver: bool
+) -> AdvanceFailure | None:
+    """Advance eines erfolgreichen Schritts mit *result_value*; ``None``, wenn
+    er gelang. Gemeinsam für den Ergebnis-Tail und den nachgeholten Advance
+    in ``fail_workflow_step`` (F4-01, KTD8). Loggt jeden Fehler; *redeliver*
+    sagt, ob der Aufrufer einen vorübergehenden Fehler neu zustellt (WARNING)
+    oder nicht (ERROR)."""
+    headers: dict[str, Any] = delivery.headers or {}
+    step_path = headers.get(HEADER_WORKFLOW_STEP, "")
+    if not isinstance(step_path, str):
+        step_path = ""
+    try:
+        await advancer.advance(wf_id, step_path, task_id, result_value)
+    except (BackendConnectionError, WorkflowStateConflict) as exc:
+        # Die Konfliktgrenze des Compare-and-Set (U9) heisst: der Advance
+        # ist nicht fertig, nicht gescheitert — wie ein Backend-Ausfall
+        # behandeln, nicht fail-markieren.
+        if redeliver:
+            logger.warning("workflow_advance_backend_error", workflow_id=wf_id, **_error_fields(exc))
+        else:
+            logger.error("workflow_advance_backend_error", workflow_id=wf_id, **_error_fields(exc))
+        return AdvanceFailure(transient=True, error=exc)
+    except UnroutableMessage as exc:
+        # Die Queue des naechsten Schritts fehlt (BZ-03, Plan 0.12.0 MR 6).
+        # Eine Redelivery aenderte daran nichts und liefe bis zum
+        # Zustelllimit: den Workflow sofort fail-markieren.
+        logger.error("workflow_advance_unroutable", workflow_id=wf_id, **_error_fields(exc))
+        return AdvanceFailure(transient=False, error=exc)
+    except BrokerConnectionError as exc:
+        # A workflow-step publish failed transiently (e.g. a
+        # publisher-confirm Nack past the broker's retry budget). Do NOT
+        # mark the workflow failed — a Nack means the message was not
+        # committed, so redelivery re-runs the idempotent advance and
+        # re-publishes safely (deterministic step ids + step_tasks).
+        if redeliver:
+            logger.warning("workflow_advance_broker_error", workflow_id=wf_id, **_error_fields(exc))
+        else:
+            logger.error("workflow_advance_broker_error", workflow_id=wf_id, **_error_fields(exc))
+        return AdvanceFailure(transient=True, error=exc)
+    except Exception as exc:  # noqa: BLE001 - unerwarteter Advance-Fehler markiert Workflow
+        # Unexpected advance bug: fail the workflow so get() raises
+        # instead of hanging (no infinite redelivery loop).
+        logger.error("workflow_advance_failed", workflow_id=wf_id, **_error_fields(exc))
+        return AdvanceFailure(transient=False, error=exc)
+    return None
+
+
 def _error_class(execution: ExecutionResult) -> str | None:
     """``error_class`` eines Fehlerergebnisses (P9): nur mit Task-Exception."""
     return None if execution.task_exception is None else error_class_of(execution.task_exception)
@@ -57,6 +146,8 @@ class ResultTail:
     def __init__(self, deps: GateDeps, *, workflow_advancer: Any) -> None:
         self._deps = deps
         self._workflow_advancer = workflow_advancer
+        # Zeitpunkt der letzten ``result_store_retrying``-WARNING (Drossel).
+        self._retry_warned_at: float | None = None
 
     @staticmethod
     def _encode_with_fallback(ctx: GateContext, execution: ExecutionResult) -> bytes:
@@ -226,70 +317,94 @@ class ResultTail:
                 event="workflow_fail_mark_failed",
                 error_class=_error_class(execution),
             )
-        headers: dict[str, Any] = delivery.headers or {}
-        step_path = headers.get(HEADER_WORKFLOW_STEP, "")
-        if not isinstance(step_path, str):
-            step_path = ""
-        try:
-            await advancer.advance(wf_id, step_path, ctx.task_id, execution.result_value)
-        except (BackendConnectionError, WorkflowStateConflict) as exc:
-            # Die Konfliktgrenze des Compare-and-Set (U9) heisst: der Advance
-            # ist nicht fertig, nicht gescheitert — wie ein Backend-Ausfall
-            # behandeln, nicht fail-markieren.
-            if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
+        at_least_once = task_info.delivery is DeliveryMode.AT_LEAST_ONCE
+        failure = await advance_with_result(
+            advancer, wf_id, delivery, execution.result_value, ctx.task_id, redeliver=at_least_once
+        )
+        if failure is None:
+            return None
+        if failure.transient:
+            if at_least_once:
                 # Transient — redelivery retries the idempotent advance.
-                logger.warning("workflow_advance_backend_error", workflow_id=wf_id, **_error_fields(exc))
                 await redeliver_in_place(deps, delivery, ctx)
                 return Redelivered
-            logger.error("workflow_advance_backend_error", workflow_id=wf_id, **_error_fields(exc))
             return Terminal.release_in_finally()
-        except UnroutableMessage as exc:
-            # Die Queue des naechsten Schritts fehlt (BZ-03, Plan 0.12.0 MR 6).
-            # Eine Redelivery aenderte daran nichts und liefe bis zum
-            # Zustelllimit: den Workflow sofort fail-markieren, dann Ack.
-            # Bewusst ``_fail_workflow`` statt ``fail_workflow_step``: dessen
-            # Schutz "Schritt schon erledigt" griffe hier immer, denn das
-            # Ergebnis dieses Schritts ist bereits gespeichert.
-            logger.error("workflow_advance_unroutable", workflow_id=wf_id, **_error_fields(exc))
-            return await self._fail_workflow(
-                delivery,
-                ctx,
-                wf_id,
-                advancer,
-                "UnroutableMessage",
-                str(exc),
-                event="workflow_fail_mark_error",
-            )
-        except BrokerConnectionError as exc:
-            # A workflow-step publish failed transiently (e.g. a
-            # publisher-confirm Nack past the broker's retry budget). Do NOT
-            # mark the workflow failed — a Nack means the message was not
-            # committed, so redelivery re-runs the idempotent advance and
-            # re-publishes safely (deterministic step ids + step_tasks).
-            if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
-                logger.warning("workflow_advance_broker_error", workflow_id=wf_id, **_error_fields(exc))
-                await redeliver_in_place(deps, delivery, ctx)
-                return Redelivered
-            logger.error("workflow_advance_broker_error", workflow_id=wf_id, **_error_fields(exc))
-            return Terminal.release_in_finally()
-        except Exception as exc:  # noqa: BLE001 - unerwarteter Advance-Fehler markiert Workflow
-            # Unexpected advance bug: fail the workflow so get() raises
-            # instead of hanging, then ack (no infinite redelivery loop).
-            logger.error(
-                "workflow_advance_failed",
-                workflow_id=wf_id,
-                **_error_fields(exc),
-            )
-            return await self._fail_workflow(
-                delivery,
-                ctx,
-                wf_id,
-                advancer,
-                type(exc).__name__,
-                str(exc),
-                event="workflow_fail_mark_error",
-            )
+        # ``UnroutableMessage`` oder unerwarteter Fehler: fail-markieren, dann
+        # Ack. Bewusst ``_fail_workflow`` statt ``fail_workflow_step``: dessen
+        # Schutz "Schritt schon erledigt" griffe hier immer, denn das Ergebnis
+        # dieses Schritts ist bereits gespeichert.
+        return await self._fail_workflow(
+            delivery,
+            ctx,
+            wf_id,
+            advancer,
+            failure.error_type,
+            failure.reason,
+            event="workflow_fail_mark_error",
+        )
+
+    async def _store_once(self, ctx: GateContext, result_bytes: bytes, result_ttl: int) -> None:
+        await self._deps.backend.store_result(
+            ctx.task_id,
+            result_bytes,
+            result_ttl * 1000,
+            op_timeout=self._deps.config.backend_op_timeout,
+        )
+
+    async def _store(self, ctx: GateContext, result_bytes: bytes, result_ttl: int) -> BackendConnectionError | None:
+        """Ergebnis speichern; liefert den letzten Fehler, wenn es nicht gelang.
+
+        E-072 (KTD7): bei AT_LEAST_ONCE bis zu ``STORE_ATTEMPTS`` Versuche mit
+        den Wartezeiten der Zurückstellung, gedeckelt durch
+        ``consumer_timeout_s`` ab ``ctx.received_at``; der Slot bleibt dabei
+        belegt. FIRE_AND_FORGET bleibt bei einem Versuch (KD8)."""
+        try:
+            await self._store_once(ctx, result_bytes, result_ttl)
+        except BackendConnectionError as exc:
+            task_info = ctx.task_info
+            assert task_info is not None
+            if task_info.delivery is not DeliveryMode.AT_LEAST_ONCE:
+                return exc
+            try:
+                return await self._retry_store(ctx, result_bytes, result_ttl, exc)
+            except asyncio.CancelledError:
+                # Drain-Ende (E-001) im Warten oder in einem wiederholten
+                # Versuch: nie propagieren -- der Terminal-Default im
+                # ``finally`` schriebe sonst Schedfire-Marker und
+                # Unique-Freigabe auf eine unbestätigte Nachricht.
+                return exc
         return None
+
+    def _log_retrying(self, ctx: GateContext, store_attempt: int, delay_s: float, exc: BaseException) -> None:
+        fields = {"task_id": ctx.task_id, "store_attempt": store_attempt, "delay_s": delay_s, **_error_fields(exc)}
+        now = _monotonic()
+        if self._retry_warned_at is None or now - self._retry_warned_at >= RETRY_WARNING_INTERVAL_S:
+            self._retry_warned_at = now
+            logger.warning("result_store_retrying", **fields)
+        else:
+            logger.debug("result_store_retrying", **fields)
+
+    async def _retry_store(
+        self, ctx: GateContext, result_bytes: bytes, result_ttl: int, exc: BackendConnectionError
+    ) -> BackendConnectionError | None:
+        config = self._deps.config
+        deadline = ctx.received_at + config.consumer_timeout_s
+        for attempt in range(2, STORE_ATTEMPTS + 1):
+            delay_s = backend_defer_delay(attempt - 1, config.backend_defer_base_delay, config.backend_defer_max_delay)
+            # Der nächste Versuch muss vor ``consumer_timeout_s`` enden,
+            # sonst schlösse RabbitMQ den Kanal der unbestätigten Zustellung.
+            if _monotonic() + delay_s + config.backend_op_timeout > deadline:
+                return exc
+            self._log_retrying(ctx, attempt - 1, delay_s, exc)
+            await _sleep(delay_s)
+            try:
+                await self._store_once(ctx, result_bytes, result_ttl)
+            except BackendConnectionError as retry_exc:
+                exc = retry_exc
+                continue
+            logger.info("result_store_recovered", task_id=ctx.task_id, store_attempts=attempt)
+            return None
+        return exc
 
     async def finish(self, delivery: Any, ctx: GateContext, execution: ExecutionResult) -> DeliveryOutcome:
         deps = self._deps
@@ -303,23 +418,17 @@ class ResultTail:
             return await self._finish_without_store(delivery, ctx, execution, advancer)
 
         # Store result, then notify; ack comes last.
-        try:
-            await deps.backend.store_result(
-                ctx.task_id,
-                result_bytes,
-                result_ttl * 1000,
-                op_timeout=deps.config.backend_op_timeout,
-            )
-        except BackendConnectionError as exc:
+        store_error = await self._store(ctx, result_bytes, result_ttl)
+        if store_error is not None:
             if task_info.delivery is DeliveryMode.AT_LEAST_ONCE:
                 # Selbstheilend (KTD11): die Neuzustellung speichert erneut.
-                logger.warning("backend_connection_error", **_error_fields(exc))
+                logger.warning("backend_connection_error", **_error_fields(store_error))
                 # Non-terminal — redelivery will re-run the task from
                 # scratch; keep the flag so next terminal path can release.
                 await redeliver_in_place(deps, delivery, ctx)
                 return Redelivered
             # FIRE_AND_FORGET: keine Neuzustellung, das Ergebnis ist verloren.
-            logger.error("backend_connection_error", **_error_fields(exc))
+            logger.error("backend_connection_error", **_error_fields(store_error))
             return Terminal.release_in_finally()
 
         try:

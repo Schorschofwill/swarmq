@@ -177,7 +177,7 @@ to cover the whole workflow including retries.
 | `workflow_id` | `str` | Stable id; store it to reattach later. |
 | `await status()` | `"running"`, `"completed"`, `"failed"` or `"cancelled"` | |
 | `await children()` | `dict[str, dict]` | One entry per enqueued step, keyed by its topology path (see below): `{"task_id", "status", "result"?}`. `status` is `"running"` (no result yet), `"completed"` (with `result`) or `"failed"`. Empty before any step is enqueued. |
-| `await cancel()` | `bool` | Sets the workflow cancel flag; `True` if it was newly set. |
+| `await cancel()` | `bool` | Sets the workflow cancel flag; `True` if it was newly set. The flag lives `max(24 h, result_ttl)`, also on a reattached handle (since 0.13.0). |
 | `await get(timeout=30.0)` | the final result | Waits until the workflow is terminal; see [failure modes](#failure-modes). |
 
 Reattach from any process with the id:
@@ -230,6 +230,7 @@ workflows.
 |---|---|
 | A step fails and has retries left | It is retried like any task; the workflow keeps running. |
 | A step fails terminally (retries exhausted, `NoRetry`, delivery limit, `max_age` exceeded, lock template error, end of a lock wait, task not registered in the worker) | The worker marks the workflow `failed` when it dead-letters the step; `get()` raises `TaskError` with the step's error message. `TaskError.error_class` names the class of the step's exception (e.g. `builtins.ValueError`), or the swarmq class of the terminal path (`swarmq.exceptions.LockWaitExceeded`, `TaskNotFoundError`, `RedeliveryLimitError`); it is `None` after `max_age` expiry, a lock template error or a hung worker, and for workflows failed by an older worker. No further steps run, and a chord body never runs if a header member failed. A late duplicate of a step that already succeeded does not mark the workflow failed (`workflow_fail_skipped_step_done`). |
+| A step whose success is already stored is dead-lettered late (for example at the delivery limit, after its advance failed) | Since 0.13.0 the worker completes the workflow advance with the stored result instead of marking the workflow failed (`workflow_advance_caught_up`); the message is acked without a DLQ copy and without `TASK_DLQ`. If that last advance fails transiently at the delivery limit, the message goes to the DLQ without an error result and the workflow stays `running` until its TTL. |
 | The workflow state expired while a step was still running | The step's result cannot advance the workflow; the worker logs `workflow_state_missing` (WARNING, field `workflow_id`). Raise `result_ttl` for long workflows. |
 | A middleware `pre_enqueue` raises for one of the first steps (in the client) | `apply()` raises that exception; nothing is persisted or published. |
 | A middleware `pre_enqueue` raises for a later step (in the worker) | No step of that front is published; the workflow is `failed` and `get()` raises `TaskError` with the exception's message. See [middleware for workflow steps](middleware.md#workflow-steps). |
@@ -240,7 +241,7 @@ workflows.
 | A single step is cancelled with `cancel(task_id)`, before or while it runs | The workflow is `failed`; `get()` raises `TaskError` with the message `task was cancelled`. No further steps run. A step that already succeeded does not mark the workflow failed. If both the step and its workflow are cancelled, the step's cancel wins (`failed`). |
 | `get()` times out while the workflow is still running | `ResultNotReadyError`; the workflow keeps running, call `get()` again. |
 | The workflow completed but its final result expired | `WorkflowResultExpired`; raise `result_ttl`. |
-| A member result needed for fan-in expired, or a member result is missing | The workflow is `failed` (recorded error type `WorkflowResultExpired` or `WorkflowValidationError`) instead of passing an incomplete list on; `get()` raises `TaskError`. |
+| A member result needed for fan-in expired, or a member result is missing (lost) | The workflow is `failed` (recorded error type `WorkflowResultExpired`; until 0.12, `WorkflowValidationError` "resolved N of M" for a missing member) instead of passing an incomplete list on; `get()` raises `TaskError`. A member whose step marker is persisted late no longer fails the workflow, because fan-in derives member result ids from the workflow id and step path (since 0.13.0). |
 | The workflow state no longer exists (never started, or expired) | `app.workflow(id)`, and `status()`/`children()`/`get()` on an existing handle, raise `WorkflowNotFound`. |
 
 `WorkflowValidationError`, `WorkflowNotFound`, `WorkflowResultExpired`,

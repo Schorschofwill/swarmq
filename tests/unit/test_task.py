@@ -370,9 +370,9 @@ def test_taskinfo_cron_extended_hash_syntax_rejected():
 
 # E-065, Nachtrag 2026-10-17 (Produktfrage B, Positivliste nach crontab(5)):
 # erlaubt sind genau 5 Felder mit Zahlen, ``*``, ``-``, ``,``, ``/``, Monats- und
-# Tagesnamen und die ``@``-Aliase. Grossgeschriebene Namen folgen mit F4-09
-# (Nachweis ``test_befund_f4_09_cron_uppercase_names.py``), die Ablehnung von
-# ``R``/``H`` und 6/7 Feldern mit dem Fix von PF-12/PF-13.
+# Tagesnamen und die ``@``-Aliase. Grossgeschriebene Namen: Nachweis F4-09
+# (``test_befund_f4_09_cron_uppercase_names.py``); Ablehnungen (PF-12/PF-13)
+# und ``@midnight`` stehen unten.
 @pytest.mark.entscheidung("E-065")
 @pytest.mark.parametrize(
     "cron",
@@ -390,6 +390,30 @@ def test_taskinfo_cron_extended_hash_syntax_rejected():
     ],
 )
 def test_taskinfo_cron_accepts_the_crontab5_positive_list(cron: str):
+    assert TaskInfo(name="task", queues=["q"], cron=cron).cron == cron
+
+
+# E-065 (U15, KTD9): alles außerhalb der Positivliste ist ``ValueError`` beim
+# Klassenbau; die Meldung nennt den Grund.
+@pytest.mark.entscheidung("E-065")
+@pytest.mark.parametrize(
+    ("cron", "reason"),
+    [
+        ("R * * * *", "random field 'R'"),
+        ("H * * * *", "hash field 'H'"),
+        ("0 0 9 * * *", "got 6 fields"),
+        ("* * * * * * 2020", "got 7 fields"),
+        ("@reboot", "alias '@reboot' is not supported"),
+    ],
+)
+def test_taskinfo_cron_outside_the_crontab5_positive_list_is_rejected(cron: str, reason: str):
+    with pytest.raises(ValueError, match=reason):
+        TaskInfo(name="task", queues=["q"], cron=cron)
+
+
+@pytest.mark.entscheidung("E-065")
+@pytest.mark.parametrize("cron", ["0 0 * * WED", "@HOURLY", "@midnight", "*/5 1-5 * jan,JUL mon-fri", "0 0 * * 7"])
+def test_taskinfo_cron_accepts_names_in_any_case_and_midnight(cron: str):
     assert TaskInfo(name="task", queues=["q"], cron=cron).cron == cron
 
 

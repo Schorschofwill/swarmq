@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from swarmq import cli
+from swarmq.contracts.broker import DeadLetterScan
 from swarmq.exceptions import (
     BackendConnectionError,
     BrokerConnectionError,
@@ -1362,6 +1363,87 @@ class TestDlqHandlerOrchestration:
         await cli._run_dlq_list(ns)
         out = capsys.readouterr().out
         assert "truncated at --limit 2" in out
+
+    # F4-05 (E-028 Nachtrag 2026-10-17): Kürzung aus ``hit_limit``, nicht aus ``scanned``.
+    # [x] list json/table: ``hit_limit`` unter dem Limit -> truncated
+    # [x] inspect/retry <id> nicht gefunden, ``hit_limit`` -> scan_exhausted und Hinweis
+    # [x] retry --all: ``hit_limit`` -> truncated
+    # [x] ``hit_limit`` False trotz ``scanned == limit`` -> nicht gekürzt
+    # [x] fremde Implementierung ohne ``hit_limit`` (schlichtes Tupel): Rückfall ``scanned >= limit``
+    #     (bestehende Tests mit Tupel-Rückgaben oben und unten)
+
+    @pytest.mark.entscheidung("E-028")
+    @pytest.mark.timeout(5)
+    async def test_list_reports_truncation_from_hit_limit_below_the_limit(self, mock_broker, capsys):
+        entry = {"task_id": "t-0", "task_name": "x", "queue": "q", "headers": {}, "body_size": 10}
+        mock_broker.list_dead_letters.return_value = DeadLetterScan([entry], 1, hit_limit=True)
+
+        await cli._run_dlq_list(argparse.Namespace(queue="q", limit=2, format="json"))
+
+        payload = json.loads(capsys.readouterr().out)
+        assert (payload["scanned"], payload["truncated"]) == (1, True)
+
+    @pytest.mark.entscheidung("E-028")
+    @pytest.mark.timeout(5)
+    async def test_list_table_shows_the_truncation_hint_from_hit_limit(self, mock_broker, capsys):
+        mock_broker.list_dead_letters.return_value = DeadLetterScan([], 0, hit_limit=True)
+
+        await cli._run_dlq_list(argparse.Namespace(queue="q", limit=2, format="table"))
+
+        assert "truncated at --limit 2" in capsys.readouterr().out
+
+    @pytest.mark.entscheidung("E-028")
+    @pytest.mark.timeout(5)
+    @pytest.mark.parametrize("output", ["json", "table"])
+    async def test_inspect_miss_reports_the_scan_limit_from_hit_limit(self, mock_broker, capsys, output):
+        mock_broker.inspect_dead_letter.return_value = DeadLetterScan(None, 1, hit_limit=True)
+
+        with pytest.raises(cli._DLQNotFound):
+            await cli._run_dlq_inspect(argparse.Namespace(task_id="t-1", queue="q", scan_limit=2, format=output))
+
+        out = capsys.readouterr().out
+        if output == "json":
+            assert json.loads(out)["scan_exhausted"] is True
+        else:
+            assert "scan hit --scan-limit" in out
+
+    @pytest.mark.entscheidung("E-028")
+    @pytest.mark.timeout(5)
+    @pytest.mark.parametrize("output", ["json", "table"])
+    async def test_retry_miss_reports_the_scan_limit_from_hit_limit(self, mock_broker, capsys, output):
+        mock_broker.retry_dead_letter.return_value = DeadLetterScan(False, 1, hit_limit=True)
+        ns = argparse.Namespace(task_id="t-1", all=False, queue="q", limit=10_000, scan_limit=2, format=output)
+
+        with pytest.raises(cli._DLQNotFound):
+            await cli._run_dlq_retry(ns)
+
+        out = capsys.readouterr().out
+        if output == "json":
+            assert json.loads(out)["scan_exhausted"] is True
+        else:
+            assert "scan hit --scan-limit" in out
+
+    @pytest.mark.entscheidung("E-028")
+    @pytest.mark.timeout(5)
+    async def test_retry_all_reports_truncation_from_hit_limit(self, mock_broker, capsys):
+        mock_broker.retry_all_dead_letters.return_value = DeadLetterScan(1, 1, hit_limit=True)
+        ns = argparse.Namespace(task_id=None, all=True, queue="q", limit=2, scan_limit=1000, format="json")
+
+        await cli._run_dlq_retry(ns)
+
+        assert json.loads(capsys.readouterr().out)["truncated"] is True
+
+    @pytest.mark.entscheidung("E-028")
+    @pytest.mark.timeout(5)
+    async def test_list_trusts_hit_limit_false_even_when_scanned_equals_the_limit(self, mock_broker, capsys):
+        entries = [
+            {"task_id": f"t-{i}", "task_name": "x", "queue": "q", "headers": {}, "body_size": 1} for i in range(2)
+        ]
+        mock_broker.list_dead_letters.return_value = DeadLetterScan(entries, 2, hit_limit=False)
+
+        await cli._run_dlq_list(argparse.Namespace(queue="q", limit=2, format="json"))
+
+        assert json.loads(capsys.readouterr().out)["truncated"] is False
 
     @pytest.mark.timeout(5)
     async def test_inspect_found_json_adds_found_true(self, mock_broker, capsys):

@@ -13,7 +13,7 @@ import contextlib
 import json
 import sys
 import time
-from collections.abc import Callable, Coroutine, Mapping
+from collections.abc import AsyncGenerator, Callable, Coroutine, Mapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from swarmq.backend.valkey import ValkeyBackend
 
 from swarmq.cli._shared import _render_table
-from swarmq.exceptions import ConfigurationError
+from swarmq.exceptions import ConfigurationError, is_backend_outage
 from swarmq.scheduler import ScheduleDefinition, ScheduleStore
 from swarmq.scheduler.prune import last_seen_by_name, prune_orphans
 from swarmq.serialization import compute_dedup_hash
@@ -145,9 +145,12 @@ def _resolve_fire_time(args: argparse.Namespace) -> tuple[str | None, int]:
         # (no --tz before 0.10.1).
         from croniter import CroniterBadCronError
 
+        from swarmq.cron_syntax import validate_cron_syntax
         from swarmq.scheduler.cron_time import next_fire_ms
 
         try:
+            # E-065 (PF-15): dieselbe Positivliste nach crontab(5) wie TaskInfo.
+            validate_cron_syntax(cron)
             fire_ts_ms = next_fire_ms(cron, None, int(time.time() * 1000))
         except (CroniterBadCronError, ValueError) as exc:
             raise ConfigurationError(f"invalid cron expression: {cron!r} ({exc})") from exc
@@ -166,6 +169,7 @@ def _render_add_result(
     args: argparse.Namespace,
     *,
     inserted: bool,
+    already_exists: bool,
     existing_owner: str | None,
     dedup_hash: str | None,
     unique_for: int | None,
@@ -175,7 +179,9 @@ def _render_add_result(
         payload: dict[str, Any] = {
             "inserted": inserted,
             "name": args.name,
-            "already_exists": not inserted,
+            # E-076: ein Eintrag existiert unter dem Namen; beim Dedup-Duplikat
+            # nennt ``duplicate_of`` den Grund.
+            "already_exists": already_exists,
         }
         if unique_for is not None:
             payload["dedup_hash"] = dedup_hash
@@ -197,6 +203,33 @@ def _render_add_result(
         )
 
 
+async def _carries_hash(store: ScheduleStore, name: str, dedup_hash: str) -> bool:
+    """Trägt der Eintrag unter ``name`` den eigenen ``dedup_hash`` (etwa ein
+    eigener Insert nach verlorener Antwort, E-058)? Ein fehlender Eintrag
+    trägt ihn nicht."""
+    existing = await store.get_definition(name)
+    return existing is not None and existing.dedup_hash == dedup_hash
+
+
+async def _release_claim(backend: ValkeyBackend, dedup_hash: str, owner: str) -> None:
+    """Owner-geprüfte Freigabe des eigenen Dedup-Claims, best effort."""
+    with contextlib.suppress(Exception):
+        await backend.release_unique(dedup_hash, owner)
+
+
+@contextlib.asynccontextmanager
+async def _claim_released_on_error(backend: ValkeyBackend, dedup_hash: str | None, owner: str) -> AsyncGenerator[None]:
+    """Fehler beim Speichern oder Lesen: Claim owner-geprüft frei (P1 #1),
+    außer nach einem Ausfall -- gespeichert sein kann der Eintrag dann
+    trotzdem (E-059, PF-6, E-041). Der Fehler erreicht den Aufrufer."""
+    try:
+        yield
+    except BaseException as exc:
+        if dedup_hash is not None and not is_backend_outage(exc):
+            await _release_claim(backend, dedup_hash, owner)
+        raise
+
+
 async def _run_schedule_add(args: argparse.Namespace) -> None:
     parsed_args, parsed_kwargs = _parse_payload(args)
     cron, fire_ts_ms = _resolve_fire_time(args)
@@ -211,6 +244,7 @@ async def _run_schedule_add(args: argparse.Namespace) -> None:
     backend = await _get_backend_factory()()
     dedup_hash: str | None = None
     existing_owner: str | None = None
+    already_exists = False
     try:
         if unique_for is not None:
             dedup_hash = compute_dedup_hash(
@@ -246,22 +280,27 @@ async def _run_schedule_add(args: argparse.Namespace) -> None:
 
         if existing_owner is not None:
             # Dup detected — don't insert; surface the clash to the
-            # operator. The flag already belongs to another schedule.
+            # operator. Hält der eigene Name den Claim, sagt erst das Lesen,
+            # ob unter dem Namen ein Eintrag existiert (E-076).
             inserted = False
+            if existing_owner == args.name:
+                # Den Claim hat ein früherer ``add`` gesetzt, nicht dieser
+                # Aufruf: Ein Lesefehler lässt ihn stehen (E-059).
+                already_exists = await ScheduleStore(backend).get_definition(args.name) is not None
         else:
             store = ScheduleStore(backend)
-            try:
+            async with _claim_released_on_error(backend, dedup_hash, args.name):
                 inserted = await store.add_schedule(definition)
-            except BaseException:
-                # Rollback the dedup claim on store failure (P1 #1).
-                if dedup_hash is not None:
-                    with contextlib.suppress(Exception):
-                        await backend.release_unique(dedup_hash, args.name)
-                raise
+                already_exists = not inserted
+                if not inserted and dedup_hash is not None and not await _carries_hash(store, args.name, dedup_hash):
+                    # Konflikt: der Eintrag unter dem Namen trägt den eigenen
+                    # Claim nicht (E-059, PF-6).
+                    await _release_claim(backend, dedup_hash, args.name)
 
         _render_add_result(
             args,
             inserted=inserted,
+            already_exists=already_exists,
             existing_owner=existing_owner,
             dedup_hash=dedup_hash,
             unique_for=unique_for,
@@ -328,6 +367,15 @@ def _leader_version_text(leader: str | None, version: str | None) -> str:
     return version or "(not reported: swarmq before 0.10.0)"
 
 
+def _worker_entry(key: str) -> tuple[str, str | None]:
+    """``<worker_identity>|<owner_token>`` → (Worker-ID, Prozess) (F4-06,
+    KTD12); ein alter Schlüssel ohne ``|`` (0.11/0.12) bleibt die Worker-ID."""
+    worker_id, _, process = key.rpartition("|")
+    if not worker_id:
+        return key, None
+    return worker_id, process
+
+
 async def _run_schedule_status(args: argparse.Namespace) -> None:
     backend = await _get_backend_factory()()
     try:
@@ -339,7 +387,10 @@ async def _run_schedule_status(args: argparse.Namespace) -> None:
         leader = await backend.get_scheduler_leader()
         # KTD11: Version des Leaders (None = vor 0.10.0, schreibt keine).
         leader_info = await backend.schedules.leader_info()
-        workers = sorted((await backend.schedules.worker_versions()).items())
+        workers = [
+            (*_worker_entry(key), version)
+            for key, version in sorted((await backend.schedules.worker_versions()).items())
+        ]
 
         store = ScheduleStore(backend)
         now_ms = int(time.time() * 1000)
@@ -364,7 +415,10 @@ async def _run_schedule_status(args: argparse.Namespace) -> None:
                     }
                     for name, score, defn in upcoming
                 ],
-                "workers": [{"worker_id": worker_id, "version": version} for worker_id, version in workers],
+                "workers": [
+                    {"worker_id": worker_id, "version": version, "process": process}
+                    for worker_id, process, version in workers
+                ],
             }
             sys.stdout.write(json.dumps(payload, indent=2) + "\n")
             return
@@ -384,8 +438,9 @@ async def _run_schedule_status(args: argparse.Namespace) -> None:
         sys.stdout.write("WORKERS:\n")
         if not workers:
             sys.stdout.write("  (none)\n")
-        for worker_id, version in workers:
-            sys.stdout.write(f"  {worker_id}  {version}\n")
+        for worker_id, process, version in workers:
+            column = f"  {process}" if process is not None else ""
+            sys.stdout.write(f"  {worker_id}  {version}{column}\n")
     finally:
         await backend.close()
 

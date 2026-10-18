@@ -32,12 +32,14 @@ Die erwarteten Termine stammen aus der Belastungspruefung vom 08.10.2026
 # 15. Ungueltiger Ausdruck wirft croniters Fehler (nicht IndexError).
 # 16. Naiver ``start`` (ohne tzinfo) wirft ValueError statt als Hostzeit
 #     gelesen zu werden.
+# 17. Unbekannte Zone und Zone mit Pfadteil ueber 255 Byte werfen beide
+#     ``ZoneInfoNotFoundError`` (F4-08), kein ``OSError``.
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 from unittest.mock import patch
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import pytest
 from croniter import CroniterBadCronError, croniter
@@ -261,6 +263,15 @@ class TestNextFireTimes:
 
         with pytest.raises(ValueError, match="timezone-aware"):
             next_fire_times("0 3 * * *", start, timezone=BERLIN)
+
+    @pytest.mark.parametrize(
+        "zone", ["Europe/Nowhere", "a" * 256, "Europe/" + "x" * 300], ids=["unknown", "256", "europe-300"]
+    )
+    def test_unusable_zone_raises_zone_info_not_found(self, zone: str) -> None:
+        start = datetime(2026, 10, 8, 12, 0, tzinfo=UTC)
+
+        with pytest.raises(ZoneInfoNotFoundError):
+            next_fire_times("0 3 * * *", start, timezone=zone)
 
 
 class TestNextFireMs:

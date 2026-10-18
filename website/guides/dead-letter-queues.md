@@ -129,7 +129,9 @@ TASK_ID                               TASK_NAME    RETRIES  ERROR_PREVIEW       
 Useful flags:
 
 - `--limit N` — maximum number of messages to list (default 100).
-  The output shows `(truncated)` or JSON `truncated: true` when hit.
+  The output shows `(truncated)` or JSON `truncated: true` when hit,
+  also when expired messages used up the limit (since 0.13.0; they
+  count towards `--limit` but not towards `scanned`).
 - `--format json` — machine-readable output with headers, body, and
   a `truncated` envelope for agent scripts.
 - `--queue QUEUE` — the main queue name; the DLQ is `{queue}.XQ`.
@@ -271,7 +273,10 @@ start without `PRECONDITION_FAILED`.
 - **Expired messages are dropped on read.** A message whose time ran
   out while a read held it is not put back, also with `dlq retry` and
   `dlq retry --all`. No log event reports it, and the `scanned` count of
-  `--format json` does not include it.
+  `--format json` does not include it. It still counts towards `--limit`
+  and `--scan-limit`: `truncated` and `scan_exhausted` are true whenever
+  reading stopped at the limit, including reads spent on expired entries
+  (since 0.13.0).
 - **Old stock gets the full retention on its first read.** Messages
   without `x-swarmq-dead-lettered-at` or without
   `x-swarmq-dead-letter-ttl-ms` (dead-lettered before 0.11.0, or routed

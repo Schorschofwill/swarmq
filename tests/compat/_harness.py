@@ -182,7 +182,9 @@ def start_worker(rabbitmq_url: str, valkey_url: str, queue: str) -> Iterator[obj
     wartet auf ``worker_started``; der Teardown beendet alle geordnet."""
     workers: list[CompatWorker] = []
 
-    def _start(python: str, expect: str, module: str = "tests.compat._compat_tasks") -> CompatWorker:
+    def _start(
+        python: str, expect: str, module: str = "tests.compat._compat_tasks", extra_args: list[str] | None = None
+    ) -> CompatWorker:
         proc = spawn_worker(
             queue,
             fixture_module=module,
@@ -190,6 +192,7 @@ def start_worker(rabbitmq_url: str, valkey_url: str, queue: str) -> Iterator[obj
             backend_url=valkey_url,
             concurrency=2,
             env_extra={"COMPAT_EXPECT_SWARMQ": expect, **SCHEDULER_ENV},
+            extra_args=extra_args,
             python=python,
         )
         worker = CompatWorker(proc, "repo" if expect == "repo" else f"pypi-{expect}")

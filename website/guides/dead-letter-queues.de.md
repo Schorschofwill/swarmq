@@ -137,7 +137,9 @@ Nützliche Flags:
 
 - `--limit N` — maximale Anzahl aufzulistender Nachrichten
   (Default 100). Die Ausgabe zeigt `(truncated)` oder JSON
-  `truncated: true`, wenn getroffen.
+  `truncated: true`, wenn getroffen, auch wenn abgelaufene Nachrichten
+  das Limit verbraucht haben (seit 0.13.0; sie zählen bei `--limit` mit,
+  in `scanned` nicht).
 - `--format json` — maschinenlesbare Ausgabe mit Headern, Body
   und einem `truncated`-Envelope für Agent-Skripte.
 - `--queue QUEUE` — der Haupt-Queue-Name; die DLQ ist `{queue}.XQ`.
@@ -284,7 +286,10 @@ unverändert, bestehende Deployments starten also ohne
   deren Zeit abgelaufen ist, während ein Lesevorgang sie hielt, wird
   nicht zurückgelegt, auch bei `dlq retry` und `dlq retry --all`. Kein
   Log-Event meldet das, und der Zähler `scanned` von `--format json`
-  enthält sie nicht.
+  enthält sie nicht. Bei `--limit` und `--scan-limit` zählt sie trotzdem
+  mit: `truncated` und `scan_exhausted` sind wahr, sobald das Lesen am
+  Limit endete, auch durch Lesungen abgelaufener Einträge (seit
+  0.13.0).
 - **Altbestand bekommt beim ersten Lesen die volle Frist.** Nachrichten
   ohne `x-swarmq-dead-lettered-at` oder ohne
   `x-swarmq-dead-letter-ttl-ms` (vor 0.11.0 dead-gelettert oder vom

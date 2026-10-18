@@ -12,6 +12,7 @@ import msgspec
 
 from swarmq.config import SwarmQConfig
 from swarmq.contracts.coordination import CronReports
+from swarmq.cron_syntax import validate_cron_syntax
 from swarmq.exceptions import BackendConnectionError
 from swarmq.logging import _error_fields, get_logger
 from swarmq.scheduler.cron_time import next_fire_ms
@@ -29,14 +30,17 @@ logger = get_logger(__name__)
 
 def _validated(payload: bytes, now_ms: int) -> ScheduleDefinition:
     """Gemeldete Definition dekodieren und prüfen, bevor der Leader sie
-    übernimmt (KTD10): Quelle ``static``, ein Cron-Ausdruck, und der nächste
-    Termin lässt sich in der Zone berechnen (unbekannte Zone, kaputter
-    Ausdruck). Wirft bei jedem Mangel."""
+    übernimmt (KTD10): Quelle ``static``, ein Cron-Ausdruck nach crontab(5)
+    (E-065), und der nächste Termin lässt sich in der Zone berechnen
+    (unbekannte Zone, kaputter Ausdruck). Wirft bei jedem Mangel."""
     definition = msgspec.json.decode(payload, type=ScheduleDefinition)
     if definition.source != "static":
         raise ValueError(f"reported definition has source {definition.source!r}, not 'static'")
     if definition.cron is None:
         raise ValueError("reported definition has no cron expression")
+    # E-065 (U15): dieselbe Positivliste wie ``TaskInfo``; schützt vor
+    # Meldungen älterer Worker (0.12 nahm 6/7 Felder, R und H an).
+    validate_cron_syntax(definition.cron)
     next_fire_ms(definition.cron, definition.timezone, now_ms)
     return definition
 
@@ -49,6 +53,12 @@ class SchedulerCronSync:
     _config: SwarmQConfig
     _store: ScheduleStore
     _reported_names: frozenset[str] = frozenset()
+    #: Ungültige Meldungen (Name, Abdruck), die in Amtszeit
+    #: ``_invalid_logged_term`` schon geloggt sind (Drossel wie ``cron_lost``, E-003).
+    _invalid_logged: frozenset[tuple[str, str]] = frozenset()
+    _invalid_logged_term: int = -1
+    #: Laufende Amtszeit (``unowned.py``).
+    _term: int
 
     if TYPE_CHECKING:
 
@@ -83,6 +93,18 @@ class SchedulerCronSync:
                 schedule_name=name,
                 **_error_fields(exc),
             )
+
+    def _invalid_report_log_due(self, name: str, fingerprint: str) -> bool:
+        """``True`` einmal je Meldung (Name, Abdruck) und Amtszeit: eine
+        ungültige Meldung kommt in jedem Sync-Takt wieder (U15, KTD9)."""
+        if self._invalid_logged_term != self._term:
+            self._invalid_logged_term = self._term
+            self._invalid_logged = frozenset()
+        key = (name, fingerprint)
+        if key in self._invalid_logged:
+            return False
+        self._invalid_logged |= {key}
+        return True
 
     async def adopt_reported_crons(self) -> None:
         """Leader-Takt (KTD10): pro Name die jüngste lebende Meldung aller
@@ -123,12 +145,13 @@ class SchedulerCronSync:
             try:
                 desired = _validated(choice.report.payload, now_ms)
             except Exception as exc:  # noqa: BLE001 - ungültige Meldung wird geloggt und übersprungen
-                logger.error(
-                    "scheduler_cron_report_invalid",
-                    schedule_name=choice.report.name,
-                    fingerprint=choice.report.fingerprint,
-                    **_error_fields(exc),
-                )
+                if self._invalid_report_log_due(choice.report.name, choice.report.fingerprint):
+                    logger.error(
+                        "scheduler_cron_report_invalid",
+                        schedule_name=choice.report.name,
+                        fingerprint=choice.report.fingerprint,
+                        **_error_fields(exc),
+                    )
                 continue
             await self.apply_static_definition(desired, now_ms)
         await self.prune_static_crons(snapshot)

@@ -19,6 +19,10 @@ version“); gleiche Regel im Kontrollkanal, der Supervisoren eines Hosts über
 ``:p<pid>`` trennt (``cli.md:247-249``). ``SWARMQ_WORKER_ID`` ist nicht als
 Pflichtwert je Supervisor dokumentiert (``configuration.md:139, 224-242``).
 
+Fix (Plan 2026-10-17-2103, U19, KTD12): der Schlüssel trägt hinter ``|`` das
+Owner-Token des Prozesses; ``schedule status`` zeigt je Prozess einen Eintrag
+mit ``worker_id`` und ``process``.
+
 Zwei Supervisoren mit ``--processes 1`` ohne ``SWARMQ_WORKER_ID`` in einem
 eigenen Namensraum, Meldetakt 2 s; ``schedule status --format json`` als
 Unterprozess.
@@ -122,11 +126,6 @@ def _workers(namespace: str) -> list[dict[str, Any]]:
 
 @pytest.mark.entscheidung("E-029")
 @pytest.mark.befund("F4-06")
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="F4-06: offen - Versionsmeldungen zweier Supervisoren eines Hosts ueberschreiben sich",
-)
 async def test_schedule_status_lists_the_workers_of_two_supervisors_on_one_host(
     supervisors: list[subprocess.Popen[str]], namespace: str
 ) -> None:

@@ -12,6 +12,14 @@
 #    ``_run_command``), keine halbe Ausgabe, das Backend wird geschlossen.
 # 6. E-075: ``SWARMQ_BACKEND_CONNECT_TIMEOUT_S`` begrenzt auch den
 #    Verbindungsaufbau des CLI-Backends (ohne ``SwarmQConfig``).
+#
+# Test list (Plan 2026-10-17-2103, U19, F4-06, KTD12, E-029):
+# 7. JSON: Schlüssel ``<worker_identity>|<owner_token>`` erscheinen je Prozess
+#    mit ``worker_id`` (Teil vor dem letzten ``|``) und ``process`` (Token).
+# 8. JSON: alte Schlüssel ohne ``|`` (0.11/0.12, Mischbetrieb) erscheinen
+#    unverändert als ``worker_id``, ``process`` ist ``null``.
+# 9. Text: je Prozess eine Zeile ``<worker_id>  <version>  <process>``; alte
+#    Schlüssel ohne Prozessspalte.
 
 from __future__ import annotations
 
@@ -69,9 +77,24 @@ async def test_json_lists_reporting_workers_with_version(monkeypatch) -> None:
     )
     data = json.loads(await _status(monkeypatch, backend, "json"))
     assert data["leader_version"] is None
+    # Alte Schlüssel ohne ``|`` (Mischbetrieb, F4-06): ohne Prozessangabe.
     assert data["workers"] == [
-        {"worker_id": "a:0", "version": "0.10.1"},
-        {"worker_id": "b:p2", "version": "0.10.0"},
+        {"worker_id": "a:0", "version": "0.10.1", "process": None},
+        {"worker_id": "b:p2", "version": "0.10.0", "process": None},
+    ]
+
+
+@pytest.mark.entscheidung("E-029")
+async def test_json_lists_each_process_of_a_worker_identity(monkeypatch) -> None:
+    backend = _backend(
+        leader="host:1:aa",
+        version="0.13.0",
+        workers={"host:0|host:21:bb": "0.13.0", "host:0|host:11:aa": "0.12.3"},
+    )
+    data = json.loads(await _status(monkeypatch, backend, "json"))
+    assert data["workers"] == [
+        {"worker_id": "host:0", "version": "0.12.3", "process": "host:11:aa"},
+        {"worker_id": "host:0", "version": "0.13.0", "process": "host:21:bb"},
     ]
 
 
@@ -94,6 +117,17 @@ async def test_table_lists_reporting_workers(monkeypatch) -> None:
     backend = _backend(leader="a:0", version="0.10.1", workers={"b:p2": "0.9.9", "a:0": "0.10.1"})
     output = await _status(monkeypatch, backend, "table")
     assert output.endswith("WORKERS:\n  a:0  0.10.1\n  b:p2  0.9.9\n")
+
+
+@pytest.mark.entscheidung("E-029")
+async def test_table_lists_each_process_and_old_keys_unchanged(monkeypatch) -> None:
+    backend = _backend(
+        leader="host:1:aa",
+        version="0.13.0",
+        workers={"host:0|host:21:bb": "0.13.0", "host:0|host:11:aa": "0.13.0", "host:0": "0.12.3"},
+    )
+    output = await _status(monkeypatch, backend, "table")
+    assert output.endswith("WORKERS:\n  host:0  0.12.3\n  host:0  0.13.0  host:11:aa\n  host:0  0.13.0  host:21:bb\n")
 
 
 async def test_table_without_reporting_workers(monkeypatch) -> None:

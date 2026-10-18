@@ -1,4 +1,4 @@
-"""Nachweis F4-04: ``purge_dead_letters`` schließt seinen DLQ-Channel nicht.
+"""Nachweis F4-04 (behoben in 0.13.0): ``purge_dead_letters`` schloss seinen DLQ-Channel nicht.
 
 Register: docs/befunde/fehlersuche-runde-4-2026-10.md (F4-04; Verdacht
 R4M-E-02; Gegenprüfung ``6-gegenpruefung-M.md``).
@@ -47,9 +47,6 @@ def _broker(purge: AsyncMock) -> tuple[RabbitMQBroker, Mock]:
 
 
 @pytest.mark.befund("F4-04")
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="F4-04: offen - purge_dead_letters schliesst seinen DLQ-Channel nicht"
-)
 async def test_purge_closes_its_own_dlq_channel() -> None:
     broker, channel = _broker(AsyncMock(return_value=Mock(message_count=3)))
 
@@ -60,9 +57,6 @@ async def test_purge_closes_its_own_dlq_channel() -> None:
 
 
 @pytest.mark.befund("F4-04")
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="F4-04: offen - purge_dead_letters schliesst seinen DLQ-Channel nicht"
-)
 async def test_failed_purge_still_closes_its_own_dlq_channel() -> None:
     broker, channel = _broker(AsyncMock(side_effect=RuntimeError("channel error")))
 

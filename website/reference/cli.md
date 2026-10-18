@@ -311,7 +311,11 @@ swarmq schedule add NAME
 
 Creates a new schedule (insert-if-absent). Pass exactly one of
 `--cron` (5-field expression) or `--at` (ISO 8601 one-shot time;
-without a timezone it is read as UTC). `--args` (default `[]`) must be
+without a timezone it is read as UTC). `--cron` accepts the same
+crontab(5) positive list as `TaskInfo.cron`
+([cron syntax](configuration.md#scheduling-cron)); anything else, such
+as six fields or `L`, `W`, `#`, `R`, `H`, `?` and `@reboot`, ends the
+command with exit `1` before any connection (since 0.13.0). `--args` (default `[]`) must be
 a JSON array, `--kwargs` (default `{}`) a JSON object; anything else
 exits `1`. `--queue` defaults to `default`. `--task` is not checked
 against the task registry: a typo only surfaces when the schedule fires
@@ -325,6 +329,23 @@ output: `inserted: false`, `duplicate_of: <owner>`). `--unique-until`
 (`completion` by default, `start`) decides whether the flag is released
 when the task reaches a terminal state or when a worker picks it up; it
 only applies together with `--unique-for`.
+
+`--format json` prints `inserted`, `name` and `already_exists`, with
+`--unique-for` also `dedup_hash`, `unique_until` and, for a duplicate,
+`duplicate_of`. `inserted` says whether this call stored the schedule.
+`already_exists` is `true` whenever an entry exists under the name, also
+for the same name with the same arguments; a dedup duplicate under
+another name gives `already_exists: false` with `duplicate_of` (since
+0.13.0; read `inserted`, not `already_exists`, to learn whether the call
+stored anything). The `--unique-for` claim is released at once when a
+different entry already holds the name, and when the backend answers
+with an error. It is kept until it expires when the backend fails
+(connection lost, timeout), because the entry may have been stored; a
+repeated call until then is a duplicate. A claim that an earlier
+`schedule add` under the same name holds is never released by this
+call, not even after a read error. Reading the entry under the
+name can log `schedule_def_malformed_skipped` (WARNING) for an entry it
+cannot decode.
 
 Example:
 
@@ -363,26 +384,34 @@ workers that report crons, with their swarmq versions.
 
 ```text
 LEADER: host-a:4711:3f9c2a1b
-LEADER_VERSION: 0.10.0
+LEADER_VERSION: 0.13.0
 NOW:    2026-10-20T08:00:00+00:00
 UPCOMING:
   2026-10-21T01:00:00+00:00  daily_report  task=daily_report  queue=reports
 WORKERS:
-  worker-a  0.10.0
-  worker-b  0.10.0
+  worker-a  0.13.0  host-a:4711:3f9c2a1b
+  worker-a  0.13.0  host-a:4802:9d01b7e4
+  worker-b  0.12.3
 ```
 
 `LEADER_VERSION` is `(not reported: swarmq before 0.10.0)` when the
 leader runs a swarmq that writes no version, and `-` without a leader.
-`WORKERS` lists every worker whose report is live (three
-`SWARMQ_SCHEDULER_SEEN_INTERVAL_S`), `(none)` without any. Every
+`WORKERS` lists every worker process whose report is live (three
+`SWARMQ_SCHEDULER_SEEN_INTERVAL_S`), `(none)` without any. Since 0.13.0
+each process reports under its own key, so worker processes with the same
+`worker_id` (two supervisors on one host, the same `SWARMQ_WORKER_ID`)
+appear as separate lines; the third column is the process (the owner
+token `host:pid:id`). Workers before 0.13.0 report without it and show
+two columns. After a worker is respawned or killed, its old line stays
+visible for up to three report intervals. Every
 version shown here should be at least the minimum leader version
 (currently 0.12; see
 [leader version](../guides/scheduling-and-retries.md#leader-version)).
 Fire times are shown in UTC.
 
 `--format json` adds the fields `leader_version` (string or `null`)
-and `workers` (a list of `{"worker_id": ..., "version": ...}`) to
+and `workers` (a list of `{"worker_id": ..., "version": ...,
+"process": ...}`; `process` is `null` for workers before 0.13.0) to
 `leader`, `now_ms` and `upcoming`.
 
 ### `swarmq schedule prune`
@@ -428,7 +457,11 @@ stay in the DLQ with their remaining retention; reading does not
 extend it, and messages whose retention ran out are dropped (see
 [retention](../guides/dead-letter-queues.md#retention-dead-lettered-messages-expire)).
 The table output shows `(truncated)` when `--limit` is hit;
-`--format json` includes a `truncated: bool` envelope.
+`--format json` includes a `truncated: bool` envelope. `truncated` (and
+`scan_exhausted` of `inspect` and `retry TASK_ID`) is true whenever
+reading stopped at the limit, including reads spent on expired entries
+that `scanned` does not count (since 0.13.0; before, an expired entry
+could hide the limit).
 
 All `dlq` subcommands that put messages back compute the remaining
 retention from the message's own headers `x-swarmq-dead-lettered-at`
@@ -447,7 +480,10 @@ swarmq dlq inspect TASK_ID [--queue QUEUE]
 
 Finds one DLQ message by `task_id` and prints its full headers and
 decoded body. Non-destructive. Exits `3` when the task_id is not
-found (use `--scan-limit`, default `1000`, to widen the search).
+found (use `--scan-limit`, default `1000`, to widen the search). If the
+scan stopped at `--scan-limit` without a match, the message says so and
+`--format json` has `scan_exhausted: true`; `dlq retry TASK_ID` does the
+same.
 
 ### `swarmq dlq retry`
 

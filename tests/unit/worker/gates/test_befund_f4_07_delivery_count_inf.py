@@ -43,9 +43,6 @@ class _Delivery:
 
 
 @pytest.mark.befund("F4-07")
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="F4-07: offen - DeliveryCountGate wirft OverflowError bei inf"
-)
 @pytest.mark.parametrize(
     "headers",
     [

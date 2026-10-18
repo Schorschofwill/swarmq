@@ -179,7 +179,7 @@ Der Workflow-Zustand lebt so lange wie `result_ttl` der
 | `workflow_id` | `str` | Stabile ID; speichere sie, um dich später wieder anzuhängen. |
 | `await status()` | `"running"`, `"completed"`, `"failed"` oder `"cancelled"` | |
 | `await children()` | `dict[str, dict]` | Ein Eintrag pro eingereihtem Schritt, Schlüssel ist sein Topologie-Pfad (siehe unten): `{"task_id", "status", "result"?}`. `status` ist `"running"` (noch kein Ergebnis), `"completed"` (mit `result`) oder `"failed"`. Leer, bevor ein Schritt eingereiht ist. |
-| `await cancel()` | `bool` | Setzt das Cancel-Flag des Workflows; `True`, wenn es neu gesetzt wurde. |
+| `await cancel()` | `bool` | Setzt das Cancel-Flag des Workflows; `True`, wenn es neu gesetzt wurde. Das Flag lebt `max(24 h, result_ttl)`, auch bei einem neu gebauten Handle (seit 0.13.0). |
 | `await get(timeout=30.0)` | das Endergebnis | Wartet, bis der Workflow terminal ist; siehe [Fehlerfälle](#fehlerfalle). |
 
 Aus jedem Prozess mit der ID wieder anhängen:
@@ -233,6 +233,7 @@ Workflows auf.
 |---|---|
 | Ein Schritt scheitert und hat Retries übrig | Er wird wie jeder Task wiederholt; der Workflow läuft weiter. |
 | Ein Schritt scheitert terminal (Retries erschöpft, `NoRetry`, Delivery-Limit, `max_age` überschritten, Fehler im Lock-Template, Ende einer Lock-Wartezeit, Task im Worker nicht registriert) | Der Worker markiert den Workflow als `failed`, wenn er den Schritt dead-lettert; `get()` wirft `TaskError` mit der Fehlermeldung des Schritts. `TaskError.error_class` nennt die Klasse der Exception des Schritts (z. B. `builtins.ValueError`) oder die swarmq-Klasse des terminalen Pfads (`swarmq.exceptions.LockWaitExceeded`, `TaskNotFoundError`, `RedeliveryLimitError`); nach Ablauf durch `max_age`, bei einem Fehler im Lock-Template, bei einem hängenden Worker und bei Workflows, die ein älterer Worker als gescheitert markiert hat, ist es `None`. Es laufen keine weiteren Schritte, und ein Chord-Body läuft nie, wenn ein Header-Glied gescheitert ist. Ein spätes Duplikat eines Schritts, der schon erfolgreich lief, markiert den Workflow nicht als `failed` (`workflow_fail_skipped_step_done`). |
+| Ein Schritt, dessen Erfolg schon gespeichert ist, wird spät dead-gelettert (etwa am Zustelllimit, nachdem sein Voranbringen scheiterte) | Seit 0.13.0 holt der Worker das Voranbringen mit dem gespeicherten Ergebnis nach, statt den Workflow als gescheitert zu markieren (`workflow_advance_caught_up`); die Nachricht wird ohne DLQ-Kopie und ohne `TASK_DLQ` bestätigt. Scheitert dieses letzte Voranbringen am Zustelllimit vorübergehend, geht die Nachricht ohne Fehlerergebnis in die DLQ, und der Workflow bleibt bis zu seiner TTL `running`. |
 | Der Workflow-Zustand lief ab, während ein Schritt noch lief | Das Ergebnis des Schritts kann den Workflow nicht mehr voranbringen; der Worker loggt `workflow_state_missing` (WARNING, Feld `workflow_id`). Für lange Workflows `result_ttl` erhöhen. |
 | Eine Middleware wirft in `pre_enqueue` für einen der ersten Schritte (im Client) | `apply()` wirft diese Exception; nichts wird gespeichert oder publiziert. |
 | Eine Middleware wirft in `pre_enqueue` für einen späteren Schritt (im Worker) | Kein Schritt dieser Front wird publiziert; der Workflow ist `failed`, und `get()` wirft `TaskError` mit der Nachricht der Exception. Siehe [Middleware bei Workflow-Schritten](middleware.md#workflow-schritte). |
@@ -243,7 +244,7 @@ Workflows auf.
 | Ein einzelner Schritt wird mit `cancel(task_id)` abgebrochen, vor oder während seines Laufs | Der Workflow ist `failed`; `get()` wirft `TaskError` mit der Meldung `task was cancelled`. Es laufen keine weiteren Schritte. Ein Schritt, der schon erfolgreich lief, markiert den Workflow nicht als `failed`. Sind Schritt und Workflow beide abgebrochen, gilt der Abbruch des Schritts (`failed`). |
 | `get()` läuft in den Timeout, während der Workflow noch läuft | `ResultNotReadyError`; der Workflow läuft weiter, rufe `get()` erneut auf. |
 | Der Workflow ist fertig, aber sein Endergebnis ist abgelaufen | `WorkflowResultExpired`; erhöhe `result_ttl`. |
-| Ein für das Fan-in nötiges Glied-Ergebnis ist abgelaufen oder fehlt | Der Workflow wird `failed` (gespeicherter Fehlertyp `WorkflowResultExpired` oder `WorkflowValidationError`), statt eine unvollständige Liste weiterzugeben; `get()` wirft `TaskError`. |
+| Ein für das Fan-in nötiges Glied-Ergebnis ist abgelaufen oder fehlt (verloren) | Der Workflow wird `failed` (gespeicherter Fehlertyp `WorkflowResultExpired`; bis 0.12 bei fehlendem Glied `WorkflowValidationError` „resolved N of M“), statt eine unvollständige Liste weiterzugeben; `get()` wirft `TaskError`. Ein Glied, dessen Schrittmarker verspätet gespeichert wird, lässt den Workflow nicht mehr scheitern, weil das Fan-in die Ergebnis-IDs der Glieder aus Workflow-ID und Schrittpfad ableitet (seit 0.13.0). |
 | Der Workflow-Zustand existiert nicht mehr (nie gestartet oder abgelaufen) | `app.workflow(id)` sowie `status()`/`children()`/`get()` auf einem vorhandenen Handle werfen `WorkflowNotFound`. |
 
 `WorkflowValidationError`, `WorkflowNotFound`, `WorkflowResultExpired`,

@@ -8,6 +8,9 @@ Test-Liste:
 - [x] mehrere Worker, die selbst SIGKILL ueberleben (D-Zustand): Einsammeln inkl.
       ``_collect_zombies`` endet bei 30 s, nicht 2 s + 1 s je Worker spaeter
 - [x] Worker, die im Drain sauber enden, bekommen kein Signal
+- [x] PF-8 (E-018): Kind läuft über das Drain-Ende -> INFO ``shutdown_sigterm_escalation``
+- [x] Kind überlebt bis ``sigkill_at`` -> ERROR ``shutdown_sigkill_escalation``
+- [x] Kein Kind über dem Drain-Ende -> kein Eskalations-Event
 """
 
 from __future__ import annotations
@@ -95,9 +98,39 @@ def test_unkillable_workers_do_not_stretch_the_budget(clock: _VirtualTime) -> No
     assert clock.now <= 30.0
 
 
-def test_workers_that_finish_their_drain_get_no_signal(clock: _VirtualTime) -> None:
+def test_workers_that_finish_their_drain_get_no_signal(
+    clock: _VirtualTime, swarmq_logs: list[dict[str, object]]
+) -> None:
     events: list[tuple[str, int, float]] = []
     pm = _pm(clock, _worker(clock, 1, events, exits_at=5.0), _worker(clock, 2, events, exits_at=20.0))
     pm._shutdown_all_workers()
     assert events == []
     assert clock.now <= 20.3
+    assert [e for e in swarmq_logs if str(e["event"]).startswith("shutdown_sig")] == []
+
+
+@pytest.mark.entscheidung("E-018")
+def test_sigterm_at_the_planned_drain_end_is_info(clock: _VirtualTime, swarmq_logs: list[dict[str, object]]) -> None:
+    """PF-8: Das SIGTERM am geplanten Drain-Ende ist ein regulärer Schritt des Budgets."""
+    events: list[tuple[str, int, float]] = []
+    pm = _pm(clock, _worker(clock, 1, events, exits_at=24.0), _worker(clock, 2, events, exits_at=5.0))
+    pm._shutdown_all_workers()
+    escalations = [e for e in swarmq_logs if str(e["event"]).startswith("shutdown_sig")]
+    assert [(e["event"], e["log_level"], e["count"]) for e in escalations] == [
+        ("shutdown_sigterm_escalation", "info", 1)
+    ]
+
+
+@pytest.mark.entscheidung("E-018")
+def test_child_surviving_until_sigkill_at_is_an_error(
+    clock: _VirtualTime, swarmq_logs: list[dict[str, object]]
+) -> None:
+    """Hängen zeigt erst ``shutdown_sigkill_escalation`` auf ERROR (PF-8)."""
+    events: list[tuple[str, int, float]] = []
+    pm = _pm(clock, _worker(clock, 1, events), _worker(clock, 2, events))
+    pm._shutdown_all_workers()
+    escalations = [e for e in swarmq_logs if str(e["event"]).startswith("shutdown_sig")]
+    assert [(e["event"], e["log_level"], e["count"]) for e in escalations] == [
+        ("shutdown_sigterm_escalation", "info", 2),
+        ("shutdown_sigkill_escalation", "error", 2),
+    ]

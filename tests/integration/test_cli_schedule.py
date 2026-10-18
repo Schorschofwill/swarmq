@@ -10,6 +10,7 @@ import argparse
 import io
 import uuid
 from contextlib import redirect_stdout
+from typing import Any
 
 import pytest
 import valkey.asyncio as valkey_asyncio
@@ -38,6 +39,17 @@ def _ns_add(**overrides) -> argparse.Namespace:
     }
     base.update(overrides)
     return argparse.Namespace(**base)
+
+
+async def _add_json(**overrides: Any) -> dict[str, Any]:
+    """``schedule add --format json`` mit ``--unique-until completion``."""
+    import json
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        await cli._run_schedule_add(_ns_add(unique_until="completion", format="json", **overrides))
+    result: dict[str, Any] = json.loads(buf.getvalue())
+    return result
 
 
 def _ns_list(format="table"):  # noqa: A002 - spiegelt die CLI-Option --format, Aufrufer uebergeben format= per Schluesselwort
@@ -92,6 +104,41 @@ class TestAddThenList:
         result = json.loads(buf.getvalue())
         assert result["inserted"] is False
         assert result["duplicate_of"] == name
+
+    @pytest.mark.entscheidung("E-076")
+    @pytest.mark.usefixtures("_env")
+    async def test_add_unique_duplicate_under_new_name_reports_no_existing_entry(self, valkey_url):
+        """PF-7 (U18): unter dem neuen Namen existiert nichts; den Grund nennt
+        ``duplicate_of``."""
+        import json
+
+        first = f"cron-{uuid.uuid4().hex[:8]}"
+        task_args = json.dumps([uuid.uuid4().hex])
+        await cli._run_schedule_add(_ns_add(name=first, args=task_args, unique_for=60, unique_until="completion"))
+
+        result = await _add_json(name=f"cron-{uuid.uuid4().hex[:8]}", args=task_args, unique_for=60)
+
+        assert result["inserted"] is False
+        assert result["already_exists"] is False
+        assert result["duplicate_of"] == first
+
+    @pytest.mark.entscheidung("E-059")
+    @pytest.mark.usefixtures("_env")
+    async def test_add_unique_on_taken_name_releases_the_own_claim(self, valkey_url):
+        """PF-6 (U18): der Name trägt einen Eintrag ohne den eigenen
+        ``dedup_hash``; der eigene Claim wird frei, ein gleicher Aufruf unter
+        anderem Namen wird gespeichert."""
+        import json
+
+        name = f"cron-{uuid.uuid4().hex[:8]}"
+        task_args = json.dumps([uuid.uuid4().hex])
+        await cli._run_schedule_add(_ns_add(name=name))
+
+        rejected = await _add_json(name=name, args=task_args, unique_for=60)
+        retried = await _add_json(name=f"cron-{uuid.uuid4().hex[:8]}", args=task_args, unique_for=60)
+
+        assert (rejected["inserted"], rejected["already_exists"]) == (False, True)
+        assert retried["inserted"] is True
 
     @pytest.mark.usefixtures("_env")
     async def test_list_json_format(self, valkey_url):
@@ -214,19 +261,23 @@ class TestStatus:
             await client.set(SCHEDULER_LOCK_KEY, "w1:42:abcdef12")
             await schedules.set_leader_version("w1:42:abcdef12", "0.10.0", ttl_ms=60_000)
             await schedules.report_worker_version(worker, "0.10.0", ttl_ms=60_000)
+            # F4-06 (KTD12): ab 0.13 je Prozess ``<worker_identity>|<owner_token>``.
+            await schedules.report_worker_version(f"{worker}|w2:7:aa", "0.13.0", ttl_ms=60_000)
 
             buf = io.StringIO()
             with redirect_stdout(buf):
                 await cli._run_schedule_status(_ns_status(format="json"))
             data = json.loads(buf.getvalue())
             assert data["leader_version"] == "0.10.0"
-            assert {"worker_id": worker, "version": "0.10.0"} in data["workers"]
+            assert {"worker_id": worker, "version": "0.10.0", "process": None} in data["workers"]
+            assert {"worker_id": worker, "version": "0.13.0", "process": "w2:7:aa"} in data["workers"]
 
             buf = io.StringIO()
             with redirect_stdout(buf):
                 await cli._run_schedule_status(_ns_status(format="table"))
             assert "LEADER_VERSION: 0.10.0\n" in buf.getvalue()
             assert f"  {worker}  0.10.0\n" in buf.getvalue()
+            assert f"  {worker}  0.13.0  w2:7:aa\n" in buf.getvalue()
         finally:
             await client.delete(SCHEDULER_LOCK_KEY)
             await client.aclose()

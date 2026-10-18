@@ -42,7 +42,11 @@ Invarianten (Quelle):
   Quelle: AE5, ``WorkflowAdvancer.mark_enqueued``.
 - W4 Terminales Scheitern ist synchron: Nach einem Fehlerergebnis oder
   Dead-Letter eines Schritts, der nicht neu zugestellt wurde, ist der
-  Workflow terminal. Quelle: E-040.
+  Workflow terminal. Quelle: E-040. Ausnahme (Nachtrag E-040, F4-01, KD6):
+  Ist das Erfolgsergebnis des Schritts schon gespeichert, holt der
+  Dead-Letter den Advance nach und bestätigt ohne DLQ-Kopie; das Modell
+  behandelt die Zustellung dann wie einen Erfolg, und das Erfolgsergebnis
+  bleibt unverändert.
 - W5 Unroutbarer Advance: Wirft ein Folge-Publish ``UnroutableMessage`` und
   wird die Zustellung bestätigt, ist der Workflow ``failed`` (Fehlertyp
   ``UnroutableMessage``); ein unroutbarer Start (``apply``) hinterlässt
@@ -85,18 +89,11 @@ Nicht nachgebildet: Ablauf von Ergebnissen und Zustand (TTL 24 h,
 ``sig()`` zur Laufzeit, die Zähler im Chord-Store (nur über ihre Wirkung, W1
 und W2, beobachtet; der Store hat keine Lese-API).
 
-Bekannte Befunde und Entscheidungen (Register
-``docs/befunde/fehlersuche-runde-4-2026-10.md``), ausgeklammert an der
-auslösenden Regel (KTD3, R8):
-
-- F4-16 (R4Z-01; E-073, KD1 für Blätter überholt): Ein Gruppenglied, dessen
-  Marker der publizierende Advance nicht persistiert hat, kippt den Workflow
-  beim Fan-in auf ``failed``. Vorbedingung ``deliverable``; Nachweis
-  ``test_unmarked_member_completing_first_completes_the_workflow``.
-- F4-01 (R4Z-02): Ein Dead-Letter nach gespeichertem, nicht
-  weitergeschaltetem Erfolg lässt den Workflow ``running``. In
-  ``deliver_pending`` wird ``dlq`` nach gespeichertem Erfolg zu ``ok``;
-  Nachweis ``test_dead_letter_after_unadvanced_success``.
+Bekannte Befunde (Register ``docs/befunde/fehlersuche-runde-4-2026-10.md``):
+keine Klammer mehr. F4-01 (R4Z-02) ist seit 0.13.0 behoben (Plan
+2026-10-17-2103, U14); die frühere Klammer ``dlq → ok`` in
+``deliver_pending`` ist entfallen, Nachweis
+``test_dead_letter_after_unadvanced_success``.
 """
 
 from __future__ import annotations
@@ -322,22 +319,6 @@ def predecessors(root: WorkflowNode, path: str) -> list[str]:
                 node = node.header
         prefix = f"{prefix}/{seg}"
     return out
-
-
-def fan_in_above(root: WorkflowNode, path: str) -> bool:
-    """Liegt über dem Schritt an *path* eine Gruppe (auch ein Chord-Header)?
-    Nur dann liest ein späterer Fan-in seinen Marker (F4-16, R4Z-01)."""
-    node = root
-    for seg in [s for s in path.split("/") if s]:
-        if isinstance(node, Group):
-            return True
-        if isinstance(node, Chain):
-            node = node.steps[int(seg)]
-        elif isinstance(node, Chord):
-            if seg == "h":
-                return True
-            node = node.body
-    return False
 
 
 # -- Modell --------------------------------------------------------------------
@@ -733,23 +714,6 @@ class WorkflowMachine(AsyncStateMachine[WorkflowEnv]):
         status = self.status_of(wf)
         assert status in TERMINAL, f"{wf}: {kind} von {msg} bestätigt, Status {status} (W4, E-040)"
 
-    def deliverable(self, msg: Msg) -> bool:
-        """F4-16 (R4Z-01; E-073): Ein Schritt, dessen Marker der publizierende
-        Advance nicht persistiert hat (Neuzustellung nach Publish), läuft erst,
-        wenn die Neuzustellung den Marker nachgetragen hat; sonst kippt der
-        Fan-in einer Gruppe den Workflow heute auf ``failed``. Klammer mit dem
-        Fix von F4-16 entfernen (Nachweis
-        ``unmarked_member_completing_first_completes_the_workflow``)."""
-        if not fan_in_above(msg.wf.node, msg.path):
-            return True  # reine Kette: der Abschluss braucht keinen Marker
-        state = self.state_of(msg.wf)
-        if state is None or state["status"] != STATUS_RUNNING or msg.wf.cancel_requested:
-            return True  # endet früh (terminal) oder im Cancel-Gate
-        return msg.path in state["step_tasks"]
-
-    def deliverable_pending(self) -> list[Msg]:
-        return [msg for msg in self.pending if self.deliverable(msg)]
-
     def succeeded(self, msg: Msg) -> bool:
         """Liegt schon ein Erfolgsergebnis des Schritts (früherer Lauf)?"""
         raw = self.run(self.env.backend.get_result(msg.task_id))
@@ -768,6 +732,9 @@ class WorkflowMachine(AsyncStateMachine[WorkflowEnv]):
 
     def _attempt(self, msg: Msg, kind: Kind, midway: Callable[[], Awaitable[object]] | None = None) -> None:
         status_before = self.status_of(msg.wf)
+        # W4, Nachtrag E-040 (F4-01, KD6): ein Dead-Letter nach gespeichertem
+        # Erfolg holt den Advance nach und bestätigt -- wie ein Erfolg.
+        succeeded_before = kind == "dlq" and self.succeeded(msg)
         unroutable = len(self.broker.unroutable)
         published = {wf.wf_id: dict(wf.publishes) for wf in self.wfs}
         verbs, gate = self.run(self.worker().process(msg, kind, midway))
@@ -779,18 +746,16 @@ class WorkflowMachine(AsyncStateMachine[WorkflowEnv]):
                 for path, count in wf.publishes.items():
                     if count > published.get(wf.wf_id, {}).get(path, 0):
                         wf.overlap_paths.add(path)
+        if succeeded_before:
+            assert self.succeeded(msg), f"{msg}: Dead-Letter überschrieb das Erfolgsergebnis (E-040)"
+            if verbs == ["ack"]:
+                kind = "ok"
         self._settle(msg, kind, verbs, gate, status_before)
 
-    @precondition(lambda self: bool(self.deliverable_pending()))  # F4-16 (R4Z-01, E-073)
+    @precondition(lambda self: bool(self.pending))
     @rule(data=st.data(), kind=st.sampled_from(("ok", "ok", "ok", "ok", "ok", "ok", "error", "dlq")))
     def deliver_pending(self, data: st.DataObject, kind: Kind) -> None:
-        msg = data.draw(st.sampled_from(self.deliverable_pending()), label="msg")
-        if kind == "dlq" and self.succeeded(msg):
-            # F4-01 (R4Z-02): ein Dead-Letter nach gespeichertem Erfolg
-            # markiert nicht (E-040, Bewusste Folgen) -- auch dann nicht, wenn
-            # der Advance dieses Erfolgs nie durchlief; der Workflow hängt.
-            # Nachweis ``test_dead_letter_after_unadvanced_success``.
-            kind = "ok"
+        msg = data.draw(st.sampled_from(self.pending), label="msg")
         self.deliver(msg, kind)
 
     def redeliver(self, msg: Msg) -> None:
@@ -833,12 +798,10 @@ class WorkflowMachine(AsyncStateMachine[WorkflowEnv]):
                     continue  # schon wieder eingereiht
             self._settle(msg, "ok", verbs, gate, before[msg.seq])
 
-    @precondition(
-        lambda self: self.allow_concurrent and (bool(self.done) or bool(self.deliverable_pending()))
-    )  # F4-16 (R4Z-01, E-073)
+    @precondition(lambda self: self.allow_concurrent and (bool(self.done) or bool(self.pending)))
     @rule(data=st.data())
     def concurrent_advance(self, data: st.DataObject) -> None:
-        candidates = [*self.deliverable_pending(), *self.done]
+        candidates = [*self.pending, *self.done]
         first = data.draw(st.sampled_from(candidates), label="first")
         second = data.draw(st.sampled_from(candidates), label="second")
         lanes = st.lists(st.integers(min_value=0, max_value=2), max_size=12)
@@ -874,10 +837,10 @@ class WorkflowMachine(AsyncStateMachine[WorkflowEnv]):
             assert status == STATUS_CANCELLED, f"{msg.wf}: Schritt nach cancel fertig, Status {status} (W7)"
             assert sum(msg.wf.publishes.values()) == published, f"{msg.wf}: nach cancel weitergeschaltet (W7)"
 
-    @precondition(lambda self: any(msg.wf.handle is not None for msg in self.deliverable_pending()))
+    @precondition(lambda self: any(msg.wf.handle is not None for msg in self.pending))
     @rule(data=st.data())
     def cancel_while_running(self, data: st.DataObject) -> None:
-        candidates = [msg for msg in self.deliverable_pending() if msg.wf.handle is not None]
+        candidates = [msg for msg in self.pending if msg.wf.handle is not None]
         msg = data.draw(st.sampled_from(candidates), label="msg")
         if msg.task_id in self.done_ids:
             self.deliver(msg)  # Kopie eines erledigten Schritts: der Ausführungsschutz verwirft sie
@@ -909,9 +872,7 @@ class WorkflowMachine(AsyncStateMachine[WorkflowEnv]):
         for _ in range(2_000):
             if not self.pending:
                 break
-            ready = self.deliverable_pending()  # F4-16 (R4Z-01, E-073)
-            assert ready, f"nur Schritte ohne persistierten Marker offen: {self.pending[:5]}"
-            self.deliver(ready[0])
+            self.deliver(self.pending[0])
         assert not self.pending, f"Zustellungen enden nicht: {self.pending[:5]}"
         for wf in self.wfs:
             status = self.status_of(wf)

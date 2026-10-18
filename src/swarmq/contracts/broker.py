@@ -30,6 +30,30 @@ class QueueStatus:
     consumer_count: int
 
 
+# Nicht-leere ``__slots__`` lehnt CPython für tuple-Unterklassen ab; ``hit_limit``
+# braucht deshalb das Instanz-``__dict__``.
+class DeadLetterScan[T](tuple[T, int]):  # noqa: SLOT001 - hit_limit ist Instanzattribut, tuple erlaubt keine Slots
+    """Ergebnis der DLQ-Lesebefehle von ``BrokerAdmin`` (F4-05, E-028).
+
+    Entpackt wie ``(erstes, scanned)`` und erfüllt damit die Signaturen
+    ``tuple[..., int]``. ``hit_limit`` sagt, ob das Lesen am Limit endete;
+    ``scanned`` zählt abgelaufene Einträge nicht, die aber Lesungen
+    verbrauchen. Implementierungen ohne das Flag liefern ein schlichtes
+    Tupel; Aufrufer fallen dann auf ``scanned >= limit`` zurück."""
+
+    hit_limit: bool
+
+    def __new__(cls, first: T, scanned: int, *, hit_limit: bool) -> DeadLetterScan[T]:
+        scan = super().__new__(cls, (first, scanned))
+        scan.hit_limit = hit_limit
+        return scan
+
+    def __getnewargs_ex__(self) -> tuple[tuple[T, int], dict[str, bool]]:
+        # copy/deepcopy/pickle rufen ``__new__`` mit diesen Argumenten auf;
+        # das geerbte ``__getnewargs__`` des Tupels passt nicht zur Signatur.
+        return (self[0], self[1]), {"hit_limit": self.hit_limit}
+
+
 @runtime_checkable
 class Publisher(Protocol):
     """Veröffentlichen — alles, was der Client braucht."""
@@ -123,7 +147,11 @@ class Broker(Publisher, Consumer, Protocol):
 @runtime_checkable
 class BrokerAdmin(Protocol):
     """Optionale Erweiterung (KTD3): Dead-Letter-Operationen, Tiefen und der
-    DLX-Fallback. Konsumenten: ``swarmq dlq``, Metrics-Sampler, Health."""
+    DLX-Fallback. Konsumenten: ``swarmq dlq``, Metrics-Sampler, Health.
+
+    Die vier Lesebefehle dürfen statt des Tupels ein ``DeadLetterScan``
+    liefern; dessen ``hit_limit`` meldet, ob das Lesen am Limit endete
+    (F4-05, E-028)."""
 
     async def list_dead_letters(self, queue: str, limit: int = 100) -> tuple[list[dict[str, Any]], int]: ...
 

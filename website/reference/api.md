@@ -398,7 +398,12 @@ async def workflow(workflow_id: str) -> WorkflowHandle
 
 Reattach to a running or finished workflow by id, e.g. from another
 process. **Raises** `WorkflowNotFound` when no state exists for the id
-(never started or expired).
+(never started or expired). The cancel flag that the handle's
+`cancel()` sets lives `max(24 h, result_ttl)`, as for a handle from
+`apply()` (since 0.13.0; before, a reattached handle used 24 h and one
+from `apply()` used `result_ttl`). The lower-level
+`Client.workflow(workflow_id, *, cancel_ttl_ms=None)` takes that lifetime
+in milliseconds; `None` means 24 h.
 
 **Example.**
 
@@ -779,7 +784,10 @@ class WorkflowHandle:
 - `cancel()` — sets the workflow cancel flag. `get()` raises promptly;
   steps not yet picked up finish as cancelled; a step that is already
   running completes, but no further steps are enqueued. Returns `True`
-  when the flag was newly set.
+  when the flag was newly set. The flag lives `max(24 h, result_ttl)`
+  for handles from `app.apply()` and `app.workflow()` alike (since
+  0.13.0), so a step that waits in a queue longer than `result_ttl` is
+  still stopped.
 - `get(timeout=30.0)` — waits for a terminal status and returns the
   final result. A negative `timeout` or `nan` reads the state once and
   then raises `ResultNotReadyError` (since 0.12.3; before, it polled
@@ -846,7 +854,15 @@ connection, and `start_worker()` rejects such a broker. Inside
 Async AMQP broker wrapping aio-pika. Implements the `Broker` and
 `BrokerAdmin` protocols from `swarmq.contracts` (connect/declare/
 publish/consume, the four delivery verbs `ack`/`redeliver`/
-`retry_later`/`dead_letter`, queue depths and DLQ operations). All
+`retry_later`/`dead_letter`, queue depths and DLQ operations). The DLQ
+read commands of `BrokerAdmin` (`list_dead_letters`, `inspect_dead_letter`,
+`retry_dead_letter`, `retry_all_dead_letters`) return a `DeadLetterScan`
+(`swarmq.contracts.broker`, since 0.13.0): a tuple `(result, scanned)`
+that unpacks as before, plus `hit_limit`, which says whether reading
+stopped at the limit (expired entries count towards the limit but not
+towards `scanned`). An own `BrokerAdmin` implementation may keep returning
+a plain tuple; the CLI then falls back to `scanned >= limit`. Code that
+checks `type(result) is tuple` needs adjusting. All
 configuration (queue type, prefetch, reconnect policy) flows through
 `SwarmQConfig` and `TaskInfo` — you do not call methods on this class
 directly from application code.
@@ -861,6 +877,10 @@ ValkeyBackend(
     *,
     client: valkey.asyncio.Valkey | None = None,
     pool: valkey.asyncio.ConnectionPool | None = None,
+    keys: KeySpace | None = None,
+    eviction_check: str | None = None,
+    namespace: str | None = None,
+    connect_timeout_s: float | None = None,
 )
 ```
 
@@ -868,6 +888,21 @@ Pass exactly one of `url`, `client` or `pool`; none or more than one
 raises `ConfigurationError`. A borrowed `client` is never closed by
 SwarmQ, a `pool` keeps its own lifecycle; both are for the producer
 path only (`start_worker()` rejects them).
+
+- `namespace` — the [namespace](configuration.md#namespace-several-apps-on-one-valkey)
+  of every key and channel; without it `SWARMQ_NAMESPACE` applies. If
+  both are set and differ, `SwarmQ` raises `ConfigurationError`
+  (exit `78`) ([where the namespace comes from](configuration.md#where-the-namespace-comes-from)).
+- `keys` — a ready `KeySpace` (`swarmq.keyspace`) instead of
+  `namespace`; passing both is a `ConfigurationError`.
+- `eviction_check` — `strict`, `warn` or `off`, as
+  `SWARMQ_VALKEY_EVICTION_CHECK`, which applies without it.
+- `connect_timeout_s` — overall deadline for the `PING` in `connect()`,
+  including retries; wins over `SwarmQConfig.backend_connect_timeout_s`
+  and `SWARMQ_BACKEND_CONNECT_TIMEOUT_S` (default 30 s). Must be `> 0`
+  and at most `threading.TIMEOUT_MAX`, otherwise `ConfigurationError` at
+  construction. When it expires, `connect()` raises
+  `BackendConnectionError`.
 
 Async Valkey client backing results, locks, rate limits, cancel
 flags, scheduler state, and leader election. Implements the

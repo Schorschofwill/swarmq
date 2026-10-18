@@ -23,7 +23,7 @@ from typing import Any
 from swarmq import identity
 from swarmq.backoff import backend_defer_delay, nominal_defer_total
 from swarmq.contracts import ExecutionGuardStore
-from swarmq.exceptions import BackendConnectionError
+from swarmq.exceptions import BackendConnectionError, TaskNotFoundError
 from swarmq.headers import HEADER_GUARD_DEFER_COUNT, HEADER_RETRY_COUNT
 from swarmq.logging import _error_fields, get_logger
 from swarmq.task import DeliveryMode
@@ -136,19 +136,7 @@ class ExecutionGuard:
             self._release_in_background(lease)
             return await defer_backend_unavailable(self._deps, delivery, ctx, exc, gate="execution_guard")
         if claim.status in ("done", "superseded"):
-            # Abgeschlossen (das Original hat bestaetigt bzw. seine Kopie
-            # liegt in der DLQ) oder von einer Retry-Kopie ueberholt. Nicht
-            # freigeben -- Unique-Flag und Schedfire-Marker gehoeren dem
-            # Original bzw. der Retry-Kopie.
-            logger.info(
-                "duplicate_delivery_skipped",
-                task_id=ctx.task_id,
-                task_name=ctx.task_name,
-                reason=claim.status,
-            )
-            self._event("duplicate_skipped")
-            await self._deps.broker.ack(delivery)
-            return Terminal.never_release()
+            return await self._skip_duplicate(delivery, ctx, claim.status)
         if claim.status == "running":
             return await self._defer(delivery, ctx)
         # Ab hier haelt die Zustellung den Running-Marker; das ausgefuehrte
@@ -159,6 +147,54 @@ class ExecutionGuard:
         if claim.status == "orphan_limit":
             return await self._dead_letter_orphan(delivery, ctx, claim.orphans)
         return Continue
+
+    async def skip_if_settled(self, delivery: Any, ctx: GateContext) -> DeliveryOutcome:
+        """Delivery-Count-Gate am Zustelllimit (F4-02, E-043): ist die
+        Ausführung erledigt oder überholt, wie im Gate bestätigen und
+        überspringen statt Dead-Letter; sonst ``Continue``. Liest nur
+        (``peek``), setzt keinen Marker. Scheitert das Lesen, bleibt es beim
+        Dead-Letter (KD5)."""
+        store = self._store()
+        if not self._deps.config.execution_guard or store is None or self._fire_and_forget(ctx):
+            return Continue
+        try:
+            settled = await bounded_backend_call(
+                self._deps,
+                store.peek(execution_identity(delivery, ctx.task_id), retry_count=retry_count_of(delivery.headers)),
+                what="execution guard peek",
+            )
+        except BackendConnectionError as exc:
+            logger.warning(
+                "execution_guard_peek_failed",
+                task_id=ctx.task_id,
+                task_name=ctx.task_name,
+                hint="the delivery limit dead-letters the message without knowing whether it already completed",
+                **_error_fields(exc),
+            )
+            return Continue
+        if settled is None:
+            return Continue
+        return await self._skip_duplicate(delivery, ctx, settled)
+
+    def _fire_and_forget(self, ctx: GateContext) -> bool:
+        """Zustellmodus aus der Registry wie ``RetryHandler.dead_letter``:
+        ``ctx.task_info`` ist vor dem Registry-Lookup noch ``None``; ein
+        unbekannter Task zählt wie AT_LEAST_ONCE."""
+        try:
+            task_info = self._deps.registry.get(ctx.task_name).task_info
+        except TaskNotFoundError:
+            return False
+        return task_info.delivery is DeliveryMode.FIRE_AND_FORGET
+
+    async def _skip_duplicate(self, delivery: Any, ctx: GateContext, reason: str) -> DeliveryOutcome:
+        """Abgeschlossen (das Original hat bestaetigt bzw. seine Kopie liegt in
+        der DLQ) oder von einer Retry-Kopie ueberholt. Nicht freigeben --
+        Unique-Flag und Schedfire-Marker gehoeren dem Original bzw. der
+        Retry-Kopie."""
+        logger.info("duplicate_delivery_skipped", task_id=ctx.task_id, task_name=ctx.task_name, reason=reason)
+        self._event("duplicate_skipped")
+        await self._deps.broker.ack(delivery)
+        return Terminal.never_release()
 
     async def _dead_letter_orphan(self, delivery: Any, ctx: GateContext, orphans: int) -> DeliveryOutcome:
         """Absturzschleife: dieselbe Ausfuehrung ist wiederholt ohne Freigabe

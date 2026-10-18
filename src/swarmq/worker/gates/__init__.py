@@ -13,6 +13,8 @@ der Band-Erhalt beim Retry ist die benannte Verhaltenskorrektur (KTD2, U8).
 
 from __future__ import annotations
 
+import enum
+import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -50,6 +52,15 @@ if TYPE_CHECKING:
 
 
 logger = get_logger(__name__)
+
+# Zeitquelle von ``GateContext.received_at``; Unit-Tests ersetzen sie
+# (``tests/unit/conftest.py``) durch dieselbe Fake-Uhr wie ``results._monotonic``.
+_monotonic: Callable[[], float] = time.monotonic
+
+
+def _received_now() -> float:
+    # Spät gebunden: liest ``_monotonic`` beim Aufruf (Tests ersetzen es).
+    return _monotonic()
 
 
 class WorkerBroker(Broker, BrokerAdmin, Protocol):
@@ -132,12 +143,34 @@ class GateContext:
     # Unique-Flags im start-Modus ist gelaufen, unabhaengig vom Modus und vom
     # Erfolg). Erst dann ist die terminale Freigabe im start-Modus ein No-op.
     start_release_reached: bool = False
+    # E-072 (KTD7): Zustellzeitpunkt (monotone Uhr), entsteht mit dem Kontext
+    # nach dem Decode; die Speicher-Wiederholung des Ergebnisses misst
+    # ``consumer_timeout_s`` daran.
+    received_at: float = field(default_factory=_received_now)
+
+
+class StepDone(enum.Enum):
+    """Dritter Ausgang von ``fail_workflow`` neben ``True`` (markiert bzw.
+    weiter mit dem terminalen Pfad) und ``False`` (neu zugestellt): das
+    Erfolgsergebnis des Schritts ist gespeichert (F4-01, E-040, KD6). Der
+    Aufrufer speichert kein Fehler- oder Cancel-Ergebnis darüber.
+
+    ``ACK``: der nachgeholte Advance gelang (oder ein Advance, den eine
+    Wiederholung nicht heilt, hat den Workflow fehlmarkiert) -- bestätigen
+    ohne DLQ-Kopie und ohne ``TASK_DLQ``, freigeben wie nach einer DLQ-Kopie.
+    ``DEAD_LETTER``: der Advance scheiterte vorübergehend und die Zustellung
+    darf nicht neu zugestellt werden (Zustelllimit) -- DLQ-Kopie ohne
+    Fehlerergebnis; der Workflow bleibt ``running`` (Restfall, E-040)."""
+
+    ACK = "ack"
+    DEAD_LETTER = "dead_letter"
 
 
 class FailWorkflow(Protocol):
     """``GateDeps.fail_workflow`` (``RetryHandler.fail_workflow``).
     *redeliver_with* ersetzt den Requeue an derselben Stelle, wenn die
-    Markierung voruebergehend scheitert (Cancel-Gate, FS-12)."""
+    Markierung voruebergehend scheitert (Cancel-Gate, FS-12). Ausgänge siehe
+    ``StepDone``."""
 
     def __call__(
         self,
@@ -148,7 +181,7 @@ class FailWorkflow(Protocol):
         /,
         *,
         redeliver_with: Callable[[BaseException], Awaitable[None]] | None = None,
-    ) -> Awaitable[bool]: ...
+    ) -> Awaitable[bool | StepDone]: ...
 
 
 @dataclass
@@ -178,7 +211,8 @@ class GateDeps:
     redeliver_pause: Callable[[float], Awaitable[None]] | None = None
     # BZ-13: Workflow eines terminal endenden Schritts fehlmarkieren
     # (delivery, ctx, error_message, may_redeliver) -> ``False``, wenn die
-    # Zustellung deshalb neu zugestellt wurde. Der Worker setzt es
+    # Zustellung deshalb neu zugestellt wurde, ``StepDone``, wenn der Schritt
+    # schon erfolgreich war (F4-01). Der Worker setzt es
     # (``RetryHandler.fail_workflow``); ``None`` = keine Markierung.
     fail_workflow: FailWorkflow | None = None
     # BZ-25 (MR 13): erworbenen Lock dem Keeper uebergeben (token, ttl_ms, ctx);
@@ -418,6 +452,7 @@ __all__ = [
     "GateDeps",
     "LockEntry",
     "SchedfireClaim",
+    "StepDone",
     "WorkerBackend",
     "WorkerBroker",
     "fail_workflow_best_effort",

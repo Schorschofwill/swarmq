@@ -32,17 +32,24 @@ Every deadline, TTL and interval on this page must be a finite number
 (since 0.12.3): `inf` and `nan`, as an environment value or as a `SwarmQConfig`
 argument, are a `ConfigurationError` (exit `78`) that names the field.
 Where unlimited is supported, the value is `none`, not `inf` (today
-`SWARMQ_DEAD_LETTER_TTL_S`).
+`SWARMQ_DEAD_LETTER_TTL_S`). Every deadline and TTL (including
+`result_ttl` and `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S`) must also be at
+most `315360000` s (ten years; RabbitMQ rejects a per-message expiration
+above `315360000000` ms), and counts (`SWARMQ_EXECUTION_GUARD_MAX_ORPHANS`,
+`SWARMQ_LOG_QUEUE_SIZE`, …) at most `sys.float_info.max`
+(`SWARMQ_DELIVERY_LIMIT`: at most 2^63 − 1, see below); a larger value is a `ConfigurationError` (exit
+`78`) that names the field, and `swarmq check` reports it before the
+start (since 0.13.0).
 
 | Variable | Default | Description |
 |---|---|---|
 | `SWARMQ_QUEUES` | `default` | Comma-separated queue names the worker consumes. |
-| `SWARMQ_CONCURRENCY` | `10` (io) / assigned CPUs (cpu) | Maximum tasks in flight per worker process. With `SWARMQ_POOL=cpu` the number of compute slots; see [`--concurrency`](cli.md#options). The CPU default (CPU affinity and cgroup quota, rounded up) also applies to an embedded `SwarmQConfig(pool="cpu")` without `concurrency` (since 0.12.3; before, 10); an explicit `concurrency` always wins. |
+| `SWARMQ_CONCURRENCY` | `10` (io) / assigned CPUs (cpu) | Maximum tasks in flight per worker process. Must be between `1` and `65535` (it becomes the AMQP prefetch, a short; since 0.13.0, larger values are a `ConfigurationError`, exit `78`). With `SWARMQ_POOL=cpu` the number of compute slots; see [`--concurrency`](cli.md#options). The CPU default (CPU affinity and cgroup quota, rounded up) also applies to an embedded `SwarmQConfig(pool="cpu")` without `concurrency` (since 0.12.3; before, 10); an explicit `concurrency` always wins. |
 | `SWARMQ_RESULT_TTL` | `86400` | Seconds that stored results live in Valkey. A whole number in the environment; the `SwarmQConfig` argument also takes a `float` (such as `timedelta(...).total_seconds()`), which is rounded up to whole seconds. |
 | `SWARMQ_RETRY_MAX_DELAY` | `3600.0` | Cap on retry backoff in seconds. |
 | `SWARMQ_SHUTDOWN_TIMEOUT` | `30` | Total shutdown budget in seconds from SIGTERM (since 0.12; before, only the drain): draining in-flight tasks, releasing locks, the scheduler handover, closing connections and, under the supervisor, its SIGTERM/SIGKILL escalation all fit in it. The drain ends 5 s (at most half) before the end; under the supervisor the escalation ends 2 s before it. Set Kubernetes `terminationGracePeriodSeconds` and Docker `stop_grace_period` to at least this value plus 15 s ([shutdown budget](../explanation/delivery-semantics.md#shutdown-budget)). `0` aborts at once: under the supervisor SIGTERM and SIGKILL follow without waiting, and locks and the leader role expire through their TTL (allowed under `swarmq worker` since 0.12.3; before, it stopped the start with a traceback). A negative value is a `ConfigurationError` (exit `78`). |
 | `SWARMQ_PUBLISH_TIMEOUT_S` | `120.0` | Upper bound on a complete publish, including internal retries. A publish that exceeds it fails with a broker connection error instead of waiting indefinitely for a confirm that a silently dead transport will never deliver. During graceful shutdown the shorter of this value and the remaining shutdown grace period applies. |
-| `SWARMQ_DELIVERY_LIMIT` | `20` | Delivery budget for quorum queues (`x-delivery-limit`); ignored for classic queues. Once a message has been delivered this many times, the broker itself dead-letters it — the safety net that stops a task which reliably kills the process (SIGSEGV/OOM) from being redelivered forever without ever reaching `max_retries`. The default covers three to four task-level retries per delivery plus headroom for broker hiccups. That headroom is narrower since the publish deadline: a publish that breaks its deadline inside the worker redelivers the in-flight message instead of acking it, and each round costs one delivery. Before each such hand-back the worker waits up to 5 s (growing with the delivery count), so the default budget lasts more than a minute. The worker also counts `x-acquired-count` (RabbitMQ 4.3, which does not count a requeue in `x-delivery-count`). Raise it if you must ride out longer broker outages; lower it to force a tighter delivery window. Existing queues keep the limit they were created with; the worker then dead-letters at the smaller of both values minus one ([effective delivery limit](../explanation/delivery-semantics.md#effective-delivery-limit)). |
+| `SWARMQ_DELIVERY_LIMIT` | `20` | Delivery budget for quorum queues (`x-delivery-limit`); ignored for classic queues. Once a message has been delivered this many times, the broker itself dead-letters it — the safety net that stops a task which reliably kills the process (SIGSEGV/OOM) from being redelivered forever without ever reaching `max_retries`. The default covers three to four task-level retries per delivery plus headroom for broker hiccups. That headroom is narrower since the publish deadline: a publish that breaks its deadline inside the worker redelivers the in-flight message instead of acking it, and each round costs one delivery. Before each such hand-back the worker waits up to 5 s (growing with the delivery count), so the default budget lasts more than a minute. The worker also counts `x-acquired-count` (RabbitMQ 4.3, which does not count a requeue in `x-delivery-count`). Raise it if you must ride out longer broker outages; lower it to force a tighter delivery window. Existing queues keep the limit they were created with; the worker then dead-letters at the smaller of both values minus one ([effective delivery limit](../explanation/delivery-semantics.md#effective-delivery-limit)). Must be `> 0` and at most `9223372036854775807` (2^63 − 1, AMQP long long; sent to RabbitMQ as `x-delivery-limit`). Larger values are a configuration error (exit `78`; since 0.13.0, before exit `1`). |
 | `SWARMQ_QUEUE_TYPE` | `quorum` | `quorum` (recommended) or `classic` RabbitMQ queue type. Only quorum queues carry `x-delivery-limit`; without it a message that keeps hanging workers is redelivered without bound (the worker warns at startup). Changing it for existing queues fails with `QueueArgumentsMismatch` (exit 78); [migrate](../explanation/delivery-semantics.md#changing-queue-arguments) the queues instead. |
 | `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY` | `auto` | Dead-lettering of quorum queues. `auto`: new queues get `x-dead-letter-strategy=at-least-once` and `x-overflow=reject-publish` (not `{queue}.XQ`), existing queues keep their arguments and one WARNING `queue_dead_letter_at_most_once` per process lists those without at-least-once. `at-least-once`: as `auto`, but an existing queue without at-least-once (strategy and `x-overflow=reject-publish`) fails with `QueueArgumentsMismatch` (exit 78); not allowed with `SWARMQ_QUEUE_TYPE=classic` (`ConfigurationError`). `legacy`: the arguments of 0.11 (at-most-once), no warning ([dead-lettering guarantee](../explanation/delivery-semantics.md#dead-lettering-guarantee)). |
 | `SWARMQ_BROKER_PUBLISH_CONNECTION` | `separate` | `separate`: a worker consumes and acknowledges over a second RabbitMQ connection, opened by its first `consume()`; publishes (retry, dead-letter and deferral copies, workflow steps, cron fires) keep the first one. During a resource alarm (memory, disk) RabbitMQ blocks only connections that publish, so acknowledgements keep flowing. A producer that never consumes keeps one connection. `shared`: one connection as before 0.12. With an injected `connection=`/`connection_pool=` it is always `shared` ([broker resource alarm](../explanation/architecture.md#failure-domains)). |
@@ -137,7 +144,7 @@ connection, and `swarmq worker --check` reports it with `ok: false`
 | `SWARMQ_HEALTH_PORT` | *unset* | **Base port** for `/health` and `/ready`, same slot offset. Must be `1..65535`. |
 | `SWARMQ_HEALTH_HOST` | `127.0.0.1` | Bind address for the health server. Set `0.0.0.0` for Kubernetes `httpGet` probes: the kubelet probes the pod IP, not loopback. |
 | `SWARMQ_METRICS_SAMPLE_INTERVAL` | `10.0` | Seconds between samples of the `swarmq_queue_depth`, `swarmq_dlq_messages` and `swarmq_worker_uptime_seconds` gauges; the same tick dispatches `WORKER_HEARTBEAT`. Must be `> 0`. The sampler only runs when metrics are enabled. |
-| `SWARMQ_WORKER_ID` | hostname | Base of the worker identity that appears as `worker_id` in signals, metric labels and the log context. See [worker identity](#worker-identity). |
+| `SWARMQ_WORKER_ID` | hostname | Base of the worker identity that appears as `worker_id` in signals, metric labels and the log context. Must not contain a vertical bar (it separates the worker identity from the process in the version report of `swarmq schedule status`); otherwise a `ConfigurationError`, exit `78` (since 0.13.0). See [worker identity](#worker-identity). |
 
 #### Metric catalog
 
@@ -478,9 +485,20 @@ definition time and cannot be mutated afterwards.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `cron` | `str \| None` | `None` | Standard 5-field cron expression with a next fire time. Extended syntax (`L`, `W`, `#`) is rejected, and so is an expression that never fires, such as `0 0 30 2 *` (since 0.12.3; before, the scheduler leader dropped it silently). |
+| `cron` | `str \| None` | `None` | Cron expression after crontab(5) with a next fire time (positive list, see below). An expression that never fires, such as `0 0 30 2 *`, is rejected too (since 0.12.3; before, the scheduler leader dropped it silently). |
 | `catchup` | `bool` | `False` | Reserved for a future release. `True` raises `ValueError`. |
 | `timezone` | `str \| None` | `None` | IANA zone in which `cron` is evaluated, e.g. `"Europe/Berlin"`. `None` falls back to `SWARMQ_SCHEDULER_TIMEZONE`, otherwise UTC; an explicit `"UTC"` beats that default. Requires `cron`; an unknown zone raises `ValueError`. See [time zones](../guides/scheduling-and-retries.md#time-zones). |
+
+Accepted cron syntax (positive list after crontab(5), since 0.13.0):
+exactly five fields (minute, hour, day of month, month, day of week)
+made of numbers, `*`, ranges `-`, lists `,` and steps `/`; month and
+weekday names (`jan`, `mon`) in any case; weekday `7` is Sunday; the
+aliases `@hourly`, `@daily`, `@midnight`, `@weekly`, `@monthly`,
+`@yearly` and `@annually` in any case. Rejected with `ValueError`: `L`,
+`W`, `#`, croniter's `R` and `H`, `?`, `@reboot`, and six or seven
+fields (seconds or years). `swarmq schedule add --cron` checks the same
+list (exit `1`), and the scheduler leader rejects such a definition when
+an older worker reports it (`scheduler_cron_report_invalid`).
 
 ### Deduplication
 

@@ -61,18 +61,12 @@ def test_scenario_against_valkey(machine: WorkflowMachine, scenario: Scenario) -
 
 
 @pytest.mark.befund("F4-01")
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="F4-01: offen - Dead-Letter nach Erfolg ohne Advance laesst running"
-)
 def test_dead_letter_after_unadvanced_success_against_valkey(machine: WorkflowMachine) -> None:
     workflow_scenarios.dead_letter_after_unadvanced_success(machine)
 
 
 @pytest.mark.entscheidung("E-073")
 @pytest.mark.befund("F4-16")
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="F4-16: offen - Fan-in schlaegt den Schritt-Marker nach statt abzuleiten"
-)
 def test_unmarked_member_completing_first_completes_the_workflow_against_valkey(machine: WorkflowMachine) -> None:
     workflow_scenarios.unmarked_member_completing_first_completes_the_workflow(machine)
 

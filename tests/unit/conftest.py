@@ -114,6 +114,35 @@ def _no_real_redeliver_pause(monkeypatch):
     monkeypatch.setattr("swarmq.worker.redelivery._sleep", instant)
 
 
+class ResultStoreClock:
+    """Fake-Uhr der Speicher-Wiederholung (E-072): ``sleep`` stellt die Uhr
+    vor und kehrt sofort zurück; ``delays`` hält die Wartezeiten fest."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+        self.delays: list[float] = []
+
+    def __call__(self) -> float:
+        return self.now
+
+    async def sleep(self, delay_s: float) -> None:
+        self.delays.append(delay_s)
+        self.now += delay_s
+
+
+@pytest.fixture(autouse=True)
+def result_store_clock(monkeypatch) -> ResultStoreClock:
+    """E-072 (Plan 2026-10-17-2103, U13): ``ResultTail`` wiederholt ein
+    gescheitertes Speichern mit Wartezeiten bis 8 s. Unit-Tests warten nicht
+    real: Warten und Zustellzeitpunkt (``GateContext.received_at``) laufen
+    über diese Fake-Uhr."""
+    clock = ResultStoreClock()
+    monkeypatch.setattr("swarmq.worker.results._sleep", clock.sleep)
+    monkeypatch.setattr("swarmq.worker.results._monotonic", clock)
+    monkeypatch.setattr("swarmq.worker.gates._monotonic", clock)
+    return clock
+
+
 def _is_below(file: str, roots: list[Path]) -> bool:
     path = Path(file).resolve()
     return any(path.is_relative_to(root) for root in roots)

@@ -16,12 +16,12 @@ from __future__ import annotations
 from typing import Any
 
 from swarmq.cancellation import build_cancel_result_dict
-from swarmq.exceptions import BackendConnectionError, TaskNotFoundError, WorkflowStateConflict
+from swarmq.exceptions import BackendConnectionError, BrokerConnectionError, TaskNotFoundError, WorkflowStateConflict
 from swarmq.logging import _error_fields, get_logger
 from swarmq.serialization import encode_result
 from swarmq.signals import Signal
 from swarmq.task import DeliveryMode, TaskInfo
-from swarmq.worker.gates import GateContext, GateDeps
+from swarmq.worker.gates import GateContext, GateDeps, StepDone
 from swarmq.worker.gates.backend_defer import bounded_backend_call, defer_backend_unavailable
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered, Terminal
 
@@ -44,10 +44,11 @@ def _task_info_and_result_ttl(deps: GateDeps, task_name: str) -> tuple[TaskInfo 
 
 async def _defer_fail_mark(deps: GateDeps, delivery: Any, ctx: GateContext, exc: BaseException) -> None:
     """Zurueckstellung nach voruebergehend gescheiterter Fehlmarkierung (FS-12).
-    Verlorene CAS-Runden (``WorkflowStateConflict``) heilen mit Wartezeit wie
-    ein Ausfall und gehen ebenfalls ueber die Delay-Queue."""
-    if isinstance(exc, WorkflowStateConflict):
-        outage = BackendConnectionError(f"workflow state conflict: {exc}")
+    Verlorene CAS-Runden (``WorkflowStateConflict``) und ein gescheiterter
+    Publish des nachgeholten Advance (``BrokerConnectionError``, F4-01) heilen
+    mit Wartezeit wie ein Ausfall und gehen ebenfalls ueber die Delay-Queue."""
+    if isinstance(exc, WorkflowStateConflict | BrokerConnectionError):
+        outage = BackendConnectionError(f"workflow step not settled: {exc}")
         outage.__cause__ = exc
         exc = outage
     await defer_backend_unavailable(
@@ -59,6 +60,58 @@ async def _defer_fail_mark(deps: GateDeps, delivery: Any, ctx: GateContext, exc:
         stage="cancel_fail_workflow",
         workflow_id=deps.extract_valid_workflow_id(delivery),
     )
+
+
+async def _fail_cancelled_step(deps: GateDeps, delivery: Any, ctx: GateContext) -> bool | StepDone:
+    """Workflow des per ``cancel(task_id)`` abgebrochenen Schritts
+    fehlmarkieren (FS-12); voruebergehende Fehler stellen ueber die
+    Delay-Queue zurueck. Ausgaenge wie ``GateDeps.fail_workflow``."""
+    if deps.fail_workflow is None:
+        return True
+    return await deps.fail_workflow(
+        delivery,
+        ctx,
+        "task was cancelled",
+        True,  # noqa: FBT003 - Callable-Feld ohne Parameternamen
+        redeliver_with=lambda exc: _defer_fail_mark(deps, delivery, ctx, exc),
+    )
+
+
+async def _store_cancel_result(
+    deps: GateDeps, ctx: GateContext, result_ttl: int, *, workflow_cancel: bool, step_done: bool
+) -> None:
+    """Cancel-Ergebnis speichern und melden; nie ueber einem Erfolg (F4-01:
+    ``step_done``; Workflow-Cancel: vorhandenes Ergebnis). Backend-Fehler
+    gehen an den Aufrufer (Zurueckstellung)."""
+    task_id, task_name, queue = ctx.task_id, ctx.task_name, ctx.queue
+    # On the WORKFLOW-cancel path a redelivery of an
+    # already-completed step (success stored, ack lost) must not
+    # overwrite the original result with a cancel marker — a
+    # direct get_result(task_id) would then misreport a step
+    # that genuinely ran. The per-task cancel path keeps its
+    # unconditional write (the flag only exists pre-/mid-run). F4-01: ein
+    # schon erfolgreicher Schritt (``step_done``) behaelt sein Ergebnis.
+    store_cancel_result = result_ttl > 0 and not step_done
+    if store_cancel_result and workflow_cancel:
+        existing = await bounded_backend_call(
+            deps,
+            deps.backend.get_result(task_id),
+            what="cancel existing result read",
+        )
+        store_cancel_result = existing is None
+    if store_cancel_result:
+        result_bytes = encode_result(build_cancel_result_dict(task_id=task_id, queue=queue, task_name=task_name))
+        await deps.backend.store_result(
+            task_id, result_bytes, result_ttl * 1000, op_timeout=deps.config.backend_op_timeout
+        )
+        try:
+            await bounded_backend_call(
+                deps,
+                deps.backend.notify_result(task_id),
+                what="cancel result notification",
+            )
+        except Exception as exc:  # noqa: BLE001 - Benachrichtigung best effort, wird geloggt
+            logger.warning("publish_notification_failed", task_id=task_id, **_error_fields(exc))
 
 
 class CancelGate:
@@ -124,49 +177,18 @@ class CancelGate:
         # dieses Gate laeuft vor dem Delivery-Count-Gate); das Cancel-Flag
         # bleibt stehen, die Kopie sieht diesen Zweig wieder.
         # Der Workflow-Cancel-Zweig bleibt unveraendert (FS-32).
-        if (
-            not workflow_cancel
-            and deps.fail_workflow is not None
-            and not await deps.fail_workflow(
-                delivery,
-                ctx,
-                "task was cancelled",
-                True,  # noqa: FBT003 - Callable-Feld ohne Parameternamen
-                redeliver_with=lambda exc: _defer_fail_mark(deps, delivery, ctx, exc),
-            )
-        ):
-            return Redelivered
+        # F4-01 (E-040, KD6): war der Schritt schon erfolgreich, holt die
+        # Markierung seinen Advance nach; dann kein Cancel-Ergebnis ueber dem
+        # Erfolg und kein ``TASK_CANCELLED``, sonst wie der Cancel-Pfad.
+        step_done = False
+        if not workflow_cancel:
+            marked = await _fail_cancelled_step(deps, delivery, ctx)
+            if marked is False:
+                return Redelivered
+            step_done = isinstance(marked, StepDone)
 
         try:
-            # On the WORKFLOW-cancel path a redelivery of an
-            # already-completed step (success stored, ack lost) must not
-            # overwrite the original result with a cancel marker — a
-            # direct get_result(task_id) would then misreport a step
-            # that genuinely ran. The per-task cancel path keeps its
-            # unconditional write (the flag only exists pre-/mid-run).
-            store_cancel_result = result_ttl > 0
-            if store_cancel_result and workflow_cancel:
-                existing = await bounded_backend_call(
-                    deps,
-                    deps.backend.get_result(task_id),
-                    what="cancel existing result read",
-                )
-                store_cancel_result = existing is None
-            if store_cancel_result:
-                result_bytes = encode_result(
-                    build_cancel_result_dict(task_id=task_id, queue=queue, task_name=task_name)
-                )
-                await deps.backend.store_result(
-                    task_id, result_bytes, result_ttl * 1000, op_timeout=deps.config.backend_op_timeout
-                )
-                try:
-                    await bounded_backend_call(
-                        deps,
-                        deps.backend.notify_result(task_id),
-                        what="cancel result notification",
-                    )
-                except Exception as exc:  # noqa: BLE001 - Benachrichtigung best effort, wird geloggt
-                    logger.warning("publish_notification_failed", task_id=task_id, **_error_fields(exc))
+            await _store_cancel_result(deps, ctx, result_ttl, workflow_cancel=workflow_cancel, step_done=step_done)
 
             # Shorten the flag to at most 1 h (BZ-23; log+swallow at the
             # backend boundary — Unit 3).
@@ -197,6 +219,9 @@ class CancelGate:
                 gate="cancel",
                 stage="cancel_store_result",
             )
+
+        if step_done:
+            return Terminal.already_released()
 
         # Signal AFTER the broker ack so a handler that raises doesn't
         # prevent the message from being committed.

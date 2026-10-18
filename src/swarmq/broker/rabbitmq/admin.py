@@ -18,7 +18,7 @@ from aio_pika.exceptions import ChannelNotFoundEntity
 from swarmq.broker.rabbitmq.connection import RabbitMQConnection, close_channel_quietly
 from swarmq.broker.rabbitmq.delivery import RabbitMQDelivery, dead_letter_ttl_header, message_of, settle
 from swarmq.contracts import Delivery
-from swarmq.contracts.broker import QueueStatus
+from swarmq.contracts.broker import DeadLetterScan, QueueStatus
 from swarmq.exceptions import BrokerConnectionError
 from swarmq.headers import (
     BROKER_DELIVERY_COUNTERS,
@@ -193,7 +193,7 @@ class RabbitMQAdmin(RabbitMQDelivery):
         move_to_main: bool = False,
         break_after_first_match: bool = False,
         skip_malformed_on_move: bool = False,
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
         """Read up to *limit* messages from the DLQ (acknowledgement
         required, own channel), then republish each one to either the DLQ
         (default) or the main queue (when *move_to_main* is set and either
@@ -222,14 +222,17 @@ class RabbitMQAdmin(RabbitMQDelivery):
         XQ with its remaining TTL; the original is acked only after the
         copy's publisher confirm (BZ-21, Plan 0.12.0, MR 16).
 
-        Returns ``(all_entries, matched_entries)`` — each entry has
+        Returns ``(all_entries, matched_entries, hit_limit)`` — each entry has
         ``task_id``, ``task_name``, ``queue``, ``headers``, ``body``
         (decoded dict or None), ``body_raw`` (utf-8-decoded string), and
         ``body_size``. Header keys normalised to ``str`` at the
         boundary so downstream code can use string keys safely (plan
         R-3). ``len(all_entries)`` is the number of messages actually
         scanned (not the *limit* cap) — callers use it for
-        operator-facing count reporting.
+        operator-facing count reporting. ``hit_limit`` is true when all
+        *limit* reads were used without reaching the end of the DLQ or a
+        break on the first match; expired entries use reads but are not
+        entries (F4-05, E-028).
 
         Crash safety: a reader that dies mid-read loses nothing -- the
         broker returns every unacknowledged message when the channel or
@@ -246,7 +249,7 @@ class RabbitMQAdmin(RabbitMQDelivery):
         entries: list[dict[str, Any]] = []
         matched: list[dict[str, Any]] = []
         try:
-            await self._drain_dlq_messages(
+            hit_limit = await self._drain_dlq_messages(
                 queue, queue_name, limit, match_task_id, break_after_first_match, drained, entries, matched
             )
         finally:
@@ -255,7 +258,7 @@ class RabbitMQAdmin(RabbitMQDelivery):
             finally:
                 # Was noch unbestaetigt ist, gibt der Broker zurueck.
                 await close_channel_quietly(queue.channel)
-        return entries, matched
+        return entries, matched, hit_limit
 
     async def _drain_dlq_messages(
         self,
@@ -267,14 +270,16 @@ class RabbitMQAdmin(RabbitMQDelivery):
         drained: list[tuple[Any, bytes, dict[str, Any], bool, bool]],
         entries: list[dict[str, Any]],
         matched: list[dict[str, Any]],
-    ) -> None:
+    ) -> bool:
         """Liest bis *limit* Nachrichten bestaetigungspflichtig (BZ-21): sie
         bleiben in der XQ, bis ihre Kopie bestaetigt ist. Abgelaufene werden
-        per Ack verworfen (KTD6)."""
+        per Ack verworfen (KTD6). Liefert ``hit_limit``: alle *limit*
+        Lesungen verbraucht, ohne das Ende der XQ oder einen Treffer mit
+        Abbruch zu erreichen; Abgelaufene zaehlen als Lesung (F4-05)."""
         for _ in range(limit):
             msg = await queue.get(no_ack=False, fail=False)
             if msg is None:
-                break
+                return False
             body = msg.body
             headers = self._normalise_header_keys(dict(msg.headers or {}))
             if self._stamp_or_expire(headers):
@@ -301,7 +306,8 @@ class RabbitMQAdmin(RabbitMQDelivery):
                 matched.append(entry)
             drained.append((msg, body, headers, is_match, is_malformed))
             if break_after_first_match and is_match:
-                break
+                return False
+        return True
 
     async def _copy_then_ack(
         self,
@@ -465,14 +471,18 @@ class RabbitMQAdmin(RabbitMQDelivery):
             / headers / body_size). Heavy ``body`` / ``body_raw`` fields
             are stripped for compact list output; use ``inspect`` for
             the full payload.
-          * ``scanned_count`` — the number of messages actually read
-            (may be ``len(entries)``, but exposed explicitly so callers
-            can tell "DLQ had fewer than limit" from "stopped at limit").
+          * ``scanned_count`` — the number of live messages read
+            (``len(entries)``); expired entries are acked without a copy
+            and not counted (E-028).
+
+        The result is a ``DeadLetterScan``: its ``hit_limit`` tells "DLQ
+        had fewer than limit" from "stopped at limit", also when expired
+        entries used up reads (F4-05).
 
         Non-destructive: every scanned message is copied to the end of the
         DLQ and only then acknowledged (BZ-21).
         """
-        entries, _matched = await self._drain_dlq_with_filter(queue, limit=limit)
+        entries, _matched, hit_limit = await self._drain_dlq_with_filter(queue, limit=limit)
         summaries = [
             {
                 "task_id": e["task_id"],
@@ -483,7 +493,7 @@ class RabbitMQAdmin(RabbitMQDelivery):
             }
             for e in entries
         ]
-        return summaries, len(entries)
+        return DeadLetterScan(summaries, len(entries), hit_limit=hit_limit)
 
     async def inspect_dead_letter(
         self, queue: str, task_id: str, scan_limit: int = 1000
@@ -491,19 +501,19 @@ class RabbitMQAdmin(RabbitMQDelivery):
         """Find the first DLQ message whose payload's ``task.id`` equals
         *task_id* and return its full metadata.
 
-        Returns ``(match_or_None, scanned_count)``. ``scanned_count``
-        lets the caller distinguish "genuinely not in the DLQ" from
-        "scan stopped at limit before the match" for operator-facing
-        output. Non-destructive: scanned messages are republished.
+        Returns ``(match_or_None, scanned_count)`` as a
+        ``DeadLetterScan``; its ``hit_limit`` lets the caller distinguish
+        "genuinely not in the DLQ" from "scan stopped at limit before the
+        match" for operator-facing output (F4-05). Non-destructive: scanned messages are republished.
 
         Uses ``break_after_first_match`` to minimise the number of
         messages pulled off the wire once the target is found — this
         shortens the crash-exposure window for targeted lookups.
         """
-        entries, matched = await self._drain_dlq_with_filter(
+        entries, matched, hit_limit = await self._drain_dlq_with_filter(
             queue, limit=scan_limit, match_task_id=task_id, break_after_first_match=True
         )
-        return (matched[0] if matched else None), len(entries)
+        return DeadLetterScan(matched[0] if matched else None, len(entries), hit_limit=hit_limit)
 
     async def retry_dead_letter(self, queue: str, task_id: str, scan_limit: int = 1000) -> tuple[bool, int]:
         """Republish the first matching DLQ message into *queue*.
@@ -520,10 +530,10 @@ class RabbitMQAdmin(RabbitMQDelivery):
         Messages scanned but not matched are republished back to the
         DLQ via ``_drain_dlq_with_filter``.
         """
-        entries, matched = await self._drain_dlq_with_filter(
+        entries, matched, hit_limit = await self._drain_dlq_with_filter(
             queue, limit=scan_limit, match_task_id=task_id, move_to_main=True, break_after_first_match=True
         )
-        return len(matched) > 0, len(entries)
+        return DeadLetterScan(len(matched) > 0, len(entries), hit_limit=hit_limit)
 
     async def retry_all_dead_letters(self, queue: str, limit: int = 10_000) -> tuple[int, int]:
         """Republish every valid DLQ message into *queue*.
@@ -539,19 +549,25 @@ class RabbitMQAdmin(RabbitMQDelivery):
         (including malformed). ``moved_count`` is strictly less-or-
         equal to ``scanned_count``; the gap is the malformed set.
         """
-        entries, _matched = await self._drain_dlq_with_filter(
+        entries, _matched, hit_limit = await self._drain_dlq_with_filter(
             queue, limit=limit, move_to_main=True, skip_malformed_on_move=True
         )
         moved = sum(1 for e in entries if e["task_id"] is not None)
-        return moved, len(entries)
+        return DeadLetterScan(moved, len(entries), hit_limit=hit_limit)
 
     async def purge_dead_letters(self, queue: str) -> int:
         """Drop every message in ``{queue}.XQ`` via the native
         AMQP purge. Returns the message count as reported by RabbitMQ.
+
+        Closes its own DLQ channel in every case, also when ``purge()``
+        fails (F4-04).
         """
         try:
             amqp_queue = await self._dlq_queue(queue)
-            result = await amqp_queue.purge()
+            try:
+                result = await amqp_queue.purge()
+            finally:
+                await close_channel_quietly(amqp_queue.channel)
             return int(getattr(result, "message_count", 0))
         except BrokerConnectionError:
             raise

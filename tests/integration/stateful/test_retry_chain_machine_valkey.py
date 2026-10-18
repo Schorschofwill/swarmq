@@ -96,9 +96,6 @@ def test_scenario_against_valkey(machine: RetryChainMachine, scenario: Callable[
 
 
 @pytest.mark.befund("F4-02")
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="F4-02: offen - Zustelllimit-Gate liegt vor dem Ausfuehrungsschutz"
-)
 @pytest.mark.parametrize(
     "nachweis", retry_chain_scenarios.F4_02_NACHWEISE.values(), ids=retry_chain_scenarios.F4_02_NACHWEISE.keys()
 )

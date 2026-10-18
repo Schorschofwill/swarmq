@@ -6,7 +6,9 @@ Signal ``TASK_EXPIRED``, an das Dead-Letter-Ziel veröffentlichen, bestätigen
 Dedup-Flag wird im ``finally`` owner-geprueft freigegeben). Liegt die Kopie
 und scheitert nur das Ack (``SettleFailedAfterPublish``), gilt das ebenso als
 terminal (FS-17, E-043). Publish-Fehler → ``redeliver`` (Fallback laut KTD3),
-Outcome ``Terminal.never_release()``.
+Outcome ``Terminal.never_release()``. War der Workflow-Schritt schon
+erfolgreich (F4-01, KD6), holt die Markierung seinen Advance nach: Ack ohne
+DLQ-Kopie, Fehlerergebnis und ``TASK_EXPIRED``, Outcome wie nach der Kopie.
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ from swarmq.headers import HEADER_ENQUEUED_AT
 from swarmq.logging import _error_fields, get_logger
 from swarmq.serialization import encode_result
 from swarmq.signals import Signal
-from swarmq.worker.gates import GateContext, GateDeps, dead_letter_copy, redeliver_in_place
+from swarmq.worker.gates import GateContext, GateDeps, StepDone, dead_letter_copy, redeliver_in_place
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered, Terminal
 
 logger = get_logger(__name__)
@@ -69,8 +71,15 @@ class ExpiryGate:
         # als fehlgeschlagen. Scheitert das voruebergehend, ist die Zustellung
         # neu zugestellt (nicht terminal) -- vor dem Signal, damit es je
         # Ablauf einmal feuert.
-        if deps.fail_workflow is not None and not await deps.fail_workflow(delivery, ctx, error_message, True):  # noqa: FBT003 - Callable-Feld ohne Parameternamen
+        marked = True if deps.fail_workflow is None else await deps.fail_workflow(delivery, ctx, error_message, True)  # noqa: FBT003 - Callable-Feld ohne Parameternamen
+        if marked is False:
             return Redelivered
+        if marked is StepDone.ACK:
+            # F4-01 (E-040, KD6): der Schritt war erledigt, sein Advance ist
+            # nachgeholt -- bestaetigen ohne DLQ-Kopie, Fehlerergebnis und
+            # ``TASK_EXPIRED``; Freigabe wie nach der DLQ-Kopie (BZ-22).
+            await deps.broker.ack(delivery)
+            return Terminal.release_only()
         await deps.signals.dispatch(
             Signal.TASK_EXPIRED,
             task_id=ctx.task_id,
@@ -85,8 +94,9 @@ class ExpiryGate:
         # zurueck (kein FIRE_AND_FORGET-Zweig wie auf dem Erfolgspfad); nur
         # eine globale ``config.result_ttl=0`` ueberspringt das Speichern
         # (kein ``SET ... PX 0``).
+        # F4-01 (E-040): nie ueber einem gespeicherten Erfolg.
         ttl_ms = (task_info.result_ttl or deps.config.result_ttl) * 1000
-        if ttl_ms > 0:
+        if ttl_ms > 0 and marked is not StepDone.DEAD_LETTER:
             try:
                 await deps.backend.store_result(
                     ctx.task_id,

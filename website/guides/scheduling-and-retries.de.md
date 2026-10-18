@@ -87,8 +87,15 @@ class DailyReport(Task):
         ...
 ```
 
-Nur Standard-5-Feld-Cron; Extended Syntax (`L`, `W`, `#`) wird zur
-Klassendefinitionszeit abgelehnt. Der eingebettete Scheduler des
+Nur Standard-5-Feld-Cron nach crontab(5): Zahlen, `*`, `-`, `,` und `/`,
+Monats- und Wochentagsnamen in jeder Schreibweise, Wochentag `7` für
+Sonntag und die Aliase `@hourly` bis `@annually` (auch `@midnight`).
+Alles andere wird zur Klassendefinitionszeit abgelehnt (seit 0.13.0,
+eine Positivliste): `L`, `W`, `#`, `R`, `H`, `?`, `@reboot` sowie sechs
+oder sieben Felder. Ein `0 0 9 * * *` im Stil von Quartz oder Spring
+(„täglich 09:00“, Sekunden zuerst) wird abgelehnt, weil croniter es
+anders liest (jede Sekunde ab 00:00:00 am 9. jedes Monats). Siehe die
+[vollständige Liste](../reference/configuration.md#scheduling-cron). Der eingebettete Scheduler des
 Workers nimmt die Deklaration automatisch auf — kein separater
 Cron-Daemon.
 

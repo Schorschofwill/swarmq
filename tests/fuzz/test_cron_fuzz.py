@@ -6,8 +6,9 @@ croniter ist auf 6.2.4 gepinnt (``uv.lock``).
 
 Zusagen:
 
-* E-065: Ein Cron ist ein Standard-Ausdruck mit 5 Feldern; ``L``, ``W``,
-  ``#`` werden abgelehnt; ein Ausdruck ohne nächsten Termin
+* E-065: Ein Cron ist ein Standard-Ausdruck mit 5 Feldern nach crontab(5)
+  (Positivliste, Nachtrag 2026-10-17); ``L``, ``W``, ``#``, ``R``, ``H``,
+  ``?`` und 6/7 Felder werden abgelehnt; ein Ausdruck ohne nächsten Termin
   (``0 0 30 2 *``) ist ein ``ValueError`` ("never fires"). Jeder falsche
   Wert ist ein ``ValueError`` beim Klassenbau.
 * Standard-Ausdrücke nach crontab(5) (Zahlen, ``*``, Bereiche, Schritte,
@@ -24,18 +25,17 @@ Allow-List: ``ValueError`` (samt croniter-Fehlern, die davon erben) für
 ``TaskInfo``; für ``next_fire_times`` mit angenommenem Ausdruck keine.
 
 Treffer (Bericht docs/befunde/fehlersuche-runde-4-recherche/5-fuzz.md; IDs aus
-dem Register ``docs/befunde/fehlersuche-runde-4-2026-10.md``, F4-nn Befund,
-PF-nn Produktfrage):
+dem Register ``docs/befunde/fehlersuche-runde-4-2026-10.md``), behoben mit
+der Positivliste ``swarmq.cron_syntax`` (Fix-Plan 0.13, U15); die Klammern
+sind aufgelöst:
 
-* PF-12 / R4F-05 (LÜCKE, Produktfrage B): croniters Zufallsfeld ``R`` wird angenommen; jeder Aufruf
-  von ``next_fire_times`` würfelt neu. Ausgeklammert: kein ``R`` im Alphabet.
-* F4-09 / R4F-06 (FEHLER): Namen in Großschreibung mit ``L``/``W`` (``JUL``,
-  ``WED``, ``Wed``, ``@HOURLY``) lehnt ``TaskInfo`` als erweiterte Syntax
-  ab. Ausgeklammert: solche Namen nur klein. Nachweis
-  ``tests/unit/test_befund_f4_09_cron_uppercase_names.py``.
-* PF-13 / R4F-07 (LÜCKE F3-35, Produktfrage B): 6- und 7-feldrige Ausdrücke werden
-  angenommen (6. Feld = Sekunden, 7. = Jahr). Ausgeklammert: der Test auf
-  "genau 5 Felder" erzeugt keine 6/7 Felder.
+* PF-12 / R4F-05: croniters Zufallsfeld ``R`` wurde angenommen; ``R`` ist
+  wieder im Alphabet.
+* F4-09 / R4F-06: Namen in Großschreibung mit ``L``/``W`` (``JUL``, ``WED``,
+  ``@HOURLY``) galten als erweiterte Syntax; Namen kommen in jeder
+  Schreibweise. Nachweis ``tests/unit/test_befund_f4_09_cron_uppercase_names.py``.
+* PF-13 / R4F-07 (F3-35): 6- und 7-feldrige Ausdrücke wurden angenommen; der
+  Test auf "genau 5 Felder" erzeugt sie wieder.
 
 Testliste:
 # [x] TaskInfo(cron=beliebig) -> ok oder ValueError
@@ -85,14 +85,8 @@ _ALIASES = ["@hourly", "@daily", "@midnight", "@weekly", "@monthly", "@yearly", 
 
 @st.composite
 def _name(draw: st.DrawFn, names: list[str]) -> str:
-    """Name in beliebiger Schreibweise ("case does not matter", crontab(5)).
-
-    F4-09 (R4F-06): Namen mit l/w nur klein; groß abgelehnt.
-    Treffer (geschrumpft): @example(cron="* * * * WED")
-    """
+    """Name in beliebiger Schreibweise ("case does not matter", crontab(5))."""
     name = draw(st.sampled_from(names))
-    if "l" in name or "w" in name:
-        return name
     return draw(st.sampled_from([name, name.upper(), name.capitalize()]))
 
 
@@ -133,10 +127,8 @@ def _standard_cron(draw: st.DrawFn) -> str:
     )
 
 
-# PF-12 (R4F-05): ``R`` (croniter-Zufallsfeld) nicht im Alphabet.
-# Treffer (von Hand minimiert; Hypothesis schrumpfte auf "0 0 1 R 0"): @example(cron="R * * * *")
 _junk_token = st.one_of(
-    st.sampled_from(["?", "L", "W", "#", "H"]),
+    st.sampled_from(["?", "L", "W", "#", "H", "R", "r"]),
     st.sampled_from(["*", "1W", "5L", "mon#2", "H(0-5)", "%s", "-", "/", ",", "@reboot"]),
     st.integers(-2, 100).map(str),
     st.tuples(st.integers(-1, 70), st.integers(-1, 70)).map(lambda ab: f"{ab[0]}-{ab[1]}"),
@@ -191,6 +183,8 @@ def _accepted(cron: str, timezone: str | None = None) -> bool:
 @example(cron="0 0 30 2 *", timezone=None)
 @example(cron="* * * * * * 2020", timezone=None)
 @example(cron="*/0 * * * *", timezone=None)
+@example(cron="R * * * *", timezone=None)
+@example(cron="0 0 1 R 0", timezone=None)
 @settings(max_examples=500, deadline=None)
 def test_taskinfo_cron_is_accepted_or_a_value_error(cron: str, timezone: str | None) -> None:
     _accepted(cron, timezone)
@@ -218,6 +212,8 @@ def test_accepted_cron_has_increasing_repeatable_fire_times(cron: str, timezone:
 @given(cron=_standard_cron())
 @example(cron="0 0 * jul *")
 @example(cron="0 0 * * MON-FRI")
+@example(cron="* * * * WED")
+@example(cron="0 0 * JUL *")
 @settings(max_examples=500, deadline=None)
 def test_standard_cron_is_accepted_or_never_fires(cron: str) -> None:
     error = ""
@@ -228,10 +224,10 @@ def test_standard_cron_is_accepted_or_never_fires(cron: str) -> None:
     assert not error or "never fires" in error, f"{cron!r}: {error}"
 
 
-# PF-13 (R4F-07, F3-35): 6 und 7 Felder ausgeklammert (croniter nimmt sie als
-# Sekunden- und Jahresfeld an).
-# Treffer (geschrumpft): @example(cron="0 0 * * * *")
-@given(cron=st.one_of(_junk_cron([1, 2, 3, 4, 5, 8, 9]), _standard_cron()))
+@given(cron=st.one_of(_junk_cron([1, 2, 3, 4, 5, 6, 7, 8, 9]), _standard_cron()))
+@example(cron="0 0 * * * *")
+@example(cron="0 0 9 * * *")
+@example(cron="* * * * * * 2020")
 @settings(max_examples=500, deadline=None)
 def test_accepted_cron_has_five_fields(cron: str) -> None:
     if _accepted(cron):

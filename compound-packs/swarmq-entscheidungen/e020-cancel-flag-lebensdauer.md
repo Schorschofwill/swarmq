@@ -27,6 +27,12 @@ tests:
   - tests/integration/test_worker_cancellation.py::TestRunningCancelIntegration::test_running_task_cancel_via_monitor
   - tests/e2e/test_befund_bz02_bz11_bz23_scheduler.py::test_bz23_cancelled_task_waiting_longer_than_result_ttl_does_not_run
   - tests/unit/client/test_befund_f4_03_reattach_cancel_ttl.py::test_reattached_handle_sets_the_cancel_flag_as_long_as_the_apply_handle
+  - tests/unit/test_app.py::TestSwarmQWorkflowCancelFlagTtl::test_apply_handle_cancel_flag_lives_max_of_24h_and_result_ttl
+  - tests/unit/test_app.py::TestSwarmQWorkflowCancelFlagTtl::test_reattached_handle_cancel_flag_lives_max_of_24h_and_result_ttl
+  - tests/unit/client/test_workflows.py::test_apply_cancel_flag_follows_state_ttl_above_24h
+  - tests/unit/client/test_workflows.py::test_apply_cancel_flag_lasts_24h_with_shorter_state_ttl
+  - tests/unit/client/test_workflows.py::test_reattached_handle_cancel_flag_defaults_to_24h
+  - tests/unit/client/test_workflows.py::test_reattached_handle_cancel_flag_uses_given_ttl
 ---
 
 **Entscheidung.** Das Cancel-Flag lebt `max(24 h, result_ttl)` + (Fälligkeit − jetzt) + `max_age + 300` s (falls bekannt). `cancel()` bekommt keinen `task_name`. Bei der stornierten Zustellung und beim Abbruch während des Laufs wird das Flag nicht gelöscht, sondern per `PEXPIRE … LT` auf höchstens 1 h verkürzt (LT verlängert ein kürzeres Flag nie).
@@ -35,6 +41,6 @@ tests:
 
 **Bewusste Folgen.** Wird dieselbe `task_id` innerhalb 1 h nach Wirkung neu eingereiht, wird sie storniert, und `cancel()` liefert dann False. Ein sofort publizierter Task ist 24 h stornierbar.
 
-**Nachtrag 2026-10-17 (Fehlersuche Runde 4, Georg; PF-5, F4-03, R4M-E-01b): Workflow-Cancel-Flag.** Die Regel gilt auch für das Workflow-Cancel-Flag (`sq:wf:cancel:{id}`): Es lebt `max(24 h, result_ttl)` wie die Task-Flags, gleich ob das Handle aus `apply()` stammt oder per `app.workflow(id)` neu gebaut ist. Das überholt KTD „TTL = `config.result_ttl`“ aus Plan 2026-05-30-001 `:104`. Beide Varianten von R4M-E-01 fallen damit in einen Fix: `apply()` mit `result_ttl` unter 24 h setzt das Flag auf 24 h (heute genau `result_ttl`), das neu gebaute Handle auf `max(24 h, result_ttl)` (heute fest 24 h, F4-03). Festgeschrieben bis zum Fix mit dem Nachweis F4-03 (`xfail(strict=True)`, Marker E-020); der Test für `result_ttl` unter 24 h folgt mit dem Fix. Der Teil „`get()` meldet den Abbruch nicht mehr“ heilt erst mit FS-32 (Zustand `cancelled`).
+**Nachtrag 2026-10-17 (Fehlersuche Runde 4, Georg; PF-5, F4-03, R4M-E-01b): Workflow-Cancel-Flag.** Die Regel gilt auch für das Workflow-Cancel-Flag (`sq:wf:cancel:{id}`): Es lebt `max(24 h, result_ttl)` wie die Task-Flags, gleich ob das Handle aus `apply()` stammt oder per `app.workflow(id)` neu gebaut ist. Das überholt KTD „TTL = `config.result_ttl`“ aus Plan 2026-05-30-001 `:104`. Beide Varianten von R4M-E-01 fallen damit in einen Fix: `apply()` mit `result_ttl` unter 24 h setzt das Flag auf 24 h (heute genau `result_ttl`), das neu gebaute Handle auf `max(24 h, result_ttl)` (heute fest 24 h, F4-03). Umgesetzt in 0.13.0 (Plan 2026-10-17-2103, U8): Das Handle aus `apply()` und das per `app.workflow(id)` neu gebaute setzen das Flag auf `max(24 h, result_ttl)`; der reine Client nimmt bei `apply()` `max(24 h, state_ttl_ms)` und bei `Client.workflow(id, cancel_ttl_ms=None)` 24 h, wenn kein Wert übergeben wird. Festgeschrieben durch den Nachweis F4-03 (ohne `xfail`, Marker E-020) und die Tests für `result_ttl` unter und über 24 h unter `tests:`. Der Teil „`get()` meldet den Abbruch nicht mehr“ heilt erst mit FS-32 (Zustand `cancelled`).
 
 **Überdenken nur mit neuem Argument.** Keine offenen Einwände bekannt.

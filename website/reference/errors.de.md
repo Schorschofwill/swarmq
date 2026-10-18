@@ -613,9 +613,30 @@ Warten. Eine nicht blockierte Verbindung kostet keinen zusätzlichen
 Roundtrip.
 
 **Ursache.** Ein Ressourcenalarm des Brokers. RabbitMQ meldet die
-Blockade nur einer Verbindung, die während des Alarms publiziert; der
-erste Publish nach Beginn des Alarms ist also schon gesendet, hängt und
-endet als `PublishIndeterminate`, spätere werfen diesen Fehler.
+Blockade (`connection.blocked`) nur einer Verbindung, die während des
+Alarms publiziert. Der Publish, der die Meldung auslöst, kann trotzdem
+bestätigt werden; Publishes, die vor dem Eintreffen von
+`connection.blocked` schon gesendet waren, hängen und enden als
+`PublishIndeterminate` -- je Verbindung keiner, einer oder mehrere.
+Spätere warten und werfen diesen Fehler.
+
+**Im Worker.** Eine Retry-, Rückstellungs- oder Dead-Letter-Kopie, die
+auf die Freigabe wartet, belegt ihren Task-Slot bis zur Publish-Frist;
+danach geht das Original zurück und läuft erneut (ein Task, der bei
+jedem Lauf scheitert, landet nach rund 19 Runden als
+`RedeliveryLimitError` in der DLQ). Bei jeder Fehlerrate über null sinkt
+der Konsum eines Workers im Alarm auf etwa Slots / (Taskdauer +
+Fehlerrate × Publish-Frist): gemessen mit 20 s Frist auf ein Viertel,
+mit der Vorgabe 120 s rechnerisch rund 3 %. Acks laufen über die getrennte
+Consume-Verbindung weiter. Das ist gewollt, kein Fehler. Bei häufigen
+Alarmen kommt eine kürzere `SWARMQ_PUBLISH_TIMEOUT_S` für Worker in
+Frage; der Preis sind mehr Zusatzläufe. Schneidet die Frist einen
+Publish ab, der gesendet sein kann, verwirft der Worker seinen
+Publish-Kanal und schließt ihn im Hintergrund; im Alarm läuft dieses
+Schließen in seine 5-s-Frist (`publish_channel_close_incomplete` ohne
+Traceback, `blocked=True`), und aiormq loggt bei der Freigabe `Got frame
+for closed channel` ([Event-Katalog](logging.md#event-katalog)). Beides
+ist harmlos.
 
 **Recovery.** Ein späterer Versuch ist sicher, nichts kam beim Broker
 an; eine `unique_for`-Sperre wird freigegeben. Speicher oder Platte am

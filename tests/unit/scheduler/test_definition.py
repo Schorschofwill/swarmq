@@ -65,6 +65,11 @@ insert-if-absent vs. update-static branches that live in Python.
 # 22. Feuert und löscht der Leader den Oneshot nach dem Lesen der
 #     Definitionsschicht, legt die Index-Ergänzung ihn nicht neu an.
 # 23. Ein deaktivierter byte-gleicher Oneshot bekommt keinen Fire-Index.
+#
+# Test list (Fix-Plan Runde 4, U18, KTD13 -- ``get_definition`` für die
+# Claim-Freigabe von ``schedule add --unique-for``, E-059):
+# 24. Gespeicherte Definition kommt dekodiert zurück; ohne Eintrag ``None``.
+# 25. Kaputter Eintrag -> ``None`` und ``schedule_def_malformed_skipped``.
 
 from __future__ import annotations
 
@@ -581,6 +586,31 @@ class TestScheduleStoreListSchedules:
         store, schedules = _make_store()
         schedules.list_all.return_value = {"good": good, "orphan": b'{"schedule_name":"orphan"}'}
         assert {d.schedule_name for d in await store.list_schedules()} == {"good"}
+
+
+class TestScheduleStoreGetDefinition:
+    async def test_get_definition_decodes_the_stored_entry_or_returns_none(self):
+        """Liste 24."""
+        memory = InMemoryBackend(FakeClock(1_700_000_000_000))
+        await memory.connect()
+        store = ScheduleStore(memory)
+        d = _def(schedule_name="nightly", dedup_hash="h1")
+        await store.add_schedule(d)
+
+        assert await store.get_definition("nightly") == d
+        assert await store.get_definition("missing") is None
+
+    async def test_get_definition_of_malformed_entry_is_none_and_logged(self, swarmq_logs):
+        """Liste 25: wie ``list_schedules`` -- ein kaputter Eintrag trägt keinen
+        Dedup-Hash, die CLI behandelt ihn wie einen fremden."""
+        store, _ = _make_store(hget_return=b"{not valid json")
+
+        assert await store.get_definition("corrupt") is None
+
+        [entry] = [e for e in swarmq_logs if e["event"] == "schedule_def_malformed_skipped"]
+        assert entry["log_level"] == "warning"
+        assert entry["schedule_name"] == "corrupt"
+        assert entry["error_type"] == "DecodeError"
 
 
 class TestScheduleStorePollAndCommit:

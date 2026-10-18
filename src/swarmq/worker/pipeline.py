@@ -184,6 +184,7 @@ class Worker(WorkerLifecycle, WorkerShutdown):
             on_event=self._count_guard_event,
         )
         gate_deps.broker = cast("WorkerBroker", GuardedBroker(broker, self._execution_guard))
+        self._delivery_count_gate.skip_if_settled = self._execution_guard.skip_if_settled  # F4-02: Done vor Limit
         # Phase 3b.3: detached lock-release tasks. The shield pattern
         # around _release_acquired_locks protects against run_task
         # cancellation (inner-cancel). Against graceful-shutdown

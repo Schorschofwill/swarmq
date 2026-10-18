@@ -8,6 +8,7 @@ von ``swarmq.config``; die Felder, die es liest, stehen als Stubs unter
 from __future__ import annotations
 
 import math
+import sys
 import threading
 from typing import TYPE_CHECKING, ClassVar
 
@@ -16,6 +17,27 @@ from swarmq.keyspace import validate_namespace
 from swarmq.logging_settings import VALID_LOG_LEVELS, valid_drain_timeout, validate_logger_levels
 from swarmq.seconds import whole_seconds
 from swarmq.valkey_policy import EVICTION_CHECK_MODES
+
+#: Größte Frist in Millisekunden (E-063, Nachtrag 2026-10-17; PF-11).
+#: Gemessen am 2026-10-18 gegen den Teststack: RabbitMQ 4.3.6 nimmt eine
+#: Per-Message-``expiration`` bis 315360000000 ms (zehn Jahre zu 365 Tagen)
+#: an und lehnt 315360000001 mit ``PRECONDITION_FAILED`` (``value_too_large``)
+#: ab; Valkey 8 nimmt ``PX`` bis 2**63-1 minus der aktuellen Unix-Zeit in ms
+#: an. Die kleinere Grenze gilt für alle Fristen, weil ``retry_max_delay``,
+#: ``lock_wait_max_s`` und ``dead_letter_ttl_s`` auch als Expiration enden.
+#: Festgeschrieben in ``tests/integration/backend/test_deadline_bounds_valkey.py``
+#: und ``tests/integration/broker/test_expiration_bounds_rabbitmq.py``.
+MAX_DEADLINE_MS = 315_360_000_000
+#: Dieselbe Grenze in Sekunden; ``wert * 1000`` bleibt damit <= ``MAX_DEADLINE_MS``.
+MAX_DEADLINE_S = MAX_DEADLINE_MS // 1000
+#: ``concurrency`` wird ``prefetch_count`` in ``basic.qos``, ein AMQP-short (F3-38).
+MAX_CONCURRENCY = 65535
+#: Zählfelder, die als Queue-Argument an RabbitMQ gehen, sind AMQP-``long long``
+#: (E-063): RabbitMQ nimmt ``x-delivery-limit`` bis 2**63-1 an, 2**63 lässt
+#: schon pamqp beim Kodieren mit ``TypeError`` scheitern (Exit 1 statt 78).
+MAX_BROKER_COUNT = 2**63 - 1
+#: Zählfelder mit einer engeren Grenze als ``sys.float_info.max``.
+_COUNT_BOUNDS: dict[str, int] = {"delivery_limit": MAX_BROKER_COUNT}
 
 
 def valid_backend_connect_timeout(seconds: float) -> bool:
@@ -60,9 +82,11 @@ class ConfigValidation:
         lock_wait_max_s: float
         valkey_eviction_check: str
         namespace: str | None
+        worker_id: str | None
         scheduler_publish_stepdown_s: float | None
         _POSITIVE_FIELDS: ClassVar[tuple[str, ...]]
         _FINITE_FIELDS: ClassVar[tuple[str, ...]]
+        _COUNT_FIELDS: ClassVar[frozenset[str]]
         _VALID_POOLS: ClassVar[frozenset[str]]
         _VALID_PRUNE_MODES: ClassVar[tuple[str, ...]]
         _VALID_SCHEDULER_MODES: ClassVar[tuple[str, ...]]
@@ -108,21 +132,30 @@ class ConfigValidation:
             self.result_ttl = whole_seconds(self.result_ttl, "result_ttl")
         except ValueError as exc:
             raise ConfigurationError(str(exc)) from exc
+        if self.result_ttl > MAX_DEADLINE_S:
+            # E-063, Nachtrag 2026-10-17: Grenze des Ziels (Valkey ``EX``).
+            msg = f"result_ttl must be at most {MAX_DEADLINE_S} seconds, got {self.result_ttl}"
+            raise ConfigurationError(msg)
 
-    def _validate_core(self) -> None:
-        self._apply_pool_defaults()
-        # Bereich und Endlichkeit vor jeder Relationspruefung, damit die
-        # Meldung das ursaechliche Feld nennt (E-063).
+    def _validate_ranges(self) -> None:
+        """Bereich, Endlichkeit und Grenze jedes Feldes; läuft in
+        ``__post_init__`` vor den Ableitungen und vor jeder Relationsprüfung,
+        damit die Meldung das ursächliche Feld nennt und keine Ableitung an
+        einem zu großen Wert scheitert (E-063)."""
         self._validate_positive()
         self._validate_shutdown_timeout()
-        self._validate_finite()
         if not valid_backend_connect_timeout(self.backend_connect_timeout_s):
-            # E-075: ``asyncio.timeout`` braucht eine darstellbare Frist.
+            # E-075: ``asyncio.timeout`` braucht eine darstellbare Frist; die
+            # eigene Meldung geht der allgemeinen Grenze vor.
             msg = (
                 "backend_connect_timeout_s must be > 0 and at most threading.TIMEOUT_MAX seconds, "
                 f"got {self.backend_connect_timeout_s}"
             )
             raise ConfigurationError(msg)
+        self._validate_bounds()
+
+    def _validate_core(self) -> None:
+        self._apply_pool_defaults()
         self._validate_pool()
         if not self.broker_url:
             msg = "broker_url must not be empty"
@@ -136,6 +169,9 @@ class ConfigValidation:
 
         if self.concurrency < 1:
             msg = f"concurrency must be >= 1, got {self.concurrency}"
+            raise ConfigurationError(msg)
+        if self.concurrency > MAX_CONCURRENCY:
+            msg = f"concurrency must be at most {MAX_CONCURRENCY}, got {self.concurrency}"
             raise ConfigurationError(msg)
 
         if self.unknown_task_grace_s < 0:
@@ -156,6 +192,7 @@ class ConfigValidation:
             raise ConfigurationError(msg)
         self._validate_eviction_check()
         self._validate_namespace()
+        self._validate_worker_id()
         self._validate_publish_connection()
         if self.queue_dead_letter_strategy == "at-least-once" and self.queue_type != "quorum":
             # Review MR 8, H3: nur Quorum-Queues kennen at-least-once-Dead-Lettering.
@@ -175,6 +212,14 @@ class ConfigValidation:
             self.namespace = validate_namespace(self.namespace)
         except ValueError as exc:
             raise ConfigurationError(f"SWARMQ_NAMESPACE/namespace: {exc}") from exc
+
+    def _validate_worker_id(self) -> None:
+        # F4-06 (KTD12, E-029): ``|`` trennt im Versionsschlüssel
+        # ``<worker_identity>|<owner_token>``; ``schedule status`` leitet die
+        # Worker-ID über das letzte ``|`` ab, das muss eindeutig bleiben.
+        if self.worker_id is not None and "|" in self.worker_id:
+            msg = f"SWARMQ_WORKER_ID/worker_id must not contain '|', got {self.worker_id!r}"
+            raise ConfigurationError(msg)
 
     def _validate_publish_connection(self) -> None:
         if self.broker_publish_connection not in ("separate", "shared"):
@@ -199,14 +244,28 @@ class ConfigValidation:
                 msg = f"{field_name} must be > 0, got {value}"
                 raise ConfigurationError(msg)
 
-    def _validate_finite(self) -> None:
+    def _validate_bounds(self) -> None:
         """E-063: ``inf``/``nan`` bestehen ``<= 0``, werden aber in ganze
         Millisekunden umgerechnet oder an Broker und Valkey gegeben (Review
-        MR 13, P2-3; F3-04). ``None`` heisst bei optionalen Fristen unbegrenzt."""
+        MR 13, P2-3; F3-04). ``None`` heisst bei optionalen Fristen unbegrenzt.
+
+        Nachtrag 2026-10-17 (PF-10, PF-11): auch ein endlicher Wert muss
+        innerhalb der Grenze seines Ziels liegen. ``math.isfinite`` nur auf
+        ``float``; ein ``int`` über ``float_info.max`` ließe es scheitern."""
         for field_name in self._FINITE_FIELDS:
             value = getattr(self, field_name)
-            if value is not None and not math.isfinite(value):
+            if value is None:
+                continue
+            if isinstance(value, float) and not math.isfinite(value):
                 msg = f"{field_name} must be a finite number, got {value}"
+                raise ConfigurationError(msg)
+            if field_name in self._COUNT_FIELDS:
+                bound = _COUNT_BOUNDS.get(field_name, sys.float_info.max)
+                if value > bound:
+                    msg = f"{field_name} must be at most {bound}, got {value}"
+                    raise ConfigurationError(msg)
+            elif value > MAX_DEADLINE_S:
+                msg = f"{field_name} must be at most {MAX_DEADLINE_S} seconds, got {value}"
                 raise ConfigurationError(msg)
 
     def _validate_logging(self) -> None:
@@ -230,11 +289,20 @@ class ConfigValidation:
             )
             raise ConfigurationError(msg)
 
-    def _validate_scheduler_relations(self) -> None:
+    def _validate_publish_stepdown(self) -> None:
         stepdown = self.scheduler_publish_stepdown_s
-        if stepdown is not None and not (math.isfinite(stepdown) and stepdown >= 0):
-            msg = f"scheduler_publish_stepdown_s must be >= 0 and finite (0 disables), got {stepdown!r}"
+        assert stepdown is not None  # Default (scheduler_lock_ttl) in __post_init__
+        # Vergleich statt ``math.isfinite``: ``nan`` und ``inf`` fallen durch, und
+        # ein int über float_info.max wird nicht in float umgewandelt (E-063).
+        if not 0 <= stepdown <= MAX_DEADLINE_S:
+            msg = (
+                f"scheduler_publish_stepdown_s must be >= 0, finite and at most {MAX_DEADLINE_S} seconds "
+                f"(0 disables), got {stepdown!r}"
+            )
             raise ConfigurationError(msg)
+
+    def _validate_scheduler_relations(self) -> None:
+        self._validate_publish_stepdown()
         if self.scheduler_lock_ttl < self.scheduler_heartbeat_interval * 2:
             msg = (
                 "scheduler_lock_ttl must be at least 2x "

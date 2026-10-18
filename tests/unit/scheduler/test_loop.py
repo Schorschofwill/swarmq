@@ -39,7 +39,8 @@ API), Poll/Fire, Schedfire-Dedup (``claim_unique``), Stop/Abort."""
 # 15. Wird der Beobachter selbst Leader, nimmt er die Warnung zurück
 #     (Signal mit ``outdated=False``).
 # 16. Lesefehler bei der Beobachtung: Warnung, die Election läuft weiter.
-# 17. Jeder Melde-Takt meldet die eigene Version (TTL = Lebendigkeitsfenster).
+# 17. Jeder Melde-Takt meldet die eigene Version (TTL = Lebendigkeitsfenster),
+#     unter ``<worker_id>|<owner_token>`` (Plan 2026-10-17-2103, U19, F4-06).
 #
 # Test list (Review-Befund #1): Uebernahme und Poll im Leader serialisiert.
 # 18. Eine Uebernahme, die waehrend eines Fires (zwischen Poll und Commit)
@@ -91,6 +92,7 @@ from swarmq.exceptions import BackendConnectionError
 from swarmq.locking import SCHEDULER_LOCK_NAME
 from swarmq.scheduler import (
     ScheduleDefinition,
+    SchedulerLoop,
     ScheduleStore,
 )
 from swarmq.scheduler.reports import cron_fingerprint, live_window_ms
@@ -470,16 +472,72 @@ class TestLeaderVersion:
         store,
         signal_dispatcher,
     ):
-        """Auch ohne statische Crons; TTL = Lebendigkeitsfenster der Meldungen."""
+        """Auch ohne statische Crons; TTL = Lebendigkeitsfenster der Meldungen.
+        Der Schlüssel trägt hinter ``|`` das Owner-Token des Prozesses (F4-06,
+        KTD12): zwei Supervisoren eines Hosts überschreiben sich nicht."""
         loop = _make_loop(backend, broker, config, lock_manager, store, signal_dispatcher)
 
         await loop._report_crons()
 
         backend.schedules.report_worker_version.assert_awaited_once_with(
-            "w-1",
+            "w-1|test-owner",
             "0.10.0",
             ttl_ms=live_window_ms(config.scheduler_seen_interval_s),
         )
+
+    @staticmethod
+    def _memory_loop(memory: InMemoryBackend, worker_id: str, owner_token: str) -> SchedulerLoop:
+        return SchedulerLoop(
+            backend=memory,
+            broker=AsyncMock(),
+            config=SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x", scheduler_seen_interval_s=10),
+            lock_manager=memory.locks,
+            store=ScheduleStore(memory),
+            signal_dispatcher=AsyncMock(),
+            owner_token=owner_token,
+            worker_id=worker_id,
+            version="0.13.0",
+        )
+
+    @pytest.mark.entscheidung("E-029")
+    async def test_children_of_two_supervisors_on_one_host_report_separately(self):
+        """F4-06: zwei Supervisoren ohne ``SWARMQ_WORKER_ID`` mit je zwei
+        Kindern (gleiche Slots) ergeben vier Meldungen, keine überschreibt."""
+        memory = InMemoryBackend(FakeClock())
+        await memory.connect()
+        loops = [
+            self._memory_loop(memory, f"host:{slot}", f"host:{pid}:aa")
+            for slot, pid in ((0, 11), (1, 12), (0, 21), (1, 22))
+        ]
+
+        for loop in loops:
+            await loop._report_crons()
+
+        assert dict(await memory.schedules.worker_versions()) == {
+            "host:0|host:11:aa": "0.13.0",
+            "host:1|host:12:aa": "0.13.0",
+            "host:0|host:21:aa": "0.13.0",
+            "host:1|host:22:aa": "0.13.0",
+        }
+
+    async def test_entry_of_a_respawned_child_expires_after_three_report_intervals(self):
+        """Respawn auf demselben Slot: das neue Kind meldet unter neuem Token;
+        der Eintrag des alten bleibt bis zu drei Meldetakte sichtbar (KTD12)."""
+        clock = FakeClock()
+        memory = InMemoryBackend(clock)
+        await memory.connect()
+        old = self._memory_loop(memory, "host:0", "host:11:aa")
+        new = self._memory_loop(memory, "host:0", "host:31:bb")
+        await old._report_crons()
+        await new._report_crons()
+        assert set(await memory.schedules.worker_versions()) == {"host:0|host:11:aa", "host:0|host:31:bb"}
+
+        await clock.advance(29.999)
+        await new._report_crons()
+        assert set(await memory.schedules.worker_versions()) == {"host:0|host:11:aa", "host:0|host:31:bb"}
+        await clock.advance(0.001)
+
+        assert set(await memory.schedules.worker_versions()) == {"host:0|host:31:bb"}
 
 
 class TestPollLoop:

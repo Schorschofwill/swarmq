@@ -15,6 +15,13 @@ Test-Liste:
 - [x] eigener Channel auf der Consume-Verbindung, falls offen; nie der Publish-Kanal
 - [x] gescheitertes Ack: WARNING, kein Fehler
 - [x] Kopien tragen keine Zustellzaehler des Brokers (``x-delivery-count``, ``x-acquired-count``)
+
+``hit_limit`` (F4-05, E-028 Nachtrag 2026-10-17): abgelaufene Eintraege
+verbrauchen Lesungen, zaehlen aber nicht in ``scanned``.
+- [x] list: Abgelaufener vor lebenden, Limit erreicht -> ``hit_limit``, ``scanned`` ohne Abgelaufene
+- [x] list: Queue leer vor dem Limit -> kein ``hit_limit``
+- [x] inspect/retry: nicht gefunden, Limit erreicht -> ``hit_limit``; gefunden -> kein ``hit_limit``
+- [x] retry_all: Limit erreicht -> ``hit_limit``
 """
 
 from __future__ import annotations
@@ -181,3 +188,61 @@ async def test_copies_carry_no_broker_delivery_counters(call: str) -> None:
     assert "x-delivery-count" not in msg.headers
     assert "x-acquired-count" not in msg.headers
     assert msg.headers["x-keep"] == 1
+
+
+def _expired(task_id: str) -> Mock:
+    return _message(
+        task_id, {"x-swarmq-dead-lettered-at": int((_NOW - 7200) * 1000), "x-swarmq-dead-letter-ttl-ms": 3_600_000}
+    )
+
+
+@pytest.mark.entscheidung("E-028")
+async def test_list_reports_hit_limit_when_an_expired_entry_used_up_a_read() -> None:
+    broker = _reader(_expired("old"), _message("t-0"), _message("t-1"))
+
+    result = await broker.list_dead_letters("tasks", limit=2)
+
+    entries, scanned = result
+    assert [e["task_id"] for e in entries] == ["t-0"]
+    assert scanned == 1
+    assert getattr(result, "hit_limit", None) is True
+
+
+async def test_list_without_reaching_the_limit_reports_no_hit_limit() -> None:
+    broker = _reader(_expired("old"), _message("t-0"))
+
+    result = await broker.list_dead_letters("tasks", limit=3)
+
+    assert tuple(result) == (result[0], 1)
+    assert getattr(result, "hit_limit", None) is False
+
+
+@pytest.mark.entscheidung("E-028")
+async def test_inspect_miss_reports_hit_limit_when_an_expired_entry_used_up_a_read() -> None:
+    broker = _reader(_expired("old"), _message("t-0"), _message("t-1"))
+
+    result = await broker.inspect_dead_letter("tasks", "t-1", scan_limit=2)
+
+    assert tuple(result) == (None, 1)
+    assert getattr(result, "hit_limit", None) is True
+
+
+@pytest.mark.entscheidung("E-028")
+async def test_retry_miss_reports_hit_limit_and_a_hit_does_not() -> None:
+    missed = await _reader(_expired("old"), _message("t-0"), _message("t-1")).retry_dead_letter(
+        "tasks", "t-1", scan_limit=2
+    )
+    found = await _reader(_message("t-0"), _message("t-1")).retry_dead_letter("tasks", "t-1", scan_limit=2)
+
+    assert (tuple(missed), getattr(missed, "hit_limit", None)) == ((False, 1), True)
+    assert (tuple(found), getattr(found, "hit_limit", None)) == ((True, 2), False)
+
+
+@pytest.mark.entscheidung("E-028")
+async def test_retry_all_reports_hit_limit_when_an_expired_entry_used_up_a_read() -> None:
+    broker = _reader(_expired("old"), _message("t-0"), _message("t-1"))
+
+    result = await broker.retry_all_dead_letters("tasks", limit=2)
+
+    assert tuple(result) == (1, 1)
+    assert getattr(result, "hit_limit", None) is True

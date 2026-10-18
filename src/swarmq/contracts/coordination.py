@@ -327,11 +327,14 @@ class ScheduleStore(Protocol):
 
     async def report_worker_version(self, worker_id: str, version: str, *, ttl_ms: int) -> None:
         """Meldet die swarmq-Version eines Workers; die Meldung gilt *ttl_ms*
-        (KTD11, Anzeige in ``schedule status``)."""
+        (KTD11, Anzeige in ``schedule status``). Der Scheduler-Loop meldet
+        unter ``<worker_identity>|<owner_token>``, damit sich Prozesse mit
+        gleicher Worker-ID nicht überschreiben (F4-06, KTD12)."""
         ...
 
     async def worker_versions(self) -> Mapping[str, str]:
-        """Worker-ID → swarmq-Version aller noch gültigen Meldungen."""
+        """Gemeldete Worker-ID (rohes Suffix, ab 0.13 mit ``|<owner_token>``,
+        ältere Worker ohne) → swarmq-Version aller noch gültigen Meldungen."""
         ...
 
     async def set_leader_version(self, owner: str, version: str, *, ttl_ms: int) -> None:
@@ -347,6 +350,8 @@ class ScheduleStore(Protocol):
 
 
 GuardStatus = Literal["claimed", "done", "superseded", "running", "orphan_limit"]
+# Ergebnis von ``ExecutionGuardStore.peek`` (F4-02, KTD5 Plan 0.13.0).
+GuardSettled = Literal["done", "superseded"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -403,4 +408,10 @@ class ExecutionGuardStore(Protocol):
 
     async def release(self, identity: str, *, owner: str) -> None:
         """Den eigenen Running-Marker löschen (nicht-terminaler Ausgang)."""
+        ...
+
+    async def peek(self, identity: str, *, retry_count: int) -> GuardSettled | None:
+        """Nur lesen, ohne Claim und ohne Marker (F4-02): ``done`` nach
+        ``mark_done``, ``superseded``, wenn der Superseded-Zähler größer als
+        *retry_count* ist, sonst ``None`` (auch bei abgelaufenem Zustand)."""
         ...

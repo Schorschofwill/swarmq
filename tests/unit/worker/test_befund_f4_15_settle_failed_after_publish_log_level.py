@@ -75,11 +75,6 @@ def _retry_logs(logs: list[dict[str, Any]], event: str) -> list[dict[str, Any]]:
 
 @pytest.mark.entscheidung("E-043")
 @pytest.mark.befund("F4-15")
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="F4-15: offen - SettleFailedAfterPublish aus retry_later wird als ERROR retry_publish_failed gemeldet",
-)
 async def test_retry_copy_published_but_ack_failed_is_not_reported_as_failed_publish(
     broker: MagicMock, backend: MagicMock, config: SwarmQConfig, swarmq_logs: list[dict[str, Any]]
 ) -> None:

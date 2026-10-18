@@ -93,6 +93,10 @@ Nachricht noch und wird sie redeliveren. Crasht er zwischen `Store`
 und `Ack`, ist das Ergebnis bereits dauerhaft, die Redelivery führt
 den Task aber erneut aus (siehe
 [Redelivery-Szenarien](#1-worker-crash-zwischen-store-und-ack)).
+Scheitert das Speichern des Ergebnisses (Valkey nicht erreichbar),
+wiederholt der Worker es begrenzt, bevor er die Nachricht zurückgibt;
+erst dann läuft der Task erneut
+([Szenario 4](#4-ergebnis-speichern-scheitert-nach-dem-lauf)).
 
 ## Was den Ack abbricht
 
@@ -168,6 +172,17 @@ nicht in `x-delivery-count`. Die Zustellzähler-Prüfung des Workers
 zählt beide und schickt die Zustellung eine Runde vor dem Limit in die
 DLQ, als `RedeliveryLimitError`, wenn nur `x-acquired-count` es
 erreicht hat.
+
+**Kopien mit unbestimmtem Ausgang.** Der Worker publiziert auf vier
+Pfaden eine Kopie: die Retry-Kopie, die Dead-Letter-Kopie, die
+Zurückstellung bei Backend-Ausfall und die Dead-Letter-Kopie eines
+abgelaufenen Tasks (`max_age`). Scheitert ein solcher Publish, auch mit
+unbekanntem Ausgang (`PublishIndeterminate`: der Broker kann die Kopie
+haben), bleibt das Original unbestätigt und geht zurück
+(`retry_publish_failed`, `dlq_publish_failed`,
+`task_defer_failed_redelivered`, `task_expired_dlq_publish_failed`). Ein
+zusätzlicher Lauf des Tasks oder eine zusätzliche Kopie neben dem Lauf
+wird dann auf jedem dieser Pfade hingenommen; das ist kein Fehler.
 
 Retry-Kopien, die Kopien nach einem Rate-Limit-Treffer oder
 Lock-Konflikt und die DLQ-Kopien des Workers lassen die Zustellzähler
@@ -248,7 +263,7 @@ und überdauert jeden Lauf.
 
 ## Redelivery-Szenarien
 
-Duplikate entstehen in drei Situationen, absteigend nach Häufigkeit.
+Duplikate entstehen in vier Situationen, absteigend nach Häufigkeit.
 
 ### 1. Worker-Crash zwischen Store und Ack
 
@@ -300,6 +315,33 @@ anderen Worker mit demselben Nachrichten-Body.
 
 **Mitigation.** Keine nötig. So ist das Design.
 
+### 4. Ergebnis-Speichern scheitert nach dem Lauf
+
+Der Task war erfolgreich (oder scheiterte terminal ohne Dead-Lettering,
+oder wurde abgebrochen), aber Valkey nimmt sein Ergebnis nicht an.
+Ack-nach-Store heißt: Der Worker darf noch nicht bestätigen. Seit 0.13.0
+wiederholt er das Speichern bei `AT_LEAST_ONCE`-Tasks selbst: bis zu fünf
+Versuche mit Wartezeiten von nominell 1, 2, 4 und 8 s (±20 %, der
+Backoff von `SWARMQ_BACKEND_DEFER_BASE_DELAY`), jeder Versuch begrenzt
+durch `SWARMQ_BACKEND_OP_TIMEOUT` (5 s). Nach dem ersten gescheiterten
+Versuch dauert die Wiederholung daher nominell höchstens rund 35 s, mit
+Jitter höchstens 38 s. Der nächste Versuch startet nur, wenn er vor
+`SWARMQ_CONSUMER_TIMEOUT_S` ab der Zustellung endet, und das Drain-Ende
+eines Shutdowns beendet die Wiederholung. Der Task-Slot bleibt
+währenddessen belegt. Der Worker loggt `result_store_retrying` und bei
+Erfolg `result_store_recovered`; die Nachricht wird dann ohne zweiten
+Lauf bestätigt. Erst wenn jeder Versuch scheitert, loggt der Worker
+`backend_connection_error` und gibt die Nachricht zurück, und der Task
+läuft **erneut**. `FIRE_AND_FORGET`-Tasks speichern einmal und verlieren
+das Ergebnis.
+
+**Was dein Task sieht.** Meist nichts; nach einem Valkey-Ausfall, der
+länger dauert als die Wiederholung, einen zweiten `run()`-Aufruf mit
+denselben Argumenten.
+
+**Mitigation.** Idempotenter Task-Body; Valkey so betreiben, dass
+Neustarts und Failover deutlich unter einer halben Minute bleiben.
+
 ### Shutdown-Budget
 
 `SWARMQ_SHUTDOWN_TIMEOUT` (Default 30 s) ist das Gesamtbudget ab
@@ -318,7 +360,13 @@ Leader-Übergabe und Marker des Ausführungsschutzes kamen erst nach dem
 | Supervisor: `SIGKILL`, Prozesse einsammeln | -- | bei `T - 2 s`, fertig bis `T` |
 
 `T` ist `SWARMQ_SHUTDOWN_TIMEOUT`; bei kurzem Budget ist jede Reserve
-höchstens die Hälfte des Rests (`T = 5` eingebettet: Drain 2,5 s). Der
+höchstens die Hälfte des Rests (`T = 5` eingebettet: Drain 2,5 s). Das
+`SIGTERM` des Supervisors am Drain-Ende ist ein regulärer Schritt des
+Budgets: Ein Worker, dessen Task bis dahin läuft, bekommt es, ohne dass
+etwas Alarmierendes geloggt wird (`shutdown_sigterm_escalation`, seit
+0.13.0 INFO). Erst ein Worker, der bei `T - 2 s` noch lebt, hängt; er
+wird mit `shutdown_sigkill_escalation` (ERROR) getötet, dem Event für
+Alarmregeln. Der
 Drain zählt ab `SIGTERM`, ein langsamer `WORKER_SHUTDOWN`-Handler
 (höchstens 10 s) verkürzt ihn also. Jeder Aufräumschritt hat ein
 Zeitlimit (der Rest des Budgets, mindestens 1 s); ein Schritt darüber
@@ -686,6 +734,20 @@ erreicht die DLQ über einen von fünf Wegen:
    buggy Worker ab. Ein Backend-Ausfall zählt nicht dagegen: Die
    Prüfungen vor der Ausführung stellen die Nachricht als neue
    Nachricht zurück, statt sie neu einzureihen (siehe oben).
+   Seit 0.13.0 liest die Zustellzähler-Prüfung zuerst den
+   [Ausführungsschutz](#ausfuhrungsschutz): Ist die Ausführung schon
+   erledigt oder von einem Retry überholt, wird die Zustellung bestätigt
+   und übersprungen (`duplicate_delivery_skipped`) -- kein
+   `WorkerHungError` oder `RedeliveryLimitError`, kein Fehlerergebnis,
+   kein `TASK_DLQ`, keine Unique-Freigabe und kein gescheiterter Workflow.
+   Ohne Marker, mit `SWARMQ_EXECUTION_GUARD=false`, bei
+   `FIRE_AND_FORGET`-Tasks oder wenn das Lesen scheitert
+   (`execution_guard_peek_failed`), geht die Nachricht wie bisher in die
+   DLQ. Restlücken: Dieser Weg setzt keinen Done-Marker, ein verlorener
+   Ack nach der DLQ-Kopie kann also eine zweite DLQ-Kopie erzeugen; und
+   ist der Done-Marker abgelaufen (`SWARMQ_EXECUTION_GUARD_DONE_TTL_S`),
+   geht die Nachricht wie vor 0.13 in die DLQ, und das gespeicherte
+   Ergebnis wird vom Fehlerergebnis überschrieben.
 4. **Expiry / Lock-Render / Lock-Wartezeit.** `max_age` überschritten,
    Lock-Key kann nicht gerendert werden (z. B. fehlender kwarg), oder
    die Wartezeit auf einen Lock ist zu Ende (hängender Halter,

@@ -584,10 +584,30 @@ unblock first and sends nothing while blocked; the WARNING
 `publish_connection_blocked` marks the wait. A connection that is not
 blocked costs no extra round trip.
 
-**Cause.** A broker resource alarm. RabbitMQ announces the block only
-to a connection that publishes during the alarm, so the first publish
-after the alarm starts is already on the wire, hangs and ends as
-`PublishIndeterminate`; later ones raise this error.
+**Cause.** A broker resource alarm. RabbitMQ announces the block
+(`connection.blocked`) only to a connection that publishes during the
+alarm. The publish that triggers the announcement can still be
+confirmed; publishes that were already on the wire before
+`connection.blocked` arrived hang and end as `PublishIndeterminate` --
+per connection none, one or several. Later ones wait and raise this
+error.
+
+**In the worker.** A retry, deferral or dead-letter copy that waits for
+the unblock keeps its task slot until the publish deadline; then the
+original is handed back and runs again (a task that fails on every run
+reaches the DLQ as `RedeliveryLimitError` after about 19 rounds). With
+any failure rate above zero, a worker's consumption during the alarm
+drops to roughly slots / (task duration + failure rate × publish
+deadline): measured with a 20 s deadline to a quarter, with the default
+120 s about 3 % by calculation. Acks keep flowing over the separate consume connection.
+This is deliberate, not a fault. If alarms are frequent, consider a
+shorter `SWARMQ_PUBLISH_TIMEOUT_S` for workers; the trade-off is more
+extra runs. When the deadline cuts off a publish that may have been
+sent, the worker discards its publish channel and closes it in the
+background; during the alarm that close runs into its 5 s limit
+(`publish_channel_close_incomplete` without traceback, `blocked=True`)
+and aiormq logs `Got frame for closed channel` once RabbitMQ unblocks
+([event catalog](logging.md#event-catalog)). Both are harmless.
 
 **Recovery.** Retrying later is safe, nothing reached the broker; a
 `unique_for` claim is released. Free memory or disk on the broker. A

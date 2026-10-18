@@ -37,6 +37,9 @@ Test-Liste:
       Rolling Deploy, Upgrade, Rollback und Shovel-Replay
 - [x] Plan 2026-10-17-2103, U1: Cron-Fire mit Leader-Wechsel 0.12.x <-> Arbeitsstand
       in beiden Richtungen: je erzwungenem Fire genau ein Lauf
+- [x] Plan 2026-10-17-2103, U19 (F4-06, KTD12, E-029): ``schedule status`` aus dem
+      Arbeitsstand zeigt einen 0.12.x-Worker (alter Versionsschlüssel ohne ``|``)
+      neben einem Arbeitsstands-Worker auf demselben Slot und Host
 """
 
 from __future__ import annotations
@@ -631,3 +634,56 @@ async def test_cron_fire_survives_leader_change_with_0_12_x(
     assert len({task_id for _, task_id, _, _ in runs}) == 2
     assert runs[-1][3] == follower.runtime, "after the leader stopped, only the follower consumes"
     assert await message_count(rabbitmq_url, queue) == 0, "no duplicate fire left in the queue"
+
+
+# ---------------------------------------------------------------------------
+# Plan 2026-10-17-2103, U19 (F4-06, KTD12, E-029): Versionsschlüssel je Prozess.
+# Der Arbeitsstand meldet unter ``<worker_identity>|<owner_token>``, die
+# 0.12-Reihe weiter unter ``<worker_identity>``; ``schedule status`` liest beide.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.entscheidung("E-029")
+async def test_schedule_status_shows_a_0_12_x_worker_next_to_the_new_one(
+    start_worker: StartWorker,
+    base: Base,
+    python_repo: str,
+    valkey_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.metadata
+    import os
+    import socket
+    import sys
+    from typing import Any
+
+    monkeypatch.delenv("SWARMQ_WORKER_ID", raising=False)  # spawn_worker erbt die Umgebung
+    monkeypatch.setenv("SWARMQ_SCHEDULER_SEEN_INTERVAL_S", "1")
+    # Beide unter dem Supervisor mit einem Kind: dieselbe Worker-ID ``<host>:0``.
+    start_worker(base.python, base.version, extra_args=["--processes", "1"])
+    start_worker(python_repo, "repo", extra_args=["--processes", "1"])
+    seen: list[dict[str, Any]] = []
+
+    async def both_reported() -> bool:
+        env = {**os.environ, "SWARMQ_BACKEND_URL": valkey_url}
+        result = await asyncio.to_thread(
+            subprocess.run,
+            [sys.executable, "-m", "swarmq.cli", "schedule", "status", "--format", "json"],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        )
+        seen[:] = json.loads(result.stdout)["workers"]
+        return len(seen) >= 2
+
+    assert await wait_until(both_reported, timeout=_EVENT_TIMEOUT, interval=1.0), f"WORKERS never listed both: {seen}"
+    worker_id = f"{socket.gethostname()}:0"
+    old = {"worker_id": worker_id, "version": base.version, "process": None}
+    assert old in seen, f"the {base.version} worker stays visible under its old key: {seen}"
+    [new] = [entry for entry in seen if entry["process"] is not None]
+    assert new["worker_id"] == worker_id
+    assert new["version"] == importlib.metadata.version("swarmq")
+    assert len(seen) == 2

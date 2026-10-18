@@ -42,7 +42,8 @@ from swarmq.workflow_orchestration import (
 # R4.1 Workflow state TTL. Workflow topology/status must outlive the
 # longest step + retry horizon so reattach (R14) and fan-in (R6) stay
 # resolvable. 24h matches the result-TTL default; app.apply() passes
-# config.result_ttl * 1000 through.
+# config.result_ttl * 1000 through. The workflow cancel flag lives
+# max(24h, state TTL) (E-020); app.workflow() passes the same value.
 _DEFAULT_WORKFLOW_TTL_MS = 86_400_000  # 24h
 
 
@@ -153,7 +154,9 @@ class ClientWorkflows:
                 await self._mark_apply_failed(workflow_id, state, exc, state_ttl_ms)
             raise
 
-        return WorkflowHandle(self._backend, workflow_id, self._unpack, cancel_ttl_ms=state_ttl_ms)
+        # E-020: das Cancel-Flag lebt mindestens 24 h, auch bei kürzerer Zustands-TTL.
+        cancel_ttl_ms = max(_DEFAULT_WORKFLOW_TTL_MS, state_ttl_ms)
+        return WorkflowHandle(self._backend, workflow_id, self._unpack, cancel_ttl_ms=cancel_ttl_ms)
 
     async def _mark_apply_failed(
         self, workflow_id: str, state: dict[str, Any], exc: Exception, state_ttl_ms: int
@@ -186,12 +189,13 @@ class ClientWorkflows:
             ):
                 return
 
-    async def workflow(self, workflow_id: str) -> WorkflowHandle:
+    async def workflow(self, workflow_id: str, *, cancel_ttl_ms: int | None = None) -> WorkflowHandle:
         """Reattach to a running/finished workflow by id (R14).
 
         Raises :class:`WorkflowNotFound` when no state exists for the id
         (never started, or expired) — never returns a handle over empty
-        state.
+        state. ``cancel_ttl_ms`` is the lifetime of the cancel flag the
+        handle sets; ``None`` means 24 h (E-020).
         """
         raw = await self._backend.get_workflow_state(workflow_id, op_timeout=self._backend_op_timeout)
         if raw is None:
@@ -202,7 +206,7 @@ class ClientWorkflows:
             self._backend,
             workflow_id,
             self._unpack,
-            cancel_ttl_ms=_DEFAULT_WORKFLOW_TTL_MS,
+            cancel_ttl_ms=_DEFAULT_WORKFLOW_TTL_MS if cancel_ttl_ms is None else cancel_ttl_ms,
         )
 
     @staticmethod

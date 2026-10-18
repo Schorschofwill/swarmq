@@ -29,6 +29,7 @@ from swarmq.workflow_orchestration import (
     STATUS_COMPLETED,
     build_initial_workflow_state,
     initial_frontier,
+    workflow_step_task_id,
 )
 from tests.unit.test_workflow_advancer import Driver, Echo
 
@@ -43,7 +44,7 @@ async def _seed_enqueued(driver: Driver) -> None:
     step_tasks = {}
     frontier = list(initial_frontier(driver.workflow))
     for step_path, _sig in frontier:
-        step_tasks[step_path] = f"seed-{step_path}"
+        step_tasks[step_path] = workflow_step_task_id(driver.wf_id, step_path)
     state["step_tasks"] = step_tasks
     await driver.backend.store_workflow_state(driver.wf_id, encode_json(state), 60_000)
     for step_path, sig in frontier:

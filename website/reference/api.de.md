@@ -411,7 +411,12 @@ async def workflow(workflow_id: str) -> WorkflowHandle
 
 Hängt sich per ID an einen laufenden oder fertigen Workflow, etwa aus
 einem anderen Prozess. **Raises** `WorkflowNotFound`, wenn es zur ID
-keinen Zustand gibt (nie gestartet oder abgelaufen).
+keinen Zustand gibt (nie gestartet oder abgelaufen). Das Cancel-Flag,
+das `cancel()` des Handles setzt, lebt `max(24 h, result_ttl)`, wie bei
+einem Handle aus `apply()` (seit 0.13.0; vorher nahm ein neu gebautes
+Handle 24 h und eines aus `apply()` `result_ttl`). Das tiefer liegende
+`Client.workflow(workflow_id, *, cancel_ttl_ms=None)` nimmt diese
+Lebensdauer in Millisekunden; `None` heißt 24 h.
 
 **Beispiel.**
 
@@ -805,7 +810,10 @@ class WorkflowHandle:
   sofort; noch nicht abgeholte Schritte enden als abgebrochen; ein
   bereits laufender Schritt läuft zu Ende, danach werden keine weiteren
   Schritte eingereiht. Gibt `True` zurück, wenn das Flag neu gesetzt
-  wurde.
+  wurde. Das Flag lebt `max(24 h, result_ttl)`, für Handles aus
+  `app.apply()` und `app.workflow()` gleichermaßen (seit 0.13.0); ein
+  Schritt, der länger als `result_ttl` in einer Queue wartet, wird also
+  trotzdem gestoppt.
 - `get(timeout=30.0)` — wartet auf einen Endzustand und gibt das
   Endergebnis zurück. Ein negatives `timeout` oder `nan` liest den
   Zustand einmal und wirft dann `ResultNotReadyError` (seit 0.12.3;
@@ -872,6 +880,15 @@ Asynchroner AMQP-Broker über aio-pika. Implementiert die Protokolle
 `Broker` und `BrokerAdmin` aus `swarmq.contracts` (connect/declare/
 publish/consume, die vier Zustellungs-Verben `ack`/`redeliver`/
 `retry_later`/`dead_letter`, Queue-Tiefen und DLQ-Operationen). Die
+DLQ-Lesebefehle von `BrokerAdmin` (`list_dead_letters`,
+`inspect_dead_letter`, `retry_dead_letter`, `retry_all_dead_letters`)
+liefern ein `DeadLetterScan` (`swarmq.contracts.broker`, seit 0.13.0):
+ein Tupel `(ergebnis, scanned)`, das sich wie bisher entpacken lässt,
+dazu `hit_limit`, das sagt, ob das Lesen am Limit endete (abgelaufene
+Einträge zählen beim Limit mit, in `scanned` nicht). Eine eigene
+`BrokerAdmin`-Implementierung darf weiter ein schlichtes Tupel liefern;
+die CLI fällt dann auf `scanned >= limit` zurück. Code, der
+`type(result) is tuple` prüft, muss angepasst werden. Die
 gesamte Konfiguration (Queue-Typ, Prefetch, Reconnect) läuft über
 `SwarmQConfig` und `TaskInfo` — aus Anwendungscode rufst du diese
 Klasse nicht direkt.
@@ -886,6 +903,10 @@ ValkeyBackend(
     *,
     client: valkey.asyncio.Valkey | None = None,
     pool: valkey.asyncio.ConnectionPool | None = None,
+    keys: KeySpace | None = None,
+    eviction_check: str | None = None,
+    namespace: str | None = None,
+    connect_timeout_s: float | None = None,
 )
 ```
 
@@ -893,6 +914,21 @@ Genau eines von `url`, `client` oder `pool` übergeben; keines oder
 mehrere werfen `ConfigurationError`. Einen geliehenen `client` schließt
 SwarmQ nie, ein `pool` behält seinen eigenen Lebenszyklus; beide sind
 nur für den Producer-Pfad (`start_worker()` weist sie ab).
+
+- `namespace` — der [Namensraum](configuration.md#namensraum-mehrere-apps-auf-einem-valkey)
+  aller Keys und Kanäle; ohne Angabe gilt `SWARMQ_NAMESPACE`. Sind beide
+  gesetzt und verschieden, wirft `SwarmQ` `ConfigurationError` (Exit
+  `78`) ([Herkunft des Namensraums](configuration.md#herkunft-des-namensraums)).
+- `keys` — ein fertiger `KeySpace` (`swarmq.keyspace`) statt
+  `namespace`; beides zusammen ist ein `ConfigurationError`.
+- `eviction_check` — `strict`, `warn` oder `off`, wie
+  `SWARMQ_VALKEY_EVICTION_CHECK`, das ohne Angabe gilt.
+- `connect_timeout_s` — Gesamtfrist für das `PING` in `connect()` samt
+  Wiederholungen; geht vor `SwarmQConfig.backend_connect_timeout_s` und
+  `SWARMQ_BACKEND_CONNECT_TIMEOUT_S` (Default 30 s). Muss `> 0` und
+  höchstens `threading.TIMEOUT_MAX` sein, sonst `ConfigurationError` beim
+  Konstruieren. Läuft sie ab, wirft `connect()`
+  `BackendConnectionError`.
 
 Asynchroner Valkey-Client für Ergebnisse, Locks, Rate-Limits,
 Cancel-Flags, Scheduler-Zustand und Leader-Election. Implementiert das

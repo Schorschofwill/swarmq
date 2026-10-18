@@ -271,32 +271,18 @@ def _redelivered_at_the_limit(machine: RetryChainMachine) -> Pending:
     return redelivered
 
 
-def _handle_unchecked(machine: RetryChainMachine, pending: Pending) -> None:
-    """Die Zustellung ohne Modellprüfung durch die Pipeline (das Modell
-    meldet R4Z-04 vorab)."""
-    machine.pending.remove(pending)
-    machine.current = pending
-    machine.act = Act("ok")
-    try:
-        machine.run(machine.io._handle_message(pending.delivery))
-    finally:
-        machine.current = None
-
-
 def r4z_04_completed_task_redelivered_at_the_limit_stays_a_duplicate(machine: RetryChainMachine) -> None:
     """F4-02 (R4Z-04): Der Task lief erfolgreich, das Ack ging verloren
     (Kanal weg, Done-Marker gesetzt, ``GuardedBroker.ack``). Die
-    Neuzustellungen werden als Duplikat bestätigt -- bis ``x-delivery-count``
-    die Schwelle erreicht: dann schickt das Zustelllimit-Gate, das vor dem
-    Ausführungsschutz liegt, die Nachricht in die DLQ und überschreibt das
-    Erfolgsergebnis mit einem Fehler. Erwartet (E-009, E-043): Duplikat,
-    keine DLQ-Kopie, Ergebnis bleibt Erfolg. Deterministischer Nachweis ohne
-    Maschine: ``tests/unit/worker/test_befund_f4_02_delivery_limit_before_guard.py``."""
+    Neuzustellungen werden als Duplikat bestätigt, auch wenn
+    ``x-delivery-count`` die Schwelle erreicht: das Zustelllimit-Gate liest
+    vorher den Ausführungsschutz (E-009, E-043). Keine DLQ-Kopie, das Ergebnis
+    bleibt Erfolg. Deterministischer Nachweis ohne Maschine:
+    ``tests/unit/worker/test_befund_f4_02_delivery_limit_before_guard.py``."""
     machine.publish("t1")
     assert machine.deliver(only(machine), Act("ok"), lose_settle=True).reason == "success"
     redelivered = _redelivered_at_the_limit(machine)
-    assert machine.predict(redelivered, Act("ok"), copy_failure=False).suspect == "R4Z-04"
-    _handle_unchecked(machine, redelivered)
+    assert machine.deliver(redelivered, Act("ok")).reason == "done"
     raw = machine.run(machine.env.backend.get_result("t1"))
     assert raw is not None
     result = decode_result(raw)
@@ -307,14 +293,14 @@ def r4z_04_completed_task_redelivered_at_the_limit_stays_a_duplicate(machine: Re
 def r4z_04_superseded_attempt_redelivered_at_the_limit_stays_a_duplicate(machine: RetryChainMachine) -> None:
     """F4-02 (R4Z-04), zweite Form: Der Versuch scheiterte, die Retry-Kopie liegt
     (Superseded-Marker), nur das Ack des Originals ging verloren
-    (``SettleFailedAfterPublish``). Am Zustelllimit geht das Original in die
-    DLQ und schreibt ein Fehlerergebnis, während die Kette über die
-    Retry-Kopie weiterläuft; ``get_result`` meldet den Fehler vorzeitig."""
+    (``SettleFailedAfterPublish``). Am Zustelllimit wird das Original als
+    überholt bestätigt; kein Fehlerergebnis, keine DLQ-Kopie, die Kette läuft
+    über die Retry-Kopie weiter."""
     machine.reconfigure(ChainCfg(max_retries=3))
     machine.publish("t1")
     assert machine.deliver(only(machine), ERROR, lose_settle=True).reason == "retry"
     redelivered = _redelivered_at_the_limit(machine)
-    _handle_unchecked(machine, redelivered)
+    assert machine.deliver(redelivered, Act("ok")).reason == "superseded"
     raw = machine.run(machine.env.backend.get_result("t1"))
     assert machine.broker.dead == [], "überholter Versuch in der DLQ, die Retry-Kopie läuft weiter"
     assert raw is None, "Fehlerergebnis, obwohl die Kette über die Retry-Kopie weiterläuft"
@@ -370,7 +356,7 @@ SCENARIOS: dict[str, Callable[[RetryChainMachine], None]] = {
     )
 }
 
-# Nachweise des Befunds F4-02 (R4Z-04; xfail strict, scheitern am heutigen Stand).
+# Nachweise des Befunds F4-02 (R4Z-04), seit 0.13.0 (U12) ohne xfail.
 F4_02_NACHWEISE: dict[str, Callable[[RetryChainMachine], None]] = {
     fn.__name__: fn
     for fn in (

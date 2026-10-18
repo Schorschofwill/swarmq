@@ -20,6 +20,10 @@ Erwartet:
 ``next_fire_times`` wirft für unbekannte Zonen heute ``ZoneInfoNotFoundError``;
 dafür gibt es keine Zusage, es gehört nicht in diesen Nachweis.
 
+Behoben in 0.13.0 (U16): ``normalize_timezone`` fängt auch ``OSError``;
+``cron_time._zone`` wandelt ihn in ``ZoneInfoNotFoundError``
+(``tests/unit/scheduler/test_cron_time.py``).
+
 Testliste:
 # [x] SWARMQ_SCHEDULER_TIMEZONE = "a" * 256 / "Europe/" + "x" * 300 -> ConfigurationError
 # [x] TaskInfo(timezone="a" * 256 / "Europe/" + "x" * 300) -> ValueError
@@ -39,9 +43,6 @@ _LONG_ZONES = pytest.mark.parametrize("zone", ["a" * 256, "Europe/" + "x" * 300]
 
 
 @pytest.mark.befund("F4-08")
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="F4-08: offen - Zeitzone mit Pfadteil > 255 Byte ergibt OSError"
-)
 @_LONG_ZONES
 def test_scheduler_timezone_with_a_too_long_name_is_a_configuration_error(
     zone: str, monkeypatch: pytest.MonkeyPatch
@@ -59,9 +60,6 @@ def test_scheduler_timezone_with_a_too_long_name_is_a_configuration_error(
 
 
 @pytest.mark.befund("F4-08")
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="F4-08: offen - Zeitzone mit Pfadteil > 255 Byte ergibt OSError"
-)
 @_LONG_ZONES
 def test_task_timezone_with_a_too_long_name_raises_value_error(zone: str) -> None:
     error: BaseException | None = None

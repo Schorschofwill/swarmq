@@ -126,11 +126,6 @@ def _stored_errors(backend: MagicMock) -> list[str]:
 
 @pytest.mark.entscheidung("E-043")
 @pytest.mark.befund("F4-02")
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="F4-02: offen - Zustelllimit-Gate liegt vor dem Ausfuehrungsschutz (erledigte Ausfuehrung in der DLQ)",
-)
 async def test_completed_execution_redelivered_at_the_limit_stays_a_duplicate(
     guard_backend: InMemoryBackend,
 ) -> None:
@@ -149,11 +144,6 @@ async def test_completed_execution_redelivered_at_the_limit_stays_a_duplicate(
 
 @pytest.mark.entscheidung("E-043")
 @pytest.mark.befund("F4-02")
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="F4-02: offen - Zustelllimit-Gate liegt vor dem Ausfuehrungsschutz (ueberholter Versuch in der DLQ)",
-)
 async def test_superseded_attempt_redelivered_at_the_limit_stays_a_duplicate(
     guard_backend: InMemoryBackend,
 ) -> None:

@@ -776,6 +776,14 @@ class TestWorkerIdentity:
         # ``h:7`` mal ein Slot und mal ein Prozess.
         assert cfg.worker_identity == f"h:p{os.getpid()}"
 
+    @pytest.mark.entscheidung("E-029")
+    def test_env_worker_id_with_pipe_is_rejected(self, monkeypatch):
+        """F4-06 (KTD12): ``|`` trennt im Versionsschlüssel Worker-ID und
+        Owner-Token; eine Worker-ID mit ``|`` machte die Ableitung mehrdeutig."""
+        monkeypatch.setenv("SWARMQ_WORKER_ID", "a|b")
+        with pytest.raises(ConfigurationError, match=r"SWARMQ_WORKER_ID/worker_id must not contain '\|'"):
+            SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x", worker_slot=2)
+
 
 class TestPortsPerSlot:
     """U3 (R5): ``--metrics-port``/``--health-port`` sind Basisports; der

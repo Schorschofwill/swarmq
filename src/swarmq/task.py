@@ -7,7 +7,6 @@ import asyncio
 import enum
 import inspect
 import json
-import re
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -16,6 +15,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, override
 from croniter import CroniterBadCronError, CroniterBadDateError, croniter
 
 from swarmq.config import normalize_timezone
+from swarmq.cron_syntax import validate_cron_syntax
 from swarmq.limits import parse_rate_limit
 from swarmq.locking import compute_lock_ttl_ms
 from swarmq.logging import _error_fields, get_logger
@@ -30,11 +30,6 @@ if TYPE_CHECKING:
 _progress_logger = get_logger(__name__)
 
 _MAX_TASK_NAME_LEN = 255
-
-# Cron syntax we intentionally do NOT support in v1: L (last), W (nearest
-# weekday), # (nth weekday of month). Rejected at construction so the failure
-# surfaces at task-module import time rather than inside the scheduler loop.
-_FORBIDDEN_CRON_CHARS = re.compile(r"[LW#]")
 
 # Task.run parameter names reserved by Client.schedule. A task that accepts
 # these as its own arguments would silently lose its payload because
@@ -235,11 +230,9 @@ class TaskInfo:
             raise ValueError("catchup=True is reserved for a future release; set catchup=False")
 
         if self.cron is not None:
-            # Reject extended cron-syntax (L/W/#) at construction.
-            if _FORBIDDEN_CRON_CHARS.search(self.cron):
-                raise ValueError(
-                    f"cron uses unsupported extended syntax (L/W/#): {self.cron!r}; use a standard 5-field expression"
-                )
+            # E-065: Positivliste nach crontab(5) beim Klassenbau, damit der
+            # Fehler beim Import des Task-Moduls auffällt, nicht im Leader.
+            validate_cron_syntax(self.cron)
             # F3-08 (E-065): wie der Leader den nächsten Termin berechnen;
             # ein Ausdruck ohne Termin (``0 0 30 2 *``) feuerte sonst still nie.
             # CroniterBadDateError erbt von ValueError, muss also vorher stehen.
