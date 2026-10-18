@@ -4,6 +4,15 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 [Keep a Changelog](https://keepachangelog.com/) und
 [Semantic Versioning](https://semver.org/).
 
+## [0.12.4] — 2026-10-18
+
+0.12.4 ist 0.12.4rc1 ohne Codeänderungen. Die Korrekturen und die
+Upgrade-Hinweise (Gesamtfrist für den Valkey-Verbindungsaufbau, die
+Lücke bei dauerhafter Fehlerantwort des Chord-Skripts bis 0.13.0,
+reservierte Lock-Namen, Mischbetrieb und Rollback) stehen unter
+[0.12.4rc1](#0124rc1-2026-10-18) und gelten unverändert. Installation
+mit `pip install 'swarmq==0.12.*'`; `--pre` ist nicht mehr nötig.
+
 ## [0.12.4rc1] — 2026-10-18
 
 Release-Candidate für 0.12.4 (Installation mit `pip install --pre`).
