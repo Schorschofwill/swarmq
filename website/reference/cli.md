@@ -341,7 +341,9 @@ stored anything). The `--unique-for` claim is released at once when a
 different entry already holds the name, and when the backend answers
 with an error. It is kept until it expires when the backend fails
 (connection lost, timeout), because the entry may have been stored; a
-repeated call until then is a duplicate. Reading the entry under the
+repeated call until then is a duplicate. A claim that an earlier
+`schedule add` under the same name holds is never released by this
+call, not even after a read error. Reading the entry under the
 name can log `schedule_def_malformed_skipped` (WARNING) for an entry it
 cannot decode.
 

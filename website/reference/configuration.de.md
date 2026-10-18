@@ -38,8 +38,9 @@ nicht `inf` (derzeit `SWARMQ_DEAD_LETTER_TTL_S`). Jede Frist und TTL
 (auch `result_ttl` und `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S`) darf
 außerdem höchstens `315360000` s betragen (zehn Jahre; RabbitMQ lehnt
 eine Per-Message-Expiration über `315360000000` ms ab), Zählwerte
-(`SWARMQ_DELIVERY_LIMIT`, `SWARMQ_EXECUTION_GUARD_MAX_ORPHANS`,
-`SWARMQ_LOG_QUEUE_SIZE`, …) höchstens `sys.float_info.max`; ein größerer
+(`SWARMQ_EXECUTION_GUARD_MAX_ORPHANS`, `SWARMQ_LOG_QUEUE_SIZE`, …)
+höchstens `sys.float_info.max` (`SWARMQ_DELIVERY_LIMIT`: höchstens
+2^63 − 1, siehe unten); ein größerer
 Wert ist ein `ConfigurationError` (Exit `78`), der das Feld nennt, und
 `swarmq check` meldet ihn vor dem Start (seit 0.13.0).
 

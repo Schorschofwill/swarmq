@@ -350,7 +350,9 @@ wird sofort freigegeben, wenn schon ein anderer Eintrag den Namen hält
 und wenn das Backend mit einem Fehler antwortet. Fällt das Backend aus
 (Verbindung weg, Zeitüberschreitung), bleibt er bis zu seinem Ablauf
 stehen, weil der Eintrag trotzdem gespeichert sein kann; ein erneuter
-Aufruf ist bis dahin ein Duplikat. Beim Lesen des Eintrags unter dem
+Aufruf ist bis dahin ein Duplikat. Einen Claim, den ein früheres
+`schedule add` unter demselben Namen hält, gibt der Aufruf nie frei,
+auch nicht nach einem Lesefehler. Beim Lesen des Eintrags unter dem
 Namen kann `schedule_def_malformed_skipped` (WARNING) erscheinen, wenn
 er sich nicht dekodieren lässt.
 

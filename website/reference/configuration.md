@@ -35,9 +35,9 @@ Where unlimited is supported, the value is `none`, not `inf` (today
 `SWARMQ_DEAD_LETTER_TTL_S`). Every deadline and TTL (including
 `result_ttl` and `SWARMQ_SCHEDULER_PUBLISH_STEPDOWN_S`) must also be at
 most `315360000` s (ten years; RabbitMQ rejects a per-message expiration
-above `315360000000` ms), and counts (`SWARMQ_DELIVERY_LIMIT`,
-`SWARMQ_EXECUTION_GUARD_MAX_ORPHANS`, `SWARMQ_LOG_QUEUE_SIZE`, …) at most
-`sys.float_info.max`; a larger value is a `ConfigurationError` (exit
+above `315360000000` ms), and counts (`SWARMQ_EXECUTION_GUARD_MAX_ORPHANS`,
+`SWARMQ_LOG_QUEUE_SIZE`, …) at most `sys.float_info.max`
+(`SWARMQ_DELIVERY_LIMIT`: at most 2^63 − 1, see below); a larger value is a `ConfigurationError` (exit
 `78`) that names the field, and `swarmq check` reports it before the
 start (since 0.13.0).
 
