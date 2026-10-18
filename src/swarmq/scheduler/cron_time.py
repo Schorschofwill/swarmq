@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from datetime import UTC, datetime, tzinfo
 from itertools import islice
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from croniter import croniter
 
@@ -27,8 +27,18 @@ _ALIASES = {
 
 
 def _zone(timezone: str | None) -> tzinfo:
-    """IANA-Zone des Crons; ``None`` heisst UTC."""
-    return UTC if timezone is None else ZoneInfo(timezone)
+    """IANA-Zone des Crons; ``None`` heisst UTC.
+
+    Eine unbekannte Zone wirft ``ZoneInfoNotFoundError``, auch wenn ``zoneinfo``
+    den Namen als Datei nicht öffnen kann (Pfadteil über 255 Byte: ``OSError``
+    ENAMETOOLONG, F4-08)."""
+    if timezone is None:
+        return UTC
+    try:
+        return ZoneInfo(timezone)
+    except OSError as exc:
+        msg = f"No time zone found with key {timezone}"
+        raise ZoneInfoNotFoundError(msg) from exc
 
 
 def next_fire_times(
