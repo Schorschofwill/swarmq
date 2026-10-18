@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 import structlog
@@ -13,6 +13,7 @@ from swarmq.task import TaskInfo
 from swarmq.worker.gates import GateContext
 from swarmq.worker.gates.delivery_count import DeliveryCountGate
 from swarmq.worker.outcome import Continue, Terminal
+from tests.unit._log_capture import capture_swarmq_logs
 
 
 def _gate(limit: int = 20):
@@ -232,3 +233,39 @@ async def test_unusable_queue_limit_falls_back_to_the_configuration(broker):
     assert await gate.apply(delivery, _ctx()) is Continue
     delivery = SimpleNamespace(headers={"x-delivery-count": 19}, queue="tasks")
     assert isinstance(await gate.apply(delivery, _ctx()), Terminal)
+
+
+# Plan 0.13.0, U12 (F4-02, KTD5): am Limit fragt das Gate vor dem Dead-Letter
+# den Ausführungsschutz (``ExecutionGuard.skip_if_settled``, spät gebunden).
+
+
+@pytest.mark.timeout(5)
+@pytest.mark.parametrize("counters", [{"x-delivery-count": 19}, {"x-acquired-count": 19}])
+async def test_settled_execution_at_the_limit_is_skipped_instead_of_dead_lettered(counters):
+    gate, dead_letter = _gate(limit=20)
+    skip = AsyncMock(return_value=Terminal.never_release())
+    gate.skip_if_settled = skip
+    delivery = SimpleNamespace(headers=counters)
+
+    with capture_swarmq_logs() as logs:
+        outcome = await gate.apply(delivery, _ctx())
+
+    assert outcome == Terminal.never_release()
+    skip.assert_awaited_once_with(delivery, ANY)
+    dead_letter.assert_not_awaited()
+    assert [e for e in logs if e["event"] == "delivery_limit_reached_dead_letter"] == []
+
+
+@pytest.mark.timeout(5)
+async def test_unsettled_execution_at_the_limit_still_dead_letters_and_below_it_nothing_is_read():
+    gate, dead_letter = _gate(limit=20)
+    skip = AsyncMock(return_value=Continue)
+    gate.skip_if_settled = skip
+
+    assert await gate.apply(SimpleNamespace(headers={"x-delivery-count": 18}), _ctx()) is Continue
+    skip.assert_not_awaited()
+    outcome = await gate.apply(SimpleNamespace(headers={"x-delivery-count": 19}), _ctx())
+
+    assert outcome == Terminal.already_released()
+    skip.assert_awaited_once()
+    dead_letter.assert_awaited_once()

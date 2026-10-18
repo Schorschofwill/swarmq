@@ -21,6 +21,7 @@ tests:
   - tests/unit/test_identity_sequences.py::test_publish_indeterminate_double_copy_replays_once
   - tests/unit/worker/gates/test_schedfire_replay.py::test_replay_of_a_completed_fire_runs_under_its_own_key
   - tests/unit/worker/gates/test_schedfire_replay.py::test_a_plain_duplicate_fire_keeps_the_key_and_is_skipped
+  - tests/unit/worker/gates/test_execution_guard_skip_if_settled.py::test_a_replay_at_the_limit_reads_its_own_identity
 ---
 
 **Entscheidung.** Die Ausführungsidentität ist `task_id|H#n` (H = `x-swarmq-replay-id`, n = `x-swarmq-xdeath-base` + `x-death`-Zähler außerhalb von Delay-Queues). Ein Replay aus der DLQ hat eine neue Identität und läuft, auch wenn der Done-Marker der ursprünglichen Ausführung steht. Eine normale Neuzustellung derselben Ausführung (gleiche Identität) wird weiter als Duplikat verworfen. Ein Cron-Replay läuft unter dem Schedfire-Key `K|<Identität>`; ein normaler Doppel-Fire behält K und wird verworfen. Wiederholtes `dlq retry` derselben XQ-Nachricht ergibt dieselbe Identität, der zweite Lauf wird verworfen.

@@ -14,7 +14,7 @@ import valkey.asyncio as valkey_asyncio
 from swarmq.backend.valkey.connection import as_backend_error
 from swarmq.backend.valkey.script_pipeline import ScriptPipeline
 from swarmq.contracts import GuardClaim
-from swarmq.contracts.coordination import GuardStatus
+from swarmq.contracts.coordination import GuardSettled, GuardStatus
 from swarmq.exceptions import BackendConnectionError
 from swarmq.keyspace import KeySpace
 from swarmq.lua import load_script
@@ -92,6 +92,18 @@ class ValkeyExecutionGuardStore:
 
     async def release(self, identity: str, *, owner: str) -> None:
         await self._finish(identity, [owner, "release", 0])
+
+    async def peek(self, identity: str, *, retry_count: int) -> GuardSettled | None:
+        """Nur lesen (F4-02): ein ``HMGET`` auf den Zustand, kein Skript --
+        dieselben Vergleiche wie der Anfang von ``guard_claim.lua``."""
+        done, superseded = await self._run(
+            "peek", self._client.hmget(self._keys.guard_state(identity), ["done", "sup"])
+        )
+        if done is not None:
+            return "done"
+        if superseded is not None and retry_count < int(superseded):
+            return "superseded"
+        return None
 
     async def _finish(self, identity: str, args: list[str | int]) -> None:
         await self._run("finish", self._pipeline.call(self._finish_script, self._guard_keys(identity), args))

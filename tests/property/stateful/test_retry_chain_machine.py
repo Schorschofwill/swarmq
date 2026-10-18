@@ -5,7 +5,7 @@ Invarianten und erlaubte Abweichungen stehen im Docstring von
 ``tests/property/stateful/retry_chain_machine.py``. Profil ``quick`` (100
 Beispiele) mit 30 Schritten je Beispiel; die deterministischen Abläufe aus
 ``retry_chain_scenarios.py`` halten die Testszenarien der Einheit fest.
-Nachweise zu F4-02 (R4Z-04) laufen als ``xfail(strict=True)``; R4Z-05 ist
+Die Nachweise zu F4-02 (R4Z-04) sind seit 0.13.0 (U12) grün; R4Z-05 ist
 eine ENTSCHEIDUNG (E-051) und hier festgeschrieben (Register
 ``docs/befunde/fehlersuche-runde-4-2026-10.md``).
 """
@@ -56,9 +56,6 @@ def test_lenient_count_model_is_caught(open_env: OpenEnv) -> None:
 
 
 @pytest.mark.befund("F4-02")
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="F4-02: offen - Zustelllimit-Gate liegt vor dem Ausfuehrungsschutz"
-)
 @pytest.mark.parametrize(
     "nachweis", retry_chain_scenarios.F4_02_NACHWEISE.values(), ids=retry_chain_scenarios.F4_02_NACHWEISE.keys()
 )

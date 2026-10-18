@@ -35,6 +35,8 @@ ACQUIRED_COUNT_HEADER = "x-acquired-count"
 
 # (delivery, ctx, error_message, error_type) — siehe ``RetryHandler.dead_letter``.
 DeadLetter = Callable[[Any, GateContext, str, str], Awaitable[object]]
+# ``ExecutionGuard.skip_if_settled`` (F4-02): ``Continue`` oder der Ausgang des Überspringens.
+SkipIfSettled = Callable[[Any, GateContext], Awaitable[DeliveryOutcome]]
 
 # Fester ``error_type`` fuer ``task_sent_to_dlq``: auf diesem Pfad gibt es
 # keine ausloesende Ausnahme, nur den Zustellzaehler des Brokers.
@@ -72,6 +74,10 @@ class DeliveryCountGate:
     def __init__(self, deps: GateDeps, dead_letter: DeadLetter) -> None:
         self._deps = deps
         self._dead_letter = dead_letter
+        # F4-02 (E-043): erledigte oder überholte Ausführungen am Limit
+        # bestätigen statt Dead-Letter. Die Pipeline bindet den
+        # Ausführungsschutz nach dessen Bau; ohne ihn bleibt es beim Dead-Letter.
+        self.skip_if_settled: SkipIfSettled | None = None
 
     def _limit(self, delivery: Any) -> int:
         """``min(Konfiguration, effektives Limit der Zustellungs-Queue)`` (BZ-15,
@@ -104,6 +110,10 @@ class DeliveryCountGate:
             )
         else:
             return Continue
+        if self.skip_if_settled is not None:
+            settled = await self.skip_if_settled(delivery, ctx)
+            if settled is not Continue:
+                return settled
         logger.error(
             "delivery_limit_reached_dead_letter",
             task_id=ctx.task_id,

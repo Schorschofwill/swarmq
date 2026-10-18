@@ -32,6 +32,15 @@ Review MR 12 (P2-1):
     nächsten Kopie lebt den Rückstand.
 16. Läuft die Ausführung länger als die Zustands-TTL (Hash schon weg),
     legt der ``running``-Claim den Zustand mit dem Rückstand neu an.
+
+Plan 0.13.0, U12 (F4-02, KTD5): ``peek`` liest den Zustand ohne Claim.
+17. Eine frische Identität: ``None``.
+18. Nach ``mark_done``: ``done``, für jeden Retry-Zähler.
+19. Nach ``mark_superseded(n)``: ``superseded`` für einen kleineren Zähler,
+    ``None`` für die Retry-Kopie mit Zähler ``n``.
+20. Ein Running-Marker allein ist kein Abschluss: ``None``; ``peek`` setzt
+    keinen Marker (der nächste Claim gelingt ohne Waise).
+21. Nach Ablauf des Zustands (``state_ttl_ms``): ``None``.
 """
 
 from __future__ import annotations
@@ -280,3 +289,42 @@ class ExecutionGuardStoreContract:
         await impl.mark_done(identity, owner="a", state_ttl_ms=200)
         await clock.advance(0.3)  # ueber die Done-TTL, unter dem Rueckstand
         assert await _claim(impl, identity, "c") == "done"
+
+    async def test_peek_on_a_fresh_identity_reports_nothing(self, impl: ExecutionGuardStore) -> None:
+        assert await impl.peek(_identity(), retry_count=0) is None
+
+    async def test_peek_after_done_reports_done_for_any_retry_count(self, impl: ExecutionGuardStore) -> None:
+        identity = _identity()
+        await _claim(impl, identity, "a")
+        await impl.mark_done(identity, owner="a", state_ttl_ms=STATE_TTL)
+        assert await impl.peek(identity, retry_count=0) == "done"
+        assert await impl.peek(identity, retry_count=5) == "done"
+
+    async def test_peek_after_superseded_reports_only_older_attempts(self, impl: ExecutionGuardStore) -> None:
+        identity = _identity()
+        await _claim(impl, identity, "a")
+        await impl.mark_superseded(identity, owner="a", retry_count=1, state_ttl_ms=STATE_TTL)
+        assert await impl.peek(identity, retry_count=0) == "superseded"
+        assert await impl.peek(identity, retry_count=1) is None
+
+    async def test_peek_ignores_a_running_marker_and_sets_none(self, impl: ExecutionGuardStore) -> None:
+        identity = _identity()
+        assert await impl.peek(identity, retry_count=0) is None
+        claim = await impl.claim(
+            identity,
+            owner="a",
+            retry_count=0,
+            ttl_ms=TTL,
+            state_ttl_ms=STATE_TTL,
+            max_orphans=3,
+        )
+        assert claim == GuardClaim("claimed", orphans=0)
+        assert await impl.peek(identity, retry_count=0) is None
+        assert await _claim(impl, identity, "b") == "running"
+
+    async def test_peek_after_the_state_expired_reports_nothing(self, impl: ExecutionGuardStore, clock: Clock) -> None:
+        identity = _identity()
+        await impl.claim(identity, owner="a", retry_count=0, ttl_ms=TTL, state_ttl_ms=200, max_orphans=3)
+        await impl.mark_done(identity, owner="a", state_ttl_ms=200)
+        await clock.advance(0.4)
+        assert await impl.peek(identity, retry_count=0) is None

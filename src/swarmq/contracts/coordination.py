@@ -347,6 +347,8 @@ class ScheduleStore(Protocol):
 
 
 GuardStatus = Literal["claimed", "done", "superseded", "running", "orphan_limit"]
+# Ergebnis von ``ExecutionGuardStore.peek`` (F4-02, KTD5 Plan 0.13.0).
+GuardSettled = Literal["done", "superseded"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -403,4 +405,10 @@ class ExecutionGuardStore(Protocol):
 
     async def release(self, identity: str, *, owner: str) -> None:
         """Den eigenen Running-Marker löschen (nicht-terminaler Ausgang)."""
+        ...
+
+    async def peek(self, identity: str, *, retry_count: int) -> GuardSettled | None:
+        """Nur lesen, ohne Claim und ohne Marker (F4-02): ``done`` nach
+        ``mark_done``, ``superseded``, wenn der Superseded-Zähler größer als
+        *retry_count* ist, sonst ``None`` (auch bei abgelaufenem Zustand)."""
         ...

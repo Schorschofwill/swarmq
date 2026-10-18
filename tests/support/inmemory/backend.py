@@ -31,6 +31,7 @@ from swarmq.contracts import (
     ResultBackend,
     ScheduleStore,
 )
+from swarmq.contracts.coordination import GuardSettled
 from swarmq.exceptions import BackendConnectionError
 from swarmq.locking import SCHEDULER_LOCK_NAME
 from tests.support.inmemory.clock import FakeClock
@@ -782,6 +783,15 @@ class InMemoryExecutionGuardStore:
 
     async def release(self, identity: str, *, owner: str) -> None:
         self._store(identity, self._finish(identity, owner), None)
+
+    async def peek(self, identity: str, *, retry_count: int) -> GuardSettled | None:
+        state = self._state.get(identity) or {}
+        if state.get("done"):
+            return "done"
+        superseded = state.get("sup")
+        if isinstance(superseded, int) and retry_count < superseded:
+            return "superseded"
+        return None
 
 
 if TYPE_CHECKING:  # Konformitäts-Anker (KTD1)

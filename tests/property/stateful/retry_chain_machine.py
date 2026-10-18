@@ -62,7 +62,7 @@ Invarianten (Quelle):
 - K10 Geht beim Bestätigen der Kanal verloren (``ack`` scheitert bzw.
   ``SettleFailedAfterPublish`` nach der Kopie), setzt der Ausführungsschutz
   trotzdem Done bzw. Superseded; die Neuzustellung des Originals (Broker-
-  Zähler + 1) ist ein Duplikat. Quelle: E-043, E-009,
+  Zähler + 1) ist ein Duplikat, auch am Zustelllimit (F4-02). Quelle: E-043, E-009,
   ``worker/guarded_broker.py`` (Docstrings von ``ack`` und ``retry_later``).
 
 Erlaubte Abweichungen (KTD3):
@@ -81,11 +81,11 @@ Erlaubte Abweichungen (KTD3):
 - E-009 (Bewusste Folgen): Ein UI-Move ohne Replay-ID (0.11-Altbestand)
   wird als Duplikat verworfen.
 
-Keine erlaubte Abweichung, sondern Teil von F4-02 (R4Z-04): Ein
+Bekannte Grenze (KD5, Plan 0.13.0, Restlücke zu E-043): Ein
 Zustelllimit-Dead-Letter liegt vor dem Ausführungsschutz und setzt keinen
-Done-Marker (``gates/delivery_count.py``, kein Claim); eine weitere Kopie
-derselben Identität läuft danach. K7 zählt diese DLQ-Kopien deshalb nicht
-mit (Kommentar in ``one_guarded_dead_letter_per_identity``).
+Done-Marker (``gates/delivery_count.py`` liest nur, kein Claim); eine
+weitere Kopie derselben Identität läuft danach. K7 zählt diese DLQ-Kopien
+deshalb nicht mit (Kommentar in ``one_guarded_dead_letter_per_identity``).
 
 Nicht nachgebildet: Locks (Lock-Maschine U6), ``max_age``, Workflows,
 Unique-Flags, Drain-Abbruch (E-001), Backend-Ausfall.
@@ -94,11 +94,10 @@ Befunde und Entscheidungen (Register
 ``docs/befunde/fehlersuche-runde-4-2026-10.md``; Bericht
 ``1-zustandsmodelle.md``, Abschnitt U9):
 
-- F4-02 (R4Z-04) verletzt K10: Am Zustelllimit schickt das Delivery-Count-Gate, das
-  vor dem Ausführungsschutz liegt, die Neuzustellung einer abgeschlossenen
-  oder überholten Ausführung in die DLQ und speichert ein Fehlerergebnis.
-  Ausgeklammert an ``deliver_some`` über ``deliverable`` und die
-  Vorbedingung (Kommentar ``F4-02 (R4Z-04)``); Nachweis ``r4z_04_*`` in
+- F4-02 (R4Z-04), behoben in 0.13.0 (U12): Am Zustelllimit liest das
+  Delivery-Count-Gate den Ausführungsschutz und bestätigt die Neuzustellung
+  einer abgeschlossenen oder überholten Ausführung wie dieser (K10), statt
+  sie in die DLQ zu schicken. Nachweis ``r4z_04_*`` in
   ``retry_chain_scenarios.py``.
 - R4Z-05 ist eine ENTSCHEIDUNG (E-051): Das Modell folgt dem Code (eine per
   UI mit Text-Zähler neu publizierte Retry-Kopie gilt als überholt und wird
@@ -317,7 +316,6 @@ class Expect:
     guard_defer_attempt: int | None = None
     rate_limit_count: int | None = None
     settle_lost: bool = False
-    suspect: str | None = None
 
 
 @dataclass(eq=False)
@@ -679,15 +677,14 @@ class RetryChainMachine(AsyncStateMachine[ChainEnv]):
         threshold = DELIVERY_LIMIT - 1
         identity, rc = model_identity(headers, task_id), self._rc(pending)
         state = self.guard.get(identity, GuardState())
-        if (delivered is not None and delivered >= threshold) or (acquired is not None and acquired >= threshold):
+        at_the_limit = (delivered is not None and delivered >= threshold) or (
+            acquired is not None and acquired >= threshold
+        )
+        if at_the_limit and not state.done and not (state.sup is not None and rc < state.sup):
             # Vor dem Ausführungsschutz: kein Claim, also auch kein Done-Marker.
-            expect = self._dead(Expect("dead_letter", "delivery_limit"), None, copy_failure=copy_failure)
-            if state.done or (state.sup is not None and rc < state.sup):
-                # F4-02 (R4Z-04): eine Neuzustellung einer abgeschlossenen bzw. überholten
-                # Ausführung ist laut E-009/E-043 ein Duplikat; das Gate vor dem
-                # Ausführungsschutz schickt sie in die DLQ.
-                expect.suspect = "R4Z-04"
-            return expect
+            # Erledigte oder überholte Ausführungen bestätigt das Gate dagegen
+            # wie der Ausführungsschutz (F4-02, E-043): weiter unten.
+            return self._dead(Expect("dead_letter", "delivery_limit"), None, copy_failure=copy_failure)
         if state.done:
             return Expect("ack", "done")
         if state.sup is not None and rc < state.sup:
@@ -779,7 +776,6 @@ class RetryChainMachine(AsyncStateMachine[ChainEnv]):
         """Eine Zustellung durch die echte Pipeline samt Prüfung von K1 bis K10."""
         assert not (copy_failure and lose_settle)
         expect = self.predict(pending, act, copy_failure=copy_failure)
-        assert expect.suspect is None, f"{pending} {act}: {expect.suspect} (K10) -- siehe r4z_04_*"
         expect.settle_lost = lose_settle and expect.verb in ("ack", "retry_later", "dead_letter")
         worker = {"child_death": self.cpu, "crash": self.doomed}.get(act.kind, self.io)
         runs_before = len(self.runs)
@@ -895,27 +891,16 @@ class RetryChainMachine(AsyncStateMachine[ChainEnv]):
     def publish_task(self) -> None:
         self.publish()
 
-    def deliverable(self) -> list[Pending]:
-        """Wartende Zustellungen ohne bekannten Verdacht.
-
-        F4-02 (R4Z-04): die Neuzustellung einer abgeschlossenen oder
-        überholten Ausführung am Zustelllimit bleibt liegen, statt die
-        Maschine rot zu färben; Nachweis ``r4z_04_*`` in
-        ``retry_chain_scenarios.py``. Ausgeklammert an der auslösenden Regel
-        über Auswahl und Vorbedingung an ``deliver_some``, nie mit ``assume()`` (KTD3)."""
-        return [p for p in self.pending if self.predict(p, Act("ok"), copy_failure=False).suspect is None]
-
-    @precondition(lambda self: bool(self.deliverable()))
+    @precondition(lambda self: bool(self.pending))
     @rule(data=st.data(), count=st.integers(min_value=1, max_value=6))
     def deliver_some(self, data: st.DataObject, count: int) -> None:
         """Eine bis sechs Zustellungen nacheinander, jede mit eigener Wirkung
         und Störung. Mehrere je Regel, damit Ketten (Waisen, Zustelllimit,
         Rate-Limit) auch im Profil ``quick`` tief genug werden."""
         for _ in range(count):
-            choices = self.deliverable()
-            if not choices:
+            if not self.pending:
                 return
-            pending = data.draw(st.sampled_from(choices), label="delivery")
+            pending = data.draw(st.sampled_from(self.pending), label="delivery")
             kind = data.draw(st.sampled_from(DELIVER_KINDS), label="kind")
             delay = data.draw(st.sampled_from(RETRY_DELAYS), label="delay") if kind == "retry" else None
             fault = data.draw(st.sampled_from(FAULTS), label="fault") if kind != "crash" else None
@@ -965,17 +950,17 @@ class RetryChainMachine(AsyncStateMachine[ChainEnv]):
     def advance_time(self, seconds: int) -> None:
         self.advance(seconds)
 
-    @precondition(lambda self: bool(self.deliverable()))
+    @precondition(lambda self: bool(self.pending))
     @rule(data=st.data())
     def crash_cycle(self, data: st.DataObject) -> None:
         """Absturzzyklus in einem Schritt: Worker stirbt in der Ausführung,
         die Neuzustellung kommt sofort (zurückgestellt, solange der
         Running-Marker steht), danach läuft der Marker ab. Macht Waisen und
         die Waisengrenze im Profil ``quick`` erreichbar."""
-        pending = data.draw(st.sampled_from(self.deliverable()), label="delivery")
+        pending = data.draw(st.sampled_from(self.pending), label="delivery")
         known = set(map(id, self.pending))
         self.deliver(pending, Act("crash"))
-        for back in [p for p in self.deliverable() if id(p) not in known]:
+        for back in [p for p in self.pending if id(p) not in known]:
             self.deliver(back, Act("ok"))
         self.advance(GUARD_TTL_MS // 1000 + 1)
 
@@ -1059,10 +1044,11 @@ class RetryChainMachine(AsyncStateMachine[ChainEnv]):
     def one_guarded_dead_letter_per_identity(self) -> None:
         """K7: hinter dem Ausführungsschutz höchstens eine DLQ-Kopie je Identität."""
         for identity, reasons in self.dlq_by_identity.items():
-            # Ausgenommen, nicht erlaubt: Zustelllimit-DLQs liegen vor dem
-            # Ausführungsschutz und setzen keinen Done-Marker, eine weitere
-            # Kopie derselben Identität läuft danach. Teilaspekt von F4-02
-            # (R4Z-04); siehe Bericht 1-zustandsmodelle.md, U9.
+            # Ausgenommen, bekannte Grenze (KD5, Plan 0.13.0; E-043): Zustelllimit-DLQs
+            # liegen vor dem Ausführungsschutz und setzen keinen Done-Marker
+            # (kleine Variante von F4-02: nur lesen, kein Claim); eine weitere
+            # Kopie derselben Identität läuft danach. Erledigte oder überholte
+            # Ausführungen bestätigt das Gate seit U12 statt Dead-Letter.
             guarded = [reason for reason in reasons if reason != "delivery_limit"]
             assert len(guarded) <= 1, f"{identity}: DLQ-Kopien {reasons} (K7)"
 
