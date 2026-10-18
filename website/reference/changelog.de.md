@@ -81,14 +81,20 @@ ein Deployment stoppen, und mehrere Log-Stufen haben sich geändert.
    (F4-15). `publish_channel_close_incomplete` loggt während eines
    Ressourcenalarms des Brokers ohne Traceback und mit `blocked=True`
    (PF-19 b).
-5. **Ein gescheitertes Ergebnis-Speichern belegt den Slot bis rund
-   35 s.** Für `AT_LEAST_ONCE`-Tasks wiederholt der Worker das
+5. **Ein gescheitertes Ergebnis-Speichern belegt den Slot rund 30 bis
+   40 s.** Für `AT_LEAST_ONCE`-Tasks wiederholt der Worker das
    Speichern eines terminalen Ergebnisses (Erfolg, Fehler ohne
    Dead-Letter, Abbruch) jetzt bis zu fünfmal mit Wartezeiten von 1, 2,
-   4 und 8 s, bevor er die Nachricht neu zustellt; mit dem Standardwert
-   von `SWARMQ_BACKEND_OP_TIMEOUT` sind das rund 35 s Wanduhrzeit (mit
-   Jitter höchstens 38 s), gedeckelt durch `SWARMQ_CONSUMER_TIMEOUT_S`
-   und das Drain-Ende. So lange bleibt der Slot belegt, und der Worker
+   4 und 8 s, bevor er die Nachricht neu zustellt. Wie lange das
+   dauert, hängt vom Ausfall ab. Weist Valkey die Verbindung sofort ab
+   („Error 111 connecting“), endet jeder Versuch nach der eigenen
+   Verbindungswiederholung des Valkey-Clients von 3,1 s: rund 27 s nach
+   dem ersten gescheiterten Versuch (mit Jitter 24 bis 30 s), rund 30 s
+   ab dem ersten Versuch. Läuft jeder Versuch in den Standardwert von
+   `SWARMQ_BACKEND_OP_TIMEOUT` von 5 s (Valkey hängt), sind es rund
+   35 s nach dem ersten gescheiterten Versuch (mit Jitter höchstens
+   38 s), rund 40 s ab dem ersten Versuch (höchstens 43 s). Beides ist
+   gedeckelt durch `SWARMQ_CONSUMER_TIMEOUT_S` und das Drain-Ende. So lange bleibt der Slot belegt, und der Worker
    konsumiert weniger. Ein Valkey-Ausfall innerhalb dieses Fensters
    lässt einen erfolgreichen Task nicht mehr ein zweites Mal laufen.
    Neue Events `result_store_retrying` (WARNING, gedrosselt) und

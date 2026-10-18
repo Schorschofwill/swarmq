@@ -17,6 +17,10 @@ Testliste:
 #     Wartesumme (vier Wartezeiten), kein Ack
 # [x] Wanduhr: mit backend_op_timeout je Versuch bleibt die Zeit nach dem
 #     ersten Fehlschlag unter 4 * op_timeout + 15 s * 1,2
+# [x] Wanduhr bei sofort abgewiesener Verbindung: jeder Versuch endet nach dem
+#     Wiederholfenster des Clients (3,1 s), nicht nach op_timeout -- nach dem
+#     ersten Fehlschlag 4 * 3,1 s + Wartezeiten (Charakterisierung, Loadsuite
+#     0.13.0rc1)
 # [x] consumer_timeout_s deckelt frueher: redeliver vor der Frist (inkl.
 #     op_timeout des nächsten Versuchs)
 # [x] Frist schon beim ersten Fehlschlag knapp: keine Wartezeit, sofort redeliver
@@ -192,6 +196,49 @@ async def test_wall_clock_stays_bounded_when_every_attempt_runs_into_the_op_time
 
     assert result_store_clock.now - failed_first_at[0] <= 4 * op_timeout + 15.0 * 1.2
     broker.redeliver.assert_awaited_once()
+
+
+# Wiederholfenster des Valkey-Clients bei abgewiesener TCP-Verbindung: fünf
+# TCP-Wiederholungen mit 0,1 + 0,2 + 0,4 + 0,8 + 1,6 s, dann der Fehler
+# (festgeschrieben in ``tests/unit/backend/test_valkey_handshake_retry.py::
+# test_refused_tcp_is_retried_five_times_without_outer_retry``). Es liegt unter
+# ``backend_op_timeout`` (5 s), ein Versuch läuft also nicht in die Frist.
+_REFUSED_ATTEMPT_S = 3.1
+
+
+@pytest.mark.entscheidung("E-072")
+async def test_wall_clock_when_valkey_refuses_every_connection_at_once(broker, backend, config, result_store_clock):
+    """Valkey weist jede Verbindung sofort ab ("Error 111 connecting"): jeder
+    Versuch endet nach dem Wiederholfenster des Clients. Nach dem ersten
+    Fehlschlag kommen vier Versuche und vier Wartezeiten dazu -- nominell
+    4 * 3,1 s + 15 s = 27,4 s (mit Jitter 24,4 ... 30,4 s), ab dem ersten
+    Versuch 30,5 s (27,5 ... 33,5 s). Gemessen in der Loadsuite-Abnahme
+    0.13.0rc1: rund 29-30 s ab Ausfallbeginn.
+
+    Charakterisierung: schreibt bestehendes Verhalten fest, war beim ersten
+    Lauf grün."""
+    assert config.backend_op_timeout > _REFUSED_ATTEMPT_S
+    started_at = result_store_clock.now
+    failed_at: list[float] = []
+
+    async def refused_store(*_a: Any, **_k: Any) -> None:
+        result_store_clock.now += _REFUSED_ATTEMPT_S
+        failed_at.append(result_store_clock.now)
+        raise BackendConnectionError("Error 111 connecting to valkey:6379. Connection refused.")
+
+    backend.store_result = AsyncMock(side_effect=refused_store)
+    tail, _ = _tail(broker, backend, config)
+
+    outcome = await tail.finish(make_message(_default_payload(name="store-retry")), _ctx(), _execution())
+
+    assert outcome is Redelivered
+    assert len(failed_at) == 5
+    waits = sum(result_store_clock.delays)
+    after_first_failure = result_store_clock.now - failed_at[0]
+    assert after_first_failure == pytest.approx(4 * _REFUSED_ATTEMPT_S + waits)
+    assert 4 * _REFUSED_ATTEMPT_S + 15.0 * 0.8 <= after_first_failure <= 4 * _REFUSED_ATTEMPT_S + 15.0 * 1.2
+    since_first_attempt = result_store_clock.now - started_at
+    assert 5 * _REFUSED_ATTEMPT_S + 15.0 * 0.8 <= since_first_attempt <= 5 * _REFUSED_ATTEMPT_S + 15.0 * 1.2
 
 
 @pytest.mark.entscheidung("E-072")

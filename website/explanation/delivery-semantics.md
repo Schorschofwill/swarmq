@@ -301,9 +301,15 @@ cancelled), but Valkey does not take its result. Ack-after-store means
 the worker must not ack yet. Since 0.13.0 it retries the store itself
 for `AT_LEAST_ONCE` tasks: up to five attempts with waits of nominally
 1, 2, 4 and 8 s (±20 %, the backoff of `SWARMQ_BACKEND_DEFER_BASE_DELAY`),
-each attempt bounded by `SWARMQ_BACKEND_OP_TIMEOUT` (5 s). After the first
-failed attempt the retry therefore takes nominally about 35 s at most,
-with jitter at most 38 s. The next attempt only starts if it ends before
+each attempt bounded by `SWARMQ_BACKEND_OP_TIMEOUT` (5 s). How long the
+retry takes after the first failed attempt depends on the outage: if
+Valkey refuses the connection at once, each attempt ends after the
+Valkey client's connect retry of 3.1 s, nominally about 27 s (24 to 30 s
+with jitter, about 30 s counted from the first attempt); if every attempt
+runs into `SWARMQ_BACKEND_OP_TIMEOUT`, nominally about 35 s, with jitter
+at most 38 s (about 40 s, at most 43 s, from the first attempt). An
+outage that ends right at the end of this chain can still cause a
+second run for some tasks. The next attempt only starts if it ends before
 `SWARMQ_CONSUMER_TIMEOUT_S`, counted from the delivery, and the drain
 end of a shutdown stops the retry. The task slot stays taken meanwhile.
 The worker logs `result_store_retrying` and, on success,

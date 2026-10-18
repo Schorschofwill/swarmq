@@ -78,13 +78,19 @@ the upgrade notes: cron expressions and configuration values that
    instead of ERROR `retry_publish_failed` (F4-15).
    `publish_channel_close_incomplete` during a broker resource alarm
    logs without a traceback and with `blocked=True` (PF-19 b).
-5. **A failed result store holds the slot for up to about 35 s.**
+5. **A failed result store holds the slot for about 30 to 40 s.**
    For `AT_LEAST_ONCE` tasks the worker now retries storing a terminal
    result (success, failure without dead-letter, cancellation) up to
    five times with waits of 1, 2, 4 and 8 s before it redelivers the
-   message; with the default `SWARMQ_BACKEND_OP_TIMEOUT` that is about
-   35 s of wall clock (at most 38 s with jitter), capped by
-   `SWARMQ_CONSUMER_TIMEOUT_S` and the drain end. The slot stays
+   message. How long that takes depends on the outage. If Valkey
+   refuses the connection at once ("Error 111 connecting"), each
+   attempt ends after the Valkey client's own connect retry of 3.1 s:
+   about 27 s after the first failed attempt (24 to 30 s with jitter),
+   about 30 s counted from the first attempt. If every attempt runs
+   into the default `SWARMQ_BACKEND_OP_TIMEOUT` of 5 s (Valkey hangs),
+   it is about 35 s after the first failed attempt (at most 38 s with
+   jitter), about 40 s from the first attempt (at most 43 s). Both are
+   capped by `SWARMQ_CONSUMER_TIMEOUT_S` and the drain end. The slot stays
    occupied meanwhile, and the worker consumes less. A Valkey outage
    within the window no longer runs a successful task a second time.
    New events `result_store_retrying` (WARNING, throttled) and
