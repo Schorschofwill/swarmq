@@ -38,6 +38,9 @@ Test-Liste FS-12 (Pre-Start-Cancel eines Workflow-Schritts, E-040):
 - [x] unbekannter Task als Schritt -> Markierung ohne Neuzustellung
 - [x] mit FS-13 im start-Modus: Reihenfolge ``fail -> store -> clear ->
       finalize -> release -> ack``; scheiterndes Ack -> Neuzustellung idempotent
+- [x] ``GateDeps`` ohne ``fail_workflow`` (``None`` = keine Markierung) ->
+      Cancel-Pfad wie nach gelungener Markierung: Cancel-Ergebnis, Flag
+      verkuerzt, Ack, ``TASK_CANCELLED``, ``already_released``
 """
 
 from __future__ import annotations
@@ -795,6 +798,33 @@ class TestPreStartCancelFailsWorkflow:
         assert backend.store_result.await_count == 2
         assert decode_result(backend.store_result.await_args.args[1])["is_cancelled"] is True
         broker.ack.assert_awaited_once_with(copy)
+
+    async def test_without_fail_hook_the_step_cancel_ends_like_a_marked_one(self, worker, broker, backend):
+        """``GateDeps.fail_workflow`` ist optional (``None`` = keine Markierung):
+        der Schritt-Cancel endet dann wie nach gelungener Markierung, ohne
+        Neuzustellung."""
+        backend.is_cancelled = AsyncMock(return_value=True)
+        backend.get_result = AsyncMock(return_value=None)
+        advancer = self._advancer(worker)
+        worker._gate_deps.fail_workflow = None
+        cancelled: list[dict[str, Any]] = []
+
+        async def _cap(**kw: Any) -> None:
+            cancelled.append(kw)
+
+        worker._signal_dispatcher.connect(Signal.TASK_CANCELLED, _cap)
+        msg = self._step_message()
+        ctx = GateContext(task_id="step-1", task_name="add", queue="default")
+
+        assert await worker._cancel_gate.apply(msg, ctx) == Terminal.already_released()
+
+        advancer.fail.assert_not_awaited()
+        assert decode_result(backend.store_result.await_args.args[1])["is_cancelled"] is True
+        backend.clear_cancel_flag.assert_awaited_once_with("step-1", op_timeout=5.0)
+        broker.ack.assert_awaited_once_with(msg)
+        broker.retry_later.assert_not_awaited()
+        broker.redeliver.assert_not_awaited()
+        assert cancelled == [{"task_id": "step-1", "task_name": "add", "queue": "default"}]
 
     async def test_workflow_cancel_path_does_not_fail_the_workflow(self, worker, broker, backend):
         backend.is_cancelled = AsyncMock(return_value=False)

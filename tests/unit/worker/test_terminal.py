@@ -23,6 +23,9 @@ Test-Liste:
 - [x] Lesen des Ergebnisses scheitert -> Markierung (wie bisher)
 - [x] P9 (Plan 2026-10-12-1105, MR 3, T13): ``error_class`` geht nur mit Wert
       als Keyword an ``fail``; ohne Wert bleibt der Aufruf wie bisher
+- [x] Markierung scheitert voruebergehend und das Neuzustellen scheitert auch ->
+      kein Absturz des Aufrufers, ``False``, genau eine ERROR-Zeile
+      ``workflow_fail_mark_failed`` (Redeliver best effort)
 """
 
 from __future__ import annotations
@@ -218,3 +221,19 @@ async def test_transient_fail_mark_after_an_unroutable_catch_up(redeliver: bool,
     assert await _fail(deps, advancer, redeliver=redeliver) is expected
 
     assert deps.broker.redeliver.await_count == int(redeliver)
+
+
+async def test_failing_redelivery_after_a_transient_fail_mark_does_not_crash_or_log_twice() -> None:
+    """Das Neuzustellen ist best effort: scheitert es auch, endet der Aufrufer
+    nicht-terminal (``False``) statt mit der Ausnahme, und die schon geloggte
+    Markierungs-Zeile bleibt die einzige."""
+    advancer = MagicMock(fail=AsyncMock(side_effect=BackendConnectionError("valkey down")))
+    redeliver_with = AsyncMock(side_effect=BrokerConnectionError("publish nacked"))
+
+    with capture_swarmq_logs() as logs:
+        assert await _fail(_deps(None), advancer, redeliver_with=redeliver_with) is False
+
+    redeliver_with.assert_awaited_once()
+    errors = [e for e in logs if e["log_level"] == "error"]
+    assert [e["event"] for e in errors] == ["workflow_fail_mark_failed"]
+    assert errors[0]["redelivered"] is True

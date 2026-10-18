@@ -38,6 +38,11 @@ Test-Liste Plan 0.12.0, MR 6 (BZ-03, Q14):
 17. [x] ``UnroutableMessage`` aus ``advance``: Workflow sofort fail-markiert,
     Ack, kein Redeliver (die Queue des naechsten Schritts fehlt).
 18. [x] Fail-Mark scheitert transient: Redeliver wie bei jedem Fail-Mark.
+
+Abdeckung MR !99 (Schrittpfad-Header):
+
+19. [x] Schrittpfad-Header ist kein ``str`` (fremder Producer, AMQP-Typen) ->
+    Advance mit ``""``, Ack wie bei einem gueltigen Pfad.
 """
 
 from __future__ import annotations
@@ -501,3 +506,18 @@ async def test_unroutable_advance_with_transient_fail_mark_error_is_redelivered(
     assert outcome is Redelivered
     broker.redeliver.assert_awaited_once_with(msg)
     broker.ack.assert_not_awaited()
+
+
+@pytest.mark.parametrize("step_header", [1, b"/1", None], ids=["int", "bytes", "none"])
+async def test_non_string_step_path_header_advances_with_an_empty_path(broker, backend, config, step_header):
+    tail, worker = _tail(broker, backend, config)
+    msg = make_message(
+        _default_payload(name="tail-task"), headers={HEADER_WORKFLOW_ID: _WF_ID, HEADER_WORKFLOW_STEP: step_header}
+    )
+
+    outcome = await tail.finish(msg, _ctx(), _execution())
+
+    assert outcome == Terminal.release_in_finally()
+    worker._workflow_advancer.advance.assert_awaited_once_with(_WF_ID, "", "abc-123", "ok")
+    worker._workflow_advancer.fail.assert_not_awaited()
+    broker.ack.assert_awaited_once_with(msg)

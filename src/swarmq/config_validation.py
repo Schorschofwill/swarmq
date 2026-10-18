@@ -291,8 +291,7 @@ class ConfigValidation:
 
     def _validate_publish_stepdown(self) -> None:
         stepdown = self.scheduler_publish_stepdown_s
-        if stepdown is None:
-            return
+        assert stepdown is not None  # Default (scheduler_lock_ttl) in __post_init__
         # Vergleich statt ``math.isfinite``: ``nan`` und ``inf`` fallen durch, und
         # ein int über float_info.max wird nicht in float umgewandelt (E-063).
         if not 0 <= stepdown <= MAX_DEADLINE_S:
