@@ -290,8 +290,12 @@ class WorkerLifecycle:
         # Fremdbroker ohne ``consumer_gaps`` bekommt den Check nicht.
         gaps = getattr(self._broker, "consumer_gaps", None)
         if gaps is not None:
+            # PF-20 (E-083): beim Broker fehlende Queues nennt ``/ready`` sofort.
             checks["consumers"] = consumer_check(
-                gaps, self._config.consumed_queues, grace_s=self._config.consumer_ready_grace_s
+                gaps,
+                self._config.consumed_queues,
+                grace_s=self._config.consumer_ready_grace_s,
+                missing=getattr(self._broker, "consumer_missing_queues", None),
             )
         return checks
 

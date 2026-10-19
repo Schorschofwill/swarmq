@@ -19,6 +19,14 @@ Zwei Wege:
   (``_RobustConnection__channels``); fehlt es, gilt fail-open wie beim
   Blocked-Zustand (E-025): Der Kanal kann nach einem Reconnect wieder
   aufgehen wie vor 0.14, einmal je Verbindung meldet das eine WARNING.
+
+Dazu die Restore-Liste der Queues eines ``RobustChannel`` (PF-20, E-083):
+``RobustChannel._on_open`` deklariert nach jedem Reconnect jede Queue aus
+``_queues`` passiv neu. Fehlt eine konsumierte Queue beim Broker, scheitert das
+an NOT_FOUND, schliesst den Consume-Kanal und laesst den Reconnect endlos
+scheitern. ``release_queue`` nimmt sie aus der Liste, ``readmit_queue`` legt sie
+zurueck, sobald es sie wieder gibt. ``_queues`` ist privat; fehlt es, gilt
+fail-open mit einer WARNING je Kanal (Reconnect-Schleife wie vor 0.14).
 """
 
 from __future__ import annotations
@@ -33,9 +41,12 @@ from swarmq.logging import get_logger
 logger = get_logger(__name__)
 
 _CHANNELS_ATTR = "_RobustConnection__channels"
+_QUEUES_ATTR = "_queues"
 
 #: Verbindungen, deren ``WeakSet`` schon als unlesbar gemeldet ist.
 _unreadable_reported: weakref.WeakSet[Any] = weakref.WeakSet()
+#: Kanaele, deren Restore-Liste schon als unlesbar gemeldet ist.
+_queues_unreadable_reported: weakref.WeakSet[Any] = weakref.WeakSet()
 
 
 def open_throwaway_channel(connection: aio_pika.abc.AbstractConnection) -> aio_pika.abc.AbstractChannel:
@@ -74,3 +85,41 @@ def release_channel(connection: object, channel: object) -> None:
             "channel may be reopened after a reconnect and stay open at the broker (fail-open)"
         ),
     )
+
+
+def release_queue(queue: Any, name: str) -> None:
+    """Nimmt ``queue`` aus der Restore-Liste ihres Kanals: Ein Reconnect
+    deklariert sie nicht mehr passiv neu (PF-20, E-083)."""
+    registry = _restore_registry(queue.channel)
+    if registry is None:
+        return
+    members = registry.get(name, set())
+    members.discard(queue)
+    if not members:
+        registry.pop(name, None)
+
+
+def readmit_queue(queue: Any, name: str) -> None:
+    """Legt ``queue`` zurueck in die Restore-Liste ihres Kanals, sobald es sie
+    beim Broker wieder gibt (Gegenstueck zu ``release_queue``)."""
+    registry = _restore_registry(queue.channel)
+    if registry is not None:
+        registry.setdefault(name, set()).add(queue)
+
+
+def _restore_registry(channel: object) -> dict[str, set[Any]] | None:
+    """``RobustChannel._queues`` oder ``None``; fehlt es an einem
+    ``RobustChannel``, eine WARNING je Kanal (fail-open)."""
+    registry: object = getattr(channel, _QUEUES_ATTR, None)
+    if isinstance(registry, dict):
+        return cast("dict[str, set[Any]]", registry)
+    if isinstance(channel, aio_pika.RobustChannel) and channel not in _queues_unreadable_reported:
+        _queues_unreadable_reported.add(channel)
+        logger.warning(
+            "robust_queue_release_unavailable",
+            hint=(
+                "cannot read the queue list of aio-pika's RobustChannel; a reconnect declares a deleted "
+                "consumed queue again and fails on NOT_FOUND until the worker restarts (fail-open)"
+            ),
+        )
+    return None

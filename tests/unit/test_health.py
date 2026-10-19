@@ -17,6 +17,8 @@ import asyncio
 import json
 import socket
 
+import pytest
+
 from swarmq.health import HealthChecker, consumer_check, serve_health
 from tests.support.inmemory import FakeClock, InMemoryBackend, InMemoryBroker
 
@@ -308,4 +310,18 @@ class TestConsumerCheck:
         assert await check() == (False, "no active consumer for more than 30.0s: q1.high")
 
         gaps["q1.high"] = 0.0
+        assert await check() == (True, None)
+
+    @pytest.mark.entscheidung("E-083")
+    async def test_a_queue_missing_at_the_broker_is_not_ready_at_once_and_named(self):
+        """PF-20 (E-083): eine gelöschte konsumierte Queue macht sofort nicht
+        bereit, ohne Gnadenfrist, und ``/ready`` nennt sie."""
+        missing: list[str] = ["q1.high"]
+        check = consumer_check(
+            lambda: {"q1": 0.0, "q1.high": 0.5}, ["q1", "q1.high"], grace_s=30.0, missing=lambda: missing
+        )
+
+        assert await check() == (False, "consumed queue missing at the broker: q1.high")
+
+        missing.clear()
         assert await check() == (True, None)
