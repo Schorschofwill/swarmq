@@ -1,4 +1,4 @@
-"""Virtuelle Uhr fuer Scheduler-Tests (FS-31): eine eigene Event-Loop, deren
+"""Virtuelle Uhr fuer Tests mit Wartezeiten (FS-31): eine eigene Event-Loop, deren
 ``time()`` beim Warten vorspringt. 30 s Wartezeit kosten nur Millisekunden."""
 
 from __future__ import annotations

@@ -11,9 +11,8 @@ unterbricht den Drain nicht.
 Zeit ist skaliert (wie ``test_recycling_drain_end.py``); die SIGTERM-Zeitpunkte
 kommen per ``call_later`` statt per Sleep. Alle Tests laufen auf einer
 virtuellen Uhr (``run_virtual``, 0.13.1): Die Loop-Zeit springt nur vor, wenn
-die Loop wartet, Planungsverzug unter Last verschiebt keine Messung mehr
-(vorher riss ``test_sigterm_before_a_short_recycling_drain_keeps_the_earlier_end``
-in CI-Pipeline 2961982166 sein 40-ms-Fenster mit 105 ms).
+die Loop wartet; Planungsverzug unter Last verschiebt keine Messung, Fristen
+treffen bis auf Rundung genau (``_VIRTUAL_EPS``).
 
 Testliste:
 - [x] SIGTERM im Recycling-Drain: Abbruch bei SIGTERM + drain_until, Fehlerpfad
@@ -52,13 +51,15 @@ from swarmq.task import Task, TaskInfo
 from swarmq.worker import WorkerState, recycling
 from swarmq.worker import lifecycle as _lc
 from tests.support.messages import make_message
-from tests.unit.scheduler._virtual_time import run_virtual
+from tests.support.virtual_time import run_virtual
 from tests.unit.worker._helpers import _default_payload
 
 # Die Zeitbudgets laufen auf der virtuellen Uhr; ein serieller Durchgang
 # (``timing``) ist deshalb nicht mehr noetig.
 pytestmark = [pytest.mark.timeout(5)]
 
+# Fenster nur noch im Test mit ``entscheidung``-Marker (E-018), dessen
+# Assertions unveraendert bleiben.
 _EPS = 0.005
 # Auf der virtuellen Uhr (``run_virtual``) steht die Zeit, solange die Loop
 # arbeitet: Fristen treffen bis auf Rundung genau.
@@ -208,10 +209,10 @@ def test_a_second_sigterm_does_not_move_the_anchor(worker: Any, broker: Any) -> 
         assert cancelled.is_set()
         # Das Aufraeumen endet im Budget ab dem ersten SIGTERM (sonst laege es
         # hinter dem SIGKILL, den der Supervisor ab seinem Abbau rechnet).
-        assert worker._shutdown_end <= first + finish_by + _EPS
+        assert worker._shutdown_end == pytest.approx(first + finish_by, abs=_VIRTUAL_EPS)
         deadlines = [d for d in _deadlines(broker) if d is not None]
         assert deadlines == sorted(deadlines, reverse=True), "die Endfrist darf nie spaeter werden"
-        assert abs(deadlines[-1] - (first + drain_until)) < _EPS
+        assert deadlines[-1] == pytest.approx(first + drain_until, abs=_VIRTUAL_EPS)
 
     run_virtual(scenario)
 
@@ -232,7 +233,7 @@ def test_sigterm_before_the_drain_starts_anchors_the_drain_end(worker: Any, brok
         assert task.cancelled()
         first = _deadlines(broker)[0]
         assert first is not None
-        assert sigterm + drain_until - _EPS <= first < sigterm + drain_until + _EPS
+        assert first == pytest.approx(sigterm + drain_until, abs=_VIRTUAL_EPS)
 
     run_virtual(scenario)
 
@@ -261,20 +262,19 @@ def test_a_late_sigterm_never_extends_a_short_recycling_drain(worker: Any, broke
 
         assert sigterms
         assert task.cancelled()
-        # Obergrenze ist das Ende, das ein verlaengernder SIGTERM ergaebe; auf
-        # der virtuellen Uhr faellt der Abbruch genau auf die Recycling-Frist.
-        assert started + 0.05 - _EPS <= cancelled_at[0] < sigterms[0] + drain_until
+        # Der Abbruch faellt genau auf die Recycling-Frist, nicht auf das
+        # spaetere Ende ab SIGTERM.
+        assert started + 0.05 < sigterms[0] + drain_until  # Vorbedingung
         assert cancelled_at == [pytest.approx(started + 0.05, abs=_VIRTUAL_EPS)]
         deadlines = [d for d in _deadlines(broker) if d is not None]
-        assert abs(deadlines[0] - (started + 0.05)) < _EPS
+        assert deadlines[0] == pytest.approx(started + 0.05, abs=_VIRTUAL_EPS)
         assert max(deadlines) == deadlines[0], "die Endfrist darf nie spaeter werden"
 
     run_virtual(scenario)
 
 
 def test_sigterm_before_a_short_recycling_drain_keeps_the_earlier_end(worker: Any, broker: Any) -> None:
-    """Virtuelle Uhr: der Abbruch faellt genau auf das Ende der Recycling-Frist
-    (CI-Pipeline 2961982166 riss das 40-ms-Fenster der echten Uhr mit 105 ms)."""
+    """Der Abbruch faellt genau auf das Ende der Recycling-Frist."""
 
     async def scenario() -> None:
         worker._config.shutdown_timeout = 0.08
@@ -310,9 +310,8 @@ def channel() -> Iterator[sv.SupervisorChannel]:
 def test_sigterm_while_waiting_for_the_recycle_ack_keeps_the_budget(
     worker: Any, broker: Any, channel: sv.SupervisorChannel, swarmq_logs: list[dict[str, Any]]
 ) -> None:
-    """Laufzeit rund 0,15 s: ``request_recycle`` fragt die Bestaetigung im
-    100-ms-Takt ab (Bestand); das laesst sich ohne Eingriff in den Takt nicht
-    durch ein Event ersetzen.
+    """``request_recycle`` fragt die Bestaetigung im 100-ms-Takt ab (Bestand);
+    auf der virtuellen Uhr kostet der Takt keine Wartezeit.
 
     Der Abbau beginnt wie im Worker beim SIGTERM; ein langsamer
     ``WORKER_SHUTDOWN``-Handler haelt ihn, bis ``request_recycle`` zurueck ist.
@@ -354,15 +353,14 @@ def test_sigterm_while_waiting_for_the_recycle_ack_keeps_the_budget(
         await asyncio.wait_for(shutdown, 2.0)
 
         assert task.cancelled(), "SIGTERM-Shutdown wartete die Recycling-Frist ab"
-        # Das Drain-Ende ab SIGTERM ist bei Drain-Beginn verstrichen: sofortiger Abbruch.
-        assert returned > sigterm + 2 * _EPS  # Vorbedingung: messbare Luecke
-        # Obergrenze: ein ab der Rueckkehr von ``request_recycle`` geankertes
-        # Drain-Ende brach erst bei ``returned + drain_until`` ab. Die Grenze
-        # davor laesst Planungsverzug unter Last zu (CI-Pipeline 2950202597).
-        assert cancelled_at[0] < returned + budget.drain_until
+        # Das Drain-Ende ab SIGTERM ist bei Drain-Beginn verstrichen: Abbruch
+        # sofort bei der Rueckkehr von ``request_recycle``. Ein dort geankertes
+        # Drain-Ende braeche erst bei ``returned + drain_until`` ab.
+        assert returned > sigterm + budget.drain_until  # Vorbedingung
+        assert cancelled_at == [pytest.approx(returned, abs=_VIRTUAL_EPS)]
         first = _deadlines(broker)[0]
         assert first is not None
-        assert abs(first - (sigterm + budget.drain_until)) < _EPS
+        assert first == pytest.approx(sigterm + budget.drain_until, abs=_VIRTUAL_EPS)
         events = [entry["event"] for entry in swarmq_logs if entry["logger"] == "swarmq.worker.recycling"]
         assert "worker_recycling_superseded_by_shutdown" in events
 
@@ -373,7 +371,7 @@ def test_sigterm_ends_the_ack_wait_without_marking_a_missing_ack(
     worker: Any, channel: sv.SupervisorChannel, swarmq_logs: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Supervisor im Abbau bestaetigt nie: SIGTERM beendet das Warten, ohne
-    ``recycle_ack_missing`` (Exit 75). Laufzeit rund 0,1 s wie oben."""
+    ``recycle_ack_missing`` (Exit 75)."""
 
     async def scenario() -> None:
         monkeypatch.setattr(recycling, "RECYCLE_ACK_TIMEOUT_S", 0.3)
@@ -405,8 +403,8 @@ def test_sigterm_ends_the_ack_wait_without_marking_a_missing_ack(
 
 
 def test_sigterm_during_the_monitor_sleep_does_not_request_a_recycle(worker: Any, no_supervisor: None) -> None:
-    """Laufzeit rund 0,25 s: der Monitor prueft im festen 250-ms-Takt
-    (Bestand); das SIGTERM muss genau in diesen Schlaf fallen."""
+    """Der Monitor prueft im festen 250-ms-Takt (Bestand); das SIGTERM muss
+    genau in diesen Schlaf fallen."""
 
     async def scenario() -> None:
         worker._config.recycle_max_tasks = 1
@@ -479,9 +477,9 @@ def test_sigterm_cuts_a_hanging_cancel_consume_in_the_recycling_drain(
 
         (sigterm,) = sigterms
         (ended,) = step_ended
-        assert sigterm + budget.drain_until - _EPS <= ended < sigterm + budget.finish_by
+        assert ended == pytest.approx(sigterm + budget.drain_until, abs=_VIRTUAL_EPS)
         deadlines = [d for d in _deadlines(broker) if d is not None]
-        assert abs(deadlines[-1] - (sigterm + budget.drain_until)) < _EPS
+        assert deadlines[-1] == pytest.approx(sigterm + budget.drain_until, abs=_VIRTUAL_EPS)
 
     run_virtual(scenario)
 

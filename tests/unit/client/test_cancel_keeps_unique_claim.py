@@ -16,6 +16,9 @@ Test-Liste:
 - [x] ``schedule_many``: Abbruch des Aufrufers im Publish -> Claims bleiben
 - [x] ``schedule_many``: ein Publish endet mit ``CancelledError`` -> sein
       Claim bleibt, ``CancelledError`` erreicht den Aufrufer
+- [x] ``schedule_many``: Index 0 ``RuntimeError``, Index 1 ``CancelledError``
+      -> ``CancelledError``; Claim von 1 bleibt, der von 0 wird frei
+      (Review 0.13.1, P3-2)
 - [x] verzögerter Pfad: Abbruch beim Speichern -> Claim bleibt,
       ``CancelledError``, kein ``post_enqueue``/``TASK_ENQUEUED``
 - [x] verzögerter Pfad: ``RuntimeError`` beim Speichern gibt weiter frei
@@ -79,6 +82,7 @@ class _HangingPreEnqueue(Middleware):
         await self._hang()
 
 
+@pytest.mark.entscheidung("E-041")
 async def test_cancel_in_pre_enqueue_before_the_publish_releases_the_unique_claim(broker, backend, registry) -> None:
     """Vor dem Publish ist sicher nichts gesendet: der Abbruch gibt frei wie
     jeder andere Fehler, ``CancelledError`` erreicht den Aufrufer."""
@@ -100,6 +104,11 @@ async def test_cancel_in_pre_enqueue_before_the_publish_releases_the_unique_clai
 
 @pytest.mark.entscheidung("E-041")
 async def test_cancel_of_schedule_many_during_the_publish_keeps_the_unique_claims(client, broker, backend) -> None:
+    """Hält Bestand fest, kein Nachweis des Fixes 0.13.1: Der Abbruch des
+    Aufrufers trifft ``asyncio.gather``, das die Publishes abbricht und den
+    ``CancelledError`` sofort weiterreicht; der Rückbau der Claims läuft gar
+    nicht erst. Der Test ist deshalb auch ohne den Fix grün; den Fix belegt
+    ``test_publish_of_schedule_many_ending_in_cancelled_error_keeps_its_claim``."""
     started = asyncio.Event()
     broker.publish = AsyncMock(side_effect=_hanging(started))
     backend.claim_unique = AsyncMock(return_value=None)
@@ -123,6 +132,27 @@ async def test_publish_of_schedule_many_ending_in_cancelled_error_keeps_its_clai
         await client.schedule_many([("add", (1, 2), {})], unique_for=60)
 
     backend.release_unique.assert_not_awaited()
+
+
+@pytest.mark.entscheidung("E-041")
+async def test_schedule_many_with_a_failed_and_a_cancelled_publish_raises_cancelled_and_keeps_only_that_claim(
+    client, broker, backend
+) -> None:
+    """Review 0.13.1 (P3-2): Index 0 scheitert bestimmt (``RuntimeError``),
+    Index 1 endet mit ``CancelledError``. Ein unbestimmter Eintrag macht den
+    Batch unbestimmt (B24): der Aufrufer sieht ``CancelledError``, nicht den
+    bestimmten Fehler an kleinerem Index. Der Claim von 0 wird frei, der von
+    1 bleibt."""
+    backend.claim_unique = AsyncMock(return_value=None)
+    backend.release_unique = AsyncMock()
+    broker.publish = AsyncMock(side_effect=[RuntimeError("routing failed"), asyncio.CancelledError()])
+
+    with pytest.raises(asyncio.CancelledError):
+        await client.schedule_many([("add", (1, 2), {}), ("add", (3, 4), {})], unique_for=60)
+
+    first_hash = backend.claim_unique.await_args_list[0].args[0]
+    backend.release_unique.assert_awaited_once()
+    assert backend.release_unique.await_args.args[0] == first_hash
 
 
 @pytest.mark.entscheidung("E-059")

@@ -6,7 +6,7 @@ Zeitgrenze liegt bei ``Start + lock_ttl - Marge``; jeder Renew ist auf
 ohne erfolgreichen Renew erreicht, tritt der Leader zurueck, unabhaengig von
 der Fehlerzahl (E-048, Zaehlregel bleibt daneben bestehen).
 
-Die Wartezeiten laufen auf einer virtuellen Uhr (``_virtual_time``).
+Die Wartezeiten laufen auf einer virtuellen Uhr (``tests.support.virtual_time``).
 
 Testliste:
 # [x] Renew-Erfolg bei t0, danach haengende Renews -> Ruecktritt vor t0 + ttl,
@@ -39,8 +39,8 @@ from swarmq.exceptions import BackendConnectionError
 from swarmq.locking import SCHEDULER_LOCK_NAME
 from swarmq.scheduler import SchedulerLoop
 from swarmq.signals import Signal, SignalDispatcher
+from tests.support.virtual_time import run_virtual
 from tests.unit.scheduler._helpers import _make_loop  # pyright: ignore[reportUnknownVariableType] - ungetypter Bestandshelfer
-from tests.unit.scheduler._virtual_time import run_virtual
 
 pytestmark = [pytest.mark.timeout(5)]
 

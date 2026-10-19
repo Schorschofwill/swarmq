@@ -164,8 +164,10 @@ def _resolve_fire_time(args: argparse.Namespace) -> tuple[str | None, int]:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
     fire_ts_ms = int(dt.timestamp() * 1000)
-    # E-080: wie ``schedule(eta=)``; ein fernerer Eintrag liess sich speichern,
-    # ``schedule list`` scheiterte danach an ``datetime.fromtimestamp``.
+    # E-080: wie ``schedule(eta=)``. Bis 0.13.0 wurde ein fernerer Eintrag
+    # gespeichert und feuerte; nur jenseits des Jahres 9999 scheiterte danach
+    # ``schedule list`` an ``datetime.fromtimestamp``. Die Grenze ist eine
+    # bewusste Verhaltensaenderung (eine Zahl fuer alle Fristen, E-063).
     if fire_ts_ms - int(time.time() * 1000) > MAX_DEADLINE_MS:
         raise ConfigurationError(f"--at must be at most {MAX_DEADLINE_S} seconds in the future, got {args.at!r}")
     return None, fire_ts_ms
