@@ -27,6 +27,7 @@ from __future__ import annotations
 import multiprocessing
 import signal
 import sys
+import threading
 import time
 from typing import Any, override
 from unittest.mock import MagicMock, patch
@@ -1088,9 +1089,10 @@ class TestReloadReentrancy:
         self,
     ):
         """Main-thread SIGHUP runs the handler synchronously (CPython
-        delivers pending signals between bytecodes)."""
-        import os as _os
-
+        delivers pending signals between bytecodes). An diesen Thread, nicht
+        an den Prozess: Unter xdist nimmt sonst womoeglich ein anderer Thread
+        das Signal an, und der Handler laeuft erst nach den Assertions (wie
+        ``adf31e5``)."""
         pm = ProcessManager(
             num_workers=0,
             worker_entry=_entry_stub,
@@ -1101,7 +1103,7 @@ class TestReloadReentrancy:
 
         busy_before = pm.reloader.busy
         assert busy_before is False
-        _os.kill(_os.getpid(), signal.SIGHUP)
+        signal.pthread_kill(threading.get_ident(), signal.SIGHUP)
         assert pm.reloader.pending is True
         assert pm.reloader.busy is True
         assert pm._shutting_down is False
@@ -1111,9 +1113,8 @@ class TestReloadReentrancy:
         self,
     ):
         """Double-fire raises no exception and keeps exactly one pending
-        reload (KTD8: zusammengefasst)."""
-        import os as _os
-
+        reload (KTD8: zusammengefasst). An diesen Thread, nicht an den
+        Prozess (siehe oben)."""
         pm = ProcessManager(
             num_workers=0,
             worker_entry=_entry_stub,
@@ -1122,8 +1123,8 @@ class TestReloadReentrancy:
         )
         pm._setup_signals()
 
-        _os.kill(_os.getpid(), signal.SIGHUP)
-        _os.kill(_os.getpid(), signal.SIGHUP)
+        signal.pthread_kill(threading.get_ident(), signal.SIGHUP)
+        signal.pthread_kill(threading.get_ident(), signal.SIGHUP)
         assert pm.reloader.pending is True
         assert pm._reload_requested is False
         assert pm.shutdown_event.is_set() is False

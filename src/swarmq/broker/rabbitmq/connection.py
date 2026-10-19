@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any
 
 import aio_pika
@@ -24,8 +24,18 @@ from aio_pika.exceptions import (
 )
 
 from swarmq.broker.rabbitmq.arg_conflict import AdoptionLog
-from swarmq.broker.rabbitmq.blocked import unblocked_event
-from swarmq.broker.rabbitmq.consumer_watch import ConsumerWatch
+from swarmq.broker.rabbitmq.blocked import (
+    BlockedClose,
+    blocked_close_waiters,
+    unblocked_event,
+    wait_until_unblocked,
+)
+from swarmq.broker.rabbitmq.consumer_watch import _RPC_TIMEOUT_S, ConsumerWatch
+from swarmq.broker.rabbitmq.robust_channels import (
+    open_throwaway_channel,
+    queue_exists_on_throwaway,
+    release_channel,
+)
 from swarmq.config import INJECTED_URL
 from swarmq.exceptions import BrokerConnectionError, ConfigurationError
 from swarmq.logging import _error_fields, get_logger, sanitize_url
@@ -75,10 +85,12 @@ _DEFAULT_DELIVERY_LIMIT = 20
 _DEFAULT_DEAD_LETTER_TTL_S = 604800.0
 # Frist für das nebenläufige Schließen eines verworfenen Kanals. Kurz: Meist
 # ist der Transport tot, wenn es nicht gelingt. Im Ressourcenalarm lebt er
-# aber, der Broker liest nur nicht: Dann läuft das Close in die Frist, aiormq
-# entfernt den Kanal, und bei der Aufhebung beantwortet der Broker das Close
-# (aiormq loggt dann ERROR „Got frame for closed channel“). Kein Leck
-# (PF-19, Nachtrag E-025).
+# aber, der Broker liest nur nicht: Dann wartet das Close erst auf
+# ``unblocked`` oder das Ende der Verbindung, höchstens die Publish-Frist
+# (PF-19 a), und schließt danach mit dieser Frist. Dauert der Alarm länger als
+# die Publish-Frist, läuft das Close weiter in diese Frist, aiormq entfernt den
+# Kanal, und bei der Aufhebung beantwortet der Broker das Close (aiormq loggt
+# dann ERROR „Got frame for closed channel“). Kein Leck (PF-19, Nachtrag E-025).
 _CHANNEL_CLOSE_TIMEOUT_S = 5.0
 
 # Bound for acquiring a connection from an injected
@@ -95,13 +107,35 @@ async def close_channel_quietly(channel: aio_pika.abc.AbstractChannel | None) ->
     vom Broker geschlossenen Channel (NOT_FOUND, 406) ist ``is_closed`` schon
     True; ohne eigenes ``close`` oeffnete ein RobustChannel sich wieder und
     bliebe offen, bis die Verbindung ``channel_max`` erreicht (Review MR 10,
-    P0-1; wie ``arg_conflict``)."""
+    P0-1; wie ``arg_conflict``). Vor einem Wiederoeffnen nach einem Reconnect
+    schuetzt ``close()`` allein nicht (F4-20): Wegwerf-Kanaele sind darum
+    nicht robust (``open_throwaway_channel``)."""
     if channel is None:
         return
     try:
         await channel.close()
     except Exception:  # noqa: BLE001, S110 - Schliessen best effort
         pass
+
+
+async def _restored_in_time(channel: aio_pika.abc.AbstractChannel) -> bool:
+    """Wartet, bis aio-pika einen geschlossenen ``RobustChannel`` selbst
+    wiederhergestellt hat, hoechstens ``_CHANNEL_READY_TIMEOUT_S`` (F4-22).
+
+    aio-pika setzt nach einem Reconnect zuerst ``connected`` und stellt danach
+    die Kanaele aus einer Tupel-Kopie ihres ``WeakSet`` wieder her. Wer auf
+    ``connection.ready()`` gewartet hat, wacht in diesem Fenster auf und sieht
+    den Kanal noch ``is_closed``. Ein Ersatz liesse den alten trotzdem
+    wiederherstellen; aiormq hielte ihn stark, jeder weitere Reconnect brachte
+    ihn zurueck. Auf dem Consume-Kanal haengen ausserdem die Consumer der
+    frueheren Queues (ihre ``RobustQueue`` ist an ihn gebunden)."""
+    if not isinstance(channel, aio_pika.RobustChannel):
+        return False
+    try:
+        await asyncio.wait_for(channel.ready(), timeout=_CHANNEL_READY_TIMEOUT_S)
+    except TimeoutError:
+        return False
+    return not channel.is_closed
 
 
 async def _connect_robust_closing_on_cancel(url: str) -> aio_pika.abc.AbstractRobustConnection:
@@ -213,7 +247,7 @@ class RabbitMQConnection:
         self._consume_connection: aio_pika.abc.AbstractConnection | None = None
         # Consumer-Wächter (Plan 2026-10-08-1541, U6, KTD3): kennt jeden
         # angemeldeten Consumer und meldet verlorene selbst neu an.
-        self._consumer_watch = ConsumerWatch()
+        self._consumer_watch = ConsumerWatch(queue_exists=self._consume_queue_exists)
         # U1.1: QoS state re-applied after channel recreate. Without
         # this, a reconnected consumer silently loses its prefetch.
         self._consume_prefetch: int | None = None
@@ -444,6 +478,9 @@ class RabbitMQConnection:
                 if chan is not None:
                     if not chan.is_closed:
                         await chan.close()
+                    # Die Verbindung bleibt beim Aufrufer: Ihr naechster
+                    # Reconnect oeffnete den Kanal sonst wieder (F4-20).
+                    release_channel(self._connection, chan)
                     setattr(self, attr, None)
         finally:
             if self._pool_ctx is not None:
@@ -535,12 +572,68 @@ class RabbitMQConnection:
 
         if current is None:
             return
-        task = asyncio.create_task(self._close_channel_detached(current))
+        # Vor dem Close abmelden: Ein Reconnect, waehrend das Close im Alarm
+        # wartet, oeffnete den verworfenen Kanal sonst wieder (F4-20).
+        release_channel(self._connection, current)
+        self._track_channel_close(self._close_channel_detached(current, blocked_close_waiters(self._connection)))
+
+    def _track_channel_close(self, close: Coroutine[Any, Any, None]) -> None:
+        """Startet ein nebenlaeufiges Schliessen als Task; ``close()`` sammelt ihn ein."""
+        task = asyncio.create_task(close)
         self._pending_channel_closes.add(task)
         task.add_done_callback(self._pending_channel_closes.discard)
 
-    async def _close_channel_detached(self, channel: aio_pika.abc.AbstractChannel) -> None:
-        """Best-effort-Schliessen mit eigener Frist, entkoppelt vom Aufrufer."""
+    def _retire_replaced_channel(
+        self, connection: aio_pika.abc.AbstractConnection, channel: aio_pika.abc.AbstractChannel
+    ) -> None:
+        """Raeumt einen Publish-Kanal ab, den ``_ensure_channel_tracked`` ersetzt
+        hat, weil aio-pika ihn nicht in der Frist wiederhergestellt hat (F4-22).
+
+        Abmelden allein genuegt nicht: Eine laufende Wiederherstellung arbeitet
+        auf einer Tupel-Kopie des ``WeakSet`` und oeffnet den Kanal trotzdem
+        neu, ebenso der Selbst-Restore nach einem Kanalfehler. Jedes spaete
+        Wiederoeffnen meldet ``reopen_callbacks`` (oeffentliches API); dann wird
+        der Kanal wieder geschlossen (``_close_after_restore``), ebenso, wenn er
+        schon wieder offen ist."""
+        if not isinstance(channel, aio_pika.RobustChannel):
+            return
+        release_channel(connection, channel)
+
+        def _close_when_reopened(_channel: object) -> None:
+            self._track_channel_close(self._close_after_restore(channel))
+
+        channel.reopen_callbacks.add(_close_when_reopened)
+        if not channel.is_closed:
+            # Waehrend der Ersatz aufging, ist der Restore doch noch fertig geworden.
+            _close_when_reopened(channel)
+
+    async def _close_after_restore(self, channel: aio_pika.RobustChannel) -> None:
+        """Schliesst einen wieder geoeffneten, ersetzten Kanal, erst nach dem
+        Ende seiner Wiederherstellung.
+
+        ``reopen_callbacks`` laufen mitten in ``RobustChannel.restore()``, nach
+        dem Oeffnen; ``restore()`` setzt das Restored-Event erst einen Schritt
+        der Event-Loop spaeter noch einmal. Ein Close davor liesse aio-pikas
+        ``_on_close`` den Kanal gleich wieder oeffnen. Darum ein Schritt
+        Abstand vor dem Close. Ist die Verbindung bis dahin wieder weg, ist der
+        Kanal zu und kommt nicht wieder (abgemeldet)."""
+        await asyncio.sleep(0)
+        await self._close_channel_detached(channel, None)
+
+    async def _close_channel_detached(
+        self,
+        channel: aio_pika.abc.AbstractChannel,
+        blocked: BlockedClose | None,
+    ) -> None:
+        """Best-effort-Schliessen mit eigener Frist, entkoppelt vom Aufrufer.
+
+        War die Verbindung beim Verwurf blockiert (``blocked``), wartet das
+        Close erst auf ``unblocked`` oder das Ende der Verbindung, hoechstens
+        die Publish-Frist (PF-19 a): Im Alarm liest der Broker nichts, ein
+        sofortiges Close liefe in seine Frist. Bis dahin bleiben die uebrigen
+        Confirms des Kanals offen (Praezisierung E-078)."""
+        if blocked is not None:
+            await wait_until_unblocked(blocked, timeout=self._effective_publish_timeout())
         try:
             async with asyncio.timeout(_CHANNEL_CLOSE_TIMEOUT_S):
                 if not channel.is_closed:
@@ -617,6 +710,9 @@ class RabbitMQConnection:
                     f"connection not ready after {_CHANNEL_READY_TIMEOUT_S}s "
                     f"(reopening {attr!r} on {sanitize_url(self._url)!r})"
                 ) from exc
+            replaced = channel
+            if replaced is not None and await _restored_in_time(replaced):
+                return replaced, False
             try:
                 if attr == "_publish_channel" and self._publish_channel_factory is not None:
                     channel = await self._publish_channel_factory()
@@ -639,6 +735,8 @@ class RabbitMQConnection:
                     f"channel reopen failed for {attr!r} on {sanitize_url(self._url)!r}: {exc}"
                 ) from exc
             setattr(self, attr, channel)
+            if replaced is not None and attr == "_publish_channel":
+                self._retire_replaced_channel(connection, replaced)
             return channel, True
 
     def _admin_connection(self) -> aio_pika.abc.AbstractConnection | None:
@@ -650,6 +748,16 @@ class RabbitMQConnection:
             return consume
         return self._connection
 
+    async def _consume_queue_exists(self, name: str) -> bool:
+        """Ob eine konsumierte Queue beim Broker existiert: passives Declare auf
+        einem Wegwerf-Kanal der Consume-Verbindung (PF-20, E-083). NOT_FOUND
+        schliesst nur diesen Kanal, nie den gemeinsamen Consume-Kanal. Das
+        Schliessen ist wie die Pruefung auf ``_RPC_TIMEOUT_S`` begrenzt."""
+        connection = self._consume_connection or self._connection
+        if connection is None:
+            raise BrokerConnectionError("broker is not connected")
+        return await queue_exists_on_throwaway(connection, name, close_timeout_s=_RPC_TIMEOUT_S)
+
     async def _throwaway_channel_message_count(self, name: str) -> int:
         """Message count of one queue via passive declare on a throwaway
         channel (a failed passive-declare closes the channel). A missing
@@ -659,15 +767,14 @@ class RabbitMQConnection:
             raise BrokerConnectionError("broker is not connected")
         channel: aio_pika.abc.AbstractChannel | None = None
         try:
-            channel = await connection.channel()
+            channel = await open_throwaway_channel(connection)
             q = await channel.declare_queue(name, passive=True)
             result = getattr(q, "declaration_result", None)
             if result is not None:
                 return int(getattr(result, "message_count", 0))
         except aio_pika.exceptions.ChannelNotFoundEntity:
             # Der Broker hat den Channel geschlossen (``is_closed`` ist schon
-            # True): trotzdem ``close()``, sonst oeffnet ein RobustChannel
-            # sich wieder und bleibt offen (Review MR 10, P0-1).
+            # True): trotzdem ``close()`` (Review MR 10, P0-1).
             await close_channel_quietly(channel)
             channel = None
             return 0

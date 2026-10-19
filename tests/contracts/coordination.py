@@ -267,6 +267,21 @@ class LockStoreContract:
         assert await impl.current_owner(name) is None
         assert await impl.force_release(name, max_concurrency=1) is False
 
+    async def test_force_release_of_an_expired_mutex_is_false(self, impl: LockStore, clock: Clock) -> None:
+        """Plan 0.14, U1 (KTD1): ``True`` heisst „ein Lock existierte und ist weg“."""
+        name = _name("lock")
+        await impl.acquire(name, owner="a", ttl_ms=300, max_concurrency=1)
+        await clock.advance(0.8)
+        assert await impl.force_release(name, max_concurrency=1) is False
+
+    async def test_force_release_clears_a_held_semaphore(self, impl: LockStore) -> None:
+        name = _name("sem")
+        await impl.acquire(name, owner="a", ttl_ms=60_000, max_concurrency=2)
+        await impl.acquire(name, owner="b", ttl_ms=60_000, max_concurrency=2)
+        assert await impl.force_release(name, max_concurrency=2) is True
+        assert (await impl.observe(name, max_concurrency=2)).owners == frozenset()
+        assert await impl.force_release(name, max_concurrency=2) is False
+
     async def test_semaphore_admits_up_to_max_concurrency(self, impl: LockStore) -> None:
         name = _name("sem")
         t1 = await impl.acquire(name, owner="a", ttl_ms=60_000, max_concurrency=2)

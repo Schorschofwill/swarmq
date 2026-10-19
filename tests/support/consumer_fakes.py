@@ -5,6 +5,7 @@ und ``consumers`` des aiormq-Channels. Das Verhalten der echten Broker steht in
 
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import Any
 
 
@@ -17,10 +18,14 @@ class FakeUnderlay:
 
 
 class FakeChannel:
-    """aio-pika-Channel; ``underlay`` lässt sich austauschen (Restore)."""
+    """aio-pika-Channel; ``underlay`` lässt sich austauschen (Restore).
+
+    ``_queues`` bildet die Restore-Liste von ``RobustChannel`` nach (Name →
+    Queues, die ein Reconnect passiv neu deklariert; PF-20, E-083)."""
 
     def __init__(self, underlay: FakeUnderlay) -> None:
         self.underlay = underlay
+        self._queues: defaultdict[str, set[Any]] = defaultdict(set)
 
     async def get_underlay_channel(self) -> FakeUnderlay:
         return self.underlay
@@ -32,6 +37,7 @@ class FakeQueue:
     def __init__(self, name: str, channel: FakeChannel) -> None:
         self.name = name
         self.channel = channel
+        channel._queues[name].add(self)  # wie ``declare_queue(robust=True)``
         self.cancelled: list[str] = []
         self.consumed: list[Any] = []
         self.cancel_error: Exception | None = None

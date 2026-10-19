@@ -21,6 +21,11 @@ venv mit ``swarmq==0.12.3`` (``constraints-0.12.3.txt``), der letzten
 Version vor 0.12.4; Retry-Übergabe, Leader-Wechsel und DLQ-Replay laufen
 neben 0.12.0 und 0.12.3.
 
+Vierte Basis seit Plan 2026-10-19-1500 (U0): ein venv mit ``swarmq==0.13.1``
+(``constraints-0.13.1.txt``), der letzten Version vor 0.14.0. Die Helfer für
+Producer, Retry-Übergabe und Shovel-Replay teilen sich die Suiten der 0.12-
+und der 0.13-Reihe.
+
 Opt-in über den Marker ``compat`` (braucht Netz zu PyPI beim ersten Lauf).
 """
 
@@ -32,6 +37,7 @@ import sys
 import threading
 import time
 import uuid
+from collections import Counter
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -40,6 +46,10 @@ import aio_pika
 import pytest
 import valkey.asyncio as aio_valkey
 
+from swarmq.app import SwarmQ
+from swarmq.backend.valkey import ValkeyBackend
+from swarmq.broker.rabbitmq import RabbitMQBroker
+from swarmq.exceptions import TaskError
 from swarmq.keyspace import KeySpace
 from tests.support.queues import delete_queue_family
 from tests.support.services import flush_valkey_db, valkey_db_url
@@ -59,6 +69,12 @@ BASE_012_CONSTRAINTS = Path(__file__).with_name("constraints-0.12.0.txt")
 #: Letzte Version vor 0.12.4 (Plan 2026-10-17-2103, U1): Basis für den Rollout von 0.12.4.
 BASE_0123_VERSION = "0.12.3"
 BASE_0123_CONSTRAINTS = Path(__file__).with_name("constraints-0.12.3.txt")
+#: Letzte Version vor 0.14.0 (Plan 2026-10-19-1500, U0): Basis für den Rollout von 0.14.
+BASE_0131_VERSION = "0.13.1"
+BASE_0131_CONSTRAINTS = Path(__file__).with_name("constraints-0.13.1.txt")
+#: Cron-Task und Fixture-Modul für den Leader-Wechsel.
+CRON_TASK = "compat_cron"
+CRON_MODULE = "tests.compat._compat_cron_tasks"
 
 # Schnelle Leader-Übergabe, damit ein Wechsel Sekunden statt der Standard-TTL dauert.
 SCHEDULER_ENV = {
@@ -128,6 +144,12 @@ def python_0123(tmp_path_factory: pytest.TempPathFactory) -> str:
 
 
 @pytest.fixture(scope="session")
+def python_0131(tmp_path_factory: pytest.TempPathFactory) -> str:
+    """Interpreter eines venv mit swarmq 0.13.1 von PyPI (Basis für 0.14, Plan 2026-10-19-1500)."""
+    return _pypi_python(tmp_path_factory, BASE_0131_VERSION, BASE_0131_CONSTRAINTS)
+
+
+@pytest.fixture(scope="session")
 def python_repo() -> str:
     """Interpreter des Arbeitsstands; muss swarmq aus ``<repo>/src`` laden."""
     _, location, executable = _run([sys.executable, "-c", _PROBE], cwd=str(REPO_ROOT)).split()
@@ -138,6 +160,26 @@ def python_repo() -> str:
 @pytest.fixture
 def queue() -> str:
     return f"compat-{uuid.uuid4().hex[:10]}"
+
+
+@dataclass(frozen=True)
+class Base:
+    """Eine alte Basis des Mischbetriebs: Interpreter ihres venv und Version."""
+
+    python: str
+    version: str
+
+    @property
+    def runtime(self) -> str:
+        return f"pypi-{self.version}"
+
+
+@pytest.fixture
+async def app(rabbitmq_url: str, valkey_url: str, queue: str) -> AsyncIterator[SwarmQ]:
+    """App aus dem Arbeitsstand (Producer und Ergebnisse lesen); der zuerst
+    gestartete Worker legt die Queue-Familie an."""
+    async with SwarmQ(RabbitMQBroker(rabbitmq_url), ValkeyBackend(valkey_url), queues=[queue]) as swarm:
+        yield swarm
 
 
 @pytest.fixture(autouse=True)
@@ -300,3 +342,83 @@ async def force_cron_fire(valkey_url: str, cron: str, timeout: float = 20.0) -> 
         await client.zadd(_KEYS.sched_zset(), {cron: int(time.time() * 1000) - 1000})
     finally:
         await client.aclose()
+
+
+# Läuft im venv der Basis: nur die öffentliche API, die 0.12.0 kennt.
+OLD_PRODUCER = """
+import asyncio, importlib.metadata, json, os.path, sys
+import swarmq
+from swarmq.app import SwarmQ
+from swarmq.backend.valkey import ValkeyBackend
+from swarmq.broker.rabbitmq import RabbitMQBroker
+from swarmq.client import Client
+
+async def main(broker_url, backend_url, queue, count):
+    out = {"version": importlib.metadata.version("swarmq"), "location": os.path.realpath(swarmq.__file__), "results": {}}
+    async with SwarmQ(RabbitMQBroker(broker_url), ValkeyBackend(backend_url), queues=[queue]) as app:
+        producer = Client(app.broker, app.backend)
+        task_ids = [await producer.schedule("compat_flaky", queue=queue) for _ in range(count)]
+        for task_id in task_ids:
+            out["results"][task_id] = await app.get_result(task_id, timeout=30)
+    print(json.dumps(out))
+
+asyncio.run(main(sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])))
+"""
+
+#: Wartezeit auf Ereignisse im Mischbetrieb (Consumer, Ergebnisse, Delay-Stufe).
+EVENT_TIMEOUT = 20.0
+
+
+async def wait_consumers(rabbitmq_url: str, queue: str, count: int) -> None:
+    async def reached() -> bool:
+        return await consumer_count(rabbitmq_url, queue) == count
+
+    assert await wait_until(reached, timeout=EVENT_TIMEOUT), f"consumer count on {queue} never reached {count}"
+
+
+def assert_two_attempts_each(runs: list[tuple[str, str, int, str]], task_ids: list[str], runtime: str) -> None:
+    attempts = Counter(task_id for _, task_id, _, _ in runs)
+    assert attempts == dict.fromkeys(task_ids, 2), "every message runs exactly twice (fail, retry)"
+    assert {run_runtime for *_, run_runtime in runs} == {runtime}
+
+
+async def wait_deferred_in_tier(rabbitmq_url: str, tier: str) -> None:
+    async def deferred_in_tier() -> bool:
+        try:
+            return await message_count(rabbitmq_url, tier) == 1
+        except aio_pika.exceptions.ChannelNotFoundEntity:
+            return False
+
+    assert await wait_until(deferred_in_tier, timeout=EVENT_TIMEOUT), "retry never reached the delay tier"
+
+
+async def allow_poison(valkey_url: str, queue: str) -> None:
+    """``compat_poison`` gelingt ab jetzt (``compat:flag:<queue>``)."""
+    client = aio_valkey.Valkey.from_url(valkey_url)
+    try:
+        await client.set(f"compat:flag:{queue}", "1")
+    finally:
+        await client.aclose()
+
+
+async def shovel(rabbitmq_url: str, source: str, target: str) -> None:
+    """Eine Nachricht mit allen Headern von *source* nach *target* legen --
+    wie "Move messages" in der RabbitMQ-UI bzw. ein Shovel."""
+    connection = await aio_pika.connect(rabbitmq_url)
+    try:
+        channel = await connection.channel()
+        message = await (await channel.get_queue(source)).get(no_ack=True)
+        assert message is not None, f"no message in {source}"
+        await channel.default_exchange.publish(
+            aio_pika.Message(message.body, headers=dict(message.headers or {})), routing_key=target
+        )
+    finally:
+        await connection.close()
+
+
+async def result_is(app: SwarmQ, task_id: str, expected: str) -> bool:
+    try:
+        result: object = await app.get_result(task_id, timeout=1)
+    except TaskError:  # Fehlerergebnis des Dead-Letterns, noch nicht ueberschrieben
+        return False
+    return result == expected

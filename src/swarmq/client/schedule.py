@@ -30,6 +30,7 @@ from swarmq.exceptions import (
     TaskNotFoundError,
     is_backend_outage,
     is_backend_outcome_unknown,
+    is_publish_outcome_unknown,
 )
 from swarmq.headers import (
     HEADER_ENQUEUED_AT,
@@ -49,10 +50,6 @@ from swarmq.signals import Signal
 from swarmq.task import UniqueUntil
 
 logger = get_logger(__name__)
-
-# Publish-Ausgaenge, nach denen die Nachricht angekommen sein kann: die
-# Unique-Sperre bleibt stehen (E-041; der Abbruch seit 0.13.1).
-_INDETERMINATE_PUBLISH = (PublishIndeterminate, asyncio.CancelledError)
 
 
 def _check_delay_and_eta(delay: float | None, eta: datetime | None) -> None:
@@ -348,12 +345,13 @@ class ClientScheduling(ClientScheduleResolve):
             # Sperre loest sich nach ihrer eigenen Lebensdauer von selbst
             # (Plan 2026-08-28-001, R11).
             raise
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as exc:
             # Abbruch des Aufrufers im Publish: Die Frames koennen schon
             # gesendet sein, der Ausgang ist unbestimmt wie bei
             # ``PublishIndeterminate`` -- die Sperre bleibt (E-041, 0.13.1).
-            # Vor dem Publish (``pre_enqueue``) ist nichts gesendet.
-            if dedup_hash is not None and not publishing:
+            # Vor dem Publish (``pre_enqueue``) ist nichts gesendet, ebenso
+            # bei ``PublishCancelledUnsent`` vom Broker (0.14, U4).
+            if dedup_hash is not None and not (publishing and is_publish_outcome_unknown(exc)):
                 await self._rollback_unique_claim(dedup_hash, task_id)
             raise
         except BaseException:
@@ -455,16 +453,18 @@ class ClientScheduling(ClientScheduleResolve):
         left with a half-emitted state."""
         publish_indices = state["publish_indices"]
         task_ids = state["task_ids"]
-        coros = [
-            self._broker.publish(
-                state["resolved_queues"][i],
-                state["encoded_messages"][i],
-                headers=state["dedup_headers"][i] or None,
-            )
-            for i in publish_indices
-        ]
-        results = await asyncio.gather(*coros, return_exceptions=True)
+        unsent: set[int] = set()
+        coros = [self._publish_marking_unsent(i, state, unsent) for i in publish_indices]
+        try:
+            results = await asyncio.gather(*coros, return_exceptions=True)
+        except asyncio.CancelledError:
+            # Abbruch des Aufrufers: ``gather`` hat die Publishes abgebrochen
+            # und abgewartet; frei wird nur, was nachweislich nicht gesendet
+            # ist (0.14, U4). Die Freigabe laeuft im abgebrochenen Task.
+            await self._batch_rollback_publishes(state, sorted(unsent))
+            raise
         errors = [(publish_indices[k], r) for k, r in enumerate(results) if isinstance(r, BaseException)]
+        unknown = {i for i, exc in errors if is_publish_outcome_unknown(exc) and i not in unsent}
         ok_indices = [publish_indices[k] for k, r in enumerate(results) if not isinstance(r, BaseException)]
         if errors:
             # Log partially-submitted task_ids so they can be recovered.
@@ -479,13 +479,9 @@ class ClientScheduling(ClientScheduleResolve):
             # successful ones still have matching messages in the broker).
             # Wie ``schedule``: nach ``PublishIndeterminate`` oder einem
             # Abbruch im Publish kann die Nachricht angekommen sein, die
-            # Sperre bleibt (B24; E-041, 0.13.1).
-            for idx, exc in errors:
-                if isinstance(exc, _INDETERMINATE_PUBLISH):
-                    continue
-                claim = state["claimed_flags"].get(idx)
-                if claim is not None:
-                    await self._rollback_unique_claim(*claim)
+            # Sperre bleibt (B24; E-041, 0.13.1), ausser der Broker hat den
+            # Abbruch als nicht gesendet markiert (0.14, U4).
+            await self._batch_rollback_publishes(state, [idx for idx, _ in errors if idx not in unknown])
         for i in ok_indices:
             await chain.run_post_enqueue(state["message_dicts"][i])
             await self._signal_dispatcher.dispatch(
@@ -498,8 +494,31 @@ class ClientScheduling(ClientScheduleResolve):
             # Ein unbestimmter Eintrag macht den Batch unbestimmt: ein
             # bestimmter Fehler an kleinerem Index hiesse sonst "nichts
             # gesendet, Wiederholen sicher" (B24).
-            indeterminate = [exc for _, exc in errors if isinstance(exc, _INDETERMINATE_PUBLISH)]
+            indeterminate = [exc for idx, exc in errors if idx in unknown]
             raise indeterminate[0] if indeterminate else errors[0][1]
+
+    async def _batch_rollback_publishes(self, state: dict[str, Any], indices: list[int]) -> None:
+        for idx in indices:
+            claim = state["claimed_flags"].get(idx)
+            if claim is not None:
+                await self._rollback_unique_claim(*claim)
+
+    async def _publish_marking_unsent(self, i: int, state: dict[str, Any], unsent: set[int]) -> None:
+        """Publish von Eintrag *i*; ``gather`` ersetzt den Abbruch eines Kinds
+        durch einen neuen ``CancelledError``, darum haelt *unsent* je Index fest,
+        was nachweislich nicht gesendet ist: die Markierung
+        ``PublishCancelledUnsent`` (0.14, U4) und jeder bestimmte Fehlschlag,
+        damit ein Abbruch des Aufrufers auch dessen Claim freigibt."""
+        try:
+            await self._broker.publish(
+                state["resolved_queues"][i],
+                state["encoded_messages"][i],
+                headers=state["dedup_headers"][i] or None,
+            )
+        except BaseException as exc:
+            if not is_publish_outcome_unknown(exc):
+                unsent.add(i)
+            raise
 
     async def schedule_many(
         self,

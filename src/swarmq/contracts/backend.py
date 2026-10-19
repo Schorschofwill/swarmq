@@ -14,10 +14,16 @@ from typing import Protocol, runtime_checkable
 @runtime_checkable
 class ResultBackend(Protocol):
     async def connect(self) -> None:
-        """Idempotent; Treiberfehler → ``BackendConnectionError``."""
+        """Idempotent und nebenlaeufig sicher (E-082); Treiberfehler →
+        ``BackendConnectionError``. Ein Aufruf waehrend eines laufenden
+        ``connect()`` wartet ihn ab und nutzt den verbundenen Client; scheitert
+        der laufende Aufbau, versucht der Wartende es selbst."""
         ...
 
-    async def close(self) -> None: ...
+    async def close(self) -> None:
+        """Wartet ein laufendes ``connect()`` ab und schliesst danach (E-082);
+        es bleibt kein offener Client zurueck."""
+        ...
 
     async def ping(self) -> None:
         """Wirft ``BackendConnectionError`` vor ``connect`` oder bei Störung."""

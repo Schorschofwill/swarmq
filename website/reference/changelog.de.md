@@ -4,6 +4,302 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 [Keep a Changelog](https://keepachangelog.com/) und
 [Semantic Versioning](https://semver.org/).
 
+## [0.14.0rc1] — 2026-10-19
+
+Release-Candidate für 0.14.0 (Installation mit `pip install --pre`).
+
+Minor-Release mit den Härtungen, die aus der vierten Fehlersuche und
+ihren Spikes zurückgestellt waren. Der Verbindungsaufbau zu Valkey
+wartet gegen einen Host, der Pakete verwirft, bis zu seiner Frist, und
+Befehle zur Laufzeit vervielfachen ihre TCP-Versuche nicht mehr
+(PF-16). Ein `schedule()`-Aufruf, der abgebrochen wird, bevor etwas
+gesendet wurde, gibt seinen `unique_for`-Claim frei. Im
+Ressourcenalarm des Brokers wartet das Schließen eines verworfenen
+Publish-Kanals auf die Freigabe (PF-19). `ValkeyBackend.connect()`/
+`close()` sind nebenläufig sicher, und `LockStore.force_release` ist
+atomar. Nach einem Reconnect öffnet aio-pika keine Kanäle mehr, die
+swarmq geschlossen oder verworfen hat (F4-20), ein Publish oder
+Worker-Start, der auf den Reconnect gewartet hat, nutzt den Kanal, den
+aio-pika wiederherstellt, statt einen zweiten zu öffnen (F4-22), und
+ein Publish, der im Ressourcenalarm wartet, wird nach einem Verbindungsabriss mit dem
+Reconnect gesendet, statt bis zu seiner Frist zu warten (F4-21). Eine
+konsumierte Queue, die bei laufendem Worker gelöscht wird, legt die
+übrigen Queues des Workers nicht mehr still: Der Consumer-Wächter
+meldet sie als `consumer_queue_missing`, hält `/ready` rot und lässt die
+übrigen Queues und die Verbindung heil (PF-20). Keine
+neuen Header, Lua-Skripte, Key-Formate oder
+Formatänderungen: 0.14.0 läuft neben 0.13.x auf denselben Queues und
+Keys, in beide Richtungen, und ein Rollback auf 0.13.1 ist möglich.
+Jede Änderung wirkt nur im eigenen Prozess (Valkey-Client,
+Broker-Kanal, Claim des Clients); ein Claim, den ein 0.14-Client nach
+einem Abbruch freigibt, sieht für einen 0.13.1-Client gleich aus. Der
+Mischbetrieb ist gegen 0.13.1 getestet, daneben gegen 0.11.0, 0.11.1,
+0.12.0 und 0.12.3. Der Chaos-Teststack läuft jetzt auf RabbitMQ 4.3.6,
+derselben Broker-Version wie Integrationstests, CI und Loadsuite;
+Toxiproxy ist auf `ghcr.io/shopify/toxiproxy:2.9.0` gepinnt. Lies die
+Upgrade-Hinweise: Fehlertext beim Verbinden, Fehlerzeiten, Abbruch,
+die Logzeilen im Alarm, die Kanalzahl beim Broker und das Verhalten
+nach dem Löschen einer konsumierten Queue ändern sich.
+
+### Upgrade-Hinweise
+
+1. **Der Verbindungsaufbau zu Valkey wartet gegen einen Host, der
+   Pakete verwirft, bis zur Frist.** Ein Zeitablauf beim TCP-Aufbau
+   wird innerhalb des Verbindungsaufbaus des Treibers nicht mehr
+   wiederholt. Stattdessen wiederholt `ValkeyBackend.connect()`
+   (Worker-Start, CLI-Befehle, Producer) nach einem solchen Zeitablauf
+   seinen `PING` mit kurzem Backoff, bis
+   [`SWARMQ_BACKEND_CONNECT_TIMEOUT_S`](configuration.md#worker-verhalten)
+   abläuft, und wirft dann `BackendConnectionError` mit
+   `Valkey connect timed out after <Frist>s`. Mit der Vorgabe 30 s
+   ändert sich nichts: `connect()` endete schon bisher nach 30 s mit
+   `Valkey connect timed out after 30.0s`. Mit einer Frist über rund
+   33 s dauert der Start jetzt wirklich so lange; bisher gab er nach
+   rund 33 s auf (6 Verbindungsversuche zu 5 s plus 3,1 s Backoff), mit
+   `Valkey connect failed: Timeout connecting to server`. Alarmregeln
+   auf diesen Text brauchen den neuen. Unter `swarmq worker` dauert dann
+   jeder gescheiterte Start bis zur Frist, ein Slot erreicht die
+   Neustartgrenze des Supervisors (5 Abstürze binnen einer Stunde) also
+   später. Ein Port, der Verbindungen abweist, endet weiter nach rund
+   3,1 s mit `Valkey connect failed: …`; Handshake-Trennungen und
+   Anmeldefehler sind unverändert. Keiner dieser Fälle wird bis zur
+   Frist wiederholt (E-075).
+2. **Valkey-Befehle scheitern gegen einen Host, der Pakete verwirft,
+   früher.** Stirbt eine Verbindung mitten im Befehl, endet der Befehl
+   jetzt nach rund 38 s statt rund 179 s mit `BackendConnectionError`
+   (5 statt 30 TCP-Versuche). Ein Befehl, der eine neue
+   Pool-Verbindung braucht, endet nach einem TCP-Versuch, rund 5 s statt
+   rund 33 s. Beide Werte sind aus skalierten Messungen gegen ein echtes
+   SYN-Blackhole abgeleitet. Operationen unter
+   `SWARMQ_BACKEND_OP_TIMEOUT` (5 s, die Prüfungen des Workers vor einem
+   Task) waren schon bisher begrenzt. Die Schleifen von swarmq, die nach
+   `BackendConnectionError` neu versuchen (Fortschritts-Watch,
+   Leader-Wahl, Ergebnis-Nachlauf, Gates), warten alle zwischen den
+   Versuchen; sie machen gleich viele Versuche in kürzerer Zeit. Ein
+   solcher TCP-Zeitablauf kommt jetzt als `ConnectionError` von
+   valkey-py statt als dessen `TimeoutError` bei swarmq an, mit
+   demselben Text `Timeout connecting to server`; swarmq wirft wie
+   bisher `BackendConnectionError`. Den Unterschied sieht nur Code, der
+   die Ursache dieses Fehlers prüft.
+3. **Ein Abbruch, bevor etwas gesendet wurde, gibt den
+   `unique_for`-Claim frei.** Wird `schedule()` oder `schedule_many()`
+   abgebrochen (ein Timeout um den Aufruf, `task.cancel()`), bevor der
+   RabbitMQ-Broker die Nachricht gesendet haben kann, gibt der Client
+   den Claim jetzt frei, und ein Wiederholversuch wird nicht mehr bis
+   zum Ablauf des Claims als Duplikat abgewiesen. Das umfasst das Warten
+   auf eine blockierte Publish-Verbindung (Ressourcenalarm), das Öffnen
+   des Publish-Kanals, das Warten auf die Kanal-Sperre und den Backoff
+   nach Versuchen, die nichts gesendet haben. Der Broker markiert einen
+   solchen Abbruch als `swarmq.exceptions.PublishCancelledUnsent`, eine
+   Unterklasse von `asyncio.CancelledError`: `except
+   asyncio.CancelledError` fängt ihn unverändert, `task.cancelled()`
+   bleibt `True`, und `asyncio.timeout` macht weiter `TimeoutError`
+   daraus. Er wird nicht aus `swarmq` exportiert. Ein Abbruch, nachdem
+   die Nachricht gesendet sein kann, hält den Claim wie in 0.13.1,
+   ebenso ein Abbruch beim Speichern eines `delay`/`eta`-Eintrags und
+   in `swarmq schedule add`; dort wird nichts publiziert. Ein eigener
+   Publisher (`Publisher.publish`) darf `PublishCancelledUnsent` werfen,
+   wenn er nachweislich nichts gesendet hat; ohne die Markierung gilt
+   ein Abbruch als unbestimmt, und der Claim bleibt
+   ([Deduplizierung](../guides/locking-and-dedup.md), E-041, E-042,
+   E-059).
+4. **Die Logzeilen im Alarm ändern sich, wenn ein Publish-Kanal
+   verworfen wird.** Schneidet die Publish-Frist einen Publish ab, der
+   gesendet sein kann, während die Publish-Verbindung blockiert ist
+   (Ressourcenalarm), schickt swarmq das `Channel.Close` des verworfenen
+   Kanals jetzt erst, wenn RabbitMQ die Verbindung freigibt oder die
+   Verbindung endet, höchstens nach der Publish-Frist
+   (`SWARMQ_PUBLISH_TIMEOUT_S`, beim Herunterfahren die restliche
+   Gnadenfrist). Danach schließt es wie bisher mit seiner 5-s-Frist. Bei
+   einem Alarm, der kürzer ist als die Publish-Frist, entfallen
+   `publish_channel_close_incomplete` (WARNING) und die aiormq-ERROR
+   `Got frame for closed channel N: <Channel.CloseOk>`. Stattdessen kann
+   aiormq die WARNING `Delivery tag … confirmed … was ignored`
+   (`aiormq.channel`) loggen, wenn der Broker den auslösenden Publish
+   nach der Freigabe bestätigt; dieser Publish endet weiter als
+   `PublishIndeterminate`. Bei einem Alarm, der länger dauert als die
+   Publish-Frist (etwa 60 s Alarm, 20 s Frist), bleiben beide alten
+   Zeilen. Alarmregeln auf diese Zeilen anpassen
+   ([Event-Katalog](logging.md#event-katalog)). Die übrigen Publishes,
+   die auf dem verworfenen Kanal noch auf ihr Confirm warten, bleiben
+   bis zum Schließen offen: Sie enden bestätigt, wenn die Freigabe vor
+   ihrer eigenen Frist kommt, sonst mit ihrer eigenen Frist als
+   `PublishIndeterminate`, und belegen ihren Slot höchstens bis dahin.
+   Ein Herunterfahren im Alarm dauert weiter höchstens 5 s länger
+   (E-025, E-078).
+5. **Eigene `ResultBackend`-Implementierungen: `connect()` und
+   `close()` müssen nebenläufig sicher sein.** Der Vertrag
+   (`swarmq.contracts.ResultBackend`) verlangt jetzt: Ein `connect()`
+   während eines laufenden `connect()` wartet ihn ab und nutzt dessen
+   Client, und es versucht es selbst, wenn jener scheitert; `close()`
+   wartet ein laufendes `connect()` ab und schließt danach, es bleibt
+   kein Client offen. Die Signaturen bleiben gleich. Bei
+   `ValkeyBackend` wartet `close()` darum höchstens die Frist
+   (`SWARMQ_BACKEND_CONNECT_TIMEOUT_S`) eines laufenden `connect()` ab
+   ([Vertragshinweise](api.md#protokolle-der-koordinations-stores),
+   E-082).
+6. **`LockStore.force_release` meldet, was es entfernt hat.**
+   `ValkeyLockStore.force_release` löscht den Lock-Schlüssel jetzt mit
+   einem einzigen `DEL`: `True` heißt, zu diesem Zeitpunkt existierte
+   ein Lock-Schlüssel und ist jetzt weg, `False`, es gab keinen. Eine
+   Fehlerantwort von Valkey (etwa `WRONGTYPE`) wirft jetzt
+   `BackendResponseError`, ein Ausfall `BackendConnectionError`;
+   `BackendResponseError` ist eine Unterklasse von
+   `BackendConnectionError`, bestehende Handler fangen sie also weiter.
+   Bei einer Semaphore kommt `True`, solange ihr Schlüssel existiert,
+   auch wenn alle Halter schon abgelaufen sind.
+7. **Weniger Kanäle beim Broker nach einem Reconnect.** Die
+   Wegwerf-Kanäle von swarmq (Queue-Deklarationen, Queue-Tiefe und
+   -Status, Zugriff auf die DLQ) sind jetzt einfache
+   `aio_pika.Channel`, und ein verworfener Publish-Kanal wird, wie die
+   Kanäle, die `close()` auf einer injizierten Verbindung oder einem
+   Pool schließt, aus der Wiederherstellung von aio-pikas
+   `RobustConnection` abgemeldet. Nach einem Reconnect gehen nur der
+   lebende Publish- und Consume-Kanal wieder auf. Ein Publish oder
+   Worker-Start, der auf den Reconnect gewartet hat, wartet jetzt, bis
+   aio-pika den Kanal wiederhergestellt hat (höchstens 10 s, meist
+   Millisekunden), und nutzt ihn; bisher öffnete er neben dem
+   wiederhergestellten einen zweiten Kanal, und beide kamen mit jedem
+   weiteren Reconnect wieder (F4-22). Erst wenn die Wiederherstellung
+   länger dauert, öffnet swarmq einen neuen Kanal: Ein ersetzter
+   Publish-Kanal wird geschlossen, sobald aio-pika ihn doch noch
+   wiederherstellt; ein ersetzter Consume-Kanal bleibt offen, weil auf
+   ihm die Consumer der vorher konsumierten Queues liegen. Bisher wurde jeder
+   geschlossene Kanal, den die Garbage Collection noch nicht
+   eingesammelt hatte, wieder geöffnet und blieb dann offen; die
+   Kanalzahl beim Broker wuchs so mit jedem Reconnect. Dashboards und
+   Alarmregeln auf die Kanalzahl der swarmq-Verbindungen sehen jetzt
+   niedrigere Werte, die über Reconnects gleich bleiben. Ein Reconnect
+   nach dem Lesen von Tiefe oder Status einer inzwischen gelöschten
+   Queue scheitert nicht mehr alle 5 s an `NOT_FOUND`, und ein
+   Reconnect legt keine gelöschte Queue mehr neu an. Legt eine spätere
+   aio-pika-Version die Wiederherstellungsmenge nicht mehr offen, loggt
+   swarmq je Verbindung einmal die WARNING
+   `robust_channel_release_unavailable` und verhält sich wie vor 0.14
+   ([Event-Katalog](logging.md#event-katalog), E-078).
+8. **Eine gelöschte konsumierte Queue wird eingegrenzt und gemeldet.**
+   Wird eine Queue gelöscht, die ein laufender Worker konsumiert, prüft
+   der Consumer-Wächter jetzt passiv auf einem Wegwerf-Kanal, ob es die
+   Queue gibt, bevor er den Consumer neu anmeldet. Fehlt sie, loggt der
+   Worker einmal die ERROR `consumer_queue_missing` (Feld `queue`),
+   sendet für sie kein `basic.consume` und nimmt sie aus der
+   Wiederherstellung von aio-pika, damit ein Reconnect sie nicht neu
+   deklariert. Wird die Queue gelöscht, während die Verbindung schon
+   getrennt ist, oder kurz vor einem Reconnect vor dem nächsten Takt,
+   scheitert der Reconnect weiter an `NOT_FOUND` wie bisher; dann hilft
+   nur ein Neustart. Die übrigen Queues des Workers konsumieren weiter, die Verbindung
+   bleibt bestehen und das Publizieren läuft weiter, mit beiden Werten
+   von `SWARMQ_BROKER_PUBLISH_CONNECTION`. Bisher standen alle Queues
+   des Workers still, in jedem Takt kam `consumer_watch_tick_failed`,
+   und ein Reconnect scheiterte alle 5 s an `NOT_FOUND` (mit `shared`
+   auch das Publizieren). `/ready` wird sofort rot, ohne
+   `SWARMQ_CONSUMER_READY_GRACE_S`, mit
+   `consumed queue missing at the broker: <queue>` unter `consumers`;
+   bisher wurde es erst nach der Gnadenfrist rot, mit
+   `no active consumer for more than …`. Der Worker fährt nicht herunter
+   und legt die Queue nicht neu an. Gibt es die Queue wieder (ein
+   anderer Worker mit dieser Queue startet, oder ein Betreiber
+   deklariert sie), meldet der Wächter den Consumer binnen eines Takts
+   wieder an und loggt `consumer_reregistered` mit dem neuen
+   `reason=queue_recreated`; sonst den Worker neu starten. Einen Alarm
+   auf `consumer_queue_missing` anlegen. Legt eine spätere
+   aio-pika-Version die Queue-Liste eines Kanals nicht mehr offen, loggt
+   swarmq je Kanal einmal die WARNING `robust_queue_release_unavailable`,
+   und ein Reconnect scheitert wie bisher
+   ([Konsumierte Queue löschen](../explanation/delivery-semantics.md#konsumierte-queue-loschen),
+   E-083).
+
+### Behoben
+
+- **`force_release` ist atomar.** Es las `EXISTS` und gab danach frei,
+  ohne das Ergebnis der Freigabe zu prüfen; ein Lock, der dazwischen
+  ablief, wurde als `True` gemeldet, und jeder Treiberfehler wurde zu
+  einem pauschalen `BackendConnectionError`. Siehe Upgrade-Hinweis 6.
+- **Nebenläufige `ValkeyBackend.connect()` und `close()`.** Ein zweites
+  `connect()` während eines laufenden baute einen zweiten Client und
+  ließ den ersten offen; ein `close()` während `connect()` kehrte sofort
+  zurück und ließ den danach gebauten Client offen. Jetzt nutzt ein
+  nebenläufiges `connect()` den Client, der gerade entsteht, `close()`
+  wartet ein laufendes `connect()` ab, und kein Client bleibt
+  ungeschlossen. swarmq selbst ruft beide nicht nebenläufig auf; die
+  Korrektur gilt für Anwendungen, die es tun (E-082).
+- **PF-16: Valkey-Befehle vervielfachen ihre TCP-Versuche gegen einen
+  Host, der Pakete verwirft, nicht mehr.** Die Befehlswiederholung
+  (5 Wiederholungen) und die Wiederholung im Verbindungsaufbau
+  multiplizierten sich: Ein Befehl, dessen Verbindung starb, machte bis
+  zu 30 TCP-Versuche zu je 5 s. Siehe Upgrade-Hinweis 2 (E-075).
+- **F4-20: Nach einem Reconnect öffnet aio-pika keine Kanäle mehr, die
+  swarmq geschlossen oder verworfen hat.** Wegwerf-Kanäle (Deklaration,
+  Queue-Tiefe und -Status, DLQ) sind einfache Kanäle, ein verworfener
+  Publish-Kanal wird aus der Wiederherstellung abgemeldet, ebenso die
+  Kanäle, die `close()` auf einer injizierten Verbindung schließt.
+  Bisher wuchs die Kanalzahl beim Broker mit jedem Reconnect, und die
+  Tiefenabfrage einer inzwischen gelöschten Queue ließ den Reconnect
+  alle 5 s an `NOT_FOUND` scheitern. Siehe Upgrade-Hinweis 7 (E-078).
+- **F4-22: Ein Publish oder Worker-Start, der auf einen Reconnect
+  wartet, lässt keinen zweiten Kanal mehr zurück.** aio-pika meldet die
+  Verbindung als bereit, bevor es die Kanäle wiederherstellt; ein
+  Publish, der dazwischen aufwachte, fand seinen Kanal noch geschlossen
+  und öffnete einen neuen, und aio-pika stellte den alten trotzdem
+  wieder her. Die Kanalzahl beim Broker wuchs mit jedem Ausfall, den
+  ein Publish abwartete, um eins (`[1, 2]`, `[1, 2, 3]`,
+  `[1, 2, 3, 4]`). Jetzt wartet swarmq die Wiederherstellung ab und
+  behält den Kanal. Siehe Upgrade-Hinweis 7 (E-078).
+- **F4-21: Ein Publish, der bei blockierter Verbindung wartet, bemerkt
+  einen Verbindungsabriss** und wird nach dem Reconnect gesendet, statt
+  mit der Publish-Frist als `BrokerPublishBlocked` zu enden. Die Frist
+  bleibt die Obergrenze. Dauert der Alarm an und ist die neue
+  Verbindung noch nicht blockiert, wird auf ihr gesendet; der Publish
+  kann dann wie jeder erste Publish im Alarm als `PublishIndeterminate`
+  enden
+  ([`BrokerPublishBlocked`](errors.md#brokerpublishblocked), E-025).
+
+### Geändert
+
+- **`ValkeyBackend.connect()` wartet gegen einen Host, der Pakete
+  verwirft, bis zu seiner Frist.** Siehe Upgrade-Hinweis 1 (E-075).
+- **Ein Abbruch, bevor etwas gesendet wurde, gibt den
+  `unique_for`-Claim frei** (`PublishCancelledUnsent`). Siehe
+  Upgrade-Hinweis 3 (E-041).
+- **PF-19: Im Ressourcenalarm wartet das Schließen eines verworfenen
+  Publish-Kanals auf `connection.unblocked`**, höchstens die
+  Publish-Frist. Kein Kanal bleibt zurück, keine Kanalnummer wird
+  doppelt vergeben. Siehe Upgrade-Hinweis 4 (E-025, E-078).
+- **PF-20: Eine gelöschte konsumierte Queue legt die übrigen Queues des
+  Workers nicht mehr still.** Der Consumer-Wächter prüft die Queue
+  passiv, bevor er einen Consumer neu anmeldet; eine fehlende Queue
+  wird gemeldet (`consumer_queue_missing`, `/ready`), aus der
+  Wiederherstellung genommen und wieder konsumiert, sobald es sie
+  wieder gibt. Siehe Upgrade-Hinweis 8 (E-083).
+
+### Dokumentation
+
+- **`SWARMQ_BACKEND_CONNECT_TIMEOUT_S` ist gegen einen Host, der Pakete
+  verwirft, wieder eine Wartezeit.** Konfigurations- und API-Referenz
+  und `BackendConnectionError` sagen das; ein abweisender Port endet
+  weiter nach rund 3,1 s. Der Eintrag zu 0.13.0rc2 beschreibt 0.13 und
+  bleibt, wie er ist.
+- **Event-Katalog:** Die aiormq-WARNING
+  `Delivery tag … confirmed … was ignored` ist aufgenommen;
+  `publish_channel_close_incomplete` und die aiormq-Zeile
+  `Got frame for closed channel` erscheinen laut Katalog nur noch,
+  wenn der Alarm länger dauert als die Publish-Frist. Neu ist die
+  WARNING `robust_channel_release_unavailable` (F4-20), dazu die ERROR
+  `consumer_queue_missing`, die WARNING
+  `robust_queue_release_unavailable` und der Grund `queue_recreated`
+  von `consumer_reregistered` (PF-20).
+- **API-Referenz:** Vertragshinweise für 0.14.0 zu
+  `ResultBackend.connect`/`close`, `LockStore.force_release` und
+  `Publisher.publish` (`PublishCancelledUnsent`).
+- **Fehlerkatalog:** `PublishCancelledUnsent`, das zurückgestellte
+  Schließen des Kanals unter `BrokerPublishBlocked` und was ein
+  Verbindungsabriss beim Warten auf die Freigabe bewirkt (F4-21).
+- **Zustellsemantik und Deployment-Anleitung:** was passiert, wenn
+  eine konsumierte Queue bei laufenden Workern gelöscht wird, und dass
+  man zum Löschen oder Neuanlegen einer Queue weiterhin zuerst die
+  Worker stoppt
+  ([Konsumierte Queue löschen](../explanation/delivery-semantics.md#konsumierte-queue-loschen)).
+
 ## [0.13.1] — 2026-10-19
 
 0.13.1 ist 0.13.1rc1 ohne Codeänderungen. Die Korrekturen und die

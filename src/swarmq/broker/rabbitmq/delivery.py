@@ -23,7 +23,7 @@ from typing import Any, cast
 import aio_pika
 from aio_pika.exceptions import ChannelInvalidStateError, ChannelNotFoundEntity, DeliveryError, PublishError
 
-from swarmq.broker.rabbitmq.blocked import UNREADABLE, unblocked_event
+from swarmq.broker.rabbitmq.blocked import UNREADABLE, blocked_waiters, wait_until_unblocked
 from swarmq.broker.rabbitmq.connection import (
     _CHANNEL_TRANSIENT_ERRORS,
     _PUBLISH_MAX_ATTEMPTS,
@@ -41,6 +41,7 @@ from swarmq.contracts import Delivery, DeliveryCallback, PublishReceipt
 from swarmq.exceptions import (
     BrokerConnectionError,
     BrokerPublishBlocked,
+    PublishCancelledUnsent,
     PublishIndeterminate,
     PublishRejected,
     SettleFailedAfterPublish,
@@ -307,6 +308,9 @@ class RabbitMQDelivery(RabbitMQDeclarations):
         current_task().cancelling() rose above its value at entry (KTD9:
         a drain-cancelled handler keeps running with cancelling() > 0,
         E-001; its internal aio-pika cancel is a lost channel, not its own).
+        Kam der eigene Abbruch, bevor ein Versuch gesendet haben kann
+        (``maybe_sent``, E-042), geht er als ``PublishCancelledUnsent`` weiter
+        (Plan 0.14, U4).
         """
         cancelling_at_entry = _cancelling_now()
         # Vor jedem Versuch und ohne Wiederholung: zu grosse Header schloessen
@@ -333,6 +337,14 @@ class RabbitMQDelivery(RabbitMQDeclarations):
                     return await self._publish_attempts(routing_key, msg, in_flight, maybe_sent, cancelling_at_entry)
                 finally:
                     self._active_publish_timeouts.discard(timeout_cm)
+        except asyncio.CancelledError as exc:
+            # U4 (Plan 0.14, E-041, E-042): Der eigene Abbruch, bevor ein
+            # Versuch gesendet haben kann (Blocked-Warten, Kanalaufbau,
+            # Sperren-Warteschlange, Backoff nach nicht gesendeten Versuchen),
+            # bleibt ein Abbruch, traegt aber "nichts gesendet" zum Client.
+            if _is_own_cancel(exc, cancelling_at_entry) and not any(maybe_sent):
+                raise PublishCancelledUnsent(*exc.args) from exc
+            raise
         except TimeoutError as exc:
             if blocked:
                 # Nichts gesendet, der Kanal ist gesund: kein Verwurf, und
@@ -394,32 +406,42 @@ class RabbitMQDelivery(RabbitMQDeclarations):
         Unblockiert kostet das nur ein synchrones Lesen -- kein Roundtrip,
         kein ``wait_for``. Blockiert, wuerde ein Publish auf dem Socket
         haengen und als ``PublishIndeterminate`` enden; das Warten innerhalb
-        der Publish-Frist sendet nichts, bis der Alarm vorbei ist."""
-        event = unblocked_event(self._connection)
-        if event is UNREADABLE:
-            if not self._blocked_state_unreadable_reported:
-                self._blocked_state_unreadable_reported = True
+        der Publish-Frist sendet nichts, bis der Alarm vorbei ist.
+
+        Gewartet wird auf ``unblocked`` oder ``closing`` derselben
+        aiormq-Verbindung (F4-21): aiormq setzt das Event beim Schliessen
+        nicht. Endet die Verbindung, wird der Zustand neu gelesen: Hat aio-pika
+        schon neu verbunden und ist die neue Verbindung blockiert, wird auf
+        sie weiter gewartet. Ohne Verbindung oder noch auf der toten endet das
+        Warten, und ``_publish_attempts`` wartet auf den Reconnect; den
+        Blocked-Zustand der neuen Verbindung prueft es nicht erneut (E-025,
+        Grenze D-1), ein Publish auf ihr haengt dann bis zur Frist. Die Frist
+        bleibt die Obergrenze."""
+        while True:
+            waiters = blocked_waiters(self._connection)
+            if not isinstance(waiters, tuple):
+                break
+            if not blocked:
                 logger.warning(
-                    "publish_blocked_state_unreadable",
+                    "publish_connection_blocked",
+                    routing_key=routing_key,
                     hint=(
-                        "cannot read the connection.blocked state from aiormq; publishes run "
-                        "unchecked (fail-open) and hang on the socket during a broker alarm"
+                        "the broker blocked the publish connection (resource alarm: memory or disk); "
+                        "publishes wait until it is unblocked or the publish deadline expires"
                     ),
                 )
-            return
-        if not isinstance(event, asyncio.Event) or event.is_set():
-            return
-        logger.warning(
-            "publish_connection_blocked",
-            routing_key=routing_key,
-            hint=(
-                "the broker blocked the publish connection (resource alarm: memory or disk); "
-                "publishes wait until it is unblocked or the publish deadline expires"
-            ),
-        )
-        blocked.append(True)
-        await event.wait()
+                blocked.append(True)
+            await wait_until_unblocked(waiters, timeout=None)
         blocked.clear()
+        if waiters is UNREADABLE and not self._blocked_state_unreadable_reported:
+            self._blocked_state_unreadable_reported = True
+            logger.warning(
+                "publish_blocked_state_unreadable",
+                hint=(
+                    "cannot read the connection.blocked state from aiormq; publishes run "
+                    "unchecked (fail-open) and hang on the socket during a broker alarm"
+                ),
+            )
 
     def _report_closing_unreadable(self) -> None:
         if self._closing_unreadable_reported:
@@ -559,6 +581,11 @@ class RabbitMQDelivery(RabbitMQDeclarations):
         Leer vor dem ersten ``consume`` und nach ``cancel_consume``; Grundlage
         des Consumer-Checks von ``/ready`` (U6, R2)."""
         return self._consumer_watch.gaps()
+
+    def consumer_missing_queues(self) -> list[str]:
+        """Konsumierte Queues, die beim Broker fehlen (PF-20, E-083); ``/ready``
+        nennt sie, bis es sie wieder gibt."""
+        return self._consumer_watch.missing_queues()
 
     async def cancel_consume(self) -> None:
         """Cancel all active consumers to stop receiving new messages.

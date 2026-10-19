@@ -5,13 +5,13 @@ category: spikes
 module: broker/rabbitmq/connection
 problem_type: spike
 component: broker
-status: findings-captured
+status: implemented
 applies_when:
   - ein Plan will das Channel.Close im Ressourcenalarm bis connection.unblocked zurückstellen (PF-19 a)
   - Änderungen an _discard_publish_channel, _close_channel_detached oder _CHANNEL_CLOSE_TIMEOUT_S
   - eine Fehlersuche meldet „Got frame for closed channel“ oder publish_channel_close_incomplete im Alarm
 tags: [broker, blocked, alarm, kanal, close, aiormq, pf-19, r4i-04b, e-025, spike]
-entscheidungen: [E-025, E-041, E-042]
+entscheidungen: [E-025, E-041, E-042, E-078]
 ---
 
 # Spike PF-19 (a): Kanal-Close nach `unblocked`
@@ -96,3 +96,66 @@ der bisherigen 5-s-Frist. Festschreibender Integrationstest unter `exclusive` mi
 Ablauf: kein aiormq-ERROR, Kanal beim Broker geschlossen, neue Kanalnummer verschieden. Die schon
 beschlossene Doku (b) bleibt richtig; der Kommentar an `_CHANNEL_CLOSE_TIMEOUT_S` ist mit beiden
 Wegen zu berichtigen. Keine „Entscheidung überdenken?“-Markierung nötig.
+
+## Umsetzung (0.14, U6)
+
+Plan `docs/plans/2026-10-19-1500-feat-swarmq-0-14-plan.md` (R6, KTD5, U6), umgesetzt wie empfohlen,
+mit der Schranke aus Befund 4:
+
+- `blocked_close_waiters(connection)` in `broker/rabbitmq/blocked.py` liest beim Verwurf das
+  Unblocked-Event **und** das `closing`-Future derselben aiormq-Verbindung. Nicht blockiert, Zustand
+  oder `closing` unlesbar: `None`, sofortiges Close wie bisher (fail-open, E-025).
+- `wait_until_unblocked(...)` wartet auf `unblocked` oder `closing`, höchstens die Publish-Frist
+  (`_effective_publish_timeout()`, im ersten Schritt des Close-Tasks gelesen). Der Hilfs-Task für
+  `Event.wait()` wird danach abgebrochen; auch beim Abbruch durch `broker.close()` bleibt kein Task
+  zurück.
+- `_close_channel_detached` schließt danach wie bisher mit `_CHANNEL_CLOSE_TIMEOUT_S` (5 s).
+  `_drain_pending_channel_closes` ist unverändert.
+
+Festgeschrieben (Nachtrag E-025, Präzisierung E-078):
+
+- Unit: `tests/unit/broker/test_rabbitmq.py::TestChannelCloseAfterUnblocked` (fünf Tests: Close erst
+  nach `unblocked`; Alarm länger als die Frist; Verbindungsende; `closing` unlesbar;
+  `broker.close()` im Warten) und zwei neue Tests in `test_publish_deadline_channel_discard.py`
+  (übrige Confirms enden bestätigt bzw. mit ihrer eigenen Frist).
+- Integration (`exclusive`, `memory_alarm`): `tests/integration/broker/test_pf19_close_after_unblocked.py`,
+  Ablauf wie oben mit Publish-Frist 15 s und Aufhebung nach 8 s. Ohne die Änderung rot an der
+  aiormq-ERROR „Got frame for closed channel 1: <Channel.CloseOk>“; mit ihr keine ERROR, beim Broker
+  nur Kanal 2, `m2` bestätigt. Zweiter Test: Verbindungsende im Alarm (Management-API wie
+  `rabbitmqctl close_connection`), das wartende Close endet sofort.
+- Chaos (4.3.6-Stack): `tests/chaos/test_publish_deadline.py::TestDeferredCloseUnderAlarm`, Alarm plus
+  Toxiproxy `down` während des Wartens. Rot, wenn das Warten `closing` nicht beachtet.
+
+Nebenbeobachtungen bei der Umsetzung (nicht Teil von PF-19 a; gegengeprüft als F4-20 und F4-21,
+beide in 0.14 behoben, siehe unten):
+
+1. aio-pikas `RobustConnection` stellt nach einem Reconnect jeden `RobustChannel` aus ihrem `WeakSet`
+   wieder her, der noch nicht eingesammelt ist, auch explizit geschlossene oder verworfene
+   (`_on_connected` ruft `restore()` für alle, `close()` entfernt den Kanal nicht). Mit abgeschalteter
+   Garbage Collection standen nach einem Abriss 9 bis 11 zusätzliche Kanäle beim Broker, mit und ohne
+   PF-19 a; mit GC meist keiner, in einem von drei Testläufen einer.
+2. Nach einem Verbindungsabriss im Alarm zeigt `connection.transport` bis zum Reconnect (rund 5 s) auf
+   die tote aiormq-Verbindung, deren Unblocked-Event nie mehr gesetzt wird. Ein Publish in diesem
+   Fenster wartet in `_wait_while_blocked` bis zur Publish-Frist und endet als `BrokerPublishBlocked`,
+   statt nach dem Reconnect zu senden (einmal in sechs Integrationsläufen beobachtet). Die Schranke
+   „unblocked oder `closing`“ aus PF-19 a wäre dort dieselbe.
+
+### Nachtrag 0.14: F4-20 und F4-21 behoben
+
+- **F4-20** (Nebenbeobachtung 1): Wegwerf-Kanäle (Deklaration, Tiefe, Queue-Status, DLQ) sind
+  nicht mehr robust (`open_throwaway_channel` in `broker/rabbitmq/robust_channels.py`, ein
+  `aio_pika.Channel`); der verworfene Publish-Kanal und die Kanäle einer geliehenen Verbindung
+  werden aus dem `WeakSet` der `RobustConnection` abgemeldet (`release_channel`, privates API
+  `_RobustConnection__channels`, fail-open). Nachweis:
+  `tests/unit/broker/test_befund_f4_20_restore_closed_channels.py` und
+  `tests/integration/broker/test_befund_f4_20_restore_closed_channels.py` (Garbage Collection aus,
+  Abriss über die Management-API: beim Broker nur der lebende Kanal; Reconnect nach der Tiefe einer
+  gelöschten Queue binnen 10 s). Präzisierung in E-078.
+- **F4-21** (Nebenbeobachtung 2): `_wait_while_blocked` wartet auf `unblocked` oder `closing`
+  derselben aiormq-Verbindung (`blocked_waiters`, `wait_until_unblocked`) und liest nach einem
+  Abriss neu. Nachweis: `tests/unit/broker/test_befund_f4_21_blocked_wait_after_cut.py` und
+  `tests/integration/broker/test_befund_f4_21_blocked_wait_after_cut.py`. Nachtrag in E-025.
+- Weiter offen (eigener Verdacht, Gegenprüfung ausstehend): Ersetzt `_ensure_channel_tracked` im
+  Restore-Fenster eines Reconnects einen noch geschlossenen robusten Kanal durch einen neuen, stellt
+  aio-pika den alten trotzdem wieder her; er bleibt offen (Probe: je Reconnect mit einem Publish im
+  Fenster ein Kanal mehr beim Broker).

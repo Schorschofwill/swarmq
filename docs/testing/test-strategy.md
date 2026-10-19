@@ -16,7 +16,7 @@ unterschiedlichen Ausführungs-Stufen.
 | `tests/chaos/` | `chaos` | – | örtlich vor Releases | Toxiproxy + Container-Restart + Crash |
 | `tests/stress/` | `stress` | – | manuell in der Pipeline | hohe Parallelität (10 worker × 1000 tasks) |
 | `tests/soak/` | `soak` | – | manuell in der Pipeline | 1h Last-Test mit Leak-Detection |
-| `tests/compat/` | `compat` | – | örtlich, je MR des Plans 0.12.0 und vor Patch-Releases der 0.12-Reihe | Mischbetrieb mit swarmq aus PyPI (Q2): Basis 0.11.1, Rollback-Grenze 0.11.0, für die 0.12-Reihe die Basen 0.12.0 und 0.12.3; braucht Netz zu PyPI |
+| `tests/compat/` | `compat` | – | örtlich, je MR des Plans 0.12.0 und vor Releases der 0.12- bis 0.14-Reihe | Mischbetrieb mit swarmq aus PyPI (Q2): Basis 0.11.1, Rollback-Grenze 0.11.0, für die 0.12-Reihe die Basen 0.12.0 und 0.12.3, für die 0.13-Reihe die Basis 0.13.1 (`test_mixed_operation_0_13.py`, seit 0.14); braucht Netz zu PyPI |
 | `tests/integration/spikes/` | `spike` (+ `integration`) | ✓ | pre-merge | Charakterisierung RabbitMQ 4.3.6 und 4.2.9 (Spikes S1–S9) |
 
 `addopts` in `pyproject.toml` schliesst opt-in-Marker per Default aus,
@@ -150,8 +150,13 @@ docker run -d --name swarmq-test-toxiproxy --network host \
 uv run just chaos -m "chaos or stress or property or fuzz"
 ```
 
-Erwartung (Stand 2026-10-14): **116 passed, 4 skipped** (120 Tests). Die
-vier Skips sind begründet und sollen so bleiben — `libfaketime` fehlt (auf
+Erwartung (Stand 2026-10-19, Chaos-Stack auf RabbitMQ 4.3.6): **206
+passed, 4 skipped** (210 Tests: 46 in `tests/chaos`, 29 in
+`tests/e2e/combinations`, 33 Fuzz, 96 Property, 6 Stress). Am 2026-10-14
+waren es 116 passed; der Zuwachs kommt aus neuen Property- und
+Fuzz-Tests. Die Umstellung von 3.13.7 auf 4.3.6 (PF-1) änderte nichts:
+Derselbe Stand lief vorher auf 3.13.7 mit demselben Ergebnis, kein Test
+musste angepasst werden. Die vier Skips sind begründet und sollen so bleiben — `libfaketime` fehlt (auf
 die U3.x-Stressreihe vertagt), und die drei Disk-Pressure-Tests stehen
 hinter `SWARMQ_RUN_DISK_TESTS=1`, weil sie unter geteilter Last flattern.
 Jeder weitere Skip (etwa ein nicht erreichbarer Toxiproxy) heißt: Gate nicht
@@ -300,9 +305,10 @@ HYPOTHESIS_PROFILE=thorough uv run just property
 SWARMQ_SOAK_HOURS=1 uv run --extra test pytest tests/soak -m soak
 
 # Mischbetrieb ältere Version / Arbeitsstand: legt pro Sitzung je ein venv
-# mit swarmq==0.11.1, 0.11.0, 0.12.0 und 0.12.3 an (Abhängigkeiten aus
-# tests/compat/constraints-<version>.txt); die Tests der 0.12-Reihe laufen
-# parametrisiert gegen 0.12.0 und 0.12.3; ohne eigenes Rezept, Sperre per Hand
+# mit swarmq==0.11.1, 0.11.0, 0.12.0, 0.12.3 und 0.13.1 an (Abhängigkeiten
+# aus tests/compat/constraints-<version>.txt); die Tests der 0.12-Reihe laufen
+# parametrisiert gegen 0.12.0 und 0.12.3, die der 0.13-Reihe gegen 0.13.1;
+# ohne eigenes Rezept, Sperre per Hand
 scripts/with-test-lock.sh uv run --extra test --extra reload pytest tests/compat -m compat -q
 ```
 
@@ -333,6 +339,15 @@ Was der Namensraum nicht trennt, regelt `tests/support/xdist_isolation.py`:
   Durchgang wählt sie ab (`SWARMQ_TEST_EXCLUSIVE=skip`), ein zweiter,
   serieller Durchgang führt nur sie aus (`only`); seine JUnit-Datei endet auf
   `-serial.xml`. Ein leerer Durchgang (Exit 5) zählt nicht als Fehler.
+- Den Speicheralarm löst die Fixture `memory_alarm` aus
+  (`tests/integration/broker/conftest.py`, seit 0.14 gemeinsam für BZ-16,
+  U4 und PF-19 a). Sie liefert ein aufrufbares `MemoryAlarm`: Der Aufruf löst
+  den Alarm aus, `release()` hebt ihn im Test auf und wartet, bis er weg ist.
+  Am Testende stellt die Fixture die vorher gelesene Wasserlinie immer exakt
+  wieder her, auch nach einem `release()` und auch eine absolute
+  (`{absolute,N}`, etwa das 4-GB-Limit des lokalen Test-Brokers); vorher
+  übersprang BZ-16 auf diesem Broker still. Läuft der Test-Broker nicht im
+  erwarteten Container, wird der Test übersprungen.
 - Tests mit engem Zeitbudget gegen die echte Uhr (Abbruch auf 5 ms genau,
   Loop-Lag, Fork-Budget) tragen `@pytest.mark.timing` und laufen ebenso im
   seriellen Durchgang, auch in der Unit-Suite (`just unit`). Parallele Last
@@ -355,7 +370,7 @@ fest):
 |---|---|---|
 | `rabbitmq` (Compose, CI) | `rabbitmq:4.3.6-management` | Hauptbroker aller Integrations- und e2e-Tests |
 | `rabbitmq42` (Compose, CI-Job `integration-tests`) | `rabbitmq:4.2.9-management` | nur die 4.2-Charakterisierung; gestartet mit `channel_tick_interval 1000`, denn bis 4.2 prüft der Channel den Timeout nur je Tick (Standard 60 s); so schließt er nach etwa 4 s |
-| Chaos-Stack (`tests/chaos/compose.yml`) | `rabbitmq:3.13.7-management-alpine` | Stand, gegen den die Chaos-Suite bisher lief; ein Wechsel auf 4.x ist eine eigene Entscheidung |
+| Chaos-Stack (`tests/chaos/compose.yml`) | `rabbitmq:4.3.6-management` | seit 0.14 (PF-1) dasselbe Abbild wie Hauptbroker und CI, dazu `ghcr.io/shopify/toxiproxy:2.9.0` und `valkey/valkey:8.1.10-alpine` wie in der Loadsuite; bis 0.13 `rabbitmq:3.13.7-management-alpine` |
 
 Die Consumer-Timeout-Tests setzen per Management-API eine Policy und
 brauchen dafür zusätzlich die Management-Ports. Variablen (der 4.2-Broker

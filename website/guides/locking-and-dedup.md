@@ -257,7 +257,14 @@ stays until it expires when the outcome is unknown: after
 (a timeout around it, `task.cancel()`) during the publish or while
 storing, because the message or entry may have arrived. A retry in
 that window is reported as a duplicate. Definite failures release the
-claim.
+claim. Since 0.14 so does a cancel before the broker can have sent the
+message: while the publish waits for a connection that the broker
+blocked in a resource alarm, opens the publish channel, waits for the
+channel lock or backs off after an attempt that sent nothing. The
+broker then raises `PublishCancelledUnsent`, a subclass of
+`asyncio.CancelledError` ([error catalog](../reference/errors.md#outside-the-hierarchy-publishcancelledunsent)).
+A cancel while a `delay`/`eta` entry is stored keeps the claim, since
+nothing is published there.
 
 ### Per-call override
 

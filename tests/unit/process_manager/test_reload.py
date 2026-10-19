@@ -37,22 +37,29 @@ Tests der echten Probe stehen in
 #       Maske danach wieder die alte; ein waehrenddessen eingetroffenes
 #       SIGTERM wird dann zugestellt (Rot per Mutation geprueft: die
 #       Wiederherstellung kam mit der Obvious Implementation des ersten Tests)
+# Plan 0.14, U7 (a) -- der Rueckweg im echten Handler:
+# - [x] ein SIGTERM, das ein anderer Thread annimmt, waehrend ``reexec`` die
+#       Signale haelt: Der Handler im Hauptthread stellt es dort erneut zu,
+#       es ist vor ``execve`` anhaengig (``signal.raise_signal``)
 
 from __future__ import annotations
 
 import json
 import signal
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
+from swarmq.process_manager import ProcessManager
 from swarmq.process_manager.reload import ReloadController, reexec
 from tests.unit.process_manager._helpers import FakeClock as _Clock
 from tests.unit.process_manager._helpers import FakeProbe as _Probe
 from tests.unit.process_manager._helpers import FakeProbeFactory as _Factory
+from tests.unit.process_manager._helpers import _entry_stub
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -316,7 +323,7 @@ def test_without_execvpe_the_mask_is_restored_and_a_held_sigterm_delivered(signa
         # kann ein anderer Thread (xdist/execnet) annehmen, dann laeuft der
         # Rekorder erst nach der Pruefung (CI-Pipeline 2963323353). Den
         # Rueckweg im echten Handler (``_reexec_holds_signals``) deckt
-        # dieser Test nicht ab.
+        # ``test_a_sigterm_taken_by_another_thread_is_pending_again_before_execve``.
         _log_shutdown_signal=lambda: signal.pthread_kill(threading.get_ident(), signal.SIGTERM),
     )
     with patch("swarmq.process_manager.reload.shutdown_logging"):
@@ -335,3 +342,51 @@ def test_a_failed_execvpe_restores_the_mask(signal_mask):
         assert reexec(_pm(), 0) == 1
 
     assert _blocked() == before
+
+
+@pytest.mark.usefixtures("_restore_default_signals")
+def test_a_sigterm_taken_by_another_thread_is_pending_again_before_execve(signal_mask):
+    """Das SIGTERM nimmt ein Thread an, fuer den es nicht blockiert ist; der
+    Python-Handler laeuft im Hauptthread, waehrend ``reexec`` die Signale
+    haelt, und stellt es dort erneut zu: Es ist vor ``execve`` anhaengig.
+
+    Zugestellt wird an Threads, nicht an den Prozess -- unter xdist nimmt
+    sonst womoeglich ein fremder Thread das Signal an."""
+    pm = ProcessManager(num_workers=0, worker_entry=_entry_stub)
+    pm._setup_signals()
+    pm._reload_requested = True
+    fire = threading.Event()
+    sent = threading.Event()
+
+    def other_thread() -> None:
+        # Vor dem gesperrten Fenster gestartet: SIGTERM ist hier nicht blockiert.
+        fire.wait()
+        signal.pthread_kill(threading.get_ident(), signal.SIGTERM)
+        sent.set()
+
+    helper = threading.Thread(target=other_thread)
+    helper.start()
+    at_execve: list[tuple[str | None, bool]] = []
+
+    def execvpe(*_args: object) -> None:
+        fire.set()
+        assert sent.wait(5)
+        deadline = time.monotonic() + 5
+        while pm._shutdown_signal is None and time.monotonic() < deadline:
+            pass  # der Handler laeuft zwischen zwei Bytecodes des Hauptthreads
+        at_execve.append((pm._shutdown_signal, signal.SIGTERM in signal.sigpending()))
+
+    try:
+        with (
+            patch("swarmq.process_manager.reload.shutdown_logging"),
+            patch("swarmq.process_manager.reload.os.execvpe", side_effect=execvpe),
+        ):
+            reexec(pm, 0)
+    finally:
+        fire.set()
+        helper.join(5)
+
+    assert at_execve == [("SIGTERM", True)]
+    # Ohne ``execve`` stellt die alte Maske es zu, der Handler laeuft harmlos.
+    assert signal.SIGTERM not in signal.sigpending()
+    assert pm._shutdown_signal == "SIGTERM"

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import selectors
 from collections.abc import Callable, Coroutine
 from typing import Any, override
@@ -44,3 +45,17 @@ def run_virtual[T](main: Callable[[], Coroutine[Any, Any, T]]) -> T:
         return loop.run_until_complete(main())
     finally:
         loop.close()
+
+
+def on_virtual_clock[**P](test: Callable[P, Coroutine[Any, Any, None]]) -> Callable[P, None]:
+    """Macht aus einem ``async``-Test einen synchronen, der auf der virtuellen
+    Uhr laeuft. Fixtures und Marker bleiben, der Testkoerper bleibt
+    unveraendert: Nur die Zeitquelle wechselt. Wie bei pytest-asyncio werden
+    am Ende liegengebliebene Tasks abgebrochen (``asyncio.Runner``)."""
+
+    @functools.wraps(test)
+    def run(*args: P.args, **kwargs: P.kwargs) -> None:
+        with asyncio.Runner(loop_factory=_VirtualTimeLoop) as runner:
+            runner.run(test(*args, **kwargs))
+
+    return run

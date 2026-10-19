@@ -17,6 +17,7 @@ from aio_pika.exceptions import ChannelNotFoundEntity
 
 from swarmq.broker.rabbitmq.connection import RabbitMQConnection, close_channel_quietly
 from swarmq.broker.rabbitmq.delivery import RabbitMQDelivery, dead_letter_ttl_header, message_of, settle
+from swarmq.broker.rabbitmq.robust_channels import open_throwaway_channel
 from swarmq.contracts import Delivery
 from swarmq.contracts.broker import DeadLetterScan, QueueStatus
 from swarmq.exceptions import BrokerConnectionError
@@ -127,7 +128,7 @@ class RabbitMQAdmin(RabbitMQDelivery):
         connection = self._admin_connection()
         if connection is None or connection.is_closed:
             raise BrokerConnectionError("broker is not connected")
-        channel = await connection.channel()
+        channel = await open_throwaway_channel(connection)
         try:
             return await channel.get_queue(f"{queue_name}.XQ")
         except BaseException:
@@ -631,14 +632,13 @@ class RabbitMQAdmin(RabbitMQDelivery):
         try:
             for name in names:
                 if channel is None or channel.is_closed:
-                    channel = await connection.channel()
+                    channel = await open_throwaway_channel(connection)
                 try:
                     q = await channel.declare_queue(name, passive=True)
                 except ChannelNotFoundEntity:
                     # Queue does not exist. The broker closed the
                     # channel, so ``is_closed`` is already True: close it here
-                    # WITHOUT that guard, or a RobustChannel reopens itself and
-                    # is never closed (Review MR 10, P0-1; like ``arg_conflict``).
+                    # WITHOUT that guard (Review MR 10, P0-1; like ``arg_conflict``).
                     await close_channel_quietly(channel)
                     channel = None
                     results[name] = None

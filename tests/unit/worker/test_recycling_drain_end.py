@@ -6,7 +6,9 @@ ohne Recycling ``drain_until`` aus dem Budget, mit Recycling-Override
 und das Ende der Aufraeumschritte wird danach neu angesetzt -- sonst bekaeme
 jeder Schritt nach einem langen Recycling-Drain nur die Untergrenze.
 
-Zeit ist skaliert (wie ``test_shutdown_budget_steps.py``).
+Zeit ist skaliert (wie ``test_shutdown_budget_steps.py``). Alle Tests laufen
+auf der virtuellen Loop-Uhr (``on_virtual_clock``, 0.14): Die Zeit springt nur
+vor, wenn die Loop wartet, Planungsverzug unter Last verschiebt keine Frist.
 
 Testliste:
 - [x] Recycling: die Publish-Endfrist ist started_at + Override, nicht drain_until
@@ -33,8 +35,15 @@ from swarmq import supervision as sv
 from swarmq.shutdown_budget import shutdown_budget
 from swarmq.worker import WorkerState
 from swarmq.worker import lifecycle as _lc
+from tests.support.virtual_time import on_virtual_clock
 
-pytestmark = [pytest.mark.timeout(5), pytest.mark.timing]
+# Die Fenster von 50 und 100 ms laufen auf der virtuellen Uhr; ein serieller
+# Durchgang (``timing``) ist deshalb nicht mehr noetig.
+pytestmark = [pytest.mark.timeout(5)]
+
+# Auf der virtuellen Uhr steht die Zeit, solange die Loop arbeitet: Fristen
+# treffen bis auf Rundung genau (wie ``test_recycling_sigterm.py``).
+_VIRTUAL_EPS = 1e-9
 
 
 def _until(worker: Any, seconds: float) -> asyncio.Task[bool]:
@@ -59,6 +68,7 @@ def _deadlines(broker: Any) -> list[float | None]:
     return [call.args[0] for call in broker.set_publish_deadline.call_args_list]
 
 
+@on_virtual_clock
 async def test_recycling_publish_deadline_follows_the_drain_end(worker: Any, broker: Any) -> None:
     worker._config.shutdown_timeout = 0.02
     worker._drain_timeout_override = 5.0
@@ -71,6 +81,7 @@ async def test_recycling_publish_deadline_follows_the_drain_end(worker: Any, bro
     assert last is None
 
 
+@on_virtual_clock
 async def test_without_recycling_the_publish_deadline_stays_at_drain_until(worker: Any, broker: Any) -> None:
     worker._config.shutdown_timeout = 0.02
     drain_until = shutdown_budget(0.02, supervised=False).drain_until
@@ -121,9 +132,14 @@ async def _cleanup_after_long_recycling_drain(worker: Any, total: float) -> tupl
 
     ((step_timeout, stop_at),) = seen
     (task_done_at,) = done_at
+    # Auf der echten Uhr fiel ein abgebrochener statt abgewarteter Task nur
+    # ueber den Zeitverzug auf; auf der virtuellen Uhr ist das Ende exakt,
+    # deshalb wird das Abwarten selbst geprueft.
+    assert not task.cancelled(), "der Recycling-Drain wartet den Task ab, statt ihn abzubrechen"
     return step_timeout, stop_at - task_done_at
 
 
+@on_virtual_clock
 async def test_cleanup_after_a_long_recycling_drain_gets_the_reserve_from_the_drain_end(
     worker: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -136,9 +152,10 @@ async def test_cleanup_after_a_long_recycling_drain_gets_the_reserve_from_the_dr
     assert step_timeout + since_task_end >= reserve, (
         f"Aufraeumschritt bekam nur {step_timeout}s statt der Reserve ab Drain-Ende"
     )
-    assert step_timeout <= reserve
+    assert step_timeout <= reserve + _VIRTUAL_EPS
 
 
+@on_virtual_clock
 async def test_supervised_recycling_cleanup_gets_the_supervised_reserve_from_the_drain_end(
     worker: Any, monkeypatch: pytest.MonkeyPatch, supervised: None
 ) -> None:
@@ -153,9 +170,10 @@ async def test_supervised_recycling_cleanup_gets_the_supervised_reserve_from_the
     step_timeout, since_task_end = await _cleanup_after_long_recycling_drain(worker, 0.04)
 
     assert step_timeout + since_task_end >= reserve
-    assert step_timeout <= reserve
+    assert step_timeout <= reserve + _VIRTUAL_EPS
 
 
+@on_virtual_clock
 async def test_override_zero_means_no_recycling_drain(worker: Any, broker: Any) -> None:
     worker._config.shutdown_timeout = 0.02
     worker._drain_timeout_override = 0
@@ -168,6 +186,7 @@ async def test_override_zero_means_no_recycling_drain(worker: Any, broker: Any) 
     assert started + drain_until <= first < started + drain_until + 0.05
 
 
+@on_virtual_clock
 async def test_a_short_recycling_drain_does_not_shrink_the_cleanup_budget(
     worker: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -188,6 +207,7 @@ async def test_a_short_recycling_drain_does_not_shrink_the_cleanup_budget(
     assert step_timeout > 1.5
 
 
+@on_virtual_clock
 async def test_sigterm_drain_never_moves_the_cleanup_end_past_the_budget(
     worker: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

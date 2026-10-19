@@ -9,12 +9,9 @@ getrennte Verbindungen. ``connection.blocked`` wird nicht behandelt.
 Erwartet (Nutzersicht): während ein Publish im Alarm hängt, kommen Acks
 anderer Nachrichten desselben Workers beim Broker an.
 
-Der Test löst auf dem Test-Broker (Port 5699) per ``rabbitmqctl`` einen
-Speicher-Alarm aus und setzt die Wasserlinie im ``finally`` exakt auf den
-vorher gelesenen Wert zurück. Er läuft nur, wenn der Docker-Container des
-Test-Brokers eindeutig zu ``SWARMQ_TEST_RABBITMQ_PORT`` gehört; Läufe über
-``itest.sh`` sind per ``flock`` serialisiert, andere Läufe sehen den Alarm
-daher nicht.
+Den Speicher-Alarm löst die Fixture ``memory_alarm`` aus
+(``tests/integration/broker/conftest.py``); sie setzt die Wasserlinie danach
+exakt zurück.
 
 Test-Liste:
 - [x] Ack kommt an, während ein Publish desselben Workers im Alarm hängt (BZ-16)
@@ -24,96 +21,29 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import os
-import subprocess
-import time
 import uuid
 
 import pytest
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.contracts import Delivery
+from tests.integration.broker.conftest import rabbitmq_eval, wait_for_alarm
 from tests.support.queues import delete_queue_family
-from tests.support.services import RABBITMQ_PORT
 from tests.support.wait import wait_until
 
 # exclusive: der Speicheralarm blockiert jeden Verleger des Brokers, auch die
 # parallelen xdist-Prozesse (tests/support/xdist_isolation.py).
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(30), pytest.mark.exclusive]
 
-_CONTAINER = os.environ.get("SWARMQ_TEST_RABBITMQ_CONTAINER", "swarmq-test-rabbit")
-_ALARM_WATERMARK = "0.0000001"
 _ACK_BUDGET_S = 3.0
 
 
-def _rabbitmqctl(*args: str) -> str:
-    result = subprocess.run(
-        ["docker", "exec", _CONTAINER, "rabbitmqctl", *args],
-        capture_output=True,
-        text=True,
-        timeout=20,
-        check=True,
-    )
-    return result.stdout.strip()
-
-
-def _eval(expr: str) -> str:
-    return _rabbitmqctl("eval", expr)
-
-
-def _container_serves_test_port() -> bool:
-    try:
-        mapping = subprocess.run(
-            ["docker", "port", _CONTAINER, "5672/tcp"], capture_output=True, text=True, timeout=10, check=True
-        ).stdout
-    except OSError, subprocess.SubprocessError:
-        return False
-    return any(line.rsplit(":", 1)[-1].strip() == str(RABBITMQ_PORT) for line in mapping.splitlines())
-
-
 def _unacked(queue: str) -> int:
-    out = _eval(
+    out = rabbitmq_eval(
         f'{{ok,Q}}=rabbit_amqqueue:lookup(rabbit_misc:r(<<"/">>,queue,<<"{queue}">>)),'
         "proplists:get_value(messages_unacknowledged, rabbit_amqqueue:info(Q,[messages_unacknowledged]))."
     )
     return int(out)
-
-
-async def _wait_for_alarm(active: bool, timeout: float = 10.0) -> None:
-    async def reached() -> bool:
-        alarms = await asyncio.to_thread(_eval, "rabbit_alarm:get_alarms().")
-        return (alarms != "[]") == active
-
-    # rabbitmqctl kennt kein Warten auf Alarme.
-    if not await wait_until(reached, timeout=timeout, interval=0.1):
-        raise AssertionError(f"broker alarm state did not become active={active} within {timeout}s")
-
-
-@pytest.fixture
-def memory_alarm():
-    """Löst einen Speicher-Alarm aus und setzt die Wasserlinie sicher zurück."""
-    if not _container_serves_test_port():
-        pytest.skip(f"BZ-16: Docker-Container {_CONTAINER!r} bedient nicht Port {RABBITMQ_PORT}")
-    original = _eval("vm_memory_monitor:get_vm_memory_high_watermark().")
-    try:
-        float(original)
-    except ValueError:
-        pytest.skip(f"BZ-16: unerwartete Wasserlinie {original!r}, Broker bleibt unangetastet")
-
-    def trigger() -> None:
-        _rabbitmqctl("set_vm_memory_high_watermark", _ALARM_WATERMARK)
-
-    try:
-        yield trigger
-    finally:
-        _rabbitmqctl("set_vm_memory_high_watermark", original)
-        restored = _eval("vm_memory_monitor:get_vm_memory_high_watermark().")
-        assert float(restored) == float(original), f"watermark not restored: {restored} != {original}"
-        # Erst zurückgeben, wenn der Alarm wirklich weg ist.
-        deadline = time.monotonic() + 15
-        while _eval("rabbit_alarm:get_alarms().") != "[]":
-            assert time.monotonic() < deadline, "broker alarm still active after restoring the watermark"
-            time.sleep(0.1)
 
 
 async def test_ack_reaches_broker_while_publish_is_blocked_by_alarm(rabbitmq_url: str, memory_alarm) -> None:
@@ -139,7 +69,7 @@ async def test_ack_reaches_broker_while_publish_is_blocked_by_alarm(rabbitmq_url
         assert await asyncio.to_thread(_unacked, queue) == 2, "precondition: A and B are in flight"
 
         memory_alarm()
-        await _wait_for_alarm(active=True)
+        await wait_for_alarm(active=True)
 
         # A wird zurückgestellt: der Publish hängt im Alarm.
         blocked_publish = asyncio.create_task(worker.retry_later(by_body[b"A"], delay_ms=60_000, headers={}))

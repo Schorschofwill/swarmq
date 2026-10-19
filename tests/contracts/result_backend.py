@@ -38,6 +38,21 @@ class ResultBackendContract:
         with pytest.raises(BackendConnectionError):
             await unreachable_impl.connect()
 
+    @pytest.mark.entscheidung("E-082")
+    async def test_concurrent_connects_leave_one_usable_connection(self, fresh_impl: ResultBackend) -> None:
+        await asyncio.gather(fresh_impl.connect(), fresh_impl.connect())
+        await fresh_impl.ping()
+        await fresh_impl.close()
+
+    @pytest.mark.entscheidung("E-082")
+    async def test_close_during_connect_ends_closed(self, fresh_impl: ResultBackend) -> None:
+        """``close()`` wartet ein laufendes ``connect()`` ab und schliesst danach."""
+        connecting = asyncio.create_task(fresh_impl.connect(), eager_start=True)
+        await fresh_impl.close()
+        await connecting
+        with pytest.raises(BackendConnectionError):
+            await fresh_impl.ping()
+
     # --- Ergebnisse -----------------------------------------------------------
 
     async def test_store_and_get_result(self, impl: ResultBackend) -> None:

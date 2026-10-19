@@ -23,6 +23,23 @@ Test-Liste:
       ``CancelledError``, kein ``post_enqueue``/``TASK_ENQUEUED``
 - [x] verzögerter Pfad: ``RuntimeError`` beim Speichern gibt weiter frei
       (bestehender E-059-Test ``other-error``)
+
+Nachtrag 0.14 (Plan U4, E-041): Meldet der Broker den Abbruch als
+``PublishCancelledUnsent`` (nachweislich nichts gesendet), gibt der Client
+den Claim frei; der Abbruch geht weiter.
+- [x] sofortiger Pfad: markierter Abbruch -> Claim frei, ``CancelledError``,
+      kein ``post_enqueue``/``TASK_ENQUEUED``
+- [x] ``schedule_many``: markierter Eintrag gibt frei, unmarkierter hält,
+      der Batch wirft ``CancelledError``
+- [x] ``schedule_many``: Abbruch des Aufrufers, alle Publishes markiert ->
+      Claims frei
+- [x] Aufrufer mit ``asyncio.timeout`` um ``schedule()``: ``TimeoutError``,
+      Claim frei
+- [x] zweiter Abbruch während der Freigabe: der Abbruch geht weiter, die
+      Freigabe endet unvollständig (Claim bleibt konservativ stehen)
+- [x] ``schedule_many``: ein Eintrag scheitert schnell und bestimmt
+      (``UnroutableMessage``), ein anderer hängt, der Aufrufer bricht ab ->
+      beide Claims frei (Review 0.14, P4)
 """
 
 from __future__ import annotations
@@ -35,6 +52,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from swarmq.client import Client
+from swarmq.exceptions import PublishCancelledUnsent, UnroutableMessage
 from swarmq.middleware import MessageContext, Middleware, MiddlewareChain
 from swarmq.signals import Signal
 
@@ -55,6 +73,92 @@ async def _cancel_when(started: asyncio.Event, call: Awaitable[Any]) -> None:
     task = asyncio.ensure_future(call)
     await started.wait()
     task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert task.cancelled()
+
+
+def _hanging_then_unsent(started: asyncio.Event) -> Callable[..., Awaitable[Any]]:
+    """Publish wie der RabbitMQ-Broker im Blocked-Warten: Er hängt, und ein
+    Abbruch endet als ``PublishCancelledUnsent`` (nichts gesendet)."""
+
+    async def hang(*_args: Any, **_kwargs: Any) -> Any:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError as exc:
+            raise PublishCancelledUnsent(*exc.args) from exc
+
+    return hang
+
+
+@pytest.mark.entscheidung("E-041")
+async def test_cancel_marked_unsent_by_the_broker_releases_the_unique_claim(broker, backend, registry) -> None:
+    started = asyncio.Event()
+    middleware = MagicMock(spec=Middleware)
+    middleware.pre_enqueue = AsyncMock()
+    middleware.post_enqueue = AsyncMock()
+    dispatcher = MagicMock()
+    dispatcher.dispatch = AsyncMock()
+    client = Client(
+        broker=broker,
+        backend=backend,
+        registry=registry,
+        middleware_chain=MiddlewareChain([middleware]),
+        signal_dispatcher=dispatcher,
+    )
+    broker.publish = AsyncMock(side_effect=_hanging_then_unsent(started))
+    backend.claim_unique = AsyncMock(return_value=None)
+    backend.release_unique = AsyncMock()
+
+    await _cancel_when(started, client.schedule("add", 1, 2, queue="math", unique_for=60))
+
+    backend.release_unique.assert_awaited_once()
+    middleware.post_enqueue.assert_not_awaited()
+    assert [c for c in dispatcher.dispatch.await_args_list if c.args[0] is Signal.TASK_ENQUEUED] == []
+
+
+@pytest.mark.entscheidung("E-041")
+async def test_caller_timeout_around_schedule_raises_timeout_and_releases_the_claim(client, broker, backend) -> None:
+    """``asyncio.timeout`` des Aufrufers erkennt ``PublishCancelledUnsent``
+    als seinen Abbruch: Der Aufrufer sieht ``TimeoutError``, der Claim ist frei."""
+    started = asyncio.Event()
+    broker.publish = AsyncMock(side_effect=_hanging_then_unsent(started))
+    backend.claim_unique = AsyncMock(return_value=None)
+    backend.release_unique = AsyncMock()
+    deadline: list[asyncio.Timeout] = []
+
+    async def caller() -> object:
+        async with asyncio.timeout(None) as cm:
+            deadline.append(cm)
+            return await client.schedule("add", 1, 2, queue="math", unique_for=60)
+
+    task = asyncio.create_task(caller())
+    await started.wait()
+    deadline[0].reschedule(asyncio.get_running_loop().time())
+
+    with pytest.raises(TimeoutError):
+        await task
+    backend.release_unique.assert_awaited_once()
+
+
+@pytest.mark.entscheidung("E-041")
+async def test_second_cancel_during_the_release_is_not_swallowed(client, broker, backend) -> None:
+    started, releasing = asyncio.Event(), asyncio.Event()
+    broker.publish = AsyncMock(side_effect=_hanging_then_unsent(started))
+    backend.claim_unique = AsyncMock(return_value=None)
+    backend.release_unique = AsyncMock(side_effect=_hanging(releasing))
+
+    task = asyncio.ensure_future(client.schedule("add", 1, 2, queue="math", unique_for=60))
+    await started.wait()
+    task.cancel()
+    await releasing.wait()
+    task.cancel()
+
+    # Verschluckte die Freigabe den zweiten Abbruch, hinge der Task in ihr:
+    # ein Fehlschlag an der Assertion statt eines Hängers.
+    done, _ = await asyncio.wait({task}, timeout=1.0)
+    assert task in done, "the second cancel ends the task instead of being swallowed by the release"
     with pytest.raises(asyncio.CancelledError):
         await task
     assert task.cancelled()
@@ -153,6 +257,70 @@ async def test_schedule_many_with_a_failed_and_a_cancelled_publish_raises_cancel
     first_hash = backend.claim_unique.await_args_list[0].args[0]
     backend.release_unique.assert_awaited_once()
     assert backend.release_unique.await_args.args[0] == first_hash
+
+
+@pytest.mark.entscheidung("E-041")
+async def test_schedule_many_releases_only_the_claim_of_a_publish_marked_unsent(client, broker, backend) -> None:
+    """Index 0 endet als ``PublishCancelledUnsent`` (nichts gesendet), Index 1
+    mit einem unmarkierten ``CancelledError`` (unbestimmt). Nur der Claim von
+    0 wird frei; der Batch wirft ``CancelledError`` (B24). ``gather`` ersetzt
+    den Abbruch eines Kinds durch einen neuen ``CancelledError``; die
+    Markierung muss das überstehen."""
+    backend.claim_unique = AsyncMock(return_value=None)
+    backend.release_unique = AsyncMock()
+    broker.publish = AsyncMock(side_effect=[PublishCancelledUnsent(), asyncio.CancelledError()])
+
+    with pytest.raises(asyncio.CancelledError):
+        await client.schedule_many([("add", (1, 2), {}), ("add", (3, 4), {})], unique_for=60)
+
+    first_hash = backend.claim_unique.await_args_list[0].args[0]
+    backend.release_unique.assert_awaited_once()
+    assert backend.release_unique.await_args.args[0] == first_hash
+
+
+@pytest.mark.entscheidung("E-041")
+async def test_cancel_of_schedule_many_with_publishes_marked_unsent_releases_their_claims(
+    client, broker, backend
+) -> None:
+    """Der Abbruch des Aufrufers trifft ``gather``, das die Publishes abbricht.
+    Melden beide ``PublishCancelledUnsent``, werden beide Claims frei; der
+    Abbruch geht weiter."""
+    started = asyncio.Event()
+    broker.publish = AsyncMock(side_effect=_hanging_then_unsent(started))
+    backend.claim_unique = AsyncMock(return_value=None)
+    backend.release_unique = AsyncMock()
+
+    await _cancel_when(started, client.schedule_many([("add", (1, 2), {}), ("add", (3, 4), {})], unique_for=60))
+
+    claimed = sorted(c.args[0] for c in backend.claim_unique.await_args_list)
+    assert sorted(c.args[0] for c in backend.release_unique.await_args_list) == claimed
+
+
+async def test_cancel_of_schedule_many_releases_the_claim_of_an_entry_that_failed_before_sending(
+    client, broker, backend
+) -> None:
+    """Eintrag 0 scheitert sofort und bestimmt ohne Senden (``UnroutableMessage``),
+    Eintrag 1 wartet blockiert und meldet den Abbruch als nicht gesendet. Bricht
+    der Aufrufer ab, werden beide Claims frei, nicht nur der des wartenden."""
+    started = asyncio.Event()
+    unsent = _hanging_then_unsent(started)
+    calls = 0
+
+    async def publish(*args: Any, **kwargs: Any) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise UnroutableMessage("publish to 'math' was returned unroutable")
+        await unsent(*args, **kwargs)
+
+    broker.publish = AsyncMock(side_effect=publish)
+    backend.claim_unique = AsyncMock(return_value=None)
+    backend.release_unique = AsyncMock()
+
+    await _cancel_when(started, client.schedule_many([("add", (1, 2), {}), ("add", (3, 4), {})], unique_for=60))
+
+    claimed = sorted(c.args[0] for c in backend.claim_unique.await_args_list)
+    assert sorted(c.args[0] for c in backend.release_unique.await_args_list) == claimed
 
 
 @pytest.mark.entscheidung("E-059")

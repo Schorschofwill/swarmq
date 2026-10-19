@@ -629,7 +629,10 @@ same applies during shutdown for settles on tags the broker cancelled.
 before the first `consume` (`not consuming: <queues>`) and once a
 queue has had no active consumer for more than
 `SWARMQ_CONSUMER_READY_GRACE_S` (default 30 s): `no active consumer for
-more than 30.0s: <queues>`. **Never use `/ready` as a liveness probe**:
+more than 30.0s: <queues>`. A consumed queue that no longer exists at
+the broker makes it not ready at once, without the grace period:
+`consumed queue missing at the broker: <queues>`
+([deleting a consumed queue](#deleting-a-consumed-queue)). **Never use `/ready` as a liveness probe**:
 a broker outage would then restart every worker at once, and a restart
 does not help — the watch registers the consumer again by itself. Use
 `/health` for liveness.
@@ -940,7 +943,10 @@ queue at-least-once dead-lettering without a policy, migrate it:
    backend) that may be due only much later: wait for them, or move
    them to a temporary queue with a shovel. Never delete a delay queue
    that still holds messages; they would be lost.
-3. Stop the workers.
+3. Stop the workers that consume the queue. Never delete a queue while
+   a worker consumes it: the worker stops consuming it and stays not
+   ready until it restarts or the queue exists again
+   ([deleting a consumed queue](#deleting-a-consumed-queue)).
 4. Move or keep what is in `{queue}.XQ`.
 5. Right before deleting, check that `{queue}` is empty. The scheduler
    leader also runs in workers of other queues, so deferred tasks that
@@ -958,6 +964,48 @@ deferred task reaches `{queue}`, but no cron, oneshot or
 `delay`/`eta` task fires for any queue either until a worker with the
 scheduler on starts again. Due tasks wait in the scheduler store until
 then.
+
+### Deleting a consumed queue
+
+Never delete a queue while a worker consumes it, not even to recreate
+it right away. Stop the workers of the queue first (step 3 above), also
+when you delete a queue that looks orphaned. Since 0.14.0 a worker
+fences a deleted consumed queue off and reports it, but it does not
+create it again (E-083):
+
+- The broker ends the consumer with `basic.cancel`. Before the consumer
+  watch registers the consumer again, it checks passively on a
+  throwaway channel whether the queue exists. The queue is missing, so
+  the worker logs the ERROR `consumer_queue_missing` (field `queue`)
+  once and sends no `basic.consume` for it. It also takes the queue out
+  of aio-pika's restore, so a reconnect does not declare it again.
+- The other queues of the worker keep consuming. The consume channel
+  and the connection stay up, a reconnect succeeds, and publishing
+  keeps working, with `SWARMQ_BROKER_PUBLISH_CONNECTION=separate`
+  (default) and with `shared`.
+- `/ready` turns red at once, without `SWARMQ_CONSUMER_READY_GRACE_S`.
+  Its `consumers` entry reads
+  `consumed queue missing at the broker: <queue>`.
+- The worker does not shut down. On every tick the watch checks again.
+  When the queue exists again, because another worker with that queue
+  started or an operator declared it, the watch registers the consumer
+  and logs `consumer_reregistered` with `reason=queue_recreated`, and
+  `/ready` turns green. A queue that an operator declares by hand is
+  consumed as declared, without swarmq's arguments; a restarted worker
+  declares the queue with them.
+
+Otherwise the worker runs without that queue until it restarts. A
+restarted worker declares its queues again and consumes normally.
+
+Limits: the check and the `basic.consume` that follows are two steps.
+A queue deleted exactly between them, while the connection is already
+down, or right before a reconnect that comes before the next tick of
+the watch, still makes the `basic.consume` or aio-pika's restore fail
+with `NOT_FOUND`, as before 0.14.0: every queue of the worker stops,
+and a reconnect fails every 5 s. Then only a restart helps. Should a
+later aio-pika release no longer expose the queue list of a channel,
+swarmq logs the WARNING `robust_queue_release_unavailable` once per
+channel, and a reconnect fails the same way.
 
 ## What SwarmQ will not do
 

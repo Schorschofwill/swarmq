@@ -946,9 +946,16 @@ nur für den Producer-Pfad (`start_worker()` weist sie ab).
   `SWARMQ_BACKEND_CONNECT_TIMEOUT_S` (Default 30 s). Muss `> 0` und
   höchstens `threading.TIMEOUT_MAX` sein, sonst `ConfigurationError` beim
   Konstruieren. Läuft sie ab, wirft `connect()`
-  `BackendConnectionError`. Sie ist eine Obergrenze: Die eigenen
-  Verbindungsversuche des Treibers geben nach höchstens rund 33 s auf,
-  ein größerer Wert wartet nicht länger.
+  `BackendConnectionError`. Gegen einen Host, der Pakete verwirft,
+  wartet `connect()` bis zu ihrem Ablauf (seit 0.14; vorher gab der
+  Treiber nach rund 33 s auf); ein Port, der Verbindungen abweist, endet
+  nach rund 3,1 s.
+
+`connect()` und `close()` sind nebenläufig sicher (seit 0.14, E-082):
+Ein `connect()` während eines laufenden wartet es ab und nutzt dessen
+Client, und es versucht es selbst, wenn jenes scheitert; `close()`
+wartet ein laufendes `connect()` ab und schließt danach, höchstens bis
+zur Verbindungsfrist.
 
 Asynchroner Valkey-Client für Ergebnisse, Locks, Rate-Limits,
 Cancel-Flags, Scheduler-Zustand und Leader-Election. Implementiert das
@@ -1132,6 +1139,27 @@ Sie liest nur, ohne Claim und ohne Marker (F4-02): `"done"` nach
 auf; eine eigene Implementierung ohne `peek` loggt dort ERROR
 `delivery_handler_failed` (`AttributeError`) und lässt die Nachricht
 unbestätigt liegen, statt sie in die DLQ zu leiten.
+
+Vertragshinweise für 0.14.0 (Signaturen unverändert):
+
+- `ResultBackend.connect()` und `close()` müssen nebenläufig sicher
+  sein (E-082). Ein `connect()` während eines laufenden `connect()`
+  wartet es ab und nutzt dessen Client; scheitert jenes, versucht es der
+  wartende Aufruf selbst. `close()` wartet ein laufendes `connect()` ab
+  und schließt danach, es bleibt kein Client offen.
+- `LockStore.force_release(name, max_concurrency=…)` ist atomar: `True`
+  heißt, ein Lock existierte und ist jetzt entfernt, `False`, es gab
+  keinen. Bei einer Semaphore darf eine Implementierung `True` melden,
+  solange ihr Schlüssel existiert, auch wenn alle Halter schon
+  abgelaufen sind (der Valkey-Store von swarmq tut das: Er löscht den
+  Schlüssel mit einem `DEL`).
+- `Publisher.publish` gibt einen Abbruch der eigenen Task als
+  `asyncio.CancelledError` weiter und verschluckt ihn nie. Er darf den
+  Abbruch als `swarmq.exceptions.PublishCancelledUnsent` (eine
+  Unterklasse von `asyncio.CancelledError`) markieren, wenn er
+  nachweislich nichts gesendet hat; der Client gibt dann den
+  `unique_for`-Claim frei. Ohne die Markierung gilt der Abbruch als
+  unbestimmt, und der Claim bleibt (E-041).
 
 ## Dependency Injection (Dishka)
 

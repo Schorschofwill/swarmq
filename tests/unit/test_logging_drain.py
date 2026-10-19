@@ -114,7 +114,8 @@ from typing import override
 import pytest
 
 from swarmq.logging import dropped_log_records, shutdown_logging
-from swarmq.logging_queue import _StructlogQueueHandler
+from swarmq.logging_queue import _StructlogQueueHandler, set_drain_timeout
+from tests.unit._fork_child import FORK_TEST_TIMEOUT_S, UNBOUNDED_DRAIN_S, run_in_forked_child
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -163,6 +164,25 @@ def _returns_within(func: Callable[[], object], seconds: float = 2.0) -> bool:
 
     threading.Thread(target=run, daemon=True).start()
     return done.wait(seconds)
+
+
+_HANG_REPORT_S = 10.0
+"""Deckel fuer ein Leeren, das selbst keine Frist hat (U7 c, wie
+``CHILD_TIMEOUT_S`` in ``_fork_child``): nur die Meldezeit eines Haengers, im
+Erfolgsfall laeuft nichts so lange. Ein Leeren mit eigener Frist von 1 bis 2 s
+unter einem Deckel von 2 s gelang dagegen spaet: Wartete es faelschlich bis
+zur Frist, war das Ergebnis ein Wettlauf mit dem Deckel, unter Last ein Flake."""
+
+_HANG_TEST_TIMEOUT_S = 30
+"""``pytest.mark.timeout`` fuer Tests mit :data:`_HANG_REPORT_S`: ueber dem
+Deckel, damit der Haenger als Assertion gemeldet wird."""
+
+
+def _drains_without_deadline() -> bool:
+    """``shutdown_logging`` ohne eigene Frist: Wartet das Leeren auf etwas,
+    das nie kommt, haengt es und der Deckel meldet es, statt nach der Frist
+    still zu gelingen."""
+    return _returns_within(lambda: shutdown_logging(timeout=UNBOUNDED_DRAIN_S), seconds=_HANG_REPORT_S)
 
 
 def _stuck_handler(
@@ -313,6 +333,7 @@ class _SignallingQueue(queue.Queue[logging.LogRecord]):
         self.closing.set()
 
 
+@pytest.mark.timeout(_HANG_TEST_TIMEOUT_S)
 def test_records_logged_while_draining_land_in_a_fresh_queue() -> None:
     gate = _Gate()
     old_queue = _SignallingQueue(maxsize=10)
@@ -322,7 +343,7 @@ def test_records_logged_while_draining_land_in_a_fresh_queue() -> None:
     drained = threading.Event()
 
     def drain() -> None:
-        shutdown_logging(timeout=2)
+        shutdown_logging(timeout=UNBOUNDED_DRAIN_S)
         drained.set()
 
     threading.Thread(target=drain, daemon=True).start()
@@ -331,8 +352,8 @@ def test_records_logged_while_draining_land_in_a_fresh_queue() -> None:
         handler.handle(_record("during"))
     finally:
         gate.opened.set()
-    assert drained.wait(2)
-    assert _returns_within(lambda: shutdown_logging(timeout=2))
+    assert drained.wait(_HANG_REPORT_S)
+    assert _drains_without_deadline()
 
     assert gate.messages == ["before", "during"]
     assert handler.dropped == 0
@@ -348,6 +369,7 @@ class _SlowGate(_Gate):
         super().emit(record)
 
 
+@pytest.mark.timeout(_HANG_TEST_TIMEOUT_S)
 def test_a_drain_returns_only_after_records_logged_while_draining_are_written() -> None:
     gate = _SlowGate()
     old_queue = _SignallingQueue(maxsize=10)
@@ -357,7 +379,7 @@ def test_a_drain_returns_only_after_records_logged_while_draining_are_written() 
     drained = threading.Event()
 
     def drain() -> None:
-        shutdown_logging(timeout=2)
+        shutdown_logging(timeout=UNBOUNDED_DRAIN_S)
         drained.set()
 
     threading.Thread(target=drain, daemon=True).start()
@@ -366,12 +388,13 @@ def test_a_drain_returns_only_after_records_logged_while_draining_are_written() 
         handler.handle(_record("late"))
     finally:
         gate.opened.set()
-    assert drained.wait(2)
+    assert drained.wait(_HANG_REPORT_S)
 
     assert gate.messages == ["before", "late"]
     assert handler.dropped == 0
 
 
+@pytest.mark.timeout(_HANG_TEST_TIMEOUT_S)
 def test_a_drain_ends_soon_after_its_deadline_while_a_thread_keeps_logging() -> None:
     gate = _Gate()
     gate.opened.set()
@@ -390,7 +413,7 @@ def test_a_drain_ends_soon_after_its_deadline_while_a_thread_keeps_logging() -> 
     finally:
         stop.set()
         logger.join(1)
-    assert _returns_within(lambda: shutdown_logging(timeout=1))
+    assert _drains_without_deadline()
 
 
 def _listener_threads() -> list[threading.Thread]:
@@ -417,6 +440,7 @@ def test_an_abandoned_handler_counts_new_records_instead_of_starting_a_listener(
         gate.opened.set()
 
 
+@pytest.mark.timeout(_HANG_TEST_TIMEOUT_S)
 def test_once_the_abandoned_thread_ends_the_next_record_starts_a_fresh_listener() -> None:
     others = set(_listener_threads())
     handler, gate = _stuck_handler(maxsize=2)
@@ -429,7 +453,7 @@ def test_once_the_abandoned_thread_ends_the_next_record_starts_a_fresh_listener(
     assert not old.is_alive()
 
     handler.handle(_record("next"))
-    assert _returns_within(lambda: shutdown_logging(timeout=2))
+    assert _drains_without_deadline()
 
     # Der Rest der alten Queue ist verworfen und gezaehlt, nicht geschrieben.
     assert gate.messages == ["first", "next"]
@@ -456,6 +480,15 @@ class _BlockingStream(io.StringIO):
         return False
 
 
+def _unbounded_default_drain() -> None:
+    """Die Vorgabe-Frist (``drain_timeout``, sonst 5 s) ohne Grenze: Greift
+    die eingerichtete Frist nicht, haengt das Leeren (Meldung per Deckel),
+    statt nach der Vorgabe spaet zu gelingen. ``preserved_root_logger``
+    (autouse) setzt die Vorgabe nach dem Test zurueck."""
+    set_drain_timeout(UNBOUNDED_DRAIN_S)
+
+
+@pytest.mark.timeout(_HANG_TEST_TIMEOUT_S)
 def test_without_a_timeout_the_configured_drain_timeout_applies(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -464,6 +497,7 @@ def test_without_a_timeout_the_configured_drain_timeout_applies(
 
     stream = _BlockingStream()
     monkeypatch.setattr(sys, "stderr", stream)
+    _unbounded_default_drain()
     configure_logging(LoggingSettings(queue_size=4, drain_timeout=0.05))
     log = logging.getLogger("swarmq.tests.drain")
     try:
@@ -471,17 +505,19 @@ def test_without_a_timeout_the_configured_drain_timeout_applies(
         assert stream.entered.wait(1)
         log.warning("second")
 
-        assert _returns_within(shutdown_logging)
+        assert _returns_within(shutdown_logging, seconds=_HANG_REPORT_S)
     finally:
         stream.opened.set()
 
 
+@pytest.mark.timeout(_HANG_TEST_TIMEOUT_S)
 def test_in_a_compute_child_where_the_app_wins_the_drain_is_bounded_too() -> None:
     from swarmq.logging import configure_child_logging
     from swarmq.logging_settings import LoggingSettings
 
     gate = _Gate()
     logging.getLogger().addHandler(gate)  # Root-Handler der App aus dem Vorladen
+    _unbounded_default_drain()
     assert configure_child_logging(LoggingSettings(drain_timeout=0.05))  # App gewinnt
     log = logging.getLogger("swarmq.tests.drain")
     try:
@@ -489,7 +525,7 @@ def test_in_a_compute_child_where_the_app_wins_the_drain_is_bounded_too() -> Non
         assert gate.entered.wait(1)
         log.warning("second")
 
-        assert _returns_within(shutdown_logging)
+        assert _returns_within(shutdown_logging, seconds=_HANG_REPORT_S)
         assert gate not in [ref() for ref in logging._handlerList]  # type: ignore[attr-defined]
     finally:
         gate.opened.set()
@@ -577,6 +613,7 @@ def test_file_mode_listeners_are_drained_within_the_same_deadline(
     assert dropped_log_records() == before + 3
 
 
+@pytest.mark.timeout(_HANG_TEST_TIMEOUT_S)
 def test_an_abandoned_file_mode_listener_counts_new_records_until_its_thread_ends(
     file_mode_gate: _GateState,
 ) -> None:
@@ -600,7 +637,7 @@ def test_an_abandoned_file_mode_listener_counts_new_records_until_its_thread_end
     old.join(1)
     assert not old.is_alive()
     log.warning("after")
-    assert _returns_within(lambda: shutdown_logging(timeout=2))
+    assert _drains_without_deadline()
     written = [m for m in file_mode_gate.messages if m != "log_records_dropped"]
     assert written == ["first", "queued-0", "queued-1", "queued-2", "after"]
 
@@ -668,6 +705,7 @@ def test_a_freed_file_mode_thread_ends_by_itself_without_a_sentinel(
     assert not old.is_alive()
 
 
+@pytest.mark.timeout(_HANG_TEST_TIMEOUT_S)
 def test_file_mode_writes_synchronously_during_finalization(
     file_mode_gate: _GateState,
     monkeypatch: pytest.MonkeyPatch,
@@ -676,7 +714,7 @@ def test_file_mode_writes_synchronously_during_finalization(
     file_mode_gate.opened.set()
     log = _configure_file_mode()
     log.warning("before")
-    assert _returns_within(lambda: shutdown_logging(timeout=2))
+    assert _drains_without_deadline()
 
     with monkeypatch.context() as patch:
         patch.setattr(sys, "is_finalizing", lambda: True)
@@ -687,6 +725,7 @@ def test_file_mode_writes_synchronously_during_finalization(
     assert "Logging error" not in capfd.readouterr().err
 
 
+@pytest.mark.timeout(_HANG_TEST_TIMEOUT_S)
 def test_file_mode_writes_synchronously_when_the_thread_start_is_refused(
     file_mode_gate: _GateState,
     monkeypatch: pytest.MonkeyPatch,
@@ -694,7 +733,7 @@ def test_file_mode_writes_synchronously_when_the_thread_start_is_refused(
     file_mode_gate.opened.set()
     log = _configure_file_mode()
     log.warning("before")
-    assert _returns_within(lambda: shutdown_logging(timeout=2))
+    assert _drains_without_deadline()
 
     def refuse(self: threading.Thread) -> None:
         raise PythonFinalizationError("can't create new thread at interpreter shutdown")
@@ -886,6 +925,7 @@ def test_a_long_exception_report_keeps_its_end_within_pipe_buf(
     assert err.endswith(" the end\n")
 
 
+@pytest.mark.timeout(_HANG_TEST_TIMEOUT_S)
 def test_a_record_left_in_a_queue_without_a_running_listener_is_written_by_the_drain() -> None:
     gate = _Gate()
     gate.opened.set()
@@ -895,7 +935,7 @@ def test_a_record_left_in_a_queue_without_a_running_listener_is_written_by_the_d
     # Listener nie gestartet wurde.
     handler.queue.put_nowait(_record("raced"))
 
-    assert _returns_within(lambda: shutdown_logging(timeout=1))
+    assert _drains_without_deadline()
 
     assert gate.messages == ["raced"]
 
@@ -921,27 +961,29 @@ def _file_mode_queue_handler() -> logging.handlers.QueueHandler:
     return handler
 
 
+@pytest.mark.timeout(_HANG_TEST_TIMEOUT_S)
 def test_file_mode_writes_a_record_left_behind_the_sentinel(file_mode_gate: _GateState) -> None:
     file_mode_gate.opened.set()
     log = _configure_file_mode()
     log.warning("first")
-    assert _returns_within(lambda: shutdown_logging(timeout=2))
+    assert _drains_without_deadline()
     # Wettlauf mit dem Sentinel: Der Aufrufer sah den Thread noch leben und
     # reihte hinter dem Sentinel ein; der Thread endete am Sentinel.
     _file_mode_queue_handler().queue.put_nowait(_record("behind-sentinel"))
 
-    assert _returns_within(lambda: shutdown_logging(timeout=1))
+    assert _drains_without_deadline()
 
     assert file_mode_gate.messages == ["first", "behind-sentinel"]
 
 
+@pytest.mark.timeout(_HANG_TEST_TIMEOUT_S)
 def test_file_mode_counts_a_record_left_behind_the_sentinel_after_the_deadline(
     file_mode_gate: _GateState,
 ) -> None:
     file_mode_gate.opened.set()
     log = _configure_file_mode()
     log.warning("first")
-    assert _returns_within(lambda: shutdown_logging(timeout=2))
+    assert _drains_without_deadline()
     _file_mode_queue_handler().queue.put_nowait(_record("behind-sentinel"))
     before = dropped_log_records()
 
@@ -949,10 +991,11 @@ def test_file_mode_counts_a_record_left_behind_the_sentinel_after_the_deadline(
 
     assert dropped_log_records() == before + 1
     # Ein dafuer gestarteter Listener schriebe den Record spaetestens jetzt.
-    assert _returns_within(lambda: shutdown_logging(timeout=2))
+    assert _drains_without_deadline()
     assert file_mode_gate.messages == ["first"]
 
 
+@pytest.mark.timeout(_HANG_TEST_TIMEOUT_S)
 @pytest.mark.parametrize("error", [EOFError, OSError])
 def test_file_mode_a_closed_queue_while_discarding_does_not_raise(
     file_mode_gate: _GateState,
@@ -962,7 +1005,7 @@ def test_file_mode_a_closed_queue_while_discarding_does_not_raise(
     file_mode_gate.opened.set()
     log = _configure_file_mode()
     log.warning("first")
-    assert _returns_within(lambda: shutdown_logging(timeout=2))
+    assert _drains_without_deadline()
     queue_ = _file_mode_queue_handler().queue
     queue_.put_nowait(_record("behind-sentinel"))
 
@@ -974,6 +1017,7 @@ def test_file_mode_a_closed_queue_while_discarding_does_not_raise(
     assert _returns_within(lambda: shutdown_logging(timeout=0))
 
 
+@pytest.mark.timeout(_HANG_TEST_TIMEOUT_S)
 def test_the_closing_line_counts_records_discarded_after_the_deadline(
     file_mode_gate: _GateState,
     capfd: pytest.CaptureFixture[str],
@@ -981,7 +1025,7 @@ def test_the_closing_line_counts_records_discarded_after_the_deadline(
     file_mode_gate.opened.set()
     log = _configure_file_mode()
     log.warning("first")
-    assert _returns_within(lambda: shutdown_logging(timeout=2))
+    assert _drains_without_deadline()
     _file_mode_queue_handler().queue.put_nowait(_record("behind-sentinel"))
     handler = _StructlogQueueHandler(queue.Queue(maxsize=10), _Gate())
     handler.queue.put_nowait(_record("raced"))
@@ -1019,6 +1063,7 @@ def test_a_record_that_would_start_a_listener_after_the_deadline_counts_as_dropp
     assert healthy_target.messages == []
 
 
+@pytest.mark.timeout(_HANG_TEST_TIMEOUT_S)
 def test_file_mode_a_record_that_would_start_a_listener_after_the_deadline_counts_as_dropped(
     file_mode_gate: _GateState,
     monkeypatch: pytest.MonkeyPatch,
@@ -1028,7 +1073,7 @@ def test_file_mode_a_record_that_would_start_a_listener_after_the_deadline_count
     file_mode_gate.opened.set()
     log = _configure_file_mode()
     log.warning("first")
-    assert _returns_within(lambda: shutdown_logging(timeout=2))
+    assert _drains_without_deadline()
     _stuck, gate = _stuck_handler(maxsize=2)
     from swarmq.logging_drain import abandon as real_abandon
 
@@ -1047,9 +1092,9 @@ def test_file_mode_a_record_that_would_start_a_listener_after_the_deadline_count
     assert file_mode_gate.messages == ["first"]
 
 
+@pytest.mark.timeout(FORK_TEST_TIMEOUT_S)
 def test_a_child_forked_during_an_expired_drain_starts_its_listener() -> None:
     from swarmq.logging_drain import Deadline, draining_until
-    from tests.unit._fork_child import run_in_forked_child
 
     gate = _Gate()
     gate.opened.set()
@@ -1058,8 +1103,9 @@ def test_a_child_forked_during_an_expired_drain_starts_its_listener() -> None:
     def child() -> None:
         handler.handle(_record("in-child"))
         assert handler.dropped == 0
-        # Liste 34: der Listener des Kindes schreibt den Record auch.
-        shutdown_logging(timeout=1)
+        # Liste 34: der Listener des Kindes schreibt den Record auch. Ohne
+        # Frist: Schreibt er nie, haengt das Kind (Meldung per Deckel).
+        shutdown_logging(timeout=UNBOUNDED_DRAIN_S)
         assert gate.messages == ["in-child"]
 
     with draining_until(Deadline(0)):
