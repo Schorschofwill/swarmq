@@ -26,7 +26,6 @@ from swarmq.contracts.coordination import ScheduleStore as ContractScheduleStore
 from swarmq.exceptions import (
     BackendConnectionError,
     BackendResponseError,
-    PublishCancelledUnsent,
     PublishIndeterminate,
     TaskNotFoundError,
     is_backend_outage,
@@ -506,16 +505,19 @@ class ClientScheduling(ClientScheduleResolve):
 
     async def _publish_marking_unsent(self, i: int, state: dict[str, Any], unsent: set[int]) -> None:
         """Publish von Eintrag *i*; ``gather`` ersetzt den Abbruch eines Kinds
-        durch einen neuen ``CancelledError``, darum haelt *unsent* die
-        Markierung ``PublishCancelledUnsent`` je Index fest (0.14, U4)."""
+        durch einen neuen ``CancelledError``, darum haelt *unsent* je Index fest,
+        was nachweislich nicht gesendet ist: die Markierung
+        ``PublishCancelledUnsent`` (0.14, U4) und jeder bestimmte Fehlschlag,
+        damit ein Abbruch des Aufrufers auch dessen Claim freigibt."""
         try:
             await self._broker.publish(
                 state["resolved_queues"][i],
                 state["encoded_messages"][i],
                 headers=state["dedup_headers"][i] or None,
             )
-        except PublishCancelledUnsent:
-            unsent.add(i)
+        except BaseException as exc:
+            if not is_publish_outcome_unknown(exc):
+                unsent.add(i)
             raise
 
     async def schedule_many(
