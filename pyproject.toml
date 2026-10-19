@@ -169,7 +169,7 @@ markers = [
     "mutation: marker for mutmut configuration (not invoked directly)",
     "entscheidung(id): schreibt eine Entscheidung aus compound-packs/swarmq-entscheidungen/ fest (ID E-nnn)",
     "befund(id): Nachweis eines Befunds aus docs/befunde/ (offen mit xfail strict=True; nach dem Fix ohne xfail als Rückverweis)",
-    "compat: Mischbetrieb mit swarmq 0.11.x und 0.12.0 aus PyPI (tests/compat, opt-in, braucht Netz zu PyPI)",
+    "compat: Mischbetrieb mit swarmq 0.11.0, 0.11.1, 0.12.0, 0.12.3 und 0.13.1 aus PyPI (tests/compat, opt-in, braucht Netz zu PyPI)",
     "spike: Charakterisierung des Broker-Verhaltens (tests/integration/spikes, RabbitMQ 4.3 und 4.2)",
 ]
 
