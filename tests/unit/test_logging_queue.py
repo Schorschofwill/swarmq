@@ -101,7 +101,7 @@ from swarmq.logging_file import RateLimitedReport
 from swarmq.logging_forksource import mark_fork_source
 from swarmq.logging_format import build_formatter
 from swarmq.logging_queue import _StructlogQueueHandler, _SwarmqQueueListener
-from tests.unit._fork_child import run_in_forked_child
+from tests.unit._fork_child import FORK_TEST_TIMEOUT_S, UNBOUNDED_DRAIN_S, run_in_forked_child
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -287,6 +287,7 @@ def test_atexit_hook_is_registered_exactly_once():
         atexit.register(shutdown_logging)
 
 
+@pytest.mark.timeout(FORK_TEST_TIMEOUT_S)
 def test_after_fork_hook_resets_queue_and_drop_state():
     handler = _StructlogQueueHandler(queue.Queue(maxsize=1))
     handler.handle(_record())
@@ -306,6 +307,7 @@ def test_after_fork_hook_resets_queue_and_drop_state():
     assert run_in_forked_child(child) == 0
 
 
+@pytest.mark.timeout(FORK_TEST_TIMEOUT_S)
 def test_after_fork_next_record_starts_new_listener_without_inherited_records():
     target = _BlockingHandler()
     handler = _StructlogQueueHandler(queue.Queue(maxsize=10), target)
@@ -361,6 +363,7 @@ def test_concurrent_first_record_and_start_run_exactly_one_listener(
     assert len(_listener_threads()) == 1
 
 
+@pytest.mark.timeout(FORK_TEST_TIMEOUT_S)
 def test_after_fork_hook_does_not_inherit_a_held_start_lock(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -389,7 +392,7 @@ def test_after_fork_hook_does_not_inherit_a_held_start_lock(
 
         def child() -> None:
             handler.handle(_record(msg="child"))
-            assert target.written.wait(timeout=1)
+            target.written.wait()  # ohne Frist: Schreibt der Listener nie, haengt das Kind
 
         assert run_in_forked_child(child) == 0
     finally:
@@ -451,6 +454,7 @@ def test_setup_logging_uses_the_restartable_core():
     assert events == ["first", "second"]
 
 
+@pytest.mark.timeout(FORK_TEST_TIMEOUT_S)
 def test_child_shutdown_skips_the_running_listener_inherited_from_the_parent() -> None:
     target = _BlockingHandler()
     handler = _StructlogQueueHandler(queue.Queue(maxsize=2), target)
@@ -461,7 +465,9 @@ def test_child_shutdown_skips_the_running_listener_inherited_from_the_parent() -
         handler.handle(_record(logging.WARNING, msg="b"))
         assert handler.queue.full()
 
-        assert run_in_forked_child(shutdown_logging) == 0
+        # Ohne Frist: Wartet das Kind auf den geerbten Listener, haengt es
+        # (Meldung per Deckel), statt nach 5 s mit 0 zu enden.
+        assert run_in_forked_child(lambda: shutdown_logging(timeout=UNBOUNDED_DRAIN_S)) == 0
     finally:
         target.unblock.set()
 
@@ -836,6 +842,7 @@ def test_fork_source_emits_opt_in_records_synchronously_without_a_thread() -> No
     assert root_target.threads == [threading.current_thread().name]
 
 
+@pytest.mark.timeout(FORK_TEST_TIMEOUT_S)
 def test_forked_child_of_the_fork_source_starts_exactly_one_listener() -> None:
     from swarmq.logging import _enable_log_queue
 
@@ -848,7 +855,7 @@ def test_forked_child_of_the_fork_source_starts_exactly_one_listener() -> None:
         logging.getLogger("swarmq.tests.fork_source").info("in_child")
         logging.getLogger("swarmq.tests.fork_source").info("in_child_again")
         assert len(_listener_threads()) == 1
-        assert root_target.written.wait(timeout=1)
+        root_target.written.wait()  # ohne Frist: Schreibt der Listener nie, haengt das Kind
 
     assert run_in_forked_child(in_child) == 0
 

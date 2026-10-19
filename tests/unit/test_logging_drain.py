@@ -115,6 +115,7 @@ import pytest
 
 from swarmq.logging import dropped_log_records, shutdown_logging
 from swarmq.logging_queue import _StructlogQueueHandler
+from tests.unit._fork_child import FORK_TEST_TIMEOUT_S, UNBOUNDED_DRAIN_S, run_in_forked_child
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -1047,9 +1048,9 @@ def test_file_mode_a_record_that_would_start_a_listener_after_the_deadline_count
     assert file_mode_gate.messages == ["first"]
 
 
+@pytest.mark.timeout(FORK_TEST_TIMEOUT_S)
 def test_a_child_forked_during_an_expired_drain_starts_its_listener() -> None:
     from swarmq.logging_drain import Deadline, draining_until
-    from tests.unit._fork_child import run_in_forked_child
 
     gate = _Gate()
     gate.opened.set()
@@ -1058,8 +1059,9 @@ def test_a_child_forked_during_an_expired_drain_starts_its_listener() -> None:
     def child() -> None:
         handler.handle(_record("in-child"))
         assert handler.dropped == 0
-        # Liste 34: der Listener des Kindes schreibt den Record auch.
-        shutdown_logging(timeout=1)
+        # Liste 34: der Listener des Kindes schreibt den Record auch. Ohne
+        # Frist: Schreibt er nie, haengt das Kind (Meldung per Deckel).
+        shutdown_logging(timeout=UNBOUNDED_DRAIN_S)
         assert gate.messages == ["in-child"]
 
     with draining_until(Deadline(0)):
