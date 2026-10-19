@@ -455,8 +455,8 @@ definition time and cannot be mutated afterwards.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `soft_timeout` | `int \| None` | `None` | Seconds before the worker cancels `run()`. The task sees `asyncio.CancelledError` and must re-raise it; the worker stores `SoftTimeoutError` (swallowing the cancellation yields a success result). |
-| `hard_timeout` | `int \| None` | `None` | Seconds before the worker cancels the task coroutine outright. Must be `> soft_timeout` when both set. Required when `lock` is set. At most `315360000` (since 0.13.0). |
+| `soft_timeout` | `int \| None` | `None` | Seconds before the worker cancels `run()`. The task sees `asyncio.CancelledError` and must re-raise it; the worker stores `SoftTimeoutError` (swallowing the cancellation yields a success result). Must be `> 0` (since 0.13.1); `inf` means never. |
+| `hard_timeout` | `int \| None` | `None` | Seconds before the worker cancels the task coroutine outright. Must be `> soft_timeout` when both set. Required when `lock` is set. Must be `> 0` (since 0.13.1) and at most `315360000` (since 0.13.0). |
 
 ### Retries
 
@@ -536,6 +536,7 @@ Examples of errors surfaced at import:
 - `catchup=True` → `ValueError("catchup=True is reserved for a future release")`.
 - `max_concurrency=2` without `lock` → `ValueError("max_concurrency requires lock to be set")`.
 - `unique_for=0` → `ValueError("unique_for=0 is invalid; use None to disable dedup")`.
+- `hard_timeout=0` or `soft_timeout=float("nan")` → `ValueError("… must be > 0 seconds, …")` (since 0.13.1).
 - `cron="0 0 30 2 *"` → `ValueError` ("cron never fires: … has no next fire time").
 - `result_ttl=sys.maxsize` → `ValueError("result_ttl must be at most 315360000 seconds, …")`. The same bound as for [`SwarmQConfig`](#worker-behaviour) applies to `result_ttl`, `unique_for`, `max_age` and `hard_timeout` (since 0.13.0; before, the worker only failed when storing, ran the task again on every delivery and dead-lettered it at the delivery limit).
 

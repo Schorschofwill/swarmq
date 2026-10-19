@@ -539,7 +539,11 @@ TaskInfo(
 `nan` werfen `ValueError` (seit 0.12.3). `result_ttl`, `unique_for`,
 `max_age` und `hard_timeout` sind höchstens `315360000` Sekunden (zehn
 Jahre, die Grenze von `SwarmQConfig`); ein größerer Wert wirft
-`ValueError` (seit 0.13.0). Feld-Semantik und
+`ValueError` (seit 0.13.0). `soft_timeout` und `hard_timeout` müssen
+größer als 0 sein: `nan`, `-inf`, `0`, negative Werte und `False`
+werfen `ValueError`, eine Nicht-Zahl wie eine `timedelta` wirft
+`TypeError`, jeweils mit dem Feldnamen (seit 0.13.1). `soft_timeout=inf`
+bleibt erlaubt. Feld-Semantik und
 Validierungsregeln leben in
 [Konfigurations-Referenz — TaskInfo-Felder](configuration.md#taskinfo-felder).
 

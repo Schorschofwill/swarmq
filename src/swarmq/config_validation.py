@@ -40,21 +40,50 @@ MAX_BROKER_COUNT = 2**63 - 1
 _COUNT_BOUNDS: dict[str, int] = {"delivery_limit": MAX_BROKER_COUNT}
 
 
-def check_deadline_bound(name: str, value: float | None) -> None:
+def _require_number(name: str, value: float) -> None:
+    """Sekundenwert muss vergleichbar sein; eine ``timedelta`` oder ein
+    String scheiterte sonst mit einem Vergleichsfehler ohne Feldnamen
+    (die Annotation schuetzt zur Laufzeit nicht)."""
+    try:
+        _ = value > 0
+    except TypeError as exc:
+        msg = f"{name} must be a number of seconds, got {type(value).__module__}.{type(value).__qualname__}"
+        raise TypeError(msg) from exc
+
+
+def check_deadline_bound(name: str, value: float | None, *, positive: bool = False) -> None:
     """Frist oder TTL außerhalb von ``SwarmQConfig`` endlich und höchstens
     ``MAX_DEADLINE_S`` (E-063, Nachtrag 2026-10-19): ``TaskInfo`` und der
     Aufruf-Parameter ``unique_for`` enden als ``PX``/``EX`` in Valkey, als
     Per-Message-Expiration bzw. als Laufzeitdeckel (``hard_timeout``); ein
     größerer Wert scheiterte erst im Worker bzw. beim Claim. ``nan`` und
     ``-inf`` bestehen den Vergleich mit der Grenze und fallen deshalb eigens
-    durch. ``ValueError`` wie die übrigen ``TaskInfo``-Prüfungen (E-065)."""
+    durch. ``ValueError`` wie die übrigen ``TaskInfo``-Prüfungen (E-065).
+
+    ``positive=True`` (Nachtrag 2026-10-19, 0.13.1) verlangt zusätzlich
+    einen Wert größer 0, etwa für ``hard_timeout``."""
     if value is None:
         return
+    _require_number(name, value)
     if value > MAX_DEADLINE_S:
         msg = f"{name} must be at most {MAX_DEADLINE_S} seconds, got {value}"
         raise ValueError(msg)
     if not math.isfinite(value):
         msg = f"{name} must be a finite number of seconds, got {value}"
+        raise ValueError(msg)
+    if positive:
+        check_positive_seconds(name, value)
+
+
+def check_positive_seconds(name: str, value: float | None) -> None:
+    """Laufzeitfrist groesser 0 (E-063, Nachtrag 2026-10-19, 0.13.1):
+    ``not value > 0`` laesst auch ``nan`` und ``-inf`` durchfallen; ``inf``
+    und grosse Werte bleiben erlaubt (``soft_timeout`` hat keine Obergrenze)."""
+    if value is None:
+        return
+    _require_number(name, value)
+    if not value > 0:
+        msg = f"{name} must be > 0 seconds, got {value}"
         raise ValueError(msg)
 
 

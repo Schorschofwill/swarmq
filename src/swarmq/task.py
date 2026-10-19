@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, override
 from croniter import CroniterBadCronError, CroniterBadDateError, croniter
 
 from swarmq.config import normalize_timezone
-from swarmq.config_validation import check_deadline_bound
+from swarmq.config_validation import check_deadline_bound, check_positive_seconds
 from swarmq.cron_syntax import validate_cron_syntax
 from swarmq.limits import parse_rate_limit
 from swarmq.locking import compute_lock_ttl_ms
@@ -184,7 +184,7 @@ class TaskInfo:
             raise ValueError("name must not exceed 255 characters")
         if not self.queues:
             raise ValueError("queues must have at least 1 element")
-        check_deadline_bound("hard_timeout", self.hard_timeout)
+        check_deadline_bound("hard_timeout", self.hard_timeout, positive=True)
         # ``not >`` statt ``<=``: fuer ``soft_timeout=nan`` ist jeder Vergleich
         # falsch, die Grenze aus E-063 muss trotzdem greifen.
         if (
@@ -193,6 +193,9 @@ class TaskInfo:
             and not self.hard_timeout > self.soft_timeout
         ):
             raise ValueError("hard_timeout must be greater than soft_timeout")
+        # Nach der Relation, damit ``soft_timeout=nan`` neben ``hard_timeout``
+        # die bestehende Meldung behaelt (E-063).
+        check_positive_seconds("soft_timeout", self.soft_timeout)
         if self.retry_backoff not in _VALID_BACKOFF_STRATEGIES:
             raise ValueError(
                 f"retry_backoff must be one of {sorted(_VALID_BACKOFF_STRATEGIES)}, got {self.retry_backoff!r}"

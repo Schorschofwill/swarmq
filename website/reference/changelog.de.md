@@ -56,6 +56,19 @@ entschieden. Installation mit `pip install 'swarmq==0.13.*'`.
    `schedule()`, `schedule(delay=|eta=)`, `schedule_many()` und
    `swarmq schedule add --unique-for`
    ([Deduplizierung](../guides/locking-and-dedup.md)).
+4. **`soft_timeout` und `hard_timeout` müssen größer als 0 sein.**
+   `TaskInfo` lehnt jetzt in beiden Feldern `nan`, `-inf`, `0`,
+   negative Werte und Nicht-Zahlen wie eine `timedelta` beim Import des
+   Task-Moduls ab (`ValueError` mit dem Feldnamen, `TypeError` bei einer
+   Nicht-Zahl; Exit 1). `False` zählt als 0 und wird abgelehnt; kein
+   Timeout heißt `None`. `True` wirkt weiter als eine Sekunde.
+   `soft_timeout=inf` und große `soft_timeout`-Werte bleiben erlaubt;
+   `hard_timeout` behält seine Obergrenze von `315360000` Sekunden.
+   Keiner der abgelehnten Werte funktionierte: `soft_timeout=nan` konnte
+   den Event-Loop des Workers abstürzen lassen, ein Wert `<= 0` brach
+   jeden Lauf sofort ab, und `hard_timeout <= -30` mit `lock` ergab eine
+   Lock-TTL `<= 0`, sodass die Nachricht bis zum Zustelllimit kreiste
+   (E-063).
 
 ### Behoben
 
@@ -69,6 +82,10 @@ entschieden. Installation mit `pip install 'swarmq==0.13.*'`.
   `sched_add.lua`, in `schedule_many()` ein Publish, der mit
   `CancelledError` endete. Jeder davon kann Broker oder Valkey erreicht
   haben. Siehe Upgrade-Hinweis 3 (E-041, E-059, E-052).
+- **`soft_timeout=nan` erreicht den Worker nicht mehr.** Der Wert
+  zerstörte die Heap-Ordnung der Timer im Event-Loop; `select()` warf
+  dann `ValueError`, und `run_forever` brach ab. Siehe Upgrade-Hinweis 4
+  (E-063).
 
 ## [0.13.0] — 2026-10-19
 

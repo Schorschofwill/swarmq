@@ -52,6 +52,18 @@ decided for 0.13.1 before 0.13.0 final. Install with
    the claim. This applies to `schedule()`, `schedule(delay=|eta=)`,
    `schedule_many()` and `swarmq schedule add --unique-for`
    ([deduplication](../guides/locking-and-dedup.md)).
+4. **`soft_timeout` and `hard_timeout` must be greater than 0.**
+   `TaskInfo` now rejects `nan`, `-inf`, `0`, negative values and
+   non-numbers such as a `timedelta` in both fields when the task module
+   is imported (`ValueError` naming the field, `TypeError` for a
+   non-number; exit 1). `False` counts as 0 and is rejected; use `None`
+   for no timeout. `True` still acts as one second. `soft_timeout=inf`
+   and large `soft_timeout` values stay allowed; `hard_timeout` keeps its
+   upper bound of `315360000` seconds. None of the rejected values
+   worked: `soft_timeout=nan` could crash the worker's event loop, a
+   value `<= 0` cancelled every run at once, and `hard_timeout <= -30`
+   with a `lock` gave a lock TTL `<= 0`, so the message went round
+   until the delivery limit (E-063).
 
 ### Fixed
 
@@ -65,6 +77,9 @@ decided for 0.13.1 before 0.13.0 final. Install with
   `schedule_many()` a publish that ended in `CancelledError`. Each of
   them may have reached the broker or Valkey. See upgrade note 3
   (E-041, E-059, E-052).
+- **`soft_timeout=nan` no longer reaches the worker.** It broke the
+  heap order of the event loop's timers; `select()` then raised
+  `ValueError` and `run_forever` stopped. See upgrade note 4 (E-063).
 
 ## [0.13.0] — 2026-10-19
 

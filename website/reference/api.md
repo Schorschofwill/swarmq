@@ -520,7 +520,11 @@ TaskInfo(
 fraction is rounded up to the next second, `inf` and `nan` raise
 `ValueError` (since 0.12.3). `result_ttl`, `unique_for`, `max_age` and
 `hard_timeout` are at most `315360000` seconds (ten years, the bound of
-`SwarmQConfig`); a larger value raises `ValueError` (since 0.13.0). Field semantics and validation rules live
+`SwarmQConfig`); a larger value raises `ValueError` (since 0.13.0).
+`soft_timeout` and `hard_timeout` must be greater than 0: `nan`, `-inf`,
+`0`, negative values and `False` raise `ValueError`, a non-number such as
+a `timedelta` raises `TypeError`, each naming the field (since 0.13.1).
+`soft_timeout=inf` stays allowed. Field semantics and validation rules live
 in [Configuration reference — TaskInfo fields](configuration.md#taskinfo-fields).
 
 ## `next_fire_times()`
