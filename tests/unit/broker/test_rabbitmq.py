@@ -12,8 +12,8 @@ import aiormq.exceptions
 import pytest
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
-from swarmq.exceptions import BrokerConnectionError, ConfigurationError
-from tests.support.rabbitmq_faults import hanging_publish
+from swarmq.exceptions import BrokerConnectionError, ConfigurationError, PublishIndeterminate
+from tests.support.rabbitmq_faults import HangingChannel, hanging_publish
 
 
 class TestRabbitMQBrokerInit:
@@ -1136,3 +1136,184 @@ class TestChannelCloseDuringAlarm:
         assert record.levelno == logging.WARNING
         assert record.exc_info is not None
         assert not hasattr(record, "blocked")
+
+
+# PF-19 (a), Plan 0.14 U6, Nachtrag (3) zu E-025: Das Close eines im Alarm
+# verworfenen Publish-Kanals wartet auf ``unblocked`` oder das Ende der
+# aiormq-Verbindung, höchstens die Publish-Frist; danach wie bisher mit 5 s.
+#
+# Test-Liste:
+# [x] blockiert beim Verwurf: kein Close vor ``unblocked``, danach genau eines,
+#     kein publish_channel_close_incomplete
+# [x] Alarm länger als die Publish-Frist: nach der Frist ein Close wie heute,
+#     WARNING ohne Traceback mit blocked=True
+# [x] Verbindung endet während des Wartens: der Close-Task endet sofort
+# [x] blockiert, aber ``closing`` unlesbar: sofortiges Close (fail-open)
+# [x] broker.close() während des Wartens: Abbruch, kein hängender Task
+# Nicht blockiert oder Zustand unlesbar: sofortiges Close wie bisher, festgeschrieben
+# in TestChannelCloseDuringAlarm (E-025) und im E-078-Test.
+
+
+def _alarm_broker(
+    publish_timeout_s: float, *, closing_readable: bool = True
+) -> tuple[RabbitMQBroker, asyncio.Event, asyncio.Future[None]]:
+    """Broker auf einer aiormq-Attrappe, deren Blocked-Zustand der Test steuert;
+    ``closing_readable=False`` bildet ein geändertes aiormq ohne ``closing`` nach."""
+    broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+    unblocked = asyncio.Event()
+    unblocked.set()
+    closing: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    connection = AsyncMock()
+    underlying = {_UNBLOCKED_ATTR: unblocked, "closing": closing} if closing_readable else {_UNBLOCKED_ATTR: unblocked}
+    connection.transport.connection = SimpleNamespace(**underlying)
+    broker._connection = connection
+    broker.publish_timeout_s = publish_timeout_s
+    return broker, unblocked, closing
+
+
+def _record_close(channel: HangingChannel, unblocked: asyncio.Event) -> list[bool]:
+    """Ersetzt ``close`` und merkt sich je Aufruf, ob die Verbindung da frei war."""
+    calls: list[bool] = []
+    original = channel.close
+
+    async def close() -> None:
+        calls.append(unblocked.is_set())
+        await original()
+
+    channel.close = close  # type: ignore[method-assign]  # Test zeichnet die Aufrufe auf
+    return calls
+
+
+async def _send_then_block(
+    broker: RabbitMQBroker, channel: HangingChannel, unblocked: asyncio.Event
+) -> asyncio.Task[object]:
+    """Der Publish liegt auf dem Socket, dann meldet der Broker ``connection.blocked``."""
+    publishing = asyncio.create_task(broker.publish("tasks", b"{}"))
+    await channel.default_exchange.publish_started.wait()
+    unblocked.clear()
+    return publishing
+
+
+class TestChannelCloseAfterUnblocked:
+    @pytest.mark.timeout(5)
+    @pytest.mark.entscheidung("E-025")
+    async def test_the_close_waits_for_unblocked_and_runs_once_after_it(self, swarmq_logs):
+        broker, unblocked, _ = _alarm_broker(publish_timeout_s=60.0)
+        with hanging_publish(broker) as channel:
+            calls = _record_close(channel, unblocked)
+            publishing = await _send_then_block(broker, channel, unblocked)
+            [deadline] = broker._active_publish_timeouts
+            deadline.reschedule(asyncio.get_running_loop().time())
+            with pytest.raises(PublishIndeterminate):
+                await publishing
+
+            assert calls == [], "no Channel.Close while the broker blocks the connection"
+            [closer] = broker._pending_channel_closes
+            unblocked.set()
+            await closer
+        await broker.close()
+
+        assert calls == [True]
+        assert channel.closed
+        assert not [e for e in swarmq_logs if e["event"] == "publish_channel_close_incomplete"]
+
+    @pytest.mark.timeout(5)
+    @pytest.mark.entscheidung("E-025")
+    async def test_an_alarm_outlasting_the_publish_deadline_closes_after_it_without_traceback(self):
+        broker, unblocked, _ = _alarm_broker(publish_timeout_s=0.03)
+        collector = _RecordCollector()
+        logger = logging.getLogger("swarmq.broker.rabbitmq.connection")
+        logger.addHandler(collector)
+        try:
+            with hanging_publish(broker) as channel:
+                calls: list[bool] = []
+
+                async def close_into_the_deadline() -> None:
+                    # Der Broker liest die blockierte Verbindung nicht: Das
+                    # Close läuft in seine Frist.
+                    calls.append(unblocked.is_set())
+                    raise TimeoutError
+
+                channel.close = close_into_the_deadline  # type: ignore[method-assign]  # Test ersetzt close durch einen Fake
+                publishing = await _send_then_block(broker, channel, unblocked)
+                with pytest.raises(PublishIndeterminate):
+                    await publishing
+                [closer] = broker._pending_channel_closes
+                await closer
+            await broker.close()
+        finally:
+            logger.removeHandler(collector)
+
+        assert calls == [False], "after the publish deadline the close runs although the alarm lasts"
+        [record] = [r for r in collector.records if r.msg == "publish_channel_close_incomplete"]
+        assert record.levelno == logging.WARNING
+        assert record.exc_info is None
+        assert record.blocked is True  # type: ignore[attr-defined]  # Feld als LogRecord-Attribut
+
+    @pytest.mark.timeout(5)
+    @pytest.mark.entscheidung("E-025")
+    async def test_a_connection_ending_during_the_wait_ends_the_close_task(self, swarmq_logs):
+        broker, unblocked, closing = _alarm_broker(publish_timeout_s=60.0)
+        with hanging_publish(broker) as channel:
+            calls = _record_close(channel, unblocked)
+            before = asyncio.all_tasks()
+            publishing = await _send_then_block(broker, channel, unblocked)
+            [deadline] = broker._active_publish_timeouts
+            deadline.reschedule(asyncio.get_running_loop().time())
+            with pytest.raises(PublishIndeterminate):
+                await publishing
+            [closer] = broker._pending_channel_closes
+
+            # Die aiormq-Verbindung endet im Alarm; mit ihr ihre Kanäle.
+            channel.is_closed = True
+            closing.set_result(None)
+            await closer
+            assert asyncio.all_tasks() - before == set(), "no waiter outlives the close task"
+        await broker.close()
+
+        assert calls == [], "a channel closed with its connection needs no Channel.Close"
+        assert not unblocked.is_set()
+        assert not [e for e in swarmq_logs if e["event"] == "publish_channel_close_incomplete"]
+
+    @pytest.mark.timeout(5)
+    @pytest.mark.entscheidung("E-025")
+    async def test_an_unreadable_closing_future_closes_at_once(self):
+        # aiormq geändert: das Event ist lesbar, ``closing`` nicht.
+        broker, unblocked, _ = _alarm_broker(publish_timeout_s=60.0, closing_readable=False)
+        with hanging_publish(broker) as channel:
+            calls = _record_close(channel, unblocked)
+            publishing = await _send_then_block(broker, channel, unblocked)
+            [deadline] = broker._active_publish_timeouts
+            deadline.reschedule(asyncio.get_running_loop().time())
+            with pytest.raises(PublishIndeterminate):
+                await publishing
+            [closer] = broker._pending_channel_closes
+            await closer
+        await broker.close()
+
+        assert calls == [False], "fail-open: closed at once as before 0.14"
+
+    @pytest.mark.timeout(5)
+    @pytest.mark.entscheidung("E-025")
+    async def test_closing_the_broker_during_the_wait_cancels_the_close_without_leftovers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Die 5-s-Schranke von ``_drain_pending_channel_closes``, verkürzt.
+        monkeypatch.setattr("swarmq.broker.rabbitmq.connection._CHANNEL_CLOSE_TIMEOUT_S", 0.01)
+        broker, unblocked, _ = _alarm_broker(publish_timeout_s=60.0)
+        with hanging_publish(broker) as channel:
+            calls = _record_close(channel, unblocked)
+            before = asyncio.all_tasks()
+            publishing = await _send_then_block(broker, channel, unblocked)
+            [deadline] = broker._active_publish_timeouts
+            deadline.reschedule(asyncio.get_running_loop().time())
+            with pytest.raises(PublishIndeterminate):
+                await publishing
+            [closer] = broker._pending_channel_closes
+
+            await broker.close()
+            with pytest.raises(asyncio.CancelledError):
+                await closer
+
+        assert calls == []
+        assert asyncio.all_tasks() - before == set(), "the waiter ends with the close task"
