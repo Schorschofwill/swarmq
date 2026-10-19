@@ -4,6 +4,23 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 [Keep a Changelog](https://keepachangelog.com/) und
 [Semantic Versioning](https://semver.org/).
 
+## [0.14.0] — 2026-10-20
+
+0.14.0 ist 0.14.0rc1 ohne Codeänderungen. Die Korrekturen und die
+Upgrade-Hinweise (Valkey-Verbindungsaufbau wartet gegen einen Host, der
+Pakete verwirft, bis zur Frist; Valkey-Befehle scheitern gegen einen
+solchen Host früher; ein Abbruch vor dem Senden gibt den
+`unique_for`-Claim frei; geänderte Alarm-Logzeilen; nebenläufig sichere
+`ResultBackend.connect()`/`close()`; `LockStore.force_release` meldet,
+was es entfernt hat; weniger Kanäle beim Broker nach einem Reconnect;
+eine gelöschte konsumierte Queue wird eingegrenzt und gemeldet) stehen
+unter [0.14.0rc1](#0140rc1-2026-10-19) und gelten unverändert.
+Abgenommen von der Loadsuite an 0.14.0rc1 (Konformität, vier Smokes,
+Smoke mit 45 s Backend-Ausfall, `stufe1-1h` und `stoerung-1h`, kein
+Verlust; die Kanalzahl beim Broker bleibt über Trennungen, Alarme und
+Neustarts gleich). Installation mit `pip install 'swarmq==0.14.*'`;
+`--pre` ist nicht mehr nötig.
+
 ## [0.14.0rc1] — 2026-10-19
 
 Release-Candidate für 0.14.0 (Installation mit `pip install --pre`).
