@@ -4,6 +4,17 @@ All notable changes to SwarmQ. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [0.13.1] — 2026-10-19
+
+0.13.1 is 0.13.1rc1 without code changes. Read
+[0.13.1rc1](#0131rc1-2026-10-19) for the fixes and the upgrade notes
+(a lasting error reply in the chord script marks the workflow `failed`,
+a cancelled `schedule()` keeps its `unique_for` claim, lower bounds for
+`soft_timeout` and `hard_timeout`, `delay`, `eta` and `--at` at most ten
+years ahead, `Retry(delay)` at most ten years, mixed operation and
+rollback); they apply unchanged. Install with
+`pip install 'swarmq==0.13.*'`; `--pre` is no longer needed.
+
 ## [0.13.1rc1] — 2026-10-19
 
 Release candidate for 0.13.1 (install with `pip install --pre`).
