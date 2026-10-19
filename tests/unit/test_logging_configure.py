@@ -98,6 +98,7 @@ from swarmq.logging import (
     load_log_config,
 )
 from swarmq.logging_settings import LoggingSettings
+from tests.unit._fork_child import FORK_TEST_TIMEOUT_S, UNBOUNDED_DRAIN_S, run_in_forked_child
 
 
 def _listener_threads() -> list[threading.Thread]:
@@ -653,11 +654,11 @@ def test_file_mode_queue_listener_restarts_after_shutdown_for_the_next_job(
     assert [r.getMessage() for r in FILE_RECORDS] == ["evt_job_1", "evt_job_2"]
 
 
+@pytest.mark.timeout(FORK_TEST_TIMEOUT_S)
 def test_child_shutdown_skips_the_file_mode_listener_inherited_from_the_parent(
     tmp_path: pathlib.Path,
 ) -> None:
     from swarmq.logging import shutdown_logging
-    from tests.unit._fork_child import run_in_forked_child
 
     FILE_HANDLER_ENTERED.clear()
     FILE_HANDLER_RELEASE.clear()
@@ -685,7 +686,9 @@ def test_child_shutdown_skips_the_file_mode_listener_inherited_from_the_parent(
         (handler,) = logging.getLogger().handlers
         assert handler.queue.full()  # type: ignore[attr-defined]
 
-        assert run_in_forked_child(shutdown_logging) == 0
+        # Ohne Frist: Wartet das Kind auf den geerbten Listener, haengt es
+        # (Meldung per Deckel), statt nach 5 s mit 0 zu enden.
+        assert run_in_forked_child(lambda: shutdown_logging(timeout=UNBOUNDED_DRAIN_S)) == 0
     finally:
         FILE_HANDLER_RELEASE.set()
 

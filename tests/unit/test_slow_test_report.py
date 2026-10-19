@@ -4,9 +4,18 @@ Setup- und Call-Phasen über 100 ms erscheinen in einer Zusammenfassung und
 in ``slow-unit-tests.json``; der Exit-Code bleibt unberührt. Geprüft mit
 ``pytester`` gegen das Plugin ``tests.support.slow_tests``.
 
-Über 100 ms je Test, bewusst: Der Bericht misst echte Laufzeiten, die
-inneren Tests müssen deshalb wirklich 150 ms schlafen. Sie brauchen keine
-Dienste und bleiben darum Unit-Tests (AGENTS.md: Begründung im Test).
+Die inneren Läufe messen mit einer virtuellen Uhr (``_pytest.timing``,
+dieselbe Umlenkung, mit der pytest seine eigenen Laufzeit-Tests prüft):
+Eine Phase dauert genau so lange, wie der innere Test per
+``timing.sleep`` angibt, jede andere genau 0 s. Mit der Wanduhr wurde unter
+CI-Last auch eine triviale Phase eines inneren Tests über 100 ms langsam,
+und die exakten Listen rissen (Pipeline 2963360733: Setup 287 ms). Die
+Listen bleiben exakt; misst das Plugin selbst statt ``report.duration`` zu
+lesen, sieht es keine 150 ms und der Test wird rot.
+
+Über 100 ms je Test bleibt es trotzdem: Jeder innere pytest-Lauf kostet
+rund 0,3 s. Die Tests brauchen keine Dienste und bleiben darum Unit-Tests
+(AGENTS.md: Begründung im Test).
 
 Test-Liste:
 - [x] Test mit 150 ms Call-Phase: im Bericht und in der Datei, Exit-Code 0
@@ -23,8 +32,10 @@ Test-Liste:
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 
 import pytest
+from _pytest import timing
 
 from tests.support.slow_tests import SlowPhase
 
@@ -42,6 +53,23 @@ def _without_coverage(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("COVERAGE_RUN", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _virtual_clock(pytester: pytest.Pytester) -> Iterator[None]:
+    """Virtuelle Uhr nur für den inneren Lauf: ``runpytest`` läuft im selben
+    Prozess. Außerhalb von ``runpytest`` misst der äußere Test mit der
+    echten Uhr weiter -- sonst stünde er selbst mit Jahrzehnten im Bericht."""
+    run = pytester.runpytest
+
+    def run_with_virtual_clock(*args: str) -> pytest.RunResult:
+        with pytest.MonkeyPatch.context() as mp:
+            timing.MockTiming().patch(mp)
+            return run(*args)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(pytester, "runpytest", run_with_virtual_clock)
+        yield
+
+
 def _report(pytester: pytest.Pytester) -> list[SlowPhase]:
     entries: list[SlowPhase] = json.loads((pytester.path / "slow-unit-tests.json").read_text(encoding="utf-8"))
     return entries
@@ -50,10 +78,10 @@ def _report(pytester: pytest.Pytester) -> list[SlowPhase]:
 def test_a_slow_call_is_reported_without_changing_the_exit_code(pytester: pytest.Pytester) -> None:
     pytester.makepyfile(
         """
-        import time
+        from _pytest import timing
 
         def test_slow():
-            time.sleep(0.15)
+            timing.sleep(0.15)
         """
     )
 
@@ -64,19 +92,18 @@ def test_a_slow_call_is_reported_without_changing_the_exit_code(pytester: pytest
     [entry] = _report(pytester)
     assert entry["nodeid"] == "test_a_slow_call_is_reported_without_changing_the_exit_code.py::test_slow"
     assert entry["phase"] == "call"
-    assert entry["duration_s"] >= 0.15
+    assert entry["duration_s"] == pytest.approx(0.15)
 
 
 def test_a_slow_fixture_is_reported_as_its_own_setup_phase(pytester: pytest.Pytester) -> None:
     pytester.makepyfile(
         """
-        import time
-
         import pytest
+        from _pytest import timing
 
         @pytest.fixture
         def slow_resource():
-            time.sleep(0.15)
+            timing.sleep(0.15)
 
         def test_fast_body(slow_resource):
             pass
@@ -92,10 +119,10 @@ def test_a_slow_fixture_is_reported_as_its_own_setup_phase(pytester: pytest.Pyte
 def test_a_run_without_overruns_writes_an_empty_list_and_no_summary(pytester: pytest.Pytester) -> None:
     pytester.makepyfile(
         """
-        import time
+        from _pytest import timing
 
         def test_quick():
-            time.sleep(0.05)
+            timing.sleep(0.05)
         """
     )
 
@@ -109,10 +136,10 @@ def test_a_run_without_overruns_writes_an_empty_list_and_no_summary(pytester: py
 def test_a_failing_slow_test_is_reported_and_keeps_its_exit_code(pytester: pytest.Pytester) -> None:
     pytester.makepyfile(
         """
-        import time
+        from _pytest import timing
 
         def test_slow_and_broken():
-            time.sleep(0.15)
+            timing.sleep(0.15)
             assert False
         """
     )
@@ -127,10 +154,10 @@ def test_under_coverage_nothing_is_reported(pytester: pytest.Pytester, monkeypat
     monkeypatch.setenv("COVERAGE_RUN", "true")  # setzt ``coverage run`` für sich und alle Kinder
     pytester.makepyfile(
         """
-        import time
+        from _pytest import timing
 
         def test_slow():
-            time.sleep(0.15)
+            timing.sleep(0.15)
         """
     )
 
@@ -144,14 +171,13 @@ def test_under_coverage_nothing_is_reported(pytester: pytest.Pytester, monkeypat
 def test_only_setup_and_call_phases_are_reported(pytester: pytest.Pytester) -> None:
     pytester.makepyfile(
         """
-        import time
-
         import pytest
+        from _pytest import timing
 
         @pytest.fixture
         def slow_cleanup():
             yield
-            time.sleep(0.15)
+            timing.sleep(0.15)
 
         def test_fast_body(slow_cleanup):
             pass
@@ -171,10 +197,10 @@ def test_the_serial_pass_keeps_the_entries_of_the_parallel_pass(
     monkeypatch.setenv("SWARMQ_TEST_EXCLUSIVE", "only")
     pytester.makepyfile(
         """
-        import time
+        from _pytest import timing
 
         def test_slow():
-            time.sleep(0.15)
+            timing.sleep(0.15)
         """
     )
 

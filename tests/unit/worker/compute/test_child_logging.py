@@ -100,7 +100,7 @@ import structlog
 from swarmq.task import Task, TaskInfo
 from swarmq.worker.compute import child
 from swarmq.worker.compute.envelope import ComputeJob
-from tests.unit._fork_child import run_in_forked_child
+from tests.unit._fork_child import FORK_TEST_TIMEOUT_S, run_in_forked_child
 
 RECORDS: list[logging.LogRecord] = []
 """Ziel des ``CollectingHandler`` aus den dictConfig-Tests."""
@@ -801,7 +801,7 @@ def test_the_log_config_of_the_job_does_not_close_an_app_handler_next_to_the_sen
     assert app_file.read_text().splitlines() == ["task_line t1"]
 
 
-@pytest.mark.timeout(5)
+@pytest.mark.timeout(FORK_TEST_TIMEOUT_S)
 def test_a_forked_child_of_the_fork_source_starts_without_the_sentinel() -> None:
     root = _sentinel_root()
 
@@ -828,7 +828,7 @@ def _app_replaces_root() -> list[tuple[str, Any]]:
     return [("logging_reconfigured_by_app", {"reenabled_loggers": 0})]
 
 
-@pytest.mark.timeout(5)
+@pytest.mark.timeout(FORK_TEST_TIMEOUT_S)
 @pytest.mark.parametrize(
     "preload",
     [_app_basicconfig, _app_adds_a_handler, _app_replaces_root],

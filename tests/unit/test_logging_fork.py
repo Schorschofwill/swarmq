@@ -82,11 +82,13 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.logging import configure_logging, shutdown_logging
 from swarmq.logging_fork import hold_handler_locks
 from swarmq.logging_settings import LoggingSettings
-from tests.unit._fork_child import run_in_forked_child
+from tests.unit._fork_child import CHILD_TIMEOUT_S, FORK_TEST_TIMEOUT_S, UNBOUNDED_DRAIN_S, run_in_forked_child
 
 # Enge Zeitbudgets gegen die echte Uhr: unter paralleler Last gerissen
 # (CI und Stresslauf 2026-10-16), daher im seriellen Durchgang (``timing``).
-pytestmark = [pytest.mark.timeout(5), pytest.mark.timing]
+# Im Kind wartet nichts mit eigener Frist (Plan 0.14, KTD8): Ein Fehler endet
+# dort als Haenger oder Assertion, der Deckel des Fork-Kinds meldet ihn.
+pytestmark = [pytest.mark.timeout(FORK_TEST_TIMEOUT_S), pytest.mark.timing]
 
 RECORDS: list[logging.LogRecord] = []
 """Ziel des ``RecordingHandler`` aus den dictConfig-Dateien der Tests; je
@@ -205,7 +207,7 @@ def _messages() -> list[str]:
     return [r.getMessage() for r in RECORDS]
 
 
-def _wait_for_message(message: str, timeout: float = 2.0) -> bool:
+def _wait_for_message(message: str, timeout: float | None = 2.0) -> bool:
     with RECORDED:
         return RECORDED.wait_for(lambda: message in _messages(), timeout)
 
@@ -227,7 +229,7 @@ def test_the_child_does_not_replay_records_inherited_in_the_file_mode_queue(
 
     def child() -> None:
         log.warning("evt_child")
-        shutdown_logging()
+        shutdown_logging(timeout=UNBOUNDED_DRAIN_S)
         assert _messages() == ["evt_child"]
 
     assert run_in_forked_child(child) == 0
@@ -294,7 +296,7 @@ def test_an_app_queue_class_still_gets_a_listener_in_the_child(tmp_path: pathlib
     def child() -> None:
         # Die Queue-Kopie gehoert dem Kind: Sein eigener Listener schreibt.
         log.warning("evt_child")
-        assert _wait_for_message("evt_child")
+        assert _wait_for_message("evt_child", timeout=None)  # ohne Frist: sonst haengt das Kind
 
     assert run_in_forked_child(child) == 0
 
@@ -474,7 +476,9 @@ def test_the_child_can_fork_again_without_hook_errors(
 
     def child() -> None:
         logging.getLogger("app").warning("evt_starts_the_child_listener")
-        assert run_in_forked_child(lambda: None) == 0
+        # Halber Deckel: Ein haengendes Enkelkind meldet das Kind, bevor der
+        # Deckel des Kinds reisst.
+        assert run_in_forked_child(lambda: None, timeout=CHILD_TIMEOUT_S / 2) == 0
         assert hook_errors == []
 
     assert run_in_forked_child(child) == 0
@@ -489,7 +493,7 @@ def test_a_restart_lock_held_at_fork_does_not_block_the_child(tmp_path: pathlib.
 
     def child() -> None:
         logging.getLogger("app").warning("evt_child")
-        shutdown_logging()
+        shutdown_logging(timeout=UNBOUNDED_DRAIN_S)
         assert _messages() == ["evt_child"]
 
     try:
@@ -509,7 +513,7 @@ def test_the_child_does_not_report_the_drops_of_the_parent(tmp_path: pathlib.Pat
 
     def child() -> None:
         log.warning("evt_child")
-        shutdown_logging()
+        shutdown_logging(timeout=UNBOUNDED_DRAIN_S)
         assert _messages() == ["evt_child"]
 
     assert run_in_forked_child(child) == 0
@@ -604,12 +608,12 @@ def test_multiprocessing_exit_before_shutdown_logging_writes_all_records(
         # Interpreterende: ``multiprocessing`` wurde nach swarmq importiert,
         # seine atexit-Funktion laeuft vor ``shutdown_logging``.
         multiprocessing.util._exit_function()  # type: ignore[attr-defined]
-        shutdown_logging()
+        shutdown_logging(timeout=UNBOUNDED_DRAIN_S)
 
         assert thread_errors == []
         assert _messages() == [f"evt_exit_{i}" for i in range(3)]
 
-    assert run_in_forked_child(child, timeout=3.0) == 0
+    assert run_in_forked_child(child) == 0
 
 
 def test_a_record_after_multiprocessing_closed_the_pipe_is_counted_as_dropped(
@@ -632,13 +636,13 @@ def test_a_record_after_multiprocessing_closed_the_pipe_is_counted_as_dropped(
         before = dropped_log_records()
 
         log.warning("evt_after_exit")  # etwa aus einer spaeteren atexit-Funktion
-        shutdown_logging()
+        shutdown_logging(timeout=UNBOUNDED_DRAIN_S)
 
         assert thread_errors == []
         assert dropped_log_records() - before == 1
         assert _messages() == ["evt_before_exit"]
 
-    assert run_in_forked_child(child, timeout=3.0) == 0
+    assert run_in_forked_child(child) == 0
 
 
 def test_a_sentinel_left_in_a_closed_queue_is_not_counted_as_dropped(
@@ -673,17 +677,17 @@ def test_a_sentinel_left_in_a_closed_queue_is_not_counted_as_dropped(
                 sentinel_offered.set()
 
         def get_after_the_sentinel(*args: object, **kwargs: object) -> object:
-            assert sentinel_offered.wait(2)
+            sentinel_offered.wait()  # ohne Frist: sonst haengt das Kind
             return get(*args, **kwargs)
 
         mp_queue.put_nowait = put_nowait_and_signal
         mp_queue.get = get_after_the_sentinel
 
         log.warning("evt_after_exit")
-        shutdown_logging()
+        shutdown_logging(timeout=UNBOUNDED_DRAIN_S)
 
         assert sentinel_offered.is_set()
         assert dropped_log_records() - before == 1
         assert _messages() == ["evt_before_exit"]
 
-    assert run_in_forked_child(child, timeout=3.0) == 0
+    assert run_in_forked_child(child) == 0
