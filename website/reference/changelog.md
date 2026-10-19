@@ -4,6 +4,20 @@ All notable changes to SwarmQ. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [0.13.0] — 2026-10-19
+
+0.13.0 is 0.13.0rc2 without code changes. The two release candidates
+describe all changes since 0.12.4; their fixes and upgrade notes apply
+unchanged. Read [0.13.0rc1](#0130rc1-2026-10-18) (cron expressions
+follow a crontab(5) positive list, upper bounds for configuration
+values, changed log levels, result store retry, workflow cancel flag,
+worker version key, `already_exists`, `DeadLetterScan`, F4-01, F4-16,
+mixed operation and rollback) and [0.13.0rc2](#0130rc2-2026-10-19)
+(upper bounds for `TaskInfo` deadlines and `unique_for`,
+`ExecutionGuardStore.peek` for own implementations, log changes for
+deferrals on a lost broker channel). Install with
+`pip install 'swarmq==0.13.*'`; `--pre` is no longer needed.
+
 ## [0.13.0rc2] — 2026-10-19
 
 Second release candidate for 0.13.0 (install with `pip install --pre`).
