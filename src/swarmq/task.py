@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, override
 from croniter import CroniterBadCronError, CroniterBadDateError, croniter
 
 from swarmq.config import normalize_timezone
-from swarmq.config_validation import check_deadline_bound, check_positive_seconds
+from swarmq.config_validation import check_deadline_bound, check_positive_seconds, require_number
 from swarmq.cron_syntax import validate_cron_syntax
 from swarmq.limits import parse_rate_limit
 from swarmq.locking import compute_lock_ttl_ms
@@ -185,6 +185,10 @@ class TaskInfo:
         if not self.queues:
             raise ValueError("queues must have at least 1 element")
         check_deadline_bound("hard_timeout", self.hard_timeout, positive=True)
+        # Typ vor der Relation: eine ``timedelta`` oder ein String scheiterte
+        # sonst am Vergleich ohne Feldnamen (Review 0.13.1, M3).
+        if self.soft_timeout is not None:
+            require_number("soft_timeout", self.soft_timeout)
         # ``not >`` statt ``<=``: fuer ``soft_timeout=nan`` ist jeder Vergleich
         # falsch, die Grenze aus E-063 muss trotzdem greifen.
         if (

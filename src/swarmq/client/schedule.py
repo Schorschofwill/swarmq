@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 from swarmq.client.schedule_resolve import _MISSING as _MISSING  # Re-Export (Fassade, app.py)
 from swarmq.client.schedule_resolve import ClientScheduleResolve
 from swarmq.client.schedule_resolve import _MissingType as _MissingType
-from swarmq.config_validation import MAX_DEADLINE_MS, MAX_DEADLINE_S, check_deadline_bound
+from swarmq.config_validation import MAX_DEADLINE_MS, MAX_DEADLINE_S, check_deadline_bound, require_number
 from swarmq.contracts import Publisher, ResultBackend
 from swarmq.contracts.coordination import ScheduleStore as ContractScheduleStore
 from swarmq.exceptions import (
@@ -53,6 +53,22 @@ logger = get_logger(__name__)
 # Publish-Ausgaenge, nach denen die Nachricht angekommen sein kann: die
 # Unique-Sperre bleibt stehen (E-041; der Abbruch seit 0.13.1).
 _INDETERMINATE_PUBLISH = (PublishIndeterminate, asyncio.CancelledError)
+
+
+def _check_delay_and_eta(delay: float | None, eta: datetime | None) -> None:
+    """Form von ``delay``/``eta`` vor jeder Nebenwirkung (E-080)."""
+    if delay is not None and eta is not None:
+        raise ValueError("Specify delay OR eta, not both")
+    if delay is None:
+        return
+    # Typ vor dem Vergleich: eine ``timedelta`` oder ein String scheiterte
+    # sonst an ``< 0`` ohne Feldnamen (Review 0.13.1).
+    require_number("delay", delay)
+    if delay < 0:
+        raise ValueError(f"delay must be >= 0, got {delay!r}")
+    # ``nan`` besteht ``< 0`` und ``> 0`` nicht und veroeffentlichte sonst
+    # still sofort; ``inf`` warf beim Umrechnen ``OverflowError``.
+    check_deadline_bound("delay", delay)
 
 
 class ClientBroker(Publisher, Protocol):
@@ -225,13 +241,7 @@ class ClientScheduling(ClientScheduleResolve):
         resolved_queue, delivery_mode = self._resolve_queue_and_delivery_mode(task_name, queue)
 
         # --- deferred path: delay= / eta= ---
-        if delay is not None and eta is not None:
-            raise ValueError("Specify delay OR eta, not both")
-        if delay is not None and delay < 0:
-            raise ValueError(f"delay must be >= 0, got {delay!r}")
-        # E-080: ``nan`` besteht ``< 0`` und ``> 0`` nicht und veroeffentlichte
-        # sonst still sofort; ``inf`` warf beim Umrechnen ``OverflowError``.
-        check_deadline_bound("delay", delay)
+        _check_delay_and_eta(delay, eta)
         # delay=0 is a normal immediate publish; only non-zero delay and
         # eta take the scheduler-store detour.
         if (delay is not None and delay > 0) or eta is not None:

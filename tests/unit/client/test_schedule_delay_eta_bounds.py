@@ -13,13 +13,16 @@ Testliste:
 # [x] delay=inf -> ValueError, keine Nebenwirkung
 # [x] delay=-inf -> ValueError (delay >= 0 gilt weiter)
 # [x] delay=MAX_DEADLINE_S + 1 -> ValueError, keine Nebenwirkung
+# [x] delay als timedelta oder String -> TypeError mit Feldnamen, keine Nebenwirkung
+#     (Review 0.13.1: die Typprüfung läuft vor ``delay < 0``)
 # [x] delay=MAX_DEADLINE_S erlaubt (Eintrag mit fire_ts_ms = jetzt + Grenze)
 # [x] eta (aware) weiter als MAX_DEADLINE_S in der Zukunft -> ValueError, keine Nebenwirkung
 # [x] eta (aware) knapp innerhalb der Grenze erlaubt
+# [x] eta mit Zone +14:00: Grenze auf dem Zeitpunkt (innen gespeichert, außen abgelehnt)
 # [x] eta naiv: wie bisher als Ortszeit gelesen; fern in der Zukunft -> ValueError
 # [x] eta=datetime.max (naiv) -> ValueError mit Feldnamen statt rohem Jahresfehler
 # [x] CLI: schedule add --at jenseits der Grenze -> ConfigurationError vor dem Backend
-#     (tests/unit/test_cli.py::TestScheduleAdd…::test_schedule_add_rejects_at_beyond_the_deadline_bound)
+#     (tests/unit/test_cli.py::TestScheduleHandlerValidation::test_schedule_add_rejects_at_beyond_the_deadline_bound)
 
 schedule_many() nimmt weder delay noch eta; Workflows haben keine Verzögerung.
 """
@@ -28,7 +31,7 @@ from __future__ import annotations
 
 import math
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from typing import override
 from unittest.mock import AsyncMock, MagicMock
 
@@ -111,6 +114,23 @@ async def test_delay_outside_the_bound_is_rejected_before_any_side_effect(
     _assert_no_side_effect(broker, backend, store, recorder)
 
 
+@pytest.mark.parametrize("delay", [timedelta(seconds=60), "60"], ids=["timedelta", "string"])
+async def test_non_number_delay_names_the_field_before_any_side_effect(
+    bound_client: Client,
+    broker: AsyncMock,
+    backend: AsyncMock,
+    store: MagicMock,
+    recorder: _Recorder,
+    delay: object,
+) -> None:
+    """Review 0.13.1: ``delay < 0`` lief vor der Typprüfung und warf einen
+    Vergleichsfehler ohne Feldnamen."""
+    with pytest.raises(TypeError, match=r"^delay must be a number of seconds, got "):
+        await bound_client.schedule("bound.task", 1, queue="bound", delay=delay, unique_for=60)  # type: ignore[arg-type]  # Fehleingabe ist der Testfall
+
+    _assert_no_side_effect(broker, backend, store, recorder)
+
+
 async def test_delay_at_the_bound_is_stored(bound_client: Client, store: MagicMock) -> None:
     before_ms = int(time.time() * 1000)
 
@@ -137,6 +157,26 @@ async def test_eta_just_inside_the_bound_is_stored(bound_client: Client, store: 
     await bound_client.schedule("bound.task", 1, queue="bound", eta=eta, unique_for=60)
 
     assert store.add_schedule.await_args.args[0].fire_ts_ms == int(eta.timestamp() * 1000)
+
+
+async def test_eta_with_a_far_east_zone_is_bounded_on_its_instant(
+    bound_client: Client, broker: AsyncMock, backend: AsyncMock, store: MagicMock, recorder: _Recorder
+) -> None:
+    """Review 0.13.1 (P3-4): die Grenze gilt auf dem Zeitpunkt, nicht auf
+    der Wanduhr der Zone; ``+14:00`` liegt 14 h vor UTC."""
+    zone = timezone(timedelta(hours=14))
+    inside = datetime.now(zone) + timedelta(seconds=MAX_DEADLINE_S - 60)
+    await bound_client.schedule("bound.task", 1, queue="bound", eta=inside, unique_for=60)
+    assert store.add_schedule.await_args.args[0].fire_ts_ms == int(inside.timestamp() * 1000)
+    store.add_schedule.reset_mock()
+    backend.claim_unique.reset_mock()
+    recorder.seen.clear()
+
+    beyond = datetime.now(zone) + timedelta(seconds=MAX_DEADLINE_S + 60)
+    with pytest.raises(ValueError, match=rf"^eta must be at most {MAX_DEADLINE_S} seconds in the future"):
+        await bound_client.schedule("bound.task", 1, queue="bound", eta=beyond, unique_for=60)
+
+    _assert_no_side_effect(broker, backend, store, recorder)
 
 
 async def test_naive_eta_is_read_as_local_time_and_bounded_alike(
