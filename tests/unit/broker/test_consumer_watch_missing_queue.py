@@ -15,6 +15,10 @@ Test-Liste:
 # [x] Broker: prüft passiv auf einem Wegwerf-Kanal, NOT_FOUND heißt fehlt; ``consumer_missing_queues``
 # [x] hängende Prüfung → endet nach ``timeout_s`` (Wegwerf-Kanal, nicht der Consume-Kanal), nächster Takt
 # [x] Broker ohne Verbindung → Prüfung scheitert mit ``BrokerConnectionError``, gilt nicht als fehlend
+# [x] Broker: hängendes Declare, hängendes Close → der Takt endet nach höchstens
+#     zweimal ``_RPC_TIMEOUT_S`` (Prüfung, dann Schließen; Review 0.14, P4)
+# [x] Broker: Abbruch während des Kanal-Öffnens → der Kanal wird nach dem Öffnen
+#     geschlossen, kein Eintrag bleibt offen (Review 0.14, P4)
 """
 
 from __future__ import annotations
@@ -27,8 +31,9 @@ import pytest
 from aio_pika.exceptions import ChannelNotFoundEntity
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
-from swarmq.broker.rabbitmq.consumer_watch import ConsumerWatch
+from swarmq.broker.rabbitmq.consumer_watch import _RPC_TIMEOUT_S, ConsumerWatch
 from tests.support.consumer_fakes import FakeChannel, FakeQueue, FakeUnderlay
+from tests.support.virtual_time import run_virtual
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -219,3 +224,58 @@ async def test_the_existence_check_of_an_unconnected_broker_fails(swarmq_logs):
     [failed] = [e for e in swarmq_logs if e["event"] == "consumer_reregister_failed"]
     assert failed["error_type"] == "BrokerConnectionError"
     assert broker.consumer_missing_queues() == []
+
+
+async def _hang(*_args: Any, **_kwargs: Any) -> None:
+    await asyncio.Event().wait()
+
+
+def test_a_hanging_check_whose_close_hangs_too_ends_after_the_close_deadline() -> None:
+    """Hängt das passive Declare (Alarm mit ``shared``, halboffenes TCP), hängt
+    auch das Schließen des Wegwerf-Kanals. Der Takt endet trotzdem: Prüfung und
+    Schließen sind je auf ``_RPC_TIMEOUT_S`` begrenzt (virtuelle Uhr)."""
+
+    async def main() -> float:
+        queue = FakeQueue("q1", FakeChannel(FakeUnderlay()))
+        broker, throwaway = _broker_with(queue)
+        await broker.consume("q1", AsyncMock(), concurrency=4)
+        await broker.consumer_watch.tick()
+        throwaway.declare_queue.side_effect = _hang
+        throwaway.close.side_effect = _hang
+        queue.channel.underlay.consumers.clear()
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+
+        await broker.consumer_watch.tick()
+
+        return loop.time() - start
+
+    assert run_virtual(main) <= 2 * _RPC_TIMEOUT_S
+
+
+def test_a_check_aborted_while_the_channel_opens_closes_the_channel_once_it_is_open() -> None:
+    """Ein Abbruch mitten im Öffnen ließe den Kanal halb offen zurück (aiormq
+    fängt ``CancelledError`` dort nicht und behält den Eintrag). Das Öffnen
+    läuft deshalb zu Ende, und der Kanal wird danach geschlossen, binnen der
+    Frist des Schließens."""
+
+    async def main() -> AsyncMock:
+        queue = FakeQueue("q1", FakeChannel(FakeUnderlay()))
+        broker, throwaway = _broker_with(queue)
+        await broker.consume("q1", AsyncMock(), concurrency=4)
+        await broker.consumer_watch.tick()
+
+        async def slow_open(*_args: Any, **_kwargs: Any) -> AsyncMock:
+            await asyncio.sleep(1.5 * _RPC_TIMEOUT_S)
+            return throwaway
+
+        broker._connection.channel.side_effect = slow_open  # type: ignore[union-attr]  # AsyncMock aus _broker_with
+        queue.channel.underlay.consumers.clear()
+
+        await broker.consumer_watch.tick()
+
+        return throwaway
+
+    throwaway = run_virtual(main)
+    throwaway.declare_queue.assert_not_awaited()
+    throwaway.close.assert_awaited_once()

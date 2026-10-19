@@ -165,7 +165,10 @@ was deleted change.
    before it registers the consumer again. If it is missing, the worker
    logs the ERROR `consumer_queue_missing` (field `queue`) once, sends
    no `basic.consume` for it and takes it out of aio-pika's restore, so
-   a reconnect does not declare it again. Its other queues keep
+   a reconnect does not declare it again. A queue deleted while the
+   connection is already down, or right before a reconnect that comes
+   before the next tick, still makes the reconnect fail with `NOT_FOUND`
+   as before; then only a restart helps. The worker's other queues keep
    consuming, the connection stays up and publishing keeps working, with
    both values of `SWARMQ_BROKER_PUBLISH_CONNECTION`. Before, every
    queue of the worker stopped, `consumer_watch_tick_failed` came on

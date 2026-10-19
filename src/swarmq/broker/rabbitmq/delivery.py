@@ -410,10 +410,13 @@ class RabbitMQDelivery(RabbitMQDeclarations):
 
         Gewartet wird auf ``unblocked`` oder ``closing`` derselben
         aiormq-Verbindung (F4-21): aiormq setzt das Event beim Schliessen
-        nicht. Endet die Verbindung, wird der Zustand neu gelesen. Ohne
-        Verbindung oder auf der toten geht es zurueck in
-        ``_publish_attempts``, das auf den Reconnect wartet; ist die neue
-        blockiert, wird weiter gewartet. Die Frist bleibt die Obergrenze."""
+        nicht. Endet die Verbindung, wird der Zustand neu gelesen: Hat aio-pika
+        schon neu verbunden und ist die neue Verbindung blockiert, wird auf
+        sie weiter gewartet. Ohne Verbindung oder noch auf der toten endet das
+        Warten, und ``_publish_attempts`` wartet auf den Reconnect; den
+        Blocked-Zustand der neuen Verbindung prueft es nicht erneut (E-025,
+        Grenze D-1), ein Publish auf ihr haengt dann bis zur Frist. Die Frist
+        bleibt die Obergrenze."""
         while True:
             waiters = blocked_waiters(self._connection)
             if not isinstance(waiters, tuple):

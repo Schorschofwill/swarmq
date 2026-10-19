@@ -121,14 +121,22 @@ async def test_a_cut_while_blocked_with_the_dead_connection_still_current_goes_o
 async def test_a_cut_while_blocked_onto_a_blocked_connection_waits_until_the_deadline(swarmq_logs) -> None:
     dropped = _aiormq(blocked=True)
     broker = _broker(dropped)
-    broker.publish_timeout_s = 0.05
+    # Lange Frist, die der Test erst reißt, wenn der Publish auf der neuen
+    # Verbindung wartet: kein Rennen gegen die Uhr.
+    broker.publish_timeout_s = 60.0
     publish = asyncio.create_task(broker.publish("tasks", b"{}"))
     await getattr(dropped, _ATTR).waiting.wait()
 
     fresh = _aiormq(blocked=True)
     broker._connection.transport = SimpleNamespace(connection=fresh)  # type: ignore[union-attr]
     dropped.closing.set_result(None)
-    await getattr(fresh, _ATTR).waiting.wait()
+    waiting = asyncio.create_task(getattr(fresh, _ATTR).waiting.wait())
+    done, _ = await asyncio.wait({publish, waiting}, timeout=_SENT_WITHIN_S, return_when=asyncio.FIRST_COMPLETED)
+    waiting.cancel()
+    assert publish not in done, "the publish keeps waiting on the new blocked connection"
+    assert waiting in done, "after the cut the publish waits on the new connection, not on the dead one"
+    [deadline] = broker._active_publish_timeouts
+    deadline.reschedule(asyncio.get_running_loop().time())
 
     with pytest.raises(BrokerPublishBlocked):
         await publish

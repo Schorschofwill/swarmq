@@ -2,7 +2,7 @@
 title: Upgrade-Checkliste – private APIs von valkey-py, aiormq, aio-pika, pytest und asyncio, an denen swarmq hängt
 date: 2026-10-19
 category: docs/solutions/tooling-decisions
-module: backend/valkey/connection.py / broker/rabbitmq/blocked.py / broker/rabbitmq/robust_channels.py / broker/rabbitmq/consumer_watch.py / client/schedule.py / tests/unit/test_slow_test_report.py
+module: backend/valkey/connection.py / broker/rabbitmq/blocked.py / broker/rabbitmq/delivery.py / broker/rabbitmq/header_guard.py / broker/rabbitmq/robust_channels.py / broker/rabbitmq/consumer_watch.py / broker/rabbitmq/connection.py / client/schedule.py / logging_stdlib.py / logging_file.py / logging_queue.py / worker/compute/child.py / worker/compute/forkserver.py / tests/unit/test_slow_test_report.py
 problem_type: tooling_decision
 component: dependencies
 severity: medium
@@ -10,8 +10,9 @@ applies_when:
   - valkey-py, aiormq, aio-pika, pytest oder Python werden angehoben (auch Patch-Versionen)
   - ein Plan will eine weitere private API einer Bibliothek nutzen
   - nach einem Abhängigkeits-Upgrade scheitern Tests zu Verbindungsaufbau, Blocked-Zustand, Kanal-Wiederherstellung, gelöschter konsumierter Queue, Abbruch-Markierung oder Slow-Report
-tags: [abhaengigkeiten, upgrade, valkey-py, aiormq, aio-pika, pytest, asyncio, private-api, checkliste]
-entscheidungen: [E-025, E-041, E-075, E-078, E-083]
+  - nach einem Python-Upgrade scheitern Tests zu Logging-Listenern, Fork-Hooks oder dem Forkserver der Rechenkinder
+tags: [abhaengigkeiten, upgrade, valkey-py, aiormq, aio-pika, pytest, asyncio, logging, multiprocessing, private-api, checkliste]
+entscheidungen: [E-019, E-025, E-041, E-053, E-075, E-078, E-083]
 ---
 
 # Upgrade-Checkliste: private Bibliotheks-APIs
@@ -106,6 +107,68 @@ läuft. Tests wie oben.
   vier F4-21-Tests mit Fake-Transport) und
   `uv run just integration -k "bz16 or blocked_cancel or pf19 or befund_f4_21"` gegen den
   echten Broker.
+
+### Kanal-`closing` über `get_underlay_channel()` (undokumentiert, seit 0.12.2, FS-08)
+
+- **Wo:** `_closing_of` in `src/swarmq/broker/rabbitmq/delivery.py` (Z. 123–139) holt
+  über das öffentliche `get_underlay_channel()` von aio-pika den aiormq-Kanal und liest
+  dessen `closing`. `_publish_against_closing` wartet auf den Publish **oder** dieses
+  Future: Schließt die Verbindung, während der Publish in der Kanal-Sperre wartet, endet
+  er sofort statt erst mit der Publish-Frist (FS-08).
+- **Annahmen:** Der aiormq-Kanal trägt `closing` als `asyncio.Future`
+  (`aiormq/base.py`, `_create_closing_future`), erledigt, sobald Kanal oder Verbindung
+  enden. `get_underlay_channel()` kehrt bei stehender Verbindung ohne Suspendieren
+  zurück (Basis synchron, robust auf gesetztem `connected`).
+- **Rückfall:** Ist `closing` kein Future, loggt swarmq einmal die WARNING
+  `publish_channel_closing_unreadable` und publiziert ohne Wächter; der FS-08-Hänger
+  (Warten in der Kanal-Sperre bis zur Publish-Frist) kehrt zurück.
+- **Tests:** `uv run just unit -k "fs08 or publish_channel_closing"`.
+
+### `Connection.connection_tune.frame_max` (undokumentiert, seit 0.12, BZ-17)
+
+- **Wo:** `negotiated_frame_max` in `src/swarmq/broker/rabbitmq/header_guard.py` (Z. 56)
+  liest `connection.transport.connection.connection_tune.frame_max`; `guard_headers`
+  begrenzt die Header jedes Publish auf die Hälfte davon.
+- **Annahmen:** aiormq legt den `Connection.Tune`-Frame des Handshakes unter
+  `connection_tune` ab (in 7.0.0 Z. 365, gesetzt Z. 587) und überschreibt `frame_max`
+  dort mit dem ausgehandelten Wert.
+- **Rückfall:** Fehlt der Pfad (`AttributeError`) oder ist der Wert keine positive
+  Zahl, gilt `DEFAULT_FRAME_MAX` (131072, RabbitMQ-Standard). Handelt ein Broker einen
+  kleineren Wert aus, können zu große Header die Verbindung wieder schließen (BZ-17).
+- **Tests:** `uv run just unit -k header_guard`.
+
+### `Channel.consumers` (undokumentiert, seit 0.11, Consumer-Wächter)
+
+- **Wo:** `ConsumerWatch.tick` in `src/swarmq/broker/rabbitmq/consumer_watch.py`
+  (Z. 263) vergleicht die angemeldeten Tags mit `underlay.consumers` des aktuellen
+  aiormq-Kanals; die Settle-Regel in `delivery.py` (Z. 641) prüft
+  `tag in message.channel.consumers`, bevor ein Ack/Nack auf das Abmelden wartet.
+- **Annahmen:** `consumers` ist ein `dict` Tag → Callback am konkreten aiormq-`Channel`
+  (in 7.0.0 Z. 99), aiormq trägt bei `basic.consume_ok` ein und entfernt bei
+  `basic.cancel` vom Broker (Z. 397). Am ABC von aiormq steht es nicht.
+- **Rückfall:** keiner. Fehlt das Attribut, scheitert jeder Wächter-Takt
+  (`consumer_watch_tick_failed`) und jedes Settle eines beobachteten Tags; die Tests
+  unten werden rot.
+- **Tests:** `uv run just unit -k "consumer_watch or settle"` und
+  `uv run just integration tests/integration/broker/test_consumer_timeout.py`.
+
+### `Connection.channel()` fängt `CancelledError` beim Öffnen nicht (7.0.0, seit 0.14, PF-20)
+
+- **Verhalten:** `aiormq.Connection.channel` trägt den Kanal vor `channel.open()` in
+  `channels[n]` ein und räumt den Eintrag nur in `except Exception` wieder aus. Wird das
+  Öffnen abgebrochen (`wait_for`, `asyncio.timeout`), bleibt der Eintrag stehen, und
+  aio-pika kann den halb geöffneten Kanal nicht schließen (`Channel.close` meldet nur
+  „Channel not opened“).
+- **Folge für swarmq:** `queue_exists_on_throwaway` in `broker/rabbitmq/robust_channels.py`
+  (aufgerufen von `_consume_queue_exists` in `connection.py`) bricht das Öffnen des Wegwerf-Kanals nicht ab (`asyncio.shield`), sondern wartet es
+  im `finally` ab und schließt den Kanal, beides zusammen höchstens `_RPC_TIMEOUT_S`
+  (E-083). `_open_probe_channel` in `arg_conflict.py` bricht das Öffnen dagegen mit
+  seiner Frist ab; dort ist die Verbindung dann ohnehin tot oder blockiert.
+- **Prüfen bei einem aiormq-Upgrade:** ob `channel()` den Eintrag auch bei einem
+  Abbruch ausräumt (`except BaseException` oder `finally`). Dann wäre das Abwarten
+  überflüssig, aber nicht falsch.
+- **Tests:** `uv run just unit -k consumer_watch_missing_queue`
+  (`test_a_check_aborted_while_the_channel_opens_closes_the_channel_once_it_is_open`).
 
 ## aio-pika
 
@@ -225,6 +288,21 @@ läuft. Tests wie oben.
   (Queue gelöscht, Reconnect mit `separate` und `shared` ohne `NOT_FOUND`, Queue neu
   angelegt).
 
+### `RobustQueue._consumers` und `RobustQueue.cancel` (privat bzw. Verhalten, seit 0.11)
+
+- **Wo:** Der Consumer-Wächter (`_reregister` in `consumer_watch.py`, Modul-Docstring
+  Z. 4–13 und Z. 301–304) meldet einen vom Broker beendeten Tag über das öffentliche
+  `RobustQueue.cancel` ab, bevor er neu anmeldet. Gelesen wird `_consumers` nur in
+  `tests/integration/broker/test_consumer_timeout.py` (Z. 212, 236).
+- **Annahmen:** `RobustQueue.consume` trägt den Tag in `_consumers` ein
+  (`robust_queue.py`, in 10.0.1 Z. 141), `cancel` entfernt ihn (Z. 157), und
+  `restore()` meldet nach einem Reconnect genau die Tags darin wieder an (Z. 67).
+  aio-pika merkt ein `basic.cancel` des Brokers nicht; der tote Tag bleibt sonst stehen.
+- **Rückfall:** keiner. Entfernte `cancel` den Tag nicht mehr, legte ein Restore den
+  toten Consumer neben dem neu angemeldeten wieder an; der Integrationstest wird rot.
+- **Tests:** `uv run just unit -k consumer_watch` und
+  `uv run just integration tests/integration/broker/test_consumer_timeout.py`.
+
 ## pytest
 
 ### `_pytest.timing.MockTiming` (privat, seit 0.14, U7)
@@ -238,6 +316,13 @@ läuft. Tests wie oben.
 - **Rückfall:** keiner. Fehlt die Klasse, scheitert das Testmodul beim Lauf; das ist
   ein Testwerkzeug, kein Produktverhalten.
 - **Tests:** `uv run --extra test pytest tests/unit/test_slow_test_report.py`.
+
+### Modulname `_pytest.logging` (privat, Testwerkzeug)
+
+- **Wo:** `tests/unit/test_log_capture.py` (Z. 138) erkennt die Capture-Handler von
+  pytest am Modulnamen `_pytest.logging`.
+- **Rückfall:** keiner; benennt pytest das Modul um, wird der Test rot.
+- **Tests:** `uv run --extra test pytest tests/unit/test_log_capture.py`.
 
 ## asyncio (stdlib)
 
@@ -257,11 +342,85 @@ läuft. Tests wie oben.
   (`test_schedule_many_releases_only_the_claim_of_a_publish_marked_unsent`,
   `test_cancel_of_schedule_many_with_publishes_marked_unsent_releases_their_claims`).
 
+## logging (stdlib)
+
+### `logging._lock` und `logging._handlerList` (privat, seit 0.9)
+
+- **Wo:** nur `src/swarmq/logging_stdlib.py` (`module_lock`, `handler_refs`); genutzt
+  für die Lock-Reihenfolge im Fork-Hook (`logging_fork.py`), zum Vergessen aufgegebener
+  Handler (`logging_drain.py`) und um Handler vor `dictConfig` zu verbergen. Tests setzen
+  `_handlerList` per `monkeypatch` und halten `logging._lock` direkt
+  (`test_logging_fork.py`, `test_logging_drain.py`, `test_logging_configure.py` u. a.).
+- **Annahmen:** `_lock` ist das `RLock`, das `dictConfig`, die Handler-Registrierung
+  und `logging.shutdown` serialisiert; `_handlerList` ist die Liste der
+  Schwachreferenzen, die `shutdown` schließt; die stdlib setzt beide im Fork-Kind selbst
+  zurück (`_after_at_fork_child_reinit_locks`).
+- **Rückfall:** keiner; ein `AttributeError` im Logging-Setup. Anzupassen ist nur
+  `logging_stdlib.py`.
+- **Tests:** `uv run just unit -k "logging_fork or logging_drain or logging_configure"`.
+
+### `QueueListener._thread` und `QueueListener._monitor` (privat, seit 0.8 bzw. 0.9)
+
+- **Wo:** `_thread_of` und `_forget_thread` in `src/swarmq/logging_file.py` (Z. 464,
+  471), `_report_from_listener` (Z. 661 liest `_monitor`, Z. 683 ersetzt es durch eine
+  Hülle, die Fehler des Handlers ratenbegrenzt meldet) und `logging_queue.py` (Z. 702,
+  Drain eines laufenden Listeners). Tests lesen `listener._thread`.
+- **Annahmen:** `QueueListener.start` legt den Thread unter `_thread` ab und startet ihn
+  mit `target=self._monitor`; `stop` setzt `_thread` auf `None`; `start` wirft, solange
+  `_thread` gesetzt ist.
+- **Rückfall:** `_thread_of` liefert bei fehlendem Attribut `None` (der Listener gilt als
+  nicht gestartet); `_monitor` hat keinen Rückfall, ohne ihn scheitert das Einrichten
+  eines Datei-Listeners.
+- **Tests:** `uv run just unit -k "logging_queue or logging_file or logging_configure"`.
+
+## multiprocessing (stdlib)
+
+### `forkserver._forkserver._forkserver_alive_fd` und `._forkserver_pid` (privat, seit 0.5)
+
+- **Wo:** `release_forkserver_alive_fd` in `src/swarmq/worker/compute/child.py`
+  (Z. 79–85) schließt im Rechenkind das geerbte Schreib-Ende `_forkserver_alive_fd`,
+  sonst hielte ein lebendes Kind den Forkserver nach dem Tod des Loop-Prozesses am Leben
+  und das Parent-Death-Signal feuerte nie. `forkserver_pid` in
+  `worker/compute/forkserver.py` (Z. 157) liest `_forkserver_pid` (KTD14).
+- **Annahmen:** Das Modul-Singleton `multiprocessing.forkserver._forkserver` trägt beide
+  Attribute; jedes Kind des Forkservers erbt das Alive-fd.
+- **Rückfall:** Fehlt `_forkserver_alive_fd`, schließt das Kind nichts (kein Absturz,
+  aber verwaiste Rechenkinder nach einem Absturz des Loop-Prozesses möglich). Fehlt
+  `_forkserver_pid`, liefert `forkserver_pid` `None`, und die Prüfungen auf
+  Forkserver-Threads werden zu Warnungen.
+- **Tests:** `uv run just unit -k "compute and (child or forkserver)"` und
+  `uv run just integration -k "compute_child or app_dir_spawn"`.
+
+## Tests gegen aio-pika-Interna (F4-20, F4-22)
+
+Die Nachweise zu F4-20 und F4-22 treiben ein echtes `RobustConnection` über einem Fake
+der aiormq-Verbindung und spielen den Reconnect von Hand nach:
+`connection.transport = _FakeTransport(...)` bzw. `= None`, `connection.connected.set()`
+und `.clear()` und ein direkter Aufruf von `await connection._on_connected()`
+(`tests/unit/broker/test_befund_f4_20_restore_closed_channels.py` Z. 134–150,
+`tests/unit/broker/test_befund_f4_22_channel_replaced_in_restore_window.py`
+`_connected_broker`, `_drop`, `_reconnect` und die Tests mit `_HeldAiormq`).
+
+- **Annahmen:** `RobustConnection._on_connected` (in 10.0.1 Z. 107) setzt über
+  `Connection._on_connected` `connected` (`connection.py` Z. 137) und stellt danach die
+  Kanäle wieder her; der Abriss besteht aus `transport = None` und `connected.clear()`.
+  Die Tests ersetzen damit `connect()` und den Reconnect-Takt.
+- **Rückfall:** keiner; ändert aio-pika die Reihenfolge oder die Namen, werden die Tests
+  rot oder prüfen das Fenster nicht mehr. Dann zuerst gegen die Integrationstests
+  (`uv run just integration -k "befund_f4_20 or befund_f4_22"`) prüfen, ob das
+  Verhalten stimmt, und die Fakes nachziehen.
+- Ebenso setzen viele Unit-Tests das aiormq-Attribut `_Connection__connection_unblocked`
+  an Fakes (`test_publish_blocked.py`, `test_rabbitmq.py`, F4-20/F4-21), die
+  Integrationstests lesen `channels` der aiormq-Verbindung (`test_declare_chain.py`,
+  `test_pf19_close_after_unblocked.py`) und `test_robust_channels.py`
+  `_RobustConnection__channels`; sie folgen den Einträgen oben.
+
 ## Ablauf bei einem Upgrade
 
 1. Für jede angehobene Bibliothek die Einträge oben am neuen Quelltext prüfen.
 2. Die genannten Tests laufen lassen, dann `uv run just all` und für valkey-py,
-   aiormq und aio-pika zusätzlich `SWARMQ_REQUIRE_CHAOS=1 uv run just chaos`.
-3. Bei einer Abweichung erst die betroffene Entscheidung lesen (E-025, E-041, E-075,
-   E-078, E-083), dann anpassen. Einen Test mit `entscheidung`-Marker nicht lockern.
+   aiormq und aio-pika zusätzlich `SWARMQ_REQUIRE_CHAOS=1 uv run just chaos`. Bei einem
+   Python-Upgrade auch die Einträge zu `logging` und `multiprocessing`.
+3. Bei einer Abweichung erst die betroffene Entscheidung lesen (E-019, E-025, E-041,
+   E-053, E-075, E-078, E-083), dann anpassen. Einen Test mit `entscheidung`-Marker nicht lockern.
 4. Diese Datei mit den neuen Versionen und Zeilen nachführen.

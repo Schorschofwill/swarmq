@@ -37,6 +37,9 @@ den Claim frei; der Abbruch geht weiter.
       Claim frei
 - [x] zweiter Abbruch während der Freigabe: der Abbruch geht weiter, die
       Freigabe endet unvollständig (Claim bleibt konservativ stehen)
+- [x] ``schedule_many``: ein Eintrag scheitert schnell und bestimmt
+      (``UnroutableMessage``), ein anderer hängt, der Aufrufer bricht ab ->
+      beide Claims frei (Review 0.14, P4)
 """
 
 from __future__ import annotations
@@ -49,7 +52,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from swarmq.client import Client
-from swarmq.exceptions import PublishCancelledUnsent
+from swarmq.exceptions import PublishCancelledUnsent, UnroutableMessage
 from swarmq.middleware import MessageContext, Middleware, MiddlewareChain
 from swarmq.signals import Signal
 
@@ -152,6 +155,10 @@ async def test_second_cancel_during_the_release_is_not_swallowed(client, broker,
     await releasing.wait()
     task.cancel()
 
+    # Verschluckte die Freigabe den zweiten Abbruch, hinge der Task in ihr:
+    # ein Fehlschlag an der Assertion statt eines Hängers.
+    done, _ = await asyncio.wait({task}, timeout=1.0)
+    assert task in done, "the second cancel ends the task instead of being swallowed by the release"
     with pytest.raises(asyncio.CancelledError):
         await task
     assert task.cancelled()
@@ -280,6 +287,33 @@ async def test_cancel_of_schedule_many_with_publishes_marked_unsent_releases_the
     Abbruch geht weiter."""
     started = asyncio.Event()
     broker.publish = AsyncMock(side_effect=_hanging_then_unsent(started))
+    backend.claim_unique = AsyncMock(return_value=None)
+    backend.release_unique = AsyncMock()
+
+    await _cancel_when(started, client.schedule_many([("add", (1, 2), {}), ("add", (3, 4), {})], unique_for=60))
+
+    claimed = sorted(c.args[0] for c in backend.claim_unique.await_args_list)
+    assert sorted(c.args[0] for c in backend.release_unique.await_args_list) == claimed
+
+
+async def test_cancel_of_schedule_many_releases_the_claim_of_an_entry_that_failed_before_sending(
+    client, broker, backend
+) -> None:
+    """Eintrag 0 scheitert sofort und bestimmt ohne Senden (``UnroutableMessage``),
+    Eintrag 1 wartet blockiert und meldet den Abbruch als nicht gesendet. Bricht
+    der Aufrufer ab, werden beide Claims frei, nicht nur der des wartenden."""
+    started = asyncio.Event()
+    unsent = _hanging_then_unsent(started)
+    calls = 0
+
+    async def publish(*args: Any, **kwargs: Any) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise UnroutableMessage("publish to 'math' was returned unroutable")
+        await unsent(*args, **kwargs)
+
+    broker.publish = AsyncMock(side_effect=publish)
     backend.claim_unique = AsyncMock(return_value=None)
     backend.release_unique = AsyncMock()
 

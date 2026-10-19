@@ -182,7 +182,10 @@ nach dem Löschen einer konsumierten Queue ändern sich.
    Worker einmal die ERROR `consumer_queue_missing` (Feld `queue`),
    sendet für sie kein `basic.consume` und nimmt sie aus der
    Wiederherstellung von aio-pika, damit ein Reconnect sie nicht neu
-   deklariert. Seine übrigen Queues konsumieren weiter, die Verbindung
+   deklariert. Wird die Queue gelöscht, während die Verbindung schon
+   getrennt ist, oder kurz vor einem Reconnect vor dem nächsten Takt,
+   scheitert der Reconnect weiter an `NOT_FOUND` wie bisher; dann hilft
+   nur ein Neustart. Die übrigen Queues des Workers konsumieren weiter, die Verbindung
    bleibt bestehen und das Publizieren läuft weiter, mit beiden Werten
    von `SWARMQ_BROKER_PUBLISH_CONNECTION`. Bisher standen alle Queues
    des Workers still, in jedem Takt kam `consumer_watch_tick_failed`,

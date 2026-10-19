@@ -206,16 +206,21 @@ class _LateRestoreAiormq(_HeldAiormq):
         return await super().channel(**kwargs)
 
 
-@pytest.fixture
-def short_ready_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Die Frist, die ``_ensure_channel_tracked`` auf Verbindung, Restore und
-    neuen Kanal wartet: kurz, damit der hängende Restore sie reißt."""
+def _shorten_restore_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Kürzt die Frist, die ``_ensure_channel_tracked`` auf Restore und neuen
+    Kanal wartet, damit der hängende Restore sie reißt.
+
+    Erst aufrufen, wenn der wartende Aufruf schon in ``connection.ready()``
+    hängt und der Reconnect als Task angelegt ist, ohne Abgabe dazwischen: Das
+    Warten auf die Verbindung hat die lange Frist schon gelesen und kann vor
+    dem Reconnect nicht reißen; das Warten auf den Restore liest die kurze."""
     monkeypatch.setattr(connection_module, "_CHANNEL_READY_TIMEOUT_S", 0.05)
 
 
 @pytest.mark.befund("F4-22")
-@pytest.mark.usefixtures("short_ready_deadline")
-async def test_a_channel_restored_after_the_deadline_is_closed_and_only_its_replacement_stays() -> None:
+async def test_a_channel_restored_after_the_deadline_is_closed_and_only_its_replacement_stays(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     broker, connection, current = await _connected_broker()
     old = broker._publish_channel
     try:
@@ -225,6 +230,7 @@ async def test_a_channel_restored_after_the_deadline_is_closed_and_only_its_repl
         fresh = _HeldAiormq()
         connection.transport = _FakeTransport(fresh)  # type: ignore[assignment]  # Fake statt UnderlayConnection
         restoring = asyncio.create_task(connection._on_connected())
+        _shorten_restore_deadline(monkeypatch)
         replacement = await waiting
         assert replacement is not old, "precondition: the restore missed the deadline, the channel was replaced"
 
@@ -243,8 +249,9 @@ async def test_a_channel_restored_after_the_deadline_is_closed_and_only_its_repl
 
 
 @pytest.mark.befund("F4-22")
-@pytest.mark.usefixtures("short_ready_deadline")
-async def test_a_replaced_channel_whose_restore_failed_does_not_come_back_with_the_next_reconnect() -> None:
+async def test_a_replaced_channel_whose_restore_failed_does_not_come_back_with_the_next_reconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     broker, connection, current = await _connected_broker()
     old = broker._publish_channel
     try:
@@ -254,6 +261,7 @@ async def test_a_replaced_channel_whose_restore_failed_does_not_come_back_with_t
         failing = _FailingRestoreAiormq()
         connection.transport = _FakeTransport(failing)  # type: ignore[assignment]  # Fake statt UnderlayConnection
         restoring = asyncio.create_task(connection._on_connected())
+        _shorten_restore_deadline(monkeypatch)
         replacement = await waiting
         assert replacement is not old, "precondition: the restore missed the deadline, the channel was replaced"
         failing.release.set()
@@ -273,8 +281,9 @@ async def test_a_replaced_channel_whose_restore_failed_does_not_come_back_with_t
 
 
 @pytest.mark.befund("F4-22")
-@pytest.mark.usefixtures("short_ready_deadline")
-async def test_a_replaced_channel_restored_while_its_replacement_opened_is_closed() -> None:
+async def test_a_replaced_channel_restored_while_its_replacement_opened_is_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     broker, connection, current = await _connected_broker()
     old = broker._publish_channel
     try:
@@ -284,6 +293,7 @@ async def test_a_replaced_channel_restored_while_its_replacement_opened_is_close
         fresh = _LateRestoreAiormq()
         connection.transport = _FakeTransport(fresh)  # type: ignore[assignment]  # Fake statt UnderlayConnection
         restoring = asyncio.create_task(connection._on_connected())
+        _shorten_restore_deadline(monkeypatch)
         replacement = await waiting
         await restoring
         await _turns()
@@ -298,8 +308,9 @@ async def test_a_replaced_channel_restored_while_its_replacement_opened_is_close
 
 
 @pytest.mark.befund("F4-22")
-@pytest.mark.usefixtures("short_ready_deadline")
-async def test_a_replaced_channel_restored_after_broker_close_is_closed_on_the_borrowed_connection() -> None:
+async def test_a_replaced_channel_restored_after_broker_close_is_closed_on_the_borrowed_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     broker, connection, current = await _connected_broker()
     old = broker._publish_channel
     closed = False
@@ -310,6 +321,7 @@ async def test_a_replaced_channel_restored_after_broker_close_is_closed_on_the_b
         fresh = _HeldAiormq()
         connection.transport = _FakeTransport(fresh)  # type: ignore[assignment]  # Fake statt UnderlayConnection
         restoring = asyncio.create_task(connection._on_connected())
+        _shorten_restore_deadline(monkeypatch)
         replacement = await waiting
         assert replacement is not old, "precondition: the restore missed the deadline, the channel was replaced"
 
@@ -356,8 +368,9 @@ async def test_a_consume_in_the_restore_window_keeps_one_consume_channel_with_bo
 
 
 @pytest.mark.befund("F4-22")
-@pytest.mark.usefixtures("short_ready_deadline")
-async def test_a_replaced_consume_channel_keeps_its_consumers_when_its_restore_was_late() -> None:
+async def test_a_replaced_consume_channel_keeps_its_consumers_when_its_restore_was_late(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Auf dem alten Consume-Kanal hängen die Consumer der früheren Queues
     (ihre ``RobustQueue`` ist an ihn gebunden, der Consumer-Wächter meldet über
     sie neu an). Ihn wie einen ersetzten Publish-Kanal abzumelden und zu
@@ -371,6 +384,7 @@ async def test_a_replaced_consume_channel_keeps_its_consumers_when_its_restore_w
         fresh = _HeldAiormq()
         connection.transport = _FakeTransport(fresh)  # type: ignore[assignment]  # Fake statt UnderlayConnection
         restoring = asyncio.create_task(connection._on_connected())
+        _shorten_restore_deadline(monkeypatch)
         await waiting
         fresh.release.set()
         await restoring

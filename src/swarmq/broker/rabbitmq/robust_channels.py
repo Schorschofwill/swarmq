@@ -31,6 +31,8 @@ fail-open mit einer WARNING je Kanal (Reconnect-Schleife wie vor 0.14).
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import weakref
 from typing import Any, cast
 
@@ -60,6 +62,34 @@ def open_throwaway_channel(connection: aio_pika.abc.AbstractConnection) -> aio_p
     if isinstance(connection, aio_pika.RobustConnection):
         return aio_pika.Channel(connection)
     return connection.channel()
+
+
+async def queue_exists_on_throwaway(
+    connection: aio_pika.abc.AbstractConnection, name: str, *, close_timeout_s: float
+) -> bool:
+    """Passives Declare von *name* auf einem Wegwerf-Kanal; NOT_FOUND heisst
+    ``False`` (PF-20, E-083).
+
+    Die Frist der Pruefung setzt der Aufrufer. Ein Abbruch trifft das Oeffnen
+    nicht: aiormq faengt dort ``CancelledError`` nicht und behielte den Kanal
+    halb offen. Das ``finally`` wartet das Oeffnen ab und schliesst den Kanal,
+    beides zusammen hoechstens *close_timeout_s*: Haengt das Declare, haengt
+    auch das Close."""
+    opening: asyncio.Future[aio_pika.abc.AbstractChannel] = asyncio.ensure_future(open_throwaway_channel(connection))
+    try:
+        channel = await asyncio.shield(opening)
+        await channel.declare_queue(name, passive=True)
+    except aio_pika.exceptions.ChannelNotFoundEntity:
+        return False
+    finally:
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(_close_when_open(opening), timeout=close_timeout_s)
+    return True
+
+
+async def _close_when_open(opening: asyncio.Future[aio_pika.abc.AbstractChannel]) -> None:
+    channel = await opening
+    await channel.close()
 
 
 def release_channel(connection: object, channel: object) -> None:
