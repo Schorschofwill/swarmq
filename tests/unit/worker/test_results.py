@@ -68,6 +68,8 @@ from swarmq.worker.outcome import Redelivered, Terminal
 from tests.support.messages import make_message
 from tests.unit.worker._helpers import _default_payload
 
+pytestmark = pytest.mark.timeout(5)
+
 _WF_ID = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"
 
 

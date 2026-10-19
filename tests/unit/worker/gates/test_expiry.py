@@ -24,6 +24,8 @@ from swarmq.worker.outcome import Continue, Terminal
 from tests.support.messages import make_message
 from tests.unit.worker._helpers import as_mock
 
+pytestmark = pytest.mark.timeout(5)
+
 
 class TestTaskInfoMaxAge:
     def test_default_is_none(self):

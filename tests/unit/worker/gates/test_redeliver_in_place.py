@@ -23,11 +23,13 @@ F4-18 (0.13.0rc2): das ``nack`` selbst scheitert.
       WARNING ``delivery_settle_failed``; der Broker stellt die unbestaetigte
       Zustellung ohnehin neu zu
 - [x] jede andere Ausnahme geht unveraendert durch (Ausgang unbekannt)
+- [x] ein Abbruch (``CancelledError``) aus dem ``nack`` geht durch
 - [x] E-043: Kopie liegt, nur das Ack scheitert -> kein ``nack``, WARNING
 """
 
 from __future__ import annotations
 
+import asyncio
 import functools
 
 import pytest
@@ -208,6 +210,19 @@ async def test_foreign_nack_error_propagates(worker, broker):
     broker.redeliver.side_effect = RuntimeError("broker bug")
 
     with pytest.raises(RuntimeError, match="broker bug"):
+        await redeliver_in_place(
+            worker._gate_deps,
+            make_message(_default_payload()),
+            GateContext(task_id="abc-123", task_name="add", queue="default"),
+        )
+
+
+async def test_cancellation_from_the_nack_propagates(worker, broker):
+    """F4-18 wertet nur ``BrokerConnectionError`` als erfolgte Rueckgabe; ein
+    Abbruch darf nicht als ``delivery_settle_failed`` verschluckt werden."""
+    broker.redeliver.side_effect = asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
         await redeliver_in_place(
             worker._gate_deps,
             make_message(_default_payload()),

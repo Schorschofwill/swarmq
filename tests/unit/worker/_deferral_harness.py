@@ -1,14 +1,20 @@
 """Zustellung durch die Rückstellungs-Gates mit gestörtem Broker (F4-17, F4-18).
 
-Echter ``Worker`` mit echtem Ausführungsschutz und echter Unique-Semantik
-(``InMemoryBackend``); nur der Broker ist ein Mock. ``retry_later`` wirft die
+Echter ``Worker`` mit echtem Ausführungsschutz, echter Unique-Semantik und
+echtem Rate-Limit- und Lock-Store (``InMemoryBackend``). Der Broker ist ein
+``create_autospec`` von ``RabbitMQBroker``: ``retry_later`` wirft die
 gegebene Ausnahme, ``redeliver`` (das ``nack``) gelingt oder scheitert wie
-bei einem toten Kanal mit ``BrokerConnectionError``.
+bei einem toten Kanal mit ``BrokerConnectionError``. Nur die Fehlerpfade
+ersetzen einen Store durch ein ``create_autospec`` seines Vertrags
+(``RateLimitStore``, ``LockStore``) bzw. die ``claim``-Methode des echten
+Ausführungsschutzes.
 
-Gates:
+Szenarien der Rückstellungs-Gates:
 
-- ``rate_limit``: der Limiter verweigert (``retry_after_ms`` 500).
-- ``lock``: der Lock ist von einem anderen gehalten (Konflikt, Zurückstellung).
+- ``rate_limit``: das Limit ist vorher ausgeschöpft, der echte Limiter
+  verweigert.
+- ``lock``: der Lock ist im echten Store von einem anderen gehalten
+  (Konflikt, Zurückstellung).
 - ``guard``: dieselbe Ausführung läuft anderswo (Ausführungsschutz stellt zurück).
 - ``backend_defer``: der Limiter scheitert am Backend-Ausfall (Zurückstellung
   bei Backend-Ausfall aus dem Rate-Limit-Gate).
@@ -29,13 +35,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, override
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, create_autospec
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.config import SwarmQConfig
-from swarmq.contracts.coordination import RateLimitDecision
+from swarmq.contracts.coordination import LockStore, RateLimitStore
 from swarmq.exceptions import BackendConnectionError, BackendResponseError, BrokerConnectionError
 from swarmq.identity import execution_identity
+from swarmq.locking import compute_lock_ttl_ms
 from swarmq.registry import TaskRegistry
 from swarmq.task import Task, TaskInfo
 from swarmq.worker import Worker
@@ -88,7 +95,7 @@ _TASKS: dict[str, type[Task]] = {
 
 @dataclass
 class DeferralRun:
-    broker: MagicMock
+    broker: Any
     release_unique: AsyncMock
     flag_owner: str | None
     logs: list[dict[str, Any]] = field(default_factory=list)
@@ -97,21 +104,10 @@ class DeferralRun:
         return [e["event"] for e in self.logs if e["log_level"] == level]
 
 
-def _broker(publish_exc: BaseException | None, nack_exc: BaseException | None) -> MagicMock:
-    broker = MagicMock(spec=RabbitMQBroker)
-    for name in (
-        "connect",
-        "declare_queue",
-        "consume",
-        "ack",
-        "dead_letter",
-        "route_via_dlx",
-        "close",
-        "cancel_consume",
-    ):
-        setattr(broker, name, AsyncMock())
-    broker.retry_later = AsyncMock(side_effect=publish_exc)
-    broker.redeliver = AsyncMock(side_effect=nack_exc)
+def _broker(publish_exc: BaseException | None, nack_exc: BaseException | None) -> Any:
+    broker = create_autospec(RabbitMQBroker, instance=True)
+    broker.retry_later.side_effect = publish_exc
+    broker.redeliver.side_effect = nack_exc
     return broker
 
 
@@ -121,56 +117,53 @@ def channel_lost() -> BrokerConnectionError:
 
 
 async def run_deferral(
-    gate: str,
+    scenario: str,
     unique_until: str,
     *,
     publish_exc: BaseException | None,
     nack_exc: BaseException | None,
 ) -> DeferralRun:
-    """Eine Zustellung mit beanspruchtem Unique-Flag durch *gate*."""
+    """Eine Zustellung mit beanspruchtem Unique-Flag durch *scenario*."""
     backend = InMemoryBackend(FakeClock())
     await backend.connect()
     try:
         broker = _broker(publish_exc, nack_exc)
-        task = _TASKS[gate]
+        task = _TASKS[scenario]
         registry = TaskRegistry()
         registry.register(task)
         config = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x", concurrency=2, queues=["default"])
         worker = Worker(broker=broker, backend=backend, registry=registry, config=config)
+        # Wie ``Worker.start`` (lifecycle): Stores aus dem Backend.
         worker._guard_store = backend.execution_guard
-        if gate == "rate_limit":
-            limiter = MagicMock()
-            limiter.check = AsyncMock(return_value=RateLimitDecision(allowed=False, remaining=0, retry_after_ms=500))
+        worker._rate_limiter = backend.rate_limit
+        worker._lock_manager = backend.locks
+        if scenario == "rate_limit":
+            # ``1/s``: der erste Check verbraucht das Fenster.
+            assert (await backend.rate_limit.check(task.task_info.name, max_requests=1, window_ms=1000)).allowed
+        elif scenario == "lock":
+            ttl_ms = compute_lock_ttl_ms(task.task_info.hard_timeout)
+            assert await backend.locks.acquire("resource", owner="other", ttl_ms=ttl_ms, max_concurrency=1)
+        elif scenario in ("backend_defer", "rate_limit_error"):
+            limiter = create_autospec(RateLimitStore, instance=True)
+            limiter.check.side_effect = (
+                BackendConnectionError("valkey down") if scenario == "backend_defer" else RuntimeError("limiter bug")
+            )
             worker._rate_limiter = limiter
-        elif gate == "backend_defer":
-            limiter = MagicMock()
-            limiter.check = AsyncMock(side_effect=BackendConnectionError("valkey down"))
-            worker._rate_limiter = limiter
-        elif gate == "lock":
-            locks = MagicMock()
-            locks.acquire = AsyncMock(return_value=None)
-            locks.current_owner = AsyncMock(return_value="other")
-            locks.pttl = AsyncMock(return_value=30_000)
+        elif scenario == "lock_error":
+            locks = create_autospec(LockStore, instance=True)
+            locks.acquire.side_effect = RuntimeError("lock store bug")
             worker._lock_manager = locks
-        elif gate == "rate_limit_error":
-            limiter = MagicMock()
-            limiter.check = AsyncMock(side_effect=RuntimeError("limiter bug"))
-            worker._rate_limiter = limiter
-        elif gate == "lock_error":
-            locks = MagicMock()
-            locks.acquire = AsyncMock(side_effect=RuntimeError("lock store bug"))
-            worker._lock_manager = locks
-        elif gate == "guard_error":
+        elif scenario == "guard_error":
             backend.execution_guard.claim = AsyncMock(  # type: ignore[method-assign] # Fehlerantwort einspielen
                 side_effect=BackendResponseError("WRONGTYPE Operation against a key holding the wrong kind of value")
             )
-        elif gate == "shutdown":
+        elif scenario == "shutdown":
             worker._shutdown_event.set()
         message = make_message(
             _default_payload(task_id=TASK_ID, name=task.task_info.name, args=[], kwargs={}),
             headers={"x-swarmq-unique-hash": UNIQUE_HASH, "x-swarmq-unique-until": unique_until},
         )
-        if gate == "guard":
+        if scenario == "guard":
             await backend.execution_guard.claim(
                 execution_identity(message.headers, TASK_ID),
                 owner="other",
