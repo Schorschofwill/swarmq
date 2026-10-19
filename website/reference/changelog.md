@@ -8,7 +8,8 @@ All notable changes to SwarmQ. This project follows
 
 Second release candidate for 0.13.0 (install with `pip install --pre`).
 It adds upper bounds for the deadlines in `TaskInfo` and for the call
-parameter `unique_for`, and corrects the documentation of the Valkey
+parameter `unique_for`, fixes F4-17 and F4-18 (deferrals whose broker
+channel is lost), and corrects the documentation of the Valkey
 connect deadline, of the `ExecutionGuardStore` contract, of
 `schedule add` after `schedule remove`, and of what 0.13.0 changes for a
 lasting error reply in the chord script. The upgrade notes of
@@ -42,6 +43,18 @@ lasting error reply in the chord script. The upgrade notes of
    without it ends there with `AttributeError` instead of dead-lettering
    the message. swarmq's Valkey backend implements it
    ([contract change in 0.13.0](api.md)).
+3. **Log changes for deferrals on a lost broker channel.** A deferral
+   copy that the broker confirmed while only the ack of the original
+   failed now logs WARNING `deferral_ack_failed_after_publish` instead
+   of the gate's publish-failure line; for the rate limit, a lock
+   conflict and an unknown task that line was ERROR
+   (`rate_limit_requeue_failed`, `lock_conflict_requeue_failed`,
+   `unknown_task_defer_failed`), and these now appear only when the
+   publish itself fails (F4-17). The ERROR `task_expired_nack_also_failed`
+   is gone: a failed hand-back of an expired message logs WARNING
+   `delivery_settle_failed` like every other failed hand-back (F4-18).
+   Adjust alerts that match these names
+   ([log catalog](logging.md)).
 
 ### Changed
 
@@ -49,6 +62,35 @@ lasting error reply in the chord script. The upgrade notes of
   are at most `315360000` s; so are `unique_for=` of `schedule()`/
   `schedule_many()` and `swarmq schedule add --unique-for`.** See
   upgrade note 1 (E-063).
+
+### Fixed
+
+- **F4-17: a confirmed deferral copy with a failed ack is no error.**
+  When the broker confirmed the deferral copy of the rate-limit, lock,
+  execution guard or backend-outage gate (also of an unknown task, a
+  schedule-fire deferral and the claim copy of a requeue) and only the
+  ack of the original failed (`SettleFailedAfterPublish`), the gate
+  treated it as a failed publish: it logged its failure line (ERROR for
+  rate limit and lock conflict) and requeued on the dead channel. The
+  deferral now stands: WARNING `deferral_ack_failed_after_publish`, the
+  usual deferral line, no requeue in place. The broker redelivers the
+  original too; copy and original pass the gates again, and the
+  execution guard serializes them (E-043, upgrade note 3).
+- **F4-18: a failed hand-back no longer releases the unique flag.** When
+  a gate inside the pipeline (rate limit, lock, execution guard, backend
+  outage, and the requeues of `rate_limit_check_failed`,
+  `lock_acquire_failed`, `task_gate_backend_error`, an unavailable
+  compute slot and the result tail) handed the message back with
+  `nack(requeue=True)` on a lost channel, the error left the gate, the
+  delivery counted as finished, and the unique flag was released
+  although the message was unacknowledged and came back. With
+  `unique_until="completion"` the dedup window opened before the task
+  had run; with `"start"` before its start point. A hand-back that fails
+  on a lost channel or connection now counts as done (the broker
+  redelivers the message): WARNING `delivery_settle_failed`, and the
+  flag stays held, as the guide promises
+  ([when to release the flag](../guides/locking-and-dedup.md#when-to-release-the-flag),
+  E-034). Any other error of the hand-back still releases the flag.
 
 ### Documentation
 

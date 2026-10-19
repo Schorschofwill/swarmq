@@ -138,6 +138,13 @@ als F4-17/F4-18. Fix nach **B**. Zeitpunkt: in **rc2**, wenn rc2 nach Punkt 2
 ohnehin kommt (gleiche Abnahme, das Muster ist aus `retry.py` erprobt); sonst
 0.13.1.
 
+**Stand 2026-10-19:** Georg hat **B** entschieden. Gegenprüfung bestanden,
+im Register als FEHLER F4-17 und F4-18 (P3) aufgenommen und in 0.13.0rc2
+behoben (F4-18 f5bad41, F4-17 8c3b48f; Nachtrag E-043 vom 2026-10-19). Die
+Probe hat die Unique-Freigabe für alle vier Gates bestätigt, nicht nur für
+das Rate-Limit-Gate. Siehe `fehlersuche-runde-4-2026-10.md`, F4-17/F4-18 und
+„Entscheidung überdenken?“ Punkt 4.
+
 ## Teil 3: 0.13.1 und später
 
 ### 6. E-059: Abbruch beim Speichern gibt den Claim frei (Punkt 1)

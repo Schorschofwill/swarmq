@@ -8,7 +8,8 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 Zweiter Release-Candidate für 0.13.0 (Installation mit
 `pip install --pre`). Er bringt Obergrenzen für die Fristen in
-`TaskInfo` und für den Aufruf-Parameter `unique_for` und berichtigt die
+`TaskInfo` und für den Aufruf-Parameter `unique_for`, behebt F4-17 und
+F4-18 (Rückstellungen bei verlorenem Broker-Kanal) und berichtigt die
 Doku zur Verbindungsfrist von Valkey, zum Vertrag von
 `ExecutionGuardStore`, zu `schedule add` nach `schedule remove` und
 dazu, was 0.13.0 bei einer dauerhaften Fehlerantwort des Chord-Skripts
@@ -44,6 +45,19 @@ gelten, ergänzt um die folgenden.
    Implementierung ohne sie endet dort mit `AttributeError`, statt die
    Nachricht in die DLQ zu leiten. Das Valkey-Backend von swarmq
    implementiert sie ([Vertragsänderung in 0.13.0](api.md)).
+3. **Log-Änderungen bei Rückstellungen mit verlorenem Broker-Kanal.**
+   Eine Rückstellungs-Kopie, die der Broker bestätigt hat, während nur
+   das Ack des Originals scheiterte, loggt jetzt WARNING
+   `deferral_ack_failed_after_publish` statt der Zeile des Gates für
+   einen gescheiterten Publish; bei Rate-Limit, Lock-Konflikt und
+   unbekanntem Task war diese Zeile ERROR (`rate_limit_requeue_failed`,
+   `lock_conflict_requeue_failed`, `unknown_task_defer_failed`), und sie
+   erscheinen jetzt nur noch, wenn der Publish selbst scheitert (F4-17).
+   Der ERROR `task_expired_nack_also_failed` entfällt: Eine gescheiterte
+   Rückgabe einer abgelaufenen Nachricht loggt WARNING
+   `delivery_settle_failed` wie jede andere gescheiterte Rückgabe
+   (F4-18). Alarme auf diese Namen anpassen
+   ([Logkatalog](logging.md)).
 
 ### Geändert
 
@@ -51,6 +65,39 @@ gelten, ergänzt um die folgenden.
   sind höchstens `315360000` s, ebenso `unique_for=` von `schedule()`/
   `schedule_many()` und `swarmq schedule add --unique-for`.** Siehe
   Upgrade-Hinweis 1 (E-063).
+
+### Behoben
+
+- **F4-17: Eine bestätigte Rückstellungs-Kopie mit gescheitertem Ack ist
+  kein Fehler.** Hatte der Broker die Rückstellungs-Kopie des
+  Rate-Limit-, Lock-, Ausführungsschutz- oder Backend-Ausfall-Gates
+  bestätigt (ebenso eines unbekannten Tasks, einer
+  Schedfire-Zurückstellung und die Claim-Kopie eines Requeues) und
+  scheiterte nur das Ack des Originals (`SettleFailedAfterPublish`),
+  behandelte das Gate das wie einen gescheiterten Publish: Es loggte
+  seine Fehlerzeile (ERROR bei Rate-Limit und Lock-Konflikt) und reihte
+  auf dem toten Kanal neu ein. Jetzt gilt die Rückstellung: WARNING
+  `deferral_ack_failed_after_publish`, die übliche Zeile, kein Requeue an
+  derselben Stelle. Der Broker stellt auch das Original neu zu; Kopie und
+  Original laufen erneut durch die Gates, der Ausführungsschutz
+  serialisiert sie (E-043, Upgrade-Hinweis 3).
+- **F4-18: Eine gescheiterte Rückgabe gibt das Unique-Flag nicht mehr
+  frei.** Gab ein Gate in der Pipeline (Rate-Limit, Lock,
+  Ausführungsschutz, Backend-Ausfall sowie die Requeues von
+  `rate_limit_check_failed`, `lock_acquire_failed`,
+  `task_gate_backend_error`, eines nicht verfügbaren Rechen-Slots und des
+  Ergebnis-Tails) die Nachricht per `nack(requeue=True)` auf einem
+  verlorenen Kanal zurück, verließ der Fehler das Gate, die Zustellung
+  galt als beendet, und das Unique-Flag wurde freigegeben, obwohl die
+  Nachricht unbestätigt war und wiederkam. Bei
+  `unique_until="completion"` öffnete sich das Dedup-Fenster, bevor der
+  Task gelaufen war, bei `"start"` vor dem Startpunkt. Eine Rückgabe, die
+  an einem verlorenen Kanal oder einer verlorenen Verbindung scheitert,
+  gilt jetzt als erfolgt (der Broker stellt die Nachricht neu zu):
+  WARNING `delivery_settle_failed`, und das Flag bleibt, wie der Leitfaden
+  zusagt
+  ([Wann das Flag freigegeben wird](../guides/locking-and-dedup.md#wann-das-flag-freigeben),
+  E-034). Jeder andere Fehler der Rückgabe gibt das Flag weiter frei.
 
 ### Dokumentation
 
