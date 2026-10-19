@@ -24,6 +24,11 @@ Grenze gemockt: nur der Broker; Ausführungsschutz und Unique-Flag sind echt
 Testliste:
 # [x] 4 Gates x completion/start x SettleFailedAfterPublish/BrokerConnectionError aus retry_later,
 #     nack scheitert -> kein release_unique, das Flag bleibt beim Task
+
+Behoben in 0.13.0rc2: ``redeliver_in_place`` wertet einen Kanalverlust beim
+``nack`` als erfolgte Rückgabe (WARNING ``delivery_settle_failed``), die Gates
+melden ``Redelivered``. Seit F4-17 rufen die ``settle_failed``-Fälle gar kein
+``nack`` mehr; das Flag bleibt ebenso.
 """
 
 from __future__ import annotations
@@ -53,7 +58,6 @@ def _publish_errors() -> list[object]:
 
 
 @pytest.mark.befund("F4-18")
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="F4-18 offen")
 @pytest.mark.parametrize("make_publish_exc", _publish_errors())
 @pytest.mark.parametrize("unique_until", _modes())
 @pytest.mark.parametrize("gate", GATES)
@@ -62,7 +66,7 @@ async def test_failed_redeliver_after_failed_deferral_keeps_the_unique_flag(
 ) -> None:
     run = await run_deferral(gate, unique_until, publish_exc=make_publish_exc(), nack_exc=channel_lost())
 
-    run.broker.redeliver.assert_awaited_once()
+    run.broker.retry_later.assert_awaited_once()
     assert run.release_unique.await_count == 0, (
         "Unique-Flag freigegeben, obwohl die Nachricht unbestätigt ist und wiederkommt "
         "(locking-and-dedup.md: 'requeued before that ... keeps the flag')"

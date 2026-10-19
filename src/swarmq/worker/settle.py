@@ -34,10 +34,17 @@ def contain_delivery_errors() -> Generator[None]:
     try:
         yield
     except BrokerConnectionError as exc:
-        logger.warning(
-            "delivery_settle_failed",
-            **_error_fields(exc),
-            hint="delivery not settled; the broker redelivers the unacknowledged message",
-        )
+        log_settle_failed(exc)
     except Exception as exc:
         logger.error("delivery_handler_failed", **_error_fields(exc), exc_info=True)  # noqa: G201 - exception() reicht anderen Methodennamen an stdlib
+
+
+def log_settle_failed(exc: BrokerConnectionError) -> None:
+    """Die eine WARNING ``delivery_settle_failed``: Kanal oder Verbindung weg,
+    die Zustellung bleibt unbestaetigt und kommt neu (KTD11). Auch fuer ein
+    gescheitertes ``nack`` von ``redeliver_in_place`` (F4-18)."""
+    logger.warning(
+        "delivery_settle_failed",
+        **_error_fields(exc),
+        hint="delivery not settled; the broker redelivers the unacknowledged message",
+    )

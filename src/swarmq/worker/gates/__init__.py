@@ -29,7 +29,7 @@ from swarmq.contracts.coordination import (
     RateLimitStore,
     ScheduleStore,
 )
-from swarmq.exceptions import SettleFailedAfterPublish
+from swarmq.exceptions import BrokerConnectionError, SettleFailedAfterPublish
 from swarmq.headers import (
     BROKER_DELIVERY_COUNTERS,
     HEADER_BACKEND_DEFER_COUNT,
@@ -43,6 +43,7 @@ from swarmq.logging import _error_fields, get_logger
 from swarmq.signals import Signal
 from swarmq.worker.outcome import DeliveryOutcome
 from swarmq.worker.redelivery import redeliver_pause_s
+from swarmq.worker.settle import log_settle_failed
 
 if TYPE_CHECKING:
     from swarmq.config import SwarmQConfig
@@ -366,13 +367,23 @@ async def redeliver_in_place(deps: GateDeps, delivery: Any, ctx: GateContext) ->
 async def _pause_then_redeliver(deps: GateDeps, delivery: Any) -> None:
     """``redeliver`` nach der Pause aus ``redeliver_pause_s`` (BZ-29). Eine
     scheiternde Pause verhindert das ``nack`` nicht (die Zustellung bliebe
-    sonst unbestaetigt bis zum Kanalende); ein Abbruch geht durch."""
+    sonst unbestaetigt bis zum Kanalende); ein Abbruch geht durch.
+
+    F4-18: Scheitert das ``nack`` an Kanal- oder Verbindungsverlust
+    (``BrokerConnectionError``), bleibt die Zustellung unbestaetigt, und der
+    Broker stellt sie neu zu (Vertrag ``Broker.redeliver``) -- die Rueckgabe
+    ist also erfolgt. WARNING ``delivery_settle_failed``, kein Wurf: sonst
+    nahme die Pipeline den Default ``Terminal`` und gaebe das Unique-Flag
+    frei. Jede andere Ausnahme sagt nichts ueber den Ausgang und geht durch."""
     if deps.redeliver_pause is not None:
         try:
             await deps.redeliver_pause(redeliver_pause_s(delivery.headers or {}))
         except Exception as exc:  # noqa: BLE001 - scheiternde Pause darf nack nicht verhindern
             logger.warning("redeliver_pause_failed", **_error_fields(exc))
-    await deps.broker.redeliver(delivery)
+    try:
+        await deps.broker.redeliver(delivery)
+    except BrokerConnectionError as exc:
+        log_settle_failed(exc)
 
 
 class Gate(Protocol):

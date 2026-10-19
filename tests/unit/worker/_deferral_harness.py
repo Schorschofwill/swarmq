@@ -12,6 +12,17 @@ Gates:
 - ``guard``: dieselbe Ausführung läuft anderswo (Ausführungsschutz stellt zurück).
 - ``backend_defer``: der Limiter scheitert am Backend-Ausfall (Zurückstellung
   bei Backend-Ausfall aus dem Rate-Limit-Gate).
+
+Weitere Requeue-Pfade im ``try`` der Pipeline (``redeliver_in_place`` ohne
+Kopie, F4-18):
+
+- ``rate_limit_error``: der Limiter wirft einen Fehler, der kein Ausfall ist
+  (``rate_limit_check_failed``).
+- ``lock_error``: das Lock-Acquire wirft einen Fehler, der kein Ausfall ist
+  (``lock_acquire_failed``).
+- ``guard_error``: der Claim des Ausführungsschutzes bekommt eine
+  Fehlerantwort (``task_gate_backend_error``).
+- ``shutdown``: der Worker fährt herunter (Requeue im Shutdown-Zweig).
 """
 
 from __future__ import annotations
@@ -23,7 +34,7 @@ from unittest.mock import AsyncMock, MagicMock
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.config import SwarmQConfig
 from swarmq.contracts.coordination import RateLimitDecision
-from swarmq.exceptions import BackendConnectionError, BrokerConnectionError
+from swarmq.exceptions import BackendConnectionError, BackendResponseError, BrokerConnectionError
 from swarmq.identity import execution_identity
 from swarmq.registry import TaskRegistry
 from swarmq.task import Task, TaskInfo
@@ -36,6 +47,7 @@ from tests.unit.worker._helpers import _default_payload
 UNIQUE_HASH = "e" * 64
 TASK_ID = "t-1"
 GATES = ("rate_limit", "lock", "guard", "backend_defer")
+REQUEUE_PATHS = ("rate_limit_error", "lock_error", "guard_error", "shutdown")
 
 
 class RateLimitedTask(Task):
@@ -67,6 +79,10 @@ _TASKS: dict[str, type[Task]] = {
     "lock": LockedTask,
     "guard": PlainTask,
     "backend_defer": RateLimitedTask,
+    "rate_limit_error": RateLimitedTask,
+    "lock_error": LockedTask,
+    "guard_error": PlainTask,
+    "shutdown": PlainTask,
 }
 
 
@@ -136,6 +152,20 @@ async def run_deferral(
             locks.current_owner = AsyncMock(return_value="other")
             locks.pttl = AsyncMock(return_value=30_000)
             worker._lock_manager = locks
+        elif gate == "rate_limit_error":
+            limiter = MagicMock()
+            limiter.check = AsyncMock(side_effect=RuntimeError("limiter bug"))
+            worker._rate_limiter = limiter
+        elif gate == "lock_error":
+            locks = MagicMock()
+            locks.acquire = AsyncMock(side_effect=RuntimeError("lock store bug"))
+            worker._lock_manager = locks
+        elif gate == "guard_error":
+            backend.execution_guard.claim = AsyncMock(  # type: ignore[method-assign] # Fehlerantwort einspielen
+                side_effect=BackendResponseError("WRONGTYPE Operation against a key holding the wrong kind of value")
+            )
+        elif gate == "shutdown":
+            worker._shutdown_event.set()
         message = make_message(
             _default_payload(task_id=TASK_ID, name=task.task_info.name, args=[], kwargs={}),
             headers={"x-swarmq-unique-hash": UNIQUE_HASH, "x-swarmq-unique-until": unique_until},

@@ -521,3 +521,52 @@ async def test_non_string_step_path_header_advances_with_an_empty_path(broker, b
     worker._workflow_advancer.advance.assert_awaited_once_with(_WF_ID, "", "abc-123", "ok")
     worker._workflow_advancer.fail.assert_not_awaited()
     broker.ack.assert_awaited_once_with(msg)
+
+
+# F4-18 (0.13.0rc2): scheitert das ``nack`` der Neuzustellung am toten Kanal,
+# bleibt es bei ``Redelivered`` (Flag bleibt, „keep the flag“); vorher warf
+# ``redeliver_in_place``, und der Terminal-Default gab das Flag frei.
+_CHANNEL_LOST = BrokerConnectionError("redeliver failed, channel or connection lost: closed")
+
+
+@pytest.mark.befund("F4-18")
+async def test_store_error_with_failed_nack_stays_redelivered(broker, backend, config, result_store_clock):
+    backend.store_result = AsyncMock(side_effect=BackendConnectionError("down"))
+    broker.redeliver = AsyncMock(side_effect=_CHANNEL_LOST)
+    tail, _ = _tail(broker, backend, config)
+    msg = make_message(_default_payload(name="tail-task"))
+
+    outcome = await tail.finish(msg, _ctx(), _execution())
+
+    assert outcome is Redelivered
+    broker.redeliver.assert_awaited_once_with(msg)
+
+
+@pytest.mark.befund("F4-18")
+async def test_transient_advance_with_failed_nack_stays_redelivered(broker, backend, config):
+    broker.redeliver = AsyncMock(side_effect=_CHANNEL_LOST)
+    tail, worker = _tail(broker, backend, config)
+    worker._workflow_advancer.advance = AsyncMock(side_effect=WorkflowStateConflict("25 rounds lost"))
+    msg = make_message(
+        _default_payload(name="tail-task"), headers={HEADER_WORKFLOW_ID: _WF_ID, HEADER_WORKFLOW_STEP: "/1"}
+    )
+
+    outcome = await tail.finish(msg, _ctx(), _execution())
+
+    assert outcome is Redelivered
+    broker.redeliver.assert_awaited_once_with(msg)
+
+
+@pytest.mark.befund("F4-18")
+async def test_transient_fail_mark_with_failed_nack_stays_redelivered(broker, backend, config):
+    broker.redeliver = AsyncMock(side_effect=_CHANNEL_LOST)
+    tail, worker = _tail(broker, backend, config)
+    worker._workflow_advancer.fail = AsyncMock(side_effect=BackendConnectionError("down"))
+    msg = make_message(
+        _default_payload(name="tail-task"), headers={HEADER_WORKFLOW_ID: _WF_ID, HEADER_WORKFLOW_STEP: "/1"}
+    )
+
+    outcome = await tail.finish(msg, _ctx(), _execution(is_cancelled=True, result_value=None))
+
+    assert outcome is Redelivered
+    broker.redeliver.assert_awaited_once_with(msg)

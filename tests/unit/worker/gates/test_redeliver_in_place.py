@@ -17,6 +17,12 @@ Test-Liste (viertes Review 0.9.0):
 - [x] Freigabe wirft eine fremde Ausnahme (Dritt-Store) -> die Zustellung
       bleibt nicht unbestaetigt haengen (Kopie wie beim Ausfall)
 - [x] WARNING-Zeile fuer die Kopie (Fire-Key, Zaehler, Wartezeit, Fehler)
+
+F4-18 (0.13.0rc2): das ``nack`` selbst scheitert.
+- [x] Kanal-/Verbindungsverlust (``BrokerConnectionError``) -> kein Wurf, eine
+      WARNING ``delivery_settle_failed``; der Broker stellt die unbestaetigte
+      Zustellung ohnehin neu zu
+- [x] jede andere Ausnahme geht unveraendert durch (Ausgang unbekannt)
 """
 
 from __future__ import annotations
@@ -168,3 +174,36 @@ async def test_failing_pause_still_redelivers(worker, broker):
     await redeliver_in_place(worker._gate_deps, msg, GateContext(task_id="abc-123", task_name="add", queue="default"))
 
     broker.redeliver.assert_awaited_once_with(msg)
+
+
+@pytest.mark.befund("F4-18")
+async def test_channel_lost_on_nack_counts_as_handed_back(worker, broker, swarmq_logs):
+    """F4-18: Scheitert das ``nack`` am toten Kanal, kommt die Zustellung
+    trotzdem wieder (Vertrag ``Broker.redeliver``). Ein Wurf liesse die
+    Pipeline den Default ``Terminal`` nehmen und das Unique-Flag freigeben."""
+    broker.redeliver.side_effect = BrokerConnectionError("redeliver failed, channel or connection lost: closed")
+    msg = make_message(_default_payload())
+
+    await redeliver_in_place(worker._gate_deps, msg, GateContext(task_id="abc-123", task_name="add", queue="default"))
+
+    broker.redeliver.assert_awaited_once_with(msg)
+    [entry] = [e for e in swarmq_logs if e["event"] == "delivery_settle_failed"]
+    assert entry["log_level"] == "warning"
+    assert (entry["error_type"], entry["error"]) == (
+        "BrokerConnectionError",
+        "redeliver failed, channel or connection lost: closed",
+    )
+    assert [e for e in swarmq_logs if e["log_level"] == "error"] == []
+
+
+async def test_foreign_nack_error_propagates(worker, broker):
+    """Eine andere Ausnahme als ``BrokerConnectionError`` sagt nichts ueber den
+    Ausgang: sie geht durch (die Pipeline gibt dann wie bisher frei, KTD5)."""
+    broker.redeliver.side_effect = RuntimeError("broker bug")
+
+    with pytest.raises(RuntimeError, match="broker bug"):
+        await redeliver_in_place(
+            worker._gate_deps,
+            make_message(_default_payload()),
+            GateContext(task_id="abc-123", task_name="add", queue="default"),
+        )
