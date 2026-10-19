@@ -323,9 +323,15 @@ Ack-nach-Store heißt: Der Worker darf noch nicht bestätigen. Seit 0.13.0
 wiederholt er das Speichern bei `AT_LEAST_ONCE`-Tasks selbst: bis zu fünf
 Versuche mit Wartezeiten von nominell 1, 2, 4 und 8 s (±20 %, der
 Backoff von `SWARMQ_BACKEND_DEFER_BASE_DELAY`), jeder Versuch begrenzt
-durch `SWARMQ_BACKEND_OP_TIMEOUT` (5 s). Nach dem ersten gescheiterten
-Versuch dauert die Wiederholung daher nominell höchstens rund 35 s, mit
-Jitter höchstens 38 s. Der nächste Versuch startet nur, wenn er vor
+durch `SWARMQ_BACKEND_OP_TIMEOUT` (5 s). Wie lange die Wiederholung nach
+dem ersten gescheiterten Versuch dauert, hängt vom Ausfall ab: Weist
+Valkey die Verbindung sofort ab, endet jeder Versuch nach der
+Verbindungswiederholung des Valkey-Clients von 3,1 s, nominell rund 27 s
+(mit Jitter 24 bis 30 s, ab dem ersten Versuch rund 30 s); läuft jeder
+Versuch in `SWARMQ_BACKEND_OP_TIMEOUT`, nominell rund 35 s, mit Jitter
+höchstens 38 s (ab dem ersten Versuch rund 40 s, höchstens 43 s). Endet
+ein Ausfall genau am Ende dieser Kette, können einzelne Tasks trotzdem
+ein zweites Mal laufen. Der nächste Versuch startet nur, wenn er vor
 `SWARMQ_CONSUMER_TIMEOUT_S` ab der Zustellung endet, und das Drain-Ende
 eines Shutdowns beendet die Wiederholung. Der Task-Slot bleibt
 währenddessen belegt. Der Worker loggt `result_store_retrying` und bei

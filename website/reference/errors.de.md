@@ -509,8 +509,12 @@ hinauszögert.
 `apply()`, wenn ein Publish beim Warten auf das Publisher-Confirm des
 Brokers `SWARMQ_PUBLISH_TIMEOUT_S` überschreitet oder Verbindung oder
 Kanal in dieser Phase abbrechen (etwa ein Broker-Neustart oder eine
-Netztrennung direkt nach dem Senden). Subklasse von
-`BrokerConnectionError`.
+Netztrennung direkt nach dem Senden). Ebenso, wenn ein anderer Publish
+auf demselben Kanal nach dem Senden seine Frist überschreitet: SwarmQ
+verwirft dann den Kanal, und jeder Publish, der dort noch auf sein
+Confirm wartet, endet als `PublishIndeterminate`, auch wenn seine eigene
+Frist noch läuft; der nächste Publish öffnet einen neuen Kanal.
+Subklasse von `BrokerConnectionError`.
 
 **Ursache.** Broker oder Netz sind nach dem Senden der Nachricht
 hängen geblieben oder abgebrochen; der Broker hat sie vielleicht,
@@ -636,7 +640,15 @@ Publish-Kanal und schließt ihn im Hintergrund; im Alarm läuft dieses
 Schließen in seine 5-s-Frist (`publish_channel_close_incomplete` ohne
 Traceback, `blocked=True`), und aiormq loggt bei der Freigabe `Got frame
 for closed channel` ([Event-Katalog](logging.md#event-katalog)). Beides
-ist harmlos.
+ist harmlos. Der Verwurf beendet auch jedes andere noch offene Confirm
+auf diesem Kanal als `PublishIndeterminate`. Bei der Freigabe kann das
+einen ganzen Schub wartender Kopien treffen, wenn eine von ihnen ihre
+Frist im Alarm fast aufgebraucht hatte (gemessen: 12 weitere Kopien bei
+20 s Frist). Ihre Originale werden wie bei jeder unbestimmten Kopie neu
+zugestellt; die Kopien sind beim Broker und laufen, und der
+Ausführungsschutz lässt kein Original neben oder nach seiner Kopie
+laufen (im gemessenen Lauf wurden alle Originale als `done`
+übersprungen, kein Task lief doppelt).
 
 **Recovery.** Ein späterer Versuch ist sicher, nichts kam beim Broker
 an; eine `unique_for`-Sperre wird freigegeben. Speicher oder Platte am

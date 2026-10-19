@@ -486,7 +486,11 @@ cancellation.
 `apply()` when a publish exceeds `SWARMQ_PUBLISH_TIMEOUT_S` while
 waiting for the broker's publisher confirm, or when the connection or
 channel breaks in that phase (for example a broker restart or a network
-cut right after the message was sent). Subclass of
+cut right after the message was sent). Also when another publish on
+the same channel exceeds its deadline after sending: SwarmQ then
+discards the channel, and every publish still waiting for its confirm
+there ends as `PublishIndeterminate`, even if its own deadline has not
+run out; the next publish opens a new channel. Subclass of
 `BrokerConnectionError`.
 
 **Cause.** The broker or the network stalled or broke after the
@@ -608,6 +612,15 @@ background; during the alarm that close runs into its 5 s limit
 (`publish_channel_close_incomplete` without traceback, `blocked=True`)
 and aiormq logs `Got frame for closed channel` once RabbitMQ unblocks
 ([event catalog](logging.md#event-catalog)). Both are harmless.
+Discarding the channel also ends every other confirm still open on it
+as `PublishIndeterminate`. At the unblock this can hit a whole batch
+of waiting copies when one of them had used up nearly all of its
+deadline during the alarm (measured: 12 more copies with a 20 s
+deadline). Their originals are redelivered as for any indeterminate
+copy; the copies already reached the broker and run, and the execution
+guard keeps each original from running next to or after its copy (in
+the measured run all originals were skipped as `done`, no task ran
+twice).
 
 **Recovery.** Retrying later is safe, nothing reached the broker; a
 `unique_for` claim is released. Free memory or disk on the broker. A
