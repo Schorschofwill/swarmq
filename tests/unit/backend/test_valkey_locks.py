@@ -237,10 +237,25 @@ class TestValkeyLockStoreTokens:
         with pytest.raises(NotImplementedError):
             await store.renew(LockToken("s", "owner-a", 2), ttl_ms=1000)
 
-    async def test_force_release_uses_force_owner(self):
-        store, (_, release_script, _) = self._store(release=2)
-        assert await store.force_release("l", max_concurrency=1) is True
-        assert release_script.await_args.kwargs["args"] == ["__force__", 1]
+    async def test_force_release_is_false_when_the_lock_expired_before_the_delete(self):
+        """Plan 0.14, U1 (KTD1): Der Lock läuft zwischen Prüfen und Freigeben
+        ab; ``True`` hieße „entfernt“, obwohl nichts mehr da war."""
+        store, _ = self._store()
+        store._client.delete = AsyncMock(return_value=0)
+
+        assert await store.force_release("l", max_concurrency=1) is False
+
+    async def test_force_release_passes_through_existing_backend_connection_error(self):
+        """Ein schon eingeordneter Ausfall (z. B. aus einem Client-Wrapper)
+        bleibt ein Ausfall und wird nicht zur Fehlerantwort umgedeutet."""
+        store, _ = self._store()
+        original = BackendConnectionError("inner")
+        store._client.delete = AsyncMock(side_effect=original)
+
+        with pytest.raises(BackendConnectionError) as exc_info:
+            await store.force_release("l", max_concurrency=1)
+
+        assert exc_info.value is original
 
     async def test_current_owner_decodes_and_maps_empty_to_none(self):
         store, _ = self._store()

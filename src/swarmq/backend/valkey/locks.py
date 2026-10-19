@@ -17,8 +17,6 @@ from swarmq.exceptions import BackendConnectionError
 from swarmq.keyspace import KeySpace
 from swarmq.lua import load_script
 
-_FORCE_OWNER = "__force__"
-
 
 class LockManager:
     """Async wrapper around ``lock_acquire.lua`` + ``lock_release.lua``.
@@ -171,16 +169,21 @@ class ValkeyLockStore:
     async def extend(self, token: LockToken, ttl_ms: int) -> bool:
         return await self._manager.extend(token.name, token.owner, ttl_ms, token.max_concurrency)
 
-    async def force_release(self, name: str, *, max_concurrency: int) -> bool:
-        """Operator-Pfad ohne Owner-Check. ``lock_release.lua`` meldet für
-        ``__force__`` immer „released" (2), auch ohne Halter — der Vertrag
-        verlangt ``False`` ohne Halter, daher der EXISTS davor."""
+    async def force_release(self, name: str, *, max_concurrency: int) -> bool:  # noqa: ARG002 - Vertragssignatur, DEL braucht die Art nicht
+        """Operator-Pfad ohne Owner-Check: ein einziges ``DEL`` (Plan 0.14, U1,
+        KTD1). ``True`` heisst, zum Zeitpunkt des ``DEL`` existierte der
+        Lock-Schluessel und ist jetzt weg; ``False``, es gab keinen.
+
+        Grenze bei Semaphoren (wie zuvor mit ``EXISTS``): ``DEL`` meldet
+        ``True``, solange der ZSET-Schluessel lebt, auch wenn alle Mitglieder
+        per Score abgelaufen sind; InMemory meldet dann ``False``."""
         try:
-            existed = bool(await self._client.exists(self._keys.lock(name)))
+            deleted = await self._client.delete(self._keys.lock(name))
+        except BackendConnectionError:
+            raise
         except Exception as exc:
-            raise BackendConnectionError(f"lock exists failed for {name!r}: {exc}") from exc
-        await self._manager.release(name, _FORCE_OWNER, max_concurrency)
-        return existed
+            raise as_backend_error(f"lock force_release failed for {name!r}: {exc}", exc) from exc
+        return int(deleted) >= 1
 
     async def current_owner(self, name: str) -> str | None:
         """Halter eines Mutex-Locks (``None`` ohne Halter). Treiberfehler

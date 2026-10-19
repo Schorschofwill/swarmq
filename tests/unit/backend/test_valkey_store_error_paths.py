@@ -16,15 +16,13 @@ Bewusst nicht in der Matrix:
 - ``ValkeyLockStore.current_owner``: propagiert Treiberfehler roh (Decision E4
   im Docstring: „kein Leader“ und „Backend unerreichbar“ bleiben
   unterscheidbar).
-- ``ValkeyLockStore.force_release``: wandelt den ``EXISTS``-Fehler pauschal in
-  ``BackendConnectionError``, auch ``WRONGTYPE`` (Verdacht, im Bericht der
-  Unit U3 gemeldet, nicht hier festgeschrieben).
 
-Grenze gemockt: die registrierten Skripte (bzw. die Pipeline-Verbindung des
-Guard-Stores) werfen den Treiberfehler; ``TIME`` antwortet.
+Grenze gemockt: die registrierten Skripte, ``DEL`` (bzw. die Pipeline-Verbindung
+des Guard-Stores) werfen den Treiberfehler; ``TIME`` antwortet.
 
 Testliste:
-# [x] Lock-Store: acquire, release, renew, extend (Mutex und Semaphor), observe
+# [x] Lock-Store: acquire, release, renew, extend (Mutex und Semaphor), observe,
+#     force_release (Plan 0.14, U1: ein ``DEL``)
 # [x] Guard-Store: claim, renew, mark_done, mark_superseded, release
 # [x] Rate-Limit-Store: check
 # [x] Chord-Store: record_member, record_and_check_complete
@@ -74,6 +72,7 @@ def _script_client(error: BaseException) -> MagicMock:
     client = MagicMock()
     client.time = AsyncMock(return_value=(1, 0))
     client.register_script = MagicMock(side_effect=lambda _source: AsyncMock(side_effect=error))
+    client.delete = AsyncMock(side_effect=error)
     pipe = MagicMock()
     pipe.execute = AsyncMock(side_effect=error)
     context = MagicMock()
@@ -106,6 +105,7 @@ _CALLS: list[Any] = [
     pytest.param(lambda e: _locks(e).extend(_MUTEX, 1_000), id="lock-extend-mutex"),
     pytest.param(lambda e: _locks(e).extend(_SEMAPHORE, 1_000), id="lock-extend-semaphore"),
     pytest.param(lambda e: _locks(e).observe("n", max_concurrency=1), id="lock-observe"),
+    pytest.param(lambda e: _locks(e).force_release("n", max_concurrency=1), id="lock-force-release"),
     pytest.param(
         lambda e: _guard(e).claim("t-1", owner="o", retry_count=0, ttl_ms=1, state_ttl_ms=1, max_orphans=3),
         id="guard-claim",
