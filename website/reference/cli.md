@@ -343,7 +343,9 @@ stored anything). The `--unique-for` claim is released at once when a
 different entry already holds the name, and when the backend answers
 with an error. It is kept until it expires when the backend fails
 (connection lost, timeout), because the entry may have been stored; a
-repeated call until then is a duplicate. A claim that an earlier
+repeated call until then is a duplicate. Since 0.13.1 the same holds
+when the command is interrupted (Ctrl+C) while storing or while reading
+the entry after a conflict. A claim that an earlier
 `schedule add` under the same name holds is never released by this
 call, not even after a read error. This also holds after
 `schedule remove`: until the claim expires, adding the same name with

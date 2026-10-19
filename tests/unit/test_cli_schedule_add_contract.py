@@ -26,10 +26,17 @@ Testliste:
 # [x] nach ``schedule remove`` -> ``already_exists: false``
 # [x] Lesen fällt aus -> Claim bleibt, Fehler an Aufrufer
 # [x] Lesen mit Fehlerantwort -> Claim bleibt (nicht selbst gesetzt), Fehler an Aufrufer
+#
+# 0.13.1 (Entscheidungsvorlage 0.13.0, Punkt 6C; Nachtrag E-059): ein Abbruch
+# gilt wie ein Ausfall als unbestimmt:
+# [x] Abbruch beim Speichern -> Claim bleibt, ``CancelledError`` an den Aufrufer
+# [x] Abbruch beim Lesen des Eintrags nach Konflikt -> Claim bleibt
+# [x] anderer Fehler (``RuntimeError``) beim Speichern -> Claim frei
 """
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 from contextlib import redirect_stdout
@@ -307,3 +314,42 @@ async def test_error_reply_on_reading_the_entry_behind_the_held_own_claim_keeps_
         await _add("nightly", "--unique-for", "60")
 
     assert await _claim_owner(memory) == "nightly"
+
+
+@pytest.mark.entscheidung("E-059")
+async def test_cancel_while_storing_keeps_the_own_claim(
+    memory: InMemoryBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """0.13.1: ``sched_add.lua`` kann gelaufen sein (Strg+C, Timeout); der
+    Claim bleibt wie nach einem Ausfall, der Abbruch geht durch."""
+    monkeypatch.setattr(ScheduleStore, "add_schedule", AsyncMock(side_effect=asyncio.CancelledError()))
+
+    with pytest.raises(asyncio.CancelledError):
+        await _add("nightly", "--unique-for", "60")
+
+    assert await _claim_owner(memory) == "nightly"
+
+
+@pytest.mark.entscheidung("E-059")
+async def test_cancel_while_reading_the_conflicting_entry_keeps_the_own_claim(
+    memory: InMemoryBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _add("nightly")
+    monkeypatch.setattr(ScheduleStore, "get_definition", AsyncMock(side_effect=asyncio.CancelledError()))
+
+    with pytest.raises(asyncio.CancelledError):
+        await _add("nightly", "--unique-for", "60", cron="0 2 * * *")
+
+    assert await _claim_owner(memory) == "nightly"
+
+
+@pytest.mark.entscheidung("E-059")
+async def test_other_error_while_storing_releases_the_own_claim(
+    memory: InMemoryBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ScheduleStore, "add_schedule", AsyncMock(side_effect=RuntimeError("bug")))
+
+    with pytest.raises(RuntimeError):
+        await _add("nightly", "--unique-for", "60")
+
+    assert await _claim_owner(memory) is None

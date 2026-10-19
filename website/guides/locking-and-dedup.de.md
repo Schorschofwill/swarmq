@@ -265,6 +265,15 @@ angekommen sein. Ein
 Flag, das `schedule(delay=|eta=)` genommen hat, gehört dem Producer und
 wird bei einem solchen Fehler nie freigegeben.
 
+Ein Claim, den `schedule()` oder `schedule_many()` im Producer genommen
+hat, bleibt bis zu seinem Ablauf stehen, wenn der Ausgang unbestimmt
+ist: nach `PublishIndeterminate`, nach einem Backend-Ausfall beim
+Speichern eines `delay`/`eta`-Eintrags und seit 0.13.1 auch, wenn der
+Aufruf während des Publish oder des Speicherns abgebrochen wird (ein
+Timeout um ihn herum, `task.cancel()`), denn Nachricht oder Eintrag
+können angekommen sein. Ein Wiederholversuch in diesem Fenster gilt als
+Duplikat. Bestimmte Fehler geben den Claim frei.
+
 ### Per-Call-Override
 
 `unique_for` und `unique_until` können am `schedule()`-Aufruf

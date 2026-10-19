@@ -1,5 +1,6 @@
 """SwarmQ exception hierarchy."""
 
+import asyncio
 import math
 
 
@@ -170,6 +171,13 @@ def is_backend_outage(exc: BaseException) -> bool:
     """Ausfall des Backends (Verbindung, Timeout) -- nicht eine
     Fehlerantwort (``BackendResponseError``) und kein anderer Fehler."""
     return isinstance(exc, BackendConnectionError) and not isinstance(exc, BackendResponseError)
+
+
+def is_backend_outcome_unknown(exc: BaseException) -> bool:
+    """Kann eine schreibende Backend-Operation trotz *exc* gelaufen sein?
+    Bei einem Ausfall und bei einem Abbruch (``CancelledError``, 0.13.1):
+    valkey-py sendet den Befehl und liest danach (E-059, E-041)."""
+    return is_backend_outage(exc) or isinstance(exc, asyncio.CancelledError)
 
 
 class TaskNotFoundError(SwarmQError):

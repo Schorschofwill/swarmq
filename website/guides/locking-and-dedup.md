@@ -250,6 +250,15 @@ lost its connection while waiting for the broker's confirm
 (`PublishIndeterminate`), because the message may have arrived. A flag that `schedule(delay=|eta=)` claimed
 belongs to the producer and is never released on such a failure.
 
+A claim that `schedule()` or `schedule_many()` took in the producer
+stays until it expires when the outcome is unknown: after
+`PublishIndeterminate`, after a backend outage while storing a
+`delay`/`eta` entry, and since 0.13.1 also when the call is cancelled
+(a timeout around it, `task.cancel()`) during the publish or while
+storing, because the message or entry may have arrived. A retry in
+that window is reported as a duplicate. Definite failures release the
+claim.
+
 ### Per-call override
 
 `unique_for` and `unique_until` can be overridden at the

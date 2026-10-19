@@ -19,6 +19,8 @@ quelle:
   - website/guides/middleware.md:12, 27 (every task; pre_enqueue aborts the enqueue)
   - Georg 2026-10-17 (Fehlersuche Runde 4, PF-6, Option a)
   - docs/befunde/fehlersuche-runde-4-2026-10.md (LÜCKE PF-6, Verdacht R4M-F-01)
+  - 'Georg 2026-10-19 (Entscheidungsvorlage 0.13.0, Punkt 6, Option C: Abbruch beim Speichern hält den Claim, 0.13.1)'
+  - docs/befunde/entscheidungsvorlage-0-13-0-2026-10-19.md (Punkt 6)
 tests:
   - tests/unit/worker/test_pipeline.py::test_workflow_step_publisher_runs_middleware_then_signals
   - tests/unit/client/test_befund_f3_02_deferred_pre_enqueue.py::test_pre_enqueue_veto_blocks_deferred_schedule
@@ -45,6 +47,10 @@ tests:
   - tests/integration/test_cli_schedule.py::TestAddThenList::test_add_unique_on_taken_name_releases_the_own_claim
   - tests/unit/test_cli_schedule_add_contract.py::test_outage_on_reading_the_entry_behind_the_held_own_claim_keeps_it
   - tests/unit/test_cli_schedule_add_contract.py::test_error_reply_on_reading_the_entry_behind_the_held_own_claim_keeps_it
+  - tests/unit/test_cli_schedule_add_contract.py::test_cancel_while_storing_keeps_the_own_claim
+  - tests/unit/test_cli_schedule_add_contract.py::test_cancel_while_reading_the_conflicting_entry_keeps_the_own_claim
+  - tests/unit/test_cli_schedule_add_contract.py::test_other_error_while_storing_releases_the_own_claim
+  - tests/unit/client/test_cancel_keeps_unique_claim.py::test_cancel_while_storing_a_deferred_schedule_keeps_the_unique_claim
 ---
 
 **Entscheidung.** Jeder Enqueue über den Client (`schedule`, `schedule_many`, `apply`) und jeder Workflow-Folgeschritt läuft durch `pre_enqueue` und löst `TASK_ENQUEUED` aus. Bei `schedule(delay=…/eta=…)` läuft `pre_enqueue` im Producer vor dem Speichern im Scheduler-Store und vor dem Unique-Claim; ein Veto verhindert beides. `TASK_ENQUEUED` feuert nach dem Speichern, nicht erst beim Fire. Header- und Message-Änderungen der Middleware werden mit der Definition gespeichert, und der Leader publiziert sie beim Fire.
@@ -67,3 +73,6 @@ tests:
   - *Backend-Ausfall* (Timeout, Verbindung; `is_backend_outage`): Unbestimmt, denn `sched_add.lua` speichert Definition und Fire-Index in einem Schritt, der Eintrag kann gespeichert sein und feuern. Der Claim bleibt stehen wie im sofortigen Pfad nach `PublishIndeterminate` (E-041). Ein Wiederholversuch wird bis zum Ablauf der Sperre (`unique_for` plus Verzögerung) als Duplikat abgewiesen; das ist kein Fehler, Blockieren ist für ein Einmaligkeits-Feature die richtige Richtung.
   - *Fehlerantwort* (`BackendResponseError` aus dem Store, nichts gespeichert) und *jeder andere Fehler*, auch ein Abbruch: Der eigene Claim wird owner-geprüft freigegeben.
   - Verträglichkeit: E-052 regelt den Ausfall beim **Claim selbst** (dort Freigabe, weil noch nichts gespeichert ist) und bleibt unberührt; hier geht es um das Speichern danach. E-058 bleibt unverändert, die Regel legt nur die Folge des Konflikts für den Claim fest.
+
+**Nachtrag 2026-10-19 (0.13.1; Georg, Entscheidungsvorlage 0.13.0, Punkt 6, Option C): Abbruch beim Speichern = unbestimmt.** Ein Abbruch (`asyncio.CancelledError`: Timeout oder `task.cancel()` beim Aufrufer, Strg+C in der CLI) während `sched_add.lua` gilt wie ein Backend-Ausfall als unbestimmt: valkey-py sendet `EVALSHA` und liest danach, das Skript kann gelaufen sein und der Eintrag feuern. Der eigene Claim bleibt deshalb stehen, bis er abläuft (`unique_for` plus Verzögerung), im Client (`_schedule_deferred`) wie in der CLI (`schedule add --unique-for`, auch beim Lesen des Eintrags nach einem Konflikt). Der `CancelledError` wird danach unverändert weitergeworfen, nie verschluckt. Damit gilt der Satz „*Fehlerantwort* … und *jeder andere Fehler*, auch ein Abbruch: Der eigene Claim wird owner-geprüft freigegeben“ aus dem Nachtrag vom 2026-10-15 für den Abbruch nicht mehr; für eine Fehlerantwort und jeden anderen Fehler (etwa `RuntimeError`) bleibt es bei der Freigabe. Der sofortige Pfad und `schedule_many` folgen derselben Regel über E-041 (Nachtrag 0.13.1); den Abbruch beim Setzen des Claims regelt E-052 schon so. **Preis:** wie beim Ausfall weist ein Wiederholversuch bis zum Ablauf der Sperre als Duplikat ab, und ein `get_result` auf eine ID, die nie lief, wartet bis zum Timeout. Option D (abgeschirmt nachlesen) ist verworfen.
+

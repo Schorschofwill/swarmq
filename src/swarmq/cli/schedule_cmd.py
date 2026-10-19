@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from swarmq.backend.valkey import ValkeyBackend
 
 from swarmq.cli._shared import _render_table
-from swarmq.exceptions import ConfigurationError, is_backend_outage
+from swarmq.exceptions import ConfigurationError, is_backend_outcome_unknown
 from swarmq.scheduler import ScheduleDefinition, ScheduleStore
 from swarmq.scheduler.prune import last_seen_by_name, prune_orphans
 from swarmq.serialization import compute_dedup_hash
@@ -220,12 +220,13 @@ async def _release_claim(backend: ValkeyBackend, dedup_hash: str, owner: str) ->
 @contextlib.asynccontextmanager
 async def _claim_released_on_error(backend: ValkeyBackend, dedup_hash: str | None, owner: str) -> AsyncGenerator[None]:
     """Fehler beim Speichern oder Lesen: Claim owner-geprüft frei (P1 #1),
-    außer nach einem Ausfall -- gespeichert sein kann der Eintrag dann
-    trotzdem (E-059, PF-6, E-041). Der Fehler erreicht den Aufrufer."""
+    außer nach einem Ausfall oder Abbruch -- gespeichert sein kann der
+    Eintrag dann trotzdem (E-059, PF-6, E-041). Der Fehler erreicht den
+    Aufrufer."""
     try:
         yield
     except BaseException as exc:
-        if dedup_hash is not None and not is_backend_outage(exc):
+        if dedup_hash is not None and not is_backend_outcome_unknown(exc):
             await _release_claim(backend, dedup_hash, owner)
         raise
 

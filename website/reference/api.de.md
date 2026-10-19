@@ -181,6 +181,13 @@ Task-Module importiert.
   nicht erreichbar ist, bleibt die eigene `unique_for`-Sperre des
   Aufrufs bis zu ihrem TTL stehen, weil der Eintrag gespeichert sein und
   feuern kann; nach einer Fehlerantwort wird sie freigegeben.
+- `asyncio.CancelledError` — der Aufruf wurde abgebrochen (ein Timeout
+  um ihn herum, `task.cancel()`). Seit 0.13.1 gilt ein Abbruch während
+  des Publish oder beim Speichern eines `delay`/`eta`-Eintrags wie ein
+  Ausfall als unbestimmt: Die `unique_for`-Sperre bleibt bis zu ihrem
+  Ablauf (`unique_for` plus Verzögerung) stehen, und der
+  `CancelledError` geht unverändert weiter. Ein Abbruch in
+  `pre_enqueue`, bevor etwas gesendet wurde, gibt sie frei.
 - Propagiert aus `pre_enqueue`-Middleware-Hooks (auch bei
   `delay`/`eta`).
 
@@ -226,7 +233,9 @@ ein Element, dessen Publish unbestimmt ist, seine `unique_for`-Sperre,
 denn seine Nachricht kann angekommen sein; freigegeben werden nur die
 Sperren der Elemente, bei denen nichts gesendet wurde. Ist ein Element
 unbestimmt, wirft der Batch dessen `PublishIndeterminate`, auch wenn ein
-bestimmter Fehler an kleinerem Index steht.
+bestimmter Fehler an kleinerem Index steht. Seit 0.13.1 gilt auch ein
+Abbruch während des Publish als unbestimmt: Die Sperren bleiben, und der
+`CancelledError` geht weiter.
 
 ### `run()`
 

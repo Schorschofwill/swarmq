@@ -28,6 +28,7 @@ from swarmq.exceptions import (
     PublishIndeterminate,
     TaskNotFoundError,
     is_backend_outage,
+    is_backend_outcome_unknown,
 )
 from swarmq.headers import (
     HEADER_ENQUEUED_AT,
@@ -47,6 +48,10 @@ from swarmq.signals import Signal
 from swarmq.task import UniqueUntil
 
 logger = get_logger(__name__)
+
+# Publish-Ausgaenge, nach denen die Nachricht angekommen sein kann: die
+# Unique-Sperre bleibt stehen (E-041; der Abbruch seit 0.13.1).
+_INDETERMINATE_PUBLISH = (PublishIndeterminate, asyncio.CancelledError)
 
 
 class ClientBroker(Publisher, Protocol):
@@ -306,10 +311,12 @@ class ClientScheduling(ClientScheduleResolve):
         # the rollback safe against a racing second schedule that
         # somehow won SETNX in the meantime (cannot happen atomically
         # but defense-in-depth).
+        publishing = False
         try:
             # pre_enqueue exceptions PROPAGATE — they can prevent the enqueue.
             await chain.run_pre_enqueue(message_dict)
 
+            publishing = True
             # broker.publish forwards **properties to aio_pika.Message(**),
             # which accepts ``headers=`` natively. Empty dict is harmless.
             await self._broker.publish(
@@ -326,6 +333,14 @@ class ClientScheduling(ClientScheduleResolve):
             # Einmaligkeit ist, ist Blockieren die richtige Richtung; die
             # Sperre loest sich nach ihrer eigenen Lebensdauer von selbst
             # (Plan 2026-08-28-001, R11).
+            raise
+        except asyncio.CancelledError:
+            # Abbruch des Aufrufers im Publish: Die Frames koennen schon
+            # gesendet sein, der Ausgang ist unbestimmt wie bei
+            # ``PublishIndeterminate`` -- die Sperre bleibt (E-041, 0.13.1).
+            # Vor dem Publish (``pre_enqueue``) ist nichts gesendet.
+            if dedup_hash is not None and not publishing:
+                await self._rollback_unique_claim(dedup_hash, task_id)
             raise
         except BaseException:
             if dedup_hash is not None:
@@ -448,10 +463,11 @@ class ClientScheduling(ClientScheduleResolve):
                 )
             # Rollback flags for elements whose publish failed (the
             # successful ones still have matching messages in the broker).
-            # Wie ``schedule``: nach ``PublishIndeterminate`` kann die
-            # Nachricht angekommen sein, die Sperre bleibt (B24).
+            # Wie ``schedule``: nach ``PublishIndeterminate`` oder einem
+            # Abbruch im Publish kann die Nachricht angekommen sein, die
+            # Sperre bleibt (B24; E-041, 0.13.1).
             for idx, exc in errors:
-                if isinstance(exc, PublishIndeterminate):
+                if isinstance(exc, _INDETERMINATE_PUBLISH):
                     continue
                 claim = state["claimed_flags"].get(idx)
                 if claim is not None:
@@ -468,7 +484,7 @@ class ClientScheduling(ClientScheduleResolve):
             # Ein unbestimmter Eintrag macht den Batch unbestimmt: ein
             # bestimmter Fehler an kleinerem Index hiesse sonst "nichts
             # gesendet, Wiederholen sicher" (B24).
-            indeterminate = [exc for _, exc in errors if isinstance(exc, PublishIndeterminate)]
+            indeterminate = [exc for _, exc in errors if isinstance(exc, _INDETERMINATE_PUBLISH)]
             raise indeterminate[0] if indeterminate else errors[0][1]
 
     async def schedule_many(
@@ -697,10 +713,10 @@ class ClientScheduling(ClientScheduleResolve):
         try:
             added = await store.add_schedule(definition)
         except BaseException as exc:
-            # Ein Ausfall ist unbestimmt (``sched_add.lua`` ist atomar, der
-            # Eintrag kann feuern): Die Sperre bleibt stehen wie nach
-            # ``PublishIndeterminate`` (E-041, E-059-Nachtrag).
-            if dedup_hash is not None and not is_backend_outage(exc):
+            # Ein Ausfall oder Abbruch ist unbestimmt (``sched_add.lua`` ist
+            # atomar, der Eintrag kann feuern): Die Sperre bleibt stehen wie
+            # nach ``PublishIndeterminate`` (E-041, E-059-Nachtraege).
+            if dedup_hash is not None and not is_backend_outcome_unknown(exc):
                 await self._rollback_unique_claim(dedup_hash, task_id)
             raise
         if added is False:

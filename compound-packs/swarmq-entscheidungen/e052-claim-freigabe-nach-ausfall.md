@@ -33,4 +33,6 @@ tests:
 
 **Bewusste Folgen.** Eine Freigabe nach einem gescheiterten Erwerb ist kein Fehler, ebenso dass nach einer Fehlerantwort nichts freigegeben wird. Restlücke (F6, bewusst nicht geschlossen): Liegt das `EVALSHA lock_acquire` beim Abbruch schon im Socket-Puffer des Servers, kann die Freigabe über eine andere Verbindung vor dem Erwerb ausgeführt werden; dann bleibt ein verwaister Lock bis `hard_timeout + 30 s`. Eine zweite, verzögerte Freigabe gibt es nicht. Wird der Client-Aufruf selbst abgebrochen, läuft das Flag über seine TTL ab.
 
+**Nachtrag 2026-10-19 (0.13.1, Verweis).** Der Abbruch beim Setzen des Claims („Wird der Client-Aufruf selbst abgebrochen, läuft das Flag über seine TTL ab“) ist die Vorlage für die Regel aus Punkt 6, Option C der Entscheidungsvorlage 0.13.0: Seit 0.13.1 hält auch ein Abbruch **nach** dem Claim, beim Publish (E-041, Nachtrag 0.13.1) und beim Speichern im Scheduler-Store (E-059, Nachtrag 0.13.1), den Claim bis zu seinem Ablauf. Diese Regel selbst ändert sich nicht.
+
 **Überdenken nur mit neuem Argument.** Keine offenen Einwände bekannt.

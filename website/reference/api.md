@@ -176,6 +176,12 @@ defaults, build the producer with the same tasks registered, e.g. via a
   a conflict, and when Valkey is unreachable while storing, the call's
   own `unique_for` claim stays until its TTL ends, because the entry may
   have been stored and fire; after an error reply it is released.
+- `asyncio.CancelledError` — the call was cancelled (a timeout around it,
+  `task.cancel()`). Since 0.13.1 a cancel during the publish or while
+  storing a `delay`/`eta` entry counts as indeterminate, like an
+  outage: the `unique_for` claim stays until it expires (`unique_for`
+  plus the delay), and the `CancelledError` propagates unchanged. A
+  cancel in `pre_enqueue`, before anything was sent, releases it.
 - Propagated from `pre_enqueue` middleware hooks (with `delay`/`eta`
   too).
 
@@ -220,7 +226,8 @@ indeterminate keeps its `unique_for` claim, since its message may have
 arrived; only claims of elements where nothing was sent are released.
 If any element is indeterminate, the batch raises its
 `PublishIndeterminate`, even when a definite failure sits at a smaller
-index.
+index. Since 0.13.1 a cancel during the publish counts as indeterminate
+too: the claims stay and the `CancelledError` propagates.
 
 ### `run()`
 
