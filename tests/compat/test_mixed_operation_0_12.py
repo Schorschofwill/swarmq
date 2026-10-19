@@ -49,29 +49,34 @@ import collections
 import json
 import subprocess
 import tempfile
-from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass
+from collections.abc import Callable
 from pathlib import PurePath
 
-import aio_pika
 import pytest
 
 from swarmq.app import SwarmQ
-from swarmq.backend.valkey import ValkeyBackend
-from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.client import Client
 from tests.compat._harness import (
     BASE_012_VERSION,
     BASE_0123_VERSION,
+    CRON_MODULE,
+    CRON_TASK,
+    OLD_PRODUCER,
     REPO_ROOT,
+    Base,
     CompatWorker,
-    consumer_count,
     force_cron_fire,
     message_count,
     recorded_runs,
     wait_leader,
     wait_runs,
 )
+from tests.compat._harness import allow_poison as _allow_poison
+from tests.compat._harness import assert_two_attempts_each as _assert_two_attempts_each
+from tests.compat._harness import result_is as _result_is
+from tests.compat._harness import shovel as _shovel
+from tests.compat._harness import wait_consumers as _wait_consumers
+from tests.compat._harness import wait_deferred_in_tier as _wait_deferred_in_tier
 from tests.support.wait import wait_until
 
 pytestmark = [pytest.mark.compat, pytest.mark.timeout(120)]
@@ -82,23 +87,11 @@ _MESSAGES = 5
 _ROLLING_MESSAGES = 20
 _EVENT_TIMEOUT = 20.0
 _OLD_RUNTIME = f"pypi-{BASE_012_VERSION}"
-_CRON = "compat_cron"
-_CRON_MODULE = "tests.compat._compat_cron_tasks"
+_CRON = CRON_TASK
+_CRON_MODULE = CRON_MODULE
 
 #: Basis-Version -> Fixture ihres venv-Interpreters.
 _BASES = {BASE_012_VERSION: "python_0120", BASE_0123_VERSION: "python_0123"}
-
-
-@dataclass(frozen=True)
-class Base:
-    """Eine alte Basis der 0.12-Reihe: Interpreter ihres venv und Version."""
-
-    python: str
-    version: str
-
-    @property
-    def runtime(self) -> str:
-        return f"pypi-{self.version}"
 
 
 @pytest.fixture(params=list(_BASES))
@@ -107,49 +100,6 @@ def base(request: pytest.FixtureRequest) -> Base:
     version: str = request.param
     python: str = request.getfixturevalue(_BASES[version])
     return Base(python, version)
-
-
-# Läuft im venv der Basis: nur die öffentliche API, die 0.12.0 kennt.
-_OLD_PRODUCER = """
-import asyncio, importlib.metadata, json, os.path, sys
-import swarmq
-from swarmq.app import SwarmQ
-from swarmq.backend.valkey import ValkeyBackend
-from swarmq.broker.rabbitmq import RabbitMQBroker
-from swarmq.client import Client
-
-async def main(broker_url, backend_url, queue, count):
-    out = {"version": importlib.metadata.version("swarmq"), "location": os.path.realpath(swarmq.__file__), "results": {}}
-    async with SwarmQ(RabbitMQBroker(broker_url), ValkeyBackend(backend_url), queues=[queue]) as app:
-        producer = Client(app.broker, app.backend)
-        task_ids = [await producer.schedule("compat_flaky", queue=queue) for _ in range(count)]
-        for task_id in task_ids:
-            out["results"][task_id] = await app.get_result(task_id, timeout=30)
-    print(json.dumps(out))
-
-asyncio.run(main(sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])))
-"""
-
-
-@pytest.fixture
-async def app(rabbitmq_url: str, valkey_url: str, queue: str) -> AsyncIterator[SwarmQ]:
-    """App aus dem Arbeitsstand (Producer und Ergebnisse lesen); der zuerst
-    gestartete Worker legt die Queue-Familie an."""
-    async with SwarmQ(RabbitMQBroker(rabbitmq_url), ValkeyBackend(valkey_url), queues=[queue]) as swarm:
-        yield swarm
-
-
-async def _wait_consumers(rabbitmq_url: str, queue: str, count: int) -> None:
-    async def reached() -> bool:
-        return await consumer_count(rabbitmq_url, queue) == count
-
-    assert await wait_until(reached, timeout=_EVENT_TIMEOUT), f"consumer count on {queue} never reached {count}"
-
-
-def _assert_two_attempts_each(runs: list[tuple[str, str, int, str]], task_ids: list[str], runtime: str) -> None:
-    attempts = collections.Counter(task_id for _, task_id, _, _ in runs)
-    assert attempts == dict.fromkeys(task_ids, 2), "every message runs exactly twice (fail, retry)"
-    assert {run_runtime for *_, run_runtime in runs} == {runtime}
 
 
 async def test_old_producer_new_worker(
@@ -167,7 +117,7 @@ async def test_old_producer_new_worker(
     with tempfile.TemporaryDirectory() as cwd:  # nie das Repo im Pfad des Basis-venv
         result = await asyncio.to_thread(
             subprocess.run,
-            [base.python, "-c", _OLD_PRODUCER, rabbitmq_url, valkey_url, queue, str(_MESSAGES)],
+            [base.python, "-c", OLD_PRODUCER, rabbitmq_url, valkey_url, queue, str(_MESSAGES)],
             capture_output=True,
             text=True,
             timeout=90,
@@ -240,16 +190,6 @@ async def test_retry_between_0_12_x_and_new_worker_on_one_queue(
     assert {runtime for *_, runtime in runs} == {"repo", base.runtime}, "both versions consumed"
     assert await message_count(rabbitmq_url, queue) == 0
     assert await message_count(rabbitmq_url, f"{queue}.XQ") == 0
-
-
-async def _wait_deferred_in_tier(rabbitmq_url: str, tier: str) -> None:
-    async def deferred_in_tier() -> bool:
-        try:
-            return await message_count(rabbitmq_url, tier) == 1
-        except aio_pika.exceptions.ChannelNotFoundEntity:
-            return False
-
-    assert await wait_until(deferred_in_tier, timeout=_EVENT_TIMEOUT), "retry never reached the delay tier"
 
 
 async def test_upgrade_runs_a_deferred_retry_of_0_12_x_on_new_worker(
@@ -332,17 +272,6 @@ async def _publish_schedfire_copy(app: SwarmQ, queue: str, fire_key: str, defer_
     return task_id
 
 
-async def _allow_poison(valkey_url: str, queue: str) -> None:
-    """``compat_poison`` gelingt ab jetzt (``compat:flag:<queue>``)."""
-    import valkey.asyncio as aio_valkey
-
-    client = aio_valkey.Valkey.from_url(valkey_url)
-    try:
-        await client.set(f"compat:flag:{queue}", "1")
-    finally:
-        await client.aclose()
-
-
 async def test_deferred_schedfire_copy_with_foreign_claim_is_acked_by_0_12_0(
     start_worker: StartWorker,
     python_0120: str,
@@ -420,31 +349,6 @@ async def test_rollback_runs_a_deferred_schedfire_copy_on_0_12_0_once_the_claim_
 # ---------------------------------------------------------------------------
 
 _AT_DELIVERY_LIMIT = 19  # delivery_limit 20 (Default) -> Gate ab 19
-
-
-async def _shovel(rabbitmq_url: str, source: str, target: str) -> None:
-    """Eine Nachricht mit allen Headern von *source* nach *target* legen --
-    wie "Move messages" in der RabbitMQ-UI bzw. ein Shovel."""
-    connection = await aio_pika.connect(rabbitmq_url)
-    try:
-        channel = await connection.channel()
-        message = await (await channel.get_queue(source)).get(no_ack=True)
-        assert message is not None, f"no message in {source}"
-        await channel.default_exchange.publish(
-            aio_pika.Message(message.body, headers=dict(message.headers or {})), routing_key=target
-        )
-    finally:
-        await connection.close()
-
-
-async def _result_is(app: SwarmQ, task_id: str, expected: str) -> bool:
-    from swarmq.exceptions import TaskError
-
-    try:
-        result: object = await app.get_result(task_id, timeout=1)
-    except TaskError:  # Fehlerergebnis des Dead-Letterns, noch nicht ueberschrieben
-        return False
-    return result == expected
 
 
 async def test_shovel_replay_of_a_new_dlq_copy_runs_on_0_12_x(

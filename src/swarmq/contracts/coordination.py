@@ -52,7 +52,11 @@ class LockStore(Protocol):
         ...
 
     async def force_release(self, name: str, *, max_concurrency: int) -> bool:
-        """Operator-Pfad ohne Owner-Check."""
+        """Operator-Pfad ohne Owner-Check, atomar. ``True``: ein Lock
+        existierte und ist jetzt entfernt; ``False``: es gab keinen.
+        Semaphoren: Eine Implementierung darf ``True`` melden, solange der
+        Schluessel lebt, auch wenn alle Halter schon abgelaufen sind (Valkey,
+        Plan 0.14, KTD1)."""
         ...
 
     async def current_owner(self, name: str) -> str | None: ...

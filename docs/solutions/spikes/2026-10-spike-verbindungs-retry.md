@@ -138,3 +138,36 @@ alle 25 Retry-/Frist-Tests grün, Neustart-Toleranz unverändert.
   Messgröße TCP-Versuche je Befehl (≤ 6) und Wanduhr (≤ `socket_timeout` + 5 ×
   `socket_connect_timeout` + 3,1 s).
 - Die Laufzeitgrenze „stumm“ (rund 63 s ohne `op_timeout`) löst keine Variante; das bleibt E-075.
+
+## Umsetzung 0.14
+
+Plan `docs/plans/2026-10-19-1500-feat-swarmq-0-14-plan.md` (R3, KTD3, U3), Nachtrag 0.14 zu E-075.
+Umgesetzt ist die Variante `timeout0` als Option (c), mit einer Schleife bis zur Frist in `connect()`:
+
+- `_mark_tcp_connect_timeouts` (in `make_marked_connection` von `_retry_handshake`) wickelt
+  `connection._connect` jeder Pool-Verbindung: Ein `TimeoutError` wird `_TcpConnectTimeout`, weder
+  `OSError` noch `ValkeyError`. valkey-py wiederholt ihn in `Connection.connect` nicht und wickelt ihn in
+  `ConnectionError("Timeout connecting to server")`; die Befehls-Retry wiederholt diesen wie bisher.
+  Statt einer Unterklasse von `Connection` (Prototyp) ein Instanz-Patch, weil rund 30 Tests
+  `Valkey.from_url` ersetzen.
+- `ValkeyConnection._ping_until_deadline` wiederholt den PING nur, wenn `_TcpConnectTimeout` in der
+  Ursachenkette steht, mit `ExponentialBackoff(cap=2, base=0.05)` bis zur Gesamtfrist; Ende mit
+  `Valkey connect timed out after {Frist}s`. Jeder andere Fehler endet wie bisher sofort.
+- Die drei E-075-Tests mit Marker blieben unverändert grün.
+
+Gemessen im `timing`-Durchgang (`tests/unit/backend/test_valkey_handshake_retry.py`), SYN-Blackhole wie
+oben, skaliert (Connect-Timeout 0,2 s, `socket_timeout` 0,4 s, Backoff ein Zehntel, Summe 0,31 s), je
+drei Läufe:
+
+| Szenario | vorher (HEAD 46a8241) | 0.14 |
+|---|---|---|
+| `connect()`, Frist 2,5 s | 1,51 s, `Valkey connect failed: Timeout connecting to server` | 2,50 s, `timed out after 2.5s` |
+| Laufzeit, Partition (`GET`, alte Verbindung stumm) | 8,29 s, 30 TCP-Versuche | 1,72 s, 5 TCP-Versuche |
+| Befehl mit neuer Pool-Verbindung | 6 TCP-Versuche (≈ 1,51 s) | 0,20 s, 1 TCP-Versuch |
+
+Auf Produktionswerte übertragen: Partition 178,8 s → rund 38 s, neue Pool-Verbindung rund 33 s → rund
+5 s, Start gegen einen Host, der Pakete verwirft, bis zur Frist (vorher höchstens rund 33 s).
+
+Der Fall „stumm“ (Toxiproxy-`timeout`-Toxic) bleibt unberührt; sein Chaos-Test als Regressionswächter
+folgt nach dem Chaos-Stack 4.3.6 (U5). Toxiproxy kann den SYN-Verwurf nicht erzeugen, deshalb ist der
+festschreibende Test der `timing`-Test mit echtem Blackhole (Entscheid zu Frage 3).
