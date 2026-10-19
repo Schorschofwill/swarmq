@@ -19,7 +19,7 @@ from collections.abc import Awaitable, Callable
 from functools import partial
 from typing import Any
 
-from swarmq.exceptions import BackendConnectionError, WorkflowStateConflict
+from swarmq.exceptions import BackendConnectionError, BackendResponseError, WorkflowStateConflict
 from swarmq.headers import HEADER_WORKFLOW_ID
 from swarmq.logging import _error_fields
 from swarmq.serialization import decode_result
@@ -106,9 +106,13 @@ async def _advance_done_step(
         if redeliver:
             await _redeliver(deps, delivery, ctx, failure.error, redeliver_with)
             return False
-        # Zustelllimit (E-040, Restfall): der Workflow bleibt ``running``,
-        # die DLQ-Kopie haelt die Zustellung fuer den Betreiber fest.
-        return StepDone.DEAD_LETTER
+        if not isinstance(failure.error, BackendResponseError):
+            # Zustelllimit (E-040, Restfall): der Workflow bleibt ``running``,
+            # die DLQ-Kopie haelt die Zustellung fuer den Betreiber fest.
+            return StepDone.DEAD_LETTER
+        # Fehlerantwort am Zustelllimit (E-079, 0.13.1): unter dem Limit wie
+        # ein Ausfall neu zugestellt, hier heilt keine Wiederholung mehr --
+        # fehlmarkieren wie ``UnroutableMessage``.
     # ``UnroutableMessage`` oder unerwarteter Fehler: keine Wiederholung
     # heilt ihn -- den Workflow mit der Ursache fehlmarkieren (wie der
     # Ergebnis-Tail), das Erfolgsergebnis bleibt.

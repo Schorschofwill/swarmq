@@ -21,6 +21,7 @@ from swarmq.cancellation import build_error_result_dict, build_result_dict
 from swarmq.config import resolve_result_ttl
 from swarmq.exceptions import (
     BackendConnectionError,
+    BackendResponseError,
     BrokerConnectionError,
     ResultSerializationError,
     UnroutableMessage,
@@ -328,7 +329,11 @@ class ResultTail:
                 # Transient — redelivery retries the idempotent advance.
                 await redeliver_in_place(deps, delivery, ctx)
                 return Redelivered
-            return Terminal.release_in_finally()
+            if not isinstance(failure.error, BackendResponseError):
+                return Terminal.release_in_finally()
+            # FIRE_AND_FORGET wird nicht neu zugestellt: eine Fehlerantwort
+            # (E-079, 0.13.1) heilt hier nie -- sofort fail-markieren wie am
+            # Zustelllimit (``fail_workflow_step``).
         # ``UnroutableMessage`` oder unerwarteter Fehler: fail-markieren, dann
         # Ack. Bewusst ``_fail_workflow`` statt ``fail_workflow_step``: dessen
         # Schutz "Schritt schon erledigt" griffe hier immer, denn das Ergebnis

@@ -26,6 +26,11 @@ Test-Liste:
 - [x] Markierung scheitert voruebergehend und das Neuzustellen scheitert auch ->
       kein Absturz des Aufrufers, ``False``, genau eine ERROR-Zeile
       ``workflow_fail_mark_failed`` (Redeliver best effort)
+- [x] 0.13.1 (E-079, Nachtrag E-040): am Zustelllimit scheitert der letzte
+      Advance mit einer Fehlerantwort (``BackendResponseError``) ->
+      Fehlmarkierung mit dem Fehlertext, ``StepDone.ACK`` (ohne DLQ-Kopie)
+- [x] dabei scheitert die Fehlmarkierung -> ``StepDone.DEAD_LETTER`` wie bisher
+- [x] Fehlerantwort unter dem Limit -> weiter neu zugestellt (E-079)
 """
 
 from __future__ import annotations
@@ -36,7 +41,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from swarmq.cancellation import build_result_dict
-from swarmq.exceptions import BackendConnectionError, BrokerConnectionError, UnroutableMessage, WorkflowStateConflict
+from swarmq.exceptions import (
+    BackendConnectionError,
+    BackendResponseError,
+    BrokerConnectionError,
+    UnroutableMessage,
+    WorkflowStateConflict,
+)
 from swarmq.headers import HEADER_WORKFLOW_STEP
 from swarmq.serialization import encode_result
 from swarmq.worker.gates import GateContext, StepDone
@@ -237,3 +248,51 @@ async def test_failing_redelivery_after_a_transient_fail_mark_does_not_crash_or_
     errors = [e for e in logs if e["log_level"] == "error"]
     assert [e["event"] for e in errors] == ["workflow_fail_mark_failed"]
     assert errors[0]["redelivered"] is True
+
+
+_WRONGTYPE = "WRONGTYPE Operation against a key holding the wrong kind of value"
+
+
+@pytest.mark.entscheidung("E-079")
+async def test_error_reply_of_the_last_advance_at_the_limit_fails_the_workflow_and_acks() -> None:
+    """0.13.1 (Nachtrag E-079, E-040): eine Fehlerantwort heilt keine
+    Wiederholung; am Zustelllimit wird der Workflow mit dem Fehlertext
+    fehlmarkiert, die Zustellung ohne DLQ-Kopie bestaetigt."""
+    deps = _deps(_result(is_error=False))
+    deps.broker.redeliver = AsyncMock()
+    advancer = MagicMock(fail=AsyncMock(), advance=AsyncMock(side_effect=BackendResponseError(_WRONGTYPE)))
+
+    assert await _fail(deps, advancer, redeliver=False) is StepDone.ACK
+
+    advancer.fail.assert_awaited_once_with(_WF_ID, "BackendResponseError", _WRONGTYPE)
+    deps.broker.redeliver.assert_not_awaited()
+
+
+@pytest.mark.entscheidung("E-079")
+async def test_failing_fail_mark_after_an_error_reply_at_the_limit_dead_letters() -> None:
+    """Ist ``sq:wf:{wf}`` selbst kaputt, scheitert auch die Fehlmarkierung:
+    dann bleibt es beim Restfall (DLQ-Kopie ohne Fehlerergebnis)."""
+    deps = _deps(_result(is_error=False))
+    deps.broker.redeliver = AsyncMock()
+    advancer = MagicMock(
+        fail=AsyncMock(side_effect=BackendResponseError(_WRONGTYPE)),
+        advance=AsyncMock(side_effect=BackendResponseError(_WRONGTYPE)),
+    )
+
+    assert await _fail(deps, advancer, redeliver=False) is StepDone.DEAD_LETTER
+
+    advancer.fail.assert_awaited_once()
+    deps.broker.redeliver.assert_not_awaited()
+
+
+@pytest.mark.entscheidung("E-079")
+async def test_error_reply_of_the_catch_up_below_the_limit_still_redelivers() -> None:
+    deps = _deps(_result(is_error=False))
+    deps.redeliver_pause = None
+    deps.broker.redeliver = AsyncMock()
+    advancer = MagicMock(fail=AsyncMock(), advance=AsyncMock(side_effect=BackendResponseError(_WRONGTYPE)))
+
+    assert await _fail(deps, advancer) is False
+
+    deps.broker.redeliver.assert_awaited_once()
+    advancer.fail.assert_not_awaited()
