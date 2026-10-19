@@ -670,8 +670,9 @@ class SendEmail(Task):
   `max_retries=0`, it ends terminally (DLQ, or the error result when
   dead-lettering is disabled). A negative delay, as a computed
   `reset_at - time.time()` after a 429 easily becomes, is treated as
-  `0` (retry immediately) and counts like any other retry. `inf` and
-  `nan` raise `ValueError` when `Retry` is created; that `ValueError`
+  `0` (retry immediately) and counts like any other retry. `inf`,
+  `nan` and a delay above `315360000` seconds (ten years, since 0.13.1)
+  raise `ValueError` when `Retry` is created; that `ValueError`
   is an ordinary task error, subject to `retry_exceptions` and the
   backoff.
 - `NoRetry(reason)` — bypass the retry budget, route to DLQ

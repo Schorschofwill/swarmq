@@ -105,6 +105,12 @@ F4-15 (Plan 2026-10-17-2103, U9, E-043) -- Zusatzfall zum Nachweis
     nur das Ack scheiterte) -> WARNING ``retry_ack_failed_after_publish`` mit
     Fehlerfeldern, ``task_retrying``, Ausgang ``Redelivered``; kein
     ``redeliver``, kein ``ack``, keine Unique-Freigabe, kein Dead-Letter.
+
+F4-19 (E-060, Nachtrag 2026-10-19) -- Obergrenze, Zusatzfall zum Nachweis
+``test_befund_f4_19_retry_delay_beyond_bound.py``:
+
+44. ``Retry(delay=MAX_DEADLINE_S)`` -> ``delay_ms == MAX_DEADLINE_MS``;
+    eine Millisekunde mehr -> ``ValueError`` beim Erzeugen.
 """
 
 from __future__ import annotations
@@ -965,6 +971,27 @@ class TestRetryDelayBounds:
 
         with pytest.raises(ValueError, match="delay"):
             Retry(delay=-math.inf)
+
+    @pytest.mark.entscheidung("E-060")
+    @pytest.mark.timeout(5)
+    async def test_delay_at_the_bound_is_retried_with_exactly_the_bound(self, broker, backend, config) -> None:
+        """Liste 44 (F4-19): der genaue Grenzwert ``MAX_DEADLINE_S`` ist
+        erlaubt und geht als ``MAX_DEADLINE_MS`` an den Broker; eine
+        Millisekunde mehr lehnt der Konstruktor ab."""
+        from swarmq.config_validation import MAX_DEADLINE_MS, MAX_DEADLINE_S
+        from swarmq.exceptions import Retry
+        from swarmq.middleware import MiddlewareChain
+
+        handler, _ = _handler(broker, backend, config, _BudgetTwoTask)
+        msg = make_message(_default_payload(name="budget-two-task"))
+
+        await handler.evaluate(
+            msg, _ctx(_BudgetTwoTask), Retry(delay=MAX_DEADLINE_S), "", {"retry_count": 0}, MiddlewareChain([])
+        )
+
+        assert broker.retry_later.await_args.kwargs["delay_ms"] == MAX_DEADLINE_MS
+        with pytest.raises(ValueError, match=rf"Retry delay must be at most {MAX_DEADLINE_S} seconds"):
+            Retry(delay=MAX_DEADLINE_S + 0.001)
 
     @pytest.mark.timeout(5)
     @pytest.mark.parametrize("delay", [-0.0, -0.0005], ids=["minus-zero", "sub-millisecond"])

@@ -700,8 +700,9 @@ class SendEmail(Task):
   das Dead-Lettering abgeschaltet ist).
 - Ein negativer Delay, wie ihn ein berechnetes
   `reset_at - time.time()` nach einem 429 leicht ergibt, gilt als `0`
-  (sofort wiederholen) und zählt wie jeder andere Retry. `inf` und
-  `nan` werfen beim Erzeugen von `Retry` einen `ValueError`; dieser
+  (sofort wiederholen) und zählt wie jeder andere Retry. `inf`, `nan`
+  und ein Delay über `315360000` Sekunden (zehn Jahre, seit 0.13.1)
+  werfen beim Erzeugen von `Retry` einen `ValueError`; dieser
   `ValueError` ist ein gewöhnlicher Task-Fehler und unterliegt
   `retry_exceptions` und dem Backoff.
 - `NoRetry(reason)` — überspringt das Retry-Budget, routet sofort

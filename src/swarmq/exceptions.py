@@ -3,6 +3,8 @@
 import asyncio
 import math
 
+from swarmq.seconds import MAX_DEADLINE_S
+
 
 class SwarmQError(Exception):
     pass
@@ -282,6 +284,12 @@ class Retry(SwarmQError):
         if delay is not None:
             if not math.isfinite(delay):
                 msg = f"Retry delay must be finite, got {delay!r}"
+                raise ValueError(msg)
+            # F4-19 (E-060, Nachtrag 2026-10-19): ueber der Broker-Grenze
+            # lehnt RabbitMQ die Expiration ab; ``int(delay * 1000)`` bleibt
+            # damit auch fuer riesige Werte ohne ``OverflowError``.
+            if delay > MAX_DEADLINE_S:
+                msg = f"Retry delay must be at most {MAX_DEADLINE_S} seconds, got {delay!r}"
                 raise ValueError(msg)
             if delay < 0:
                 delay = 0.0
