@@ -52,6 +52,7 @@ from swarmq.headers import HEADER_WORKFLOW_STEP
 from swarmq.serialization import encode_result
 from swarmq.worker.gates import GateContext, StepDone
 from swarmq.worker.terminal import fail_workflow_step
+from tests.support.valkey_replies import WRONGTYPE_REPLY
 from tests.unit._log_capture import capture_swarmq_logs
 
 pytestmark = pytest.mark.timeout(5)
@@ -250,7 +251,7 @@ async def test_failing_redelivery_after_a_transient_fail_mark_does_not_crash_or_
     assert errors[0]["redelivered"] is True
 
 
-_WRONGTYPE = "WRONGTYPE Operation against a key holding the wrong kind of value"
+_WRONGTYPE = WRONGTYPE_REPLY
 
 
 @pytest.mark.entscheidung("E-079")

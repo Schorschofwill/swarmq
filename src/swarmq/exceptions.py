@@ -155,7 +155,7 @@ class BackendResponseError(BackendConnectionError):
     beantwortet (z. B. ``WRONGTYPE``, Skriptfehler).
 
     Fehlerantworten, die durch Warten heilen (OOM, READONLY, LOADING,
-    TRYAGAIN, CLUSTERDOWN, MASTERDOWN, MISCONF), sind KEIN
+    TRYAGAIN, CLUSTERDOWN, MASTERDOWN, MISCONF, BUSY, NOREPLICAS), sind KEIN
     ``BackendResponseError``, sondern ein einfacher
     ``BackendConnectionError`` (``as_backend_error``).
 

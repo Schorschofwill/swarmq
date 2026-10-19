@@ -52,6 +52,15 @@ zugestellt, eine Fehlerantwort heilt also nie):
     Fehlertext, kein Broker-Verb.
 21. [x] Ausfall im Advance eines FIRE_AND_FORGET-Schritts -> unveraendert:
     keine Fehlmarkierung, kein Broker-Verb (Restfall ``running``).
+
+Review 0.13.1:
+
+22. [x] ``BUSY`` und ``NOREPLICAS`` aus dem Advance eines
+    FIRE_AND_FORGET-Schritts (ueber ``as_backend_error``) sind ein Ausfall:
+    keine Fehlmarkierung.
+23. [x] Fehlerantwort im FAF-Advance, die Markierung scheitert danach ->
+    ERROR ``workflow_fail_mark_error`` mit ``redelivered=False``, kein
+    Broker-Verb, Terminal-Ausgang.
 """
 
 from __future__ import annotations
@@ -76,6 +85,7 @@ from swarmq.worker.execution import ExecutionResult
 from swarmq.worker.gates import GateContext
 from swarmq.worker.outcome import Redelivered, Terminal
 from tests.support.messages import make_message
+from tests.support.valkey_replies import WRONGTYPE_REPLY
 from tests.unit.worker._helpers import _default_payload
 
 pytestmark = pytest.mark.timeout(5)
@@ -584,7 +594,7 @@ async def test_transient_fail_mark_with_failed_nack_stays_redelivered(broker, ba
     broker.redeliver.assert_awaited_once_with(msg)
 
 
-_WRONGTYPE = "WRONGTYPE Operation against a key holding the wrong kind of value"
+_WRONGTYPE = WRONGTYPE_REPLY
 
 
 @pytest.mark.entscheidung("E-079")
@@ -596,6 +606,58 @@ async def test_error_reply_in_the_advance_of_a_fire_and_forget_step_fails_the_wo
 
     assert outcome == Terminal.release_in_finally()
     worker._workflow_advancer.fail.assert_awaited_once_with(_WF_ID, "BackendResponseError", _WRONGTYPE)
+    broker.ack.assert_not_awaited()
+    broker.redeliver.assert_not_awaited()
+
+
+@pytest.mark.entscheidung("E-079")
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "BUSY Valkey is busy running a script. You can only call SCRIPT KILL or SHUTDOWN NOSAVE.",
+        "NOREPLICAS Not enough good replicas to write.",
+    ],
+    ids=["busy", "noreplicas"],
+)
+async def test_self_healing_reply_in_the_advance_of_a_fire_and_forget_step_does_not_fail_the_workflow(
+    broker, backend, config, reply
+):
+    """Liste 22: ein langes Skript oder fehlende Replikate heilen durch
+    Warten; sie duerfen den Workflow nicht sofort ``failed`` machen."""
+    from valkey.exceptions import ResponseError
+
+    from swarmq.backend.valkey.connection import as_backend_error
+
+    tail, worker = _tail(broker, backend, config, TailFafStoreTask)
+    worker._workflow_advancer.advance = AsyncMock(side_effect=as_backend_error(reply, ResponseError(reply)))
+
+    outcome = await tail.finish(_wf_message("tail-faf-store"), _ctx(TailFafStoreTask), _execution())
+
+    assert outcome == Terminal.release_in_finally()
+    worker._workflow_advancer.fail.assert_not_awaited()
+    broker.ack.assert_not_awaited()
+    broker.redeliver.assert_not_awaited()
+
+
+async def test_failing_fail_mark_after_an_error_reply_in_a_fire_and_forget_advance_logs_and_ends(
+    broker, backend, config, swarmq_logs
+):
+    """Liste 23: die Markierung scheitert (etwa ``sq:wf:{wf}`` selbst mit
+    falschem Typ); FAF hat kein Broker-Verb, der Workflow bleibt ``running``
+    bis zur TTL (Restfall E-079)."""
+    tail, worker = _tail(broker, backend, config, TailFafStoreTask)
+    worker._workflow_advancer.advance = AsyncMock(side_effect=BackendResponseError(_WRONGTYPE))
+    worker._workflow_advancer.fail = AsyncMock(side_effect=BackendResponseError(_WRONGTYPE))
+
+    outcome = await tail.finish(_wf_message("tail-faf-store"), _ctx(TailFafStoreTask), _execution())
+
+    assert outcome == Terminal.release_in_finally()
+    worker._workflow_advancer.fail.assert_awaited_once_with(_WF_ID, "BackendResponseError", _WRONGTYPE)
+    [mark] = _events(swarmq_logs, "workflow_fail_mark_error")
+    assert mark["log_level"] == "error"
+    assert mark["workflow_id"] == _WF_ID
+    assert mark["error_type"] == "BackendResponseError"
+    assert mark["redelivered"] is False
     broker.ack.assert_not_awaited()
     broker.redeliver.assert_not_awaited()
 

@@ -256,8 +256,10 @@ Fehlerantworten, die durch Warten heilen, sind kein
 und werden wie ein nicht erreichbares Backend behandelt: `OOM`
 (maxmemory erreicht), `READONLY` (der Client spricht nach einem
 Failover noch mit dem herabgestuften Primary), `LOADING`, `TRYAGAIN`,
-`CLUSTERDOWN`, `MASTERDOWN` und `MISCONF` (Persistenz scheitert, etwa
-bei voller Platte).
+`CLUSTERDOWN`, `MASTERDOWN`, `MISCONF` (Persistenz scheitert, etwa
+bei voller Platte), `BUSY` (ein lang laufendes Skript) und `NOREPLICAS`
+(zu wenige Replikate für `min-replicas-to-write`; die beiden letzten
+seit 0.13.1).
 
 ## `TaskNotFoundError`
 

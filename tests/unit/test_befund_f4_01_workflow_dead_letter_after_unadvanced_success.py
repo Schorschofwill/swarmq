@@ -73,6 +73,7 @@ from swarmq.workflow_orchestration import (
     workflow_step_task_id,
 )
 from tests.support.inmemory import FakeClock, InMemoryBackend, InMemoryBroker
+from tests.support.valkey_replies import WRONGTYPE_REPLY
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -324,7 +325,7 @@ async def test_at_the_limit_an_error_reply_of_the_last_advance_fails_the_workflo
     Wiederholung. Am Zustelllimit wird der Workflow mit dem Fehlertext
     ``failed``, die Zustellung ohne DLQ-Kopie bestätigt; das
     Erfolgsergebnis bleibt."""
-    wrongtype = "WRONGTYPE Operation against a key holding the wrong kind of value"
+    wrongtype = WRONGTYPE_REPLY
     scene.view.error = BackendResponseError(wrongtype)
     scene.view.outages = 1
 

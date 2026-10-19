@@ -54,8 +54,12 @@ _OUTAGE_REPLIES: tuple[type[Exception], ...] = (OutOfMemoryError, ReadOnlyError,
 # Dieselben Zustaende als Fehlerpraefix: der Standalone-Parser von valkey-py
 # kennt MASTERDOWN, MISCONF (Persistenz scheitert, z. B. Platte voll),
 # CLUSTERDOWN und TRYAGAIN nicht und liefert einen einfachen
-# ``ResponseError`` mit dem Praefix im Text.
-_OUTAGE_REPLY_PREFIXES = frozenset({"OOM", "READONLY", "LOADING", "TRYAGAIN", "CLUSTERDOWN", "MASTERDOWN", "MISCONF"})
+# ``ResponseError`` mit dem Praefix im Text. Ebenso BUSY (ein langes Skript
+# blockiert den Server) und NOREPLICAS (``min-replicas-to-write`` nicht
+# erfuellt); beide heilen durch Warten (Review 0.13.1, Nachtrag E-079).
+_OUTAGE_REPLY_PREFIXES = frozenset(
+    {"OOM", "READONLY", "LOADING", "TRYAGAIN", "CLUSTERDOWN", "MASTERDOWN", "MISCONF", "BUSY", "NOREPLICAS"}
+)
 
 
 def _is_outage_reply(exc: BaseException) -> bool:
@@ -71,7 +75,7 @@ def as_backend_error(message: str, exc: BaseException) -> BackendConnectionError
     """Abbildung eines Treiberfehlers an der Backend-Grenze: ein
     Transportfehler (Verbindung, Timeout, Socket) und eine Fehlerantwort, die
     durch Warten heilt (OOM, READONLY, LOADING, TRYAGAIN, CLUSTERDOWN,
-    MASTERDOWN, MISCONF), sind ein Ausfall (``BackendConnectionError``); jede
+    MASTERDOWN, MISCONF, BUSY, NOREPLICAS), sind ein Ausfall (``BackendConnectionError``); jede
     andere Ursache -- WRONGTYPE, Skriptfehler -- ein ``BackendResponseError``."""
     if isinstance(exc, tuple(_TRANSIENT_ERRORS)) or _is_outage_reply(exc):
         return BackendConnectionError(message)
