@@ -670,7 +670,10 @@ Herunterfahren für Settles auf Tags, die der Broker beendet hat.
 dem ersten `consume` nicht bereit (`not consuming: <queues>`) und
 sobald eine Queue länger als `SWARMQ_CONSUMER_READY_GRACE_S` (Standard
 30 s) keinen aktiven Consumer hatte: `no active consumer for more than
-30.0s: <queues>`. **`/ready` nie als Liveness-Probe nutzen**: Ein
+30.0s: <queues>`. Eine konsumierte Queue, die es beim Broker nicht mehr
+gibt, macht ihn sofort nicht bereit, ohne Gnadenfrist:
+`consumed queue missing at the broker: <queues>`
+([Konsumierte Queue löschen](#konsumierte-queue-loschen)). **`/ready` nie als Liveness-Probe nutzen**: Ein
 Broker-Ausfall würde dann alle Worker gleichzeitig neu starten, und ein
 Neustart hilft nicht — der Wächter meldet den Consumer von selbst neu
 an. Für Liveness `/health` nutzen.
@@ -1001,8 +1004,9 @@ die Queue migrieren:
    Zwischen-Queue verschieben. Eine Delay-Queue mit Nachrichten nie
    einfach löschen; die Nachrichten gingen verloren.
 3. Die Worker stoppen, die die Queue konsumieren. Eine Queue nie
-   löschen, während ein Worker sie konsumiert: Das hält alle Queues des
-   Workers an, nicht nur die gelöschte, bis zu seinem Neustart
+   löschen, während ein Worker sie konsumiert: Der Worker konsumiert sie
+   dann nicht mehr und bleibt nicht bereit, bis er neu startet oder es
+   die Queue wieder gibt
    ([Konsumierte Queue löschen](#konsumierte-queue-loschen)).
 4. Den Inhalt von `{queue}.XQ` verschieben oder behalten.
 5. Unmittelbar vor dem Löschen prüfen, ob `{queue}` leer ist. Der
@@ -1029,28 +1033,48 @@ dahin im Scheduler-Store.
 
 Eine Queue nie löschen, während ein Worker sie konsumiert, auch nicht,
 um sie gleich neu anzulegen. Zuerst die Worker der Queue stoppen
-(Schritt 3 oben), auch wenn eine Queue verwaist aussieht. swarmq erholt
-sich von einer gelöschten konsumierten Queue nicht selbst; stattdessen
-passiert Folgendes:
+(Schritt 3 oben), auch wenn eine Queue verwaist aussieht. Seit 0.14.0
+grenzt ein Worker eine gelöschte konsumierte Queue ein und meldet sie,
+legt sie aber nicht neu an (E-083):
 
-- Der Broker beendet den Consumer mit `basic.cancel`. Der
-  Consumer-Wächter meldet ihn neu an, und das `basic.consume` scheitert
-  an `NOT_FOUND`. Der Broker schließt dabei den Kanal, und alle Consumer
-  eines Workers teilen sich diesen einen Consume-Kanal. **Alle Queues
-  des Workers** stehen still, nicht nur die gelöschte. Der Wächter loggt
-  `consumer_reregister_failed` und danach in jedem Takt
-  `consumer_watch_tick_failed`.
-- Nach `SWARMQ_CONSUMER_READY_GRACE_S` wird `/ready` rot. Sein Eintrag
-  `consumers` nennt nur die gelöschte Queue, obwohl die anderen Queues
-  des Workers ebenfalls stillstehen.
-- Der nächste Reconnect scheitert alle 5 s an der fehlenden Queue. Mit
-  `SWARMQ_BROKER_PUBLISH_CONNECTION=separate` (Default) betrifft das nur
-  die Consume-Verbindung; Publizieren funktioniert weiter. Mit `shared`
-  kommt die eine Verbindung nicht wieder, und auch Publizieren scheitert
-  (`PublishIndeterminate`, `BrokerConnectionError`).
+- Der Broker beendet den Consumer mit `basic.cancel`. Bevor der
+  Consumer-Wächter ihn neu anmeldet, prüft er passiv auf einem
+  Wegwerf-Kanal, ob es die Queue gibt. Sie fehlt, also loggt der Worker
+  einmal die ERROR `consumer_queue_missing` (Feld `queue`) und sendet
+  für sie kein `basic.consume`. Außerdem nimmt er die Queue aus der
+  Wiederherstellung von aio-pika, damit ein Reconnect sie nicht neu
+  deklariert.
+- Die übrigen Queues des Workers konsumieren weiter. Consume-Kanal und
+  Verbindung bleiben bestehen, ein Reconnect gelingt, und das
+  Publizieren läuft weiter, mit
+  `SWARMQ_BROKER_PUBLISH_CONNECTION=separate` (Default) wie mit
+  `shared`.
+- `/ready` wird sofort rot, ohne `SWARMQ_CONSUMER_READY_GRACE_S`. Sein
+  Eintrag `consumers` lautet
+  `consumed queue missing at the broker: <queue>`.
+- Der Worker fährt nicht herunter. In jedem Takt prüft der Wächter
+  erneut. Gibt es die Queue wieder, weil ein anderer Worker mit dieser
+  Queue gestartet ist oder ein Betreiber sie deklariert hat, meldet der
+  Wächter den Consumer an, loggt `consumer_reregistered` mit
+  `reason=queue_recreated`, und `/ready` wird wieder grün. Eine Queue,
+  die ein Betreiber von Hand deklariert, wird so konsumiert, wie sie
+  angelegt ist, ohne die Argumente von swarmq; ein neu gestarteter
+  Worker deklariert sie mit ihnen.
 
-Das dauert bis zum Neustart des Workers. Ein neu gestarteter Worker
-deklariert seine Queues wieder und konsumiert normal.
+Sonst läuft der Worker bis zu seinem Neustart ohne diese Queue. Ein neu
+gestarteter Worker deklariert seine Queues wieder und konsumiert
+normal.
+
+Grenzen: Prüfung und das folgende `basic.consume` sind zwei Schritte.
+Wird die Queue genau dazwischen gelöscht, während die Verbindung schon
+getrennt ist, oder kurz vor einem Reconnect, der vor dem nächsten Takt
+des Wächters kommt, scheitert `basic.consume` oder die
+Wiederherstellung von aio-pika wie vor 0.14.0 an `NOT_FOUND`: Alle
+Queues des Workers stehen still, und ein Reconnect scheitert alle 5 s.
+Dann hilft nur ein Neustart. Legt eine spätere aio-pika-Version die
+Queue-Liste eines Kanals nicht mehr offen, loggt swarmq je Kanal einmal
+die WARNING `robust_queue_release_unavailable`, und ein Reconnect
+scheitert ebenso.
 
 ## Was SwarmQ nicht tut
 

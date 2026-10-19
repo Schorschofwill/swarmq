@@ -14,6 +14,7 @@ status: gilt
 quelle:
   - Georg 2026-10-19 (PF-20, Option (b) „eingrenzen und laut scheitern“; Teilfrage „kein automatisches Herunterfahren“ vom Orchestrator entschieden, Georg kann widersprechen)
   - docs/befunde/fehlersuche-runde-4-2026-10.md (PF-20, Verdacht D der Gegenprüfung 0.14, Proben probe_d_separate und probe_d_shared)
+  - Commit 64a2f9e (0.14.0, Umsetzung mit Tests)
   - src/swarmq/broker/rabbitmq/consumer_watch.py (_queue_present, missing_queues)
   - src/swarmq/broker/rabbitmq/robust_channels.py (release_queue, readmit_queue)
   - src/swarmq/broker/rabbitmq/connection.py (_consume_queue_exists)

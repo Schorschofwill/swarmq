@@ -20,7 +20,11 @@ swarmq geschlossen oder verworfen hat (F4-20), ein Publish oder
 Worker-Start, der auf den Reconnect gewartet hat, nutzt den Kanal, den
 aio-pika wiederherstellt, statt einen zweiten zu öffnen (F4-22), und
 ein Publish, der im Ressourcenalarm wartet, wird nach einem Verbindungsabriss mit dem
-Reconnect gesendet, statt bis zu seiner Frist zu warten (F4-21). Keine
+Reconnect gesendet, statt bis zu seiner Frist zu warten (F4-21). Eine
+konsumierte Queue, die bei laufendem Worker gelöscht wird, legt die
+übrigen Queues des Workers nicht mehr still: Der Consumer-Wächter
+meldet sie als `consumer_queue_missing`, hält `/ready` rot und lässt die
+übrigen Queues und die Verbindung heil (PF-20). Keine
 neuen Header, Lua-Skripte, Key-Formate oder
 Formatänderungen: 0.14.0 läuft neben 0.13.x auf denselben Queues und
 Keys, in beide Richtungen, und ein Rollback auf 0.13.1 ist möglich.
@@ -32,7 +36,8 @@ Mischbetrieb ist gegen 0.13.1 getestet, daneben gegen 0.11.0, 0.11.1,
 derselben Broker-Version wie Integrationstests, CI und Loadsuite;
 Toxiproxy ist auf `ghcr.io/shopify/toxiproxy:2.9.0` gepinnt. Lies die
 Upgrade-Hinweise: Fehlertext beim Verbinden, Fehlerzeiten, Abbruch,
-die Logzeilen im Alarm und die Kanalzahl beim Broker ändern sich.
+die Logzeilen im Alarm, die Kanalzahl beim Broker und das Verhalten
+nach dem Löschen einer konsumierten Queue ändern sich.
 
 ### Upgrade-Hinweise
 
@@ -170,6 +175,34 @@ die Logzeilen im Alarm und die Kanalzahl beim Broker ändern sich.
    swarmq je Verbindung einmal die WARNING
    `robust_channel_release_unavailable` und verhält sich wie vor 0.14
    ([Event-Katalog](logging.md#event-katalog), E-078).
+8. **Eine gelöschte konsumierte Queue wird eingegrenzt und gemeldet.**
+   Wird eine Queue gelöscht, die ein laufender Worker konsumiert, prüft
+   der Consumer-Wächter jetzt passiv auf einem Wegwerf-Kanal, ob es die
+   Queue gibt, bevor er den Consumer neu anmeldet. Fehlt sie, loggt der
+   Worker einmal die ERROR `consumer_queue_missing` (Feld `queue`),
+   sendet für sie kein `basic.consume` und nimmt sie aus der
+   Wiederherstellung von aio-pika, damit ein Reconnect sie nicht neu
+   deklariert. Seine übrigen Queues konsumieren weiter, die Verbindung
+   bleibt bestehen und das Publizieren läuft weiter, mit beiden Werten
+   von `SWARMQ_BROKER_PUBLISH_CONNECTION`. Bisher standen alle Queues
+   des Workers still, in jedem Takt kam `consumer_watch_tick_failed`,
+   und ein Reconnect scheiterte alle 5 s an `NOT_FOUND` (mit `shared`
+   auch das Publizieren). `/ready` wird sofort rot, ohne
+   `SWARMQ_CONSUMER_READY_GRACE_S`, mit
+   `consumed queue missing at the broker: <queue>` unter `consumers`;
+   bisher wurde es erst nach der Gnadenfrist rot, mit
+   `no active consumer for more than …`. Der Worker fährt nicht herunter
+   und legt die Queue nicht neu an. Gibt es die Queue wieder (ein
+   anderer Worker mit dieser Queue startet, oder ein Betreiber
+   deklariert sie), meldet der Wächter den Consumer binnen eines Takts
+   wieder an und loggt `consumer_reregistered` mit dem neuen
+   `reason=queue_recreated`; sonst den Worker neu starten. Einen Alarm
+   auf `consumer_queue_missing` anlegen. Legt eine spätere
+   aio-pika-Version die Queue-Liste eines Kanals nicht mehr offen, loggt
+   swarmq je Kanal einmal die WARNING `robust_queue_release_unavailable`,
+   und ein Reconnect scheitert wie bisher
+   ([Konsumierte Queue löschen](../explanation/delivery-semantics.md#konsumierte-queue-loschen),
+   E-083).
 
 ### Behoben
 
@@ -227,6 +260,12 @@ die Logzeilen im Alarm und die Kanalzahl beim Broker ändern sich.
   Publish-Kanals auf `connection.unblocked`**, höchstens die
   Publish-Frist. Kein Kanal bleibt zurück, keine Kanalnummer wird
   doppelt vergeben. Siehe Upgrade-Hinweis 4 (E-025, E-078).
+- **PF-20: Eine gelöschte konsumierte Queue legt die übrigen Queues des
+  Workers nicht mehr still.** Der Consumer-Wächter prüft die Queue
+  passiv, bevor er einen Consumer neu anmeldet; eine fehlende Queue
+  wird gemeldet (`consumer_queue_missing`, `/ready`), aus der
+  Wiederherstellung genommen und wieder konsumiert, sobald es sie
+  wieder gibt. Siehe Upgrade-Hinweis 8 (E-083).
 
 ### Dokumentation
 
@@ -240,19 +279,21 @@ die Logzeilen im Alarm und die Kanalzahl beim Broker ändern sich.
   `publish_channel_close_incomplete` und die aiormq-Zeile
   `Got frame for closed channel` erscheinen laut Katalog nur noch,
   wenn der Alarm länger dauert als die Publish-Frist. Neu ist die
-  WARNING `robust_channel_release_unavailable` (F4-20).
+  WARNING `robust_channel_release_unavailable` (F4-20), dazu die ERROR
+  `consumer_queue_missing`, die WARNING
+  `robust_queue_release_unavailable` und der Grund `queue_recreated`
+  von `consumer_reregistered` (PF-20).
 - **API-Referenz:** Vertragshinweise für 0.14.0 zu
   `ResultBackend.connect`/`close`, `LockStore.force_release` und
   `Publisher.publish` (`PublishCancelledUnsent`).
 - **Fehlerkatalog:** `PublishCancelledUnsent`, das zurückgestellte
   Schließen des Kanals unter `BrokerPublishBlocked` und was ein
   Verbindungsabriss beim Warten auf die Freigabe bewirkt (F4-21).
-- **Zustellsemantik:** Eine konsumierte Queue nie bei laufenden Workern
-  löschen. Die gescheiterte Neuanmeldung schließt den gemeinsamen
-  Consume-Kanal; alle Queues des Workers stehen dann still (mit
-  `SWARMQ_BROKER_PUBLISH_CONNECTION=shared` auch das Publizieren) bis zum Neustart,
-  und `/ready` wird rot, nennt aber nur die gelöschte Queue
-  ([Queue-Argumente ändern](../explanation/delivery-semantics.md#queue-argumente-andern)).
+- **Zustellsemantik und Deployment-Anleitung:** was passiert, wenn
+  eine konsumierte Queue bei laufenden Workern gelöscht wird, und dass
+  man zum Löschen oder Neuanlegen einer Queue weiterhin zuerst die
+  Worker stoppt
+  ([Konsumierte Queue löschen](../explanation/delivery-semantics.md#konsumierte-queue-loschen)).
 
 ## [0.13.1] — 2026-10-19
 

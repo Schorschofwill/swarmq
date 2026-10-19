@@ -230,9 +230,10 @@ worker logs `delay_tier_unavailable`, uses `{queue}.DQ` for it and sets
   `QueueArgumentsMismatch` (exit `78`); migrate the queue
   ([changing queue arguments](../explanation/delivery-semantics.md#changing-queue-arguments)).
 - **Never delete a queue that a running worker consumes**, also not one
-  that looks orphaned. It stops every queue of that worker until it
-  restarts, with `SWARMQ_BROKER_PUBLISH_CONNECTION=shared` publishing as
-  well, and `/ready` names only the deleted queue
+  that looks orphaned. The worker stops consuming it, logs the ERROR
+  `consumer_queue_missing` and stays not ready (`/ready` names the
+  queue) until it restarts or the queue exists again; its other queues
+  keep running. Alert on `consumer_queue_missing`
   ([deleting a consumed queue](../explanation/delivery-semantics.md#deleting-a-consumed-queue)).
 
 ### Connections
