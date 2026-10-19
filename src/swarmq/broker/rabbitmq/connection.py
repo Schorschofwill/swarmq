@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any
 
 import aio_pika
@@ -112,6 +112,26 @@ async def close_channel_quietly(channel: aio_pika.abc.AbstractChannel | None) ->
         await channel.close()
     except Exception:  # noqa: BLE001, S110 - Schliessen best effort
         pass
+
+
+async def _restored_in_time(channel: aio_pika.abc.AbstractChannel) -> bool:
+    """Wartet, bis aio-pika einen geschlossenen ``RobustChannel`` selbst
+    wiederhergestellt hat, hoechstens ``_CHANNEL_READY_TIMEOUT_S`` (F4-22).
+
+    aio-pika setzt nach einem Reconnect zuerst ``connected`` und stellt danach
+    die Kanaele aus einer Tupel-Kopie ihres ``WeakSet`` wieder her. Wer auf
+    ``connection.ready()`` gewartet hat, wacht in diesem Fenster auf und sieht
+    den Kanal noch ``is_closed``. Ein Ersatz liesse den alten trotzdem
+    wiederherstellen; aiormq hielte ihn stark, jeder weitere Reconnect brachte
+    ihn zurueck. Auf dem Consume-Kanal haengen ausserdem die Consumer der
+    frueheren Queues (ihre ``RobustQueue`` ist an ihn gebunden)."""
+    if not isinstance(channel, aio_pika.RobustChannel):
+        return False
+    try:
+        await asyncio.wait_for(channel.ready(), timeout=_CHANNEL_READY_TIMEOUT_S)
+    except TimeoutError:
+        return False
+    return not channel.is_closed
 
 
 async def _connect_robust_closing_on_cancel(url: str) -> aio_pika.abc.AbstractRobustConnection:
@@ -551,9 +571,50 @@ class RabbitMQConnection:
         # Vor dem Close abmelden: Ein Reconnect, waehrend das Close im Alarm
         # wartet, oeffnete den verworfenen Kanal sonst wieder (F4-20).
         release_channel(self._connection, current)
-        task = asyncio.create_task(self._close_channel_detached(current, blocked_close_waiters(self._connection)))
+        self._track_channel_close(self._close_channel_detached(current, blocked_close_waiters(self._connection)))
+
+    def _track_channel_close(self, close: Coroutine[Any, Any, None]) -> None:
+        """Startet ein nebenlaeufiges Schliessen als Task; ``close()`` sammelt ihn ein."""
+        task = asyncio.create_task(close)
         self._pending_channel_closes.add(task)
         task.add_done_callback(self._pending_channel_closes.discard)
+
+    def _retire_replaced_channel(
+        self, connection: aio_pika.abc.AbstractConnection, channel: aio_pika.abc.AbstractChannel
+    ) -> None:
+        """Raeumt einen Publish-Kanal ab, den ``_ensure_channel_tracked`` ersetzt
+        hat, weil aio-pika ihn nicht in der Frist wiederhergestellt hat (F4-22).
+
+        Abmelden allein genuegt nicht: Eine laufende Wiederherstellung arbeitet
+        auf einer Tupel-Kopie des ``WeakSet`` und oeffnet den Kanal trotzdem
+        neu, ebenso der Selbst-Restore nach einem Kanalfehler. Jedes spaete
+        Wiederoeffnen meldet ``reopen_callbacks`` (oeffentliches API); dann wird
+        der Kanal wieder geschlossen (``_close_after_restore``), ebenso, wenn er
+        schon wieder offen ist."""
+        if not isinstance(channel, aio_pika.RobustChannel):
+            return
+        release_channel(connection, channel)
+
+        def _close_when_reopened(_channel: object) -> None:
+            self._track_channel_close(self._close_after_restore(channel))
+
+        channel.reopen_callbacks.add(_close_when_reopened)
+        if not channel.is_closed:
+            # Waehrend der Ersatz aufging, ist der Restore doch noch fertig geworden.
+            _close_when_reopened(channel)
+
+    async def _close_after_restore(self, channel: aio_pika.RobustChannel) -> None:
+        """Schliesst einen wieder geoeffneten, ersetzten Kanal, erst nach dem
+        Ende seiner Wiederherstellung.
+
+        ``reopen_callbacks`` laufen mitten in ``RobustChannel.restore()``, nach
+        dem Oeffnen; ``restore()`` setzt das Restored-Event erst einen Schritt
+        der Event-Loop spaeter noch einmal. Ein Close davor liesse aio-pikas
+        ``_on_close`` den Kanal gleich wieder oeffnen. Darum ein Schritt
+        Abstand vor dem Close. Ist die Verbindung bis dahin wieder weg, ist der
+        Kanal zu und kommt nicht wieder (abgemeldet)."""
+        await asyncio.sleep(0)
+        await self._close_channel_detached(channel, None)
 
     async def _close_channel_detached(
         self,
@@ -645,6 +706,9 @@ class RabbitMQConnection:
                     f"connection not ready after {_CHANNEL_READY_TIMEOUT_S}s "
                     f"(reopening {attr!r} on {sanitize_url(self._url)!r})"
                 ) from exc
+            replaced = channel
+            if replaced is not None and await _restored_in_time(replaced):
+                return replaced, False
             try:
                 if attr == "_publish_channel" and self._publish_channel_factory is not None:
                     channel = await self._publish_channel_factory()
@@ -667,6 +731,8 @@ class RabbitMQConnection:
                     f"channel reopen failed for {attr!r} on {sanitize_url(self._url)!r}: {exc}"
                 ) from exc
             setattr(self, attr, channel)
+            if replaced is not None and attr == "_publish_channel":
+                self._retire_replaced_channel(connection, replaced)
             return channel, True
 
     def _admin_connection(self) -> aio_pika.abc.AbstractConnection | None:
