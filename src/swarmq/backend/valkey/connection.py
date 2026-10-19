@@ -139,6 +139,49 @@ class _HandshakeReset(ValkeyConnectionError):
     TCP-Aufbau (Proxy oder Sidecar vor einem neu startenden Valkey; F4-14)."""
 
 
+class _TcpConnectTimeout(Exception):
+    """Der TCP-Aufbau einer Pool-Verbindung lief in ``socket_connect_timeout``
+    (Host verwirft Pakete; PF-16 b, Variante c, Nachtrag 0.14 zu E-075).
+
+    Weder ``OSError`` noch ``ValkeyError``: valkey-py wiederholt sie in
+    ``Connection.connect`` nicht und wickelt sie dort in ``ConnectionError``;
+    die Befehls-Retry wiederholt diesen wie bisher."""
+
+
+def _mark_tcp_connect_timeouts(connection: Any) -> Any:
+    """Macht einen Zeitablauf beim TCP-Aufbau von *connection* zu
+    ``_TcpConnectTimeout``, damit die innere Wiederholung des
+    Verbindungsaufbaus ihn nicht wiederholt (sonst Befehls- mal
+    Verbindungsversuche: 30 statt 6). Ein abgewiesener Port bleibt ein
+    ``OSError`` und wird weiter fuenfmal wiederholt. Haengt an der privaten
+    ``Connection._connect`` von valkey-py (6.1.1, Upgrade-Checkliste)."""
+    # Ein Verbindungsersatz ohne ``_connect`` (Tests an der Grenze
+    # ``make_connection``) bleibt, wie er ist.
+    tcp_connect = getattr(connection, "_connect", None)
+    if tcp_connect is None:
+        return connection
+
+    async def tcp_connect_marking_timeouts() -> None:
+        try:
+            await tcp_connect()
+        except TimeoutError as exc:
+            msg = "Timeout connecting to server"
+            raise _TcpConnectTimeout(msg) from exc
+
+    connection._connect = tcp_connect_marking_timeouts
+    return connection
+
+
+def _caused_by_tcp_connect_timeout(exc: BaseException) -> bool:
+    """``_TcpConnectTimeout`` steht in der Ursachenkette von *exc*."""
+    cause: BaseException | None = exc
+    while cause is not None:
+        if isinstance(cause, _TcpConnectTimeout):
+            return True
+        cause = cause.__cause__
+    return False
+
+
 def _mark_handshake_resets(connection: Any) -> Any:
     """Markiert einen Transportfehler im Handshake von *connection* als
     ``_HandshakeReset``, damit ``_retry_handshake`` ihn wiederholt.
@@ -188,7 +231,7 @@ def _retry_handshake(pool: Any) -> None:
     def make_marked_connection() -> Any:
         # Ueber die Klasse erst beim Aufruf: ein Pool-Ersatz ohne
         # ``make_connection`` laesst sich weiter bauen.
-        return _mark_handshake_resets(type(pool).make_connection(pool))
+        return _mark_handshake_resets(_mark_tcp_connect_timeouts(type(pool).make_connection(pool)))
 
     async def get_connection_with_retry(*args: Any, **kwargs: Any) -> Any:
         first_failure: float | None = None
@@ -397,11 +440,10 @@ class ValkeyConnection:
             deadline = asyncio.timeout(self._connect_timeout_s)
             try:
                 async with deadline:
-                    await client.ping()
+                    await self._ping_until_deadline(client)
             except (ValkeyError, OSError) as exc:
                 if deadline.expired():
-                    msg = f"Valkey connect timed out after {self._connect_timeout_s}s"
-                    raise BackendConnectionError(msg) from exc
+                    raise self._connect_timed_out() from exc
                 # F4-12: jeder Treiberfehler typisiert, auch Zeitablauf und
                 # Fehlerantwort auf PING (Vertrag ``ResultBackend.connect``).
                 raise as_backend_error(f"Valkey connect failed: {exc}", exc) from exc
@@ -414,6 +456,30 @@ class ValkeyConnection:
             if not connected:
                 await _close_quietly(client)
         self._client = client
+
+    def _connect_timed_out(self) -> BackendConnectionError:
+        return BackendConnectionError(f"Valkey connect timed out after {self._connect_timeout_s}s")
+
+    async def _ping_until_deadline(self, client: valkey.asyncio.Valkey) -> None:
+        """PING; nach einem Zeitablauf beim TCP-Aufbau erneut, bis die
+        Gesamtfrist erreicht ist (PF-16 b, Variante c, Nachtrag 0.14 zu
+        E-075). Jeder andere Fehler endet sofort. Das aeussere
+        ``asyncio.timeout`` bleibt der harte Deckel."""
+        backoff = ExponentialBackoff(cap=_RETRY_BACKOFF_CAP_S, base=_RETRY_BACKOFF_BASE_S)
+        started = _monotonic()
+        failures = 0
+        while True:
+            try:
+                await client.ping()
+            except ValkeyConnectionError as exc:
+                if not _caused_by_tcp_connect_timeout(exc):
+                    raise
+                if _monotonic() - started >= self._connect_timeout_s:
+                    raise self._connect_timed_out() from exc
+                failures += 1
+                await _sleep(backoff.compute(failures))
+            else:
+                return
 
     def _build_client(self) -> valkey.asyncio.Valkey:
         # Reliability hardening (2026-04-17 toxiproxy spike): command-
