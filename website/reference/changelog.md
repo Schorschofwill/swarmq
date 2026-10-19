@@ -11,9 +11,14 @@ whose step succeeded stayed `running` until its TTL (a lasting error
 reply in the chord script), and keeps the `unique_for` claim when a
 `schedule()` call is cancelled while its outcome is unknown. Both were
 decided for 0.13.1 before 0.13.0 final. It also rejects values that
-never worked: `soft_timeout` and `hard_timeout` must be greater than 0,
-`delay` and `eta` finite and at most ten years ahead. Install with
-`pip install 'swarmq==0.13.*'`.
+never worked (`soft_timeout` and `hard_timeout` ≤ 0, `nan` or not a
+number; `delay=nan`/`inf`), and bounds `delay`, `eta` and `--at` to ten
+years ahead. A more distant `eta` used to be stored and would have
+fired; this bound is a behaviour change. No new headers, Lua scripts or
+format changes: 0.13.1 runs next to 0.13.0 on the same queues and keys,
+in both directions. In mixed operation the worker that handles the
+delivery at the limit decides whether the workflow becomes `failed`.
+Install with `pip install 'swarmq==0.13.*'`.
 
 ### Upgrade notes
 
@@ -65,17 +70,21 @@ never worked: `soft_timeout` and `hard_timeout` must be greater than 0,
    worked: `soft_timeout=nan` could crash the worker's event loop, a
    value `<= 0` cancelled every run at once, and `hard_timeout <= -30`
    with a `lock` gave a lock TTL `<= 0`, so the message went round
-   until the delivery limit (E-063).
+   until the delivery limit (E-063). Such a value now stops the whole
+   worker or producer start (exit 1), even if the task is never called.
+   Check before the rollout with `swarmq worker --check` or
+   `swarmq inspect --module`.
 5. **`delay` and `eta` are finite and bounded.** `schedule(delay=…)`
    rejects `nan`, `inf` and values above `315360000` seconds (ten
    years), `schedule(eta=…)` an `eta` more than `315360000` seconds
    ahead, and `swarmq schedule add --at` such a time (exit `1`). The
    `ValueError` comes before `pre_enqueue`, any claim, publish or write.
-   Before, `delay=nan` published at once without a delay, `delay=inf`
-   raised a raw `OverflowError`, and a distant `eta` or `--at` was
-   stored (a large `delay` or `eta` could then break
-   `swarmq schedule list`). `delay < 0` stays an
-   error; a naive `eta` is still read as local time (E-080).
+   Before, `delay=nan` published at once without a delay and
+   `delay=inf` raised a raw `OverflowError`. An `eta` or `--at` more
+   than ten years ahead was stored and fired at the set time, as did a
+   `delay` above ten years; such calls now fail with `ValueError` or
+   exit 1. `delay < 0` stays an error; a naive `eta` is still read as
+   local time (E-080).
 
 ### Fixed
 
@@ -94,6 +103,25 @@ never worked: `soft_timeout` and `hard_timeout` must be greater than 0,
   `ValueError` and `run_forever` stopped. See upgrade note 4 (E-063).
 - **`schedule(delay=float("nan"))` no longer publishes at once.** See
   upgrade note 5 (E-080).
+- **F4-19: `Retry(delay=…)` above ten years no longer bypasses
+  `max_retries`.** `retry_max_delay` caps only the computed backoff; an
+  explicit `Retry` delay went through unchecked. Above `315360000`
+  seconds RabbitMQ rejects the expiration of the delay copy with
+  `PRECONDITION_FAILED` and closes the shared publish channel (parallel
+  publishes become indeterminate); the fallback redelivered the message
+  without counting it against `max_retries`, so the task ran again up
+  to the delivery limit. From about `1.8e305` the conversion to
+  milliseconds raised `OverflowError` and left the delivery
+  unacknowledged. `Retry` now rejects such a delay with `ValueError`,
+  like `inf` and `nan`; the exact bound stays allowed. Raised in a task,
+  the `ValueError` is an ordinary task error (`retry_exceptions`,
+  backoff, counts against `max_retries`) (E-060).
+- **The Valkey replies `BUSY` and `NOREPLICAS` count as an outage.** A
+  long-running script (`BUSY`) and too few replicas for
+  `min-replicas-to-write` (`NOREPLICAS`) heal by waiting, like `OOM`.
+  Until now they were a `BackendResponseError`; with upgrade note 2 a
+  `FIRE_AND_FORGET` workflow would have failed at once, and with upgrade
+  note 1 an `AT_LEAST_ONCE` workflow at the delivery limit (E-079).
 
 ## [0.13.0] — 2026-10-19
 

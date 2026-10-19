@@ -11,9 +11,15 @@ Workflow mit erfolgreichem Schritt bis zu seiner TTL `running` blieb
 (eine dauerhafte Fehlerantwort im Chord-Skript), und hält den
 `unique_for`-Claim, wenn ein `schedule()`-Aufruf bei unbestimmtem
 Ausgang abgebrochen wird. Beides war vor 0.13.0 final für 0.13.1
-entschieden. Außerdem lehnt es Werte ab, die nie funktionierten:
-`soft_timeout` und `hard_timeout` müssen größer als 0 sein, `delay` und
-`eta` endlich und höchstens zehn Jahre voraus. Installation mit `pip install 'swarmq==0.13.*'`.
+entschieden. Außerdem lehnt es Werte ab, die nie funktionierten
+(`soft_timeout` und `hard_timeout` ≤ 0, `nan` oder keine Zahl;
+`delay=nan`/`inf`), und begrenzt `delay`, `eta` und `--at` auf zehn
+Jahre voraus. Ein ferneres `eta` wurde bisher gespeichert und hätte
+gefeuert; diese Grenze ist eine Verhaltensänderung. Keine neuen Header,
+Lua-Skripte oder Formatänderungen: 0.13.1 läuft neben 0.13.0 auf
+denselben Queues und Keys, in beide Richtungen. Im Mischbetrieb
+entscheidet der Worker, der die Zustellung am Limit bearbeitet, ob der
+Workflow `failed` wird. Installation mit `pip install 'swarmq==0.13.*'`.
 
 ### Upgrade-Hinweise
 
@@ -70,17 +76,22 @@ entschieden. Außerdem lehnt es Werte ab, die nie funktionierten:
    den Event-Loop des Workers abstürzen lassen, ein Wert `<= 0` brach
    jeden Lauf sofort ab, und `hard_timeout <= -30` mit `lock` ergab eine
    Lock-TTL `<= 0`, sodass die Nachricht bis zum Zustelllimit kreiste
-   (E-063).
+   (E-063). Ein solcher Wert hält jetzt den ganzen Worker- oder
+   Producer-Start an (Exit 1), auch wenn der Task nie aufgerufen wird.
+   Vor dem Rollout mit `swarmq worker --check` bzw.
+   `swarmq inspect --module` prüfen.
 5. **`delay` und `eta` sind endlich und begrenzt.** `schedule(delay=…)`
    lehnt `nan`, `inf` und Werte über `315360000` Sekunden (zehn Jahre)
    ab, `schedule(eta=…)` ein `eta` mehr als `315360000` Sekunden voraus
    und `swarmq schedule add --at` eine solche Zeit (Exit `1`). Der
    `ValueError` kommt vor `pre_enqueue`, jedem Claim, Publish oder
    Schreiben. Bisher veröffentlichte `delay=nan` sofort ohne
-   Verzögerung, `delay=inf` warf einen rohen `OverflowError`, und ein
-   fernes `eta` oder `--at` wurde gespeichert (ein großes `delay` oder
-   `eta` konnte danach `swarmq schedule list` scheitern lassen). `delay < 0` bleibt ein Fehler; ein
-   naives `eta` gilt weiter als Ortszeit (E-080).
+   Verzögerung, und `delay=inf` warf einen rohen `OverflowError`. Ein
+   `eta` oder `--at` mehr als zehn Jahre voraus wurde bisher gespeichert
+   und feuerte zum gesetzten Zeitpunkt, ebenso ein `delay` über zehn
+   Jahre; solche Aufrufe scheitern jetzt mit `ValueError` bzw. Exit 1.
+   `delay < 0` bleibt ein Fehler; ein naives `eta` gilt weiter als
+   Ortszeit (E-080).
 
 ### Behoben
 
@@ -100,6 +111,27 @@ entschieden. Außerdem lehnt es Werte ab, die nie funktionierten:
   (E-063).
 - **`schedule(delay=float("nan"))` veröffentlicht nicht mehr sofort.**
   Siehe Upgrade-Hinweis 5 (E-080).
+- **F4-19: `Retry(delay=…)` über zehn Jahre umgeht `max_retries` nicht
+  mehr.** `retry_max_delay` deckelt nur den berechneten Backoff; eine
+  ausdrückliche `Retry`-Wartezeit ging ungeprüft durch. Über
+  `315360000` Sekunden lehnt RabbitMQ die Expiration der Delay-Kopie mit
+  `PRECONDITION_FAILED` ab und schließt den gemeinsamen Publish-Kanal
+  (parallele Publishes werden unbestimmt); der Rückfall stellte die
+  Nachricht neu zu, ohne gegen `max_retries` zu zählen, und der Task
+  lief bis zum Zustelllimit erneut. Ab etwa `1.8e305` warf die
+  Umrechnung in Millisekunden einen `OverflowError`, und die Zustellung
+  blieb unbestätigt. `Retry` lehnt eine solche Wartezeit jetzt mit
+  `ValueError` ab, wie `inf` und `nan`; der genaue Grenzwert bleibt
+  erlaubt. In einem Task geworfen, ist der `ValueError` ein gewöhnlicher
+  Task-Fehler (`retry_exceptions`, Backoff, zählt gegen `max_retries`)
+  (E-060).
+- **Die Valkey-Antworten `BUSY` und `NOREPLICAS` gelten als Ausfall.**
+  Ein lang laufendes Skript (`BUSY`) und zu wenige Replikate für
+  `min-replicas-to-write` (`NOREPLICAS`) heilen durch Warten, wie `OOM`.
+  Bisher waren sie ein `BackendResponseError`; mit Upgrade-Hinweis 2
+  wäre ein `FIRE_AND_FORGET`-Workflow sofort gescheitert, mit
+  Upgrade-Hinweis 1 ein `AT_LEAST_ONCE`-Workflow am Zustelllimit
+  (E-079).
 
 ## [0.13.0] — 2026-10-19
 
