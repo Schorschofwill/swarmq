@@ -43,10 +43,15 @@ from swarmq.contracts.coordination import LockToken
 from swarmq.supervision import SupervisorChannel, set_current_channel
 from swarmq.worker import WorkerState
 from swarmq.worker import lifecycle as _lc
+from tests.support.virtual_time import on_virtual_clock
 
-# Enge Zeitbudgets gegen die echte Uhr: unter paralleler Last gerissen
-# (CI und Stresslauf 2026-10-16), daher im seriellen Durchgang (``timing``).
-pytestmark = [pytest.mark.timeout(5), pytest.mark.timing]
+# Alle Tests laufen auf der virtuellen Loop-Uhr (``on_virtual_clock``, 0.14):
+# Die Zeit springt nur vor, wenn die Loop wartet; Planungsverzug unter Last
+# verschiebt keine Frist mehr. Vorher rissen die engen Budgets gegen die echte
+# Uhr unter paralleler Last (CI und Stresslauf 2026-10-16, Coverage-Lauf
+# 2026-10-19 mit Seed 4130427543). Ein serieller Durchgang (``timing``) ist
+# deshalb nicht mehr noetig.
+pytestmark = [pytest.mark.timeout(5)]
 
 
 def _hang(worker: Any) -> asyncio.Task[bool]:
@@ -57,6 +62,7 @@ def _hang(worker: Any) -> asyncio.Task[bool]:
 
 
 @pytest.mark.entscheidung("E-018")
+@on_virtual_clock
 async def test_supervised_drain_ends_before_the_supervisor_kills(worker: Any) -> None:
     loop = asyncio.get_running_loop()
     worker._config.shutdown_timeout = 0.2  # SIGKILL des Supervisors bei 0.1 s, Drain bis 0.05 s
@@ -92,6 +98,7 @@ async def _shutdown_within(worker: Any, seconds: float) -> None:
     await asyncio.wait_for(worker._execute_shutdown(), seconds)
 
 
+@on_virtual_clock
 async def test_hanging_scheduler_stop_is_bounded(worker: Any, broker: Any, backend: Any, short_steps: None) -> None:
     worker._config.shutdown_timeout = 0.04
     scheduler = AsyncMock()
@@ -104,6 +111,7 @@ async def test_hanging_scheduler_stop_is_bounded(worker: Any, broker: Any, backe
     backend.close.assert_awaited()
 
 
+@on_virtual_clock
 async def test_scheduler_is_aborted_when_its_stop_hangs(worker: Any, short_steps: None) -> None:
     worker._config.shutdown_timeout = 0.04
     scheduler = AsyncMock()
@@ -115,6 +123,7 @@ async def test_scheduler_is_aborted_when_its_stop_hangs(worker: Any, short_steps
     scheduler.abort.assert_awaited_once()
 
 
+@on_virtual_clock
 async def test_hanging_lock_release_is_bounded_and_the_keeper_still_closes(
     worker: Any, short_steps: None, swarmq_logs: list[dict[str, Any]]
 ) -> None:
@@ -133,6 +142,7 @@ async def test_hanging_lock_release_is_bounded_and_the_keeper_still_closes(
     assert [e for e in swarmq_logs if e["event"] == "shutdown_lock_release_failed"]
 
 
+@on_virtual_clock
 async def test_hanging_execution_guard_drain_is_bounded(
     worker: Any, short_steps: None, swarmq_logs: list[dict[str, Any]]
 ) -> None:
@@ -148,6 +158,7 @@ async def test_hanging_execution_guard_drain_is_bounded(
     assert event["step"] == "execution_guard_drain"
 
 
+@on_virtual_clock
 async def test_waiting_for_detached_releases_is_bounded_by_the_budget(worker: Any, short_steps: None) -> None:
     worker._config.shutdown_timeout = 0.04
     detached = asyncio.create_task(_forever())
@@ -159,6 +170,7 @@ async def test_waiting_for_detached_releases_is_bounded_by_the_budget(worker: An
 
 
 @pytest.mark.entscheidung("E-018")
+@on_virtual_clock
 async def test_hanging_broker_close_is_bounded_and_the_backend_still_closes(
     worker: Any, broker: Any, backend: Any, short_steps: None
 ) -> None:
@@ -170,6 +182,7 @@ async def test_hanging_broker_close_is_bounded_and_the_backend_still_closes(
     backend.close.assert_awaited_once()
 
 
+@on_virtual_clock
 async def test_hanging_backend_close_is_bounded(worker: Any, backend: Any, short_steps: None) -> None:
     worker._config.shutdown_timeout = 0.04
     backend.close.side_effect = _forever
@@ -179,6 +192,7 @@ async def test_hanging_backend_close_is_bounded(worker: Any, backend: Any, short
     assert worker._state is WorkerState.STOPPED
 
 
+@on_virtual_clock
 async def test_hanging_executor_close_is_bounded(worker: Any, short_steps: None) -> None:
     worker._config.shutdown_timeout = 0.04
     worker._close_executor = _forever
@@ -190,6 +204,7 @@ async def test_hanging_executor_close_is_bounded(worker: Any, short_steps: None)
     worker._lock_manager.release.assert_awaited_once()
 
 
+@on_virtual_clock
 async def test_hanging_di_container_close_is_bounded(
     worker: Any, broker: Any, monkeypatch: pytest.MonkeyPatch, short_steps: None
 ) -> None:
@@ -203,6 +218,7 @@ async def test_hanging_di_container_close_is_bounded(
     broker.close.assert_awaited_once()
 
 
+@on_virtual_clock
 async def test_waiting_for_a_task_that_ignores_cancellation_is_bounded(worker: Any, short_steps: None) -> None:
     loop = asyncio.get_running_loop()
     worker._config.shutdown_timeout = 0.04
@@ -227,6 +243,7 @@ async def test_waiting_for_a_task_that_ignores_cancellation_is_bounded(worker: A
 
 
 @pytest.mark.entscheidung("E-018")
+@on_virtual_clock
 async def test_recycling_drain_is_exempt_from_the_budget(worker: Any) -> None:
     worker._config.shutdown_timeout = 0.01
     worker._drain_timeout_override = 2.0
@@ -247,6 +264,7 @@ async def test_recycling_drain_is_exempt_from_the_budget(worker: Any) -> None:
 
 
 @pytest.mark.entscheidung("E-018")
+@on_virtual_clock
 async def test_exhausted_budget_still_gives_each_step_the_floor(worker: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_lc, "_SHUTDOWN_STEP_MIN_S", 0.5)
     worker._config.shutdown_timeout = 0.001
@@ -265,6 +283,7 @@ async def test_exhausted_budget_still_gives_each_step_the_floor(worker: Any, mon
 
 
 @pytest.mark.entscheidung("E-053")
+@on_virtual_clock
 async def test_hanging_cancel_consume_is_bounded_without_aborting_it(
     worker: Any, broker: Any, short_steps: None, swarmq_logs: list[dict[str, Any]]
 ) -> None:
@@ -297,6 +316,7 @@ async def test_hanging_cancel_consume_is_bounded_without_aborting_it(
     assert finished == [True]
 
 
+@on_virtual_clock
 async def test_cancel_consume_failing_after_the_drain_gave_up_is_still_logged(
     worker: Any, broker: Any, short_steps: None, swarmq_logs: list[dict[str, Any]]
 ) -> None:
@@ -323,6 +343,7 @@ async def test_cancel_consume_failing_after_the_drain_gave_up_is_still_logged(
 
 
 @pytest.mark.entscheidung("E-050")
+@on_virtual_clock
 async def test_a_delivery_after_the_drain_snapshot_is_drained_too(worker: Any, broker: Any, short_steps: None) -> None:
     """Review U10: Ein spaet angemeldeter Consumer (oder ein aufgegebenes
     ``cancel_consume``) startet waehrend des Drains noch einen Handler. Der
@@ -361,6 +382,7 @@ async def test_a_delivery_after_the_drain_snapshot_is_drained_too(worker: Any, b
 
 
 @pytest.mark.entscheidung("E-050")
+@on_virtual_clock
 async def test_a_late_delivery_beside_a_long_runner_is_cancelled_at_the_drain_end(
     worker: Any, broker: Any, short_steps: None
 ) -> None:
@@ -381,6 +403,7 @@ async def test_a_late_delivery_beside_a_long_runner_is_cancelled_at_the_drain_en
     assert late[0].cancelled()
 
 
+@on_virtual_clock
 async def test_cancel_consume_gets_the_floor_when_the_drain_is_exhausted(
     worker: Any, broker: Any, monkeypatch: pytest.MonkeyPatch, swarmq_logs: list[dict[str, Any]]
 ) -> None:
