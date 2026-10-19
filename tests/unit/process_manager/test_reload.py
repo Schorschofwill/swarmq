@@ -41,8 +41,8 @@ Tests der echten Probe stehen in
 from __future__ import annotations
 
 import json
-import os
 import signal
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -312,7 +312,12 @@ def test_without_execvpe_the_mask_is_restored_and_a_held_sigterm_delivered(signa
     pm = _pm(
         _shutdown_signal="SIGTERM",
         # SIGTERM im blockierten Fenster: bleibt anhaengig bis zur Rueckgabe.
-        _log_shutdown_signal=lambda: os.kill(os.getpid(), signal.SIGTERM),
+        # An diesen Thread, nicht an den Prozess: ein prozessweites Signal
+        # kann ein anderer Thread (xdist/execnet) annehmen, dann laeuft der
+        # Rekorder erst nach der Pruefung (CI-Pipeline 2963323353). Den
+        # Rueckweg im echten Handler (``_reexec_holds_signals``) deckt
+        # dieser Test nicht ab.
+        _log_shutdown_signal=lambda: signal.pthread_kill(threading.get_ident(), signal.SIGTERM),
     )
     with patch("swarmq.process_manager.reload.shutdown_logging"):
         assert reexec(pm, 3) == 3
