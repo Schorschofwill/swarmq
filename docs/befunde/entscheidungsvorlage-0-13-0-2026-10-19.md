@@ -210,6 +210,19 @@ als unbestimmt, der Claim bleibt, auch im sofortigen Pfad und bei
 **Empfehlung:** Jetzt **(a)**; die Variante später als **(c)**, in 0.14 mit
 Nachtrag E-075 und Toxiproxy-Test.
 
+**Stand 2026-10-19 (0.14):** (a) in 0.13.0rc2 umgesetzt (Doku). (c) umgesetzt
+auf Branch `feat/0-14` (U3, Commit `54c6bc6`, unveröffentlicht): Ein
+Zeitablauf beim TCP-Aufbau wird im Verbindungsaufbau nicht wiederholt,
+`connect()` wiederholt den `PING` danach bis zur Gesamtfrist und endet mit
+`Valkey connect timed out after …s`; ein abweisender Port endet weiter nach
+rund 3,1 s. Zur Laufzeit gemessen (skaliert, echtes SYN-Blackhole) 30 → 5
+TCP-Versuche, auf Produktionswerte 178,8 s → rund 38 s. Mit der Vorgabe 30 s
+ändert sich beim Start nichts; erst Fristen über rund 33 s warten länger.
+Festschreibend ist ein `timing`-Test mit Blackhole, weil Toxiproxy keinen
+SYN-Verwurf erzeugen kann; der Toxiproxy-Test ist Regressionswächter für den
+Fall „stumm“ (`d1b3cbf`). Nachtrag 0.14 zu E-075, Changelog 0.14.0
+Upgrade-Hinweise 1 und 2.
+
 ### 8. E-025: PF-19 (a), Kanal-Close bis `unblocked` zurückstellen (Punkt 3)
 
 **Befund:**
@@ -224,6 +237,18 @@ Nachtrag E-075 und Toxiproxy-Test.
 - Der Integrationstest hängt an PF-1 (Chaos-Stack 4.3.6).
 
 **Empfehlung:** umsetzen, aber in 0.14 zusammen mit PF-1, nicht vor final.
+
+**Stand 2026-10-19 (0.14):** umgesetzt auf Branch `feat/0-14` nach PF-1
+(Chaos-Stack 4.3.6, U5, Commit `b3b7d89`): U6, Commit `9253099`,
+unveröffentlicht. Das Close wartet bei blockierter Verbindung auf `unblocked`
+oder das Verbindungsende, höchstens die Publish-Frist. Nachtrag E-025 (3) und
+Präzisierung E-078 (übrige Confirms enden bestätigt, wenn die Freigabe vor
+ihrer eigenen Frist kommt, sonst mit ihr als `PublishIndeterminate`).
+Integrationstest unter `exclusive` mit `memory_alarm`, Chaos-Variante mit
+Toxiproxy-Abriss. Der Gewinn zeigt sich nur bei Alarmen, die kürzer sind als
+die Publish-Frist; in `stoerung-1h` (60 s Alarm, 20 s Frist) bleibt die
+aiormq-ERROR. Changelog 0.14.0 Upgrade-Hinweis 4, Katalogzeile für die
+aiormq-WARNING.
 
 ### 9. Szenario mit langem Valkey-Ausfall in der Loadsuite
 
