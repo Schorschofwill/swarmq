@@ -4,7 +4,9 @@ All notable changes to SwarmQ. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
-## [0.14.0] — unreleased
+## [0.14.0rc1] — 2026-10-19
+
+Release candidate for 0.14.0 (install with `pip install --pre`).
 
 Minor release with the hardening deferred from the fourth bug hunt and
 its spikes. Connecting to Valkey waits up to its deadline against a
