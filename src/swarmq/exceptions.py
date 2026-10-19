@@ -93,8 +93,11 @@ class SettleFailedAfterPublish(BrokerConnectionError):
     Bei einer Rueckstellungs-Kopie (Rate-Limit, Lock, Ausfuehrungsschutz,
     Backend-Ausfall, unbekannter Task, Schedfire; gleicher Retry-Zaehler)
     setzt er keinen Marker: Kopie und neu zugestelltes Original laufen beide
-    durch die Gates, der Ausfuehrungsschutz serialisiert sie. Unterklasse von
-    :class:`BrokerConnectionError`: bestehende Handler fangen sie weiter.
+    durch die Gates, der Ausfuehrungsschutz serialisiert sie. Nicht bei
+    ``FIRE_AND_FORGET``, ohne ``ExecutionGuardStore`` und mit
+    ``SWARMQ_EXECUTION_GUARD=false``: dann koennen Kopie und Original beide
+    laufen. Unterklasse von :class:`BrokerConnectionError`: bestehende
+    Handler fangen sie weiter.
     """
 
 

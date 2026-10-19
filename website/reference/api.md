@@ -1083,8 +1083,9 @@ It only reads, without a claim and without writing a marker (F4-02):
 larger than `retry_count`, otherwise `None` (also when the state has
 expired). `GuardSettled` is `Literal["done", "superseded"]` from
 `swarmq.contracts.coordination`. The worker calls it at the delivery
-limit; an implementation of your own without `peek` ends there with
-`AttributeError` instead of dead-lettering the message.
+limit; an implementation of your own without `peek` logs ERROR
+`delivery_handler_failed` (`AttributeError`) there and leaves the
+message unacknowledged instead of dead-lettering it.
 
 ## Dependency injection (Dishka)
 

@@ -24,11 +24,18 @@ lasting error reply in the chord script. The upgrade notes of
    raises `ValueError` ("`<field>` must be at most 315360000 seconds")
    when the task module is imported, so `swarmq worker` ends with exit
    `1` and restarts until the restart limit, like every other invalid
-   `TaskInfo` (E-065, E-057). A `float` is rounded up first. Before,
-   such a value (typically `result_ttl=sys.maxsize` as "keep forever")
-   only failed when the result was stored: Valkey rejected the `PX`, the
-   worker redelivered the message, and the task ran again on every
-   delivery until the delivery limit dead-lettered it. The call
+   `TaskInfo` (E-065, E-057). For `result_ttl` and `unique_for`, a
+   `float` is rounded up to whole seconds before the check; `max_age`
+   and `hard_timeout` are checked as given, so `315360000.5` is
+   rejected for all four. Before, such a value (typically
+   `result_ttl=sys.maxsize` as "keep forever") only failed when the
+   result was stored: Valkey rejected the `PX`, the worker redelivered
+   the message, and the task ran again on every delivery until the
+   delivery limit dead-lettered it. `nan` and infinite values are
+   rejected as well; before, `nan` passed the check for `max_age` and
+   `hard_timeout`, and `max_age=nan` sent every delivery to the DLQ as
+   expired. `soft_timeout=nan` next to `hard_timeout` is rejected like
+   any `soft_timeout` that is not below `hard_timeout`. The call
    parameter `unique_for` of `schedule()` and `schedule_many()` has the
    same bound (`ValueError` before any claim, publish or store), and
    `swarmq schedule add --unique-for` above it is a usage error (exit
@@ -40,8 +47,9 @@ lasting error reply in the chord script. The upgrade notes of
    0.13.0rc1 (F4-02) the worker calls `ExecutionGuardStore.peek` at the
    delivery limit; it is a required method of the public contract
    (`swarmq.contracts.coordination`). An implementation of your own
-   without it ends there with `AttributeError` instead of dead-lettering
-   the message. swarmq's Valkey backend implements it
+   without it logs ERROR `delivery_handler_failed` (`AttributeError`)
+   there and leaves the message unacknowledged instead of dead-lettering
+   it. swarmq's Valkey backend implements it
    ([contract change in 0.13.0](api.md)).
 3. **Log changes for deferrals on a lost broker channel.** A deferral
    copy that the broker confirmed while only the ack of the original
@@ -75,7 +83,10 @@ lasting error reply in the chord script. The upgrade notes of
   deferral now stands: WARNING `deferral_ack_failed_after_publish`, the
   usual deferral line, no requeue in place. The broker redelivers the
   original too; copy and original pass the gates again, and the
-  execution guard serializes them (E-043, upgrade note 3).
+  execution guard serializes them (E-043, upgrade note 3). It does not
+  for `FIRE_AND_FORGET` tasks, without an `ExecutionGuardStore` or with
+  `SWARMQ_EXECUTION_GUARD=false`; then copy and original can both
+  run.
 - **F4-18: a failed hand-back no longer releases the unique flag.** When
   a gate inside the pipeline (rate limit, lock, execution guard, backend
   outage, and the requeues of `rate_limit_check_failed`,
@@ -101,11 +112,11 @@ lasting error reply in the chord script. The upgrade notes of
   not wait longer. Corrected in the configuration and API reference and
   in upgrade note 1 of 0.12.4rc1 (E-075).
 - **A lasting error reply in the chord script keeps the workflow
-  `running` until 0.13.1.** The 0.12.4 release notes said 0.13.0 closes
-  this gap; 0.13.0 only keeps the stored success result. From 0.13.1 a
-  lasting error reply at the delivery limit marks the workflow `failed`.
-  Corrected in 0.12.4, 0.12.4rc1 and upgrade note 10 of 0.13.0rc1
-  (E-040, E-079).
+  `running` in 0.13.0.** The 0.12.4 release notes said 0.13.0 closes
+  this gap; 0.13.0 only keeps the stored success result. 0.13.1 is
+  planned to mark the workflow `failed` when a lasting error reply
+  reaches the delivery limit. Corrected in 0.12.4, 0.12.4rc1 and
+  upgrade note 10 of 0.13.0rc1 (E-040, E-079).
 - **`swarmq schedule add` after `schedule remove`:** until the claim
   expires, adding the same name with the same arguments again gives
   `inserted: false`, `already_exists: false` and
@@ -269,8 +280,9 @@ the upgrade notes: cron expressions and configuration values that
     (`WRONGTYPE` after a manual change of a swarmq key) fails every
     advance, so the step reruns up to the `delivery_limit` and the
     workflow stays `running`; what changes is that the stored success
-    is kept and the DLQ copy carries no error result. 0.13.1 will mark
-    the workflow `failed` in this case (E-079). Repair or delete
+    is kept and the DLQ copy carries no error result. 0.13.1 is
+    planned to mark the workflow `failed` in this case (E-079). Repair
+    or delete
     the changed key; without manual changes to swarmq keys the case
     does not occur.
 11. **F4-16: a missing member result is `WorkflowResultExpired`.** When
@@ -415,8 +427,9 @@ the upgrade notes: cron expressions and configuration values that
 0.12.4 is 0.12.4rc1 without code changes. Read
 [0.12.4rc1](#0124rc1-2026-10-18) for the fixes and the upgrade notes
 (overall deadline for connecting to Valkey, a lasting error reply in
-the chord script that keeps a workflow `running` until 0.13.1, reserved lock names,
-mixed operation and rollback); they apply unchanged. Install with
+the chord script that keeps a workflow `running`, with a fix planned
+for 0.13.1, reserved lock names, mixed operation and rollback); they
+apply unchanged. Install with
 `pip install 'swarmq==0.12.*'`; `--pre` is no longer needed.
 
 ## [0.12.4rc1] — 2026-10-18
@@ -437,8 +450,9 @@ and the reserved lock names (E-074, E-075). No new message headers, no
 new Lua scripts and no format change: 0.12.4 runs next to 0.12.0 to
 0.12.3 on the same queues and keys, in both directions. Read the
 upgrade notes: a worker whose Valkey does not answer now ends its
-start after at most about 30 s, and one error case of the chord script keeps a
-workflow `running` until 0.13.1 (0.13.0 only keeps the stored success).
+start after at most about 30 s, and one error case of the chord
+script keeps a workflow `running` (0.13.0 only keeps the stored
+success; a fix is planned for 0.13.1).
 
 ### Upgrade notes
 
@@ -471,10 +485,10 @@ workflow `running` until 0.13.1 (0.13.0 only keeps the stored success).
    TTL instead of becoming `failed` at once
    ([`workflow_advance_backend_error`](logging.md#event-catalog)).
    0.13.0 only keeps the stored success result in this case (F4-01);
-   the workflow still stays `running` until its TTL. From 0.13.1 a
-   lasting error reply at the delivery limit marks the workflow
-   `failed` (E-040, E-079). Without manual changes to swarmq keys the
-   case does not occur.
+   the workflow still stays `running` until its TTL. 0.13.1 is planned
+   to mark the workflow `failed` when a lasting error reply reaches the
+   delivery limit (E-040, E-079). Without manual changes to swarmq keys
+   the case does not occur.
 3. **Lock names that start with `{sched}` are reserved.** A lock
    template whose rendered name starts with `{sched}` (the hash tag of
    the scheduler leader) now dead-letters the message with

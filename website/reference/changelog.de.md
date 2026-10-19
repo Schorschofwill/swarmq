@@ -25,12 +25,20 @@ gelten, ergänzt um die folgenden.
    wirft jetzt beim Import des Task-Moduls `ValueError` („`<feld>` must
    be at most 315360000 seconds“), `swarmq worker` endet also mit Exit
    `1` und startet bis zum Restart-Limit neu, wie bei jeder anderen
-   ungültigen `TaskInfo` (E-065, E-057). Ein `float` wird vorher
-   aufgerundet. Bisher scheiterte ein solcher Wert (typisch
-   `result_ttl=sys.maxsize` als „für immer“) erst beim Speichern des
-   Ergebnisses: Valkey lehnte das `PX` ab, der Worker stellte die
-   Nachricht neu zu, und der Task lief bei jeder Zustellung erneut, bis
-   das Zustelllimit ihn in die DLQ leitete. Der Aufruf-Parameter
+   ungültigen `TaskInfo` (E-065, E-057). Bei `result_ttl` und
+   `unique_for` wird ein `float` vor der Prüfung auf ganze Sekunden
+   aufgerundet; `max_age` und `hard_timeout` werden so geprüft, wie sie
+   übergeben sind, `315360000.5` fällt also bei allen vier durch.
+   Bisher scheiterte ein solcher Wert (typisch `result_ttl=sys.maxsize`
+   als „für immer“) erst beim Speichern des Ergebnisses: Valkey lehnte
+   das `PX` ab, der Worker stellte die Nachricht neu zu, und der Task
+   lief bei jeder Zustellung erneut, bis das Zustelllimit ihn in die DLQ
+   leitete. Auch `nan` und unendliche Werte werden abgelehnt; bisher
+   bestand `nan` die Prüfung bei `max_age` und `hard_timeout`, und
+   `max_age=nan` leitete jede Zustellung als abgelaufen in die DLQ.
+   `soft_timeout=nan` neben `hard_timeout` fällt durch wie jedes
+   `soft_timeout`, das nicht unter `hard_timeout` liegt. Der
+   Aufruf-Parameter
    `unique_for` von `schedule()` und `schedule_many()` hat dieselbe
    Grenze (`ValueError` vor jedem Claim, Publish oder Speichern), und
    `swarmq schedule add --unique-for` darüber ist ein Aufruffehler (Exit
@@ -42,8 +50,9 @@ gelten, ergänzt um die folgenden.
    Seit 0.13.0rc1 (F4-02) ruft der Worker am Zustelllimit
    `ExecutionGuardStore.peek` auf; die Methode ist Pflicht im
    öffentlichen Vertrag (`swarmq.contracts.coordination`). Eine eigene
-   Implementierung ohne sie endet dort mit `AttributeError`, statt die
-   Nachricht in die DLQ zu leiten. Das Valkey-Backend von swarmq
+   Implementierung ohne sie loggt dort ERROR `delivery_handler_failed`
+   (`AttributeError`) und lässt die Nachricht unbestätigt liegen, statt
+   sie in die DLQ zu leiten. Das Valkey-Backend von swarmq
    implementiert sie ([Vertragsänderung in 0.13.0](api.md)).
 3. **Log-Änderungen bei Rückstellungen mit verlorenem Broker-Kanal.**
    Eine Rückstellungs-Kopie, die der Broker bestätigt hat, während nur
@@ -80,7 +89,10 @@ gelten, ergänzt um die folgenden.
   `deferral_ack_failed_after_publish`, die übliche Zeile, kein Requeue an
   derselben Stelle. Der Broker stellt auch das Original neu zu; Kopie und
   Original laufen erneut durch die Gates, der Ausführungsschutz
-  serialisiert sie (E-043, Upgrade-Hinweis 3).
+  serialisiert sie (E-043, Upgrade-Hinweis 3). Das gilt nicht für
+  `FIRE_AND_FORGET`-Tasks, ohne `ExecutionGuardStore` und mit
+  `SWARMQ_EXECUTION_GUARD=false`; dann können Kopie und Original beide
+  laufen.
 - **F4-18: Eine gescheiterte Rückgabe gibt das Unique-Flag nicht mehr
   frei.** Gab ein Gate in der Pipeline (Rate-Limit, Lock,
   Ausführungsschutz, Backend-Ausfall sowie die Requeues von
@@ -108,11 +120,12 @@ gelten, ergänzt um die folgenden.
   größerer Wert wartet nicht länger. Berichtigt in der Konfigurations-
   und API-Referenz und in Upgrade-Hinweis 1 von 0.12.4rc1 (E-075).
 - **Eine dauerhafte Fehlerantwort des Chord-Skripts lässt den Workflow
-  bis 0.13.1 auf `running`.** Die Release-Notes von 0.12.4 sagten,
+  in 0.13.0 auf `running`.** Die Release-Notes von 0.12.4 sagten,
   0.13.0 schließe die Lücke; 0.13.0 bewahrt nur das gespeicherte
-  Erfolgsergebnis. Ab 0.13.1 setzt eine dauerhafte Fehlerantwort am
-  Zustelllimit den Workflow auf `failed`. Berichtigt in 0.12.4,
-  0.12.4rc1 und Upgrade-Hinweis 10 von 0.13.0rc1 (E-040, E-079).
+  Erfolgsergebnis. Für 0.13.1 ist geplant, dass eine dauerhafte
+  Fehlerantwort am Zustelllimit den Workflow auf `failed` setzt.
+  Berichtigt in 0.12.4, 0.12.4rc1 und Upgrade-Hinweis 10 von 0.13.0rc1
+  (E-040, E-079).
 - **`swarmq schedule add` nach `schedule remove`:** Bis der Claim
   abläuft, ergibt ein erneutes Anlegen mit gleichem Namen und gleichen
   Argumenten `inserted: false`, `already_exists: false` und
@@ -287,8 +300,9 @@ ein Deployment stoppen, und mehrere Log-Stufen haben sich geändert.
     swarmq-Key) lässt jeden Advance scheitern, der Schritt läuft bis zum
     `delivery_limit` erneut, und der Workflow bleibt `running`; neu ist,
     dass der gespeicherte Erfolg bleibt und die DLQ-Kopie kein
-    Fehlerergebnis trägt. 0.13.1 wird den Workflow in diesem Fall auf
-    `failed` setzen (E-079). Den veränderten Key reparieren oder löschen;
+    Fehlerergebnis trägt. Für 0.13.1 ist geplant, dass eine dauerhafte
+    Fehlerantwort den Workflow in diesem Fall auf `failed` setzt
+    (E-079). Den veränderten Key reparieren oder löschen;
     ohne Handarbeit an swarmq-Keys tritt der Fall nicht auf.
 11. **F4-16: Ein fehlendes Glied-Ergebnis ist `WorkflowResultExpired`.**
     Ist ein für das Fan-in nötiges Ergebnis eines Gruppen- oder
@@ -446,9 +460,9 @@ ein Deployment stoppen, und mehrere Log-Stufen haben sich geändert.
 
 0.12.4 ist 0.12.4rc1 ohne Codeänderungen. Die Korrekturen und die
 Upgrade-Hinweise (Gesamtfrist für den Valkey-Verbindungsaufbau, eine
-dauerhafte Fehlerantwort des Chord-Skripts, die einen Workflow bis
-0.13.1 auf `running` lässt,
-reservierte Lock-Namen, Mischbetrieb und Rollback) stehen unter
+dauerhafte Fehlerantwort des Chord-Skripts, die einen Workflow auf
+`running` lässt, mit einer für 0.13.1 geplanten Korrektur, reservierte
+Lock-Namen, Mischbetrieb und Rollback) stehen unter
 [0.12.4rc1](#0124rc1-2026-10-18) und gelten unverändert. Installation
 mit `pip install 'swarmq==0.12.*'`; `--pre` ist nicht mehr nötig.
 
@@ -471,9 +485,10 @@ reservierten Lock-Namen (E-074, E-075). Keine neuen Nachrichten-Header,
 keine neuen Lua-Skripte und kein Formatwechsel: 0.12.4 läuft in beiden
 Richtungen neben 0.12.0 bis 0.12.3 auf denselben Queues und Keys. Die
 Upgrade-Hinweise lesen: Ein Worker, dessen Valkey nicht antwortet,
-beendet seinen Start jetzt nach höchstens rund 30 s, und ein Fehlerfall des
-Chord-Skripts lässt einen Workflow bis 0.13.1 auf `running` (0.13.0
-bewahrt nur den gespeicherten Erfolg).
+beendet seinen Start jetzt nach höchstens rund 30 s, und ein
+Fehlerfall des Chord-Skripts lässt einen Workflow auf `running` (0.13.0
+bewahrt nur den gespeicherten Erfolg; eine Korrektur ist für 0.13.1
+geplant).
 
 ### Upgrade-Hinweise
 
@@ -507,10 +522,10 @@ bewahrt nur den gespeicherten Erfolg).
    TTL `running`, statt sofort `failed` zu werden
    ([`workflow_advance_backend_error`](logging.md#event-katalog)).
    0.13.0 bewahrt in diesem Fall nur das gespeicherte Erfolgsergebnis
-   (F4-01); der Workflow bleibt weiter bis zur TTL `running`. Ab 0.13.1
-   setzt eine dauerhafte Fehlerantwort am Zustelllimit den Workflow
-   auf `failed` (E-040, E-079). Ohne Handarbeit an swarmq-Keys tritt
-   der Fall nicht auf.
+   (F4-01); der Workflow bleibt weiter bis zur TTL `running`. Für
+   0.13.1 ist geplant, dass eine dauerhafte Fehlerantwort am
+   Zustelllimit den Workflow auf `failed` setzt (E-040, E-079). Ohne
+   Handarbeit an swarmq-Keys tritt der Fall nicht auf.
 3. **Lock-Namen, die mit `{sched}` beginnen, sind reserviert.** Ein
    Lock-Template, dessen gerenderter Name mit `{sched}` beginnt (dem
    Hash-Tag des Scheduler-Leaders), leitet die Nachricht jetzt mit

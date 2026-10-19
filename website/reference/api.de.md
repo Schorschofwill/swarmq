@@ -1114,8 +1114,9 @@ Sie liest nur, ohne Claim und ohne Marker (F4-02): `"done"` nach
 `retry_count` ist, sonst `None` (auch bei abgelaufenem Zustand).
 `GuardSettled` ist `Literal["done", "superseded"]` aus
 `swarmq.contracts.coordination`. Der Worker ruft sie am Zustelllimit
-auf; eine eigene Implementierung ohne `peek` endet dort mit
-`AttributeError`, statt die Nachricht in die DLQ zu leiten.
+auf; eine eigene Implementierung ohne `peek` loggt dort ERROR
+`delivery_handler_failed` (`AttributeError`) und lässt die Nachricht
+unbestätigt liegen, statt sie in die DLQ zu leiten.
 
 ## Dependency Injection (Dishka)
 
