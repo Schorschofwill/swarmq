@@ -14,6 +14,8 @@ Test-Liste:
 - [x] Zustand nicht lesbar (Attribut fehlt): fail-open, eine WARNING je Broker
 - [x] keine Transport-Verbindung (Reconnect laeuft): kein Warten, keine WARNING
 - [x] WARNING zum Blockieren einmal je Episode
+- [x] eigener Abbruch im Blocked-Warten: ``PublishCancelledUnsent`` (ein
+      ``CancelledError``), ``task.cancelled()``, nichts gesendet (U4, E-041)
 """
 
 from __future__ import annotations
@@ -26,7 +28,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
-from swarmq.exceptions import BrokerConnectionError, BrokerPublishBlocked
+from swarmq.exceptions import BrokerConnectionError, BrokerPublishBlocked, PublishCancelledUnsent
 
 pytestmark = [pytest.mark.timeout(5)]
 
@@ -141,3 +143,22 @@ async def test_unreadable_state_fails_open_with_one_warning_per_broker(swarmq_lo
     assert _sent(broker) == ["tasks", "tasks"]
     warnings = [e["event"] for e in swarmq_logs if e["log_level"] == "warning"]
     assert warnings == ["publish_blocked_state_unreadable"]
+
+
+@pytest.mark.entscheidung("E-041")
+async def test_own_cancel_while_blocked_is_marked_as_unsent() -> None:
+    """Plan 0.14, U4: Bricht der Aufrufer im Blocked-Warten ab, ist
+    nachweislich nichts gesendet. Der Abbruch geht als
+    ``PublishCancelledUnsent`` weiter, bleibt aber ein Abbruch."""
+    underlying = _underlying(blocked=True)
+    broker = _broker(underlying)
+    publish = asyncio.create_task(broker.publish("tasks", b"{}"))
+    await getattr(underlying, _ATTR).waiting.wait()
+
+    publish.cancel()
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await publish
+
+    assert isinstance(caught.value, PublishCancelledUnsent)
+    assert publish.cancelled()
+    assert _sent(broker) == []

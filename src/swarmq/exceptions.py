@@ -182,6 +182,31 @@ def is_backend_outcome_unknown(exc: BaseException) -> bool:
     return is_backend_outage(exc) or isinstance(exc, asyncio.CancelledError)
 
 
+class PublishCancelledUnsent(asyncio.CancelledError):
+    """Abbruch der eigenen Task im Publish, bevor etwas gesendet sein kann
+    (Plan 0.14, U4, R4; E-041, E-042).
+
+    Ein ``asyncio.CancelledError``: ``task.cancelled()`` bleibt ``True``,
+    ``asyncio.timeout`` und ``TaskGroup`` behandeln ihn wie jeden Abbruch.
+    Die Markierung sagt nur, dass der Broker nachweislich nichts gesendet hat
+    (dasselbe Kriterium wie ``BrokerConnectionError`` nach einer Frist, E-042);
+    der Client gibt dann den Unique-Claim frei. Bewusst nicht in
+    ``swarmq.__all__``: keine neue oeffentliche Oberflaeche.
+    """
+
+
+def is_publish_outcome_unknown(exc: BaseException) -> bool:
+    """Kann die Nachricht trotz *exc* beim Broker angekommen sein?
+
+    Nach ``PublishIndeterminate`` und nach einem Abbruch im Publish ja
+    (E-041, 0.13.1), ausser der Broker hat den Abbruch als
+    ``PublishCancelledUnsent`` markiert (0.14, U4). Ein Publisher ohne diese
+    Markierung bleibt beim konservativen "unbestimmt"."""
+    if isinstance(exc, PublishCancelledUnsent):
+        return False
+    return isinstance(exc, PublishIndeterminate | asyncio.CancelledError)
+
+
 class TaskNotFoundError(SwarmQError):
     pass
 

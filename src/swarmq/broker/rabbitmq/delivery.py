@@ -41,6 +41,7 @@ from swarmq.contracts import Delivery, DeliveryCallback, PublishReceipt
 from swarmq.exceptions import (
     BrokerConnectionError,
     BrokerPublishBlocked,
+    PublishCancelledUnsent,
     PublishIndeterminate,
     PublishRejected,
     SettleFailedAfterPublish,
@@ -307,6 +308,9 @@ class RabbitMQDelivery(RabbitMQDeclarations):
         current_task().cancelling() rose above its value at entry (KTD9:
         a drain-cancelled handler keeps running with cancelling() > 0,
         E-001; its internal aio-pika cancel is a lost channel, not its own).
+        Kam der eigene Abbruch, bevor ein Versuch gesendet haben kann
+        (``maybe_sent``, E-042), geht er als ``PublishCancelledUnsent`` weiter
+        (Plan 0.14, U4).
         """
         cancelling_at_entry = _cancelling_now()
         # Vor jedem Versuch und ohne Wiederholung: zu grosse Header schloessen
@@ -333,6 +337,14 @@ class RabbitMQDelivery(RabbitMQDeclarations):
                     return await self._publish_attempts(routing_key, msg, in_flight, maybe_sent, cancelling_at_entry)
                 finally:
                     self._active_publish_timeouts.discard(timeout_cm)
+        except asyncio.CancelledError as exc:
+            # U4 (Plan 0.14, E-041, E-042): Der eigene Abbruch, bevor ein
+            # Versuch gesendet haben kann (Blocked-Warten, Kanalaufbau,
+            # Sperren-Warteschlange, Backoff nach nicht gesendeten Versuchen),
+            # bleibt ein Abbruch, traegt aber "nichts gesendet" zum Client.
+            if _is_own_cancel(exc, cancelling_at_entry) and not any(maybe_sent):
+                raise PublishCancelledUnsent(*exc.args) from exc
+            raise
         except TimeoutError as exc:
             if blocked:
                 # Nichts gesendet, der Kanal ist gesund: kein Verwurf, und
