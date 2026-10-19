@@ -150,8 +150,13 @@ docker run -d --name swarmq-test-toxiproxy --network host \
 uv run just chaos -m "chaos or stress or property or fuzz"
 ```
 
-Erwartung (Stand 2026-10-14): **116 passed, 4 skipped** (120 Tests). Die
-vier Skips sind begründet und sollen so bleiben — `libfaketime` fehlt (auf
+Erwartung (Stand 2026-10-19, Chaos-Stack auf RabbitMQ 4.3.6): **206
+passed, 4 skipped** (210 Tests: 46 in `tests/chaos`, 29 in
+`tests/e2e/combinations`, 33 Fuzz, 96 Property, 6 Stress). Am 2026-10-14
+waren es 116 passed; der Zuwachs kommt aus neuen Property- und
+Fuzz-Tests. Die Umstellung von 3.13.7 auf 4.3.6 (PF-1) änderte nichts:
+Derselbe Stand lief vorher auf 3.13.7 mit demselben Ergebnis, kein Test
+musste angepasst werden. Die vier Skips sind begründet und sollen so bleiben — `libfaketime` fehlt (auf
 die U3.x-Stressreihe vertagt), und die drei Disk-Pressure-Tests stehen
 hinter `SWARMQ_RUN_DISK_TESTS=1`, weil sie unter geteilter Last flattern.
 Jeder weitere Skip (etwa ein nicht erreichbarer Toxiproxy) heißt: Gate nicht
@@ -355,7 +360,7 @@ fest):
 |---|---|---|
 | `rabbitmq` (Compose, CI) | `rabbitmq:4.3.6-management` | Hauptbroker aller Integrations- und e2e-Tests |
 | `rabbitmq42` (Compose, CI-Job `integration-tests`) | `rabbitmq:4.2.9-management` | nur die 4.2-Charakterisierung; gestartet mit `channel_tick_interval 1000`, denn bis 4.2 prüft der Channel den Timeout nur je Tick (Standard 60 s); so schließt er nach etwa 4 s |
-| Chaos-Stack (`tests/chaos/compose.yml`) | `rabbitmq:3.13.7-management-alpine` | Stand, gegen den die Chaos-Suite bisher lief; ein Wechsel auf 4.x ist eine eigene Entscheidung |
+| Chaos-Stack (`tests/chaos/compose.yml`) | `rabbitmq:4.3.6-management` | seit 0.14 (PF-1) dasselbe Abbild wie Hauptbroker und CI, dazu `ghcr.io/shopify/toxiproxy:2.9.0` und `valkey/valkey:8.1.10-alpine` wie in der Loadsuite; bis 0.13 `rabbitmq:3.13.7-management-alpine` |
 
 Die Consumer-Timeout-Tests setzen per Management-API eine Policy und
 brauchen dafür zusätzlich die Management-Ports. Variablen (der 4.2-Broker
