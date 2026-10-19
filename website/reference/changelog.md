@@ -4,6 +4,68 @@ All notable changes to SwarmQ. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [0.13.1] — unreleased
+
+Patch release for 0.13.0. It closes the last case in which a workflow
+whose step succeeded stayed `running` until its TTL (a lasting error
+reply in the chord script), and keeps the `unique_for` claim when a
+`schedule()` call is cancelled while its outcome is unknown. Both were
+decided for 0.13.1 before 0.13.0 final. Install with
+`pip install 'swarmq==0.13.*'`.
+
+### Upgrade notes
+
+1. **A lasting error reply in a workflow advance now fails the
+   workflow at the delivery limit.** When Valkey answers the advance of
+   a successful workflow step with an error (`BackendResponseError`,
+   for example `WRONGTYPE` on the chord or result key), the step is
+   still redelivered up to the delivery limit, as in 0.13.0 (E-079). At
+   the limit the worker now marks the workflow `failed` with the error
+   text instead of dead-lettering the message: `handle.get()` raises
+   `TaskError` with that text, the message is acked without a DLQ copy
+   and without `TASK_DLQ`, and the stored success of the step stays.
+   Before, the message went to the DLQ without an error result and the
+   workflow stayed `running` until its TTL. If the failure mark itself
+   fails (for example because the workflow state key has the wrong
+   type), the 0.13.0 behaviour remains. An outage (connection,
+   timeout) at the limit is unchanged. Alerts that count DLQ copies of
+   workflow steps see one copy less per such workflow; watch
+   `workflow_advance_backend_error` (ERROR) instead
+   ([failure modes](../guides/workflows.md#failure-modes), E-040).
+2. **`FIRE_AND_FORGET` steps fail the workflow at once on an error
+   reply.** A `FIRE_AND_FORGET` step (built with `sig()` and an
+   explicit `result_ttl`) is never redelivered, so the same error reply
+   in its advance now marks the workflow `failed` immediately. Before,
+   the workflow stayed `running` until its TTL. An outage is unchanged.
+3. **A cancelled `schedule()` keeps its `unique_for` claim.** When the
+   call is cancelled (a timeout around it, `task.cancel()`, Ctrl+C in
+   `swarmq schedule add`) while the message is being published or the
+   `delay`/`eta` entry is being stored, the outcome is unknown: the
+   message or entry may have arrived. The claim now stays until it
+   expires, after `unique_for` plus the delay, like after a backend
+   outage or `PublishIndeterminate` (E-041, E-059). A retry in that
+   window is reported as a duplicate, and `get_result()` on the task ID
+   of a call that never arrived waits until its timeout. The
+   `CancelledError` still reaches the caller unchanged. Before, the
+   cancel released the claim, and a retry could run the task twice. A
+   cancel in `pre_enqueue`, before anything was sent, still releases
+   the claim. This applies to `schedule()`, `schedule(delay=|eta=)`,
+   `schedule_many()` and `swarmq schedule add --unique-for`
+   ([deduplication](../guides/locking-and-dedup.md)).
+
+### Fixed
+
+- **A lasting error reply in the chord script no longer leaves the
+  workflow `running` at the delivery limit.** See upgrade notes 1 and
+  2 (E-079, E-040).
+- **A cancel while publishing or storing no longer releases the
+  `unique_for` claim.** In the immediate path a raw `CancelledError`
+  during the publish released the claim, in the deferred path and in
+  `swarmq schedule add` a cancel during `sched_add.lua`, in
+  `schedule_many()` a publish that ended in `CancelledError`. Each of
+  them may have reached the broker or Valkey. See upgrade note 3
+  (E-041, E-059, E-052).
+
 ## [0.13.0] — 2026-10-19
 
 0.13.0 is 0.13.0rc2 without code changes. The two release candidates

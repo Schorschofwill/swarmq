@@ -4,6 +4,72 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 [Keep a Changelog](https://keepachangelog.com/) und
 [Semantic Versioning](https://semver.org/).
 
+## [0.13.1] — unveröffentlicht
+
+Patch-Release für 0.13.0. Es schließt den letzten Fall, in dem ein
+Workflow mit erfolgreichem Schritt bis zu seiner TTL `running` blieb
+(eine dauerhafte Fehlerantwort im Chord-Skript), und hält den
+`unique_for`-Claim, wenn ein `schedule()`-Aufruf bei unbestimmtem
+Ausgang abgebrochen wird. Beides war vor 0.13.0 final für 0.13.1
+entschieden. Installation mit `pip install 'swarmq==0.13.*'`.
+
+### Upgrade-Hinweise
+
+1. **Eine dauerhafte Fehlerantwort beim Voranbringen eines Workflows
+   lässt ihn am Zustelllimit scheitern.** Antwortet Valkey auf das
+   Voranbringen eines erfolgreichen Workflow-Schritts mit einem Fehler
+   (`BackendResponseError`, etwa `WRONGTYPE` auf dem Chord- oder
+   Ergebnis-Key), wird der Schritt wie in 0.13.0 bis zum Zustelllimit
+   neu zugestellt (E-079). Am Limit markiert der Worker den Workflow
+   jetzt mit dem Fehlertext als `failed`, statt die Nachricht in die DLQ
+   zu legen: `handle.get()` wirft `TaskError` mit diesem Text, die
+   Nachricht wird ohne DLQ-Kopie und ohne `TASK_DLQ` bestätigt, und der
+   gespeicherte Erfolg des Schritts bleibt. Bisher ging die Nachricht
+   ohne Fehlerergebnis in die DLQ, und der Workflow blieb bis zu seiner
+   TTL `running`. Scheitert die Markierung selbst (etwa weil der Key des
+   Workflow-Zustands einen falschen Typ hat), bleibt es beim Verhalten
+   von 0.13.0. Ein Ausfall (Verbindung, Zeitablauf) am Limit ist
+   unverändert. Alarme, die DLQ-Kopien von Workflow-Schritten zählen,
+   sehen je solchem Workflow eine Kopie weniger; stattdessen
+   `workflow_advance_backend_error` (ERROR) beobachten
+   ([Fehlerfälle](../guides/workflows.md#fehlerfalle), E-040).
+2. **`FIRE_AND_FORGET`-Schritte lassen den Workflow bei einer
+   Fehlerantwort sofort scheitern.** Ein `FIRE_AND_FORGET`-Schritt (mit
+   `sig()` und ausdrücklichem `result_ttl` gebaut) wird nie neu
+   zugestellt; dieselbe Fehlerantwort beim Voranbringen markiert den
+   Workflow deshalb jetzt sofort als `failed`. Bisher blieb er bis zu
+   seiner TTL `running`. Ein Ausfall ist unverändert.
+3. **Ein abgebrochenes `schedule()` hält seinen `unique_for`-Claim.**
+   Wird der Aufruf abgebrochen (ein Timeout um ihn herum,
+   `task.cancel()`, Strg+C in `swarmq schedule add`), während die
+   Nachricht gesendet oder der `delay`/`eta`-Eintrag gespeichert wird,
+   ist der Ausgang unbestimmt: Nachricht oder Eintrag können angekommen
+   sein. Der Claim bleibt jetzt bis zu seinem Ablauf stehen, nach
+   `unique_for` plus Verzögerung, wie nach einem Backend-Ausfall oder
+   `PublishIndeterminate` (E-041, E-059). Ein Wiederholversuch in
+   diesem Fenster gilt als Duplikat, und `get_result()` auf die Task-ID
+   eines Aufrufs, der nie ankam, wartet bis zu seinem Timeout. Der
+   `CancelledError` erreicht den Aufrufer weiter unverändert. Bisher gab
+   der Abbruch den Claim frei, und ein Wiederholversuch konnte den Task
+   doppelt ausführen. Ein Abbruch in `pre_enqueue`, bevor etwas
+   gesendet wurde, gibt den Claim weiter frei. Das gilt für
+   `schedule()`, `schedule(delay=|eta=)`, `schedule_many()` und
+   `swarmq schedule add --unique-for`
+   ([Deduplizierung](../guides/locking-and-dedup.md)).
+
+### Behoben
+
+- **Eine dauerhafte Fehlerantwort im Chord-Skript lässt den Workflow am
+  Zustelllimit nicht mehr `running`.** Siehe Upgrade-Hinweise 1 und 2
+  (E-079, E-040).
+- **Ein Abbruch beim Senden oder Speichern gibt den
+  `unique_for`-Claim nicht mehr frei.** Im sofortigen Pfad gab ein
+  roher `CancelledError` während des Publish den Claim frei, im
+  verzögerten Pfad und in `swarmq schedule add` ein Abbruch während
+  `sched_add.lua`, in `schedule_many()` ein Publish, der mit
+  `CancelledError` endete. Jeder davon kann Broker oder Valkey erreicht
+  haben. Siehe Upgrade-Hinweis 3 (E-041, E-059, E-052).
+
 ## [0.13.0] — 2026-10-19
 
 0.13.0 ist 0.13.0rc2 ohne Codeänderungen. Die beiden
