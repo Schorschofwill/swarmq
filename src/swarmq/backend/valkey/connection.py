@@ -306,6 +306,9 @@ class ValkeyConnection:
                 f"connect_timeout_s must be > 0 and at most threading.TIMEOUT_MAX seconds, got {connect_timeout_s}"
             )
         self._connect_timeout_s = connect_timeout_s
+        # E-082: ``connect()`` und ``close()`` serialisiert. Unter 3.14 bindet
+        # die Sperre die Loop erst, wenn jemand warten muss.
+        self._lifecycle_lock = asyncio.Lock()
         if not given:
             raise ConfigurationError("ValkeyBackend requires exactly one of: url, client, or pool")
         if len(given) > 1:
@@ -372,10 +375,17 @@ class ValkeyConnection:
         return self._keys.namespace
 
     async def connect(self) -> None:
-        # Idempotent, and a no-op when a client was injected: the borrowed
-        # client/pool already exists, so swarmq builds nothing here.
-        if self._client is not None:
-            return
+        # E-082: Ein zweiter Aufruf wartet einen laufenden Aufbau ab und nutzt
+        # dessen Client; scheitert der Aufbau, versucht er es selbst. Kein
+        # geteilter Aufbau-Task: Ein Abbruch wirkt im Task des Aufrufers (F4-13).
+        async with self._lifecycle_lock:
+            # Idempotent, and a no-op when a client was injected: the borrowed
+            # client/pool already exists, so swarmq builds nothing here.
+            if self._client is not None:
+                return
+            await self._connect_locked()
+
+    async def _connect_locked(self) -> None:
         # F4-13: Der Client gilt erst nach PING und Eviction-Pruefung als
         # verbunden; scheitert ein Schritt (auch durch Abbruch), wird der
         # eigene Client geschlossen und ``connect()`` bleibt wiederholbar.
@@ -440,16 +450,18 @@ class ValkeyConnection:
         return self.eviction_check
 
     async def close(self) -> None:
-        if self._client is not None:
-            # Only tear down a client swarmq built itself. A borrowed
-            # client/pool (injected at construction) is left open for the
-            # caller — closing it here would break the caller's own app.
-            if self._owns_client:
-                # Vor dem Trennen: Ein Befehl, der waehrend aclose() erst
-                # startet, bekaeme sonst die gerade getrennte Verbindung.
-                _seal_pool(self._client.connection_pool)
-                await self._client.aclose()
-            self._client = None
+        # E-082: wartet ein laufendes ``connect()`` ab und schliesst danach.
+        async with self._lifecycle_lock:
+            if self._client is not None:
+                # Only tear down a client swarmq built itself. A borrowed
+                # client/pool (injected at construction) is left open for the
+                # caller — closing it here would break the caller's own app.
+                if self._owns_client:
+                    # Vor dem Trennen: Ein Befehl, der waehrend aclose() erst
+                    # startet, bekaeme sonst die gerade getrennte Verbindung.
+                    _seal_pool(self._client.connection_pool)
+                    await self._client.aclose()
+                self._client = None
 
     async def ping(self) -> None:
         """Wirft ``BackendConnectionError`` vor ``connect()`` oder wenn der
