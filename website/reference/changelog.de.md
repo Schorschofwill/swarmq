@@ -4,6 +4,22 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 [Keep a Changelog](https://keepachangelog.com/) und
 [Semantic Versioning](https://semver.org/).
 
+## [0.13.0] — 2026-10-19
+
+0.13.0 ist 0.13.0rc2 ohne Codeänderungen. Die beiden
+Release-Candidates beschreiben alle Änderungen seit 0.12.4; ihre
+Korrekturen und Upgrade-Hinweise gelten unverändert. Siehe
+[0.13.0rc1](#0130rc1-2026-10-18) (Cron-Ausdrücke als Positivliste nach
+crontab(5), Obergrenzen für Konfigurationswerte, geänderte Log-Stufen,
+Wiederholung beim Speichern des Ergebnisses, Cancel-Flag von
+Workflows, Versionsschlüssel der Worker, `already_exists`,
+`DeadLetterScan`, F4-01, F4-16, Mischbetrieb und Rollback) und
+[0.13.0rc2](#0130rc2-2026-10-19) (Obergrenzen für die Fristen in
+`TaskInfo` und `unique_for`, `ExecutionGuardStore.peek` für eigene
+Implementierungen, Log-Änderungen bei Rückstellungen mit verlorenem
+Broker-Kanal). Installation mit `pip install 'swarmq==0.13.*'`; `--pre`
+ist nicht mehr nötig.
+
 ## [0.13.0rc2] — 2026-10-19
 
 Zweiter Release-Candidate für 0.13.0 (Installation mit
