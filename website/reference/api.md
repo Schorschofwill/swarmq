@@ -917,9 +917,15 @@ path only (`start_worker()` rejects them).
   and `SWARMQ_BACKEND_CONNECT_TIMEOUT_S` (default 30 s). Must be `> 0`
   and at most `threading.TIMEOUT_MAX`, otherwise `ConfigurationError` at
   construction. When it expires, `connect()` raises
-  `BackendConnectionError`. It is an upper bound: the driver's own
-  connection attempts give up after at most about 33 s, so a larger
-  value does not wait longer.
+  `BackendConnectionError`. Against a host that drops packets,
+  `connect()` waits until it expires (since 0.14; before, the driver
+  gave up after about 33 s); a port that refuses connections ends after
+  about 3.1 s.
+
+`connect()` and `close()` are safe to call concurrently (since 0.14,
+E-082): a `connect()` during a running one waits for it and uses its
+client, and tries on its own if that one fails; `close()` waits for a
+running `connect()` and then closes, at most the connect deadline.
 
 Async Valkey client backing results, locks, rate limits, cancel
 flags, scheduler state, and leader election. Implements the
@@ -1099,6 +1105,25 @@ expired). `GuardSettled` is `Literal["done", "superseded"]` from
 limit; an implementation of your own without `peek` logs ERROR
 `delivery_handler_failed` (`AttributeError`) there and leaves the
 message unacknowledged instead of dead-lettering it.
+
+Contract notes for 0.14.0 (signatures unchanged):
+
+- `ResultBackend.connect()` and `close()` must be safe to call
+  concurrently (E-082). A `connect()` during a running `connect()`
+  waits for it and uses its client; if that one fails, the waiting call
+  tries on its own. `close()` waits for a running `connect()` and then
+  closes, so no client is left open.
+- `LockStore.force_release(name, max_concurrency=…)` is atomic: `True`
+  means a lock existed and is now removed, `False` that there was none.
+  For a semaphore an implementation may return `True` as long as its
+  key exists, even when all holders have expired (swarmq's Valkey store
+  does: it deletes the key with one `DEL`).
+- `Publisher.publish` passes a cancel of its own task on as
+  `asyncio.CancelledError` and never swallows it. It may mark the
+  cancel as `swarmq.exceptions.PublishCancelledUnsent` (a subclass of
+  `asyncio.CancelledError`) when it provably sent nothing; the client
+  then releases the `unique_for` claim. Without the mark the cancel
+  counts as unknown and the claim stays (E-041).
 
 ## Dependency injection (Dishka)
 

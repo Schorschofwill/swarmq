@@ -272,7 +272,16 @@ Speichern eines `delay`/`eta`-Eintrags und seit 0.13.1 auch, wenn der
 Aufruf während des Publish oder des Speicherns abgebrochen wird (ein
 Timeout um ihn herum, `task.cancel()`), denn Nachricht oder Eintrag
 können angekommen sein. Ein Wiederholversuch in diesem Fenster gilt als
-Duplikat. Bestimmte Fehler geben den Claim frei.
+Duplikat. Bestimmte Fehler geben den Claim frei. Seit 0.14 tut das auch
+ein Abbruch, bevor der Broker die Nachricht gesendet haben kann: während
+der Publish auf eine Verbindung wartet, die der Broker im
+Ressourcenalarm blockiert hat, den Publish-Kanal öffnet, auf die
+Kanal-Sperre wartet oder nach einem Versuch, der nichts gesendet hat,
+zurückwartet. Der Broker wirft dann `PublishCancelledUnsent`, eine
+Unterklasse von `asyncio.CancelledError`
+([Fehlerkatalog](../reference/errors.md#auerhalb-der-hierarchie-publishcancelledunsent)).
+Ein Abbruch beim Speichern eines `delay`/`eta`-Eintrags hält den Claim,
+denn dort wird nichts publiziert.
 
 ### Per-Call-Override
 

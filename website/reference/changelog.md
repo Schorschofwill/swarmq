@@ -4,6 +4,173 @@ All notable changes to SwarmQ. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [0.14.0] — unreleased
+
+Minor release with the hardening deferred from the fourth bug hunt and
+its spikes. Connecting to Valkey waits up to its deadline against a
+host that drops packets, and commands at runtime no longer multiply
+their TCP attempts (PF-16). A `schedule()` call that is cancelled before
+anything was sent releases its `unique_for` claim. During a broker
+resource alarm, the close of a discarded publish channel waits for the
+unblock (PF-19). `ValkeyBackend.connect()`/`close()` are safe to call
+concurrently, and `LockStore.force_release` is atomic. No new message
+headers, Lua scripts, key formats or message format changes: 0.14.0
+runs next to 0.13.x on the same queues and keys, in both directions,
+and a rollback to 0.13.1 is possible. Every change acts only inside
+the process (Valkey client, broker channel, client claim); a claim that
+a 0.14 client releases after a cancel looks the same to a 0.13.1
+client. Mixed operation is tested against 0.13.1, besides 0.11.0,
+0.11.1, 0.12.0 and 0.12.3. The chaos test stack now runs RabbitMQ
+4.3.6, the same broker version as integration tests, CI and the
+load-test suite; Toxiproxy is pinned to
+`ghcr.io/shopify/toxiproxy:2.9.0`. Read the upgrade notes: the connect
+error text, failure times, a cancel and the alarm log lines change.
+
+### Upgrade notes
+
+1. **Connecting to Valkey waits up to the deadline against a host that
+   drops packets.** A timed-out TCP connect is no longer retried inside
+   the driver's connection setup. Instead `ValkeyBackend.connect()`
+   (worker start, CLI commands, producers) repeats its `PING` after such
+   a timeout, with a short backoff, until
+   [`SWARMQ_BACKEND_CONNECT_TIMEOUT_S`](configuration.md#worker-behaviour)
+   expires, and then raises `BackendConnectionError` with
+   `Valkey connect timed out after <deadline>s`. With the default of
+   30 s nothing changes: `connect()` already ended after 30 s with
+   `Valkey connect timed out after 30.0s`. With a deadline above about
+   33 s the start now really waits that long; before, it gave up after
+   about 33 s (6 connection attempts of 5 s plus 3.1 s backoff) with
+   `Valkey connect failed: Timeout connecting to server`. Alert rules
+   that match that text need the new one. Under `swarmq worker` every
+   failed start then takes up to the deadline, so a slot reaches the
+   supervisor's restart limit (5 crashes within an hour) later. A port
+   that refuses connections still ends after about 3.1 s with
+   `Valkey connect failed: …`; handshake resets and authentication
+   errors are unchanged. Neither repeats until the deadline (E-075).
+2. **Valkey commands fail sooner against a host that drops packets.**
+   When a connection dies in the middle of a command, the command now
+   ends with `BackendConnectionError` after about 38 s instead of about
+   179 s (5 instead of 30 TCP attempts). A command that needs a new
+   pool connection ends after one TCP attempt, about 5 s instead of
+   about 33 s. Both are derived from scaled measurements against a real
+   SYN blackhole. Operations under `SWARMQ_BACKEND_OP_TIMEOUT` (5 s, the
+   worker's checks before a task) were bounded before. swarmq's loops
+   that retry after `BackendConnectionError` (progress watch, leader
+   election, result tail, gates) all wait between attempts; they make
+   the same number of attempts in less time. Such a TCP timeout now
+   reaches swarmq as valkey-py's `ConnectionError` instead of its
+   `TimeoutError`, with the same text `Timeout connecting to server`;
+   swarmq raises `BackendConnectionError` as before. Only code that
+   inspects the cause of that error sees the difference.
+3. **A cancel before anything was sent releases the `unique_for`
+   claim.** When `schedule()` or `schedule_many()` is cancelled (a
+   timeout around it, `task.cancel()`) before the RabbitMQ broker can
+   have sent the message, the client now releases the claim, and a
+   retry is no longer refused as a duplicate until the claim expires.
+   That covers waiting for a blocked publish connection (resource
+   alarm), opening the publish channel, waiting for the channel lock and
+   the backoff after attempts that sent nothing. The broker marks such
+   a cancel as `swarmq.exceptions.PublishCancelledUnsent`, a subclass of
+   `asyncio.CancelledError`: `except asyncio.CancelledError` catches it
+   unchanged, `task.cancelled()` stays `True`, and `asyncio.timeout`
+   still turns it into `TimeoutError`. It is not exported from
+   `swarmq`. A cancel after the message may have been sent keeps the
+   claim as in 0.13.1, and so does a cancel while a `delay`/`eta` entry
+   is stored or in `swarmq schedule add`; nothing is published there.
+   A publisher of your own (`Publisher.publish`) may raise
+   `PublishCancelledUnsent` when it provably sent nothing; without it a
+   cancel counts as unknown and the claim stays
+   ([deduplication](../guides/locking-and-dedup.md), E-041, E-042,
+   E-059).
+4. **Alarm log lines change when a publish channel is discarded.** When
+   the publish deadline cuts off a publish that may have been sent
+   while the publish connection is blocked (resource alarm), swarmq now
+   sends the `Channel.Close` of the discarded channel only once RabbitMQ
+   unblocks the connection or the connection ends, at most after the
+   publish deadline (`SWARMQ_PUBLISH_TIMEOUT_S`, during shutdown the
+   remaining grace period). Then it closes within its 5 s limit as
+   before. For an alarm shorter than the publish deadline,
+   `publish_channel_close_incomplete` (WARNING) and aiormq's ERROR
+   `Got frame for closed channel N: <Channel.CloseOk>` no longer appear.
+   Instead aiormq can log the WARNING
+   `Delivery tag … confirmed … was ignored` (`aiormq.channel`) when the
+   broker confirms the triggering publish after the unblock; that
+   publish still ends as `PublishIndeterminate`. For an alarm longer
+   than the publish deadline (for example 60 s alarm, 20 s deadline)
+   both old lines remain. Adjust alert rules that match these lines
+   ([event catalog](logging.md#event-catalog)). The other publishes
+   still waiting for their confirm on the discarded channel stay open
+   until the close: they end confirmed when the unblock comes before
+   their own deadline, otherwise as `PublishIndeterminate` at their own
+   deadline, and keep their slot at most until then. A shutdown during
+   an alarm still takes at most 5 s longer (E-025, E-078).
+5. **Own `ResultBackend` implementations: `connect()` and `close()`
+   must be safe to call concurrently.** The contract
+   (`swarmq.contracts.ResultBackend`) now requires that a `connect()`
+   during a running `connect()` waits for it and uses its client, and
+   tries on its own if that one fails; `close()` waits for a running
+   `connect()` and then closes, so no client is left open. The
+   signatures are unchanged. With `ValkeyBackend`, `close()` therefore
+   waits at most the deadline (`SWARMQ_BACKEND_CONNECT_TIMEOUT_S`) of a
+   running `connect()` ([contract notes](api.md#coordination-store-protocols),
+   E-082).
+6. **`LockStore.force_release` reports what it removed.**
+   `ValkeyLockStore.force_release` now deletes the lock key with a
+   single `DEL`: `True` means a lock key existed at that moment and is
+   gone, `False` that there was none. An error reply from Valkey (for
+   example `WRONGTYPE`) now raises `BackendResponseError`, an outage
+   `BackendConnectionError`; `BackendResponseError` is a subclass of
+   `BackendConnectionError`, so existing handlers still catch it. For a
+   semaphore, `True` comes as long as its key exists, even when all
+   holders have expired.
+
+### Fixed
+
+- **`force_release` is atomic.** It read `EXISTS` and released
+  afterwards, ignoring the result of the release; a lock that expired
+  in between was reported as `True`, and every driver error became a
+  plain `BackendConnectionError`. See upgrade note 6.
+- **Concurrent `ValkeyBackend.connect()` and `close()`.** A second
+  `connect()` during a running one built a second client and left the
+  first one open; a `close()` during `connect()` returned at once and
+  left the client built afterwards open. Now a concurrent `connect()`
+  reuses the client being built, `close()` waits for a running
+  `connect()`, and no client is left unclosed. No code in swarmq calls
+  them concurrently; the fix is for applications that do (E-082).
+- **PF-16: Valkey commands no longer multiply their TCP attempts
+  against a host that drops packets.** The command retry (5 retries)
+  and the retry inside the connection setup multiplied: a command whose
+  connection died made up to 30 TCP attempts of 5 s. See upgrade
+  note 2 (E-075).
+
+### Changed
+
+- **`ValkeyBackend.connect()` waits until its deadline against a host
+  that drops packets.** See upgrade note 1 (E-075).
+- **A cancel before anything was sent releases the `unique_for` claim**
+  (`PublishCancelledUnsent`). See upgrade note 3 (E-041).
+- **PF-19: during a resource alarm the close of a discarded publish
+  channel waits for `connection.unblocked`**, at most the publish
+  deadline. No channel leaks and no channel number is reused. See
+  upgrade note 4 (E-025, E-078).
+
+### Documentation
+
+- **`SWARMQ_BACKEND_CONNECT_TIMEOUT_S` is again a waiting time against
+  a host that drops packets.** The configuration and API reference and
+  `BackendConnectionError` say so; a refusing port still ends after
+  about 3.1 s. The 0.13.0rc2 entry describes 0.13 and stays as it is.
+- **Event catalog:** the aiormq WARNING
+  `Delivery tag … confirmed … was ignored` is listed, and
+  `publish_channel_close_incomplete` and aiormq's
+  `Got frame for closed channel` are described as appearing only when
+  the alarm outlasts the publish deadline.
+- **API reference:** contract notes for 0.14.0 on
+  `ResultBackend.connect`/`close`, `LockStore.force_release` and
+  `Publisher.publish` (`PublishCancelledUnsent`).
+- **Error catalog:** `PublishCancelledUnsent`, and the deferred channel
+  close under `BrokerPublishBlocked`.
+
 ## [0.13.1] — 2026-10-19
 
 0.13.1 is 0.13.1rc1 without code changes. Read

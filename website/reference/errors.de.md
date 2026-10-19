@@ -209,7 +209,11 @@ seinen `PING` (ACL `NOPERM` als `BackendResponseError`), mit der
 Meldung `Valkey connect failed: …`. Der `PING` läuft unter einer
 Gesamtfrist, [`SWARMQ_BACKEND_CONNECT_TIMEOUT_S`](configuration.md#worker-verhalten)
 (Vorgabe 30 s); läuft sie ab, lautet die Meldung
-`Valkey connect timed out after …s`. Ein gescheiterter `connect()`
+`Valkey connect timed out after …s`. Gegen einen Host, der Pakete
+verwirft, wiederholt `connect()` den `PING` bis zu dieser Frist (seit
+0.14; vorher endete es nach rund 33 s mit `Valkey connect failed:
+Timeout connecting to server`); ein Port, der Verbindungen abweist,
+endet nach rund 3,1 s mit `Valkey connect failed: …`. Ein gescheiterter `connect()`
 schließt den Client, den er gebaut hat, und hinterlässt kein halb
 verbundenes Backend; ein späterer `connect()` erreicht Valkey erneut
 und wiederholt die Eviction-Prüfung. Wird die Verbindung angenommen,
@@ -519,9 +523,12 @@ Kanal in dieser Phase abbrechen (etwa ein Broker-Neustart oder eine
 Netztrennung direkt nach dem Senden). Ebenso, wenn ein anderer Publish
 auf demselben Kanal nach dem Senden seine Frist überschreitet: SwarmQ
 verwirft dann den Kanal, und jeder Publish, der dort noch auf sein
-Confirm wartet, endet als `PublishIndeterminate`, auch wenn seine eigene
-Frist noch läuft; der nächste Publish öffnet einen neuen Kanal.
-Subklasse von `BrokerConnectionError`.
+Confirm wartet, endet beim Schließen des Kanals als
+`PublishIndeterminate`, auch wenn seine eigene Frist noch läuft; der
+nächste Publish öffnet einen neuen Kanal. Im Ressourcenalarm des
+Brokers wartet dieses Schließen auf die Freigabe (siehe
+[`BrokerPublishBlocked`](#brokerpublishblocked)). Subklasse von
+`BrokerConnectionError`.
 
 **Ursache.** Broker oder Netz sind nach dem Senden der Nachricht
 hängen geblieben oder abgebrochen; der Broker hat sie vielleicht,
@@ -651,15 +658,26 @@ Consume-Verbindung weiter. Das ist gewollt, kein Fehler. Bei häufigen
 Alarmen kommt eine kürzere `SWARMQ_PUBLISH_TIMEOUT_S` für Worker in
 Frage; der Preis sind mehr Zusatzläufe. Schneidet die Frist einen
 Publish ab, der gesendet sein kann, verwirft der Worker seinen
-Publish-Kanal und schließt ihn im Hintergrund; im Alarm läuft dieses
-Schließen in seine 5-s-Frist (`publish_channel_close_incomplete` ohne
-Traceback, `blocked=True`), und aiormq loggt bei der Freigabe `Got frame
-for closed channel` ([Event-Katalog](logging.md#event-katalog)). Beides
-ist harmlos. Der Verwurf beendet auch jedes andere noch offene Confirm
-auf diesem Kanal als `PublishIndeterminate`. Bei der Freigabe kann das
-einen ganzen Schub wartender Kopien treffen, wenn eine von ihnen ihre
-Frist im Alarm fast aufgebraucht hatte (gemessen: 12 weitere Kopien bei
-20 s Frist). Ihre Originale werden wie bei jeder unbestimmten Kopie neu
+Publish-Kanal. Seit 0.14 schickt er das Schließen dieses Kanals erst,
+wenn RabbitMQ die Verbindung freigibt oder die Verbindung endet,
+höchstens nach der Publish-Frist, und schließt dann wie bisher mit 5 s
+Frist. Bei einem Alarm, der kürzer ist als die Publish-Frist, erscheint
+keine Fehlerzeile; aiormq kann die WARNING
+`Delivery tag … confirmed … was ignored` loggen, wenn der Broker den
+auslösenden Publish nach der Freigabe bestätigt (er endet trotzdem als
+`PublishIndeterminate`). Dauert der Alarm länger als die Publish-Frist,
+läuft das Schließen in seine 5-s-Frist (`publish_channel_close_incomplete`
+ohne Traceback, `blocked=True`), und aiormq loggt bei der Freigabe
+`Got frame for closed channel` ([Event-Katalog](logging.md#event-katalog)).
+Alles das ist harmlos; kein Kanal bleibt zurück. Die übrigen noch
+offenen Confirms auf dem verworfenen Kanal bleiben bis zum Schließen
+offen: Sie enden bestätigt, wenn die Freigabe vor ihrer eigenen Frist
+kommt, sonst mit ihrer eigenen Frist als `PublishIndeterminate`, und
+belegen ihren Slot höchstens bis dahin (E-078). Vor 0.14 endeten sie
+sofort als `PublishIndeterminate`; bei der Freigabe konnte das einen
+ganzen Schub wartender Kopien treffen, wenn eine von ihnen ihre Frist
+im Alarm fast aufgebraucht hatte (gemessen mit 0.13: 12 weitere Kopien
+bei 20 s Frist). Ihre Originale werden wie bei jeder unbestimmten Kopie neu
 zugestellt; die Kopien sind beim Broker und laufen, und der
 Ausführungsschutz lässt kein Original neben oder nach seiner Kopie
 laufen (im gemessenen Lauf wurden alle Originale als `done`
@@ -822,6 +840,30 @@ einen frischen Forkserver. Unter `swarmq worker` geschieht das von
 selbst: Der Worker-Subprozess endet mit Code `71`, und der Supervisor
 startet ihn im Restart-Budget neu (`worker_fork_source_rejected`).
 Siehe [CPU-Modus](../guides/cpu-mode.md).
+
+## Außerhalb der Hierarchie: `PublishCancelledUnsent`
+
+`swarmq.exceptions.PublishCancelledUnsent` (seit 0.14) ist eine
+Unterklasse von `asyncio.CancelledError`, kein `SwarmQError`, und wird
+nicht aus `swarmq` exportiert. Er ist ein Abbruch wie jeder andere:
+`except asyncio.CancelledError` fängt ihn, `task.cancelled()` ist
+`True`, und `asyncio.timeout` macht `TimeoutError` daraus.
+
+**Wann geraist.** Vom Publish des RabbitMQ-Brokers, wenn die aufrufende
+Task abgebrochen wird, bevor ein Versuch die Nachricht gesendet haben
+kann: beim Warten auf eine blockierte Publish-Verbindung
+(Ressourcenalarm), beim Öffnen des Publish-Kanals, beim Warten auf die
+Kanal-Sperre oder im Backoff nach einem Versuch, der nichts gesendet
+hat. Ein Abbruch nach dem Senden bleibt ein einfacher `CancelledError`.
+
+**Ursache.** Ein Timeout um `schedule()` oder `schedule_many()` oder
+ein `task.cancel()` der aufrufenden Task.
+
+**Recovery.** Nichts zu tun. Der Client gibt den `unique_for`-Claim
+eines solchen Aufrufs frei, ein Wiederholversuch wird also nicht als
+Duplikat abgewiesen; nach einem einfachen `CancelledError` im Publish
+bleibt der Claim bis zu seinem Ablauf
+([Deduplizierung](../guides/locking-and-dedup.md), E-041).
 
 ## Siehe auch
 

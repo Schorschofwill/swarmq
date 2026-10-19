@@ -4,6 +4,188 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 [Keep a Changelog](https://keepachangelog.com/) und
 [Semantic Versioning](https://semver.org/).
 
+## [0.14.0] — unreleased
+
+Minor-Release mit den Härtungen, die aus der vierten Fehlersuche und
+ihren Spikes zurückgestellt waren. Der Verbindungsaufbau zu Valkey
+wartet gegen einen Host, der Pakete verwirft, bis zu seiner Frist, und
+Befehle zur Laufzeit vervielfachen ihre TCP-Versuche nicht mehr
+(PF-16). Ein `schedule()`-Aufruf, der abgebrochen wird, bevor etwas
+gesendet wurde, gibt seinen `unique_for`-Claim frei. Im
+Ressourcenalarm des Brokers wartet das Schließen eines verworfenen
+Publish-Kanals auf die Freigabe (PF-19). `ValkeyBackend.connect()`/
+`close()` sind nebenläufig sicher, und `LockStore.force_release` ist
+atomar. Keine neuen Header, Lua-Skripte, Key-Formate oder
+Formatänderungen: 0.14.0 läuft neben 0.13.x auf denselben Queues und
+Keys, in beide Richtungen, und ein Rollback auf 0.13.1 ist möglich.
+Jede Änderung wirkt nur im eigenen Prozess (Valkey-Client,
+Broker-Kanal, Claim des Clients); ein Claim, den ein 0.14-Client nach
+einem Abbruch freigibt, sieht für einen 0.13.1-Client gleich aus. Der
+Mischbetrieb ist gegen 0.13.1 getestet, daneben gegen 0.11.0, 0.11.1,
+0.12.0 und 0.12.3. Der Chaos-Teststack läuft jetzt auf RabbitMQ 4.3.6,
+derselben Broker-Version wie Integrationstests, CI und Loadsuite;
+Toxiproxy ist auf `ghcr.io/shopify/toxiproxy:2.9.0` gepinnt. Lies die
+Upgrade-Hinweise: Fehlertext beim Verbinden, Fehlerzeiten, Abbruch und
+die Logzeilen im Alarm ändern sich.
+
+### Upgrade-Hinweise
+
+1. **Der Verbindungsaufbau zu Valkey wartet gegen einen Host, der
+   Pakete verwirft, bis zur Frist.** Ein Zeitablauf beim TCP-Aufbau
+   wird innerhalb des Verbindungsaufbaus des Treibers nicht mehr
+   wiederholt. Stattdessen wiederholt `ValkeyBackend.connect()`
+   (Worker-Start, CLI-Befehle, Producer) nach einem solchen Zeitablauf
+   seinen `PING` mit kurzem Backoff, bis
+   [`SWARMQ_BACKEND_CONNECT_TIMEOUT_S`](configuration.md#worker-verhalten)
+   abläuft, und wirft dann `BackendConnectionError` mit
+   `Valkey connect timed out after <Frist>s`. Mit der Vorgabe 30 s
+   ändert sich nichts: `connect()` endete schon bisher nach 30 s mit
+   `Valkey connect timed out after 30.0s`. Mit einer Frist über rund
+   33 s dauert der Start jetzt wirklich so lange; bisher gab er nach
+   rund 33 s auf (6 Verbindungsversuche zu 5 s plus 3,1 s Backoff), mit
+   `Valkey connect failed: Timeout connecting to server`. Alarmregeln
+   auf diesen Text brauchen den neuen. Unter `swarmq worker` dauert dann
+   jeder gescheiterte Start bis zur Frist, ein Slot erreicht die
+   Neustartgrenze des Supervisors (5 Abstürze binnen einer Stunde) also
+   später. Ein Port, der Verbindungen abweist, endet weiter nach rund
+   3,1 s mit `Valkey connect failed: …`; Handshake-Trennungen und
+   Anmeldefehler sind unverändert. Keiner dieser Fälle wird bis zur
+   Frist wiederholt (E-075).
+2. **Valkey-Befehle scheitern gegen einen Host, der Pakete verwirft,
+   früher.** Stirbt eine Verbindung mitten im Befehl, endet der Befehl
+   jetzt nach rund 38 s statt rund 179 s mit `BackendConnectionError`
+   (5 statt 30 TCP-Versuche). Ein Befehl, der eine neue
+   Pool-Verbindung braucht, endet nach einem TCP-Versuch, rund 5 s statt
+   rund 33 s. Beide Werte sind aus skalierten Messungen gegen ein echtes
+   SYN-Blackhole abgeleitet. Operationen unter
+   `SWARMQ_BACKEND_OP_TIMEOUT` (5 s, die Prüfungen des Workers vor einem
+   Task) waren schon bisher begrenzt. Die Schleifen von swarmq, die nach
+   `BackendConnectionError` neu versuchen (Fortschritts-Watch,
+   Leader-Wahl, Ergebnis-Nachlauf, Gates), warten alle zwischen den
+   Versuchen; sie machen gleich viele Versuche in kürzerer Zeit. Ein
+   solcher TCP-Zeitablauf kommt jetzt als `ConnectionError` von
+   valkey-py statt als dessen `TimeoutError` bei swarmq an, mit
+   demselben Text `Timeout connecting to server`; swarmq wirft wie
+   bisher `BackendConnectionError`. Den Unterschied sieht nur Code, der
+   die Ursache dieses Fehlers prüft.
+3. **Ein Abbruch, bevor etwas gesendet wurde, gibt den
+   `unique_for`-Claim frei.** Wird `schedule()` oder `schedule_many()`
+   abgebrochen (ein Timeout um den Aufruf, `task.cancel()`), bevor der
+   RabbitMQ-Broker die Nachricht gesendet haben kann, gibt der Client
+   den Claim jetzt frei, und ein Wiederholversuch wird nicht mehr bis
+   zum Ablauf des Claims als Duplikat abgewiesen. Das umfasst das Warten
+   auf eine blockierte Publish-Verbindung (Ressourcenalarm), das Öffnen
+   des Publish-Kanals, das Warten auf die Kanal-Sperre und den Backoff
+   nach Versuchen, die nichts gesendet haben. Der Broker markiert einen
+   solchen Abbruch als `swarmq.exceptions.PublishCancelledUnsent`, eine
+   Unterklasse von `asyncio.CancelledError`: `except
+   asyncio.CancelledError` fängt ihn unverändert, `task.cancelled()`
+   bleibt `True`, und `asyncio.timeout` macht weiter `TimeoutError`
+   daraus. Er wird nicht aus `swarmq` exportiert. Ein Abbruch, nachdem
+   die Nachricht gesendet sein kann, hält den Claim wie in 0.13.1,
+   ebenso ein Abbruch beim Speichern eines `delay`/`eta`-Eintrags und
+   in `swarmq schedule add`; dort wird nichts publiziert. Ein eigener
+   Publisher (`Publisher.publish`) darf `PublishCancelledUnsent` werfen,
+   wenn er nachweislich nichts gesendet hat; ohne die Markierung gilt
+   ein Abbruch als unbestimmt, und der Claim bleibt
+   ([Deduplizierung](../guides/locking-and-dedup.md), E-041, E-042,
+   E-059).
+4. **Die Logzeilen im Alarm ändern sich, wenn ein Publish-Kanal
+   verworfen wird.** Schneidet die Publish-Frist einen Publish ab, der
+   gesendet sein kann, während die Publish-Verbindung blockiert ist
+   (Ressourcenalarm), schickt swarmq das `Channel.Close` des verworfenen
+   Kanals jetzt erst, wenn RabbitMQ die Verbindung freigibt oder die
+   Verbindung endet, höchstens nach der Publish-Frist
+   (`SWARMQ_PUBLISH_TIMEOUT_S`, beim Herunterfahren die restliche
+   Gnadenfrist). Danach schließt es wie bisher mit seiner 5-s-Frist. Bei
+   einem Alarm, der kürzer ist als die Publish-Frist, entfallen
+   `publish_channel_close_incomplete` (WARNING) und die aiormq-ERROR
+   `Got frame for closed channel N: <Channel.CloseOk>`. Stattdessen kann
+   aiormq die WARNING `Delivery tag … confirmed … was ignored`
+   (`aiormq.channel`) loggen, wenn der Broker den auslösenden Publish
+   nach der Freigabe bestätigt; dieser Publish endet weiter als
+   `PublishIndeterminate`. Bei einem Alarm, der länger dauert als die
+   Publish-Frist (etwa 60 s Alarm, 20 s Frist), bleiben beide alten
+   Zeilen. Alarmregeln auf diese Zeilen anpassen
+   ([Event-Katalog](logging.md#event-katalog)). Die übrigen Publishes,
+   die auf dem verworfenen Kanal noch auf ihr Confirm warten, bleiben
+   bis zum Schließen offen: Sie enden bestätigt, wenn die Freigabe vor
+   ihrer eigenen Frist kommt, sonst mit ihrer eigenen Frist als
+   `PublishIndeterminate`, und belegen ihren Slot höchstens bis dahin.
+   Ein Herunterfahren im Alarm dauert weiter höchstens 5 s länger
+   (E-025, E-078).
+5. **Eigene `ResultBackend`-Implementierungen: `connect()` und
+   `close()` müssen nebenläufig sicher sein.** Der Vertrag
+   (`swarmq.contracts.ResultBackend`) verlangt jetzt: Ein `connect()`
+   während eines laufenden `connect()` wartet ihn ab und nutzt dessen
+   Client, und es versucht es selbst, wenn jener scheitert; `close()`
+   wartet ein laufendes `connect()` ab und schließt danach, es bleibt
+   kein Client offen. Die Signaturen bleiben gleich. Bei
+   `ValkeyBackend` wartet `close()` darum höchstens die Frist
+   (`SWARMQ_BACKEND_CONNECT_TIMEOUT_S`) eines laufenden `connect()` ab
+   ([Vertragshinweise](api.md#protokolle-der-koordinations-stores),
+   E-082).
+6. **`LockStore.force_release` meldet, was es entfernt hat.**
+   `ValkeyLockStore.force_release` löscht den Lock-Schlüssel jetzt mit
+   einem einzigen `DEL`: `True` heißt, zu diesem Zeitpunkt existierte
+   ein Lock-Schlüssel und ist jetzt weg, `False`, es gab keinen. Eine
+   Fehlerantwort von Valkey (etwa `WRONGTYPE`) wirft jetzt
+   `BackendResponseError`, ein Ausfall `BackendConnectionError`;
+   `BackendResponseError` ist eine Unterklasse von
+   `BackendConnectionError`, bestehende Handler fangen sie also weiter.
+   Bei einer Semaphore kommt `True`, solange ihr Schlüssel existiert,
+   auch wenn alle Halter schon abgelaufen sind.
+
+### Behoben
+
+- **`force_release` ist atomar.** Es las `EXISTS` und gab danach frei,
+  ohne das Ergebnis der Freigabe zu prüfen; ein Lock, der dazwischen
+  ablief, wurde als `True` gemeldet, und jeder Treiberfehler wurde zu
+  einem pauschalen `BackendConnectionError`. Siehe Upgrade-Hinweis 6.
+- **Nebenläufige `ValkeyBackend.connect()` und `close()`.** Ein zweites
+  `connect()` während eines laufenden baute einen zweiten Client und
+  ließ den ersten offen; ein `close()` während `connect()` kehrte sofort
+  zurück und ließ den danach gebauten Client offen. Jetzt nutzt ein
+  nebenläufiges `connect()` den Client, der gerade entsteht, `close()`
+  wartet ein laufendes `connect()` ab, und kein Client bleibt
+  ungeschlossen. swarmq selbst ruft beide nicht nebenläufig auf; die
+  Korrektur gilt für Anwendungen, die es tun (E-082).
+- **PF-16: Valkey-Befehle vervielfachen ihre TCP-Versuche gegen einen
+  Host, der Pakete verwirft, nicht mehr.** Die Befehlswiederholung
+  (5 Wiederholungen) und die Wiederholung im Verbindungsaufbau
+  multiplizierten sich: Ein Befehl, dessen Verbindung starb, machte bis
+  zu 30 TCP-Versuche zu je 5 s. Siehe Upgrade-Hinweis 2 (E-075).
+
+### Geändert
+
+- **`ValkeyBackend.connect()` wartet gegen einen Host, der Pakete
+  verwirft, bis zu seiner Frist.** Siehe Upgrade-Hinweis 1 (E-075).
+- **Ein Abbruch, bevor etwas gesendet wurde, gibt den
+  `unique_for`-Claim frei** (`PublishCancelledUnsent`). Siehe
+  Upgrade-Hinweis 3 (E-041).
+- **PF-19: Im Ressourcenalarm wartet das Schließen eines verworfenen
+  Publish-Kanals auf `connection.unblocked`**, höchstens die
+  Publish-Frist. Kein Kanal bleibt zurück, keine Kanalnummer wird
+  doppelt vergeben. Siehe Upgrade-Hinweis 4 (E-025, E-078).
+
+### Dokumentation
+
+- **`SWARMQ_BACKEND_CONNECT_TIMEOUT_S` ist gegen einen Host, der Pakete
+  verwirft, wieder eine Wartezeit.** Konfigurations- und API-Referenz
+  und `BackendConnectionError` sagen das; ein abweisender Port endet
+  weiter nach rund 3,1 s. Der Eintrag zu 0.13.0rc2 beschreibt 0.13 und
+  bleibt, wie er ist.
+- **Event-Katalog:** Die aiormq-WARNING
+  `Delivery tag … confirmed … was ignored` ist aufgenommen;
+  `publish_channel_close_incomplete` und die aiormq-Zeile
+  `Got frame for closed channel` erscheinen laut Katalog nur noch,
+  wenn der Alarm länger dauert als die Publish-Frist.
+- **API-Referenz:** Vertragshinweise für 0.14.0 zu
+  `ResultBackend.connect`/`close`, `LockStore.force_release` und
+  `Publisher.publish` (`PublishCancelledUnsent`).
+- **Fehlerkatalog:** `PublishCancelledUnsent`, und das zurückgestellte
+  Schließen des Kanals unter `BrokerPublishBlocked`.
+
 ## [0.13.1] — 2026-10-19
 
 0.13.1 ist 0.13.1rc1 ohne Codeänderungen. Die Korrekturen und die
