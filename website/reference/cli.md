@@ -311,7 +311,8 @@ swarmq schedule add NAME
 
 Creates a new schedule (insert-if-absent). Pass exactly one of
 `--cron` (5-field expression) or `--at` (ISO 8601 one-shot time;
-without a timezone it is read as UTC). `--cron` accepts the same
+without a timezone it is read as UTC; at most `315360000` seconds ahead,
+otherwise exit `1` before any connection, since 0.13.1). `--cron` accepts the same
 crontab(5) positive list as `TaskInfo.cron`
 ([cron syntax](configuration.md#scheduling-cron)); anything else, such
 as six fields or `L`, `W`, `#`, `R`, `H`, `?` and `@reboot`, ends the
@@ -343,7 +344,9 @@ stored anything). The `--unique-for` claim is released at once when a
 different entry already holds the name, and when the backend answers
 with an error. It is kept until it expires when the backend fails
 (connection lost, timeout), because the entry may have been stored; a
-repeated call until then is a duplicate. A claim that an earlier
+repeated call until then is a duplicate. Since 0.13.1 the same holds
+when the command is interrupted (Ctrl+C) while storing or while reading
+the entry after a conflict. A claim that an earlier
 `schedule add` under the same name holds is never released by this
 call, not even after a read error. This also holds after
 `schedule remove`: until the claim expires, adding the same name with

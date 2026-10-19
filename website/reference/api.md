@@ -118,8 +118,8 @@ Enqueue a task and return its `task_id`.
 | `task_name` | `str` | Name declared in `TaskInfo.name`. |
 | `*args`, `**kwargs` | `Any` | Forwarded to `Task.run()`. Must be JSON-compatible. |
 | `queue` | `str \| None` | Override the task's default queue. Required in client-only mode (no registry). |
-| `delay` | `float \| None` | Seconds to wait before delivery. Mutually exclusive with `eta`. Must be `≥ 0`. |
-| `eta` | `datetime \| None` | Absolute fire time. Mutually exclusive with `delay`. Must be in the future (1s lenience). |
+| `delay` | `float \| None` | Seconds to wait before delivery. Mutually exclusive with `eta`. Must be `≥ 0`, finite and at most `315360000` (ten years, since 0.13.1). |
+| `eta` | `datetime \| None` | Absolute fire time. Mutually exclusive with `delay`. Must be in the future (1s lenience) and at most `315360000` seconds ahead (since 0.13.1). A naive `datetime` is read as local time. |
 | `unique_for` | `float \| None` | Override `TaskInfo.unique_for`, in seconds. Must be `> 0`, finite and at most `315360000` (`ValueError` otherwise, before any claim, publish or store; since 0.12.3, the upper bound since 0.13.0); a `float` is rounded up to whole seconds. Pass `None` to disable dedup for this call. |
 | `unique_until` | `"start" \| "completion"` | Override `TaskInfo.unique_until`. |
 
@@ -169,13 +169,21 @@ defaults, build the producer with the same tasks registered, e.g. via a
 
 - `TaskNotFoundError` — task_name not in the registry (registry mode).
 - `ValueError` — `delay < 0`, both `delay` and `eta` set, `eta` in the past,
-  `unique_for` `<= 0`, `inf`, `nan` or above `315360000` (ten years).
+  `delay` `nan`, `inf` or above `315360000`, `eta` more than `315360000`
+  seconds ahead (since 0.13.1, before `pre_enqueue`, any claim and any
+  write), `unique_for` `<= 0`, `inf`, `nan` or above `315360000` (ten years).
 - `BrokerConnectionError` — broker unreachable at publish.
 - `BackendResponseError` — with `delay`/`eta`: the scheduler store holds
   a different entry under the one-shot's name, or refused the write. On
   a conflict, and when Valkey is unreachable while storing, the call's
   own `unique_for` claim stays until its TTL ends, because the entry may
   have been stored and fire; after an error reply it is released.
+- `asyncio.CancelledError` — the call was cancelled (a timeout around it,
+  `task.cancel()`). Since 0.13.1 a cancel during the publish or while
+  storing a `delay`/`eta` entry counts as indeterminate, like an
+  outage: the `unique_for` claim stays until it expires (`unique_for`
+  plus the delay), and the `CancelledError` propagates unchanged. A
+  cancel in `pre_enqueue`, before anything was sent, releases it.
 - Propagated from `pre_enqueue` middleware hooks (with `delay`/`eta`
   too).
 
@@ -220,7 +228,8 @@ indeterminate keeps its `unique_for` claim, since its message may have
 arrived; only claims of elements where nothing was sent are released.
 If any element is indeterminate, the batch raises its
 `PublishIndeterminate`, even when a definite failure sits at a smaller
-index.
+index. Since 0.13.1 a cancel during the publish counts as indeterminate
+too: the claims stay and the `CancelledError` propagates.
 
 ### `run()`
 
@@ -513,7 +522,11 @@ TaskInfo(
 fraction is rounded up to the next second, `inf` and `nan` raise
 `ValueError` (since 0.12.3). `result_ttl`, `unique_for`, `max_age` and
 `hard_timeout` are at most `315360000` seconds (ten years, the bound of
-`SwarmQConfig`); a larger value raises `ValueError` (since 0.13.0). Field semantics and validation rules live
+`SwarmQConfig`); a larger value raises `ValueError` (since 0.13.0).
+`soft_timeout` and `hard_timeout` must be greater than 0: `nan`, `-inf`,
+`0`, negative values and `False` raise `ValueError`, a non-number such as
+a `timedelta` raises `TypeError`, each naming the field (since 0.13.1).
+`soft_timeout=inf` stays allowed. Field semantics and validation rules live
 in [Configuration reference — TaskInfo fields](configuration.md#taskinfo-fields).
 
 ## `next_fire_times()`

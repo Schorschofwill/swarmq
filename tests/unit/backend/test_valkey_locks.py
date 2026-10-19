@@ -17,6 +17,8 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from valkey.exceptions import ConnectionError as ValkeyConnectionError
+from valkey.exceptions import TimeoutError as ValkeyTimeoutError
 
 from swarmq.backend.valkey.locks import LockManager, ValkeyLockStore
 from swarmq.contracts import LockToken
@@ -245,3 +247,17 @@ class TestValkeyLockStoreTokens:
         assert await store.current_owner("l") == "owner-a"
         store._client.get = AsyncMock(return_value=b"")
         assert await store.current_owner("l") is None
+
+    @pytest.mark.entscheidung("E-081")
+    @pytest.mark.parametrize("error", [ValkeyConnectionError("down"), ValkeyTimeoutError("slow")])
+    async def test_current_owner_propagates_raw_driver_errors(self, error):
+        """E-081: anders als ``force_release`` und ``observe`` übersetzt
+        ``current_owner`` Treiberfehler nicht in ``BackendConnectionError``;
+        „kein Halter“ (``None``) bleibt von „Valkey weg“ unterscheidbar."""
+        store, _ = self._store()
+        store._client.get = AsyncMock(side_effect=error)
+
+        with pytest.raises(type(error)) as caught:
+            await store.current_owner("l")
+
+        assert caught.value is error

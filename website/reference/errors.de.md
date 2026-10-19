@@ -244,15 +244,22 @@ Nachricht dafür vor der Ausführung nicht zurück (anders als bei einem
 nicht erreichbaren Backend): Sie geht an derselben Stelle in die Queue
 zurück und landet, wenn der Fehler bleibt, über das Zustelllimit in
 `{queue}.XQ`. Den im Fehler genannten Key prüfen und löschen oder
-korrigieren.
+korrigieren. Trifft der Fehler das Voranbringen eines schon erfolgreichen
+Workflow-Schritts, wird der Schritt ebenso bis zum Zustelllimit neu
+zugestellt; seit 0.13.1 markiert der Worker den Workflow danach mit dem
+Fehlertext als `failed`, statt die Nachricht in die DLQ zu legen
+(`FIRE_AND_FORGET`-Schritte: sofort). Siehe
+[Fehlerfälle bei Workflows](../guides/workflows.md#fehlerfalle).
 
 Fehlerantworten, die durch Warten heilen, sind kein
 `BackendResponseError`, sondern ein einfacher `BackendConnectionError`
 und werden wie ein nicht erreichbares Backend behandelt: `OOM`
 (maxmemory erreicht), `READONLY` (der Client spricht nach einem
 Failover noch mit dem herabgestuften Primary), `LOADING`, `TRYAGAIN`,
-`CLUSTERDOWN`, `MASTERDOWN` und `MISCONF` (Persistenz scheitert, etwa
-bei voller Platte).
+`CLUSTERDOWN`, `MASTERDOWN`, `MISCONF` (Persistenz scheitert, etwa
+bei voller Platte), `BUSY` (ein lang laufendes Skript) und `NOREPLICAS`
+(zu wenige Replikate für `min-replicas-to-write`; die beiden letzten
+seit 0.13.1).
 
 ## `TaskNotFoundError`
 

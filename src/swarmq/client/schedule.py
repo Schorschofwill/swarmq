@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 from swarmq.client.schedule_resolve import _MISSING as _MISSING  # Re-Export (Fassade, app.py)
 from swarmq.client.schedule_resolve import ClientScheduleResolve
 from swarmq.client.schedule_resolve import _MissingType as _MissingType
+from swarmq.config_validation import MAX_DEADLINE_MS, MAX_DEADLINE_S, check_deadline_bound, require_number
 from swarmq.contracts import Publisher, ResultBackend
 from swarmq.contracts.coordination import ScheduleStore as ContractScheduleStore
 from swarmq.exceptions import (
@@ -28,6 +29,7 @@ from swarmq.exceptions import (
     PublishIndeterminate,
     TaskNotFoundError,
     is_backend_outage,
+    is_backend_outcome_unknown,
 )
 from swarmq.headers import (
     HEADER_ENQUEUED_AT,
@@ -47,6 +49,26 @@ from swarmq.signals import Signal
 from swarmq.task import UniqueUntil
 
 logger = get_logger(__name__)
+
+# Publish-Ausgaenge, nach denen die Nachricht angekommen sein kann: die
+# Unique-Sperre bleibt stehen (E-041; der Abbruch seit 0.13.1).
+_INDETERMINATE_PUBLISH = (PublishIndeterminate, asyncio.CancelledError)
+
+
+def _check_delay_and_eta(delay: float | None, eta: datetime | None) -> None:
+    """Form von ``delay``/``eta`` vor jeder Nebenwirkung (E-080)."""
+    if delay is not None and eta is not None:
+        raise ValueError("Specify delay OR eta, not both")
+    if delay is None:
+        return
+    # Typ vor dem Vergleich: eine ``timedelta`` oder ein String scheiterte
+    # sonst an ``< 0`` ohne Feldnamen (Review 0.13.1).
+    require_number("delay", delay)
+    if delay < 0:
+        raise ValueError(f"delay must be >= 0, got {delay!r}")
+    # ``nan`` besteht ``< 0`` und ``> 0`` nicht und veroeffentlichte sonst
+    # still sofort; ``inf`` warf beim Umrechnen ``OverflowError``.
+    check_deadline_bound("delay", delay)
 
 
 class ClientBroker(Publisher, Protocol):
@@ -219,10 +241,7 @@ class ClientScheduling(ClientScheduleResolve):
         resolved_queue, delivery_mode = self._resolve_queue_and_delivery_mode(task_name, queue)
 
         # --- deferred path: delay= / eta= ---
-        if delay is not None and eta is not None:
-            raise ValueError("Specify delay OR eta, not both")
-        if delay is not None and delay < 0:
-            raise ValueError(f"delay must be >= 0, got {delay!r}")
+        _check_delay_and_eta(delay, eta)
         # delay=0 is a normal immediate publish; only non-zero delay and
         # eta take the scheduler-store detour.
         if (delay is not None and delay > 0) or eta is not None:
@@ -306,10 +325,12 @@ class ClientScheduling(ClientScheduleResolve):
         # the rollback safe against a racing second schedule that
         # somehow won SETNX in the meantime (cannot happen atomically
         # but defense-in-depth).
+        publishing = False
         try:
             # pre_enqueue exceptions PROPAGATE — they can prevent the enqueue.
             await chain.run_pre_enqueue(message_dict)
 
+            publishing = True
             # broker.publish forwards **properties to aio_pika.Message(**),
             # which accepts ``headers=`` natively. Empty dict is harmless.
             await self._broker.publish(
@@ -326,6 +347,14 @@ class ClientScheduling(ClientScheduleResolve):
             # Einmaligkeit ist, ist Blockieren die richtige Richtung; die
             # Sperre loest sich nach ihrer eigenen Lebensdauer von selbst
             # (Plan 2026-08-28-001, R11).
+            raise
+        except asyncio.CancelledError:
+            # Abbruch des Aufrufers im Publish: Die Frames koennen schon
+            # gesendet sein, der Ausgang ist unbestimmt wie bei
+            # ``PublishIndeterminate`` -- die Sperre bleibt (E-041, 0.13.1).
+            # Vor dem Publish (``pre_enqueue``) ist nichts gesendet.
+            if dedup_hash is not None and not publishing:
+                await self._rollback_unique_claim(dedup_hash, task_id)
             raise
         except BaseException:
             if dedup_hash is not None:
@@ -448,10 +477,11 @@ class ClientScheduling(ClientScheduleResolve):
                 )
             # Rollback flags for elements whose publish failed (the
             # successful ones still have matching messages in the broker).
-            # Wie ``schedule``: nach ``PublishIndeterminate`` kann die
-            # Nachricht angekommen sein, die Sperre bleibt (B24).
+            # Wie ``schedule``: nach ``PublishIndeterminate`` oder einem
+            # Abbruch im Publish kann die Nachricht angekommen sein, die
+            # Sperre bleibt (B24; E-041, 0.13.1).
             for idx, exc in errors:
-                if isinstance(exc, PublishIndeterminate):
+                if isinstance(exc, _INDETERMINATE_PUBLISH):
                     continue
                 claim = state["claimed_flags"].get(idx)
                 if claim is not None:
@@ -468,7 +498,7 @@ class ClientScheduling(ClientScheduleResolve):
             # Ein unbestimmter Eintrag macht den Batch unbestimmt: ein
             # bestimmter Fehler an kleinerem Index hiesse sonst "nichts
             # gesendet, Wiederholen sicher" (B24).
-            indeterminate = [exc for _, exc in errors if isinstance(exc, PublishIndeterminate)]
+            indeterminate = [exc for _, exc in errors if isinstance(exc, _INDETERMINATE_PUBLISH)]
             raise indeterminate[0] if indeterminate else errors[0][1]
 
     async def schedule_many(
@@ -621,10 +651,23 @@ class ClientScheduling(ClientScheduleResolve):
         """
         now_ms = int(time.time() * 1000)
         if eta is not None:
-            fire_ts_ms = int(eta.timestamp() * 1000)
+            try:
+                fire_ts_ms = int(eta.timestamp() * 1000)
+            except ValueError as exc:
+                # Naive Zeit am Rand (``datetime.max``/``min``): als Ortszeit
+                # nicht darstellbar, jedenfalls ausserhalb der Grenze. Dieselbe
+                # Meldung wie die Grenze unten, sonst hinge sie von der
+                # Zeitzone des Prozesses ab (in UTC ist ``datetime.max``
+                # darstellbar).
+                raise ValueError(
+                    f"eta must be at most {MAX_DEADLINE_S} seconds in the future, got {eta.isoformat()}"
+                ) from exc
             # Allow a 1s lenience for clock skew / scheduling latency.
             if fire_ts_ms < now_ms - 1_000:
                 raise ValueError(f"eta is in the past: {eta.isoformat()}. Use delay=0 for immediate execution.")
+            # E-080: dieselbe Grenze wie ``delay`` (E-063), vor ``pre_enqueue``.
+            if fire_ts_ms - now_ms > MAX_DEADLINE_MS:
+                raise ValueError(f"eta must be at most {MAX_DEADLINE_S} seconds in the future, got {eta.isoformat()}")
         else:
             assert delay is not None  # caller-side validated
             fire_ts_ms = now_ms + int(delay * 1000)
@@ -697,10 +740,10 @@ class ClientScheduling(ClientScheduleResolve):
         try:
             added = await store.add_schedule(definition)
         except BaseException as exc:
-            # Ein Ausfall ist unbestimmt (``sched_add.lua`` ist atomar, der
-            # Eintrag kann feuern): Die Sperre bleibt stehen wie nach
-            # ``PublishIndeterminate`` (E-041, E-059-Nachtrag).
-            if dedup_hash is not None and not is_backend_outage(exc):
+            # Ein Ausfall oder Abbruch ist unbestimmt (``sched_add.lua`` ist
+            # atomar, der Eintrag kann feuern): Die Sperre bleibt stehen wie
+            # nach ``PublishIndeterminate`` (E-041, E-059-Nachtraege).
+            if dedup_hash is not None and not is_backend_outcome_unknown(exc):
                 await self._rollback_unique_claim(dedup_hash, task_id)
             raise
         if added is False:

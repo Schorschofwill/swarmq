@@ -1,6 +1,9 @@
 """SwarmQ exception hierarchy."""
 
+import asyncio
 import math
+
+from swarmq.seconds import MAX_DEADLINE_S
 
 
 class SwarmQError(Exception):
@@ -152,7 +155,7 @@ class BackendResponseError(BackendConnectionError):
     beantwortet (z. B. ``WRONGTYPE``, Skriptfehler).
 
     Fehlerantworten, die durch Warten heilen (OOM, READONLY, LOADING,
-    TRYAGAIN, CLUSTERDOWN, MASTERDOWN, MISCONF), sind KEIN
+    TRYAGAIN, CLUSTERDOWN, MASTERDOWN, MISCONF, BUSY, NOREPLICAS), sind KEIN
     ``BackendResponseError``, sondern ein einfacher
     ``BackendConnectionError`` (``as_backend_error``).
 
@@ -170,6 +173,13 @@ def is_backend_outage(exc: BaseException) -> bool:
     """Ausfall des Backends (Verbindung, Timeout) -- nicht eine
     Fehlerantwort (``BackendResponseError``) und kein anderer Fehler."""
     return isinstance(exc, BackendConnectionError) and not isinstance(exc, BackendResponseError)
+
+
+def is_backend_outcome_unknown(exc: BaseException) -> bool:
+    """Kann eine schreibende Backend-Operation trotz *exc* gelaufen sein?
+    Bei einem Ausfall und bei einem Abbruch (``CancelledError``, 0.13.1):
+    valkey-py sendet den Befehl und liest danach (E-059, E-041)."""
+    return is_backend_outage(exc) or isinstance(exc, asyncio.CancelledError)
 
 
 class TaskNotFoundError(SwarmQError):
@@ -274,6 +284,12 @@ class Retry(SwarmQError):
         if delay is not None:
             if not math.isfinite(delay):
                 msg = f"Retry delay must be finite, got {delay!r}"
+                raise ValueError(msg)
+            # F4-19 (E-060, Nachtrag 2026-10-19): ueber der Broker-Grenze
+            # lehnt RabbitMQ die Expiration ab; ``int(delay * 1000)`` bleibt
+            # damit auch fuer riesige Werte ohne ``OverflowError``.
+            if delay > MAX_DEADLINE_S:
+                msg = f"Retry delay must be at most {MAX_DEADLINE_S} seconds, got {delay!r}"
                 raise ValueError(msg)
             if delay < 0:
                 delay = 0.0

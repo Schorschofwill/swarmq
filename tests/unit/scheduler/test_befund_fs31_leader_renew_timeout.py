@@ -36,8 +36,8 @@ from swarmq.config import SwarmQConfig
 from swarmq.contracts.coordination import LockToken
 from swarmq.exceptions import BackendConnectionError
 from swarmq.signals import SignalDispatcher
+from tests.support.virtual_time import run_virtual
 from tests.unit.scheduler._helpers import _make_loop  # pyright: ignore[reportUnknownVariableType] - ungetypter Bestandshelfer
-from tests.unit.scheduler._virtual_time import run_virtual
 
 pytestmark = [pytest.mark.timeout(5)]
 

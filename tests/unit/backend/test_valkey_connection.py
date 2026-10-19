@@ -15,6 +15,8 @@ Test-Liste (viertes Review 0.9.0):
       Fehlerpraefix, z. B. MASTERDOWN ausserhalb des Cluster-Parsers, MISCONF)
       sind Ausfaelle
 - [x] WRONGTYPE und Skriptfehler bleiben ``BackendResponseError``
+- [x] BUSY (langes Skript) und NOREPLICAS (``min-replicas-to-write``) sind
+      Ausfaelle (Review 0.13.1)
 """
 
 from __future__ import annotations
@@ -68,11 +70,31 @@ def test_self_healing_replies_without_own_class_are_outages(reply):
     assert _is_outage(as_backend_error(str(exc), exc))
 
 
+@pytest.mark.entscheidung("E-079")
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "BUSY Valkey is busy running a script. You can only call SCRIPT KILL or SHUTDOWN NOSAVE.",
+        "NOREPLICAS Not enough good replicas to write.",
+    ],
+    ids=["busy", "noreplicas"],
+)
+def test_busy_script_and_missing_replicas_are_outages(reply):
+    """Review 0.13.1: ein langes Skript (``BUSY``) und zu wenige Replikate
+    (``NOREPLICAS``, ``min-replicas-to-write``) heilen durch Warten wie
+    ``OOM``. Seit 0.13.1 markiert der FAF-Pfad eine Fehlerantwort sofort als
+    ``failed``; eine falsche Einstufung schlüge dort sofort durch."""
+    exc = vx.ResponseError(reply)
+
+    assert _is_outage(as_backend_error(str(exc), exc))
+
+
 @pytest.mark.parametrize(
     "exc",
     [
         vx.ResponseError("WRONGTYPE Operation against a key holding the wrong kind of value"),
         vx.ResponseError("ERR user_script:1: Script attempted to access nonexistent global variable"),
+        vx.ResponseError("BUSYKEY Target key name already exists."),
         vx.ResponseError(""),
         vx.DataError("Invalid input of type: 'dict'"),
     ],

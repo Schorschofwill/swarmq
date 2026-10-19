@@ -34,6 +34,10 @@ Testliste:
 # [x] Erfolg gespeichert, Advance scheitert (Neuzustellung), Neuzustellung im
 #     Dead-Letter -> nachgeholter Advance, Ack ohne DLQ-Kopie und ohne
 #     ``TASK_DLQ``, Workflow ``completed``, Erfolgsergebnis unverändert
+# [x] 0.13.1 (Nachtrag E-079/E-040): am Zustelllimit scheitert der letzte
+#     Advance mit einer Fehlerantwort -> Workflow ``failed`` mit dem
+#     Fehlertext (``get()`` wirft ``TaskError``), Ack ohne DLQ-Kopie und
+#     ohne ``TASK_DLQ``, Erfolgsergebnis unverändert
 """
 
 from __future__ import annotations
@@ -48,7 +52,7 @@ import pytest
 from swarmq.client import Client
 from swarmq.config import SwarmQConfig
 from swarmq.contracts import Delivery, PublishReceipt
-from swarmq.exceptions import BackendConnectionError
+from swarmq.exceptions import BackendConnectionError, BackendResponseError, TaskError
 from swarmq.middleware import MiddlewareChain
 from swarmq.registry import TaskRegistry
 from swarmq.serialization import decode_json, decode_result
@@ -69,6 +73,7 @@ from swarmq.workflow_orchestration import (
     workflow_step_task_id,
 )
 from tests.support.inmemory import FakeClock, InMemoryBackend, InMemoryBroker
+from tests.support.valkey_replies import WRONGTYPE_REPLY
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -121,11 +126,13 @@ class _RecordingBroker(InMemoryBroker):
 
 class _CasOutage:
     """Backend-Sicht des Workers: das nächste Compare-and-Set des
-    Workflow-Zustands scheitert (Valkey kurz weg, nach dem Publish)."""
+    Workflow-Zustands scheitert (Valkey kurz weg, nach dem Publish; mit
+    *error* auch als Fehlerantwort)."""
 
     def __init__(self, inner: InMemoryBackend) -> None:
         self._inner = inner
         self.outages = 0
+        self.error: Exception = BackendConnectionError("valkey unreachable (injected)")
 
     def __getattr__(self, name: str) -> Any:
         attr = getattr(self._inner, name)
@@ -135,7 +142,7 @@ class _CasOutage:
         async def call(*args: Any, **kwargs: Any) -> Any:
             if self.outages > 0:
                 self.outages -= 1
-                raise BackendConnectionError("valkey unreachable (injected)")
+                raise self.error
             return await attr(*args, **kwargs)
 
         return call
@@ -171,6 +178,7 @@ class _Scene:
     workflow_id: str
     body: bytes
     headers: dict[str, Any]
+    handle: Any
     dlq_signals: list[dict[str, Any]] = field(default_factory=list)
 
     def delivery(self) -> Delivery:
@@ -245,7 +253,7 @@ async def scene(backend: InMemoryBackend) -> AsyncIterator[_Scene]:
         kwargs={},
         workflow_id=handle.workflow_id,
     )
-    result = _Scene(backend, view, broker, retry, ctx, handle.workflow_id, body, dict(headers))
+    result = _Scene(backend, view, broker, retry, ctx, handle.workflow_id, body, dict(headers), handle)
 
     async def _on_dlq(**kwargs: Any) -> None:
         result.dlq_signals.append(kwargs)
@@ -307,3 +315,26 @@ async def test_at_the_limit_the_last_advance_completes_the_workflow_and_keeps_th
     assert scene.dlq_signals == []
     stored = await scene.stored_result()
     assert (stored["is_error"], stored["result"]) == (False, ["a1"])
+
+
+@pytest.mark.entscheidung("E-079")
+async def test_at_the_limit_an_error_reply_of_the_last_advance_fails_the_workflow_and_keeps_the_success(
+    scene: _Scene,
+) -> None:
+    """0.13.1 (Nachtrag E-079, E-040): eine Fehlerantwort heilt keine
+    Wiederholung. Am Zustelllimit wird der Workflow mit dem Fehlertext
+    ``failed``, die Zustellung ohne DLQ-Kopie bestätigt; das
+    Erfolgsergebnis bleibt."""
+    wrongtype = WRONGTYPE_REPLY
+    scene.view.error = BackendResponseError(wrongtype)
+    scene.view.outages = 1
+
+    assert await scene.dead_letter(may_redeliver=False) is False
+
+    assert await scene.status() == STATUS_FAILED
+    assert scene.broker.verbs == ["ack"]
+    assert scene.dlq_signals == []
+    stored = await scene.stored_result()
+    assert (stored["is_error"], stored["result"]) == (False, ["a1"])
+    with pytest.raises(TaskError, match="WRONGTYPE"):
+        await scene.handle.get(timeout=1)

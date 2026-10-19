@@ -463,8 +463,8 @@ mutiert werden.
 
 | Feld | Typ | Default | Beschreibung |
 |---|---|---|---|
-| `soft_timeout` | `int \| None` | `None` | Sekunden, nach denen der Worker `run()` abbricht. Im Task kommt `asyncio.CancelledError` an, die erneut geworfen werden muss; der Worker speichert `SoftTimeoutError` (wer den Abbruch verschluckt, liefert ein Erfolgsergebnis). |
-| `hard_timeout` | `int \| None` | `None` | Sekunden, nach denen der Worker die Task-Coroutine abbricht. Muss `> soft_timeout` sein, wenn beides gesetzt. Pflicht, wenn `lock` gesetzt ist. Höchstens `315360000` (seit 0.13.0). |
+| `soft_timeout` | `int \| None` | `None` | Sekunden, nach denen der Worker `run()` abbricht. Im Task kommt `asyncio.CancelledError` an, die erneut geworfen werden muss; der Worker speichert `SoftTimeoutError` (wer den Abbruch verschluckt, liefert ein Erfolgsergebnis). Muss `> 0` sein (seit 0.13.1); `inf` heißt nie. |
+| `hard_timeout` | `int \| None` | `None` | Sekunden, nach denen der Worker die Task-Coroutine abbricht. Muss `> soft_timeout` sein, wenn beides gesetzt. Pflicht, wenn `lock` gesetzt ist. Muss `> 0` sein (seit 0.13.1), höchstens `315360000` (seit 0.13.0). |
 
 ### Retries
 
@@ -545,6 +545,7 @@ Beispiele für Fehler, die beim Import auftreten:
 - `catchup=True` → `ValueError("catchup=True is reserved for a future release")`.
 - `max_concurrency=2` ohne `lock` → `ValueError("max_concurrency requires lock to be set")`.
 - `unique_for=0` → `ValueError("unique_for=0 is invalid; use None to disable dedup")`.
+- `hard_timeout=0` oder `soft_timeout=float("nan")` → `ValueError("… must be > 0 seconds, …")` (seit 0.13.1).
 - `cron="0 0 30 2 *"` → `ValueError` („cron never fires: … has no next fire time“).
 - `result_ttl=sys.maxsize` → `ValueError("result_ttl must be at most 315360000 seconds, …")`. Dieselbe Grenze wie für [`SwarmQConfig`](#worker-verhalten) gilt für `result_ttl`, `unique_for`, `max_age` und `hard_timeout` (seit 0.13.0; vorher scheiterte erst der Worker beim Speichern, führte den Task bei jeder Zustellung erneut aus und legte ihn am Zustelllimit in die DLQ).
 

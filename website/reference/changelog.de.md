@@ -4,6 +4,137 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 [Keep a Changelog](https://keepachangelog.com/) und
 [Semantic Versioning](https://semver.org/).
 
+## [0.13.1rc1] — 2026-10-19
+
+Release-Candidate für 0.13.1 (Installation mit `pip install --pre`).
+
+Patch-Release für 0.13.0. Es schließt den letzten Fall, in dem ein
+Workflow mit erfolgreichem Schritt bis zu seiner TTL `running` blieb
+(eine dauerhafte Fehlerantwort im Chord-Skript), und hält den
+`unique_for`-Claim, wenn ein `schedule()`-Aufruf bei unbestimmtem
+Ausgang abgebrochen wird. Beides war vor 0.13.0 final für 0.13.1
+entschieden. Außerdem lehnt es Werte ab, die nie funktionierten
+(`soft_timeout` und `hard_timeout` ≤ 0, `nan` oder keine Zahl;
+`delay=nan`/`inf`), und begrenzt `delay`, `eta` und `--at` auf zehn
+Jahre voraus. Ein ferneres `eta` wurde bisher gespeichert und hätte
+gefeuert; diese Grenze ist eine Verhaltensänderung. Keine neuen Header,
+Lua-Skripte oder Formatänderungen: 0.13.1 läuft neben 0.13.0 auf
+denselben Queues und Keys, in beide Richtungen. Im Mischbetrieb
+entscheidet der Worker, der die Zustellung am Limit bearbeitet, ob der
+Workflow `failed` wird.
+
+### Upgrade-Hinweise
+
+1. **Eine dauerhafte Fehlerantwort beim Voranbringen eines Workflows
+   lässt ihn am Zustelllimit scheitern.** Antwortet Valkey auf das
+   Voranbringen eines erfolgreichen Workflow-Schritts mit einem Fehler
+   (`BackendResponseError`, etwa `WRONGTYPE` auf dem Chord- oder
+   Ergebnis-Key), wird der Schritt wie in 0.13.0 bis zum Zustelllimit
+   neu zugestellt (E-079). Am Limit markiert der Worker den Workflow
+   jetzt mit dem Fehlertext als `failed`, statt die Nachricht in die DLQ
+   zu legen: `handle.get()` wirft `TaskError` mit diesem Text, die
+   Nachricht wird ohne DLQ-Kopie und ohne `TASK_DLQ` bestätigt, und der
+   gespeicherte Erfolg des Schritts bleibt. Bisher ging die Nachricht
+   ohne Fehlerergebnis in die DLQ, und der Workflow blieb bis zu seiner
+   TTL `running`. Scheitert die Markierung selbst (etwa weil der Key des
+   Workflow-Zustands einen falschen Typ hat), bleibt es beim Verhalten
+   von 0.13.0. Ein Ausfall (Verbindung, Zeitablauf) am Limit ist
+   unverändert. Alarme, die DLQ-Kopien von Workflow-Schritten zählen,
+   sehen je solchem Workflow eine Kopie weniger; stattdessen
+   `workflow_advance_backend_error` (ERROR) beobachten
+   ([Fehlerfälle](../guides/workflows.md#fehlerfalle), E-040).
+2. **`FIRE_AND_FORGET`-Schritte lassen den Workflow bei einer
+   Fehlerantwort sofort scheitern.** Ein `FIRE_AND_FORGET`-Schritt (mit
+   `sig()` und ausdrücklichem `result_ttl` gebaut) wird nie neu
+   zugestellt; dieselbe Fehlerantwort beim Voranbringen markiert den
+   Workflow deshalb jetzt sofort als `failed`. Bisher blieb er bis zu
+   seiner TTL `running`. Ein Ausfall ist unverändert.
+3. **Ein abgebrochenes `schedule()` hält seinen `unique_for`-Claim.**
+   Wird der Aufruf abgebrochen (ein Timeout um ihn herum,
+   `task.cancel()`, Strg+C in `swarmq schedule add`), während die
+   Nachricht gesendet oder der `delay`/`eta`-Eintrag gespeichert wird,
+   ist der Ausgang unbestimmt: Nachricht oder Eintrag können angekommen
+   sein. Der Claim bleibt jetzt bis zu seinem Ablauf stehen, nach
+   `unique_for` plus Verzögerung, wie nach einem Backend-Ausfall oder
+   `PublishIndeterminate` (E-041, E-059). Ein Wiederholversuch in
+   diesem Fenster gilt als Duplikat, und `get_result()` auf die Task-ID
+   eines Aufrufs, der nie ankam, wartet bis zu seinem Timeout. Der
+   `CancelledError` erreicht den Aufrufer weiter unverändert. Bisher gab
+   der Abbruch den Claim frei, und ein Wiederholversuch konnte den Task
+   doppelt ausführen. Ein Abbruch in `pre_enqueue`, bevor etwas
+   gesendet wurde, gibt den Claim weiter frei. Das gilt für
+   `schedule()`, `schedule(delay=|eta=)`, `schedule_many()` und
+   `swarmq schedule add --unique-for`
+   ([Deduplizierung](../guides/locking-and-dedup.md)).
+4. **`soft_timeout` und `hard_timeout` müssen größer als 0 sein.**
+   `TaskInfo` lehnt jetzt in beiden Feldern `nan`, `-inf`, `0`,
+   negative Werte und Nicht-Zahlen wie eine `timedelta` beim Import des
+   Task-Moduls ab (`ValueError` mit dem Feldnamen, `TypeError` bei einer
+   Nicht-Zahl; Exit 1). `False` zählt als 0 und wird abgelehnt; kein
+   Timeout heißt `None`. `True` wirkt weiter als eine Sekunde.
+   `soft_timeout=inf` und große `soft_timeout`-Werte bleiben erlaubt;
+   `hard_timeout` behält seine Obergrenze von `315360000` Sekunden.
+   Keiner der abgelehnten Werte funktionierte: `soft_timeout=nan` konnte
+   den Event-Loop des Workers abstürzen lassen, ein Wert `<= 0` brach
+   jeden Lauf sofort ab, und `hard_timeout <= -30` mit `lock` ergab eine
+   Lock-TTL `<= 0`, sodass die Nachricht bis zum Zustelllimit kreiste
+   (E-063). Ein solcher Wert hält jetzt den ganzen Worker- oder
+   Producer-Start an (Exit 1), auch wenn der Task nie aufgerufen wird.
+   Vor dem Rollout mit `swarmq worker --check` bzw.
+   `swarmq inspect --module` prüfen.
+5. **`delay` und `eta` sind endlich und begrenzt.** `schedule(delay=…)`
+   lehnt `nan`, `inf` und Werte über `315360000` Sekunden (zehn Jahre)
+   ab, `schedule(eta=…)` ein `eta` mehr als `315360000` Sekunden voraus
+   und `swarmq schedule add --at` eine solche Zeit (Exit `1`). Der
+   `ValueError` kommt vor `pre_enqueue`, jedem Claim, Publish oder
+   Schreiben. Bisher veröffentlichte `delay=nan` sofort ohne
+   Verzögerung, und `delay=inf` warf einen rohen `OverflowError`. Ein
+   `eta` oder `--at` mehr als zehn Jahre voraus wurde bisher gespeichert
+   und feuerte zum gesetzten Zeitpunkt, ebenso ein `delay` über zehn
+   Jahre; solche Aufrufe scheitern jetzt mit `ValueError` bzw. Exit 1.
+   `delay < 0` bleibt ein Fehler; ein naives `eta` gilt weiter als
+   Ortszeit (E-080).
+
+### Behoben
+
+- **Eine dauerhafte Fehlerantwort im Chord-Skript lässt den Workflow am
+  Zustelllimit nicht mehr `running`.** Siehe Upgrade-Hinweise 1 und 2
+  (E-079, E-040).
+- **Ein Abbruch beim Senden oder Speichern gibt den
+  `unique_for`-Claim nicht mehr frei.** Im sofortigen Pfad gab ein
+  roher `CancelledError` während des Publish den Claim frei, im
+  verzögerten Pfad und in `swarmq schedule add` ein Abbruch während
+  `sched_add.lua`, in `schedule_many()` ein Publish, der mit
+  `CancelledError` endete. Jeder davon kann Broker oder Valkey erreicht
+  haben. Siehe Upgrade-Hinweis 3 (E-041, E-059, E-052).
+- **`soft_timeout=nan` erreicht den Worker nicht mehr.** Der Wert
+  zerstörte die Heap-Ordnung der Timer im Event-Loop; `select()` warf
+  dann `ValueError`, und `run_forever` brach ab. Siehe Upgrade-Hinweis 4
+  (E-063).
+- **`schedule(delay=float("nan"))` veröffentlicht nicht mehr sofort.**
+  Siehe Upgrade-Hinweis 5 (E-080).
+- **F4-19: `Retry(delay=…)` über zehn Jahre umgeht `max_retries` nicht
+  mehr.** `retry_max_delay` deckelt nur den berechneten Backoff; eine
+  ausdrückliche `Retry`-Wartezeit ging ungeprüft durch. Über
+  `315360000` Sekunden lehnt RabbitMQ die Expiration der Delay-Kopie mit
+  `PRECONDITION_FAILED` ab und schließt den gemeinsamen Publish-Kanal
+  (parallele Publishes werden unbestimmt); der Rückfall stellte die
+  Nachricht neu zu, ohne gegen `max_retries` zu zählen, und der Task
+  lief bis zum Zustelllimit erneut. Ab etwa `1.8e305` warf die
+  Umrechnung in Millisekunden einen `OverflowError`, und die Zustellung
+  blieb unbestätigt. `Retry` lehnt eine solche Wartezeit jetzt mit
+  `ValueError` ab, wie `inf` und `nan`; der genaue Grenzwert bleibt
+  erlaubt. In einem Task geworfen, ist der `ValueError` ein gewöhnlicher
+  Task-Fehler (`retry_exceptions`, Backoff, zählt gegen `max_retries`)
+  (E-060).
+- **Die Valkey-Antworten `BUSY` und `NOREPLICAS` gelten als Ausfall.**
+  Ein lang laufendes Skript (`BUSY`) und zu wenige Replikate für
+  `min-replicas-to-write` (`NOREPLICAS`) heilen durch Warten, wie `OOM`.
+  Bisher waren sie ein `BackendResponseError`; mit Upgrade-Hinweis 2
+  wäre ein `FIRE_AND_FORGET`-Workflow sofort gescheitert, mit
+  Upgrade-Hinweis 1 ein `AT_LEAST_ONCE`-Workflow am Zustelllimit
+  (E-079).
+
 ## [0.13.0] — 2026-10-19
 
 0.13.0 ist 0.13.0rc2 ohne Codeänderungen. Die beiden

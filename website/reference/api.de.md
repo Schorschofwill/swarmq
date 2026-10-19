@@ -120,8 +120,8 @@ Enqueuet einen Task und gibt seine `task_id` zurück.
 | `task_name` | `str` | Name, den `TaskInfo.name` deklariert. |
 | `*args`, `**kwargs` | `Any` | An `Task.run()` weitergegeben. Müssen JSON-kompatibel sein. |
 | `queue` | `str \| None` | Überschreibt die Default-Queue des Tasks. Im Client-Only-Modus (ohne Registry) pflicht. |
-| `delay` | `float \| None` | Sekunden Verzögerung vor Zustellung. Gegenseitig ausschließend mit `eta`. Muss `≥ 0` sein. |
-| `eta` | `datetime \| None` | Absoluter Fire-Zeitpunkt. Gegenseitig ausschließend mit `delay`. Muss in der Zukunft liegen (1s Lenienz). |
+| `delay` | `float \| None` | Sekunden Verzögerung vor Zustellung. Gegenseitig ausschließend mit `eta`. Muss `≥ 0`, endlich und höchstens `315360000` sein (zehn Jahre, seit 0.13.1). |
+| `eta` | `datetime \| None` | Absoluter Fire-Zeitpunkt. Gegenseitig ausschließend mit `delay`. Muss in der Zukunft liegen (1s Lenienz) und höchstens `315360000` Sekunden voraus (seit 0.13.1). Ein naives `datetime` gilt als Ortszeit. |
 | `unique_for` | `float \| None` | Überschreibt `TaskInfo.unique_for`, in Sekunden. Muss `> 0`, endlich und höchstens `315360000` sein (sonst `ValueError`, vor jedem Claim, Publish oder Speichern; seit 0.12.3, die Obergrenze seit 0.13.0); ein `float` wird auf ganze Sekunden aufgerundet. `None` deaktiviert Dedup für diesen Aufruf. |
 | `unique_until` | `"start" \| "completion"` | Überschreibt `TaskInfo.unique_until`. |
 
@@ -173,7 +173,9 @@ Task-Module importiert.
 
 - `TaskNotFoundError` — task_name nicht in der Registry (Registry-Modus).
 - `ValueError` — `delay < 0`, `delay` und `eta` gleichzeitig, `eta` in Vergangenheit,
-  `unique_for` `<= 0`, `inf`, `nan` oder über `315360000` (zehn Jahre).
+  `delay` `nan`, `inf` oder über `315360000`, `eta` mehr als `315360000`
+  Sekunden voraus (seit 0.13.1, vor `pre_enqueue`, jedem Claim und
+  jedem Schreiben), `unique_for` `<= 0`, `inf`, `nan` oder über `315360000` (zehn Jahre).
 - `BrokerConnectionError` — Broker beim Publish unerreichbar.
 - `BackendResponseError` — bei `delay`/`eta`: Der Scheduler-Store hat
   unter dem Namen des Oneshots einen anderen Eintrag, oder er hat das
@@ -181,6 +183,13 @@ Task-Module importiert.
   nicht erreichbar ist, bleibt die eigene `unique_for`-Sperre des
   Aufrufs bis zu ihrem TTL stehen, weil der Eintrag gespeichert sein und
   feuern kann; nach einer Fehlerantwort wird sie freigegeben.
+- `asyncio.CancelledError` — der Aufruf wurde abgebrochen (ein Timeout
+  um ihn herum, `task.cancel()`). Seit 0.13.1 gilt ein Abbruch während
+  des Publish oder beim Speichern eines `delay`/`eta`-Eintrags wie ein
+  Ausfall als unbestimmt: Die `unique_for`-Sperre bleibt bis zu ihrem
+  Ablauf (`unique_for` plus Verzögerung) stehen, und der
+  `CancelledError` geht unverändert weiter. Ein Abbruch in
+  `pre_enqueue`, bevor etwas gesendet wurde, gibt sie frei.
 - Propagiert aus `pre_enqueue`-Middleware-Hooks (auch bei
   `delay`/`eta`).
 
@@ -226,7 +235,9 @@ ein Element, dessen Publish unbestimmt ist, seine `unique_for`-Sperre,
 denn seine Nachricht kann angekommen sein; freigegeben werden nur die
 Sperren der Elemente, bei denen nichts gesendet wurde. Ist ein Element
 unbestimmt, wirft der Batch dessen `PublishIndeterminate`, auch wenn ein
-bestimmter Fehler an kleinerem Index steht.
+bestimmter Fehler an kleinerem Index steht. Seit 0.13.1 gilt auch ein
+Abbruch während des Publish als unbestimmt: Die Sperren bleiben, und der
+`CancelledError` geht weiter.
 
 ### `run()`
 
@@ -530,7 +541,11 @@ TaskInfo(
 `nan` werfen `ValueError` (seit 0.12.3). `result_ttl`, `unique_for`,
 `max_age` und `hard_timeout` sind höchstens `315360000` Sekunden (zehn
 Jahre, die Grenze von `SwarmQConfig`); ein größerer Wert wirft
-`ValueError` (seit 0.13.0). Feld-Semantik und
+`ValueError` (seit 0.13.0). `soft_timeout` und `hard_timeout` müssen
+größer als 0 sein: `nan`, `-inf`, `0`, negative Werte und `False`
+werfen `ValueError`, eine Nicht-Zahl wie eine `timedelta` wirft
+`TypeError`, jeweils mit dem Feldnamen (seit 0.13.1). `soft_timeout=inf`
+bleibt erlaubt. Feld-Semantik und
 Validierungsregeln leben in
 [Konfigurations-Referenz — TaskInfo-Felder](configuration.md#taskinfo-felder).
 

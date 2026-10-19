@@ -318,7 +318,8 @@ swarmq schedule add NAME
 
 Legt einen neuen Schedule an (Insert-if-absent). Übergib genau
 eines von `--cron` (5-Feld-Expression) oder `--at` (ISO-8601-
-Einzelzeit; ohne Zeitzone als UTC gelesen). `--cron` nimmt dieselbe
+Einzelzeit; ohne Zeitzone als UTC gelesen; höchstens `315360000`
+Sekunden voraus, sonst Exit `1` vor jeder Verbindung, seit 0.13.1). `--cron` nimmt dieselbe
 Positivliste nach crontab(5) an wie `TaskInfo.cron`
 ([Cron-Syntax](configuration.md#scheduling-cron)); alles andere, etwa
 sechs Felder oder `L`, `W`, `#`, `R`, `H`, `?` und `@reboot`, beendet den
@@ -352,7 +353,9 @@ wird sofort freigegeben, wenn schon ein anderer Eintrag den Namen hält
 und wenn das Backend mit einem Fehler antwortet. Fällt das Backend aus
 (Verbindung weg, Zeitüberschreitung), bleibt er bis zu seinem Ablauf
 stehen, weil der Eintrag trotzdem gespeichert sein kann; ein erneuter
-Aufruf ist bis dahin ein Duplikat. Einen Claim, den ein früheres
+Aufruf ist bis dahin ein Duplikat. Seit 0.13.1 gilt dasselbe, wenn der
+Befehl beim Speichern oder beim Lesen des Eintrags nach einem Konflikt
+abgebrochen wird (Strg+C). Einen Claim, den ein früheres
 `schedule add` unter demselben Namen hält, gibt der Aufruf nie frei,
 auch nicht nach einem Lesefehler. Das gilt auch nach
 `schedule remove`: Bis der Claim abläuft, ergibt ein erneutes Anlegen

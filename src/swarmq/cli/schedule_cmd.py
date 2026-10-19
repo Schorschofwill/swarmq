@@ -23,7 +23,8 @@ if TYPE_CHECKING:
     from swarmq.backend.valkey import ValkeyBackend
 
 from swarmq.cli._shared import _render_table
-from swarmq.exceptions import ConfigurationError, is_backend_outage
+from swarmq.config_validation import MAX_DEADLINE_MS, MAX_DEADLINE_S
+from swarmq.exceptions import ConfigurationError, is_backend_outcome_unknown
 from swarmq.scheduler import ScheduleDefinition, ScheduleStore
 from swarmq.scheduler.prune import last_seen_by_name, prune_orphans
 from swarmq.serialization import compute_dedup_hash
@@ -162,7 +163,14 @@ def _resolve_fire_time(args: argparse.Namespace) -> tuple[str | None, int]:
         raise ConfigurationError(f"invalid --at datetime: {args.at!r} ({exc})") from exc
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
-    return None, int(dt.timestamp() * 1000)
+    fire_ts_ms = int(dt.timestamp() * 1000)
+    # E-080: wie ``schedule(eta=)``. Bis 0.13.0 wurde ein fernerer Eintrag
+    # gespeichert und feuerte; nur jenseits des Jahres 9999 scheiterte danach
+    # ``schedule list`` an ``datetime.fromtimestamp``. Die Grenze ist eine
+    # bewusste Verhaltensaenderung (eine Zahl fuer alle Fristen, E-063).
+    if fire_ts_ms - int(time.time() * 1000) > MAX_DEADLINE_MS:
+        raise ConfigurationError(f"--at must be at most {MAX_DEADLINE_S} seconds in the future, got {args.at!r}")
+    return None, fire_ts_ms
 
 
 def _render_add_result(
@@ -220,12 +228,13 @@ async def _release_claim(backend: ValkeyBackend, dedup_hash: str, owner: str) ->
 @contextlib.asynccontextmanager
 async def _claim_released_on_error(backend: ValkeyBackend, dedup_hash: str | None, owner: str) -> AsyncGenerator[None]:
     """Fehler beim Speichern oder Lesen: Claim owner-geprüft frei (P1 #1),
-    außer nach einem Ausfall -- gespeichert sein kann der Eintrag dann
-    trotzdem (E-059, PF-6, E-041). Der Fehler erreicht den Aufrufer."""
+    außer nach einem Ausfall oder Abbruch -- gespeichert sein kann der
+    Eintrag dann trotzdem (E-059, PF-6, E-041). Der Fehler erreicht den
+    Aufrufer."""
     try:
         yield
     except BaseException as exc:
-        if dedup_hash is not None and not is_backend_outage(exc):
+        if dedup_hash is not None and not is_backend_outcome_unknown(exc):
             await _release_claim(backend, dedup_hash, owner)
         raise
 

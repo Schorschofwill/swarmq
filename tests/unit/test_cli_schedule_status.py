@@ -20,6 +20,10 @@
 #    unverändert als ``worker_id``, ``process`` ist ``null``.
 # 9. Text: je Prozess eine Zeile ``<worker_id>  <version>  <process>``; alte
 #    Schlüssel ohne Prozessspalte.
+#
+# E-081 (0.13.1, Plan 2026-04-23-001, E4):
+# 10. Ein roher Treiberfehler aus ``get_scheduler_leader`` endet über
+#     ``main`` mit Exit 1, ohne Ausgabe auf stdout; das Backend wird geschlossen.
 
 from __future__ import annotations
 
@@ -31,6 +35,8 @@ from contextlib import redirect_stdout
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
+from valkey.exceptions import ConnectionError as ValkeyConnectionError
+from valkey.exceptions import TimeoutError as ValkeyTimeoutError
 
 from swarmq.cli import schedule_cmd
 from swarmq.contracts import LeaderInfo
@@ -174,3 +180,27 @@ async def test_connect_deadline_from_the_environment_bounds_the_cli_backend(monk
         pytest.raises(BackendConnectionError, match=r"timed out after 0\.01s"),
     ):
         await schedule_cmd._run_schedule_status(argparse.Namespace(format="json", limit=5))
+
+
+@pytest.mark.entscheidung("E-081")
+@pytest.mark.parametrize("error", [ValkeyConnectionError("valkey down"), ValkeyTimeoutError("valkey slow")])
+def test_raw_driver_error_from_the_leader_lookup_ends_with_exit_1(monkeypatch, capsys, error) -> None:
+    """E-081: ``get_scheduler_leader`` reicht Treiberfehler roh weiter; die
+    CLI fängt sie gezielt (``_startup_error_classes``) und meldet einen
+    Ausfall mit Exit 1 statt „kein Leader“ auszugeben."""
+    from swarmq.cli import main
+
+    backend = _backend(leader=None, version=None, workers={})
+    backend.get_scheduler_leader = AsyncMock(side_effect=error)
+
+    async def _factory() -> MagicMock:
+        return backend
+
+    monkeypatch.setattr(schedule_cmd, "_get_backend_factory", lambda: _factory)
+
+    assert main(["schedule", "status", "--format", "json"]) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert str(error) in captured.err
+    backend.close.assert_awaited_once()

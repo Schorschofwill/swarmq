@@ -707,6 +707,7 @@ class TestSchedulerLeader:
 
         assert result is None
 
+    @pytest.mark.entscheidung("E-081")
     async def test_get_scheduler_leader_propagates_connection_error(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")
         mock_client = AsyncMock()
@@ -717,6 +718,7 @@ class TestSchedulerLeader:
         with pytest.raises(ValkeyConnectionError, match="backend down"):
             await backend.get_scheduler_leader()
 
+    @pytest.mark.entscheidung("E-081")
     async def test_get_scheduler_leader_propagates_timeout_error(self):
         from valkey.exceptions import TimeoutError as ValkeyTimeoutError
 

@@ -18,11 +18,25 @@ Testliste:
 # [x] soft_timeout=nan neben hard_timeout abgelehnt (``hard > soft`` gilt für nan nicht)
 # [x] Client: schedule(..., unique_for=) über der Grenze -> ValueError vor jedem Claim
 # [x] CLI: schedule add --unique-for über der Grenze ist ein Argumentfehler
+
+Nachtrag 2026-10-19 (0.13.1, Untergrenze und Endlichkeit für die Laufzeitfristen):
+# [x] soft_timeout allein: nan, -inf, 0, -1 -> ValueError mit Feldnamen
+# [x] hard_timeout: 0, -1, -30, -31 -> ValueError mit Feldnamen (nan/-inf siehe oben)
+# [x] soft_timeout, hard_timeout: timedelta -> TypeError mit Feldnamen
+# [x] False ist 0 und wird abgelehnt (wie unique_for=False, max_age=False); True bleibt 1 s
+# [x] soft_timeout=inf und soft_timeout=10**30 allein bleiben erlaubt
+# [x] kleinster positiver Wert (5e-324) ist für beide Felder erlaubt
+
+Review 0.13.1:
+# [x] soft_timeout als timedelta oder String neben hard_timeout -> TypeError
+#     mit Feldnamen (Typprüfung vor der Relation, M3)
+# [x] hard_timeout=True bleibt 1 s (P3-4)
 """
 
 from __future__ import annotations
 
 import math
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -97,3 +111,78 @@ def test_nan_soft_timeout_next_to_hard_timeout_is_rejected() -> None:
     Vergleich falsch; ``hard_timeout <= nan`` liess den Wert durch."""
     with pytest.raises(ValueError, match="^hard_timeout must be greater than soft_timeout"):
         _info(soft_timeout=math.nan, hard_timeout=60)
+
+
+# --- Nachtrag 2026-10-19 (0.13.1): Untergrenze und Endlichkeit -------------
+
+
+@pytest.mark.parametrize("value", [math.nan, -math.inf, 0, -1], ids=["nan", "neg-inf", "zero", "minus-one"])
+def test_soft_timeout_alone_must_be_a_positive_number(value: float) -> None:
+    """``soft_timeout=nan`` zerstört die Heap-Ordnung der Timer und kann den
+    Event-Loop des Workers abstürzen lassen (``select(nan)``); ``<= 0`` bricht
+    jeden Lauf sofort ab."""
+    with pytest.raises(ValueError, match=r"^soft_timeout must be > 0 seconds, got"):
+        _info(soft_timeout=value)
+
+
+@pytest.mark.parametrize("value", [0, -1, -30, -31], ids=["zero", "minus-one", "minus-30", "minus-31"])
+def test_hard_timeout_must_be_positive(value: float) -> None:
+    """``hard_timeout <= 0`` bricht jeden Lauf sofort ab; ab ``-30`` ergibt
+    sich mit ``lock`` eine Lock-TTL ``<= 0`` (``hard_timeout + 30 s``), und
+    die Nachricht kreiste bis zum Zustelllimit."""
+    with pytest.raises(ValueError, match=r"^hard_timeout must be > 0 seconds, got"):
+        _info(hard_timeout=value)
+
+
+@pytest.mark.parametrize("field_name", ["soft_timeout", "hard_timeout"])
+def test_timedelta_timeout_names_the_field(field_name: str) -> None:
+    """Die Felder nehmen Sekunden, keine ``timedelta``; der Fehler nennt beim
+    Import das Feld (E-057: Exit 1) statt eines nackten Vergleichsfehlers."""
+    with pytest.raises(TypeError, match=rf"^{field_name} must be a number of seconds, got datetime.timedelta"):
+        _info(**{field_name: timedelta(seconds=60)})
+
+
+@pytest.mark.parametrize("field_name", ["soft_timeout", "hard_timeout"])
+def test_false_timeout_is_zero_and_rejected(field_name: str) -> None:
+    """``bool`` bleibt unverändert (E-055): ``True`` wirkt als 1 s, ``False``
+    als 0 und fällt wie ``unique_for=False`` und ``max_age=False`` unter die
+    Untergrenze. „Kein Timeout“ heißt ``None``."""
+    with pytest.raises(ValueError, match=rf"^{field_name} must be > 0 seconds, got False"):
+        _info(**{field_name: False})
+
+
+def test_true_timeout_stays_one_second() -> None:
+    info = _info(soft_timeout=True, hard_timeout=2)
+
+    assert info.soft_timeout is True
+
+
+def test_true_hard_timeout_stays_one_second() -> None:
+    """Review 0.13.1 (P3-4): ``hard_timeout`` läuft über
+    ``check_deadline_bound(positive=True)``, nicht über dieselbe Prüfung wie
+    ``soft_timeout``; ``True`` bleibt auch dort 1 s."""
+    info = _info(hard_timeout=True)
+
+    assert info.hard_timeout is True
+
+
+@pytest.mark.parametrize("value", [math.inf, 10**30], ids=["inf", "ten-to-the-30"])
+def test_soft_timeout_alone_has_no_upper_bound(value: float) -> None:
+    """``soft_timeout`` endet nur in ``asyncio.wait_for``; ``inf`` und große
+    Werte heißen dort „nie“ und bleiben erlaubt."""
+    assert _info(soft_timeout=value).soft_timeout == value
+
+
+@pytest.mark.parametrize("field_name", ["soft_timeout", "hard_timeout"])
+def test_smallest_positive_timeout_is_valid(field_name: str) -> None:
+    smallest = math.ulp(0.0)
+
+    assert getattr(_info(**{field_name: smallest}), field_name) == smallest
+
+
+@pytest.mark.parametrize("value", [timedelta(seconds=60), "60"], ids=["timedelta", "string"])
+def test_wrong_type_soft_timeout_next_to_hard_timeout_names_the_field(value: object) -> None:
+    """Review 0.13.1 (M3): die Relation ``hard_timeout > soft_timeout`` lief
+    vor der Typprüfung und warf einen Vergleichsfehler ohne Feldnamen."""
+    with pytest.raises(TypeError, match=r"^soft_timeout must be a number of seconds, got "):
+        _info(soft_timeout=value, hard_timeout=120)

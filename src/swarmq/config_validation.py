@@ -15,21 +15,13 @@ from typing import TYPE_CHECKING, ClassVar
 from swarmq.exceptions import ConfigurationError
 from swarmq.keyspace import validate_namespace
 from swarmq.logging_settings import VALID_LOG_LEVELS, valid_drain_timeout, validate_logger_levels
+
+# Re-Export: die Grenze lebt im Blattmodul ``seconds`` (F4-19, kein Importzyklus).
+from swarmq.seconds import MAX_DEADLINE_MS as MAX_DEADLINE_MS
+from swarmq.seconds import MAX_DEADLINE_S as MAX_DEADLINE_S
 from swarmq.seconds import whole_seconds
 from swarmq.valkey_policy import EVICTION_CHECK_MODES
 
-#: Größte Frist in Millisekunden (E-063, Nachtrag 2026-10-17; PF-11).
-#: Gemessen am 2026-10-18 gegen den Teststack: RabbitMQ 4.3.6 nimmt eine
-#: Per-Message-``expiration`` bis 315360000000 ms (zehn Jahre zu 365 Tagen)
-#: an und lehnt 315360000001 mit ``PRECONDITION_FAILED`` (``value_too_large``)
-#: ab; Valkey 8 nimmt ``PX`` bis 2**63-1 minus der aktuellen Unix-Zeit in ms
-#: an. Die kleinere Grenze gilt für alle Fristen, weil ``retry_max_delay``,
-#: ``lock_wait_max_s`` und ``dead_letter_ttl_s`` auch als Expiration enden.
-#: Festgeschrieben in ``tests/integration/backend/test_deadline_bounds_valkey.py``
-#: und ``tests/integration/broker/test_expiration_bounds_rabbitmq.py``.
-MAX_DEADLINE_MS = 315_360_000_000
-#: Dieselbe Grenze in Sekunden; ``wert * 1000`` bleibt damit <= ``MAX_DEADLINE_MS``.
-MAX_DEADLINE_S = MAX_DEADLINE_MS // 1000
 #: ``concurrency`` wird ``prefetch_count`` in ``basic.qos``, ein AMQP-short (F3-38).
 MAX_CONCURRENCY = 65535
 #: Zählfelder, die als Queue-Argument an RabbitMQ gehen, sind AMQP-``long long``
@@ -40,21 +32,50 @@ MAX_BROKER_COUNT = 2**63 - 1
 _COUNT_BOUNDS: dict[str, int] = {"delivery_limit": MAX_BROKER_COUNT}
 
 
-def check_deadline_bound(name: str, value: float | None) -> None:
+def require_number(name: str, value: float) -> None:
+    """Sekundenwert muss vergleichbar sein; eine ``timedelta`` oder ein
+    String scheiterte sonst mit einem Vergleichsfehler ohne Feldnamen
+    (die Annotation schuetzt zur Laufzeit nicht)."""
+    try:
+        _ = value > 0
+    except TypeError as exc:
+        msg = f"{name} must be a number of seconds, got {type(value).__module__}.{type(value).__qualname__}"
+        raise TypeError(msg) from exc
+
+
+def check_deadline_bound(name: str, value: float | None, *, positive: bool = False) -> None:
     """Frist oder TTL außerhalb von ``SwarmQConfig`` endlich und höchstens
     ``MAX_DEADLINE_S`` (E-063, Nachtrag 2026-10-19): ``TaskInfo`` und der
     Aufruf-Parameter ``unique_for`` enden als ``PX``/``EX`` in Valkey, als
     Per-Message-Expiration bzw. als Laufzeitdeckel (``hard_timeout``); ein
     größerer Wert scheiterte erst im Worker bzw. beim Claim. ``nan`` und
     ``-inf`` bestehen den Vergleich mit der Grenze und fallen deshalb eigens
-    durch. ``ValueError`` wie die übrigen ``TaskInfo``-Prüfungen (E-065)."""
+    durch. ``ValueError`` wie die übrigen ``TaskInfo``-Prüfungen (E-065).
+
+    ``positive=True`` (Nachtrag 2026-10-19, 0.13.1) verlangt zusätzlich
+    einen Wert größer 0, etwa für ``hard_timeout``."""
     if value is None:
         return
+    require_number(name, value)
     if value > MAX_DEADLINE_S:
         msg = f"{name} must be at most {MAX_DEADLINE_S} seconds, got {value}"
         raise ValueError(msg)
     if not math.isfinite(value):
         msg = f"{name} must be a finite number of seconds, got {value}"
+        raise ValueError(msg)
+    if positive:
+        check_positive_seconds(name, value)
+
+
+def check_positive_seconds(name: str, value: float | None) -> None:
+    """Laufzeitfrist groesser 0 (E-063, Nachtrag 2026-10-19, 0.13.1):
+    ``not value > 0`` laesst auch ``nan`` und ``-inf`` durchfallen; ``inf``
+    und grosse Werte bleiben erlaubt (``soft_timeout`` hat keine Obergrenze)."""
+    if value is None:
+        return
+    require_number(name, value)
+    if not value > 0:
+        msg = f"{name} must be > 0 seconds, got {value}"
         raise ValueError(msg)
 
 

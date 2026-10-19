@@ -7,6 +7,8 @@ applies_when:
   - eine Fehlersuche meldet OverflowError oder Exit 1 statt 78 für einen sehr großen Konfigurationswert
   - ein neues Ganzzahl- oder Fristfeld kommt dazu (Obergrenze seines Ziels festlegen)
   - Änderungen an den Fristfeldern von TaskInfo (result_ttl, max_age, unique_for, hard_timeout) oder am Aufruf-Parameter unique_for (Client, CLI)
+  - Änderungen an soft_timeout oder hard_timeout in TaskInfo, an check_deadline_bound oder check_positive_seconds
+  - eine Fehlersuche meldet, dass soft_timeout=0, hard_timeout=False oder ein negativer Timeout beim Import abgelehnt wird
 tags: [konfiguration, validierung, fristen, f3-04]
 id: E-063
 datum: 2026-10-15
@@ -20,6 +22,8 @@ quelle:
   - docs/befunde/fehlersuche-runde-4-2026-10.md (LÜCKE PF-10, PF-11)
   - 'Georg 2026-10-19 (Entscheidungsvorlage 0.13.0, Punkt 2: TaskInfo-Grenze in 0.13.0rc2; Punkt 4b/4c bestätigt)'
   - docs/befunde/entscheidungsvorlage-0-13-0-2026-10-19.md (Punkte 2, 4b, 4c)
+  - 'Georg 2026-10-19 (Gegenprüfung 0.13.1, Punkt A: Untergrenze und Endlichkeit für soft_timeout und hard_timeout)'
+  - docs/befunde/fehlersuche-runde-4-2026-10.md (Deferred und Verdachte, soft_timeout/hard_timeout)
 tests:
   - tests/unit/test_config_lock_wait.py::test_must_be_finite
   - tests/unit/test_config_stepdown.py::test_negative_or_infinite_is_rejected
@@ -46,6 +50,13 @@ tests:
   - tests/unit/test_taskinfo_deadline_bounds.py::test_float_just_above_the_bound_is_rejected_without_rounding
   - tests/unit/test_taskinfo_deadline_bounds.py::test_non_finite_deadline_is_rejected
   - tests/unit/test_taskinfo_deadline_bounds.py::test_nan_soft_timeout_next_to_hard_timeout_is_rejected
+  - tests/unit/test_taskinfo_deadline_bounds.py::test_soft_timeout_alone_must_be_a_positive_number
+  - tests/unit/test_taskinfo_deadline_bounds.py::test_hard_timeout_must_be_positive
+  - tests/unit/test_taskinfo_deadline_bounds.py::test_timedelta_timeout_names_the_field
+  - tests/unit/test_taskinfo_deadline_bounds.py::test_false_timeout_is_zero_and_rejected
+  - tests/unit/test_taskinfo_deadline_bounds.py::test_true_timeout_stays_one_second
+  - tests/unit/test_taskinfo_deadline_bounds.py::test_soft_timeout_alone_has_no_upper_bound
+  - tests/unit/test_taskinfo_deadline_bounds.py::test_smallest_positive_timeout_is_valid
   - tests/unit/client/test_call_unique_for_deadline_bound.py::test_schedule_rejects_unique_for_above_the_bound
   - tests/unit/client/test_call_unique_for_deadline_bound.py::test_schedule_many_rejects_unique_for_above_the_bound
   - tests/unit/client/test_call_unique_for_deadline_bound.py::test_schedule_accepts_unique_for_at_the_bound
@@ -66,5 +77,11 @@ Umgesetzt in 0.13.0 (U16): Gemessen gegen den Teststack ist die kleinere Grenze 
 **Nachtrag 2026-10-19 (Georg, Entscheidungsvorlage 0.13.0, Punkte 2, 4b und 4c): dieselbe Grenze für `TaskInfo` und den Aufruf-Parameter `unique_for`.** Bestätigt sind die Entscheidungen des Orchestrators vom 2026-10-18: eine Grenze `MAX_DEADLINE_S` (zehn Jahre) für jede Frist und TTL, auch für Felder, die nur als Valkey-TTL enden (4b), und `delivery_limit` höchstens 2⁶³−1 mit `ConfigurationError` (Exit 78) darüber (4c). Neu (Folge-Lücke aus dem Abschluss-Review 0.13.0): `TaskInfo.result_ttl`, `max_age`, `unique_for` und `hard_timeout` lehnen Werte über `MAX_DEADLINE_S` mit `ValueError` ab, beim Import des Task-Moduls wie die übrigen `TaskInfo`-Prüfungen (E-065; Exit 1 nach E-057, nicht 78); bei `result_ttl` und `unique_for` wird ein `float` vorher aufgerundet (E-055, siehe Nachtrag unten). Dieselbe Grenze gilt für den Aufruf-Parameter `unique_for` von `schedule()` und `schedule_many()` (`ValueError` vor jedem Claim, Publish oder Speichern, wie E-056) und für `swarmq schedule add --unique-for` (Aufruffehler, Exit 2). Der genaue Grenzwert ist erlaubt. Gemeinsame Prüfung: `config_validation.check_deadline_bound`. Vorher scheiterte etwa `result_ttl=sys.maxsize` („für immer“) erst beim Speichern (`PX` über int64, `BackendResponseError`); der Worker stellte neu zu und der Task lief bei jeder Zustellung erneut bis zum Zustelllimit. Breaking gegenüber 0.13.0rc1 und deshalb in 0.13.0 (rc2), nicht in einem 0.13.x-Patch. `soft_timeout` bleibt ohne eigene Grenze; gesetzt neben `hard_timeout` ist es durch `hard_timeout > soft_timeout` begrenzt.
 
 **Nachtrag 2026-10-19, Abschluss-Review 0.13.0rc2: `nan` und genaue Rundung.** Die Regel „inf und nan … abgelehnt“ gilt auch für die `TaskInfo`-Fristen: `check_deadline_bound` lehnt nicht endliche Werte mit `ValueError` ab („`<feld>` must be a finite number of seconds“). Vorher bestand `nan` den Vergleich mit der Grenze; `max_age=nan` ließ jede Zustellung als abgelaufen in die DLQ laufen, `hard_timeout=nan` und `-inf` wurden angenommen. `soft_timeout=nan` neben `hard_timeout` fällt unter `hard_timeout > soft_timeout` durch (der Vergleich ist für `nan` falsch). Aufgerundet (E-055) werden nur `result_ttl` und `unique_for`; `max_age` und `hard_timeout` werden so geprüft, wie sie übergeben sind. Eigene Grenzen für `soft_timeout` allein und eine Untergrenze für `hard_timeout` legt diese Regel nicht fest.
+
+**Nachtrag 2026-10-19 (Georg, Gegenprüfung 0.13.1, Punkt A): Untergrenze und Endlichkeit für `soft_timeout` und `hard_timeout`.** Der Satz oben „Eigene Grenzen für `soft_timeout` allein und eine Untergrenze für `hard_timeout` legt diese Regel nicht fest“ ist damit ergänzt. `TaskInfo` lehnt in beiden Feldern beim Import des Task-Moduls ab: `nan`, `-inf`, Werte `<= 0` (`ValueError` „`<feld>` must be > 0 seconds“; für `hard_timeout` bei `nan`/`-inf` weiter „must be a finite number of seconds“) und Nicht-Zahlen wie `timedelta` (`TypeError` „`<feld>` must be a number of seconds“). Beides bleibt Exit 1 beim Import (E-057). `soft_timeout=inf` und große `soft_timeout`-Werte bleiben erlaubt („nie“ in `asyncio.wait_for`); für `hard_timeout` gilt weiter die Obergrenze `MAX_DEADLINE_S`. Die Relation `hard_timeout > soft_timeout` bleibt und wird vor der Untergrenze von `soft_timeout` geprüft, damit `soft_timeout=nan` neben `hard_timeout` die bisherige Meldung behält. Ort: `config_validation.check_deadline_bound(..., positive=True)` und `check_positive_seconds` (geprüft wird `not value > 0`, damit `nan` durchfällt).
+
+Begründung: Keiner der abgelehnten Werte funktionierte. `soft_timeout=nan` zerstört die Heap-Ordnung der Timer des Event-Loops und kann ihn abstürzen lassen (`select(nan)` wirft `ValueError`, `run_forever` bricht ab). `soft_timeout <= 0` und `hard_timeout <= 0` brechen jeden Lauf sofort ab; ab `hard_timeout=-30` mit `lock` ist die Lock-TTL (`hard_timeout + 30 s`) `<= 0`, und die Nachricht kreist bis zum Zustelllimit.
+
+`bool`: E-055 lässt `bool` unverändert (`True` wirkt als 1 s); das gilt auch hier. `False` ist der Wert 0 und fällt deshalb unter die Untergrenze, wie schon `unique_for=False` (E-056) und `max_age=False`. Das ist mit E-055 vereinbar: E-055 regelt nur, dass `bool` nicht umgewandelt wird, nicht, dass jeder `bool` gültig ist. „Kein Timeout“ heißt `None`; `hard_timeout=False` brach bisher jeden Lauf sofort ab, weil der Worker nur `is not None` prüft.
 
 **Überdenken nur mit neuem Argument.** Keine offenen Einwände bekannt.

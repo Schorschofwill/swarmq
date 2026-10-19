@@ -43,6 +43,11 @@ Advance-Pfad endet in `running`. Teilfrage zu B: Nach gelungener Markierung
 eine DLQ-Kopie? Nebenbefund für B: Bei FIRE_AND_FORGET-Schritten bleibt der
 Workflow sofort `running`, ohne Limit. Das sollte B ausdrücklich mitnehmen.
 
+**Stand 2026-10-19:** A in 0.13.0 umgesetzt; B umgesetzt in 0.13.1, Commit
+`9fe9299` (Branch `fix/0-13-1`, unveröffentlicht): am Limit fail-markieren bei
+`BackendResponseError`, ACK ohne DLQ-Kopie, FIRE_AND_FORGET sofort `failed`
+(E-079, Nachtrag E-040).
+
 ### 2. Obergrenze für `TaskInfo`-Fristen (Folge-Lücke E-063)
 
 **Befund:** `MAX_DEADLINE_S` (zehn Jahre) prüft nur `SwarmQConfig`
@@ -175,6 +180,11 @@ derselbe Preis wie beim Ausfall nach E-041.
 
 **Empfehlung:** **C in 0.13.1.** Das ist keine Regression, und die Änderung
 blockiert eher, als dass sie etwas aufbricht.
+
+**Stand 2026-10-19:** C umgesetzt in 0.13.1, Commit `f82ab70` (Branch
+`fix/0-13-1`, unveröffentlicht): ein Abbruch beim Senden oder Speichern gilt
+als unbestimmt, der Claim bleibt, auch im sofortigen Pfad und bei
+`schedule_many` (Nachträge E-059, E-041, Verweis E-052).
 
 ### 7. E-075: PF-16 (b), Zeitabläufe beim TCP-Aufbau nicht wiederholen (Punkt 2)
 

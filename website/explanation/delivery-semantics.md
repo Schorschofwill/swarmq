@@ -136,7 +136,8 @@ Only an outage defers: when Valkey answers a check with an error
 help, and the message goes back to the queue in place, so a persistent
 error reaches `{queue}.XQ` through the delivery limit. Error replies
 that heal by waiting (`OOM`, `READONLY` during a failover, `LOADING`,
-`TRYAGAIN`, `CLUSTERDOWN`, `MASTERDOWN`, `MISCONF`) count as an outage
+`TRYAGAIN`, `CLUSTERDOWN`, `MASTERDOWN`, `MISCONF`, `BUSY`,
+`NOREPLICAS`) count as an outage
 and defer. Once the backend has answered,
 the count starts over: retry, rate-limit and lock copies do not carry
 `x-swarmq-backend-defer-count`, and a message the broker hands back

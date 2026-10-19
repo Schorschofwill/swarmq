@@ -144,7 +144,8 @@ hilft Warten nicht, und die Nachricht geht an derselben Stelle in die
 Queue zurück; ein bleibender Fehler landet so über das Zustelllimit in
 `{queue}.XQ`. Fehlerantworten, die durch Warten heilen (`OOM`,
 `READONLY` während eines Failovers, `LOADING`, `TRYAGAIN`,
-`CLUSTERDOWN`, `MASTERDOWN`, `MISCONF`), gelten als Ausfall und werden
+`CLUSTERDOWN`, `MASTERDOWN`, `MISCONF`, `BUSY`, `NOREPLICAS`), gelten
+als Ausfall und werden
 zurückgestellt. Sobald das Backend geantwortet hat, beginnt die Zählung neu:
 Retry-, Rate-Limit- und Lock-Kopien tragen
 `x-swarmq-backend-defer-count` nicht, und eine Nachricht, die der Broker

@@ -4,6 +4,126 @@ All notable changes to SwarmQ. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [0.13.1rc1] — 2026-10-19
+
+Release candidate for 0.13.1 (install with `pip install --pre`).
+
+Patch release for 0.13.0. It closes the last case in which a workflow
+whose step succeeded stayed `running` until its TTL (a lasting error
+reply in the chord script), and keeps the `unique_for` claim when a
+`schedule()` call is cancelled while its outcome is unknown. Both were
+decided for 0.13.1 before 0.13.0 final. It also rejects values that
+never worked (`soft_timeout` and `hard_timeout` ≤ 0, `nan` or not a
+number; `delay=nan`/`inf`), and bounds `delay`, `eta` and `--at` to ten
+years ahead. A more distant `eta` used to be stored and would have
+fired; this bound is a behaviour change. No new headers, Lua scripts or
+format changes: 0.13.1 runs next to 0.13.0 on the same queues and keys,
+in both directions. In mixed operation the worker that handles the
+delivery at the limit decides whether the workflow becomes `failed`.
+
+### Upgrade notes
+
+1. **A lasting error reply in a workflow advance now fails the
+   workflow at the delivery limit.** When Valkey answers the advance of
+   a successful workflow step with an error (`BackendResponseError`,
+   for example `WRONGTYPE` on the chord or result key), the step is
+   still redelivered up to the delivery limit, as in 0.13.0 (E-079). At
+   the limit the worker now marks the workflow `failed` with the error
+   text instead of dead-lettering the message: `handle.get()` raises
+   `TaskError` with that text, the message is acked without a DLQ copy
+   and without `TASK_DLQ`, and the stored success of the step stays.
+   Before, the message went to the DLQ without an error result and the
+   workflow stayed `running` until its TTL. If the failure mark itself
+   fails (for example because the workflow state key has the wrong
+   type), the 0.13.0 behaviour remains. An outage (connection,
+   timeout) at the limit is unchanged. Alerts that count DLQ copies of
+   workflow steps see one copy less per such workflow; watch
+   `workflow_advance_backend_error` (ERROR) instead
+   ([failure modes](../guides/workflows.md#failure-modes), E-040).
+2. **`FIRE_AND_FORGET` steps fail the workflow at once on an error
+   reply.** A `FIRE_AND_FORGET` step (built with `sig()` and an
+   explicit `result_ttl`) is never redelivered, so the same error reply
+   in its advance now marks the workflow `failed` immediately. Before,
+   the workflow stayed `running` until its TTL. An outage is unchanged.
+3. **A cancelled `schedule()` keeps its `unique_for` claim.** When the
+   call is cancelled (a timeout around it, `task.cancel()`, Ctrl+C in
+   `swarmq schedule add`) while the message is being published or the
+   `delay`/`eta` entry is being stored, the outcome is unknown: the
+   message or entry may have arrived. The claim now stays until it
+   expires, after `unique_for` plus the delay, like after a backend
+   outage or `PublishIndeterminate` (E-041, E-059). A retry in that
+   window is reported as a duplicate, and `get_result()` on the task ID
+   of a call that never arrived waits until its timeout. The
+   `CancelledError` still reaches the caller unchanged. Before, the
+   cancel released the claim, and a retry could run the task twice. A
+   cancel in `pre_enqueue`, before anything was sent, still releases
+   the claim. This applies to `schedule()`, `schedule(delay=|eta=)`,
+   `schedule_many()` and `swarmq schedule add --unique-for`
+   ([deduplication](../guides/locking-and-dedup.md)).
+4. **`soft_timeout` and `hard_timeout` must be greater than 0.**
+   `TaskInfo` now rejects `nan`, `-inf`, `0`, negative values and
+   non-numbers such as a `timedelta` in both fields when the task module
+   is imported (`ValueError` naming the field, `TypeError` for a
+   non-number; exit 1). `False` counts as 0 and is rejected; use `None`
+   for no timeout. `True` still acts as one second. `soft_timeout=inf`
+   and large `soft_timeout` values stay allowed; `hard_timeout` keeps its
+   upper bound of `315360000` seconds. None of the rejected values
+   worked: `soft_timeout=nan` could crash the worker's event loop, a
+   value `<= 0` cancelled every run at once, and `hard_timeout <= -30`
+   with a `lock` gave a lock TTL `<= 0`, so the message went round
+   until the delivery limit (E-063). Such a value now stops the whole
+   worker or producer start (exit 1), even if the task is never called.
+   Check before the rollout with `swarmq worker --check` or
+   `swarmq inspect --module`.
+5. **`delay` and `eta` are finite and bounded.** `schedule(delay=…)`
+   rejects `nan`, `inf` and values above `315360000` seconds (ten
+   years), `schedule(eta=…)` an `eta` more than `315360000` seconds
+   ahead, and `swarmq schedule add --at` such a time (exit `1`). The
+   `ValueError` comes before `pre_enqueue`, any claim, publish or write.
+   Before, `delay=nan` published at once without a delay and
+   `delay=inf` raised a raw `OverflowError`. An `eta` or `--at` more
+   than ten years ahead was stored and fired at the set time, as did a
+   `delay` above ten years; such calls now fail with `ValueError` or
+   exit 1. `delay < 0` stays an error; a naive `eta` is still read as
+   local time (E-080).
+
+### Fixed
+
+- **A lasting error reply in the chord script no longer leaves the
+  workflow `running` at the delivery limit.** See upgrade notes 1 and
+  2 (E-079, E-040).
+- **A cancel while publishing or storing no longer releases the
+  `unique_for` claim.** In the immediate path a raw `CancelledError`
+  during the publish released the claim, in the deferred path and in
+  `swarmq schedule add` a cancel during `sched_add.lua`, in
+  `schedule_many()` a publish that ended in `CancelledError`. Each of
+  them may have reached the broker or Valkey. See upgrade note 3
+  (E-041, E-059, E-052).
+- **`soft_timeout=nan` no longer reaches the worker.** It broke the
+  heap order of the event loop's timers; `select()` then raised
+  `ValueError` and `run_forever` stopped. See upgrade note 4 (E-063).
+- **`schedule(delay=float("nan"))` no longer publishes at once.** See
+  upgrade note 5 (E-080).
+- **F4-19: `Retry(delay=…)` above ten years no longer bypasses
+  `max_retries`.** `retry_max_delay` caps only the computed backoff; an
+  explicit `Retry` delay went through unchecked. Above `315360000`
+  seconds RabbitMQ rejects the expiration of the delay copy with
+  `PRECONDITION_FAILED` and closes the shared publish channel (parallel
+  publishes become indeterminate); the fallback redelivered the message
+  without counting it against `max_retries`, so the task ran again up
+  to the delivery limit. From about `1.8e305` the conversion to
+  milliseconds raised `OverflowError` and left the delivery
+  unacknowledged. `Retry` now rejects such a delay with `ValueError`,
+  like `inf` and `nan`; the exact bound stays allowed. Raised in a task,
+  the `ValueError` is an ordinary task error (`retry_exceptions`,
+  backoff, counts against `max_retries`) (E-060).
+- **The Valkey replies `BUSY` and `NOREPLICAS` count as an outage.** A
+  long-running script (`BUSY`) and too few replicas for
+  `min-replicas-to-write` (`NOREPLICAS`) heal by waiting, like `OOM`.
+  Until now they were a `BackendResponseError`; with upgrade note 2 a
+  `FIRE_AND_FORGET` workflow would have failed at once, and with upgrade
+  note 1 an `AT_LEAST_ONCE` workflow at the delivery limit (E-079).
+
 ## [0.13.0] — 2026-10-19
 
 0.13.0 is 0.13.0rc2 without code changes. The two release candidates

@@ -229,14 +229,21 @@ incompatible server.
 message for it before execution (it does for an unreachable backend):
 the message goes back to the queue in place and, if the error
 persists, reaches `{queue}.XQ` through the delivery limit. Inspect the
-key named in the error and delete or fix it.
+key named in the error and delete or fix it. When the error hits the
+advance of a workflow step that already succeeded, the step is likewise
+redelivered up to the delivery limit; since 0.13.1 the worker then marks
+the workflow `failed` with the error text instead of dead-lettering the
+message (`FIRE_AND_FORGET` steps: at once). See
+[workflow failure modes](../guides/workflows.md#failure-modes).
 
 Error replies that heal by waiting are not a `BackendResponseError`
 but a plain `BackendConnectionError`, handled like an unreachable
 backend: `OOM` (maxmemory reached), `READONLY` (the client still talks
 to a demoted primary after a failover), `LOADING`, `TRYAGAIN`,
-`CLUSTERDOWN`, `MASTERDOWN` and `MISCONF` (persistence failing, for
-example a full disk).
+`CLUSTERDOWN`, `MASTERDOWN`, `MISCONF` (persistence failing, for
+example a full disk), `BUSY` (a long-running script) and `NOREPLICAS`
+(too few replicas for `min-replicas-to-write`; the last two since
+0.13.1).
 
 ## `TaskNotFoundError`
 
