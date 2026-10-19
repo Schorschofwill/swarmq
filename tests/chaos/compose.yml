@@ -4,23 +4,28 @@
 
 services:
   rabbitmq:
-    # Exakt gepinnt (Plan 2026-10-08-1541, KTD9) auf die Version, gegen die
-    # die Suite bisher lief; ein Wechsel auf 4.x ist eine eigene Entscheidung.
-    image: rabbitmq:3.13.7-management-alpine
+    # Exakt gepinnt auf dasselbe Abbild wie Hauptstack, CI und Loadsuite
+    # (PF-1, Plan 2026-10-19-1500, KTD7); bis 0.13 lief hier 3.13.7-alpine.
+    image: rabbitmq:4.3.6-management
     healthcheck:
       # `ping` only proves the Erlang VM is up — it goes green BEFORE the
       # AMQP listener (5672) actually accepts connections. `compose --wait`
       # would then release while a connecting worker still hits
       # "Server connection unexpectedly closed / Read 0 bytes" and exits.
       # `check_port_connectivity` gates on the listener ports accepting.
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      # Als Benutzer rabbitmq (gosu): Ein CLI-Aufruf als root vor dem
+      # Serverstart legt /var/lib/rabbitmq/.erlang.cookie root-eigen an, und
+      # der Server bricht mit "eacces" ab (wie `rabbitmq42` in
+      # docker-compose.yml).
+      test: ["CMD", "gosu", "rabbitmq", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
       interval: 3s
       timeout: 10s
       retries: 20
       start_period: 15s
 
   valkey:
-    image: valkey/valkey:8-alpine
+    # Exakt wie in der Loadsuite (KTD7).
+    image: valkey/valkey:8.1.10-alpine
     # AOF on so Pub/Sub-adjacent state survives restarts where
     # relevant chaos tests assert recovery semantics.
     command: ["valkey-server", "--appendonly", "yes"]
@@ -31,7 +36,9 @@ services:
       retries: 15
 
   toxiproxy:
-    image: shopify/toxiproxy:latest
+    # Gepinnt wie docker-compose.chaos.yml und CI; das Docker-Hub-Repo
+    # shopify/toxiproxy ist veraltet.
+    image: ghcr.io/shopify/toxiproxy:2.9.0
     command: ["-host=0.0.0.0"]
     ports:
       - "${TOXI_ADMIN_PORT:-8474}:8474"
