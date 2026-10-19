@@ -15,7 +15,9 @@ resource alarm, the close of a discarded publish channel waits for the
 unblock (PF-19). `ValkeyBackend.connect()`/`close()` are safe to call
 concurrently, and `LockStore.force_release` is atomic. After a
 reconnect, aio-pika no longer reopens channels swarmq had closed or
-discarded (F4-20), and a publish waiting during a resource alarm is
+discarded (F4-20), a publish or worker start that waited for the
+reconnect uses the channel aio-pika restores instead of opening a
+second one (F4-22), and a publish waiting during a resource alarm is
 sent after a dropped connection reconnects instead of waiting for its
 deadline (F4-21). No new message
 headers, Lua scripts, key formats or message format changes: 0.14.0
@@ -134,7 +136,15 @@ channel count at the broker change.
    channel, like the channels that `close()` closes on an injected
    connection or pool, is removed from the restore set of aio-pika's
    `RobustConnection`. After a reconnect only the live publish and
-   consume channels open again. Before, every closed channel that
+   consume channels open again. A publish or a worker start that waited
+   for the reconnect now waits until aio-pika has restored the channel
+   (at most 10 s, usually milliseconds) and uses it; before, it opened a
+   second channel next to the restored one, and both came back with
+   every further reconnect (F4-22). Only when the restore takes longer
+   does swarmq open a new channel: a replaced publish channel is closed
+   as soon as aio-pika restores it anyway, a replaced consume channel
+   stays open because it carries the consumers of the queues consumed
+   before it. Before, every closed channel that
    garbage collection had not yet collected was reopened and then kept
    open, so the channel count at the broker grew with every reconnect;
    dashboards and alert rules on the channel count of swarmq
@@ -172,6 +182,14 @@ channel count at the broker change.
   Before, the channel count at the broker grew with every reconnect,
   and the depth check of a since-deleted queue made the reconnect fail
   with `NOT_FOUND` every 5 s. See upgrade note 7 (E-078).
+- **F4-22: a publish or worker start that waits for a reconnect no
+  longer leaves a second channel behind.** aio-pika marks the
+  connection as ready before it restores the channels; a publish that
+  woke up in between found its channel still closed and opened a new
+  one, and aio-pika restored the old one anyway. The channel count at
+  the broker grew by one with every outage that a publish waited
+  through (`[1, 2]`, `[1, 2, 3]`, `[1, 2, 3, 4]`). Now swarmq waits for
+  the restore and keeps the channel. See upgrade note 7 (E-078).
 - **F4-21: a publish waiting while the broker blocks the connection
   now notices a dropped connection** and is sent after the reconnect
   instead of failing with `BrokerPublishBlocked` at the publish
@@ -210,6 +228,12 @@ channel count at the broker change.
 - **Error catalog:** `PublishCancelledUnsent`, the deferred channel
   close under `BrokerPublishBlocked`, and what a dropped connection
   during the wait for the unblock does (F4-21).
+- **Delivery semantics:** never delete a consumed queue while its
+  workers run. The failed re-subscription closes the shared consume
+  channel, so every queue of the worker stops (with
+  `SWARMQ_BROKER_PUBLISH_CONNECTION=shared` publishing as well) until a restart, and
+  `/ready` turns red naming only the deleted queue
+  ([Changing queue arguments](../explanation/delivery-semantics.md#changing-queue-arguments)).
 
 ## [0.13.1] — 2026-10-19
 

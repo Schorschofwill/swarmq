@@ -237,6 +237,11 @@ setzt `swarmq_delay_tiers_unavailable`.
 - **`SWARMQ_QUEUE_TYPE` ändern** endet bei einer bestehenden Queue mit
   `QueueArgumentsMismatch` (Exit `78`); zieh die Queue um
   ([Queue-Argumente ändern](../explanation/delivery-semantics.md#queue-argumente-andern)).
+- **Nie eine Queue löschen, die ein laufender Worker konsumiert**, auch
+  keine, die verwaist aussieht. Das hält alle Queues dieses Workers bis
+  zu seinem Neustart an, mit `SWARMQ_BROKER_PUBLISH_CONNECTION=shared`
+  auch das Publizieren, und `/ready` nennt nur die gelöschte Queue
+  ([Konsumierte Queue löschen](../explanation/delivery-semantics.md#konsumierte-queue-loschen)).
 
 ### Verbindungen
 

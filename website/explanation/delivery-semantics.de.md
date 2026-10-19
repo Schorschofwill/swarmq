@@ -1000,7 +1000,10 @@ die Queue migrieren:
    später fällig sind: auf sie warten oder sie per Shovel in eine
    Zwischen-Queue verschieben. Eine Delay-Queue mit Nachrichten nie
    einfach löschen; die Nachrichten gingen verloren.
-3. Die Worker stoppen.
+3. Die Worker stoppen, die die Queue konsumieren. Eine Queue nie
+   löschen, während ein Worker sie konsumiert: Das hält alle Queues des
+   Workers an, nicht nur die gelöschte, bis zu seinem Neustart
+   ([Konsumierte Queue löschen](#konsumierte-queue-loschen)).
 4. Den Inhalt von `{queue}.XQ` verschieben oder behalten.
 5. Unmittelbar vor dem Löschen prüfen, ob `{queue}` leer ist. Der
    Scheduler-Leader läuft auch in Workern anderer Queues; verzögerte
@@ -1021,6 +1024,33 @@ verzögerter Task erreicht `{queue}`, aber es feuert auch kein Cron,
 Oneshot oder `delay`/`eta`-Task für irgendeine Queue, bis wieder ein
 Worker mit eingeschaltetem Scheduler startet. Fällige Tasks warten bis
 dahin im Scheduler-Store.
+
+### Konsumierte Queue löschen
+
+Eine Queue nie löschen, während ein Worker sie konsumiert, auch nicht,
+um sie gleich neu anzulegen. Zuerst die Worker der Queue stoppen
+(Schritt 3 oben), auch wenn eine Queue verwaist aussieht. swarmq erholt
+sich von einer gelöschten konsumierten Queue nicht selbst; stattdessen
+passiert Folgendes:
+
+- Der Broker beendet den Consumer mit `basic.cancel`. Der
+  Consumer-Wächter meldet ihn neu an, und das `basic.consume` scheitert
+  an `NOT_FOUND`. Der Broker schließt dabei den Kanal, und alle Consumer
+  eines Workers teilen sich diesen einen Consume-Kanal. **Alle Queues
+  des Workers** stehen still, nicht nur die gelöschte. Der Wächter loggt
+  `consumer_reregister_failed` und danach in jedem Takt
+  `consumer_watch_tick_failed`.
+- Nach `SWARMQ_CONSUMER_READY_GRACE_S` wird `/ready` rot. Sein Eintrag
+  `consumers` nennt nur die gelöschte Queue, obwohl die anderen Queues
+  des Workers ebenfalls stillstehen.
+- Der nächste Reconnect scheitert alle 5 s an der fehlenden Queue. Mit
+  `SWARMQ_BROKER_PUBLISH_CONNECTION=separate` (Default) betrifft das nur
+  die Consume-Verbindung; Publizieren funktioniert weiter. Mit `shared`
+  kommt die eine Verbindung nicht wieder, und auch Publizieren scheitert
+  (`PublishIndeterminate`, `BrokerConnectionError`).
+
+Das dauert bis zum Neustart des Workers. Ein neu gestarteter Worker
+deklariert seine Queues wieder und konsumiert normal.
 
 ## Was SwarmQ nicht tut
 
