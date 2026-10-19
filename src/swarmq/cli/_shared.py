@@ -17,6 +17,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+from swarmq.config_validation import MAX_DEADLINE_S
 from swarmq.exceptions import ConfigurationError
 from swarmq.logging_settings import VALID_LOG_FORMATS, VALID_LOG_LEVELS
 
@@ -75,6 +76,15 @@ def _positive_int(raw: str) -> int:
         raise argparse.ArgumentTypeError(f"not an integer: {raw!r}") from exc
     if value < 1:
         raise argparse.ArgumentTypeError(f"must be >= 1 (got {value})")
+    return value
+
+
+def _deadline_seconds(raw: str) -> int:
+    """argparse type-function for a deadline in whole seconds: ``>= 1`` and at
+    most ``MAX_DEADLINE_S`` like ``TaskInfo`` (E-063, Nachtrag 2026-10-19)."""
+    value = _positive_int(raw)
+    if value > MAX_DEADLINE_S:
+        raise argparse.ArgumentTypeError(f"must be at most {MAX_DEADLINE_S} seconds (got {value})")
     return value
 
 

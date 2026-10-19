@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, override
 from croniter import CroniterBadCronError, CroniterBadDateError, croniter
 
 from swarmq.config import normalize_timezone
+from swarmq.config_validation import check_deadline_bound
 from swarmq.cron_syntax import validate_cron_syntax
 from swarmq.limits import parse_rate_limit
 from swarmq.locking import compute_lock_ttl_ms
@@ -170,6 +171,7 @@ class TaskInfo:
     def __post_init__(self) -> None:
         # E-055: float-Sekunden (``timedelta(...).total_seconds()``) als int.
         object.__setattr__(self, "result_ttl", whole_seconds(self.result_ttl, "result_ttl"))
+        check_deadline_bound("result_ttl", self.result_ttl)
         self._validate_identity_and_retry()
         self._validate_limits_and_locking()
         self._validate_scheduling()
@@ -182,6 +184,7 @@ class TaskInfo:
             raise ValueError("name must not exceed 255 characters")
         if not self.queues:
             raise ValueError("queues must have at least 1 element")
+        check_deadline_bound("hard_timeout", self.hard_timeout)
         if self.soft_timeout is not None and self.hard_timeout is not None and self.hard_timeout <= self.soft_timeout:
             raise ValueError("hard_timeout must be greater than soft_timeout")
         if self.retry_backoff not in _VALID_BACKOFF_STRATEGIES:
@@ -198,6 +201,7 @@ class TaskInfo:
             parse_rate_limit(self.rate_limit)
         if self.max_age is not None and self.max_age <= 0:
             raise ValueError("max_age must be > 0 when set")
+        check_deadline_bound("max_age", self.max_age)
         if self.priority not in ("high", "normal", "low"):
             raise ValueError(f"priority must be 'high' | 'normal' | 'low', got {self.priority!r}")
         if self.max_concurrency < 1:
@@ -264,6 +268,7 @@ class TaskInfo:
         # - float wird nach den Rohwert-Prüfungen ganzzahlig (E-055).
         if self.unique_for is not None:
             object.__setattr__(self, "unique_for", validate_unique_for(self.unique_for))
+            check_deadline_bound("unique_for", self.unique_for)
         if self.unique_until not in _VALID_UNIQUE_UNTIL:
             raise ValueError(f"unique_until must be one of {sorted(_VALID_UNIQUE_UNTIL)}, got {self.unique_until!r}")
 

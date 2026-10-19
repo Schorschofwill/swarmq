@@ -1007,6 +1007,41 @@ class TestScheduleAddUniqueFor:
                 ]
             )
 
+    @pytest.mark.entscheidung("E-063")
+    def test_unique_for_above_the_deadline_bound_is_a_usage_error(self, capsys):
+        """Nachtrag E-063 (2026-10-19): dieselbe Grenze wie ``TaskInfo.unique_for``;
+        sonst scheitert erst der Claim mit ``SET PX`` über int64."""
+        from swarmq.config_validation import MAX_DEADLINE_S
+
+        parser = cli._build_parser()
+        with pytest.raises(SystemExit) as excinfo:
+            parser.parse_args(
+                [
+                    "schedule",
+                    "add",
+                    "test",
+                    "--cron",
+                    "* * * * *",
+                    "--task",
+                    "t",
+                    "--unique-for",
+                    str(MAX_DEADLINE_S + 1),
+                ]
+            )
+
+        assert excinfo.value.code == 2
+        assert f"must be at most {MAX_DEADLINE_S}" in capsys.readouterr().err
+
+    def test_unique_for_exactly_at_the_deadline_bound_is_accepted(self):
+        from swarmq.config_validation import MAX_DEADLINE_S
+
+        parser = cli._build_parser()
+        ns = parser.parse_args(
+            ["schedule", "add", "test", "--cron", "* * * * *", "--task", "t", "--unique-for", str(MAX_DEADLINE_S)]
+        )
+
+        assert ns.unique_for == MAX_DEADLINE_S
+
 
 class TestInspectCommand:
     """Argparse + import-side behaviour for the new `swarmq inspect` cmd."""

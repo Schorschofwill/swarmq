@@ -360,7 +360,7 @@
           "name": "--unique-for",
           "positional": false,
           "required": false,
-          "type": "positive_int"
+          "type": "deadline_seconds"
         },
         {
           "choices": [

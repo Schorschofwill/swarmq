@@ -9,6 +9,7 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING, Any, Literal, override
 
+from swarmq.config_validation import check_deadline_bound
 from swarmq.exceptions import TaskNotFoundError
 from swarmq.logging import get_logger
 from swarmq.seconds import validate_unique_for
@@ -142,6 +143,7 @@ class ClientScheduleResolve:
             # E-056/E-055: wie TaskInfo prüfen, float ganzzahlig machen; vor
             # jedem Claim, Publish oder Speichern.
             final_for = validate_unique_for(unique_for)
+            check_deadline_bound("unique_for", final_for)
 
         if not isinstance(unique_until, _MissingType):
             final_until = unique_until
