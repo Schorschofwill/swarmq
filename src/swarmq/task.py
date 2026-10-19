@@ -185,7 +185,13 @@ class TaskInfo:
         if not self.queues:
             raise ValueError("queues must have at least 1 element")
         check_deadline_bound("hard_timeout", self.hard_timeout)
-        if self.soft_timeout is not None and self.hard_timeout is not None and self.hard_timeout <= self.soft_timeout:
+        # ``not >`` statt ``<=``: fuer ``soft_timeout=nan`` ist jeder Vergleich
+        # falsch, die Grenze aus E-063 muss trotzdem greifen.
+        if (
+            self.soft_timeout is not None
+            and self.hard_timeout is not None
+            and not self.hard_timeout > self.soft_timeout
+        ):
             raise ValueError("hard_timeout must be greater than soft_timeout")
         if self.retry_backoff not in _VALID_BACKOFF_STRATEGIES:
             raise ValueError(

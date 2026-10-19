@@ -8,6 +8,7 @@ Speichern; sonst scheiterte erst das ``SET PX`` in Valkey.
 Testliste:
 # [x] schedule(unique_for=MAX_DEADLINE_S + 1) -> ValueError, kein Claim, kein Publish
 # [x] schedule_many(unique_for=MAX_DEADLINE_S + 1) -> ValueError, kein Claim, kein Publish
+# [x] schedule() und schedule_many() mit unique_for=MAX_DEADLINE_S: Claim mit der Grenze, Publish
 """
 
 from __future__ import annotations
@@ -46,3 +47,23 @@ async def test_schedule_many_rejects_unique_for_above_the_bound(
 
     backend.claim_unique.assert_not_awaited()
     broker.publish.assert_not_awaited()
+
+
+async def test_schedule_accepts_unique_for_at_the_bound(
+    bound_client: Client, broker: AsyncMock, backend: AsyncMock
+) -> None:
+    await bound_client.schedule("bound.task", 1, queue="bound", unique_for=MAX_DEADLINE_S)
+
+    backend.claim_unique.assert_awaited_once()
+    assert MAX_DEADLINE_S * 1000 in backend.claim_unique.await_args.args
+    broker.publish.assert_awaited_once()
+
+
+async def test_schedule_many_accepts_unique_for_at_the_bound(
+    bound_client: Client, broker: AsyncMock, backend: AsyncMock
+) -> None:
+    await bound_client.schedule_many([("bound.task", (1,), {})], queue="bound", unique_for=MAX_DEADLINE_S)
+
+    backend.claim_unique.assert_awaited_once()
+    assert MAX_DEADLINE_S * 1000 in backend.claim_unique.await_args.args
+    broker.publish.assert_awaited()
