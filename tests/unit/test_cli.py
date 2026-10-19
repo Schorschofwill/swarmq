@@ -9,7 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 from typing import Any, override
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -946,6 +946,21 @@ class TestScheduleHandlerValidation:
         )
         with pytest.raises(ConfigurationError, match="--at"):
             await cli._run_schedule_add(ns)
+
+    @pytest.mark.entscheidung("E-080")
+    @pytest.mark.parametrize("at", ["9999-12-31T00:00:00Z", "2200-01-01T00:00:00"])
+    async def test_schedule_add_rejects_at_beyond_the_deadline_bound(self, monkeypatch, at):
+        """E-080: ``--at`` höchstens ``MAX_DEADLINE_S`` in der Zukunft, wie
+        ``schedule(eta=)``; geprüft, bevor ein Backend aufgebaut wird."""
+        from swarmq.cli import schedule_cmd
+        from swarmq.config_validation import MAX_DEADLINE_S
+
+        factory = Mock(side_effect=AssertionError("no backend before the bound check"))
+        monkeypatch.setattr(schedule_cmd, "_get_backend_factory", factory)
+        ns = argparse.Namespace(name="x", cron=None, at=at, task="t", args="[]", kwargs="{}", queue="default")
+        with pytest.raises(ConfigurationError, match=rf"^--at must be at most {MAX_DEADLINE_S} seconds in the future"):
+            await cli._run_schedule_add(ns)
+        factory.assert_not_called()
 
 
 # ---- R3.5 ce-review P3 #23: CLI surface for dedup ------------------

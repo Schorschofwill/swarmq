@@ -118,8 +118,8 @@ Enqueue a task and return its `task_id`.
 | `task_name` | `str` | Name declared in `TaskInfo.name`. |
 | `*args`, `**kwargs` | `Any` | Forwarded to `Task.run()`. Must be JSON-compatible. |
 | `queue` | `str \| None` | Override the task's default queue. Required in client-only mode (no registry). |
-| `delay` | `float \| None` | Seconds to wait before delivery. Mutually exclusive with `eta`. Must be `≥ 0`. |
-| `eta` | `datetime \| None` | Absolute fire time. Mutually exclusive with `delay`. Must be in the future (1s lenience). |
+| `delay` | `float \| None` | Seconds to wait before delivery. Mutually exclusive with `eta`. Must be `≥ 0`, finite and at most `315360000` (ten years, since 0.13.1). |
+| `eta` | `datetime \| None` | Absolute fire time. Mutually exclusive with `delay`. Must be in the future (1s lenience) and at most `315360000` seconds ahead (since 0.13.1). A naive `datetime` is read as local time. |
 | `unique_for` | `float \| None` | Override `TaskInfo.unique_for`, in seconds. Must be `> 0`, finite and at most `315360000` (`ValueError` otherwise, before any claim, publish or store; since 0.12.3, the upper bound since 0.13.0); a `float` is rounded up to whole seconds. Pass `None` to disable dedup for this call. |
 | `unique_until` | `"start" \| "completion"` | Override `TaskInfo.unique_until`. |
 
@@ -169,7 +169,9 @@ defaults, build the producer with the same tasks registered, e.g. via a
 
 - `TaskNotFoundError` — task_name not in the registry (registry mode).
 - `ValueError` — `delay < 0`, both `delay` and `eta` set, `eta` in the past,
-  `unique_for` `<= 0`, `inf`, `nan` or above `315360000` (ten years).
+  `delay` `nan`, `inf` or above `315360000`, `eta` more than `315360000`
+  seconds ahead (since 0.13.1, before `pre_enqueue`, any claim and any
+  write), `unique_for` `<= 0`, `inf`, `nan` or above `315360000` (ten years).
 - `BrokerConnectionError` — broker unreachable at publish.
 - `BackendResponseError` — with `delay`/`eta`: the scheduler store holds
   a different entry under the one-shot's name, or refused the write. On

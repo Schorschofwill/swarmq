@@ -120,8 +120,8 @@ Enqueuet einen Task und gibt seine `task_id` zurück.
 | `task_name` | `str` | Name, den `TaskInfo.name` deklariert. |
 | `*args`, `**kwargs` | `Any` | An `Task.run()` weitergegeben. Müssen JSON-kompatibel sein. |
 | `queue` | `str \| None` | Überschreibt die Default-Queue des Tasks. Im Client-Only-Modus (ohne Registry) pflicht. |
-| `delay` | `float \| None` | Sekunden Verzögerung vor Zustellung. Gegenseitig ausschließend mit `eta`. Muss `≥ 0` sein. |
-| `eta` | `datetime \| None` | Absoluter Fire-Zeitpunkt. Gegenseitig ausschließend mit `delay`. Muss in der Zukunft liegen (1s Lenienz). |
+| `delay` | `float \| None` | Sekunden Verzögerung vor Zustellung. Gegenseitig ausschließend mit `eta`. Muss `≥ 0`, endlich und höchstens `315360000` sein (zehn Jahre, seit 0.13.1). |
+| `eta` | `datetime \| None` | Absoluter Fire-Zeitpunkt. Gegenseitig ausschließend mit `delay`. Muss in der Zukunft liegen (1s Lenienz) und höchstens `315360000` Sekunden voraus (seit 0.13.1). Ein naives `datetime` gilt als Ortszeit. |
 | `unique_for` | `float \| None` | Überschreibt `TaskInfo.unique_for`, in Sekunden. Muss `> 0`, endlich und höchstens `315360000` sein (sonst `ValueError`, vor jedem Claim, Publish oder Speichern; seit 0.12.3, die Obergrenze seit 0.13.0); ein `float` wird auf ganze Sekunden aufgerundet. `None` deaktiviert Dedup für diesen Aufruf. |
 | `unique_until` | `"start" \| "completion"` | Überschreibt `TaskInfo.unique_until`. |
 
@@ -173,7 +173,9 @@ Task-Module importiert.
 
 - `TaskNotFoundError` — task_name nicht in der Registry (Registry-Modus).
 - `ValueError` — `delay < 0`, `delay` und `eta` gleichzeitig, `eta` in Vergangenheit,
-  `unique_for` `<= 0`, `inf`, `nan` oder über `315360000` (zehn Jahre).
+  `delay` `nan`, `inf` oder über `315360000`, `eta` mehr als `315360000`
+  Sekunden voraus (seit 0.13.1, vor `pre_enqueue`, jedem Claim und
+  jedem Schreiben), `unique_for` `<= 0`, `inf`, `nan` oder über `315360000` (zehn Jahre).
 - `BrokerConnectionError` — Broker beim Publish unerreichbar.
 - `BackendResponseError` — bei `delay`/`eta`: Der Scheduler-Store hat
   unter dem Namen des Oneshots einen anderen Eintrag, oder er hat das

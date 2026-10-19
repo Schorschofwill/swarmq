@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 from swarmq.client.schedule_resolve import _MISSING as _MISSING  # Re-Export (Fassade, app.py)
 from swarmq.client.schedule_resolve import ClientScheduleResolve
 from swarmq.client.schedule_resolve import _MissingType as _MissingType
+from swarmq.config_validation import MAX_DEADLINE_MS, MAX_DEADLINE_S, check_deadline_bound
 from swarmq.contracts import Publisher, ResultBackend
 from swarmq.contracts.coordination import ScheduleStore as ContractScheduleStore
 from swarmq.exceptions import (
@@ -228,6 +229,9 @@ class ClientScheduling(ClientScheduleResolve):
             raise ValueError("Specify delay OR eta, not both")
         if delay is not None and delay < 0:
             raise ValueError(f"delay must be >= 0, got {delay!r}")
+        # E-080: ``nan`` besteht ``< 0`` und ``> 0`` nicht und veroeffentlichte
+        # sonst still sofort; ``inf`` warf beim Umrechnen ``OverflowError``.
+        check_deadline_bound("delay", delay)
         # delay=0 is a normal immediate publish; only non-zero delay and
         # eta take the scheduler-store detour.
         if (delay is not None and delay > 0) or eta is not None:
@@ -637,10 +641,21 @@ class ClientScheduling(ClientScheduleResolve):
         """
         now_ms = int(time.time() * 1000)
         if eta is not None:
-            fire_ts_ms = int(eta.timestamp() * 1000)
+            try:
+                fire_ts_ms = int(eta.timestamp() * 1000)
+            except ValueError as exc:
+                # Naive Zeit am Rand (``datetime.max``/``min``): als Ortszeit
+                # nicht darstellbar, jedenfalls ausserhalb der Grenze.
+                raise ValueError(
+                    f"eta must be a representable time at most {MAX_DEADLINE_S} seconds in the future, "
+                    f"got {eta.isoformat()}"
+                ) from exc
             # Allow a 1s lenience for clock skew / scheduling latency.
             if fire_ts_ms < now_ms - 1_000:
                 raise ValueError(f"eta is in the past: {eta.isoformat()}. Use delay=0 for immediate execution.")
+            # E-080: dieselbe Grenze wie ``delay`` (E-063), vor ``pre_enqueue``.
+            if fire_ts_ms - now_ms > MAX_DEADLINE_MS:
+                raise ValueError(f"eta must be at most {MAX_DEADLINE_S} seconds in the future, got {eta.isoformat()}")
         else:
             assert delay is not None  # caller-side validated
             fire_ts_ms = now_ms + int(delay * 1000)

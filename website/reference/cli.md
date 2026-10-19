@@ -311,7 +311,8 @@ swarmq schedule add NAME
 
 Creates a new schedule (insert-if-absent). Pass exactly one of
 `--cron` (5-field expression) or `--at` (ISO 8601 one-shot time;
-without a timezone it is read as UTC). `--cron` accepts the same
+without a timezone it is read as UTC; at most `315360000` seconds ahead,
+otherwise exit `1` before any connection, since 0.13.1). `--cron` accepts the same
 crontab(5) positive list as `TaskInfo.cron`
 ([cron syntax](configuration.md#scheduling-cron)); anything else, such
 as six fields or `L`, `W`, `#`, `R`, `H`, `?` and `@reboot`, ends the

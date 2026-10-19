@@ -64,6 +64,16 @@ decided for 0.13.1 before 0.13.0 final. Install with
    value `<= 0` cancelled every run at once, and `hard_timeout <= -30`
    with a `lock` gave a lock TTL `<= 0`, so the message went round
    until the delivery limit (E-063).
+5. **`delay` and `eta` are finite and bounded.** `schedule(delay=…)`
+   rejects `nan`, `inf` and values above `315360000` seconds (ten
+   years), `schedule(eta=…)` an `eta` more than `315360000` seconds
+   ahead, and `swarmq schedule add --at` such a time (exit `1`). The
+   `ValueError` comes before `pre_enqueue`, any claim, publish or write.
+   Before, `delay=nan` published at once without a delay, `delay=inf`
+   raised a raw `OverflowError`, and a distant `eta` or `--at` was
+   stored (a large `delay` or `eta` could then break
+   `swarmq schedule list`). `delay < 0` stays an
+   error; a naive `eta` is still read as local time (E-080).
 
 ### Fixed
 
@@ -80,6 +90,8 @@ decided for 0.13.1 before 0.13.0 final. Install with
 - **`soft_timeout=nan` no longer reaches the worker.** It broke the
   heap order of the event loop's timers; `select()` then raised
   `ValueError` and `run_forever` stopped. See upgrade note 4 (E-063).
+- **`schedule(delay=float("nan"))` no longer publishes at once.** See
+  upgrade note 5 (E-080).
 
 ## [0.13.0] — 2026-10-19
 

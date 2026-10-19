@@ -318,7 +318,8 @@ swarmq schedule add NAME
 
 Legt einen neuen Schedule an (Insert-if-absent). Übergib genau
 eines von `--cron` (5-Feld-Expression) oder `--at` (ISO-8601-
-Einzelzeit; ohne Zeitzone als UTC gelesen). `--cron` nimmt dieselbe
+Einzelzeit; ohne Zeitzone als UTC gelesen; höchstens `315360000`
+Sekunden voraus, sonst Exit `1` vor jeder Verbindung, seit 0.13.1). `--cron` nimmt dieselbe
 Positivliste nach crontab(5) an wie `TaskInfo.cron`
 ([Cron-Syntax](configuration.md#scheduling-cron)); alles andere, etwa
 sechs Felder oder `L`, `W`, `#`, `R`, `H`, `?` und `@reboot`, beendet den

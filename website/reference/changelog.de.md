@@ -69,6 +69,16 @@ entschieden. Installation mit `pip install 'swarmq==0.13.*'`.
    jeden Lauf sofort ab, und `hard_timeout <= -30` mit `lock` ergab eine
    Lock-TTL `<= 0`, sodass die Nachricht bis zum Zustelllimit kreiste
    (E-063).
+5. **`delay` und `eta` sind endlich und begrenzt.** `schedule(delay=…)`
+   lehnt `nan`, `inf` und Werte über `315360000` Sekunden (zehn Jahre)
+   ab, `schedule(eta=…)` ein `eta` mehr als `315360000` Sekunden voraus
+   und `swarmq schedule add --at` eine solche Zeit (Exit `1`). Der
+   `ValueError` kommt vor `pre_enqueue`, jedem Claim, Publish oder
+   Schreiben. Bisher veröffentlichte `delay=nan` sofort ohne
+   Verzögerung, `delay=inf` warf einen rohen `OverflowError`, und ein
+   fernes `eta` oder `--at` wurde gespeichert (ein großes `delay` oder
+   `eta` konnte danach `swarmq schedule list` scheitern lassen). `delay < 0` bleibt ein Fehler; ein
+   naives `eta` gilt weiter als Ortszeit (E-080).
 
 ### Behoben
 
@@ -86,6 +96,8 @@ entschieden. Installation mit `pip install 'swarmq==0.13.*'`.
   zerstörte die Heap-Ordnung der Timer im Event-Loop; `select()` warf
   dann `ValueError`, und `run_forever` brach ab. Siehe Upgrade-Hinweis 4
   (E-063).
+- **`schedule(delay=float("nan"))` veröffentlicht nicht mehr sofort.**
+  Siehe Upgrade-Hinweis 5 (E-080).
 
 ## [0.13.0] — 2026-10-19
 

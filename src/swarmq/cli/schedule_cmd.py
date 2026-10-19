@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from swarmq.backend.valkey import ValkeyBackend
 
 from swarmq.cli._shared import _render_table
+from swarmq.config_validation import MAX_DEADLINE_MS, MAX_DEADLINE_S
 from swarmq.exceptions import ConfigurationError, is_backend_outcome_unknown
 from swarmq.scheduler import ScheduleDefinition, ScheduleStore
 from swarmq.scheduler.prune import last_seen_by_name, prune_orphans
@@ -162,7 +163,12 @@ def _resolve_fire_time(args: argparse.Namespace) -> tuple[str | None, int]:
         raise ConfigurationError(f"invalid --at datetime: {args.at!r} ({exc})") from exc
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
-    return None, int(dt.timestamp() * 1000)
+    fire_ts_ms = int(dt.timestamp() * 1000)
+    # E-080: wie ``schedule(eta=)``; ein fernerer Eintrag liess sich speichern,
+    # ``schedule list`` scheiterte danach an ``datetime.fromtimestamp``.
+    if fire_ts_ms - int(time.time() * 1000) > MAX_DEADLINE_MS:
+        raise ConfigurationError(f"--at must be at most {MAX_DEADLINE_S} seconds in the future, got {args.at!r}")
+    return None, fire_ts_ms
 
 
 def _render_add_result(
