@@ -170,6 +170,28 @@ läuft. Tests wie oben.
   Management-API: beim Broker nur die lebenden Kanäle; Reconnect nach der Tiefe einer
   gelöschten Queue binnen 10 s).
 
+### Restore-Fenster und `reopen_callbacks` (öffentliches API, Ablauf, seit 0.14, F4-22)
+
+- **Wo:** `_restored_in_time`, `_retire_replaced_channel` und `_close_after_restore` in
+  `broker/rabbitmq/connection.py`, aufgerufen aus `_ensure_channel_tracked`.
+- **Annahmen über den Ablauf in aio-pika 10.0.1:** `_on_connected` setzt zuerst
+  `connected` und stellt danach die Kanäle aus einer Tupel-Kopie des `WeakSet` wieder
+  her; ein schon abgemeldeter Kanal in dieser Kopie wird trotzdem geöffnet.
+  `RobustChannel.ready()` wartet auf Verbindung und Restored-Event.
+  `RobustChannel.reopen()` ruft `reopen_callbacks` nach dem Öffnen; `restore()` setzt das
+  Restored-Event danach noch einmal, einen Schritt der Event-Loop später (die leere
+  Callback-Sammlung gibt ein `STUB_AWAITABLE` zurück, das einmal abgibt). Ein Close vor
+  diesem Schritt ließe `_on_close` den Kanal gleich wieder öffnen; darum schließt
+  `_close_after_restore` erst nach `asyncio.sleep(0)`.
+- **Rückfall:** keiner; ändert aio-pika den Ablauf, öffnet sich ein ersetzter
+  Publish-Kanal schlimmstenfalls noch einmal, und jedes weitere Wiederöffnen schließt
+  ihn erneut. Die Tests unten werden rot.
+- **Tests:** `uv run just unit tests/unit/broker/test_befund_f4_22_channel_replaced_in_restore_window.py`
+  (Wiederherstellung im Fenster, langsamer als die Frist, gescheitert, während des
+  Ersatzes fertig, nach `broker.close()`, Consume) und
+  `uv run just integration tests/integration/broker/test_befund_f4_22_channel_replaced_in_restore_window.py`
+  (drei Ausfälle, genau ein Kanal beim Broker).
+
 ## pytest
 
 ### `_pytest.timing.MockTiming` (privat, seit 0.14, U7)

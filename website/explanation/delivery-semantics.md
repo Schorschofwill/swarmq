@@ -940,7 +940,10 @@ queue at-least-once dead-lettering without a policy, migrate it:
    backend) that may be due only much later: wait for them, or move
    them to a temporary queue with a shovel. Never delete a delay queue
    that still holds messages; they would be lost.
-3. Stop the workers.
+3. Stop the workers that consume the queue. Never delete a queue while
+   a worker consumes it: that stops every queue of the worker, not only
+   the deleted one, until it restarts
+   ([deleting a consumed queue](#deleting-a-consumed-queue)).
 4. Move or keep what is in `{queue}.XQ`.
 5. Right before deleting, check that `{queue}` is empty. The scheduler
    leader also runs in workers of other queues, so deferred tasks that
@@ -958,6 +961,31 @@ deferred task reaches `{queue}`, but no cron, oneshot or
 `delay`/`eta` task fires for any queue either until a worker with the
 scheduler on starts again. Due tasks wait in the scheduler store until
 then.
+
+### Deleting a consumed queue
+
+Never delete a queue while a worker consumes it, not even to recreate
+it right away. Stop the workers of the queue first (step 3 above), also
+when you delete a queue that looks orphaned. swarmq does not recover
+from a deleted consumed queue on its own; what happens instead:
+
+- The broker ends the consumer with `basic.cancel`. The consumer watch
+  registers it again, and the `basic.consume` fails with `NOT_FOUND`.
+  The broker closes the channel with it, and all consumers of a worker
+  share that one consume channel. **Every queue of the worker** stops,
+  not only the deleted one. The watch logs `consumer_reregister_failed`
+  and then `consumer_watch_tick_failed` on every tick.
+- After `SWARMQ_CONSUMER_READY_GRACE_S`, `/ready` turns red. Its
+  `consumers` entry names only the deleted queue, although the other
+  queues of the worker stand still as well.
+- The next reconnect fails on the missing queue every 5 s. With
+  `SWARMQ_BROKER_PUBLISH_CONNECTION=separate` (default) that is only the
+  consume connection; publishing keeps working. With `shared` the one
+  connection does not come back, and publishing fails as well
+  (`PublishIndeterminate`, `BrokerConnectionError`).
+
+This lasts until the worker restarts. A restarted worker declares its
+queues again and consumes normally.
 
 ## What SwarmQ will not do
 

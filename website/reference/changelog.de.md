@@ -16,8 +16,10 @@ Ressourcenalarm des Brokers wartet das Schließen eines verworfenen
 Publish-Kanals auf die Freigabe (PF-19). `ValkeyBackend.connect()`/
 `close()` sind nebenläufig sicher, und `LockStore.force_release` ist
 atomar. Nach einem Reconnect öffnet aio-pika keine Kanäle mehr, die
-swarmq geschlossen oder verworfen hat (F4-20), und ein Publish, der im
-Ressourcenalarm wartet, wird nach einem Verbindungsabriss mit dem
+swarmq geschlossen oder verworfen hat (F4-20), ein Publish oder
+Worker-Start, der auf den Reconnect gewartet hat, nutzt den Kanal, den
+aio-pika wiederherstellt, statt einen zweiten zu öffnen (F4-22), und
+ein Publish, der im Ressourcenalarm wartet, wird nach einem Verbindungsabriss mit dem
 Reconnect gesendet, statt bis zu seiner Frist zu warten (F4-21). Keine
 neuen Header, Lua-Skripte, Key-Formate oder
 Formatänderungen: 0.14.0 läuft neben 0.13.x auf denselben Queues und
@@ -146,7 +148,16 @@ die Logzeilen im Alarm und die Kanalzahl beim Broker ändern sich.
    Kanäle, die `close()` auf einer injizierten Verbindung oder einem
    Pool schließt, aus der Wiederherstellung von aio-pikas
    `RobustConnection` abgemeldet. Nach einem Reconnect gehen nur der
-   lebende Publish- und Consume-Kanal wieder auf. Bisher wurde jeder
+   lebende Publish- und Consume-Kanal wieder auf. Ein Publish oder
+   Worker-Start, der auf den Reconnect gewartet hat, wartet jetzt, bis
+   aio-pika den Kanal wiederhergestellt hat (höchstens 10 s, meist
+   Millisekunden), und nutzt ihn; bisher öffnete er neben dem
+   wiederhergestellten einen zweiten Kanal, und beide kamen mit jedem
+   weiteren Reconnect wieder (F4-22). Erst wenn die Wiederherstellung
+   länger dauert, öffnet swarmq einen neuen Kanal: Ein ersetzter
+   Publish-Kanal wird geschlossen, sobald aio-pika ihn doch noch
+   wiederherstellt; ein ersetzter Consume-Kanal bleibt offen, weil auf
+   ihm die Consumer der vorher konsumierten Queues liegen. Bisher wurde jeder
    geschlossene Kanal, den die Garbage Collection noch nicht
    eingesammelt hatte, wieder geöffnet und blieb dann offen; die
    Kanalzahl beim Broker wuchs so mit jedem Reconnect. Dashboards und
@@ -187,6 +198,15 @@ die Logzeilen im Alarm und die Kanalzahl beim Broker ändern sich.
   Bisher wuchs die Kanalzahl beim Broker mit jedem Reconnect, und die
   Tiefenabfrage einer inzwischen gelöschten Queue ließ den Reconnect
   alle 5 s an `NOT_FOUND` scheitern. Siehe Upgrade-Hinweis 7 (E-078).
+- **F4-22: Ein Publish oder Worker-Start, der auf einen Reconnect
+  wartet, lässt keinen zweiten Kanal mehr zurück.** aio-pika meldet die
+  Verbindung als bereit, bevor es die Kanäle wiederherstellt; ein
+  Publish, der dazwischen aufwachte, fand seinen Kanal noch geschlossen
+  und öffnete einen neuen, und aio-pika stellte den alten trotzdem
+  wieder her. Die Kanalzahl beim Broker wuchs mit jedem Ausfall, den
+  ein Publish abwartete, um eins (`[1, 2]`, `[1, 2, 3]`,
+  `[1, 2, 3, 4]`). Jetzt wartet swarmq die Wiederherstellung ab und
+  behält den Kanal. Siehe Upgrade-Hinweis 7 (E-078).
 - **F4-21: Ein Publish, der bei blockierter Verbindung wartet, bemerkt
   einen Verbindungsabriss** und wird nach dem Reconnect gesendet, statt
   mit der Publish-Frist als `BrokerPublishBlocked` zu enden. Die Frist
@@ -227,6 +247,12 @@ die Logzeilen im Alarm und die Kanalzahl beim Broker ändern sich.
 - **Fehlerkatalog:** `PublishCancelledUnsent`, das zurückgestellte
   Schließen des Kanals unter `BrokerPublishBlocked` und was ein
   Verbindungsabriss beim Warten auf die Freigabe bewirkt (F4-21).
+- **Zustellsemantik:** Eine konsumierte Queue nie bei laufenden Workern
+  löschen. Die gescheiterte Neuanmeldung schließt den gemeinsamen
+  Consume-Kanal; alle Queues des Workers stehen dann still (mit
+  `SWARMQ_BROKER_PUBLISH_CONNECTION=shared` auch das Publizieren) bis zum Neustart,
+  und `/ready` wird rot, nennt aber nur die gelöschte Queue
+  ([Queue-Argumente ändern](../explanation/delivery-semantics.md#queue-argumente-andern)).
 
 ## [0.13.1] — 2026-10-19
 
