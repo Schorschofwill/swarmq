@@ -222,6 +222,23 @@ class TestDLQUniqueForCombo:
                 result = await app.get_result(tid, timeout=5)
                 assert result == 10
 
+                # The result is visible before the release: notify, ack and
+                # the unique release in the handler's finally come after the
+                # store. Leaving the context cancels start_worker() (abort
+                # path, no drain) and closes the worker backend, which can
+                # drop a release still in flight -- wait for the release
+                # itself while the worker runs (CI main pipeline 2964583684).
+                valkey = backend._client
+                assert valkey is not None
+
+                async def unique_flag_released() -> bool:
+                    async for key in valkey.scan_iter(match="*unique:*"):
+                        if await valkey.get(key) == tid.encode():
+                            return False
+                    return True
+
+                assert await wait_until(unique_flag_released, timeout=10), "unique flag never released"
+
         # After completion the unique flag must be released.
         broker2 = RabbitMQBroker(rabbitmq_url)
         backend2 = ValkeyBackend(valkey_url)
