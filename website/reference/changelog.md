@@ -10,7 +10,9 @@ Patch release for 0.13.0. It closes the last case in which a workflow
 whose step succeeded stayed `running` until its TTL (a lasting error
 reply in the chord script), and keeps the `unique_for` claim when a
 `schedule()` call is cancelled while its outcome is unknown. Both were
-decided for 0.13.1 before 0.13.0 final. Install with
+decided for 0.13.1 before 0.13.0 final. It also rejects values that
+never worked: `soft_timeout` and `hard_timeout` must be greater than 0,
+`delay` and `eta` finite and at most ten years ahead. Install with
 `pip install 'swarmq==0.13.*'`.
 
 ### Upgrade notes

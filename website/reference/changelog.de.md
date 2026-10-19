@@ -11,7 +11,9 @@ Workflow mit erfolgreichem Schritt bis zu seiner TTL `running` blieb
 (eine dauerhafte Fehlerantwort im Chord-Skript), und hält den
 `unique_for`-Claim, wenn ein `schedule()`-Aufruf bei unbestimmtem
 Ausgang abgebrochen wird. Beides war vor 0.13.0 final für 0.13.1
-entschieden. Installation mit `pip install 'swarmq==0.13.*'`.
+entschieden. Außerdem lehnt es Werte ab, die nie funktionierten:
+`soft_timeout` und `hard_timeout` müssen größer als 0 sein, `delay` und
+`eta` endlich und höchstens zehn Jahre voraus. Installation mit `pip install 'swarmq==0.13.*'`.
 
 ### Upgrade-Hinweise
 
