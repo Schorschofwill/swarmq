@@ -15,7 +15,11 @@ gesendet wurde, gibt seinen `unique_for`-Claim frei. Im
 Ressourcenalarm des Brokers wartet das Schließen eines verworfenen
 Publish-Kanals auf die Freigabe (PF-19). `ValkeyBackend.connect()`/
 `close()` sind nebenläufig sicher, und `LockStore.force_release` ist
-atomar. Keine neuen Header, Lua-Skripte, Key-Formate oder
+atomar. Nach einem Reconnect öffnet aio-pika keine Kanäle mehr, die
+swarmq geschlossen oder verworfen hat (F4-20), und ein Publish, der im
+Ressourcenalarm wartet, wird nach einem Verbindungsabriss mit dem
+Reconnect gesendet, statt bis zu seiner Frist zu warten (F4-21). Keine
+neuen Header, Lua-Skripte, Key-Formate oder
 Formatänderungen: 0.14.0 läuft neben 0.13.x auf denselben Queues und
 Keys, in beide Richtungen, und ein Rollback auf 0.13.1 ist möglich.
 Jede Änderung wirkt nur im eigenen Prozess (Valkey-Client,
@@ -25,8 +29,8 @@ Mischbetrieb ist gegen 0.13.1 getestet, daneben gegen 0.11.0, 0.11.1,
 0.12.0 und 0.12.3. Der Chaos-Teststack läuft jetzt auf RabbitMQ 4.3.6,
 derselben Broker-Version wie Integrationstests, CI und Loadsuite;
 Toxiproxy ist auf `ghcr.io/shopify/toxiproxy:2.9.0` gepinnt. Lies die
-Upgrade-Hinweise: Fehlertext beim Verbinden, Fehlerzeiten, Abbruch und
-die Logzeilen im Alarm ändern sich.
+Upgrade-Hinweise: Fehlertext beim Verbinden, Fehlerzeiten, Abbruch,
+die Logzeilen im Alarm und die Kanalzahl beim Broker ändern sich.
 
 ### Upgrade-Hinweise
 
@@ -135,6 +139,26 @@ die Logzeilen im Alarm ändern sich.
    `BackendConnectionError`, bestehende Handler fangen sie also weiter.
    Bei einer Semaphore kommt `True`, solange ihr Schlüssel existiert,
    auch wenn alle Halter schon abgelaufen sind.
+7. **Weniger Kanäle beim Broker nach einem Reconnect.** Die
+   Wegwerf-Kanäle von swarmq (Queue-Deklarationen, Queue-Tiefe und
+   -Status, Zugriff auf die DLQ) sind jetzt einfache
+   `aio_pika.Channel`, und ein verworfener Publish-Kanal wird, wie die
+   Kanäle, die `close()` auf einer injizierten Verbindung oder einem
+   Pool schließt, aus der Wiederherstellung von aio-pikas
+   `RobustConnection` abgemeldet. Nach einem Reconnect gehen nur der
+   lebende Publish- und Consume-Kanal wieder auf. Bisher wurde jeder
+   geschlossene Kanal, den die Garbage Collection noch nicht
+   eingesammelt hatte, wieder geöffnet und blieb dann offen; die
+   Kanalzahl beim Broker wuchs so mit jedem Reconnect. Dashboards und
+   Alarmregeln auf die Kanalzahl der swarmq-Verbindungen sehen jetzt
+   niedrigere Werte, die über Reconnects gleich bleiben. Ein Reconnect
+   nach dem Lesen von Tiefe oder Status einer inzwischen gelöschten
+   Queue scheitert nicht mehr alle 5 s an `NOT_FOUND`, und ein
+   Reconnect legt keine gelöschte Queue mehr neu an. Legt eine spätere
+   aio-pika-Version die Wiederherstellungsmenge nicht mehr offen, loggt
+   swarmq je Verbindung einmal die WARNING
+   `robust_channel_release_unavailable` und verhält sich wie vor 0.14
+   ([Event-Katalog](logging.md#event-katalog), E-078).
 
 ### Behoben
 
@@ -155,6 +179,22 @@ die Logzeilen im Alarm ändern sich.
   (5 Wiederholungen) und die Wiederholung im Verbindungsaufbau
   multiplizierten sich: Ein Befehl, dessen Verbindung starb, machte bis
   zu 30 TCP-Versuche zu je 5 s. Siehe Upgrade-Hinweis 2 (E-075).
+- **F4-20: Nach einem Reconnect öffnet aio-pika keine Kanäle mehr, die
+  swarmq geschlossen oder verworfen hat.** Wegwerf-Kanäle (Deklaration,
+  Queue-Tiefe und -Status, DLQ) sind einfache Kanäle, ein verworfener
+  Publish-Kanal wird aus der Wiederherstellung abgemeldet, ebenso die
+  Kanäle, die `close()` auf einer injizierten Verbindung schließt.
+  Bisher wuchs die Kanalzahl beim Broker mit jedem Reconnect, und die
+  Tiefenabfrage einer inzwischen gelöschten Queue ließ den Reconnect
+  alle 5 s an `NOT_FOUND` scheitern. Siehe Upgrade-Hinweis 7 (E-078).
+- **F4-21: Ein Publish, der bei blockierter Verbindung wartet, bemerkt
+  einen Verbindungsabriss** und wird nach dem Reconnect gesendet, statt
+  mit der Publish-Frist als `BrokerPublishBlocked` zu enden. Die Frist
+  bleibt die Obergrenze. Dauert der Alarm an und ist die neue
+  Verbindung noch nicht blockiert, wird auf ihr gesendet; der Publish
+  kann dann wie jeder erste Publish im Alarm als `PublishIndeterminate`
+  enden
+  ([`BrokerPublishBlocked`](errors.md#brokerpublishblocked), E-025).
 
 ### Geändert
 
@@ -179,12 +219,14 @@ die Logzeilen im Alarm ändern sich.
   `Delivery tag … confirmed … was ignored` ist aufgenommen;
   `publish_channel_close_incomplete` und die aiormq-Zeile
   `Got frame for closed channel` erscheinen laut Katalog nur noch,
-  wenn der Alarm länger dauert als die Publish-Frist.
+  wenn der Alarm länger dauert als die Publish-Frist. Neu ist die
+  WARNING `robust_channel_release_unavailable` (F4-20).
 - **API-Referenz:** Vertragshinweise für 0.14.0 zu
   `ResultBackend.connect`/`close`, `LockStore.force_release` und
   `Publisher.publish` (`PublishCancelledUnsent`).
-- **Fehlerkatalog:** `PublishCancelledUnsent`, und das zurückgestellte
-  Schließen des Kanals unter `BrokerPublishBlocked`.
+- **Fehlerkatalog:** `PublishCancelledUnsent`, das zurückgestellte
+  Schließen des Kanals unter `BrokerPublishBlocked` und was ein
+  Verbindungsabriss beim Warten auf die Freigabe bewirkt (F4-21).
 
 ## [0.13.1] — 2026-10-19
 

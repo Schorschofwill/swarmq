@@ -638,6 +638,22 @@ blockiert ist; die WARNING `publish_connection_blocked` markiert das
 Warten. Eine nicht blockierte Verbindung kostet keinen zusätzlichen
 Roundtrip.
 
+**Verbindungsabriss beim Warten.** Seit 0.14 endet das Warten auch,
+wenn die blockierte Verbindung abreißt (aiormq meldet dann keine
+Freigabe). Gesendet war nichts, der Publish wartet darum nicht mehr bis
+zur Publish-Frist und wirft diesen Fehler: Er wartet wie jeder Publish
+ohne Verbindung auf den Reconnect und wird dann auf der neuen
+Verbindung gesendet (E-042). Ist auch die neue Verbindung blockiert,
+wartet er weiter. Dauert der Alarm an, hat RabbitMQ die neue Verbindung
+aber noch nicht blockiert (die Blockade meldet es nur einer Verbindung,
+die im Alarm publiziert), wird der Publish gesendet und fällt unter
+dieselbe Grenze wie jeder erste Publish im Alarm (D-1, siehe
+**Ursache**): Er kann als `PublishIndeterminate` enden, oder bestätigt,
+wenn der Alarm vor seiner Frist endet. Die Publish-Frist bleibt die
+Obergrenze für das ganze Warten; ein Abbruch darin wirft weiter
+`PublishCancelledUnsent`. Vor 0.14 wartete ein solcher Publish auf der
+toten Verbindung bis zu seiner Frist (F4-21, E-025).
+
 **Ursache.** Ein Ressourcenalarm des Brokers. RabbitMQ meldet die
 Blockade (`connection.blocked`) nur einer Verbindung, die während des
 Alarms publiziert. Der Publish, der die Meldung auslöst, kann trotzdem

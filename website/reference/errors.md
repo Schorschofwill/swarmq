@@ -608,6 +608,22 @@ unblock first and sends nothing while blocked; the WARNING
 `publish_connection_blocked` marks the wait. A connection that is not
 blocked costs no extra round trip.
 
+**Connection drop during the wait.** Since 0.14 the wait also ends when
+the blocked connection drops (aiormq does not report an unblock then).
+Nothing was sent, so the publish no longer waits until the publish
+deadline and raises this error: it waits for the reconnect like any
+publish without a connection and is then sent on the new connection
+(E-042). If the new connection is blocked as well, the publish waits
+on. If the alarm is still on but RabbitMQ has not yet blocked the new
+connection (it announces the block only to a connection that publishes
+during the alarm), the publish is sent and falls under the same limit
+as any first publish during an alarm (D-1, see **Cause**): it can end
+as `PublishIndeterminate`, or confirmed when the alarm ends before its
+deadline. The publish deadline stays the upper bound for the whole
+wait; a cancel during it still raises `PublishCancelledUnsent`. Before
+0.14 such a publish waited on the dead connection until its deadline
+(F4-21, E-025).
+
 **Cause.** A broker resource alarm. RabbitMQ announces the block
 (`connection.blocked`) only to a connection that publishes during the
 alarm. The publish that triggers the announcement can still be

@@ -13,7 +13,11 @@ their TCP attempts (PF-16). A `schedule()` call that is cancelled before
 anything was sent releases its `unique_for` claim. During a broker
 resource alarm, the close of a discarded publish channel waits for the
 unblock (PF-19). `ValkeyBackend.connect()`/`close()` are safe to call
-concurrently, and `LockStore.force_release` is atomic. No new message
+concurrently, and `LockStore.force_release` is atomic. After a
+reconnect, aio-pika no longer reopens channels swarmq had closed or
+discarded (F4-20), and a publish waiting during a resource alarm is
+sent after a dropped connection reconnects instead of waiting for its
+deadline (F4-21). No new message
 headers, Lua scripts, key formats or message format changes: 0.14.0
 runs next to 0.13.x on the same queues and keys, in both directions,
 and a rollback to 0.13.1 is possible. Every change acts only inside
@@ -24,7 +28,8 @@ client. Mixed operation is tested against 0.13.1, besides 0.11.0,
 4.3.6, the same broker version as integration tests, CI and the
 load-test suite; Toxiproxy is pinned to
 `ghcr.io/shopify/toxiproxy:2.9.0`. Read the upgrade notes: the connect
-error text, failure times, a cancel and the alarm log lines change.
+error text, failure times, a cancel, the alarm log lines and the
+channel count at the broker change.
 
 ### Upgrade notes
 
@@ -123,6 +128,23 @@ error text, failure times, a cancel and the alarm log lines change.
    `BackendConnectionError`, so existing handlers still catch it. For a
    semaphore, `True` comes as long as its key exists, even when all
    holders have expired.
+7. **Fewer channels at the broker after a reconnect.** swarmq's
+   throwaway channels (queue declarations, queue depth and status, DLQ
+   access) are now plain `aio_pika.Channel`s, and a discarded publish
+   channel, like the channels that `close()` closes on an injected
+   connection or pool, is removed from the restore set of aio-pika's
+   `RobustConnection`. After a reconnect only the live publish and
+   consume channels open again. Before, every closed channel that
+   garbage collection had not yet collected was reopened and then kept
+   open, so the channel count at the broker grew with every reconnect;
+   dashboards and alert rules on the channel count of swarmq
+   connections now see lower values that stay flat across reconnects.
+   A reconnect after reading the depth or status of a since-deleted
+   queue no longer fails every 5 s with `NOT_FOUND`, and a reconnect no
+   longer declares a deleted queue again. Should a later aio-pika
+   release no longer expose the restore set, swarmq logs the WARNING
+   `robust_channel_release_unavailable` once per connection and behaves
+   as before 0.14 ([event catalog](logging.md#event-catalog), E-078).
 
 ### Fixed
 
@@ -142,6 +164,22 @@ error text, failure times, a cancel and the alarm log lines change.
   and the retry inside the connection setup multiplied: a command whose
   connection died made up to 30 TCP attempts of 5 s. See upgrade
   note 2 (E-075).
+- **F4-20: after a reconnect, aio-pika no longer reopens channels
+  swarmq had closed or discarded.** Throwaway channels (declarations,
+  queue depth and status, DLQ) are plain channels, and a discarded
+  publish channel is released from the connection's restore set, as
+  are the channels that `close()` closes on an injected connection.
+  Before, the channel count at the broker grew with every reconnect,
+  and the depth check of a since-deleted queue made the reconnect fail
+  with `NOT_FOUND` every 5 s. See upgrade note 7 (E-078).
+- **F4-21: a publish waiting while the broker blocks the connection
+  now notices a dropped connection** and is sent after the reconnect
+  instead of failing with `BrokerPublishBlocked` at the publish
+  deadline. The deadline stays the upper bound. If the alarm is still
+  on and the new connection is not blocked yet, the publish is sent on
+  it and, like any first publish during an alarm, can end as
+  `PublishIndeterminate`
+  ([`BrokerPublishBlocked`](errors.md#brokerpublishblocked), E-025).
 
 ### Changed
 
@@ -164,12 +202,14 @@ error text, failure times, a cancel and the alarm log lines change.
   `Delivery tag … confirmed … was ignored` is listed, and
   `publish_channel_close_incomplete` and aiormq's
   `Got frame for closed channel` are described as appearing only when
-  the alarm outlasts the publish deadline.
+  the alarm outlasts the publish deadline. New: the WARNING
+  `robust_channel_release_unavailable` (F4-20).
 - **API reference:** contract notes for 0.14.0 on
   `ResultBackend.connect`/`close`, `LockStore.force_release` and
   `Publisher.publish` (`PublishCancelledUnsent`).
-- **Error catalog:** `PublishCancelledUnsent`, and the deferred channel
-  close under `BrokerPublishBlocked`.
+- **Error catalog:** `PublishCancelledUnsent`, the deferred channel
+  close under `BrokerPublishBlocked`, and what a dropped connection
+  during the wait for the unblock does (F4-21).
 
 ## [0.13.1] — 2026-10-19
 
