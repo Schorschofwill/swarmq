@@ -80,7 +80,14 @@ class Publisher(Protocol):
         body: bytes,
         headers: Mapping[str, Any] | None = None,
     ) -> PublishReceipt:
-        """Persistente, bestätigte Veröffentlichung; Fehlschlag → ``BrokerConnectionError``."""
+        """Persistente, bestätigte Veröffentlichung; Fehlschlag → ``BrokerConnectionError``.
+
+        Ein Abbruch der eigenen Task geht als ``asyncio.CancelledError``
+        weiter, nie verschluckt. Optional markiert der Publisher ihn als
+        ``PublishCancelledUnsent``, wenn nachweislich nichts gesendet wurde;
+        ohne diese Markierung gilt der Abbruch als unbestimmt (E-041), und
+        der Client hält den Unique-Claim.
+        """
         ...
 
     def set_publish_deadline(self, at: float | None) -> None:

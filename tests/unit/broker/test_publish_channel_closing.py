@@ -39,6 +39,15 @@ Test-Liste:
 - [x] beendetes Kind haengt nicht am ``closing`` des Kanals (kein Speicherleck)
 - [x] aio-pika-Kanal ohne ``closing``-Future -> Rueckfall mit einer WARNING je Broker
 - [x] Versionsschutz: aiormq traegt ``closing``-Future, aio-pika ``get_underlay_channel``
+- [x] eigener Abbruch in der Sperren-Warteschlange -> ``PublishCancelledUnsent``
+      (U4, E-042-Kriterium ``maybe_sent``)
+- [x] eigener Abbruch im Backoff nach einem nicht gesendeten Versuch -> markiert
+- [x] eigener Abbruch beim Kanalaufbau (Warten auf ``ready()``) -> markiert
+- [x] eigener Abbruch nach dem Einreihen -> unmarkierter ``CancelledError``
+- [x] eigener Abbruch nach einem negativen Confirm -> unmarkiert (E-041)
+- [x] fremder ``CancelledError`` vor dem Senden -> unmarkiert
+- [x] Handler, den der Drain schon abgebrochen hat (``cancelling() > 0``),
+      verliert den Kanal vor dem Senden -> kein markierter Abbruch
 """
 
 from __future__ import annotations
@@ -59,7 +68,7 @@ from aiormq.exceptions import AMQPConnectionError, ChannelClosed
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.contracts import PublishReceipt
-from swarmq.exceptions import BrokerConnectionError, PublishIndeterminate
+from swarmq.exceptions import BrokerConnectionError, PublishCancelledUnsent, PublishIndeterminate
 from tests.support.aiormq_transport import FakePublishChannel, FakeTransport
 
 # Enge Zeitbudgets gegen die echte Uhr: unter paralleler Last gerissen
@@ -362,6 +371,150 @@ async def test_a_deadline_while_waiting_for_the_channel_lock_is_not_indeterminat
 
     assert not isinstance(caught.value, PublishIndeterminate)
     assert transport.write_queue.empty()
+
+
+async def _cancel_and_catch(publish: asyncio.Task[Any]) -> asyncio.CancelledError:
+    """Bricht *publish* ab und liefert den ``CancelledError``, mit dem es endet."""
+    publish.cancel()
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await publish
+    assert publish.cancelled()
+    return caught.value
+
+
+@pytest.mark.entscheidung("E-041")
+async def test_an_own_cancel_while_waiting_for_the_channel_lock_is_marked_unsent() -> None:
+    """U4 (E-042-Kriterium): In der Warteschlange der Kanal-Sperre hat der
+    Versuch nichts eingereiht; der Abbruch ist als nicht gesendet markiert."""
+    transport = FakeTransport(closing=True)
+    broker = _broker(transport)
+    await transport.lock.acquire()  # ein anderer Publish haelt die Sperre
+    try:
+        publish = asyncio.create_task(broker.publish("tasks", b"{}"))
+        await transport.lock.waiter_arrived.wait()
+        cancelled = await _cancel_and_catch(publish)
+    finally:
+        transport.lock.release()
+
+    assert isinstance(cancelled, PublishCancelledUnsent)
+    assert transport.write_queue.empty()
+
+
+@pytest.fixture
+def hanging_backoff(monkeypatch: pytest.MonkeyPatch) -> asyncio.Event:
+    """Der Backoff zwischen zwei Versuchen haengt; das Event meldet seinen Beginn."""
+    original = asyncio.sleep
+    entered = asyncio.Event()
+
+    async def _sleep(delay: float, *args: object) -> None:
+        if delay <= 0:
+            await original(0)
+            return
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(asyncio, "sleep", _sleep)
+    return entered
+
+
+@pytest.mark.entscheidung("E-041")
+async def test_an_own_cancel_in_the_backoff_after_an_unsent_attempt_is_marked_unsent(
+    hanging_backoff: asyncio.Event,
+) -> None:
+    dead = FakeTransport(closing=True)
+    broker = _broker(dead)
+    publish = asyncio.create_task(broker.publish("tasks", b"{}"))
+    await dead.next_frame()  # eingereiht, nie geschrieben
+    dead.lose_connection(AMQPConnectionError(_LOST))
+    await hanging_backoff.wait()
+
+    cancelled = await _cancel_and_catch(publish)
+
+    assert isinstance(cancelled, PublishCancelledUnsent)
+
+
+@pytest.mark.entscheidung("E-041")
+async def test_an_own_cancel_in_the_backoff_after_a_nacked_attempt_stays_unmarked(
+    hanging_backoff: asyncio.Event,
+) -> None:
+    """Ein negatives Confirm heisst "womoeglich gesendet" (E-041): Der
+    Abbruch im Backoff danach bleibt unmarkiert, der Claim bleibt."""
+    transport = FakeTransport(closing=True)
+    broker = _broker(transport)
+    publish = asyncio.create_task(broker.publish("tasks", b"{}"))
+    frame = await transport.next_frame()
+    frame.drain()
+    transport.nack_all()
+    await hanging_backoff.wait()
+
+    cancelled = await _cancel_and_catch(publish)
+
+    assert not isinstance(cancelled, PublishCancelledUnsent)
+
+
+@pytest.mark.entscheidung("E-041")
+async def test_an_own_cancel_while_the_channel_opens_is_marked_unsent() -> None:
+    waiting = asyncio.Event()
+
+    async def _ready() -> None:
+        waiting.set()
+        await asyncio.Event().wait()
+
+    broker = _broker(FakeTransport(closing=True), ready=AsyncMock(side_effect=_ready))
+    publish = asyncio.create_task(broker.publish("tasks", b"{}"))
+    await waiting.wait()
+
+    cancelled = await _cancel_and_catch(publish)
+
+    assert isinstance(cancelled, PublishCancelledUnsent)
+
+
+@pytest.mark.entscheidung("E-041")
+async def test_an_own_cancel_after_the_frame_was_enqueued_stays_unmarked() -> None:
+    """Eingereiht heisst: Der Writer schreibt womoeglich noch (E-042)."""
+    transport = FakeTransport(closing=True)
+    broker = _broker(transport)
+    publish = asyncio.create_task(broker.publish("tasks", b"{}"))
+    await transport.next_frame()
+
+    cancelled = await _cancel_and_catch(publish)
+
+    assert not isinstance(cancelled, PublishCancelledUnsent)
+
+
+async def test_a_foreign_cancel_before_sending_stays_unmarked() -> None:
+    """Ein ``CancelledError`` aus aio-pika (kein Anstieg von ``cancelling()``)
+    ist kein Abbruch des Aufrufers und wird nicht markiert."""
+    broker = _broker(FakeTransport(closing=True), ready=AsyncMock(side_effect=asyncio.CancelledError()))
+
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await broker.publish("tasks", b"{}")
+
+    assert not isinstance(caught.value, PublishCancelledUnsent)
+
+
+async def test_a_drain_cancelled_handler_losing_the_channel_before_sending_stays_unmarked() -> None:
+    """KTD9: Ein vom Drain abgebrochener Handler laeuft mit ``cancelling() > 0``
+    weiter (E-001); ein aio-pika-interner Abbruch ist nicht sein eigener."""
+    broker = _broker(FakeTransport(closing=True), ready=AsyncMock(side_effect=asyncio.CancelledError()))
+
+    async def _handler() -> BaseException:
+        current = asyncio.current_task()
+        assert current is not None
+        current.cancel()
+        try:
+            await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            pass  # der Drain-Abbruch; der Handler laeuft weiter (E-001)
+        try:
+            await broker.publish("tasks", b"{}")
+        except asyncio.CancelledError as exc:
+            return exc
+        raise AssertionError("publish should have failed")
+
+    outcome = await asyncio.create_task(_handler())
+
+    assert not isinstance(outcome, PublishCancelledUnsent)
 
 
 class _CountingClosing(asyncio.Future[Any]):
