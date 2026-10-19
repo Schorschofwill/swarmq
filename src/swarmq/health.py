@@ -29,7 +29,7 @@ import asyncio
 import json
 import re
 import time
-from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, NotRequired, TypedDict, cast
 
@@ -164,20 +164,26 @@ def consumer_check(
     expected: Sequence[str],
     *,
     grace_s: float,
+    missing: Callable[[], Iterable[str]] | None = None,
 ) -> ReadinessCheck:
     """``/ready``-Check: jede erwartete Queue hat einen aktiven Consumer (U6, R2).
 
     ``gaps`` liefert je konsumierter Queue die Sekunden ohne aktiven Consumer
     (``Broker.consumer_gaps``); rot wird es erst nach ``grace_s``. Eine
     Queue, die noch gar nicht konsumiert wird, macht den Worker sofort nicht
-    bereit — vor dem ersten ``consume`` ist er es nicht.
+    bereit — vor dem ersten ``consume`` ist er es nicht. ``missing`` nennt
+    konsumierte Queues, die beim Broker fehlen (``Broker.consumer_missing_queues``,
+    PF-20, E-083): Sie machen sofort nicht bereit, ohne Gnadenfrist.
     """
 
     async def _check() -> tuple[bool, str | None]:
+        gone = [] if missing is None else list(missing())
+        if gone:
+            return False, f"consumed queue missing at the broker: {', '.join(gone)}"
         current = gaps()
-        missing = [queue for queue in expected if queue not in current]
-        if missing:
-            return False, f"not consuming: {', '.join(missing)}"
+        unconsumed = [queue for queue in expected if queue not in current]
+        if unconsumed:
+            return False, f"not consuming: {', '.join(unconsumed)}"
         # Kurzes Fehlen ist normal: Der Consumer-Waechter meldet binnen zwei
         # Takten neu an. Erst danach ist es ein Ausfall.
         stale = [queue for queue in expected if current[queue] > grace_s]

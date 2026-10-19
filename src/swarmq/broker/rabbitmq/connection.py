@@ -243,7 +243,7 @@ class RabbitMQConnection:
         self._consume_connection: aio_pika.abc.AbstractConnection | None = None
         # Consumer-Wächter (Plan 2026-10-08-1541, U6, KTD3): kennt jeden
         # angemeldeten Consumer und meldet verlorene selbst neu an.
-        self._consumer_watch = ConsumerWatch()
+        self._consumer_watch = ConsumerWatch(queue_exists=self._consume_queue_exists)
         # U1.1: QoS state re-applied after channel recreate. Without
         # this, a reconnected consumer silently loses its prefetch.
         self._consume_prefetch: int | None = None
@@ -743,6 +743,23 @@ class RabbitMQConnection:
         if consume is not None and not consume.is_closed:
             return consume
         return self._connection
+
+    async def _consume_queue_exists(self, name: str) -> bool:
+        """Ob eine konsumierte Queue beim Broker existiert: passives Declare auf
+        einem Wegwerf-Kanal der Consume-Verbindung (PF-20, E-083). NOT_FOUND
+        schliesst nur diesen Kanal, nie den gemeinsamen Consume-Kanal."""
+        connection = self._consume_connection or self._connection
+        if connection is None:
+            raise BrokerConnectionError("broker is not connected")
+        channel: aio_pika.abc.AbstractChannel | None = None
+        try:
+            channel = await open_throwaway_channel(connection)
+            await channel.declare_queue(name, passive=True)
+        except aio_pika.exceptions.ChannelNotFoundEntity:
+            return False
+        finally:
+            await close_channel_quietly(channel)
+        return True
 
     async def _throwaway_channel_message_count(self, name: str) -> int:
         """Message count of one queue via passive declare on a throwaway

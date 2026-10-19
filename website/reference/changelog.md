@@ -19,7 +19,10 @@ discarded (F4-20), a publish or worker start that waited for the
 reconnect uses the channel aio-pika restores instead of opening a
 second one (F4-22), and a publish waiting during a resource alarm is
 sent after a dropped connection reconnects instead of waiting for its
-deadline (F4-21). No new message
+deadline (F4-21). A consumed queue deleted while the worker runs no
+longer stops the worker's other queues: the consumer watch reports it
+as `consumer_queue_missing`, keeps `/ready` red and leaves the other
+queues and the connection intact (PF-20). No new message
 headers, Lua scripts, key formats or message format changes: 0.14.0
 runs next to 0.13.x on the same queues and keys, in both directions,
 and a rollback to 0.13.1 is possible. Every change acts only inside
@@ -30,8 +33,9 @@ client. Mixed operation is tested against 0.13.1, besides 0.11.0,
 4.3.6, the same broker version as integration tests, CI and the
 load-test suite; Toxiproxy is pinned to
 `ghcr.io/shopify/toxiproxy:2.9.0`. Read the upgrade notes: the connect
-error text, failure times, a cancel, the alarm log lines and the
-channel count at the broker change.
+error text, failure times, a cancel, the alarm log lines, the
+channel count at the broker and the behaviour after a consumed queue
+was deleted change.
 
 ### Upgrade notes
 
@@ -155,6 +159,32 @@ channel count at the broker change.
    release no longer expose the restore set, swarmq logs the WARNING
    `robust_channel_release_unavailable` once per connection and behaves
    as before 0.14 ([event catalog](logging.md#event-catalog), E-078).
+8. **A deleted consumed queue is fenced off and reported.** When a
+   queue that a running worker consumes is deleted, the consumer watch
+   now checks passively on a throwaway channel whether the queue exists
+   before it registers the consumer again. If it is missing, the worker
+   logs the ERROR `consumer_queue_missing` (field `queue`) once, sends
+   no `basic.consume` for it and takes it out of aio-pika's restore, so
+   a reconnect does not declare it again. Its other queues keep
+   consuming, the connection stays up and publishing keeps working, with
+   both values of `SWARMQ_BROKER_PUBLISH_CONNECTION`. Before, every
+   queue of the worker stopped, `consumer_watch_tick_failed` came on
+   every tick, and a reconnect failed every 5 s with `NOT_FOUND` (with
+   `shared` publishing as well). `/ready` turns red at once, without
+   `SWARMQ_CONSUMER_READY_GRACE_S`, with
+   `consumed queue missing at the broker: <queue>` under `consumers`;
+   before it turned red after the grace period with
+   `no active consumer for more than …`. The worker does not shut down
+   and does not create the queue again. When the queue exists again
+   (another worker with that queue starts, or an operator declares it),
+   the watch registers the consumer within a tick and logs
+   `consumer_reregistered` with the new `reason=queue_recreated`;
+   otherwise restart the worker. Add an alert on `consumer_queue_missing`.
+   Should a later aio-pika release no longer expose a channel's queue
+   list, swarmq logs the WARNING `robust_queue_release_unavailable`
+   once per channel and a reconnect fails as before
+   ([deleting a consumed queue](../explanation/delivery-semantics.md#deleting-a-consumed-queue),
+   E-083).
 
 ### Fixed
 
@@ -209,6 +239,11 @@ channel count at the broker change.
   channel waits for `connection.unblocked`**, at most the publish
   deadline. No channel leaks and no channel number is reused. See
   upgrade note 4 (E-025, E-078).
+- **PF-20: a deleted consumed queue no longer stops the worker's other
+  queues.** The consumer watch checks the queue passively before it
+  registers a consumer again; a missing queue is reported
+  (`consumer_queue_missing`, `/ready`), taken out of the restore and
+  consumed again once it exists. See upgrade note 8 (E-083).
 
 ### Documentation
 
@@ -221,19 +256,20 @@ channel count at the broker change.
   `publish_channel_close_incomplete` and aiormq's
   `Got frame for closed channel` are described as appearing only when
   the alarm outlasts the publish deadline. New: the WARNING
-  `robust_channel_release_unavailable` (F4-20).
+  `robust_channel_release_unavailable` (F4-20), the ERROR
+  `consumer_queue_missing`, the WARNING
+  `robust_queue_release_unavailable` and the reason `queue_recreated`
+  of `consumer_reregistered` (PF-20).
 - **API reference:** contract notes for 0.14.0 on
   `ResultBackend.connect`/`close`, `LockStore.force_release` and
   `Publisher.publish` (`PublishCancelledUnsent`).
 - **Error catalog:** `PublishCancelledUnsent`, the deferred channel
   close under `BrokerPublishBlocked`, and what a dropped connection
   during the wait for the unblock does (F4-21).
-- **Delivery semantics:** never delete a consumed queue while its
-  workers run. The failed re-subscription closes the shared consume
-  channel, so every queue of the worker stops (with
-  `SWARMQ_BROKER_PUBLISH_CONNECTION=shared` publishing as well) until a restart, and
-  `/ready` turns red naming only the deleted queue
-  ([Changing queue arguments](../explanation/delivery-semantics.md#changing-queue-arguments)).
+- **Delivery semantics and deployment guide:** what happens when a
+  consumed queue is deleted while its workers run, and that stopping
+  the workers first is still the way to delete or recreate a queue
+  ([deleting a consumed queue](../explanation/delivery-semantics.md#deleting-a-consumed-queue)).
 
 ## [0.13.1] — 2026-10-19
 

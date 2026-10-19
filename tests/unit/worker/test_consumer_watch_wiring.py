@@ -8,6 +8,8 @@ Test-Liste:
    (mit Prioritäten das Tripel); eine fehlende Queue macht nicht bereit.
 2. Nach dem Konsumstart läuft der Wächter im konfigurierten Takt und zählt
    Neuanmeldungen in die Metrik.
+3. Eine beim Broker fehlende konsumierte Queue macht ``/ready`` rot und wird
+   genannt (PF-20, E-083).
 """
 
 from __future__ import annotations
@@ -123,3 +125,21 @@ async def test_watch_starts_with_the_configured_interval_and_counts_into_the_met
         broker.consume.assert_awaited()
     finally:
         await _stop(worker, task)
+
+
+@pytest.mark.entscheidung("E-083")
+async def test_ready_names_a_consumed_queue_missing_at_the_broker():
+    port = _free_port()
+    config = SwarmQConfig(broker_url="amqp://x", backend_url="valkey://x", queues=["a", "b"], health_port=port)
+    broker = _broker()
+    broker.consumer_gaps.return_value = {"a": 0.0, "b": 0.0}
+    broker.consumer_missing_queues = Mock(return_value=["a"])
+    worker = Worker(broker=broker, backend=_backend(), registry=TaskRegistry(), config=config)
+    task = await _running(worker)
+    try:
+        status, body = await _http_get(port, "/ready")
+    finally:
+        await _stop(worker, task)
+
+    assert status == 503
+    assert json.loads(body)["consumers"] == {"ok": False, "error": "consumed queue missing at the broker: a"}

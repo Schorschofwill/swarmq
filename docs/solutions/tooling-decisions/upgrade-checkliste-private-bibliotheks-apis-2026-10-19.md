@@ -2,16 +2,16 @@
 title: Upgrade-Checkliste – private APIs von valkey-py, aiormq, aio-pika, pytest und asyncio, an denen swarmq hängt
 date: 2026-10-19
 category: docs/solutions/tooling-decisions
-module: backend/valkey/connection.py / broker/rabbitmq/blocked.py / broker/rabbitmq/robust_channels.py / client/schedule.py / tests/unit/test_slow_test_report.py
+module: backend/valkey/connection.py / broker/rabbitmq/blocked.py / broker/rabbitmq/robust_channels.py / broker/rabbitmq/consumer_watch.py / client/schedule.py / tests/unit/test_slow_test_report.py
 problem_type: tooling_decision
 component: dependencies
 severity: medium
 applies_when:
   - valkey-py, aiormq, aio-pika, pytest oder Python werden angehoben (auch Patch-Versionen)
   - ein Plan will eine weitere private API einer Bibliothek nutzen
-  - nach einem Abhängigkeits-Upgrade scheitern Tests zu Verbindungsaufbau, Blocked-Zustand, Kanal-Wiederherstellung, Abbruch-Markierung oder Slow-Report
+  - nach einem Abhängigkeits-Upgrade scheitern Tests zu Verbindungsaufbau, Blocked-Zustand, Kanal-Wiederherstellung, gelöschter konsumierter Queue, Abbruch-Markierung oder Slow-Report
 tags: [abhaengigkeiten, upgrade, valkey-py, aiormq, aio-pika, pytest, asyncio, private-api, checkliste]
-entscheidungen: [E-025, E-041, E-075, E-078]
+entscheidungen: [E-025, E-041, E-075, E-078, E-083]
 ---
 
 # Upgrade-Checkliste: private Bibliotheks-APIs
@@ -192,6 +192,39 @@ läuft. Tests wie oben.
   `uv run just integration tests/integration/broker/test_befund_f4_22_channel_replaced_in_restore_window.py`
   (drei Ausfälle, genau ein Kanal beim Broker).
 
+### `RobustChannel._queues` (privat, seit 0.14, PF-20)
+
+- **Wo:** `release_queue` und `readmit_queue` in `robust_channels.py`, aufgerufen vom
+  Consumer-Wächter (`_queue_present` in `broker/rabbitmq/consumer_watch.py`). Fehlt eine
+  konsumierte Queue beim Broker (passives Declare auf einem Wegwerf-Kanal,
+  `_consume_queue_exists` in `connection.py`), nimmt `release_queue` die `RobustQueue`
+  aus `_queues` ihres `RobustChannel` (Name → Menge der `RobustQueue`); gibt es sie
+  wieder, legt `readmit_queue` sie zurück. Duck-typed: jeder Kanal mit einem `dict`
+  unter `_queues` gilt.
+- **Annahmen:** `RobustChannel.declare_queue(..., robust=True)` (auch `get_queue`, das
+  passiv deklariert) trägt die Queue in `_queues[name]` ein (in 10.0.1 Z. 277);
+  `_on_open` stellt nach einem Reconnect genau die Queues darin wieder her
+  (`queue.restore()`, Z. 140), und `RobustQueue.restore()` deklariert passiv neu und
+  meldet die Consumer aus `_consumers` wieder an (`robust_queue.py`, Z. 57–74). Ein
+  passives Declare mit NOT_FOUND lässt `_on_open` scheitern; daran scheitert der ganze
+  Reconnect (siehe `_on_connected` oben). `RobustQueue.cancel` entfernt den Tag aus
+  `_consumers` (öffentliches API, Z. 157); der Wächter meldet den Tag vorher ab.
+  Einen öffentlichen Ersatz gibt es nicht: `RobustChannel.queue_delete` entfernt den Eintrag
+  auch, löschte aber eine inzwischen neu angelegte Queue.
+- **Rückfall:** Ist `_queues` an einem `RobustChannel` kein `dict`, loggt swarmq je
+  Kanal einmal die WARNING `robust_queue_release_unavailable` und lässt die Queue in
+  der Liste (fail-open). Der Wächter meldet die Queue trotzdem als fehlend und sendet
+  kein `basic.consume`; die übrigen Queues laufen weiter, aber ein Reconnect scheitert
+  wie vor 0.14 alle 5 s an `NOT_FOUND`, bis der Worker neu startet (E-083).
+- **Prüfen:** `aio_pika/robust_channel.py`: `self._queues = defaultdict(set)` (Z. 67),
+  `_on_open` (Z. 135–155), `declare_queue` (Z. 242–278); `aio_pika/robust_queue.py`:
+  `restore` und `cancel`.
+- **Tests:** `uv run just unit -k "robust_channels or consumer_watch_missing_queue"`
+  (echter `RobustChannel` und `RobustQueue`: Abmelden, Zurücklegen, fail-open) und
+  `uv run just integration tests/integration/broker/test_consumed_queue_deleted.py`
+  (Queue gelöscht, Reconnect mit `separate` und `shared` ohne `NOT_FOUND`, Queue neu
+  angelegt).
+
 ## pytest
 
 ### `_pytest.timing.MockTiming` (privat, seit 0.14, U7)
@@ -230,5 +263,5 @@ läuft. Tests wie oben.
 2. Die genannten Tests laufen lassen, dann `uv run just all` und für valkey-py,
    aiormq und aio-pika zusätzlich `SWARMQ_REQUIRE_CHAOS=1 uv run just chaos`.
 3. Bei einer Abweichung erst die betroffene Entscheidung lesen (E-025, E-041, E-075,
-   E-078), dann anpassen. Einen Test mit `entscheidung`-Marker nicht lockern.
+   E-078, E-083), dann anpassen. Einen Test mit `entscheidung`-Marker nicht lockern.
 4. Diese Datei mit den neuen Versionen und Zeilen nachführen.

@@ -579,6 +579,11 @@ class RabbitMQDelivery(RabbitMQDeclarations):
         des Consumer-Checks von ``/ready`` (U6, R2)."""
         return self._consumer_watch.gaps()
 
+    def consumer_missing_queues(self) -> list[str]:
+        """Konsumierte Queues, die beim Broker fehlen (PF-20, E-083); ``/ready``
+        nennt sie, bis es sie wieder gibt."""
+        return self._consumer_watch.missing_queues()
+
     async def cancel_consume(self) -> None:
         """Cancel all active consumers to stop receiving new messages.
 

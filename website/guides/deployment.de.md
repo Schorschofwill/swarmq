@@ -238,9 +238,11 @@ setzt `swarmq_delay_tiers_unavailable`.
   `QueueArgumentsMismatch` (Exit `78`); zieh die Queue um
   ([Queue-Argumente ändern](../explanation/delivery-semantics.md#queue-argumente-andern)).
 - **Nie eine Queue löschen, die ein laufender Worker konsumiert**, auch
-  keine, die verwaist aussieht. Das hält alle Queues dieses Workers bis
-  zu seinem Neustart an, mit `SWARMQ_BROKER_PUBLISH_CONNECTION=shared`
-  auch das Publizieren, und `/ready` nennt nur die gelöschte Queue
+  keine, die verwaist aussieht. Der Worker konsumiert sie dann nicht
+  mehr, loggt die ERROR `consumer_queue_missing` und bleibt nicht bereit
+  (`/ready` nennt die Queue), bis er neu startet oder es die Queue
+  wieder gibt; seine übrigen Queues laufen weiter. Einen Alarm auf
+  `consumer_queue_missing` anlegen
   ([Konsumierte Queue löschen](../explanation/delivery-semantics.md#konsumierte-queue-loschen)).
 
 ### Verbindungen

@@ -10,6 +10,9 @@ Test-Liste:
 # [x] ``release_channel`` ohne ``RobustConnection``: nichts zu tun, keine WARNING
 # [x] ``WeakSet`` fehlt (aio-pika geändert): fail-open, eine WARNING je Verbindung, kein Fehler
 # [x] ``close()`` auf geliehener Verbindung: der Reconnect des Aufrufers öffnet den Publish-Kanal nicht wieder
+# [x] ``release_queue``: nur diese Queue verlässt die Restore-Liste des ``RobustChannel`` (PF-20, E-083)
+# [x] ``readmit_queue``: die Queue kommt zurück in die Restore-Liste
+# [x] ``_queues`` fehlt (aio-pika geändert): fail-open, eine WARNING je Kanal; ohne ``RobustChannel`` nichts zu tun
 """
 
 from __future__ import annotations
@@ -22,7 +25,12 @@ import aio_pika
 import pytest
 from yarl import URL
 
-from swarmq.broker.rabbitmq.robust_channels import open_throwaway_channel, release_channel
+from swarmq.broker.rabbitmq.robust_channels import (
+    open_throwaway_channel,
+    readmit_queue,
+    release_channel,
+    release_queue,
+)
 from tests.unit.broker.test_befund_f4_20_restore_closed_channels import _connected_broker, _reconnect
 
 pytestmark = pytest.mark.timeout(5)
@@ -74,3 +82,64 @@ async def test_closing_a_broker_on_a_borrowed_connection_releases_its_publish_ch
     fresh = await _reconnect(connection, first)
 
     assert sorted(fresh.channels) == [], "the caller's reconnect does not reopen swarmq's publish channel"
+
+
+def _robust_channel() -> aio_pika.RobustChannel:
+    return aio_pika.RobustChannel(aio_pika.RobustConnection(URL("amqp://guest:guest@localhost/")))
+
+
+def _registered(channel: aio_pika.RobustChannel, name: str) -> aio_pika.RobustQueue:
+    """Eine Queue in der Restore-Liste, wie ``declare_queue(passive=True)`` sie anlegt."""
+    queue = aio_pika.RobustQueue(channel, name, passive=True)
+    channel._queues[name].add(queue)
+    return queue
+
+
+@pytest.mark.entscheidung("E-083")
+async def test_a_released_queue_leaves_the_restore_list_and_the_others_stay() -> None:
+    channel = _robust_channel()
+    deleted = _registered(channel, "a")
+    twin = _registered(channel, "b")
+    other = _registered(channel, "b")
+
+    release_queue(deleted, "a")
+    release_queue(twin, "b")
+
+    assert dict(channel._queues) == {"b": {other}}
+
+
+@pytest.mark.entscheidung("E-083")
+async def test_a_missing_queue_registry_fails_open_with_one_warning_per_channel(swarmq_logs) -> None:
+    channel = _robust_channel()
+    other = _robust_channel()
+    queue = aio_pika.RobustQueue(channel, "a", passive=True)
+    # aio-pika ohne die private Restore-Liste (umbenannt oder entfernt)
+    del channel._queues
+    del other._queues
+
+    release_queue(queue, "a")
+    release_queue(queue, "a")
+    release_queue(aio_pika.RobustQueue(other, "a", passive=True), "a")
+
+    warnings = [e["event"] for e in swarmq_logs if e["log_level"] == "warning"]
+    assert warnings == ["robust_queue_release_unavailable"] * 2
+
+
+def test_release_and_readmit_without_a_robust_channel_do_nothing(swarmq_logs) -> None:
+    queue = Mock(channel=Mock(spec=aio_pika.Channel))
+
+    release_queue(queue, "a")
+    readmit_queue(queue, "a")
+
+    assert [e for e in swarmq_logs if e["log_level"] == "warning"] == []
+
+
+@pytest.mark.entscheidung("E-083")
+async def test_a_readmitted_queue_is_back_in_the_restore_list() -> None:
+    channel = _robust_channel()
+    queue = _registered(channel, "a")
+    release_queue(queue, "a")
+
+    readmit_queue(queue, "a")
+
+    assert dict(channel._queues) == {"a": {queue}}

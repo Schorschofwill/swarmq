@@ -27,16 +27,19 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from swarmq.broker.rabbitmq.robust_channels import readmit_queue, release_queue
 from swarmq.logging import _error_fields, get_logger
 
 logger = get_logger(__name__)
 
 #: Hook für die Metrik ``swarmq_consumer_reregistrations_total``: (Queue, Grund).
 ReregisteredHook = Callable[[str, str], None]
+#: Passive Prüfung, ob eine Queue beim Broker existiert (PF-20, E-083).
+QueueExists = Callable[[str], Awaitable[bool]]
 
 # ``RobustChannel.get_underlay_channel`` wartet auf ``connection.ready()`` und
 # kehrt bei getrennter Verbindung nie zurück. Der Takt gibt dann auf; die
@@ -75,6 +78,8 @@ class _Watched:
     # Zeitpunkt (``clock``), seit dem der Consumer vermisst wird.
     missing_since: float | None = None
     reason: str = ""
+    # Die Queue fehlt beim Broker (PF-20, E-083): kein ``basic.consume``.
+    queue_missing: bool = False
 
 
 class ConsumerWatch:
@@ -91,8 +96,10 @@ class ConsumerWatch:
         timeout_s: float = _RPC_TIMEOUT_S,
         rpc_timeout_s: float = _RPC_EMERGENCY_TIMEOUT_S,
         clock: Callable[[], float] = time.monotonic,
+        queue_exists: QueueExists | None = None,
     ) -> None:
         self._timeout_s = timeout_s
+        self._queue_exists = queue_exists
         self._rpc_timeout_s = rpc_timeout_s
         self._clock = clock
         self._entries: list[_Watched] = []
@@ -229,6 +236,11 @@ class ConsumerWatch:
             for entry in self._entries
         }
 
+    def missing_queues(self) -> list[str]:
+        """Konsumierte Queues, die beim Broker fehlen (PF-20, E-083); ``/ready``
+        nennt sie, bis es sie wieder gibt."""
+        return [entry.queue_name for entry in self._entries if entry.queue_missing]
+
     async def tick(self) -> None:
         """Ein Prüfdurchgang über alle angemeldeten Consumer."""
         for entry in self._entries:
@@ -305,6 +317,8 @@ class ConsumerWatch:
 
     async def _consume(self, entry: _Watched, underlay: Any) -> None:
         try:
+            if not await self._queue_present(entry):
+                return
             await self._channel_ready(entry.queue)
             tag = await entry.queue.consume(entry.callback, timeout=self._rpc_timeout_s)
         except Exception as exc:  # noqa: BLE001 - geloggt, Waechter laeuft weiter
@@ -334,6 +348,32 @@ class ConsumerWatch:
         )
         if self.on_reregistered is not None:
             self.on_reregistered(entry.queue_name, entry.reason)
+
+    async def _queue_present(self, entry: _Watched) -> bool:
+        """Ob die Queue beim Broker existiert, passiv geprueft (PF-20, E-083).
+
+        Fehlt sie, unterbleibt ``basic.consume``: Es scheiterte an NOT_FOUND und
+        schloesse den gemeinsamen Consume-Kanal (E-019). Beim ersten Fehlen
+        nimmt der Waechter die Queue aus aio-pikas Restore-Liste, sonst
+        scheiterte jeder Reconnect an ihr, und meldet ERROR. Gibt es sie
+        wieder, kommt sie zurueck in die Liste."""
+        if self._queue_exists is None:
+            return True
+        # Begrenzt wie der Kanalbezug: Die Pruefung laeuft auf einem
+        # Wegwerf-Kanal, ein Abbruch schliesst nie den Consume-Kanal (E-053).
+        if await asyncio.wait_for(self._queue_exists(entry.queue_name), timeout=self._timeout_s):
+            if entry.queue_missing:
+                # Jemand hat die Queue neu angelegt: wieder in die Restore-Liste
+                # und neu anmelden.
+                entry.queue_missing = False
+                entry.reason = "queue_recreated"
+                readmit_queue(entry.queue, entry.queue_name)
+            return True
+        if not entry.queue_missing:
+            entry.queue_missing = True
+            release_queue(entry.queue, entry.queue_name)
+            logger.error("consumer_queue_missing", queue=entry.queue_name)
+        return False
 
     async def _cancel_late(self, entry: _Watched, tag: str) -> None:
         try:
