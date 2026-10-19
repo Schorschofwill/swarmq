@@ -4,7 +4,9 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 [Keep a Changelog](https://keepachangelog.com/) und
 [Semantic Versioning](https://semver.org/).
 
-## [0.13.1] — unveröffentlicht
+## [0.13.1rc1] — 2026-10-19
+
+Release-Candidate für 0.13.1 (Installation mit `pip install --pre`).
 
 Patch-Release für 0.13.0. Es schließt den letzten Fall, in dem ein
 Workflow mit erfolgreichem Schritt bis zu seiner TTL `running` blieb
@@ -19,7 +21,7 @@ gefeuert; diese Grenze ist eine Verhaltensänderung. Keine neuen Header,
 Lua-Skripte oder Formatänderungen: 0.13.1 läuft neben 0.13.0 auf
 denselben Queues und Keys, in beide Richtungen. Im Mischbetrieb
 entscheidet der Worker, der die Zustellung am Limit bearbeitet, ob der
-Workflow `failed` wird. Installation mit `pip install 'swarmq==0.13.*'`.
+Workflow `failed` wird.
 
 ### Upgrade-Hinweise
 

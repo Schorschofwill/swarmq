@@ -4,7 +4,9 @@ All notable changes to SwarmQ. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
-## [0.13.1] — unreleased
+## [0.13.1rc1] — 2026-10-19
+
+Release candidate for 0.13.1 (install with `pip install --pre`).
 
 Patch release for 0.13.0. It closes the last case in which a workflow
 whose step succeeded stayed `running` until its TTL (a lasting error
@@ -18,7 +20,6 @@ fired; this bound is a behaviour change. No new headers, Lua scripts or
 format changes: 0.13.1 runs next to 0.13.0 on the same queues and keys,
 in both directions. In mixed operation the worker that handles the
 delivery at the limit decides whether the workflow becomes `failed`.
-Install with `pip install 'swarmq==0.13.*'`.
 
 ### Upgrade notes
 
