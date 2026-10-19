@@ -12,6 +12,7 @@ quelle:
   - Georg 2026-10-17 (Fehlersuche Runde 4, PF-7, Option a)
   - docs/befunde/fehlersuche-runde-4-2026-10.md (LÜCKE PF-7, Verdacht R4M-F-02)
   - Commit 8971cbc (already_exists = not inserted), Commit 0a2a8b6 (duplicate_of)
+  - 'Georg 2026-10-19 (Entscheidungsvorlage 0.13.0, Punkt 4d bestätigt, Punkt 3c Doku)'
 tests:
   - tests/unit/test_cli_schedule_add_contract.py::test_inserted_schedule_reports_already_exists_false
   - tests/unit/test_cli_schedule_add_contract.py::test_taken_name_reports_already_exists_true
@@ -28,5 +29,7 @@ tests:
 **Begründung.** Agenten lesen die JSON-Ausgabe als Vertrag (R3.10 P3 #18). `already_exists = not inserted` (8971cbc) stammt aus der Zeit vor `duplicate_of` (0a2a8b6) und meldet heute `true`, obwohl unter dem Namen nichts gespeichert ist.
 
 **Bewusste Folgen.** Ein Aufrufer, der `already_exists` als „nicht gespeichert“ gelesen hat, muss `inserted` lesen. Gehört der Claim dem eigenen Namen (gleicher Name, gleiche Argumente, Claim noch gehalten), wird nichts gespeichert; die CLI liest den Eintrag unter dem Namen, und `already_exists` ist genau dann `true`, wenn er existiert (Nacharbeit U18): nach einem gefeuerten Oneshot, nach einem Ausfall ohne gespeicherten Eintrag oder nach `schedule remove` ist es `false`. `duplicate_of` nennt in diesem Fall den eigenen Namen. Scheitert das Lesen, bleibt der Claim stehen (die CLI hat ihn nicht selbst gesetzt, E-059), und der Fehler geht an den Aufrufer. Festgeschrieben sind neu angelegt, Name belegt, der Duplikatfall (U18, 0.13.0) und der gehaltene eigene Claim mit und ohne Eintrag.
+
+**Nachtrag 2026-10-19 (Georg, Entscheidungsvorlage 0.13.0, Punkte 3c und 4d): bestätigt.** Bestätigt ist die Entscheidung des Orchestrators vom 2026-10-18: `already_exists` wird durch Lesen des Eintrags unter dem Namen bestimmt; ein gehaltener eigener Claim bleibt stehen, auch wenn das Lesen scheitert, und `duplicate_of` nennt den Halter. Seit 0.13.0rc2 steht in `cli.md` auch der Fall nach `schedule remove`: Bis der Claim abläuft, ergibt ein Neuanlegen mit gleichem Namen und gleichen Argumenten `inserted: false`, `already_exists: false`, `duplicate_of: <eigener Name>`.
 
 **Überdenken nur mit neuem Argument.** Keine offenen Einwände bekannt.

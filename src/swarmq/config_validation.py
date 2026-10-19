@@ -40,6 +40,24 @@ MAX_BROKER_COUNT = 2**63 - 1
 _COUNT_BOUNDS: dict[str, int] = {"delivery_limit": MAX_BROKER_COUNT}
 
 
+def check_deadline_bound(name: str, value: float | None) -> None:
+    """Frist oder TTL außerhalb von ``SwarmQConfig`` endlich und höchstens
+    ``MAX_DEADLINE_S`` (E-063, Nachtrag 2026-10-19): ``TaskInfo`` und der
+    Aufruf-Parameter ``unique_for`` enden als ``PX``/``EX`` in Valkey, als
+    Per-Message-Expiration bzw. als Laufzeitdeckel (``hard_timeout``); ein
+    größerer Wert scheiterte erst im Worker bzw. beim Claim. ``nan`` und
+    ``-inf`` bestehen den Vergleich mit der Grenze und fallen deshalb eigens
+    durch. ``ValueError`` wie die übrigen ``TaskInfo``-Prüfungen (E-065)."""
+    if value is None:
+        return
+    if value > MAX_DEADLINE_S:
+        msg = f"{name} must be at most {MAX_DEADLINE_S} seconds, got {value}"
+        raise ValueError(msg)
+    if not math.isfinite(value):
+        msg = f"{name} must be a finite number of seconds, got {value}"
+        raise ValueError(msg)
+
+
 def valid_backend_connect_timeout(seconds: float) -> bool:
     """Gesamtfrist des Verbindungsaufbaus zum Backend (E-075): groesser 0 und
     hoechstens ``threading.TIMEOUT_MAX``; ``nan`` und ``inf`` fallen durch."""

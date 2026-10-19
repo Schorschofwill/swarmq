@@ -4,6 +4,136 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 [Keep a Changelog](https://keepachangelog.com/) und
 [Semantic Versioning](https://semver.org/).
 
+## [0.13.0rc2] — 2026-10-19
+
+Zweiter Release-Candidate für 0.13.0 (Installation mit
+`pip install --pre`). Er bringt Obergrenzen für die Fristen in
+`TaskInfo` und für den Aufruf-Parameter `unique_for`, behebt F4-17 und
+F4-18 (Rückstellungen bei verlorenem Broker-Kanal) und berichtigt die
+Doku zur Verbindungsfrist von Valkey, zum Vertrag von
+`ExecutionGuardStore`, zu `schedule add` nach `schedule remove` und
+dazu, was 0.13.0 bei einer dauerhaften Fehlerantwort des Chord-Skripts
+ändert. Die Upgrade-Hinweise von [0.13.0rc1](#0130rc1-2026-10-18)
+gelten, ergänzt um die folgenden.
+
+### Upgrade-Hinweise
+
+1. **Fristen in `TaskInfo` haben dieselbe Obergrenze wie die
+   Konfiguration.** `result_ttl`, `max_age`, `unique_for` und
+   `hard_timeout` dürfen höchstens `315360000` s betragen (zehn Jahre,
+   `MAX_DEADLINE_S`); genau dieser Wert ist erlaubt. Ein größerer Wert
+   wirft jetzt beim Import des Task-Moduls `ValueError` („`<feld>` must
+   be at most 315360000 seconds“), `swarmq worker` endet also mit Exit
+   `1` und startet bis zum Restart-Limit neu, wie bei jeder anderen
+   ungültigen `TaskInfo` (E-065, E-057). Bei `result_ttl` und
+   `unique_for` wird ein `float` vor der Prüfung auf ganze Sekunden
+   aufgerundet; `max_age` und `hard_timeout` werden so geprüft, wie sie
+   übergeben sind, `315360000.5` fällt also bei allen vier durch.
+   Bisher scheiterte ein solcher Wert (typisch `result_ttl=sys.maxsize`
+   als „für immer“) erst beim Speichern des Ergebnisses: Valkey lehnte
+   das `PX` ab, der Worker stellte die Nachricht neu zu, und der Task
+   lief bei jeder Zustellung erneut, bis das Zustelllimit ihn in die DLQ
+   leitete. Auch `nan` und unendliche Werte werden abgelehnt; bisher
+   bestand `nan` die Prüfung bei `max_age` und `hard_timeout`, und
+   `max_age=nan` leitete jede Zustellung als abgelaufen in die DLQ.
+   `soft_timeout=nan` neben `hard_timeout` fällt durch wie jedes
+   `soft_timeout`, das nicht unter `hard_timeout` liegt. Der
+   Aufruf-Parameter
+   `unique_for` von `schedule()` und `schedule_many()` hat dieselbe
+   Grenze (`ValueError` vor jedem Claim, Publish oder Speichern), und
+   `swarmq schedule add --unique-for` darüber ist ein Aufruffehler (Exit
+   `2`). Upgrade-Hinweis 3 von 0.13.0rc1 („jede Frist und TTL“) gilt
+   damit auch für diese Felder. Vor dem Deployment
+   `swarmq worker --module … --check` gegen die Task-Module laufen lassen
+   ([`TaskInfo`-Felder](configuration.md#taskinfo-felder), E-063).
+2. **Eigene `ExecutionGuardStore`-Implementierungen brauchen `peek`.**
+   Seit 0.13.0rc1 (F4-02) ruft der Worker am Zustelllimit
+   `ExecutionGuardStore.peek` auf; die Methode ist Pflicht im
+   öffentlichen Vertrag (`swarmq.contracts.coordination`). Eine eigene
+   Implementierung ohne sie loggt dort ERROR `delivery_handler_failed`
+   (`AttributeError`) und lässt die Nachricht unbestätigt liegen, statt
+   sie in die DLQ zu leiten. Das Valkey-Backend von swarmq
+   implementiert sie ([Vertragsänderung in 0.13.0](api.md)).
+3. **Log-Änderungen bei Rückstellungen mit verlorenem Broker-Kanal.**
+   Eine Rückstellungs-Kopie, die der Broker bestätigt hat, während nur
+   das Ack des Originals scheiterte, loggt jetzt WARNING
+   `deferral_ack_failed_after_publish` statt der Zeile des Gates für
+   einen gescheiterten Publish; bei Rate-Limit, Lock-Konflikt und
+   unbekanntem Task war diese Zeile ERROR (`rate_limit_requeue_failed`,
+   `lock_conflict_requeue_failed`, `unknown_task_defer_failed`), und sie
+   erscheinen jetzt nur noch, wenn der Publish selbst scheitert (F4-17).
+   Der ERROR `task_expired_nack_also_failed` entfällt: Eine gescheiterte
+   Rückgabe einer abgelaufenen Nachricht loggt WARNING
+   `delivery_settle_failed` wie jede andere gescheiterte Rückgabe
+   (F4-18). Alarme auf diese Namen anpassen
+   ([Logkatalog](logging.md)).
+
+### Geändert
+
+- **`TaskInfo.result_ttl`, `max_age`, `unique_for` und `hard_timeout`
+  sind höchstens `315360000` s, ebenso `unique_for=` von `schedule()`/
+  `schedule_many()` und `swarmq schedule add --unique-for`.** Siehe
+  Upgrade-Hinweis 1 (E-063).
+
+### Behoben
+
+- **F4-17: Eine bestätigte Rückstellungs-Kopie mit gescheitertem Ack ist
+  kein Fehler.** Hatte der Broker die Rückstellungs-Kopie des
+  Rate-Limit-, Lock-, Ausführungsschutz- oder Backend-Ausfall-Gates
+  bestätigt (ebenso eines unbekannten Tasks, einer
+  Schedfire-Zurückstellung und die Claim-Kopie eines Requeues) und
+  scheiterte nur das Ack des Originals (`SettleFailedAfterPublish`),
+  behandelte das Gate das wie einen gescheiterten Publish: Es loggte
+  seine Fehlerzeile (ERROR bei Rate-Limit und Lock-Konflikt) und reihte
+  auf dem toten Kanal neu ein. Jetzt gilt die Rückstellung: WARNING
+  `deferral_ack_failed_after_publish`, die übliche Zeile, kein Requeue an
+  derselben Stelle. Der Broker stellt auch das Original neu zu; Kopie und
+  Original laufen erneut durch die Gates, der Ausführungsschutz
+  serialisiert sie (E-043, Upgrade-Hinweis 3). Das gilt nicht für
+  `FIRE_AND_FORGET`-Tasks, ohne `ExecutionGuardStore` und mit
+  `SWARMQ_EXECUTION_GUARD=false`; dann können Kopie und Original beide
+  laufen.
+- **F4-18: Eine gescheiterte Rückgabe gibt das Unique-Flag nicht mehr
+  frei.** Gab ein Gate in der Pipeline (Rate-Limit, Lock,
+  Ausführungsschutz, Backend-Ausfall sowie die Requeues von
+  `rate_limit_check_failed`, `lock_acquire_failed`,
+  `task_gate_backend_error`, eines nicht verfügbaren Rechen-Slots und des
+  Ergebnis-Tails) die Nachricht per `nack(requeue=True)` auf einem
+  verlorenen Kanal zurück, verließ der Fehler das Gate, die Zustellung
+  galt als beendet, und das Unique-Flag wurde freigegeben, obwohl die
+  Nachricht unbestätigt war und wiederkam. Bei
+  `unique_until="completion"` öffnete sich das Dedup-Fenster, bevor der
+  Task gelaufen war, bei `"start"` vor dem Startpunkt. Eine Rückgabe, die
+  an einem verlorenen Kanal oder einer verlorenen Verbindung scheitert,
+  gilt jetzt als erfolgt (der Broker stellt die Nachricht neu zu):
+  WARNING `delivery_settle_failed`, und das Flag bleibt, wie der Leitfaden
+  zusagt
+  ([Wann das Flag freigegeben wird](../guides/locking-and-dedup.md#wann-das-flag-freigeben),
+  E-034). Jeder andere Fehler der Rückgabe gibt das Flag weiter frei.
+
+### Dokumentation
+
+- **`SWARMQ_BACKEND_CONNECT_TIMEOUT_S` ist eine Obergrenze, keine
+  Wartezeit.** Gegen einen Host, der Pakete verwirft, gibt der
+  Verbindungsaufbau nach höchstens rund 33 s auf (6 Versuche zu 5 s plus
+  3,1 s Backoff), gegen einen Port, der abweist, nach rund 3,1 s; ein
+  größerer Wert wartet nicht länger. Berichtigt in der Konfigurations-
+  und API-Referenz und in Upgrade-Hinweis 1 von 0.12.4rc1 (E-075).
+- **Eine dauerhafte Fehlerantwort des Chord-Skripts lässt den Workflow
+  in 0.13.0 auf `running`.** Die Release-Notes von 0.12.4 sagten,
+  0.13.0 schließe die Lücke; 0.13.0 bewahrt nur das gespeicherte
+  Erfolgsergebnis. Für 0.13.1 ist geplant, dass eine dauerhafte
+  Fehlerantwort am Zustelllimit den Workflow auf `failed` setzt.
+  Berichtigt in 0.12.4, 0.12.4rc1 und Upgrade-Hinweis 10 von 0.13.0rc1
+  (E-040, E-079).
+- **`swarmq schedule add` nach `schedule remove`:** Bis der Claim
+  abläuft, ergibt ein erneutes Anlegen mit gleichem Namen und gleichen
+  Argumenten `inserted: false`, `already_exists: false` und
+  `duplicate_of: <eigener Name>`
+  ([`swarmq schedule add`](cli.md#swarmq-schedule-add), E-076).
+- **`ExecutionGuardStore.peek`** steht in der API-Referenz als
+  Vertragsänderung in 0.13.0.
+
 ## [0.13.0rc1] — 2026-10-18
 
 Release-Candidate für 0.13.0 (Installation mit `pip install --pre`).
@@ -170,7 +300,9 @@ ein Deployment stoppen, und mehrere Log-Stufen haben sich geändert.
     swarmq-Key) lässt jeden Advance scheitern, der Schritt läuft bis zum
     `delivery_limit` erneut, und der Workflow bleibt `running`; neu ist,
     dass der gespeicherte Erfolg bleibt und die DLQ-Kopie kein
-    Fehlerergebnis trägt. Den veränderten Key reparieren oder löschen;
+    Fehlerergebnis trägt. Für 0.13.1 ist geplant, dass eine dauerhafte
+    Fehlerantwort den Workflow in diesem Fall auf `failed` setzt
+    (E-079). Den veränderten Key reparieren oder löschen;
     ohne Handarbeit an swarmq-Keys tritt der Fall nicht auf.
 11. **F4-16: Ein fehlendes Glied-Ergebnis ist `WorkflowResultExpired`.**
     Ist ein für das Fan-in nötiges Ergebnis eines Gruppen- oder
@@ -327,9 +459,10 @@ ein Deployment stoppen, und mehrere Log-Stufen haben sich geändert.
 ## [0.12.4] — 2026-10-18
 
 0.12.4 ist 0.12.4rc1 ohne Codeänderungen. Die Korrekturen und die
-Upgrade-Hinweise (Gesamtfrist für den Valkey-Verbindungsaufbau, die
-Lücke bei dauerhafter Fehlerantwort des Chord-Skripts bis 0.13.0,
-reservierte Lock-Namen, Mischbetrieb und Rollback) stehen unter
+Upgrade-Hinweise (Gesamtfrist für den Valkey-Verbindungsaufbau, eine
+dauerhafte Fehlerantwort des Chord-Skripts, die einen Workflow auf
+`running` lässt, mit einer für 0.13.1 geplanten Korrektur, reservierte
+Lock-Namen, Mischbetrieb und Rollback) stehen unter
 [0.12.4rc1](#0124rc1-2026-10-18) und gelten unverändert. Installation
 mit `pip install 'swarmq==0.12.*'`; `--pre` ist nicht mehr nötig.
 
@@ -352,8 +485,10 @@ reservierten Lock-Namen (E-074, E-075). Keine neuen Nachrichten-Header,
 keine neuen Lua-Skripte und kein Formatwechsel: 0.12.4 läuft in beiden
 Richtungen neben 0.12.0 bis 0.12.3 auf denselben Queues und Keys. Die
 Upgrade-Hinweise lesen: Ein Worker, dessen Valkey nicht antwortet,
-beendet seinen Start jetzt nach 30 s, und ein Fehlerfall des
-Chord-Skripts lässt einen Workflow bis 0.13.0 auf `running`.
+beendet seinen Start jetzt nach höchstens rund 30 s, und ein
+Fehlerfall des Chord-Skripts lässt einen Workflow auf `running` (0.13.0
+bewahrt nur den gespeicherten Erfolg; eine Korrektur ist für 0.13.1
+geplant).
 
 ### Upgrade-Hinweise
 
@@ -364,14 +499,19 @@ Chord-Skripts lässt einen Workflow bis 0.13.0 auf `running`.
    (Vorgabe `30.0` s) mit `BackendConnectionError`
    (`Valkey connect timed out after …s`). Bisher ließ ein Host, der
    Pakete verwirft (Firewall-`DROP`, falsche VPC-Adresse, angehaltener
-   Container), den Start rund 3 Minuten warten. Den Wert erhöhen, wenn
-   Valkey beim Start berechtigt länger braucht. Ein an
+   Container), den Start rund 3 Minuten warten. Die Frist ist eine
+   Obergrenze, keine Wartezeit: Gegen einen Host, der Pakete verwirft,
+   geben die Verbindungsversuche nach höchstens rund 33 s auf (6
+   Versuche zu 5 s plus 3,1 s Backoff, `Valkey connect failed: …`), ein
+   Port, der Verbindungen abweist, nach rund 3,1 s. Ein Wert über rund
+   33 s lässt den Start deshalb nicht länger warten; ein kleinerer Wert
+   lässt ihn schneller scheitern. Ein an
    `ValkeyBackend(...)` übergebenes `connect_timeout_s=` gewinnt vor dem
    `SwarmQConfig`-Feld `backend_connect_timeout_s` und der Variable.
    Werte `<= 0`, `inf` und `nan` sind ein `ConfigurationError` (Exit
    `78` für den Worker und `swarmq check`). Befehle zur Laufzeit
    behalten ihre Wiederholpolitik (E-075).
-2. **Release-Lücke bis 0.13.0: eine dauerhafte Fehlerantwort im
+2. **Release-Lücke bis 0.13.1: eine dauerhafte Fehlerantwort im
    Chord-Skript.** Ein Ausfall, während ein Gruppen- oder Chord-Glied
    seinen Workflow voranbringt, stellt den Schritt jetzt neu zu, statt
    den Workflow scheitern zu lassen (F4-11). Denselben Weg nimmt jetzt
@@ -381,11 +521,11 @@ Chord-Skripts lässt einen Workflow bis 0.13.0 auf `running`.
    und läuft jedes Mal erneut, danach bleibt der Workflow bis zu seiner
    TTL `running`, statt sofort `failed` zu werden
    ([`workflow_advance_backend_error`](logging.md#event-katalog)).
-   0.13.0 bewahrt in diesem Fall das gespeicherte Erfolgsergebnis
-   (F4-01), der Workflow bleibt aber weiter bis zur TTL `running`; ob
-   eine dauerhafte Fehlerantwort am Limit den Workflow `failed` setzen
-   soll, ist eine offene Entscheidung. Ohne Handarbeit an swarmq-Keys
-   tritt der Fall nicht auf.
+   0.13.0 bewahrt in diesem Fall nur das gespeicherte Erfolgsergebnis
+   (F4-01); der Workflow bleibt weiter bis zur TTL `running`. Für
+   0.13.1 ist geplant, dass eine dauerhafte Fehlerantwort am
+   Zustelllimit den Workflow auf `failed` setzt (E-040, E-079). Ohne
+   Handarbeit an swarmq-Keys tritt der Fall nicht auf.
 3. **Lock-Namen, die mit `{sched}` beginnen, sind reserviert.** Ein
    Lock-Template, dessen gerenderter Name mit `{sched}` beginnt (dem
    Hash-Tag des Scheduler-Leaders), leitet die Nachricht jetzt mit

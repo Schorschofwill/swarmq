@@ -24,6 +24,8 @@ from swarmq.worker.outcome import Continue, Terminal
 from tests.support.messages import make_message
 from tests.unit.worker._helpers import as_mock
 
+pytestmark = pytest.mark.timeout(5)
+
 
 class TestTaskInfoMaxAge:
     def test_default_is_none(self):
@@ -183,7 +185,8 @@ class TestExpiryErrorFields:
     Test-Liste:
     - [x] ``task_expired_result_store_failed`` (WARNING) mit Fehlerfeldern.
     - [x] ``task_expired_dlq_publish_failed`` (WARNING) mit Fehlerfeldern.
-    - [x] ``task_expired_nack_also_failed`` (ERROR) mit den Fehlerfeldern des Nack.
+    - [x] Doppelfehler: ``delivery_settle_failed`` (WARNING, seit F4-18 statt ERROR
+      ``task_expired_nack_also_failed``) mit den Fehlerfeldern des Nack.
     """
 
     async def test_result_store_failure_carries_error_fields(self, swarmq_logs):
@@ -233,7 +236,12 @@ class TestExpiryErrorFields:
         as_mock(w._broker).redeliver.assert_awaited_once_with(msg)
         as_mock(w._broker).ack.assert_not_awaited()
 
-    async def test_double_failure_carries_error_fields_of_the_nack(self, swarmq_logs):
+    @pytest.mark.befund("F4-18")
+    async def test_double_failure_is_a_warning_with_the_error_fields_of_the_nack(self, swarmq_logs):
+        """F4-18 (0.13.0rc2): scheitert auch das ``nack`` am toten Kanal, stellt
+        der Broker die Zustellung neu zu -- selbstheilend, also WARNING
+        ``delivery_settle_failed`` statt ERROR ``task_expired_nack_also_failed``.
+        Das Flag bleibt (``never_release``)."""
         from swarmq.exceptions import BrokerConnectionError
 
         w = _make_worker()
@@ -241,12 +249,14 @@ class TestExpiryErrorFields:
         as_mock(w._broker).redeliver = AsyncMock(side_effect=BrokerConnectionError("redeliver failed, channel lost"))
         ti = TaskInfo(name="t", queues=["q"], max_age=10)
 
-        await _apply(w, _expiry_message(int(time.time()) - 30), ti, task_id="id")
+        handled = await _apply(w, _expiry_message(int(time.time()) - 30), ti, task_id="id")
 
-        [entry] = [e for e in swarmq_logs if e["event"] == "task_expired_nack_also_failed"]
-        assert entry["log_level"] == "error"
+        assert handled == Terminal.never_release()
+        [entry] = [e for e in swarmq_logs if e["event"] == "delivery_settle_failed"]
+        assert entry["log_level"] == "warning"
         assert entry["error_type"] == "BrokerConnectionError"
         assert entry["error"] == "redeliver failed, channel lost"
+        assert [e["event"] for e in swarmq_logs if e["log_level"] == "error"] == []
 
 
 class TestExpiredWorkflowStep:

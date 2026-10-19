@@ -29,7 +29,7 @@ from swarmq.contracts.coordination import (
     RateLimitStore,
     ScheduleStore,
 )
-from swarmq.exceptions import SettleFailedAfterPublish
+from swarmq.exceptions import BrokerConnectionError, SettleFailedAfterPublish
 from swarmq.headers import (
     BROKER_DELIVERY_COUNTERS,
     HEADER_BACKEND_DEFER_COUNT,
@@ -43,6 +43,7 @@ from swarmq.logging import _error_fields, get_logger
 from swarmq.signals import Signal
 from swarmq.worker.outcome import DeliveryOutcome
 from swarmq.worker.redelivery import redeliver_pause_s
+from swarmq.worker.settle import log_settle_failed
 
 if TYPE_CHECKING:
     from swarmq.config import SwarmQConfig
@@ -354,7 +355,15 @@ async def redeliver_in_place(deps: GateDeps, delivery: Any, ctx: GateContext) ->
     try:
         # Publish-then-ack: ``retry_later`` bestaetigt das Original erst nach
         # dem Publisher-Confirm der Kopie.
-        await deps.broker.retry_later(delivery, delay_ms=delay_ms, headers=headers)
+        await publish_deferral_copy(
+            deps,
+            delivery,
+            ctx,
+            delay_ms=delay_ms,
+            headers=headers,
+            deferral="schedfire_claim",
+            schedfire_key=claim.key,
+        )
     except Exception as exc:  # noqa: BLE001 - Broker gestoert, letzter Ausweg nack
         # Broker ebenfalls gestoert: letzter Ausweg ``nack``.
         logger.warning("task_copy_failed_redelivered", **fields, **_error_fields(exc))
@@ -363,16 +372,59 @@ async def redeliver_in_place(deps: GateDeps, delivery: Any, ctx: GateContext) ->
     logger.warning("task_requeued_as_copy", **fields, defer_count=attempt, delay_ms=delay_ms)
 
 
+async def publish_deferral_copy(
+    deps: GateDeps,
+    delivery: Any,
+    ctx: GateContext,
+    *,
+    delay_ms: int,
+    headers: Mapping[str, Any],
+    deferral: str,
+    **fields: Any,
+) -> None:
+    """``retry_later`` einer Rueckstellungs-Kopie (gleicher Retry-Zaehler).
+
+    E-043 (Nachtrag 2026-10-19, F4-17): Liegt die Kopie bestaetigt in der
+    Delay-Queue und scheitert nur das Ack des Originals
+    (``SettleFailedAfterPublish``), ist die Rueckstellung erfolgt -- WARNING
+    ``deferral_ack_failed_after_publish``, kein Wurf; der Aufrufer laeuft
+    weiter wie nach Erfolg (normale Zeile, ``Redelivered``, kein
+    ``redeliver``). Der Broker stellt das Original neu zu; einen
+    Superseded-Marker gibt es fuer Rueckstellungen nicht, Kopie und Original
+    laufen beide durch die Gates. Jeder andere Fehler geht durch."""
+    try:
+        await deps.broker.retry_later(delivery, delay_ms=delay_ms, headers=headers)
+    except SettleFailedAfterPublish as exc:
+        logger.warning(
+            "deferral_ack_failed_after_publish",
+            task_id=ctx.task_id,
+            task_name=ctx.task_name,
+            deferral=deferral,
+            **fields,
+            **_error_fields(exc),
+        )
+
+
 async def _pause_then_redeliver(deps: GateDeps, delivery: Any) -> None:
     """``redeliver`` nach der Pause aus ``redeliver_pause_s`` (BZ-29). Eine
     scheiternde Pause verhindert das ``nack`` nicht (die Zustellung bliebe
-    sonst unbestaetigt bis zum Kanalende); ein Abbruch geht durch."""
+    sonst unbestaetigt bis zum Kanalende); ein Abbruch geht durch.
+
+    F4-18: Scheitert das ``nack`` an Kanal- oder Verbindungsverlust
+    (``BrokerConnectionError``), bleibt die Zustellung unbestaetigt, und der
+    Broker stellt sie neu zu (Vertrag ``Broker.redeliver``) -- die Rueckgabe
+    ist also erfolgt. WARNING ``delivery_settle_failed``, kein Wurf: sonst
+    nahme die Pipeline den Default ``Terminal`` und gaebe das Unique-Flag
+    frei. Jede andere Ausnahme sagt nichts ueber den Ausgang und geht durch."""
     if deps.redeliver_pause is not None:
         try:
             await deps.redeliver_pause(redeliver_pause_s(delivery.headers or {}))
         except Exception as exc:  # noqa: BLE001 - scheiternde Pause darf nack nicht verhindern
             logger.warning("redeliver_pause_failed", **_error_fields(exc))
-    await deps.broker.redeliver(delivery)
+    try:
+        await deps.broker.redeliver(delivery)
+    except BrokerConnectionError as exc:
+        log_settle_failed(exc)
 
 
 class Gate(Protocol):
@@ -456,6 +508,7 @@ __all__ = [
     "WorkerBackend",
     "WorkerBroker",
     "fail_workflow_best_effort",
+    "publish_deferral_copy",
     "redeliver_in_place",
     "route_via_dlx",
 ]

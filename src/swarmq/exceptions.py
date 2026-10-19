@@ -85,10 +85,19 @@ class SettleFailedAfterPublish(BrokerConnectionError):
     (Publisher-Confirm), nur das Bestaetigen des Originals scheiterte.
 
     Der Broker stellt das Original erneut zu, die Kopie ist trotzdem
-    unterwegs. Der Ausfuehrungsschutz (Plan 2026-10-08-1541, KTD5) setzt
-    deshalb seinen Superseded- bzw. Done-Marker wie nach Erfolg, damit die
-    Neuzustellung des Originals uebersprungen wird. Unterklasse von
-    :class:`BrokerConnectionError`: bestehende Handler fangen sie weiter.
+    unterwegs; der Worker wertet das als erfolgten Retry, Dead-Letter bzw.
+    erfolgte Rueckstellung (E-043). Der Ausfuehrungsschutz (Plan
+    2026-10-08-1541, KTD5) setzt nur bei der Retry-Kopie (hoeherer
+    Retry-Zaehler) den Superseded- und bei der DLQ-Kopie den Done-Marker wie
+    nach Erfolg, damit die Neuzustellung des Originals uebersprungen wird.
+    Bei einer Rueckstellungs-Kopie (Rate-Limit, Lock, Ausfuehrungsschutz,
+    Backend-Ausfall, unbekannter Task, Schedfire; gleicher Retry-Zaehler)
+    setzt er keinen Marker: Kopie und neu zugestelltes Original laufen beide
+    durch die Gates, der Ausfuehrungsschutz serialisiert sie. Nicht bei
+    ``FIRE_AND_FORGET``, ohne ``ExecutionGuardStore`` und mit
+    ``SWARMQ_EXECUTION_GUARD=false``: dann koennen Kopie und Original beide
+    laufen. Unterklasse von :class:`BrokerConnectionError`: bestehende
+    Handler fangen sie weiter.
     """
 
 

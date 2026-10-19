@@ -57,7 +57,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from swarmq.exceptions import BackendConnectionError
+from swarmq.exceptions import BackendConnectionError, SettleFailedAfterPublish
 from swarmq.headers import (
     HEADER_BACKEND_DEFER_COUNT,
     HEADER_ENQUEUED_AT,
@@ -177,6 +177,24 @@ async def test_fresh_duplicate_is_still_acked(worker, broker, foreign_claim):
 
     broker.ack.assert_awaited_once_with(msg)
     broker.retry_later.assert_not_awaited()
+
+
+@pytest.mark.entscheidung("E-043")
+async def test_published_deferral_with_failed_ack_counts_as_deferred(worker, broker, foreign_claim, swarmq_logs):
+    """Nachtrag E-043 (2026-10-19): die Kopie liegt, nur das Ack scheiterte --
+    erfolgte Rueckstellung, kein ``redeliver``, der fremde Claim bleibt."""
+    broker.retry_later.side_effect = SettleFailedAfterPublish("ack failed after publisher confirm")
+    msg = _fire({"x-delivery-count": 1})
+
+    assert await worker._schedfire_gate.apply(msg, _ctx()) is Redelivered
+
+    broker.redeliver.assert_not_awaited()
+    foreign_claim.schedules.release_fire_claim.assert_not_awaited()
+    events = [e["event"] for e in swarmq_logs]
+    assert "schedfire_redelivery_deferred" in events
+    assert "schedfire_defer_failed_redelivered" not in events
+    [entry] = [e for e in swarmq_logs if e["event"] == "deferral_ack_failed_after_publish"]
+    assert (entry["log_level"], entry["deferral"], entry["schedfire_key"]) == ("warning", "schedfire", "cron:s:1")
 
 
 async def test_failed_deferral_requeues_without_releasing_the_foreign_claim(worker, broker, foreign_claim, swarmq_logs):

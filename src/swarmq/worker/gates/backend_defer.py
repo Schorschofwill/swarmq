@@ -30,7 +30,7 @@ from typing import Any
 
 from swarmq.exceptions import BackendConnectionError, is_backend_outage
 from swarmq.logging import _error_fields, get_logger
-from swarmq.worker.gates import GateContext, GateDeps, deferral_copy, redeliver_in_place
+from swarmq.worker.gates import GateContext, GateDeps, deferral_copy, publish_deferral_copy, redeliver_in_place
 from swarmq.worker.outcome import DeliveryOutcome, Redelivered
 
 logger = get_logger(__name__)
@@ -95,7 +95,17 @@ async def defer_backend_unavailable(
     try:
         # Publish-then-ack: ``retry_later`` bestaetigt das Original erst, wenn
         # der Broker die Kopie bestaetigt hat (Publisher-Confirm).
-        await deps.broker.retry_later(delivery, delay_ms=delay_ms, headers=headers)
+        await publish_deferral_copy(
+            deps,
+            delivery,
+            ctx,
+            delay_ms=delay_ms,
+            headers=headers,
+            deferral="backend_defer",
+            gate=gate,
+            stage=stage,
+            **context,
+        )
     except Exception as publish_exc:  # noqa: BLE001 - Broker gestoert, Rueckfall auf alten Weg
         # Broker ebenfalls gestoert: der alte Weg. Das Original ist nicht
         # bestaetigt; ``PublishIndeterminate`` kann eine Kopie hinterlassen

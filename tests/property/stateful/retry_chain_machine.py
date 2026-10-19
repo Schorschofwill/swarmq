@@ -808,14 +808,13 @@ class RetryChainMachine(AsyncStateMachine[ChainEnv]):
         if expect.verb is None:
             assert calls == [], f"{where} (K1: Verb nach dem Tod)"
         elif expect.settle_lost:
-            # Kanal weg: das vorhergesagte Verb (Kopie liegt bzw. Ack ging
-            # verloren), danach höchstens das gescheiterte ``redeliver`` des
-            # Rückfalls -- nur noch bei der Rate-Limit-Kopie; nach der
-            # Retry-Kopie kein ``redeliver`` (F4-15, E-043).
+            # Kanal weg: genau das vorhergesagte Verb (Kopie liegt bzw. Ack
+            # ging verloren). Kein ``redeliver`` danach, weder nach der
+            # Retry-Kopie (F4-15) noch nach einer Rückstellungs-Kopie
+            # (F4-17, Nachtrag E-043 vom 2026-10-19).
             assert calls, where
             assert (calls[0].verb, calls[0].settle_lost) == (expect.verb, True), f"{where} (K1/K2)"
-            fallback = 1 if expect.verb == "retry_later" and expect.reason != "retry" else 0
-            assert [(c.verb, c.ok) for c in calls[1:]] == [("redeliver", False)] * fallback, f"{where} (K1)"
+            assert calls[1:] == [], f"{where} (K1)"
             succeeded = calls[:1]
         else:
             assert len(succeeded) == 1, f"{where} (K1: genau ein Verb)"

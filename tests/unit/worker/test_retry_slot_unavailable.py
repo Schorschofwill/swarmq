@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from swarmq.config import SwarmQConfig
+from swarmq.exceptions import BrokerConnectionError
 from swarmq.task import TaskInfo
 from swarmq.worker.compute.pool import SlotUnavailable
 from swarmq.worker.gates import GateContext, GateDeps
@@ -66,3 +67,19 @@ async def test_slot_unavailable_logs_warning_with_error_fields(swarmq_logs):
     assert entry["task_id"] == "t1"
     assert entry["error_type"] == "SlotUnavailable"
     assert entry["error"] == "no ready"
+
+
+@pytest.mark.befund("F4-18")
+@pytest.mark.timeout(5)
+async def test_slot_unavailable_with_failed_nack_stays_redelivered():
+    """F4-18 (0.13.0rc2): scheitert das ``nack`` am toten Kanal, bleibt es bei
+    ``Redelivered`` -- der Broker stellt die Zustellung ohnehin neu zu, das
+    Unique-Flag bleibt."""
+    handler, deps = _handler()
+    deps.broker.redeliver = AsyncMock(side_effect=BrokerConnectionError("redeliver failed, channel lost"))
+
+    outcome = await handler.evaluate(
+        MagicMock(), _ctx(), SlotUnavailable("no ready"), "no ready", partial_message(retry_count=0), MagicMock()
+    )
+
+    assert outcome is Redelivered

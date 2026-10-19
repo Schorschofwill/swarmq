@@ -11,6 +11,7 @@ from swarmq.cli._shared import (
     _APP_DIR_HELP,
     _FORMAT_CHOICES,
     _app_dir_path,
+    _deadline_seconds,
     _dotted_module_name,
     _positive_int,
 )
@@ -96,7 +97,7 @@ def _add_schedule_parser(subparsers: Any) -> None:
     )
     sched_add.add_argument(
         "--unique-for",
-        type=_positive_int,
+        type=_deadline_seconds,
         default=None,
         metavar="SECONDS",
         help=(

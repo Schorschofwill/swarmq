@@ -137,12 +137,10 @@ class ExpiryGate:
             await dead_letter_copy(deps, delivery, dict(delivery.headers or {}))
         except BrokerConnectionError as exc:
             logger.warning("task_expired_dlq_publish_failed", **_error_fields(exc))
-            try:
-                await redeliver_in_place(deps, delivery, ctx)
-            except BrokerConnectionError as nack_exc:
-                # Double-failure — let the message TTL / broker
-                # redeliver-limit be the safety net.
-                logger.error("task_expired_nack_also_failed", **_error_fields(nack_exc))
+            # Scheitert auch das ``nack`` am toten Kanal, meldet
+            # ``redeliver_in_place`` das selbst (WARNING, F4-18): der Broker
+            # stellt die unbestaetigte Zustellung neu zu.
+            await redeliver_in_place(deps, delivery, ctx)
             return Terminal.never_release()
         # BZ-22: die Kopie liegt in der DLQ -- das Unique-Flag freigeben
         # (owner-geprueft im ``finally``), sonst verschluckte es jedes neue

@@ -24,7 +24,7 @@ except SwarmQError as exc:
 | `QueueArgumentsMismatch` | `ConfigurationError` | An existing queue has other arguments than the configuration, which swarmq cannot adopt (for example a changed `SWARMQ_QUEUE_TYPE`) |
 | `BrokerConnectionError` | `SwarmQError` | Cannot reach RabbitMQ |
 | `PublishIndeterminate` | `BrokerConnectionError` | A publish was sent but broke its deadline or lost its connection before the confirm; whether it arrived is unknown |
-| `SettleFailedAfterPublish` | `BrokerConnectionError` | Worker-internal: a retry or dead-letter copy was published, only the ack of the original failed |
+| `SettleFailedAfterPublish` | `BrokerConnectionError` | Worker-internal: a retry, dead-letter or deferral copy was published, only the ack of the original failed |
 | `MessageHeadersTooLarge` | `BrokerConnectionError` | Message headers do not fit into half of `frame_max`, even with long texts truncated; nothing was sent |
 | `UnroutableMessage` | `BrokerConnectionError` | The broker returned a publish: no queue with this name exists; nothing was delivered |
 | `BrokerPublishBlocked` | `BrokerConnectionError` | The broker blocked the publish connection (resource alarm) for the whole publish deadline; nothing was sent |
@@ -522,9 +522,9 @@ except BrokerConnectionError:
 ## `SettleFailedAfterPublish`
 
 **When raised.** Only inside the worker, by `retry_later` and
-`dead_letter`: the broker confirmed the retry or dead-letter copy, but
-acknowledging the original failed (usually because the channel is
-gone). Subclass of `BrokerConnectionError`, so existing handlers keep
+`dead_letter`: the broker confirmed the retry, dead-letter or deferral
+copy, but acknowledging the original failed (usually because the
+channel is gone). Subclass of `BrokerConnectionError`, so existing handlers keep
 catching it. It never reaches `schedule()` or `get_result()`.
 
 **Cause.** The channel or connection was lost between publishing the
@@ -532,11 +532,18 @@ copy and the ack, for example after a consumer timeout on RabbitMQ up
 to 4.2.
 
 **Recovery.** None needed in application code. The broker redelivers
-the original while the copy is already on its way; the
+the original while the copy is already on its way. For a retry or
+dead-letter copy, the
 [execution guard](../explanation/delivery-semantics.md#execution-guard)
 sets its superseded or done marker as after success, so the
-redelivered original is skipped. Import it from `swarmq.exceptions` if
-you need it in tests.
+redelivered original is skipped. A deferral copy (rate limit, lock,
+execution guard, backend outage, unknown task, schedule fire; same
+retry count) gets no marker: copy and original both pass the gates
+again, and the execution guard serializes them (since 0.13.0rc2,
+E-043). It does not for `FIRE_AND_FORGET` tasks, without an
+`ExecutionGuardStore` or with `SWARMQ_EXECUTION_GUARD=false`; then copy
+and original can both run. Import it from `swarmq.exceptions` if you
+need it in tests.
 
 ## `MessageHeadersTooLarge`
 

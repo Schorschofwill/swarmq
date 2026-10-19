@@ -323,7 +323,9 @@ on a worker.
 
 `--unique-for SECONDS` claims a dedup flag over task name + args +
 kwargs before inserting the schedule; its TTL is `SECONDS` plus the time
-until the first fire. A second `schedule add` with the same task, args
+until the first fire. `SECONDS` is at most `315360000` (ten years, like
+`TaskInfo.unique_for`); a larger value is a usage error (exit `2`, since
+0.13.0). A second `schedule add` with the same task, args
 and kwargs while the flag is held is rejected as a duplicate (`json`
 output: `inserted: false`, `duplicate_of: <owner>`). `--unique-until`
 (`completion` by default, `start`) decides whether the flag is released
@@ -343,7 +345,11 @@ with an error. It is kept until it expires when the backend fails
 (connection lost, timeout), because the entry may have been stored; a
 repeated call until then is a duplicate. A claim that an earlier
 `schedule add` under the same name holds is never released by this
-call, not even after a read error. Reading the entry under the
+call, not even after a read error. This also holds after
+`schedule remove`: until the claim expires, adding the same name with
+the same task, args and kwargs again gives `inserted: false`,
+`already_exists: false` and `duplicate_of: <its own name>`, because the
+entry is gone but the claim of the removed schedule is still held. Reading the entry under the
 name can log `schedule_def_malformed_skipped` (WARNING) for an entry it
 cannot decode.
 

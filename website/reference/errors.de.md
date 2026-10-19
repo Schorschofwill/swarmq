@@ -25,7 +25,7 @@ except SwarmQError as exc:
 | `QueueArgumentsMismatch` | `ConfigurationError` | Eine vorhandene Queue hat andere Argumente als die Konfiguration, die swarmq nicht übernehmen kann (etwa ein geänderter `SWARMQ_QUEUE_TYPE`) |
 | `BrokerConnectionError` | `SwarmQError` | RabbitMQ nicht erreichbar |
 | `PublishIndeterminate` | `BrokerConnectionError` | Ein Publish ist gesendet, hat aber vor dem Confirm seine Frist gerissen oder die Verbindung verloren; ob er ankam, ist unbekannt |
-| `SettleFailedAfterPublish` | `BrokerConnectionError` | Worker-intern: Eine Retry- oder Dead-Letter-Kopie ist veröffentlicht, nur das Ack des Originals scheiterte |
+| `SettleFailedAfterPublish` | `BrokerConnectionError` | Worker-intern: Eine Retry-, Dead-Letter- oder Rückstellungs-Kopie ist veröffentlicht, nur das Ack des Originals scheiterte |
 | `MessageHeadersTooLarge` | `BrokerConnectionError` | Die Nachrichten-Header passen auch mit gekürzten Texten nicht in die Hälfte von `frame_max`; nichts wurde gesendet |
 | `UnroutableMessage` | `BrokerConnectionError` | Der Broker hat einen Publish zurückgegeben: Es gibt keine Queue mit diesem Namen; nichts wurde zugestellt |
 | `BrokerPublishBlocked` | `BrokerConnectionError` | Der Broker hat die Publish-Verbindung über die ganze Publish-Frist blockiert (Ressourcenalarm); nichts wurde gesendet |
@@ -547,8 +547,9 @@ except BrokerConnectionError:
 ## `SettleFailedAfterPublish`
 
 **Wann geworfen.** Nur im Worker, von `retry_later` und `dead_letter`:
-Der Broker hat die Retry- oder Dead-Letter-Kopie bestätigt, aber das
-Bestätigen des Originals scheiterte (meist, weil der Channel weg ist).
+Der Broker hat die Retry-, Dead-Letter- oder Rückstellungs-Kopie
+bestätigt, aber das Bestätigen des Originals scheiterte (meist, weil
+der Channel weg ist).
 Unterklasse von `BrokerConnectionError`, bestehende Handler fangen sie
 also weiter. Sie erreicht nie `schedule()` oder `get_result()`.
 
@@ -557,11 +558,18 @@ Kopie und dem Ack verloren, etwa nach einem Consumer-Timeout auf
 RabbitMQ bis 4.2.
 
 **Recovery.** Im Anwendungscode nichts nötig. Der Broker stellt das
-Original erneut zu, während die Kopie schon unterwegs ist; der
+Original erneut zu, während die Kopie schon unterwegs ist. Bei einer
+Retry- oder Dead-Letter-Kopie setzt der
 [Ausführungsschutz](../explanation/delivery-semantics.md#ausfuhrungsschutz)
-setzt seinen Superseded- bzw. Done-Marker wie nach Erfolg, sodass das
-neu zugestellte Original übersprungen wird. Für Tests aus
-`swarmq.exceptions` importieren.
+seinen Superseded- bzw. Done-Marker wie nach Erfolg, sodass das neu
+zugestellte Original übersprungen wird. Eine Rückstellungs-Kopie
+(Rate-Limit, Lock, Ausführungsschutz, Backend-Ausfall, unbekannter
+Task, Schedfire; gleicher Retry-Zähler) bekommt keinen Marker: Kopie
+und Original laufen beide erneut durch die Gates, und der
+Ausführungsschutz serialisiert sie (seit 0.13.0rc2, E-043). Das gilt
+nicht für `FIRE_AND_FORGET`-Tasks, ohne `ExecutionGuardStore` und mit
+`SWARMQ_EXECUTION_GUARD=false`; dann können Kopie und Original beide
+laufen. Für Tests aus `swarmq.exceptions` importieren.
 
 ## `MessageHeadersTooLarge`
 

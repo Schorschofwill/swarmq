@@ -21,7 +21,14 @@ from swarmq.exceptions import TaskNotFoundError
 from swarmq.headers import HEADER_UNKNOWN_SINCE
 from swarmq.logging import _error_fields
 from swarmq.signals import Signal
-from swarmq.worker.gates import GateContext, GateDeps, redeliver_in_place, republish_headers, route_via_dlx
+from swarmq.worker.gates import (
+    GateContext,
+    GateDeps,
+    publish_deferral_copy,
+    redeliver_in_place,
+    republish_headers,
+    route_via_dlx,
+)
 from swarmq.worker.outcome import DeliveryOutcome, Redelivered
 
 if TYPE_CHECKING:
@@ -135,7 +142,7 @@ async def _defer(
     headers[HEADER_UNKNOWN_SINCE] = since_ms
     delay_ms = unknown_defer_delay_ms(elapsed_ms=elapsed_ms, remaining_ms=remaining_ms)
     try:
-        await deps.broker.retry_later(delivery, delay_ms=delay_ms, headers=headers)
+        await publish_deferral_copy(deps, delivery, ctx, delay_ms=delay_ms, headers=headers, deferral="unknown_task")
     except Exception as exc:  # noqa: BLE001 - Broker gestoert, Original bleibt in der Queue
         # Wie Retry und Rate-Limit: das Original bleibt in der Queue, die
         # naechste Zustellung misst weiter ab ``since_ms`` (Header bleibt).
