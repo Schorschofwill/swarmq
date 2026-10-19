@@ -23,6 +23,10 @@ Grenze gemockt: nur der Broker (``retry_later`` wirft
 
 Testliste:
 # [x] Rate-Limit- und Lock-Gate: retry_later wirft SettleFailedAfterPublish -> keine ERROR-Zeile
+
+Behoben in 0.13.0rc2: ``publish_deferral_copy`` meldet den Fall als WARNING
+``deferral_ack_failed_after_publish`` (Nachtrag E-043 vom 2026-10-19); die
+übrigen Gates und die Einzelheiten prüft ``test_deferral_copy_ack_failed.py``.
 """
 
 from __future__ import annotations
@@ -35,8 +39,8 @@ from tests.unit.worker._deferral_harness import run_deferral
 pytestmark = pytest.mark.timeout(5)
 
 
+@pytest.mark.entscheidung("E-043")
 @pytest.mark.befund("F4-17")
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="F4-17 offen")
 @pytest.mark.parametrize("gate", ["rate_limit", "lock"])
 async def test_deferral_copy_published_but_ack_failed_logs_no_error(gate: str) -> None:
     run = await run_deferral(

@@ -16,7 +16,14 @@ from swarmq.exceptions import is_backend_outage
 from swarmq.limits import parse_rate_limit
 from swarmq.logging import _error_fields, get_logger
 from swarmq.signals import Signal
-from swarmq.worker.gates import GateContext, GateDeps, _as_count, redeliver_in_place, republish_headers
+from swarmq.worker.gates import (
+    GateContext,
+    GateDeps,
+    _as_count,
+    publish_deferral_copy,
+    redeliver_in_place,
+    republish_headers,
+)
 from swarmq.worker.gates.backend_defer import bounded_backend_call, defer_backend_unavailable
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered
 
@@ -106,7 +113,9 @@ class RateLimitGate:
         )
 
         try:
-            await deps.broker.retry_later(delivery, delay_ms=retry_after_ms, headers=original_headers)
+            await publish_deferral_copy(
+                deps, delivery, ctx, delay_ms=retry_after_ms, headers=original_headers, deferral="rate_limit"
+            )
         except Exception as exc:  # noqa: BLE001 - Broker gestoert, Original bleibt in Flight
             # Broker failure between publish and ack would create a
             # duplicate (republished + redelivered original). nack with

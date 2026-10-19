@@ -355,13 +355,54 @@ async def redeliver_in_place(deps: GateDeps, delivery: Any, ctx: GateContext) ->
     try:
         # Publish-then-ack: ``retry_later`` bestaetigt das Original erst nach
         # dem Publisher-Confirm der Kopie.
-        await deps.broker.retry_later(delivery, delay_ms=delay_ms, headers=headers)
+        await publish_deferral_copy(
+            deps,
+            delivery,
+            ctx,
+            delay_ms=delay_ms,
+            headers=headers,
+            deferral="schedfire_claim",
+            schedfire_key=claim.key,
+        )
     except Exception as exc:  # noqa: BLE001 - Broker gestoert, letzter Ausweg nack
         # Broker ebenfalls gestoert: letzter Ausweg ``nack``.
         logger.warning("task_copy_failed_redelivered", **fields, **_error_fields(exc))
         await _pause_then_redeliver(deps, delivery)
         return
     logger.warning("task_requeued_as_copy", **fields, defer_count=attempt, delay_ms=delay_ms)
+
+
+async def publish_deferral_copy(
+    deps: GateDeps,
+    delivery: Any,
+    ctx: GateContext,
+    *,
+    delay_ms: int,
+    headers: Mapping[str, Any],
+    deferral: str,
+    **fields: Any,
+) -> None:
+    """``retry_later`` einer Rueckstellungs-Kopie (gleicher Retry-Zaehler).
+
+    E-043 (Nachtrag 2026-10-19, F4-17): Liegt die Kopie bestaetigt in der
+    Delay-Queue und scheitert nur das Ack des Originals
+    (``SettleFailedAfterPublish``), ist die Rueckstellung erfolgt -- WARNING
+    ``deferral_ack_failed_after_publish``, kein Wurf; der Aufrufer laeuft
+    weiter wie nach Erfolg (normale Zeile, ``Redelivered``, kein
+    ``redeliver``). Der Broker stellt das Original neu zu; einen
+    Superseded-Marker gibt es fuer Rueckstellungen nicht, Kopie und Original
+    laufen beide durch die Gates. Jeder andere Fehler geht durch."""
+    try:
+        await deps.broker.retry_later(delivery, delay_ms=delay_ms, headers=headers)
+    except SettleFailedAfterPublish as exc:
+        logger.warning(
+            "deferral_ack_failed_after_publish",
+            task_id=ctx.task_id,
+            task_name=ctx.task_name,
+            deferral=deferral,
+            **fields,
+            **_error_fields(exc),
+        )
 
 
 async def _pause_then_redeliver(deps: GateDeps, delivery: Any) -> None:
@@ -467,6 +508,7 @@ __all__ = [
     "WorkerBackend",
     "WorkerBroker",
     "fail_workflow_best_effort",
+    "publish_deferral_copy",
     "redeliver_in_place",
     "route_via_dlx",
 ]

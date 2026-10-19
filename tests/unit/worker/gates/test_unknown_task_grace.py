@@ -16,6 +16,8 @@ Test-Liste:
       ``TASK_REJECTED`` (reason ``unregistered_task``), ERROR ``task_not_found``
 - [x] Frist 0: sofort Dead-Letter
 - [x] Publish der Kopie scheitert: ``redeliver``, keine Ausnahme
+- [x] Kopie liegt, nur das Ack scheitert (``SettleFailedAfterPublish``):
+      erfolgte Rueckstellung, WARNING statt ERROR, kein ``redeliver`` (E-043)
 - [x] Cron-Fire (Schedfire-Claim): Rueckstellung schreibt keinen
       Completed-Marker und gibt das Unique-Flag nicht frei; die Kopie traegt
       das Claim-Token
@@ -35,7 +37,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from swarmq.exceptions import BackendConnectionError
+from swarmq.exceptions import BackendConnectionError, SettleFailedAfterPublish
 from swarmq.headers import (
     HEADER_GUARD_DEFER_COUNT,
     HEADER_RETRY_COUNT,
@@ -182,6 +184,24 @@ async def test_failed_copy_publish_redelivers_the_original(broker, backend, conf
 
     broker.redeliver.assert_awaited_once()
     broker.dead_letter.assert_not_awaited()
+
+
+@pytest.mark.entscheidung("E-043")
+async def test_published_copy_with_failed_ack_counts_as_deferred(broker, backend, config, clock, swarmq_logs) -> None:
+    """Nachtrag E-043 (2026-10-19): die Kopie liegt in der Delay-Queue, nur das
+    Ack des Originals scheiterte -- die Rueckstellung ist erfolgt."""
+    broker.retry_later = AsyncMock(side_effect=SettleFailedAfterPublish("ack failed after publisher confirm"))
+    worker = _worker(broker, backend, config)
+
+    await worker._handle_message(_unknown())
+
+    broker.redeliver.assert_not_awaited()
+    events = [(e["event"], e["log_level"]) for e in swarmq_logs]
+    assert ("deferral_ack_failed_after_publish", "warning") in events
+    assert ("task_unknown_deferred", "warning") in events
+    assert [e for e in swarmq_logs if e["log_level"] == "error"] == []
+    [entry] = [e for e in swarmq_logs if e["event"] == "deferral_ack_failed_after_publish"]
+    assert entry["deferral"] == "unknown_task"
 
 
 @pytest.mark.entscheidung("E-008")

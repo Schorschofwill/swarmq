@@ -27,7 +27,14 @@ from swarmq.exceptions import BackendConnectionError, TaskNotFoundError
 from swarmq.headers import HEADER_GUARD_DEFER_COUNT, HEADER_RETRY_COUNT
 from swarmq.logging import _error_fields, get_logger
 from swarmq.task import DeliveryMode
-from swarmq.worker.gates import GateContext, GateDeps, prior_deferrals, redeliver_in_place, republish_headers
+from swarmq.worker.gates import (
+    GateContext,
+    GateDeps,
+    prior_deferrals,
+    publish_deferral_copy,
+    redeliver_in_place,
+    republish_headers,
+)
 from swarmq.worker.gates.backend_defer import bounded_backend_call, defer_backend_unavailable
 from swarmq.worker.gates.delivery_count import WORKER_HUNG_ERROR_TYPE, DeadLetter
 from swarmq.worker.outcome import Continue, DeliveryOutcome, Redelivered, Terminal
@@ -228,7 +235,9 @@ class ExecutionGuard:
         delay_s = backend_defer_delay(attempt, config.backend_defer_base_delay, config.backend_defer_max_delay)
         delay_ms = int(delay_s * 1000)
         try:
-            await self._deps.broker.retry_later(delivery, delay_ms=delay_ms, headers=headers)
+            await publish_deferral_copy(
+                self._deps, delivery, ctx, delay_ms=delay_ms, headers=headers, deferral="execution_guard"
+            )
         except Exception as exc:  # noqa: BLE001 - Broker gestoert, Requeue an derselben Stelle
             # Broker gestoert: der alte Weg, Requeue an derselben Stelle.
             logger.warning(

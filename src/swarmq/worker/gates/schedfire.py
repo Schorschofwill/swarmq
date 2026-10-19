@@ -59,6 +59,7 @@ from swarmq.worker.gates import (
     GateDeps,
     SchedfireClaim,
     prior_deferrals,
+    publish_deferral_copy,
     redeliver_in_place,
     republish_headers,
     schedfire_redelivery,
@@ -266,7 +267,15 @@ class SchedfireGate:
         delay_s = backend_defer_delay(attempt, config.backend_defer_base_delay, config.backend_defer_max_delay)
         delay_ms = int(delay_s * 1000)
         try:
-            await self._deps.broker.retry_later(delivery, delay_ms=delay_ms, headers=headers)
+            await publish_deferral_copy(
+                self._deps,
+                delivery,
+                ctx,
+                delay_ms=delay_ms,
+                headers=headers,
+                deferral="schedfire",
+                schedfire_key=key,
+            )
         except Exception as exc:  # noqa: BLE001 - Broker gestoert, Requeue an derselben Stelle
             # Broker gestoert: Requeue an derselben Stelle. Die Zustellung
             # haelt keinen Claim (``ctx.schedfire_claim`` ist None) -- der

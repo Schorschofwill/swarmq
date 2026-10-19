@@ -67,6 +67,7 @@ from swarmq.signals import Signal
 from swarmq.worker.gates import (
     GateContext,
     GateDeps,
+    publish_deferral_copy,
     redeliver_in_place,
     republish_headers,
     route_via_dlx,
@@ -387,7 +388,15 @@ class LockGate:
 
         self.waits.record(ctx.task_id, wait_since_ms=wait_since, now_ms=now_ms)
         try:
-            await deps.broker.retry_later(delivery, delay_ms=lock_conflict_delay_ms(conflicts), headers=headers)
+            await publish_deferral_copy(
+                deps,
+                delivery,
+                ctx,
+                delay_ms=lock_conflict_delay_ms(conflicts),
+                headers=headers,
+                deferral="lock_conflict",
+                lock_name=lock_name,
+            )
         except Exception as exc:  # noqa: BLE001 - Broker gestoert, Original bleibt in Flight
             # Same try/except shape as retry / rate-limit: broker failure
             # between publish and ack means the message might double-

@@ -23,6 +23,7 @@ F4-18 (0.13.0rc2): das ``nack`` selbst scheitert.
       WARNING ``delivery_settle_failed``; der Broker stellt die unbestaetigte
       Zustellung ohnehin neu zu
 - [x] jede andere Ausnahme geht unveraendert durch (Ausgang unbekannt)
+- [x] E-043: Kopie liegt, nur das Ack scheitert -> kein ``nack``, WARNING
 """
 
 from __future__ import annotations
@@ -33,7 +34,12 @@ import pytest
 
 import swarmq.worker.gates as gates_module
 from swarmq.backoff import backend_defer_delay
-from swarmq.exceptions import BackendConnectionError, BrokerConnectionError, PublishIndeterminate
+from swarmq.exceptions import (
+    BackendConnectionError,
+    BrokerConnectionError,
+    PublishIndeterminate,
+    SettleFailedAfterPublish,
+)
 from swarmq.headers import HEADER_BACKEND_DEFER_COUNT, HEADER_SCHEDFIRE_CLAIM
 from swarmq.worker.gates import GateContext, SchedfireClaim, redeliver_in_place
 from tests.support.messages import make_message
@@ -207,3 +213,20 @@ async def test_foreign_nack_error_propagates(worker, broker):
             make_message(_default_payload()),
             GateContext(task_id="abc-123", task_name="add", queue="default"),
         )
+
+
+@pytest.mark.entscheidung("E-043")
+async def test_copy_published_with_failed_ack_is_not_nacked(worker, broker, backend, swarmq_logs):
+    """Nachtrag E-043 (2026-10-19): die Kopie mit dem Owner-Token liegt, nur das
+    Ack des Originals scheiterte -- sie uebernimmt den Claim, kein ``nack``."""
+    backend.schedules.release_fire_claim.side_effect = BackendConnectionError("valkey down")
+    broker.retry_later.side_effect = SettleFailedAfterPublish("ack failed after publisher confirm")
+
+    await redeliver_in_place(worker._gate_deps, _fire(), _claimed_ctx())
+
+    broker.redeliver.assert_not_awaited()
+    events = [e["event"] for e in swarmq_logs]
+    assert "task_requeued_as_copy" in events
+    assert "task_copy_failed_redelivered" not in events
+    [entry] = [e for e in swarmq_logs if e["event"] == "deferral_ack_failed_after_publish"]
+    assert (entry["log_level"], entry["deferral"], entry["schedfire_key"]) == ("warning", "schedfire_claim", "cron_a:1")
