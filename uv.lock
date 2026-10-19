@@ -1710,7 +1710,7 @@ wheels = [
 
 [[package]]
 name = "swarmq"
-version = "0.13.0rc1"
+version = "0.13.0rc2"
 source = { editable = "." }
 dependencies = [
     { name = "aio-pika" },

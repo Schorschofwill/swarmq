@@ -4,7 +4,7 @@ All notable changes to SwarmQ. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
-## [0.13.0rc2] — unreleased
+## [0.13.0rc2] — 2026-10-19
 
 Second release candidate for 0.13.0 (install with `pip install --pre`).
 It adds upper bounds for the deadlines in `TaskInfo` and for the call

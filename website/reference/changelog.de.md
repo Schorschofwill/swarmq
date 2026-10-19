@@ -4,7 +4,7 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 [Keep a Changelog](https://keepachangelog.com/) und
 [Semantic Versioning](https://semver.org/).
 
-## [0.13.0rc2] — unreleased
+## [0.13.0rc2] — 2026-10-19
 
 Zweiter Release-Candidate für 0.13.0 (Installation mit
 `pip install --pre`). Er bringt Obergrenzen für die Fristen in
