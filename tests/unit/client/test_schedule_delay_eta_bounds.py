@@ -30,7 +30,9 @@ schedule_many() nimmt weder delay noch eta; Workflows haben keine Verzögerung.
 from __future__ import annotations
 
 import math
+import os
 import time
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta, timezone
 from typing import override
 from unittest.mock import AsyncMock, MagicMock
@@ -198,12 +200,36 @@ async def test_naive_eta_is_read_as_local_time_and_bounded_alike(
     _assert_no_side_effect(broker, backend, store, recorder)
 
 
+@pytest.fixture(params=["UTC", "Europe/Berlin"])
+def local_zone(request: pytest.FixtureRequest) -> Iterator[str]:
+    """Setzt die Ortszeit des Prozesses (``TZ`` + ``tzset``) und stellt sie
+    danach wieder her: ein naives ``eta`` gilt als Ortszeit."""
+    previous = os.environ.get("TZ")
+    os.environ["TZ"] = request.param
+    time.tzset()
+    try:
+        yield request.param
+    finally:
+        if previous is None:
+            del os.environ["TZ"]
+        else:
+            os.environ["TZ"] = previous
+        time.tzset()
+
+
 async def test_naive_datetime_max_eta_names_the_field(
-    bound_client: Client, broker: AsyncMock, backend: AsyncMock, store: MagicMock, recorder: _Recorder
+    local_zone: str,
+    bound_client: Client,
+    broker: AsyncMock,
+    backend: AsyncMock,
+    store: MagicMock,
+    recorder: _Recorder,
 ) -> None:
-    """``datetime.max.timestamp()`` scheitert ohne Zone am Jahr 10000; der
-    Fehler nennt jetzt ``eta`` statt nur das Jahr."""
-    with pytest.raises(ValueError, match=rf"^eta must be a representable time at most {MAX_DEADLINE_S} seconds"):
+    """Ein naives ``datetime.max`` liegt in jeder Ortszeit ausserhalb der
+    Grenze. Oestlich von UTC scheitert ``timestamp()`` am Jahr 10000, in UTC
+    nicht; die Meldung ist in beiden Faellen dieselbe und nennt ``eta``
+    (CI-Lauf 2962709369 lief in UTC, lokal in Europe/Berlin)."""
+    with pytest.raises(ValueError, match=rf"^eta must be at most {MAX_DEADLINE_S} seconds in the future, got "):
         await bound_client.schedule("bound.task", 1, queue="bound", eta=datetime.max, unique_for=60)  # noqa: DTZ901 - naive Zeit ist der geprüfte Fall
 
     _assert_no_side_effect(broker, backend, store, recorder)

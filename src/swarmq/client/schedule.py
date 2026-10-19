@@ -655,10 +655,12 @@ class ClientScheduling(ClientScheduleResolve):
                 fire_ts_ms = int(eta.timestamp() * 1000)
             except ValueError as exc:
                 # Naive Zeit am Rand (``datetime.max``/``min``): als Ortszeit
-                # nicht darstellbar, jedenfalls ausserhalb der Grenze.
+                # nicht darstellbar, jedenfalls ausserhalb der Grenze. Dieselbe
+                # Meldung wie die Grenze unten, sonst hinge sie von der
+                # Zeitzone des Prozesses ab (in UTC ist ``datetime.max``
+                # darstellbar).
                 raise ValueError(
-                    f"eta must be a representable time at most {MAX_DEADLINE_S} seconds in the future, "
-                    f"got {eta.isoformat()}"
+                    f"eta must be at most {MAX_DEADLINE_S} seconds in the future, got {eta.isoformat()}"
                 ) from exc
             # Allow a 1s lenience for clock skew / scheduling latency.
             if fire_ts_ms < now_ms - 1_000:
