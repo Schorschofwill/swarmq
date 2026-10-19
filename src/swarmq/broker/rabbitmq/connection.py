@@ -30,8 +30,12 @@ from swarmq.broker.rabbitmq.blocked import (
     unblocked_event,
     wait_until_unblocked,
 )
-from swarmq.broker.rabbitmq.consumer_watch import ConsumerWatch
-from swarmq.broker.rabbitmq.robust_channels import open_throwaway_channel, release_channel
+from swarmq.broker.rabbitmq.consumer_watch import _RPC_TIMEOUT_S, ConsumerWatch
+from swarmq.broker.rabbitmq.robust_channels import (
+    open_throwaway_channel,
+    queue_exists_on_throwaway,
+    release_channel,
+)
 from swarmq.config import INJECTED_URL
 from swarmq.exceptions import BrokerConnectionError, ConfigurationError
 from swarmq.logging import _error_fields, get_logger, sanitize_url
@@ -747,19 +751,12 @@ class RabbitMQConnection:
     async def _consume_queue_exists(self, name: str) -> bool:
         """Ob eine konsumierte Queue beim Broker existiert: passives Declare auf
         einem Wegwerf-Kanal der Consume-Verbindung (PF-20, E-083). NOT_FOUND
-        schliesst nur diesen Kanal, nie den gemeinsamen Consume-Kanal."""
+        schliesst nur diesen Kanal, nie den gemeinsamen Consume-Kanal. Das
+        Schliessen ist wie die Pruefung auf ``_RPC_TIMEOUT_S`` begrenzt."""
         connection = self._consume_connection or self._connection
         if connection is None:
             raise BrokerConnectionError("broker is not connected")
-        channel: aio_pika.abc.AbstractChannel | None = None
-        try:
-            channel = await open_throwaway_channel(connection)
-            await channel.declare_queue(name, passive=True)
-        except aio_pika.exceptions.ChannelNotFoundEntity:
-            return False
-        finally:
-            await close_channel_quietly(channel)
-        return True
+        return await queue_exists_on_throwaway(connection, name, close_timeout_s=_RPC_TIMEOUT_S)
 
     async def _throwaway_channel_message_count(self, name: str) -> int:
         """Message count of one queue via passive declare on a throwaway

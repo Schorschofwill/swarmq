@@ -542,11 +542,21 @@ class TestBrokerWiring:
         await broker.consume("q1", AsyncMock(), concurrency=4)
         await broker.consumer_watch.tick()
         counted: list[tuple[str, str]] = []
-        broker.start_consumer_watch(interval_s=3600.0, on_reregistered=lambda q, r: counted.append((q, r)))
+        reported = asyncio.Event()
+
+        def hook(queue_name: str, reason: str) -> None:
+            counted.append((queue_name, reason))
+            reported.set()
+
+        broker.start_consumer_watch(interval_s=3600.0, on_reregistered=hook)
         try:
             queue.channel.underlay.consumers.clear()
             broker.consumer_watch.request_check()
             assert await broker.consumer_watch.wait_cancelled("q1-new-1", timeout=1.0)
+            # Die Neuanmeldung folgt dem Abmelden erst nach der Prüfung der
+            # Queue (PF-20); auf den Hook warten, nicht auf eine Zahl von Schritten.
+            async with asyncio.timeout(1.0):
+                await reported.wait()
         finally:
             await broker.close()
         assert counted == [("q1", "broker_cancel")]

@@ -36,7 +36,7 @@ tests:
   - tests/integration/broker/test_consumed_queue_deleted.py::test_a_recreated_queue_is_consumed_again
 ---
 
-**Entscheidung.** Bevor der Consumer-Wächter einen Consumer neu anmeldet (`basic.consume`), prüft er passiv auf einem Wegwerf-Kanal (`open_throwaway_channel`, nicht robust) der Consume-Verbindung, ob die Queue existiert. Die Prüfung ist wie der Kanalbezug auf `_RPC_TIMEOUT_S` begrenzt; ein Abbruch trifft nur den Wegwerf-Kanal (E-053). Fehlt die Queue (NOT_FOUND):
+**Entscheidung.** Bevor der Consumer-Wächter einen Consumer neu anmeldet (`basic.consume`), prüft er passiv auf einem Wegwerf-Kanal (`open_throwaway_channel`, nicht robust) der Consume-Verbindung, ob die Queue existiert. Die Prüfung ist wie der Kanalbezug auf `_RPC_TIMEOUT_S` begrenzt, das anschließende Schließen des Wegwerf-Kanals (nach einem Abbruch im Öffnen samt dem Ende des Öffnens) noch einmal auf `_RPC_TIMEOUT_S`; ein Takt hängt an einer Queue also höchstens zweimal `_RPC_TIMEOUT_S`. Ein Abbruch trifft nur den Wegwerf-Kanal (E-053), nie das Öffnen selbst: aiormq behielte einen mitten im Öffnen abgebrochenen Kanal halb offen. Fehlt die Queue (NOT_FOUND):
 
 - loggt der Worker einmal je Verlust ERROR `consumer_queue_missing` mit `queue`;
 - unterbleibt `basic.consume`, und der Wächter nimmt die `RobustQueue` aus der Restore-Liste ihres `RobustChannel` (`_queues`, `release_queue`), damit ein Reconnect sie nicht passiv neu deklariert;
