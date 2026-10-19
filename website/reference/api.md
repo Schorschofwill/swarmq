@@ -120,7 +120,7 @@ Enqueue a task and return its `task_id`.
 | `queue` | `str \| None` | Override the task's default queue. Required in client-only mode (no registry). |
 | `delay` | `float \| None` | Seconds to wait before delivery. Mutually exclusive with `eta`. Must be `≥ 0`. |
 | `eta` | `datetime \| None` | Absolute fire time. Mutually exclusive with `delay`. Must be in the future (1s lenience). |
-| `unique_for` | `float \| None` | Override `TaskInfo.unique_for`, in seconds. Must be `> 0` and finite (`ValueError` otherwise, before any claim, publish or store; since 0.12.3); a `float` is rounded up to whole seconds. Pass `None` to disable dedup for this call. |
+| `unique_for` | `float \| None` | Override `TaskInfo.unique_for`, in seconds. Must be `> 0`, finite and at most `315360000` (`ValueError` otherwise, before any claim, publish or store; since 0.12.3, the upper bound since 0.13.0); a `float` is rounded up to whole seconds. Pass `None` to disable dedup for this call. |
 | `unique_until` | `"start" \| "completion"` | Override `TaskInfo.unique_until`. |
 
 **Returns.** `str` — the `task_id` (UUIDv7). On a dedup hit, the
@@ -169,7 +169,7 @@ defaults, build the producer with the same tasks registered, e.g. via a
 
 - `TaskNotFoundError` — task_name not in the registry (registry mode).
 - `ValueError` — `delay < 0`, both `delay` and `eta` set, `eta` in the past,
-  `unique_for` `<= 0`, `inf` or `nan`.
+  `unique_for` `<= 0`, `inf`, `nan` or above `315360000` (ten years).
 - `BrokerConnectionError` — broker unreachable at publish.
 - `BackendResponseError` — with `delay`/`eta`: the scheduler store holds
   a different entry under the one-shot's name, or refused the write. On
@@ -209,8 +209,8 @@ kwargs)` tuple. Published concurrently via `asyncio.gather`.
 On dedup hits, the existing owner's task_id is placed at that index
 (list length always equals input length).
 
-`unique_for` follows the same rules as in `schedule()`: `> 0` and
-finite, a `float` rounded up to whole seconds.
+`unique_for` follows the same rules as in `schedule()`: `> 0`,
+finite and at most `315360000`, a `float` rounded up to whole seconds.
 
 **Raises.** Same shape as `schedule()`. On partial publish failure,
 successfully published task_ids are still written to the result
@@ -511,7 +511,9 @@ TaskInfo(
 `result_ttl` and `unique_for` take a `float` such as
 `timedelta(hours=1).total_seconds()`: a whole value becomes `int`, a
 fraction is rounded up to the next second, `inf` and `nan` raise
-`ValueError` (since 0.12.3). Field semantics and validation rules live
+`ValueError` (since 0.12.3). `result_ttl`, `unique_for`, `max_age` and
+`hard_timeout` are at most `315360000` seconds (ten years, the bound of
+`SwarmQConfig`); a larger value raises `ValueError` (since 0.13.0). Field semantics and validation rules live
 in [Configuration reference — TaskInfo fields](configuration.md#taskinfo-fields).
 
 ## `next_fire_times()`
@@ -902,7 +904,9 @@ path only (`start_worker()` rejects them).
   and `SWARMQ_BACKEND_CONNECT_TIMEOUT_S` (default 30 s). Must be `> 0`
   and at most `threading.TIMEOUT_MAX`, otherwise `ConfigurationError` at
   construction. When it expires, `connect()` raises
-  `BackendConnectionError`.
+  `BackendConnectionError`. It is an upper bound: the driver's own
+  connection attempts give up after at most about 33 s, so a larger
+  value does not wait longer.
 
 Async Valkey client backing results, locks, rate limits, cancel
 flags, scheduler state, and leader election. Implements the
@@ -1066,6 +1070,21 @@ entry back with `get`; a byte-identical entry counts as its own insert,
 and a missing fire time is added with `replan_if_unchanged`. Any other
 existing entry is a conflict, and `swarmq schedule add` still reports
 "already exists" for an existing name.
+
+Contract change in 0.13.0. `ExecutionGuardStore` has a new required
+method:
+
+```python
+async def peek(self, identity: str, *, retry_count: int) -> GuardSettled | None: ...
+```
+
+It only reads, without a claim and without writing a marker (F4-02):
+`"done"` after `mark_done`, `"superseded"` when the superseded count is
+larger than `retry_count`, otherwise `None` (also when the state has
+expired). `GuardSettled` is `Literal["done", "superseded"]` from
+`swarmq.contracts.coordination`. The worker calls it at the delivery
+limit; an implementation of your own without `peek` ends there with
+`AttributeError` instead of dead-lettering the message.
 
 ## Dependency injection (Dishka)
 

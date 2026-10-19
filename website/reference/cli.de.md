@@ -330,7 +330,9 @@ fällt erst auf, wenn der Schedule auf einem Worker feuert.
 
 `--unique-for SECONDS` belegt vor dem Anlegen des Schedules ein
 Dedup-Flag über Task-Name + args + kwargs; seine TTL ist `SECONDS` plus
-die Zeit bis zum ersten Feuern. Ein zweites `schedule add` mit
+die Zeit bis zum ersten Feuern. `SECONDS` ist höchstens `315360000`
+(zehn Jahre, wie `TaskInfo.unique_for`); ein größerer Wert ist ein
+Aufruffehler (Exit `2`, seit 0.13.0). Ein zweites `schedule add` mit
 demselben Task und denselben args und kwargs wird, solange das Flag
 gehalten wird, als Duplikat abgewiesen (`json`-Ausgabe:
 `inserted: false`, `duplicate_of: <owner>`). `--unique-until`
@@ -352,7 +354,12 @@ und wenn das Backend mit einem Fehler antwortet. Fällt das Backend aus
 stehen, weil der Eintrag trotzdem gespeichert sein kann; ein erneuter
 Aufruf ist bis dahin ein Duplikat. Einen Claim, den ein früheres
 `schedule add` unter demselben Namen hält, gibt der Aufruf nie frei,
-auch nicht nach einem Lesefehler. Beim Lesen des Eintrags unter dem
+auch nicht nach einem Lesefehler. Das gilt auch nach
+`schedule remove`: Bis der Claim abläuft, ergibt ein erneutes Anlegen
+mit gleichem Namen und gleichem Task, args und kwargs `inserted: false`,
+`already_exists: false` und `duplicate_of: <eigener Name>`, weil der
+Eintrag weg ist, der Claim des entfernten Schedules aber noch gehalten
+wird. Beim Lesen des Eintrags unter dem
 Namen kann `schedule_def_malformed_skipped` (WARNING) erscheinen, wenn
 er sich nicht dekodieren lässt.
 

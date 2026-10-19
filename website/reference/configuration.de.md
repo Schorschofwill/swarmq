@@ -80,7 +80,7 @@ Wert ist ein `ConfigurationError` (Exit `78`), der das Feld nennt, und
 | `SWARMQ_COMPUTE_THREAD_LIMIT` | `1` | Threads je Rechenkind (`OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`, `NUMEXPR_NUM_THREADS`, `MAGICK_THREAD_LIMIT`). |
 | `SWARMQ_CANCEL_POLL_INTERVAL` | `1.0` | Sekunden zwischen In-Task-Cancel-Flag-Checks. |
 | `SWARMQ_BACKEND_OP_TIMEOUT` | `5.0` | Obergrenze in Sekunden für einzelne Valkey-Operationen in der Worker-Pipeline: Cancel-Check, Dedup-Prüfung und Claim eines Schedule-Fires, Rate-Limit-Prüfung, Lock-Acquire, Lesen des Ergebnisses eines abgebrochenen Workflow-Schritts, Ergebnis-Schreiben, Ergebnis-Benachrichtigung nach einem Abbruch vor dem Start sowie Abschluss oder Freigabe eines Schedule-Fire-Claims. Läuft eine Prüfung vor der Ausführung hinein, gilt das Backend als nicht erreichbar und die Nachricht wird zurückgestellt, statt auf das Socket-Timeout des Valkey-Clients zu warten. Muss `> 0` sein. |
-| `SWARMQ_BACKEND_CONNECT_TIMEOUT_S` | `30.0` | Gesamtfrist in Sekunden für den `PING`, mit dem sich ein `ValkeyBackend` verbindet (Worker-Start, CLI-Befehle, Producer), samt der Verbindungsversuche und Wiederholungen darin. Läuft sie ab, wirft `connect()` `BackendConnectionError` (`Valkey connect timed out after …s`) und schließt den Client, den es gebaut hat; der nächste `connect()` beginnt neu. Sie begrenzt nur das Verbinden; Befehle zur Laufzeit behalten ihre Wiederholpolitik. Jedes `ValkeyBackend` liest sie, auch ohne `SwarmQConfig`; ein an `ValkeyBackend(...)` übergebenes `connect_timeout_s=` gewinnt vor dem `SwarmQConfig`-Feld `backend_connect_timeout_s` und dieser Variable. Muss `> 0` und höchstens `threading.TIMEOUT_MAX` sein; `inf`, `nan` und andere Werte sind ein `ConfigurationError`: Exit `78` für den Worker und `swarmq check`, Exit `1` für andere CLI-Befehle, beim Bau des `ValkeyBackend` eines Producers. |
+| `SWARMQ_BACKEND_CONNECT_TIMEOUT_S` | `30.0` | Gesamtfrist in Sekunden für den `PING`, mit dem sich ein `ValkeyBackend` verbindet (Worker-Start, CLI-Befehle, Producer), samt der Verbindungsversuche und Wiederholungen darin. Läuft sie ab, wirft `connect()` `BackendConnectionError` (`Valkey connect timed out after …s`) und schließt den Client, den es gebaut hat; der nächste `connect()` beginnt neu. Sie ist eine Obergrenze, keine Wartezeit: Gegen einen Host, der Pakete verwirft, gibt der Treiber nach höchstens rund 33 s auf (6 Verbindungsversuche zu 5 s plus 3,1 s Backoff, `Valkey connect failed: …`), gegen einen Port, der Verbindungen abweist, nach rund 3,1 s; ein Wert über rund 33 s lässt `connect()` nicht länger warten. Sie begrenzt nur das Verbinden; Befehle zur Laufzeit behalten ihre Wiederholpolitik. Jedes `ValkeyBackend` liest sie, auch ohne `SwarmQConfig`; ein an `ValkeyBackend(...)` übergebenes `connect_timeout_s=` gewinnt vor dem `SwarmQConfig`-Feld `backend_connect_timeout_s` und dieser Variable. Muss `> 0` und höchstens `threading.TIMEOUT_MAX` sein; `inf`, `nan` und andere Werte sind ein `ConfigurationError`: Exit `78` für den Worker und `swarmq check`, Exit `1` für andere CLI-Befehle, beim Bau des `ValkeyBackend` eines Producers. |
 | `SWARMQ_BACKEND_DEFER_BASE_DELAY` | `1.0` | Sekunden, die eine Nachricht nach ihrer ersten Zurückstellung wartet, wenn eine Prüfung vor der Ausführung (Schedule-Fire-Dedup, Cancel-Check, Rate-Limit, Lock) das Backend nicht erreicht. Jede weitere Zurückstellung derselben Nachricht verdoppelt die Wartezeit. Jede Wartezeit streut zufällig um ±20 %, damit gemeinsam zurückgestellte Nachrichten nicht gemeinsam wiederkommen. Die Nachricht geht als neue Nachricht über die Delay-Queue zurück, eine lange Backend-Störung verbraucht also weder `max_retries` noch das Zustelllimit. |
 | `SWARMQ_BACKEND_DEFER_MAX_DELAY` | `60.0` | Obergrenze der verdoppelten Wartezeit in Sekunden, vor der Streuung um ±20 % (eine einzelne Wartezeit kann also bis zum 1,2-Fachen dieses Werts betragen); mindestens `SWARMQ_BACKEND_DEFER_BASE_DELAY`. Begrenzt, wie lange eine Nachricht nach der Rückkehr des Backends noch wartet. |
 | `SWARMQ_BURST_MODE` | `false` | Bei `true` exited der Worker nach `SWARMQ_BURST_IDLE_TIMEOUT` Sekunden Queue-Stille. |
@@ -464,7 +464,7 @@ mutiert werden.
 | Feld | Typ | Default | Beschreibung |
 |---|---|---|---|
 | `soft_timeout` | `int \| None` | `None` | Sekunden, nach denen der Worker `run()` abbricht. Im Task kommt `asyncio.CancelledError` an, die erneut geworfen werden muss; der Worker speichert `SoftTimeoutError` (wer den Abbruch verschluckt, liefert ein Erfolgsergebnis). |
-| `hard_timeout` | `int \| None` | `None` | Sekunden, nach denen der Worker die Task-Coroutine abbricht. Muss `> soft_timeout` sein, wenn beides gesetzt. Pflicht, wenn `lock` gesetzt ist. |
+| `hard_timeout` | `int \| None` | `None` | Sekunden, nach denen der Worker die Task-Coroutine abbricht. Muss `> soft_timeout` sein, wenn beides gesetzt. Pflicht, wenn `lock` gesetzt ist. Höchstens `315360000` (seit 0.13.0). |
 
 ### Retries
 
@@ -513,20 +513,20 @@ sie meldet (`scheduler_cron_report_invalid`).
 
 | Feld | Typ | Default | Beschreibung |
 |---|---|---|---|
-| `unique_for` | `int \| None` | `None` | Sekunden; aktiviert Dedup auf `(task_name, args, kwargs)` innerhalb der TTL. `0`, negative Werte, `inf` und `nan` abgelehnt. Ein `float` wie `timedelta(...).total_seconds()` wird angenommen und auf die nächste Sekunde aufgerundet. |
+| `unique_for` | `int \| None` | `None` | Sekunden; aktiviert Dedup auf `(task_name, args, kwargs)` innerhalb der TTL. `0`, negative Werte, `inf` und `nan` abgelehnt, ebenso ein Wert über `315360000` (zehn Jahre, seit 0.13.0). Ein `float` wie `timedelta(...).total_seconds()` wird angenommen und auf die nächste Sekunde aufgerundet. |
 | `unique_until` | `"start" \| "completion"` | `"completion"` | Wann der Dedup-Flag freigegeben wird. `"start"` bei Worker-Pickup; `"completion"` bei Terminalzustand. |
 
 ### Expiry
 
 | Feld | Typ | Default | Beschreibung |
 |---|---|---|---|
-| `max_age` | `int \| None` | `None` | Sekunden; Worker routet bei Pickup in die DLQ mit `TASK_EXPIRED`, wenn Alter diesen Wert überschreitet. Muss `> 0` sein, wenn gesetzt. |
+| `max_age` | `int \| None` | `None` | Sekunden; Worker routet bei Pickup in die DLQ mit `TASK_EXPIRED`, wenn Alter diesen Wert überschreitet. Muss `> 0` sein, wenn gesetzt, und höchstens `315360000` (seit 0.13.0). |
 
 ### Result-Storage
 
 | Feld | Typ | Default | Beschreibung |
 |---|---|---|---|
-| `result_ttl` | `int \| None` | `None` | Per-Task-Override von `SwarmQConfig.result_ttl`. Ein `float` wird angenommen und auf die nächste Sekunde aufgerundet; `inf` und `nan` abgelehnt. |
+| `result_ttl` | `int \| None` | `None` | Per-Task-Override von `SwarmQConfig.result_ttl`. Ein `float` wird angenommen und auf die nächste Sekunde aufgerundet; `inf` und `nan` abgelehnt, ebenso ein Wert über `315360000` (zehn Jahre, seit 0.13.0; für „für immer“ eine lange, aber endliche TTL setzen). |
 
 ## Validierungs-Verhalten
 
@@ -546,6 +546,7 @@ Beispiele für Fehler, die beim Import auftreten:
 - `max_concurrency=2` ohne `lock` → `ValueError("max_concurrency requires lock to be set")`.
 - `unique_for=0` → `ValueError("unique_for=0 is invalid; use None to disable dedup")`.
 - `cron="0 0 30 2 *"` → `ValueError` („cron never fires: … has no next fire time“).
+- `result_ttl=sys.maxsize` → `ValueError("result_ttl must be at most 315360000 seconds, …")`. Dieselbe Grenze wie für [`SwarmQConfig`](#worker-verhalten) gilt für `result_ttl`, `unique_for`, `max_age` und `hard_timeout` (seit 0.13.0; vorher scheiterte erst der Worker beim Speichern, führte den Task bei jeder Zustellung erneut aus und legte ihn am Zustelllimit in die DLQ).
 
 Die betroffene `TaskInfo`-Zeile fixen und erneut laufen lassen —
 kein Worker-Reset nötig, weil der Fehler verhindert, dass der
