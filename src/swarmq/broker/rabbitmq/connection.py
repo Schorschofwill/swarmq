@@ -24,7 +24,12 @@ from aio_pika.exceptions import (
 )
 
 from swarmq.broker.rabbitmq.arg_conflict import AdoptionLog
-from swarmq.broker.rabbitmq.blocked import unblocked_event
+from swarmq.broker.rabbitmq.blocked import (
+    BlockedClose,
+    blocked_close_waiters,
+    unblocked_event,
+    wait_until_unblocked,
+)
 from swarmq.broker.rabbitmq.consumer_watch import ConsumerWatch
 from swarmq.config import INJECTED_URL
 from swarmq.exceptions import BrokerConnectionError, ConfigurationError
@@ -75,10 +80,12 @@ _DEFAULT_DELIVERY_LIMIT = 20
 _DEFAULT_DEAD_LETTER_TTL_S = 604800.0
 # Frist für das nebenläufige Schließen eines verworfenen Kanals. Kurz: Meist
 # ist der Transport tot, wenn es nicht gelingt. Im Ressourcenalarm lebt er
-# aber, der Broker liest nur nicht: Dann läuft das Close in die Frist, aiormq
-# entfernt den Kanal, und bei der Aufhebung beantwortet der Broker das Close
-# (aiormq loggt dann ERROR „Got frame for closed channel“). Kein Leck
-# (PF-19, Nachtrag E-025).
+# aber, der Broker liest nur nicht: Dann wartet das Close erst auf
+# ``unblocked`` oder das Ende der Verbindung, höchstens die Publish-Frist
+# (PF-19 a), und schließt danach mit dieser Frist. Dauert der Alarm länger als
+# die Publish-Frist, läuft das Close weiter in diese Frist, aiormq entfernt den
+# Kanal, und bei der Aufhebung beantwortet der Broker das Close (aiormq loggt
+# dann ERROR „Got frame for closed channel“). Kein Leck (PF-19, Nachtrag E-025).
 _CHANNEL_CLOSE_TIMEOUT_S = 5.0
 
 # Bound for acquiring a connection from an injected
@@ -535,12 +542,24 @@ class RabbitMQConnection:
 
         if current is None:
             return
-        task = asyncio.create_task(self._close_channel_detached(current))
+        task = asyncio.create_task(self._close_channel_detached(current, blocked_close_waiters(self._connection)))
         self._pending_channel_closes.add(task)
         task.add_done_callback(self._pending_channel_closes.discard)
 
-    async def _close_channel_detached(self, channel: aio_pika.abc.AbstractChannel) -> None:
-        """Best-effort-Schliessen mit eigener Frist, entkoppelt vom Aufrufer."""
+    async def _close_channel_detached(
+        self,
+        channel: aio_pika.abc.AbstractChannel,
+        blocked: BlockedClose | None,
+    ) -> None:
+        """Best-effort-Schliessen mit eigener Frist, entkoppelt vom Aufrufer.
+
+        War die Verbindung beim Verwurf blockiert (``blocked``), wartet das
+        Close erst auf ``unblocked`` oder das Ende der Verbindung, hoechstens
+        die Publish-Frist (PF-19 a): Im Alarm liest der Broker nichts, ein
+        sofortiges Close liefe in seine Frist. Bis dahin bleiben die uebrigen
+        Confirms des Kanals offen (Praezisierung E-078)."""
+        if blocked is not None:
+            await wait_until_unblocked(blocked, timeout=self._effective_publish_timeout())
         try:
             async with asyncio.timeout(_CHANNEL_CLOSE_TIMEOUT_S):
                 if not channel.is_closed:
