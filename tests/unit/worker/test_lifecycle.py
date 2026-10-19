@@ -47,6 +47,7 @@ from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 from swarmq.worker import Worker, WorkerState
 from tests.support.messages import make_message
+from tests.support.virtual_time import on_virtual_clock
 from tests.unit.worker._helpers import gauge_value
 
 pytestmark = pytest.mark.timeout(5)
@@ -772,6 +773,18 @@ class TestBurstConfig:
         assert cfg.burst_idle_timeout == 2.5
 
 
+class _LoopClock:
+    """``time`` fuer ``swarmq.worker.lifecycle``: ``monotonic`` ist die Uhr
+    der laufenden Loop (auf der virtuellen Uhr deren Zeit), der Rest bleibt."""
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(time, name)
+
+    @staticmethod
+    def monotonic() -> float:
+        return asyncio.get_running_loop().time()
+
+
 class TestBurstMonitor:
     async def test_monitor_triggers_shutdown_after_idle_timeout(self):
         w = _make_burst_worker(burst_mode=True, idle_timeout=0.2)
@@ -808,17 +821,23 @@ class TestBurstMonitor:
         await asyncio.wait_for(monitor, timeout=2.0)
         assert w._shutdown_event.is_set()
 
-    async def test_monitor_clock_resets_on_message(self):
+    @on_virtual_clock
+    async def test_monitor_clock_resets_on_message(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Each delivery resets the idle clock; the monitor only fires
-        after a fresh full idle window."""
+        after a fresh full idle window.
+
+        Auf der virtuellen Uhr (U7 c): Die 100 ms Reserve zwischen dem
+        zweiten Schlaf und dem Ausloesen koennte sonst unter Last reissen. Der
+        Monitor liest ``time.monotonic``; hier liefert sie die Loop-Zeit."""
+        monkeypatch.setattr("swarmq.worker.lifecycle.time", _LoopClock())
         w = _make_burst_worker(burst_mode=True, idle_timeout=0.4)
-        w._last_message_received_at = time.monotonic()
+        w._last_message_received_at = asyncio.get_running_loop().time()
         monitor = asyncio.create_task(w._burst_monitor())
 
         # 0.2s in, simulate a message — resets clock.
         await asyncio.sleep(0.2)
         assert not w._shutdown_event.is_set()
-        w._last_message_received_at = time.monotonic()
+        w._last_message_received_at = asyncio.get_running_loop().time()
 
         # 0.3s later (still within fresh window) — no shutdown.
         await asyncio.sleep(0.3)

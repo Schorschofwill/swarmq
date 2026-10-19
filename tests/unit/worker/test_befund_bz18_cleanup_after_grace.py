@@ -17,7 +17,9 @@ nicht. Erwartet: Mit hängendem Task sind Locks freigegeben und der Scheduler
 gestoppt, bevor ``shutdown_timeout`` ab Beginn des Herunterfahrens abläuft.
 
 Die Frist ist im Test verkleinert (80 ms statt 30 s); das Verhältnis
-Drain : Frist ist dasselbe wie mit Defaults.
+Drain : Frist ist dasselbe wie mit Defaults. Der Test läuft auf der virtuellen
+Loop-Uhr (``on_virtual_clock``, 0.14): Planungsverzug unter Last verschiebt die
+Messung nicht mehr.
 
 Test-Liste:
 - [x] hängender Task, Handler-Lock offen, eingebetteter Scheduler ->
@@ -35,15 +37,17 @@ import pytest
 
 from swarmq.contracts.coordination import LockToken
 from swarmq.worker import WorkerState
+from tests.support.virtual_time import on_virtual_clock
 
-# Enge Zeitbudgets gegen die echte Uhr: unter paralleler Last gerissen
-# (CI und Stresslauf 2026-10-16), daher im seriellen Durchgang (``timing``).
-pytestmark = [pytest.mark.timeout(5), pytest.mark.timing]
+# Die Gnadenfrist laeuft auf der virtuellen Uhr; ein serieller Durchgang
+# (``timing``) ist deshalb nicht mehr noetig.
+pytestmark = [pytest.mark.timeout(5)]
 
 _GRACE_S = 0.08
 
 
 @pytest.mark.entscheidung("E-018")
+@on_virtual_clock
 async def test_locks_and_leader_are_released_within_the_grace_period(worker: Any) -> None:
     loop = asyncio.get_running_loop()
     worker._config.shutdown_timeout = _GRACE_S

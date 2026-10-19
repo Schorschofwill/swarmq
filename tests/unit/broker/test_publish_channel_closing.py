@@ -53,9 +53,10 @@ Test-Liste:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import gc
 import weakref
-from collections.abc import AsyncIterator
+from collections.abc import Iterator
 from typing import Any, cast, override
 from unittest.mock import AsyncMock, Mock
 
@@ -70,10 +71,14 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.contracts import PublishReceipt
 from swarmq.exceptions import BrokerConnectionError, PublishCancelledUnsent, PublishIndeterminate
 from tests.support.aiormq_transport import FakePublishChannel, FakeTransport
+from tests.support.virtual_time import on_virtual_clock
 
-# Enge Zeitbudgets gegen die echte Uhr: unter paralleler Last gerissen
-# (CI und Stresslauf 2026-10-16), daher im seriellen Durchgang (``timing``).
-pytestmark = [pytest.mark.timeout(5), pytest.mark.timing]
+# Alle Tests laufen auf der virtuellen Loop-Uhr (``on_virtual_clock``, 0.14):
+# Die Publish-Frist reisst genau dann, wenn die Loop sonst nur noch warten
+# wuerde, nie schon waehrend der Schritte davor. Vorher rissen die engen
+# Fristen gegen die echte Uhr unter paralleler Last (CI und Stresslauf
+# 2026-10-16); ein serieller Durchgang (``timing``) ist nicht mehr noetig.
+pytestmark = [pytest.mark.timeout(5)]
 
 _LOST = "Server connection unexpectedly closed. Read 0 bytes but 1 bytes expected"
 
@@ -100,9 +105,11 @@ def _broker(*transports: FakeTransport, ready: AsyncMock | None = None) -> Rabbi
     return broker
 
 
-@pytest.fixture
-async def unretrieved() -> AsyncIterator[list[str]]:
-    """Meldungen "never retrieved" des Loops (wie in test_publish_connection_loss.py)."""
+@contextlib.contextmanager
+def _unretrieved() -> Iterator[list[str]]:
+    """Meldungen "never retrieved" des laufenden Loops (wie in
+    test_publish_connection_loss.py). Kein Fixture: Der Test laeuft auf der
+    virtuellen Loop, nicht auf der von pytest-asyncio."""
     loop = asyncio.get_running_loop()
     previous = loop.get_exception_handler()
     messages: list[str] = []
@@ -133,6 +140,7 @@ async def _healthy_wire(transport: FakeTransport) -> None:
         transport.confirm_all()
 
 
+@on_virtual_clock
 async def test_a_publish_cancelled_in_the_lock_queue_is_not_sent_and_retried() -> None:
     dead, healthy = FakeTransport(closing=True), FakeTransport()
     broker = _broker(dead, healthy)
@@ -153,6 +161,7 @@ async def test_a_publish_cancelled_in_the_lock_queue_is_not_sent_and_retried() -
     assert dead.write_queue.empty(), "der Wartende hat nichts in den toten Kanal gelegt"
 
 
+@on_virtual_clock
 async def test_a_publish_that_got_the_lock_after_the_cut_is_not_sent_and_retried() -> None:
     """Zweite Wakeup-Reihenfolge: Der Halter scheitert zuerst und gibt die
     Sperre frei, der Wartende reiht seinen Frame in den toten Kanal ein; erst
@@ -178,6 +187,7 @@ async def test_a_publish_that_got_the_lock_after_the_cut_is_not_sent_and_retried
     assert all(isinstance(result, PublishReceipt) for result in results)
 
 
+@on_virtual_clock
 async def test_a_drained_publish_whose_channel_closes_is_indeterminate_and_not_resent() -> None:
     transport = FakeTransport(closing=True)
     broker = _broker(transport)
@@ -192,6 +202,7 @@ async def test_a_drained_publish_whose_channel_closes_is_indeterminate_and_not_r
     assert cast("AsyncMock", broker._publish_channel_factory).await_count == 1
 
 
+@on_virtual_clock
 async def test_a_channel_closed_by_the_broker_while_waiting_for_the_drain_retries_on_a_new_channel() -> None:
     closed, healthy = FakeTransport(closing=True), FakeTransport()
     broker = _broker(closed, healthy)
@@ -208,6 +219,7 @@ async def test_a_channel_closed_by_the_broker_while_waiting_for_the_drain_retrie
     assert receipt.queue == "tasks"
 
 
+@on_virtual_clock
 async def test_a_channel_closed_before_the_attempt_sends_nothing_and_retries() -> None:
     closed, healthy = FakeTransport(closing=True), FakeTransport()
     closed.close_channel(AMQPConnectionError(_LOST))
@@ -223,6 +235,7 @@ async def test_a_channel_closed_before_the_attempt_sends_nothing_and_retries() -
     assert closed.write_queue.empty()
 
 
+@on_virtual_clock
 async def test_an_own_cancel_while_waiting_passes_through_and_cancels_the_child() -> None:
     transport = FakeTransport(closing=True)
     broker = _broker(transport)
@@ -260,12 +273,14 @@ async def _deadline_while_waiting() -> tuple[type[BaseException] | None, set[asy
     return outcome, running
 
 
-async def test_a_deadline_while_waiting_cancels_and_collects_the_child(unretrieved: list[str]) -> None:
+@on_virtual_clock
+async def test_a_deadline_while_waiting_cancels_and_collects_the_child() -> None:
     """E-041: Die Frist reisst mitten im Versuch (Frame eingereiht) ->
     unbestimmt. Das Kind endet mit dem Vorgang; sein Confirm, das der spaetere
     Abriss ablehnt, ist abgeholt."""
-    outcome, running = await _deadline_while_waiting()
-    gc.collect()
+    with _unretrieved() as unretrieved:
+        outcome, running = await _deadline_while_waiting()
+        gc.collect()
 
     assert outcome is PublishIndeterminate
     assert running == set(), "das Kind laeuft nicht weiter"
@@ -273,8 +288,9 @@ async def test_a_deadline_while_waiting_cancels_and_collects_the_child(unretriev
 
 
 #: Frist fuer Tests, in denen sie erst am zweiten, nie bereiten Kanalaufbau
-#: reissen soll. Langsamer Unit-Test mit Absicht (je 0.25 s): kuerzer
-#: rissen sie unter CI-Last schon vorher und verfehlten ihre Voraussetzung.
+#: reissen soll. Auf der echten Uhr rissen 20 ms unter CI-Last schon vorher
+#: und verfehlten die Voraussetzung; auf der virtuellen Uhr kosten die 0.25 s
+#: keine Laufzeit mehr.
 _DEADLINE_AT_SECOND_READY_S = 0.25
 
 
@@ -283,6 +299,7 @@ async def _never_ready() -> None:
     await asyncio.Event().wait()
 
 
+@on_virtual_clock
 async def test_a_deadline_before_anything_was_sent_is_not_indeterminate() -> None:
     """a3: Die Frist reisst beim Warten auf die Verbindung; gesendet wurde
     nichts, der Aufrufer darf sicher wiederholen."""
@@ -295,6 +312,7 @@ async def test_a_deadline_before_anything_was_sent_is_not_indeterminate() -> Non
     assert not isinstance(caught.value, PublishIndeterminate)
 
 
+@on_virtual_clock
 async def test_a_deadline_while_reconnecting_after_an_unsent_attempt_is_not_indeterminate() -> None:
     """a3: Der erste Versuch wurde nachweislich nicht gesendet (Abriss vor
     dem Schreiben); die Frist reisst beim Kanalaufbau des naechsten."""
@@ -322,6 +340,7 @@ async def test_a_deadline_while_reconnecting_after_an_unsent_attempt_is_not_inde
     assert ready_calls == 2, "Voraussetzung: die Frist riss beim zweiten Kanalaufbau"
 
 
+@on_virtual_clock
 async def test_a_deadline_after_a_nacked_then_an_unsent_attempt_stays_indeterminate() -> None:
     """E-041: Ein negatives Confirm heisst "womoeglich gesendet". Ein spaeterer,
     nachweislich nicht gesendeter Versuch loescht das nicht; reisst die Frist
@@ -352,6 +371,7 @@ async def test_a_deadline_after_a_nacked_then_an_unsent_attempt_stays_indetermin
     assert transport.write_queue.empty(), "Voraussetzung: Versuch 2 hat nichts eingereiht"
 
 
+@on_virtual_clock
 async def test_a_deadline_while_waiting_for_the_channel_lock_is_not_indeterminate() -> None:
     """E-042: Das Kind steht noch in der Warteschlange der Kanal-Sperre, die
     Verbindung bleibt offen. Reisst die Frist, hat es nichts eingereiht; der
@@ -383,6 +403,7 @@ async def _cancel_and_catch(publish: asyncio.Task[Any]) -> asyncio.CancelledErro
 
 
 @pytest.mark.entscheidung("E-041")
+@on_virtual_clock
 async def test_an_own_cancel_while_waiting_for_the_channel_lock_is_marked_unsent() -> None:
     """U4 (E-042-Kriterium): In der Warteschlange der Kanal-Sperre hat der
     Versuch nichts eingereiht; der Abbruch ist als nicht gesendet markiert."""
@@ -418,6 +439,7 @@ def hanging_backoff(monkeypatch: pytest.MonkeyPatch) -> asyncio.Event:
 
 
 @pytest.mark.entscheidung("E-041")
+@on_virtual_clock
 async def test_an_own_cancel_in_the_backoff_after_an_unsent_attempt_is_marked_unsent(
     hanging_backoff: asyncio.Event,
 ) -> None:
@@ -434,6 +456,7 @@ async def test_an_own_cancel_in_the_backoff_after_an_unsent_attempt_is_marked_un
 
 
 @pytest.mark.entscheidung("E-041")
+@on_virtual_clock
 async def test_an_own_cancel_in_the_backoff_after_a_nacked_attempt_stays_unmarked(
     hanging_backoff: asyncio.Event,
 ) -> None:
@@ -453,6 +476,7 @@ async def test_an_own_cancel_in_the_backoff_after_a_nacked_attempt_stays_unmarke
 
 
 @pytest.mark.entscheidung("E-041")
+@on_virtual_clock
 async def test_an_own_cancel_while_the_channel_opens_is_marked_unsent() -> None:
     waiting = asyncio.Event()
 
@@ -470,6 +494,7 @@ async def test_an_own_cancel_while_the_channel_opens_is_marked_unsent() -> None:
 
 
 @pytest.mark.entscheidung("E-041")
+@on_virtual_clock
 async def test_an_own_cancel_after_the_frame_was_enqueued_stays_unmarked() -> None:
     """Eingereiht heisst: Der Writer schreibt womoeglich noch (E-042)."""
     transport = FakeTransport(closing=True)
@@ -482,6 +507,7 @@ async def test_an_own_cancel_after_the_frame_was_enqueued_stays_unmarked() -> No
     assert not isinstance(cancelled, PublishCancelledUnsent)
 
 
+@on_virtual_clock
 async def test_a_foreign_cancel_before_sending_stays_unmarked() -> None:
     """Ein ``CancelledError`` aus aio-pika (kein Anstieg von ``cancelling()``)
     ist kein Abbruch des Aufrufers und wird nicht markiert."""
@@ -493,6 +519,7 @@ async def test_a_foreign_cancel_before_sending_stays_unmarked() -> None:
     assert not isinstance(caught.value, PublishCancelledUnsent)
 
 
+@on_virtual_clock
 async def test_a_drain_cancelled_handler_losing_the_channel_before_sending_stays_unmarked() -> None:
     """KTD9: Ein vom Drain abgebrochener Handler laeuft mit ``cancelling() > 0``
     weiter (E-001); ein aio-pika-interner Abbruch ist nicht sein eigener."""
@@ -530,6 +557,7 @@ class _CountingClosing(asyncio.Future[Any]):
         super().add_done_callback(fn, context=context)
 
 
+@on_virtual_clock
 async def test_many_concurrent_publishes_register_once_on_the_shared_closing() -> None:
     """Alle Publishes teilen den einen Publish-Kanal und sein ``closing``. Je
     Publish ein Callback darauf (und sein lineares Entfernen) machte N
@@ -549,6 +577,7 @@ async def test_many_concurrent_publishes_register_once_on_the_shared_closing() -
     assert closing.registered == 1
 
 
+@on_virtual_clock
 async def test_a_finished_publish_child_is_not_kept_alive_by_its_channel() -> None:
     """Der Kanal lebt lange; ein beendetes Publish-Kind darf nicht an seinem
     ``closing`` haengen bleiben (sonst waechst der Speicher je Publish)."""
@@ -577,6 +606,7 @@ aio_pika.abc.AbstractChannel.register(_AioPikaChannel)
 
 
 @pytest.mark.entscheidung("E-042")
+@on_virtual_clock
 async def test_an_unreadable_closing_falls_back_with_one_warning_per_broker(
     swarmq_logs: list[dict[str, Any]],
 ) -> None:
@@ -607,6 +637,7 @@ class _AiormqBase(aiormq.base.Base):
         return "base"
 
 
+@on_virtual_clock
 async def test_the_installed_aio_pika_and_aiormq_still_provide_a_closing_future() -> None:
     """Versionsschutz: Der FS-08-Waechter braucht ``get_underlay_channel`` an
     aio-pikas Kanal und ein ``closing``-Future an aiormqs Kanal. Fehlt eins
@@ -619,6 +650,7 @@ async def test_the_installed_aio_pika_and_aiormq_still_provide_a_closing_future(
     assert issubclass(aio_pika.RobustChannel, aio_pika.abc.AbstractChannel)
 
 
+@on_virtual_clock
 async def test_a_confirm_that_arrives_with_the_channel_close_completes_the_publish() -> None:
     """Das Ack und das Schliessen kommen im selben Moment (Schliessen zuerst).
     Der Waechter bricht das Kind erst nach dessen eigenem Weiterlaufen ab;
