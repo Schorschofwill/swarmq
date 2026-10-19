@@ -22,6 +22,7 @@ from typing import Any
 import aio_pika
 from aio_pika.exceptions import ChannelNotFoundEntity, ChannelPreconditionFailed
 
+from swarmq.broker.rabbitmq.robust_channels import open_throwaway_channel
 from swarmq.exceptions import BrokerConnectionError, QueueArgumentsMismatch
 from swarmq.logging import get_logger
 
@@ -126,7 +127,7 @@ async def declare_adopting_existing(
         else:
             return current
         finally:
-            # Auch nach einem 406: ein RobustChannel öffnet sich sonst selbst wieder.
+            # Auch nach einem 406 schliessen (Review MR 10, P0-1).
             if channel is not None:
                 with suppress(Exception):
                     await asyncio.wait_for(channel.close(), timeout=timeout_s)
@@ -163,8 +164,8 @@ async def declare_chain(
     try:
         await channel.declare_queue(queue, passive=True)
     except ChannelNotFoundEntity:
-        # Der Broker hat den Channel geschlossen; schliessen, damit ein
-        # RobustChannel sich nicht selbst wieder oeffnet.
+        # Der Broker hat den Channel geschlossen; trotzdem schliessen
+        # (Review MR 10, P0-1).
         with suppress(Exception):
             await asyncio.wait_for(channel.close(), timeout=timeout_s)
         return await declare_adopting_existing(connection, queue, target, timeout_s=timeout_s, log=log)
@@ -187,7 +188,9 @@ async def _open_probe_channel(
             await connection.ready()
             # aio_pika liefert das Channel-Objekt sofort, erst ``await`` öffnet
             # es. So bleibt es greifbar, falls das Öffnen ins Zeitlimit läuft.
-            pending = connection.channel()
+            # Nicht robust: Ein Reconnect öffnete ihn sonst wieder und legte
+            # seine Queues neu an (F4-20).
+            pending = open_throwaway_channel(connection)
             channel: aio_pika.abc.AbstractChannel = await pending
             return channel
     except TimeoutError as exc:

@@ -45,7 +45,30 @@ def unblocked_event(connection: Any) -> asyncio.Event | Unreadable | None:
     return event
 
 
+BlockedWait = tuple[asyncio.Event, asyncio.Future[object] | None]
 BlockedClose = tuple[asyncio.Event, asyncio.Future[object]]
+
+
+def blocked_waiters(connection: Any) -> BlockedWait | Unreadable | None:
+    """Unblocked-Event und ``closing`` derselben aiormq-Verbindung, solange
+    sie blockiert ist und lebt (F4-21, PF-19 a).
+
+    ``None``: nicht verbunden, nicht blockiert, oder ``closing`` ist schon
+    erledigt -- eine tote Verbindung gilt wie "nicht verbunden", den
+    Reconnect wartet der Publish-Pfad selbst ab. ``UNREADABLE`` wie bei
+    ``unblocked_event``. Ist nur ``closing`` nicht lesbar, steht an seiner
+    Stelle ``None``: Gewartet wird dann allein auf das Event (bis 0.13)."""
+    event = unblocked_event(connection)
+    if not isinstance(event, asyncio.Event):
+        return event
+    if event.is_set():
+        return None
+    closing = getattr(connection.transport.connection, "closing", None)
+    if not isinstance(closing, asyncio.Future):
+        return event, None
+    if closing.done():
+        return None
+    return event, cast("asyncio.Future[object]", closing)
 
 
 def blocked_close_waiters(connection: Any) -> BlockedClose | None:
@@ -57,21 +80,22 @@ def blocked_close_waiters(connection: Any) -> BlockedClose | None:
     alten Kanals nie freigaebe; ``closing`` meldet das Ende des alten.
     ``None`` heisst "nicht blockiert" oder "nicht lesbar" (fail-open, E-025):
     dann sofort schliessen wie bisher."""
-    event = unblocked_event(connection)
-    if not isinstance(event, asyncio.Event) or event.is_set():
+    waiters = blocked_waiters(connection)
+    if not isinstance(waiters, tuple):
         return None
-    closing = getattr(connection.transport.connection, "closing", None)
-    if not isinstance(closing, asyncio.Future):
+    event, closing = waiters
+    if closing is None:
         return None
-    return event, cast("asyncio.Future[object]", closing)
+    return event, closing
 
 
-async def wait_until_unblocked(blocked: BlockedClose, timeout: float) -> None:
+async def wait_until_unblocked(blocked: BlockedWait, timeout: float | None) -> None:
     """Wartet auf ``unblocked`` oder das Ende der Verbindung, hoechstens
-    ``timeout``; kein Ausgang ist ein Fehler. Der Hilfs-Task endet mit."""
+    ``timeout`` (``None``: ohne eigene Frist); kein Ausgang ist ein Fehler.
+    Der Hilfs-Task endet mit, auch bei einem Abbruch."""
     unblocked, closing = blocked
     waiter = asyncio.ensure_future(unblocked.wait())
-    either: set[asyncio.Future[Any]] = {waiter, closing}
+    either: set[asyncio.Future[Any]] = {waiter} if closing is None else {waiter, closing}
     try:
         await asyncio.wait(either, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
     finally:
