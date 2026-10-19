@@ -23,7 +23,7 @@ from typing import Any, cast
 import aio_pika
 from aio_pika.exceptions import ChannelInvalidStateError, ChannelNotFoundEntity, DeliveryError, PublishError
 
-from swarmq.broker.rabbitmq.blocked import UNREADABLE, unblocked_event
+from swarmq.broker.rabbitmq.blocked import UNREADABLE, blocked_waiters, wait_until_unblocked
 from swarmq.broker.rabbitmq.connection import (
     _CHANNEL_TRANSIENT_ERRORS,
     _PUBLISH_MAX_ATTEMPTS,
@@ -406,32 +406,39 @@ class RabbitMQDelivery(RabbitMQDeclarations):
         Unblockiert kostet das nur ein synchrones Lesen -- kein Roundtrip,
         kein ``wait_for``. Blockiert, wuerde ein Publish auf dem Socket
         haengen und als ``PublishIndeterminate`` enden; das Warten innerhalb
-        der Publish-Frist sendet nichts, bis der Alarm vorbei ist."""
-        event = unblocked_event(self._connection)
-        if event is UNREADABLE:
-            if not self._blocked_state_unreadable_reported:
-                self._blocked_state_unreadable_reported = True
+        der Publish-Frist sendet nichts, bis der Alarm vorbei ist.
+
+        Gewartet wird auf ``unblocked`` oder ``closing`` derselben
+        aiormq-Verbindung (F4-21): aiormq setzt das Event beim Schliessen
+        nicht. Endet die Verbindung, wird der Zustand neu gelesen. Ohne
+        Verbindung oder auf der toten geht es zurueck in
+        ``_publish_attempts``, das auf den Reconnect wartet; ist die neue
+        blockiert, wird weiter gewartet. Die Frist bleibt die Obergrenze."""
+        while True:
+            waiters = blocked_waiters(self._connection)
+            if not isinstance(waiters, tuple):
+                break
+            if not blocked:
                 logger.warning(
-                    "publish_blocked_state_unreadable",
+                    "publish_connection_blocked",
+                    routing_key=routing_key,
                     hint=(
-                        "cannot read the connection.blocked state from aiormq; publishes run "
-                        "unchecked (fail-open) and hang on the socket during a broker alarm"
+                        "the broker blocked the publish connection (resource alarm: memory or disk); "
+                        "publishes wait until it is unblocked or the publish deadline expires"
                     ),
                 )
-            return
-        if not isinstance(event, asyncio.Event) or event.is_set():
-            return
-        logger.warning(
-            "publish_connection_blocked",
-            routing_key=routing_key,
-            hint=(
-                "the broker blocked the publish connection (resource alarm: memory or disk); "
-                "publishes wait until it is unblocked or the publish deadline expires"
-            ),
-        )
-        blocked.append(True)
-        await event.wait()
+                blocked.append(True)
+            await wait_until_unblocked(waiters, timeout=None)
         blocked.clear()
+        if waiters is UNREADABLE and not self._blocked_state_unreadable_reported:
+            self._blocked_state_unreadable_reported = True
+            logger.warning(
+                "publish_blocked_state_unreadable",
+                hint=(
+                    "cannot read the connection.blocked state from aiormq; publishes run "
+                    "unchecked (fail-open) and hang on the socket during a broker alarm"
+                ),
+            )
 
     def _report_closing_unreadable(self) -> None:
         if self._closing_unreadable_reported:

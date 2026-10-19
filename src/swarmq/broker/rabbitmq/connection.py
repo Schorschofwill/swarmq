@@ -31,6 +31,7 @@ from swarmq.broker.rabbitmq.blocked import (
     wait_until_unblocked,
 )
 from swarmq.broker.rabbitmq.consumer_watch import ConsumerWatch
+from swarmq.broker.rabbitmq.robust_channels import open_throwaway_channel, release_channel
 from swarmq.config import INJECTED_URL
 from swarmq.exceptions import BrokerConnectionError, ConfigurationError
 from swarmq.logging import _error_fields, get_logger, sanitize_url
@@ -102,7 +103,9 @@ async def close_channel_quietly(channel: aio_pika.abc.AbstractChannel | None) ->
     vom Broker geschlossenen Channel (NOT_FOUND, 406) ist ``is_closed`` schon
     True; ohne eigenes ``close`` oeffnete ein RobustChannel sich wieder und
     bliebe offen, bis die Verbindung ``channel_max`` erreicht (Review MR 10,
-    P0-1; wie ``arg_conflict``)."""
+    P0-1; wie ``arg_conflict``). Vor einem Wiederoeffnen nach einem Reconnect
+    schuetzt ``close()`` allein nicht (F4-20): Wegwerf-Kanaele sind darum
+    nicht robust (``open_throwaway_channel``)."""
     if channel is None:
         return
     try:
@@ -451,6 +454,9 @@ class RabbitMQConnection:
                 if chan is not None:
                     if not chan.is_closed:
                         await chan.close()
+                    # Die Verbindung bleibt beim Aufrufer: Ihr naechster
+                    # Reconnect oeffnete den Kanal sonst wieder (F4-20).
+                    release_channel(self._connection, chan)
                     setattr(self, attr, None)
         finally:
             if self._pool_ctx is not None:
@@ -542,6 +548,9 @@ class RabbitMQConnection:
 
         if current is None:
             return
+        # Vor dem Close abmelden: Ein Reconnect, waehrend das Close im Alarm
+        # wartet, oeffnete den verworfenen Kanal sonst wieder (F4-20).
+        release_channel(self._connection, current)
         task = asyncio.create_task(self._close_channel_detached(current, blocked_close_waiters(self._connection)))
         self._pending_channel_closes.add(task)
         task.add_done_callback(self._pending_channel_closes.discard)
@@ -678,15 +687,14 @@ class RabbitMQConnection:
             raise BrokerConnectionError("broker is not connected")
         channel: aio_pika.abc.AbstractChannel | None = None
         try:
-            channel = await connection.channel()
+            channel = await open_throwaway_channel(connection)
             q = await channel.declare_queue(name, passive=True)
             result = getattr(q, "declaration_result", None)
             if result is not None:
                 return int(getattr(result, "message_count", 0))
         except aio_pika.exceptions.ChannelNotFoundEntity:
             # Der Broker hat den Channel geschlossen (``is_closed`` ist schon
-            # True): trotzdem ``close()``, sonst oeffnet ein RobustChannel
-            # sich wieder und bleibt offen (Review MR 10, P0-1).
+            # True): trotzdem ``close()`` (Review MR 10, P0-1).
             await close_channel_quietly(channel)
             channel = None
             return 0

@@ -15,12 +15,10 @@ Test-Liste:
 - [x] Verbindungsende im Alarm: das wartende Close endet sofort, ohne Fehler
       und ohne hängenden Task; nach dem Reconnect ist m2 bestätigt
 
-Nicht Teil dieser Tests: Nach einem Reconnect öffnet aio-pikas
-``RobustConnection`` jeden noch nicht eingesammelten ``RobustChannel`` neu,
-auch explizit geschlossene oder verworfene (``_on_connected`` stellt alle
-Kanäle seines ``WeakSet`` wieder her). Mit abgeschalteter Garbage Collection
-standen danach 9 bis 11 zusätzliche Kanäle beim Broker, mit und ohne PF-19 a;
-das ist ein eigener Befund (Gegenprüfung offen), kein Verhalten dieser Änderung.
+Nicht Teil dieser Tests: die Kanalzahl nach einem Reconnect. Bis 0.13 öffnete
+aio-pikas ``RobustConnection`` dabei jeden noch nicht eingesammelten
+``RobustChannel`` neu, auch geschlossene oder verworfene; das ist F4-20, behoben
+in 0.14 und nachgewiesen in ``test_befund_f4_20_restore_closed_channels.py``.
 """
 
 from __future__ import annotations
@@ -228,9 +226,9 @@ async def test_a_connection_ending_during_the_alarm_ends_the_waiting_close(
         await asyncio.to_thread(memory_alarm.release)
 
         # Bis aio-pika neu verbindet (rund 5 s), zeigt der Transport noch auf die
-        # tote, blockierte aiormq-Verbindung; ein Publish in diesem Fenster
-        # wartete bis zur Frist auf deren Unblocked-Event (eigener Verdacht,
-        # nicht Teil von PF-19 a). Darum erst nach dem Reconnect.
+        # tote, blockierte aiormq-Verbindung. Bis 0.13 wartete ein Publish in
+        # diesem Fenster bis zur Frist auf deren Unblocked-Event (F4-21, behoben
+        # in 0.14, eigener Nachweis); dieser Test sendet erst nach dem Reconnect.
         async def reconnected() -> bool:
             return _aiormq_connection(broker) not in (None, dropped)
 

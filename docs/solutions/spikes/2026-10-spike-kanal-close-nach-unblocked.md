@@ -126,7 +126,8 @@ Festgeschrieben (Nachtrag E-025, Präzisierung E-078):
 - Chaos (4.3.6-Stack): `tests/chaos/test_publish_deadline.py::TestDeferredCloseUnderAlarm`, Alarm plus
   Toxiproxy `down` während des Wartens. Rot, wenn das Warten `closing` nicht beachtet.
 
-Nebenbeobachtungen bei der Umsetzung (nicht Teil von PF-19 a, Gegenprüfung offen):
+Nebenbeobachtungen bei der Umsetzung (nicht Teil von PF-19 a; gegengeprüft als F4-20 und F4-21,
+beide in 0.14 behoben, siehe unten):
 
 1. aio-pikas `RobustConnection` stellt nach einem Reconnect jeden `RobustChannel` aus ihrem `WeakSet`
    wieder her, der noch nicht eingesammelt ist, auch explizit geschlossene oder verworfene
@@ -138,3 +139,23 @@ Nebenbeobachtungen bei der Umsetzung (nicht Teil von PF-19 a, Gegenprüfung offe
    Fenster wartet in `_wait_while_blocked` bis zur Publish-Frist und endet als `BrokerPublishBlocked`,
    statt nach dem Reconnect zu senden (einmal in sechs Integrationsläufen beobachtet). Die Schranke
    „unblocked oder `closing`“ aus PF-19 a wäre dort dieselbe.
+
+### Nachtrag 0.14: F4-20 und F4-21 behoben
+
+- **F4-20** (Nebenbeobachtung 1): Wegwerf-Kanäle (Deklaration, Tiefe, Queue-Status, DLQ) sind
+  nicht mehr robust (`open_throwaway_channel` in `broker/rabbitmq/robust_channels.py`, ein
+  `aio_pika.Channel`); der verworfene Publish-Kanal und die Kanäle einer geliehenen Verbindung
+  werden aus dem `WeakSet` der `RobustConnection` abgemeldet (`release_channel`, privates API
+  `_RobustConnection__channels`, fail-open). Nachweis:
+  `tests/unit/broker/test_befund_f4_20_restore_closed_channels.py` und
+  `tests/integration/broker/test_befund_f4_20_restore_closed_channels.py` (Garbage Collection aus,
+  Abriss über die Management-API: beim Broker nur der lebende Kanal; Reconnect nach der Tiefe einer
+  gelöschten Queue binnen 10 s). Präzisierung in E-078.
+- **F4-21** (Nebenbeobachtung 2): `_wait_while_blocked` wartet auf `unblocked` oder `closing`
+  derselben aiormq-Verbindung (`blocked_waiters`, `wait_until_unblocked`) und liest nach einem
+  Abriss neu. Nachweis: `tests/unit/broker/test_befund_f4_21_blocked_wait_after_cut.py` und
+  `tests/integration/broker/test_befund_f4_21_blocked_wait_after_cut.py`. Nachtrag in E-025.
+- Weiter offen (eigener Verdacht, Gegenprüfung ausstehend): Ersetzt `_ensure_channel_tracked` im
+  Restore-Fenster eines Reconnects einen noch geschlossenen robusten Kanal durch einen neuen, stellt
+  aio-pika den alten trotzdem wieder her; er bleibt offen (Probe: je Reconnect mit einem Publish im
+  Fenster ein Kanal mehr beim Broker).
