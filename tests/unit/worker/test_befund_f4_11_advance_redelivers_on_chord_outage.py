@@ -28,7 +28,7 @@ Testliste:
 # [x] ``OOM`` im Chord-Skript: ``Redelivered``, Workflow nicht ``failed``
 # [x] dauerhafte Fehlerantwort (``WRONGTYPE``) im Chord-Skript: ebenfalls
 #     ``Redelivered`` bis zum Zustelllimit, kein Fail-Mark (KD7 im Fix-Plan
-#     Runde 4: wie Lock- und Rate-Limit-Gate, keine neue Regel)
+#     Runde 4, seit 2026-10-19 Regel E-079)
 # [x] Chord: Ausfall beim letzten Kopfglied, dann Rückkehr von Valkey: der
 #     Chord-Body wird genau einmal eingereiht, auch bei einer weiteren
 #     Zustellung desselben Glieds
@@ -168,6 +168,7 @@ async def _status(state_store: InMemoryBackend) -> str:
     return str(decode_json(raw)["status"])
 
 
+@pytest.mark.entscheidung("E-079")
 async def test_error_reply_in_the_chord_script_redelivers_instead_of_failing_the_workflow(
     broker: Any, backend: Any, config: Any
 ) -> None:
