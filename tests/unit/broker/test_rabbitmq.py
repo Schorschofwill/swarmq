@@ -1220,7 +1220,7 @@ class TestChannelCloseAfterUnblocked:
     @pytest.mark.timeout(5)
     @pytest.mark.entscheidung("E-025")
     async def test_an_alarm_outlasting_the_publish_deadline_closes_after_it_without_traceback(self):
-        broker, unblocked, _ = _alarm_broker(publish_timeout_s=0.03)
+        broker, unblocked, _ = _alarm_broker(publish_timeout_s=60.0)
         collector = _RecordCollector()
         logger = logging.getLogger("swarmq.broker.rabbitmq.connection")
         logger.addHandler(collector)
@@ -1236,6 +1236,11 @@ class TestChannelCloseAfterUnblocked:
 
                 channel.close = close_into_the_deadline  # type: ignore[method-assign]  # Test ersetzt close durch einen Fake
                 publishing = await _send_then_block(broker, channel, unblocked)
+                # Die Frist reißt erst jetzt, im Alarm; das Close wartet danach
+                # höchstens die (dann kurze) Publish-Frist auf ``unblocked``.
+                broker.publish_timeout_s = 0.03
+                [deadline] = broker._active_publish_timeouts
+                deadline.reschedule(asyncio.get_running_loop().time())
                 with pytest.raises(PublishIndeterminate):
                     await publishing
                 [closer] = broker._pending_channel_closes

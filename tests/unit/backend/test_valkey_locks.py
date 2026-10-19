@@ -245,6 +245,14 @@ class TestValkeyLockStoreTokens:
 
         assert await store.force_release("l", max_concurrency=1) is False
 
+    async def test_force_release_is_true_when_the_delete_removed_the_lock(self):
+        """Gegenstück: ``DEL`` hat den Lock-Schlüssel entfernt (Plan 0.14, U1)."""
+        store, _ = self._store()
+        store._client.delete = AsyncMock(return_value=1)
+
+        assert await store.force_release("l", max_concurrency=1) is True
+        store._client.delete.assert_awaited_once()
+
     async def test_force_release_passes_through_existing_backend_connection_error(self):
         """Ein schon eingeordneter Ausfall (z. B. aus einem Client-Wrapper)
         bleibt ein Ausfall und wird nicht zur Fehlerantwort umgedeutet."""
