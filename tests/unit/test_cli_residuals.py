@@ -229,6 +229,31 @@ class TestCheckDetectionRobustness:
         result = _is_check_invocation(None)
         assert isinstance(result, bool)
 
+    @pytest.mark.entscheidung("E-062")
+    def test_main_without_argv_reads_check_from_sys_argv(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """T-F-12: ``main(None)`` (der Konsolen-Einstieg) erkennt ``worker --check``
+        aus ``sys.argv`` und meldet einen argparse-Fehler als JSON mit Exit 1.
+
+        Mutant ``check_cmd.py:250`` ``sys.argv[1:]`` → ``sys.argv[2:]``: der
+        Detektor sähe ``worker`` nicht, argparse endete mit Exit 2 ohne Payload.
+        """
+        import json
+
+        from swarmq.cli import main
+
+        monkeypatch.setattr(
+            "sys.argv",
+            ["swarmq", "worker", "--module=json", "--watch-dir", "/definitely/not/existing/xyz", "--check"],
+        )
+
+        rc = main(None)
+
+        payload = json.loads(capsys.readouterr().out)
+        assert rc == 1
+        assert (payload["ok"], payload["error_type"]) == (False, "ArgparseError")
+
     def test_worker_check_equals_value_detects_as_check(self) -> None:
         """``worker --check=true`` must enter the JSON-contract path.
 

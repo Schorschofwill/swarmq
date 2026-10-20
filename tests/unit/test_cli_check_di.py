@@ -5,6 +5,7 @@ Test-Liste:
     "ConfigurationError"``, Exit 1; stdout ist genau eine JSON-Zeile, auch
     wenn das Modul beim Import druckt
 11'. Der Supervisor-Start (``check_worker_config``) importiert weiter nicht
+11b. Ausgaben des Moduls beim Import gehen nach stderr (T-F-24)
 11a. global registrierter DI-Testtask, ``--module=json`` → ``ok: true``
     (nur neu registrierte Tasks werden geprüft)
 """
@@ -65,6 +66,22 @@ def test_worker_check_reports_di_task_without_container(app_cwd: Path, capsys: p
     assert payload["ok"] is False
     assert payload["error_type"] == "ConfigurationError"
     assert "checkdi.missing" in payload["error"]
+
+
+def test_worker_check_forwards_module_output_to_stderr(app_cwd: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Testlücke T-F-24 (Runde 4): was das Modul beim Import druckt, landet auf
+    stderr statt zu verschwinden; stdout bleibt die eine JSON-Zeile.
+
+    Mutant ``check_cmd.py:122`` ``redirect_stdout(sys.stderr)`` →
+    ``redirect_stdout(None)``: ``print`` schriebe ins Leere.
+    """
+    (app_cwd / "checkdi_banner.py").write_text(_DI_MODULE.format(name="checkdi.banner"))
+
+    main(["worker", "--module", "checkdi_banner", "--check"])
+
+    captured = capsys.readouterr()
+    assert "banner from the app module" in captured.err
+    assert len(captured.out.splitlines()) == 1
 
 
 def test_supervisor_preflight_does_not_import_the_module(app_cwd: Path, monkeypatch: pytest.MonkeyPatch) -> None:

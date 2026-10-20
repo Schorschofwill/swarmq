@@ -628,3 +628,70 @@ class TestCheckValidatesLogging:
         assert payload["error_type"] == "ConfigurationError"
         assert str(bad) in payload["error"]
         assert "Unable to configure handler" in payload["error"]
+
+
+class TestCheckForwardsTheStartArguments:
+    """T-F-11: ``worker --check`` reicht ``--autoscale``, ``--configure`` und
+    ``--watch-dir`` an die Prüfung weiter, die auch der Start macht (E-062).
+
+    ``TestPreflightCommandAgrees`` deckt nur ``--processes`` und die Ports;
+    ohne diese Tests bliebe unbemerkt, wenn ``--check`` eines der drei
+    Argumente fallen ließe und damit "in Ordnung" für eine Kombination
+    meldete, die der Start ablehnt.
+
+    Test-Liste:
+    - [x] ``--autoscale`` zählt mit seiner Obergrenze für die Portbereiche
+    - [x] ``--pool cpu`` mit ``--autoscale`` wird wie beim Start abgelehnt
+    - [x] ``--configure`` erscheint im Payload; ein nicht auffindbares Modul ist ein Fehler
+    - [x] ``--watch-dir`` bestimmt die gemeldeten Watch-Verzeichnisse
+    """
+
+    @staticmethod
+    def _check(capsys, *extra: str) -> tuple[int, dict[str, Any]]:
+        import json
+
+        rc = main(["worker", "--module=json", "--check", *extra])
+        return rc, json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+
+    @pytest.mark.entscheidung("E-062")
+    def test_autoscale_upper_bound_sizes_the_reported_port_range(self, capsys):
+        """T-F-11, Mutant ``check_cmd.py:173`` ``autoscale=getattr(args, "autoscale", None)``
+        → ``autoscale=None``: der Bereich schrumpfte auf einen Port."""
+        rc, payload = self._check(capsys, "--autoscale", "2,5", "--metrics-port", "9000")
+
+        assert rc == 0
+        assert payload["metrics_ports"] == [9000, 9004]
+
+    @pytest.mark.entscheidung("E-062")
+    def test_cpu_pool_with_autoscale_is_rejected_like_the_start(self, capsys):
+        """T-F-11, Mutant ``check.py:343`` ``validate_pool_mode(pool=pool,
+        autoscale=autoscale)`` → ``autoscale=None``: ``--check`` meldete ok."""
+        rc, payload = self._check(capsys, "--pool", "cpu", "--autoscale", "2,4")
+
+        assert rc == 1
+        assert payload["error_type"] == "ConfigurationError"
+        assert "--autoscale" in payload["error"]
+
+    @pytest.mark.entscheidung("E-062")
+    @pytest.mark.entscheidung("E-069")
+    def test_configure_hook_is_checked_and_reported(self, capsys):
+        """T-F-11, Mutant ``check_cmd.py:181`` ``configure=getattr(args, "configure",
+        None)`` → ``configure=None``: der Hook fehlte im Payload, und ein nicht
+        auffindbares Hook-Modul ginge als ok durch."""
+        rc_ok, ok = self._check(capsys, "--configure", "json:loads")
+        rc_bad, bad = self._check(capsys, "--configure", "nope_xyz_unresolvable:setup")
+
+        assert (rc_ok, ok["configure"]) == (0, "json:loads")
+        assert rc_bad == 1
+        assert bad["error_type"] == "ConfigurationError"
+        assert "nope_xyz_unresolvable" in bad["error"]
+
+    @pytest.mark.entscheidung("E-062")
+    def test_watch_dir_decides_the_reported_watch_dirs(self, capsys, tmp_path):
+        """T-F-11, Mutant ``check_cmd.py:166`` ``watch_dir=getattr(args, "watch_dir",
+        None)`` → ``watch_dir=None``: gemeldet würde das Paketverzeichnis statt
+        des angegebenen Verzeichnisses."""
+        rc, payload = self._check(capsys, "--reload", "--watch-dir", str(tmp_path))
+
+        assert rc == 0
+        assert payload["watch_dirs"] == [str(tmp_path.resolve())]

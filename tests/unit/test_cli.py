@@ -1757,6 +1757,132 @@ class TestDlqHandlerOrchestration:
         await cli._run_dlq_async(ns)
         mock_broker.purge_dead_letters.assert_awaited_once()
 
+    # T-F-13: die Handler reichen Queue, ``--scan-limit`` und ``--limit`` an den
+    # Broker weiter. Die e2e-Tests decken die Queue; auf Unit-Ebene fehlte es.
+    # [x] purge: Queue
+    # [x] inspect: Queue, Task-ID, scan_limit
+    # [x] retry <id>: Queue, Task-ID, scan_limit
+    # [x] retry --all: Queue, limit
+    # T-F-14: JSON-Verträge der DLQ-Befehle jenseits von ``hit_limit``.
+    # [x] inspect nicht gefunden: Payload mit task_id und queue
+    # [x] retry <id> nicht gefunden: moved 0
+    # [x] retry --all: all true
+    # [x] list: bytes-Header als Text, ungültiges UTF-8 ersetzt statt Fehler
+
+    @pytest.mark.timeout(5)
+    async def test_purge_targets_the_named_queue(self, mock_broker, capsys):
+        """T-F-13, Mutant ``dlq_cmd.py:266`` ``purge_dead_letters(args.queue)`` →
+        ``purge_dead_letters(None)``."""
+        mock_broker.purge_dead_letters.return_value = 0
+
+        await cli._run_dlq_purge(argparse.Namespace(queue="orders", format="table"))
+
+        mock_broker.purge_dead_letters.assert_awaited_once_with("orders")
+        assert "orders.XQ" in capsys.readouterr().out
+
+    @pytest.mark.timeout(5)
+    async def test_inspect_passes_queue_task_and_scan_limit(self, mock_broker, capsys):
+        """T-F-13, Mutant ``dlq_cmd.py:136`` ``scan_limit=args.scan_limit`` →
+        ``scan_limit=None``."""
+        mock_broker.inspect_dead_letter.return_value = (None, 0)
+
+        with pytest.raises(cli._DLQNotFound):
+            await cli._run_dlq_inspect(argparse.Namespace(task_id="t-9", queue="orders", scan_limit=7, format="json"))
+
+        mock_broker.inspect_dead_letter.assert_awaited_once_with("orders", "t-9", scan_limit=7)
+        capsys.readouterr()
+
+    @pytest.mark.timeout(5)
+    async def test_retry_single_passes_queue_task_and_scan_limit(self, mock_broker, capsys):
+        """T-F-13, Mutant ``dlq_cmd.py:234`` ``scan_limit=args.scan_limit`` →
+        ``scan_limit=None``."""
+        mock_broker.retry_dead_letter.return_value = (True, 1)
+        ns = argparse.Namespace(task_id="t-9", all=False, queue="orders", limit=9, scan_limit=7, format="json")
+
+        await cli._run_dlq_retry(ns)
+
+        mock_broker.retry_dead_letter.assert_awaited_once_with("orders", "t-9", scan_limit=7)
+        capsys.readouterr()
+
+    @pytest.mark.timeout(5)
+    async def test_retry_all_passes_queue_and_limit(self, mock_broker, capsys):
+        """T-F-13, Mutant ``dlq_cmd.py:206`` ``limit=args.limit`` → ``limit=None``."""
+        mock_broker.retry_all_dead_letters.return_value = (0, 0)
+        ns = argparse.Namespace(task_id=None, all=True, queue="orders", limit=9, scan_limit=7, format="json")
+
+        await cli._run_dlq_retry(ns)
+
+        mock_broker.retry_all_dead_letters.assert_awaited_once_with("orders", limit=9)
+        capsys.readouterr()
+
+    @pytest.mark.entscheidung("E-028")
+    @pytest.mark.timeout(5)
+    async def test_inspect_miss_payload_names_task_and_queue(self, mock_broker, capsys):
+        """T-F-14, Mutant ``dlq_cmd.py:146`` ``"task_id"`` → ``"XXtask_idXX"``."""
+        mock_broker.inspect_dead_letter.return_value = DeadLetterScan(None, 3, hit_limit=False)
+
+        with pytest.raises(cli._DLQNotFound):
+            await cli._run_dlq_inspect(argparse.Namespace(task_id="t-9", queue="orders", scan_limit=7, format="json"))
+
+        assert json.loads(capsys.readouterr().out) == {
+            "found": False,
+            "task_id": "t-9",
+            "queue": "orders",
+            "scanned": 3,
+            "scan_exhausted": False,
+        }
+
+    @pytest.mark.entscheidung("E-028")
+    @pytest.mark.timeout(5)
+    async def test_retry_miss_payload_reports_nothing_moved(self, mock_broker, capsys):
+        """T-F-14, Mutant ``dlq_cmd.py:242`` ``1 if found else 0`` → ``1 if found else 1``."""
+        mock_broker.retry_dead_letter.return_value = DeadLetterScan(False, 3, hit_limit=False)
+        ns = argparse.Namespace(task_id="t-9", all=False, queue="orders", limit=9, scan_limit=7, format="json")
+
+        with pytest.raises(cli._DLQNotFound):
+            await cli._run_dlq_retry(ns)
+
+        assert json.loads(capsys.readouterr().out) == {
+            "moved": 0,
+            "queue": "orders",
+            "task_id": "t-9",
+            "found": False,
+            "scanned": 3,
+            "scan_exhausted": False,
+        }
+
+    @pytest.mark.entscheidung("E-028")
+    @pytest.mark.timeout(5)
+    async def test_retry_all_payload_says_all(self, mock_broker, capsys):
+        """T-F-14, Mutant ``dlq_cmd.py:219`` ``"all": True`` → ``"all": False``."""
+        mock_broker.retry_all_dead_letters.return_value = DeadLetterScan(2, 2, hit_limit=False)
+        ns = argparse.Namespace(task_id=None, all=True, queue="orders", limit=9, scan_limit=7, format="json")
+
+        await cli._run_dlq_retry(ns)
+
+        payload = json.loads(capsys.readouterr().out)
+        assert (payload["all"], payload["queue"], payload["moved"]) == (True, "orders", 2)
+
+    @pytest.mark.timeout(5)
+    async def test_list_json_decodes_bytes_headers(self, mock_broker, capsys):
+        """T-F-14, Mutanten ``dlq_cmd.py:111`` Zuweisung ``e["headers"] =
+        _normalise_headers_for_json(...)`` streichen (der Header erschiene als
+        ``"b'...'"``) und ``dlq_cmd.py:72`` ``errors="replace"`` → ``errors="strict"``
+        (ungültiges UTF-8 bräche den Befehl mit ``UnicodeDecodeError`` ab)."""
+        entry = {
+            "task_id": "t-1",
+            "task_name": "add",
+            "queue": "orders",
+            "headers": {"x-swarmq-traceback": b"boom", "x-raw": b"\xff\xfeok"},
+            "body_size": 1,
+        }
+        mock_broker.list_dead_letters.return_value = DeadLetterScan([entry], 1, hit_limit=False)
+
+        await cli._run_dlq_list(argparse.Namespace(queue="orders", limit=9, format="json"))
+
+        headers = json.loads(capsys.readouterr().out)["entries"][0]["headers"]
+        assert headers == {"x-swarmq-traceback": "boom", "x-raw": "��ok"}
+
 
 class TestRenderTable:
     """Shared table renderer used by three CLI formatters (P3 #14)."""

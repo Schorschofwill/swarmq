@@ -143,6 +143,13 @@ class TestConfigureHookPreflight:
     def test_absent_hook_reports_none(self):
         assert self._check()["configure"] is None
 
+    def test_spec_without_module_name_is_malformed(self):
+        """T-F-19, Mutant ``check.py:285`` ``not module_name or`` streichen: die
+        Form ``:setup`` fiele erst beim Auffinden des leeren Moduls auf, mit
+        einer Meldung, die die erwartete Form nicht nennt."""
+        with pytest.raises(ConfigurationError, match="is not MODULE:CALLABLE"):
+            self._check(configure=":setup")
+
 
 class TestHeadroomPreflight:
     """Kontrollkanal U3 (R1, R3): ``--max-processes`` gegen Startwerte und CPU-Zuteilung.
@@ -179,6 +186,13 @@ class TestHeadroomPreflight:
             autoscale=(2, 8),
             max_processes=8,
         )
+        assert result["module"] == "json"
+
+    def test_headroom_equal_to_the_processes_is_accepted(self):
+        """T-F-19, Mutant ``check.py:255`` ``max_processes < processes`` → ``<=``:
+        ein Spielraum genau gleich der Startprozesszahl wäre abgelehnt."""
+        result = check_worker_config(module="json", reload=False, watch_dir=None, processes=4, max_processes=4)
+
         assert result["module"] == "json"
 
     @pytest.fixture
