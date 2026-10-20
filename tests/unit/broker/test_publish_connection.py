@@ -15,6 +15,10 @@ Test-Liste:
 - [x] Consume-Verbindung scheitert -> ``BrokerConnectionError``
 - [x] Admin-Lesen (``queue_depth``, ``dead_letter_depth``) ueber die Consume-Verbindung, falls offen
 - [x] ... sonst wie bisher ueber die Publish-Verbindung (auch wenn die Consume-Verbindung zu ist)
+
+Testlücken Runde 4 (Plan 2026-10-20-1500, U4):
+- [x] E-14: close -> connect -> consume legt den Consume-Kanal auf die neue Consume-Verbindung
+- [x] E-20: der Fehler der Consume-Verbindung nennt den Grund, ohne Passwort
 """
 
 from __future__ import annotations
@@ -131,3 +135,31 @@ async def test_admin_reads_fall_back_to_the_publish_connection() -> None:
     broker._consume_connection = _counting_connection(5)
     broker._consume_connection.is_closed = True
     assert await broker.ready_depth("tasks") == 1
+
+
+async def test_after_close_and_reconnect_consume_uses_a_channel_on_the_new_consume_connection() -> None:
+    """Lücke E-14, Mutant ``connection.py:462`` Zeile
+    ``self._consume_channel = None`` gestrichen: Der Kanal der geschlossenen
+    Consume-Verbindung bliebe stehen und ``consume`` liefe auf ihm."""
+    broker, _publish_conn, consume_conn = await _connected()
+    await broker.close()
+    publish_again, consume_again = _connection(), _connection()
+
+    with patch(_CONNECT, AsyncMock(side_effect=[publish_again, consume_again])):
+        await broker.connect()
+        await broker.consume("q3", AsyncMock(), concurrency=4)
+
+    consume_again.channel.assert_awaited_once_with()
+    consume_again.channel.return_value.get_queue.assert_awaited_once_with("q3")
+    assert consume_conn.channel.return_value.get_queue.await_count == 2  # nur q1 und q2
+
+
+async def test_failing_consume_connection_names_the_reason_without_the_password() -> None:
+    """Lücke E-20, Mutant ``connection.py:327`` ``failed: {exc}`` → ``failed: ``."""
+    broker = RabbitMQBroker("amqp://user:supersecret@rabbit.host/")
+    with patch(_CONNECT, AsyncMock(side_effect=[_connection(), ConnectionError("refused")])):
+        await broker.connect()
+        with pytest.raises(BrokerConnectionError) as excinfo:
+            await broker.consume("q1", AsyncMock(), concurrency=4)
+
+    assert str(excinfo.value) == "consume connection to 'amqp://user:***@rabbit.host/' failed: refused"
