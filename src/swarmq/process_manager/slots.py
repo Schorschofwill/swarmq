@@ -145,12 +145,14 @@ def drain_candidates(
     Prozess der erste Kandidat, KTD1) und Worker jünger als ``min_age_s``
     (Autoskalierer: ``SCALE_MIN_AGE_S``; Sollwert-Durchlauf: 0, R12).
     ``now`` kommt vom Aufrufer: Die Uhr lesen ``supervisor``, ``autoscale``
-    und ``setpoint``, dort ersetzen Tests sie.
+    und ``setpoint``, dort ersetzen Tests sie. Mit ``min_age_s=0`` gilt die
+    Altersbedingung immer, denn ``spawned_at`` stammt aus derselben monotonen
+    Uhr und liegt nie nach ``now``; einen Sonderfall braucht es nicht.
     """
     return {
         pid: w
         for pid, w in workers.items()
         if not w.expected_shutdown
         and slots.state(w.worker_id) is not SlotState.TRANSITION
-        and (min_age_s <= 0 or now - w.spawned_at >= min_age_s)
+        and now - w.spawned_at >= min_age_s
     }
