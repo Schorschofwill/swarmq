@@ -29,6 +29,7 @@ tests:
   - tests/integration/test_befund_bz10_shared_valkey.py::test_same_lock_name_in_two_apps_does_not_block_the_other_app
   - tests/unit/test_cli_env_check_namespace.py::test_invalid_namespace_exits_78
   - tests/unit/test_cli_env_check_namespace.py::test_invalid_namespace_exits_78_for_every_command
+  - tests/unit/backend/test_valkey_namespace.py::test_reconciling_with_a_configuration_without_namespace_drops_the_environment_namespace
 ---
 
 **Entscheidung.** `SWARMQ_NAMESPACE` ist optional; ohne Angabe bleibt alles wie bisher (nicht BREAKING). Gesetzt präfixt er alle Valkey-Keys, Pub/Sub-Kanäle, den Leader und den Kontrollkanal mit `<ns>:sq:` (Hash-Tags bleiben). Queue-Namen bleiben ohne Präfix; für RabbitMQ gilt „eigener vhost je App“. Ein ausdrücklicher Backend-Parameter geht vor der Konfiguration; sind beide gesetzt und verschieden, `ConfigurationError` „namespace mismatch“ (Exit 78). Der Namensraum muss kleingeschrieben sein (`[a-z0-9][a-z0-9_.-]{0,63}`, nicht `sq`).

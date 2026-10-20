@@ -42,6 +42,8 @@ tests:
   - tests/unit/test_config_finite.py::test_negative_shutdown_timeout_is_a_configuration_error
   - tests/unit/process_manager/test_shutdown_phases.py::test_sigterm_at_the_planned_drain_end_is_info
   - tests/unit/process_manager/test_shutdown_phases.py::test_child_surviving_until_sigkill_at_is_an_error
+  - tests/unit/process_manager/test_befund_f3_13_recycle_heartbeat_deadline.py::test_recycling_deadline_adds_the_sigterm_period_to_the_grace
+  - tests/unit/process_manager/test_shutdown_phases.py::test_unkillable_workers_are_collected_until_the_end_of_the_budget
 ---
 
 **Entscheidung.** `SWARMQ_SHUTDOWN_TIMEOUT` (und `ProcessManager.shutdown_grace_s`) ist das Gesamtbudget ab SIGTERM. Die Eskalation des Supervisors endet bei `total − 2 s` (SIGKILL), der Drain läuft höchstens bis `finish_by − 5 s`, damit Lock-Freigabe, Leader-Übergabe und Guard-Abschluss noch Zeit haben; das gilt auch eingebettet. Jeder Aufräumschritt hat ein eigenes Zeitlimit. Der Recycling-Drain ist ausgenommen. Die Doku nennt `terminationGracePeriodSeconds` bzw. Docker `stop_grace_period` ≥ `shutdown_timeout + 15`.

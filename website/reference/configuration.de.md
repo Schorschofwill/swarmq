@@ -211,8 +211,12 @@ Zwei Konfigurationen werden beim Start mit `ConfigurationError`
 - Metrik- und Health-Bereich, die sich überschneiden — einen Basisport
   mindestens `N` Ports weit verschieben.
 
-Das `--check`-Payload nennt die genauen Ports als `metrics_ports` und
-`health_ports`, damit niemand sie selbst ausrechnen muss.
+Das `--check`-Payload nennt beide Bereiche als `metrics_ports` und
+`health_ports`, je als `[erster, letzter]` mit beiden Enden inklusive,
+nicht als Liste aller Ports: Für die drei Slots oben druckt es
+`[9000, 9002]` und `[9100, 9102]`. Bei zwei Slots sieht der Bereich
+`[9000, 9001]` wie eine genaue Portliste aus, ist aber trotzdem ein
+Bereich.
 
 #### Prometheus-Beispiel
 

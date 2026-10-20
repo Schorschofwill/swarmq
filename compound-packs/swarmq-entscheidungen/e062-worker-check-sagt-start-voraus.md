@@ -26,6 +26,12 @@ tests:
   - tests/unit/test_befund_f3_17_worker_check_env.py::test_worker_check_does_not_require_broker_and_backend_urls
   - tests/unit/test_befund_f3_19_check_argparse_payload.py::test_argparse_error_payload_carries_every_contract_key
   - tests/unit/test_befund_f3_19_check_argparse_payload.py::test_configuration_error_payload_carries_every_contract_key
+  - tests/unit/test_befund_f3_19_check_argparse_payload.py::test_configuration_error_payload_keeps_the_values_known_before_the_failure
+  - tests/unit/test_cli_multiprocess.py::TestCheckForwardsTheStartArguments::test_autoscale_upper_bound_sizes_the_reported_port_range
+  - tests/unit/test_cli_multiprocess.py::TestCheckForwardsTheStartArguments::test_configure_hook_is_checked_and_reported
+  - tests/unit/test_cli_multiprocess.py::TestCheckForwardsTheStartArguments::test_cpu_pool_with_autoscale_is_rejected_like_the_start
+  - tests/unit/test_cli_multiprocess.py::TestCheckForwardsTheStartArguments::test_watch_dir_decides_the_reported_watch_dirs
+  - tests/unit/test_cli_residuals.py::TestCheckDetectionRobustness::test_main_without_argv_reads_check_from_sys_argv
 ---
 
 **Entscheidung.** `swarmq worker --check` sagt den Start voraus: Ein `ok: true` heißt, dass der Pre-Flight des Supervisors und die Konfigurationsprüfung des Workers bestehen. Geprüft werden dazu alle Env-Werte, die der Start mit 78 ablehnt (z. B. `SWARMQ_SCHEDULER`, `SWARMQ_CONCURRENCY`, `SWARMQ_SHUTDOWN_TIMEOUT`, `SWARMQ_VALKEY_EVICTION_CHECK`). Fehlende `SWARMQ_BROKER_URL`/`SWARMQ_BACKEND_URL` prüft `--check` nicht; die Doku sagt das. Ein argparse-Fehler unter `--check` kommt als JSON-Payload mit Exit 1 (nicht 2), mit demselben stabilen Feldsatz wie jeder andere `--check`-Fehler.

@@ -21,6 +21,8 @@ tests:
   - tests/unit/broker/test_delay_tiers.py::test_delay_over_one_hour_stays_in_the_delay_queue
   - tests/integration/broker/test_delay_tiers.py::test_refused_tier_falls_back_to_the_delay_queue
   - tests/unit/worker/test_delay_metrics.py::test_unavailable_delay_tiers_gauge_per_consumed_queue
+  - tests/unit/broker/test_delay_tiers.py::test_declaring_the_family_again_skips_ready_and_refused_tiers
+  - tests/unit/broker/test_delay_tiers.py::test_tier_refused_after_an_unroutable_publish_sends_this_and_later_deferrals_to_the_delay_queue
 ---
 
 **Entscheidung.** Es gibt 7 Delay-Stufen `{q}.DQ.1s` … `.1h` (höchstens Faktor 4 auseinander); gewählt wird die kleinste Stufe ≥ Wartezeit. Über 1 h bleibt die Nachricht in `{q}.DQ`. Ein Fehler beim Deklarieren einer Stufe ist nicht fatal: Rückfall auf `{q}.DQ`, WARNING `delay_tier_unavailable`, Gauge `swarmq_delay_tiers_unavailable` (Ausnahme: strenger at-least-once-Modus, siehe E-017).

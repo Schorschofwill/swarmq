@@ -26,6 +26,7 @@ tests:
   - tests/unit/worker/test_results.py::test_outage_in_the_advance_of_a_fire_and_forget_step_does_not_fail_the_workflow
   - tests/unit/backend/test_valkey_connection.py::test_busy_script_and_missing_replicas_are_outages
   - tests/unit/worker/test_results.py::test_self_healing_reply_in_the_advance_of_a_fire_and_forget_step_does_not_fail_the_workflow
+  - tests/unit/backend/test_valkey_store_error_paths.py::test_guard_peek_classifies_driver_errors_like_the_other_store_calls
 ---
 
 **Entscheidung.** Antwortet das Chord-Skript (`chord_complete.lua`) beim Advance eines Gruppen- oder Chord-Glieds mit einer Fehlerantwort (`BackendResponseError`, etwa `WRONGTYPE` auf dem Chord- oder Ergebnis-Key), behandelt der Worker das (gilt für `AT_LEAST_ONCE`; `FIRE_AND_FORGET` siehe Nachtrag 0.13.1) wie einen Ausfall von Valkey: Der Advance gilt als vorübergehend gescheitert, die Nachricht wird neu zugestellt (`workflow_advance_backend_error`, WARNING, am Limit ERROR). Unter dem Zustelllimit gibt es kein sofortiges Fail-Mark. Am Limit gilt E-040 (Nachtrag 2026-10-17 und 2026-10-19).

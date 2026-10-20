@@ -16,6 +16,7 @@ tests:
   - tests/unit/test_slots.py::test_effective_concurrency_cpu_uses_assigned_cpus
   - tests/unit/test_slots.py::test_effective_concurrency_explicit_wins_for_every_pool
   - tests/unit/test_befund_f3_14_embedded_cpu_concurrency.py::test_embedded_cpu_pool_defaults_to_assigned_cpus
+  - tests/unit/process_manager/test_run.py::TestStartWiringGaps::test_explicit_concurrency_counts_against_the_assigned_cpus
 ---
 
 **Entscheidung.** Ohne ausdrückliches `concurrency` hat ein Worker im CPU-Modus so viele Slots, wie ihm CPUs zugeteilt sind (Affinität und cgroup-Quote, aufgerundet, bei `--processes N` geteilt). Das gilt für die CLI und für eine eingebettete App (`SwarmQConfig(pool="cpu")`). Ein ausdrückliches `concurrency` gewinnt immer. Im IO-Modus bleibt die Voreinstellung 10.

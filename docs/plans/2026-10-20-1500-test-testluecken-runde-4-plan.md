@@ -540,3 +540,29 @@ Gemeinsam genutzte Helfer werden nur gelesen, nicht geändert: `tests/unit/proce
 - Die Einstufungen V-A bis V-D stehen im Befundregister. V-C und V-D sind in der Doku korrigiert. V-B liegt Georg als Produktfrage vor.
 - Die Register-Verweise sind nachgetragen.
 - MRs je Paket erst nach Georgs Ok.
+
+## Status (2026-10-20)
+
+Alle Pakete umgesetzt, lokal auf den Branches `test/tl-u1` bis `test/tl-u10` (ungepusht, MRs erst nach Georgs Ok). `test/tl-u10` enthält U1 bis U9 als Merges.
+
+| Paket | Commits | Ergebnis |
+|---|---|---|
+| U1 | `886cbba` | D-1, D-2, D-3, D-5, D-6, D-9, D-10 geschlossen; D-7 nicht umgesetzt (äquivalenter Mutant) |
+| U2 | `3176131` | X-1 (E-022, Invariante I9) und X-2 (E-014, Invariante L10) |
+| U3 | `50ea93d` | E-1, E-2, E-4, E-5, E-6, E-16, E-17, E-18 |
+| U4 | `1eae9d9` | E-10 bis E-15, E-20; kein Test zu V-A |
+| U5 | `c1fa4e1` | E-7, E-8, E-9, E-19 |
+| U6 | `3f4d7f8` | T-F-01 bis T-F-04, T-F-08, T-F-23, T-F-26, X-5; optionale Härtung T-F-09 nicht umgesetzt |
+| U7 | `353b742` | T-F-05 bis T-F-07, T-F-10, T-F-19 (Teil `setpoint.validate`), T-F-21, T-F-22 |
+| U8 | `4354a03`, `c30fe49` | T-F-11 bis T-F-20, T-F-24, T-F-25 |
+| U9 | `5cdeaf9`, `37319e2` | X-3 und X-4 entfernt, X-6 umgesetzt |
+| U10 | `test/tl-u10` | Register-Verweise (29 Tests in 16 Regeln), Befundregister (Abschnitt „Test-Runde (2026-10-20)“), Doku V-C und V-D |
+
+Geschlossen: 51 der 52 offenen oder teilweisen Lücken (D 7, E 19, T-F 25); D-4, D-8, E-3 und T-F-09 waren schon geschlossen.
+
+Abweichungen:
+
+- **D-7 nicht umgesetzt.** Der Mutant „`self._pending = []` in `_drain` streichen“ ist äquivalent: `_fail` hat alle verbliebenen Aufrufe schon erledigt, der nächste Sammler filtert erledigte Futures heraus. Dasselbe Verhalten töten drei Bestandstests.
+- **T-F-09: Härtung nicht umgesetzt.** Die Lücke ist geschlossen; die optionale Härtung mit `signal.raise_signal` als Rekorder entfällt.
+- **Marker:** E-014, E-020, E-022 und E-083 aus „Marker neu“ hat kein Paket gesetzt; U2 prüft E-014 und E-022 als Invarianten der Maschinen.
+- **Neue Befunde aus der Gegenprüfung (Verdacht V-E):** F4-25 (P3) und F4-26 (P2) im Autoskalierer, offen, Fix in 0.14.2 nach Georgs Freigabe. V-B ist Produktfrage PF-21 (offen bei Georg).
