@@ -21,8 +21,8 @@ from typing import cast
 import pytest
 
 from swarmq.backend.valkey import ValkeyBackend
-from swarmq.backend.valkey.execution_guard import run_key
 from swarmq.exceptions import BackendResponseError
+from swarmq.keyspace import KeySpace
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(10)]
 
@@ -70,7 +70,8 @@ async def test_claim_succeeds_after_the_script_cache_was_flushed(backend: Valkey
 
 async def test_error_reply_fails_only_its_own_claim(backend: ValkeyBackend) -> None:
     broken = f"pipe-{uuid.uuid4().hex}"
-    await cast("Awaitable[int]", backend.client.hset(run_key(broken), "x", "1"))  # GET auf einen Hash: WRONGTYPE
+    # Der Backend-Default ist KeySpace() ohne Namensraum; GET auf einen Hash: WRONGTYPE.
+    await cast("Awaitable[int]", backend.client.hset(KeySpace().guard_run(broken), "x", "1"))
 
     left, right = f"pipe-{uuid.uuid4().hex}", f"pipe-{uuid.uuid4().hex}"
     results = await asyncio.gather(
