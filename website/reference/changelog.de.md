@@ -53,7 +53,8 @@ Supervisors.
 1. **Während eines Drains skaliert der Autoskalierer früher hoch.** Die
    Schwelle teilt den Rückstau jetzt durch weniger aktive Worker. Bei
    drei Workern, von denen einer draint, startet ein Rückstau von 120
-   einen Worker (120 > 2 × 50); 0.14.1 wartete auf mehr als 150.
+   einen Worker (120 > 2 × 50), sofern ein Slot frei ist (etwa
+   `--autoscale 1,5`); 0.14.1 wartete auf mehr als 150.
 2. **Mit `--max-processes N` kann ein Worker in einem Spielraum-Slot
    starten, während ein anderer draint.** Aktiv sind höchstens `MAX`
    Worker, zusätzlich können bis zu `N − MAX` drainende Prozesse laufen:
@@ -67,7 +68,7 @@ Supervisors.
    Slot, wie in 0.14.1.** Die Slot-Tabelle hat `MAX` Slots, und ein
    drainender Worker hält seinen Slot bis zum Exit. Bei `MAX − 1` aktiven
    Workern und einem drainenden wächst die Gruppe erst nach dem Ende des
-   Drains wieder (höchstens `SWARMQ_SHUTDOWN_TIMEOUT`), auch wenn das Log
+   Drains wieder (ein Abbau-Drain höchstens `SWARMQ_SHUTDOWN_TIMEOUT`), auch wenn das Log
    jetzt `active` unter `MAX` zeigt.
 
 ## [0.14.1] — 2026-10-20

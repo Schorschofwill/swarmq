@@ -51,8 +51,9 @@ the supervisor's `--autoscale` decisions change.
 
 1. **During a drain the autoscaler scales up earlier.** The threshold
    now divides the backlog by fewer active workers. With three workers,
-   one of them draining, a backlog of 120 starts a worker (120 > 2 × 50);
-   0.14.1 waited for more than 150.
+   one of them draining, a backlog of 120 starts a worker (120 > 2 × 50),
+   provided a slot is free (for example `--autoscale 1,5`); 0.14.1 waited
+   for more than 150.
 2. **With `--max-processes N` a worker may start in a headroom slot
    while another drains.** At most `MAX` workers are active, but up to
    `N − MAX` draining processes may run in addition: plan their memory,
@@ -65,8 +66,8 @@ the supervisor's `--autoscale` decisions change.
 3. **Without `--max-processes` the scale-up still waits for the slot,
    as in 0.14.1.** The slot table has `MAX` slots, and a draining worker
    holds its slot until it exits. With `MAX − 1` active workers and one
-   draining, the group grows again only after the drain ends (at most
-   `SWARMQ_SHUTDOWN_TIMEOUT`), even though the log now shows
+   draining, the group grows again only after the drain ends (a
+   scale-down drain at most `SWARMQ_SHUTDOWN_TIMEOUT`), even though the log now shows
    `active` below `MAX`.
 
 ## [0.14.1] — 2026-10-20

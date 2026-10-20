@@ -35,7 +35,7 @@ tests:
 
 **Bewusste Folgen.**
 - Während eines Drains skaliert der Autoskalierer früher hoch: Die Schwelle rechnet mit weniger aktiven Workern.
-- Ohne `--max-processes` hat die Slot-Tabelle `MAX` Einträge. Belegt ein drainender Prozess einen davon, wächst die Gruppe bis zu seinem Exit nicht über `MAX − drainend` aktive Worker, auch bei Rückstau. Der Drain ist durch `SWARMQ_SHUTDOWN_TIMEOUT` begrenzt.
+- Ohne `--max-processes` hat die Slot-Tabelle `MAX` Einträge. Belegt ein drainender Prozess einen davon, wächst die Gruppe bis zu seinem Exit nicht über `MAX − drainend` aktive Worker, auch bei Rückstau. Ein Abbau-Drain ist durch `SWARMQ_SHUTDOWN_TIMEOUT` begrenzt; ein Recycling-Drain nicht (E-018).
 - Mit `--max-processes H` > `MAX` kann der Autoskalierer während eines Drains in einen Spielraum-Slot hochskalieren. Aktiv bleiben ≤ `MAX`, Prozesse ≤ `H` (plus Slots im Übergang); bis zu `H − MAX` drainende Prozesse laufen zusätzlich, mit ihrem Speicher, und `workers` im Status zählt sie mit. `H` ist unter `--autoscale` nur gegen die Portbereiche geprüft, nicht gegen CPUs (die CPU-Prüfung gilt nur für `--pool cpu`, das `--autoscale` ausschließt).
 - Fallen die nicht drainenden Worker ohne Abbau unter `MIN` (gesperrter Slot, sauberes Ende), stellt der Autoskalierer die Untergrenze nicht aktiv wieder her; das tun neuer Rückstau oder der Sollwert-Durchlauf.
 - Unter `--autoscale` startet das Nachfüllen des Monitor-Loops nichts; Ersatz nach einem Absturz kommt allein aus `_maybe_restart`.
