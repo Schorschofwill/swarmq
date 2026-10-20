@@ -543,22 +543,30 @@ class RabbitMQDelivery(RabbitMQDeclarations):
         # it after a channel recreate.
         self._consume_prefetch = concurrency
         chan = await self._ensure_consume_channel()
-        # Apply QoS on the initial consume() — _ensure_consume_channel
-        # only re-applies after a recreate (avoids an AMQP RPC per
-        # consume-channel access).
-        await chan.set_qos(prefetch_count=concurrency)
-        try:
-            amqp_queue = await chan.get_queue(queue)
-        except ChannelNotFoundEntity:
-            # Die Queue ist weg: die naechste Deklaration legt sie neu an (MR 8).
-            self.invalidate_declaration(queue)
-            raise
 
         async def _on_raw(message: aio_pika.abc.AbstractIncomingMessage) -> None:
             delivery = Delivery(body=message.body, headers=dict(message.headers or {}), queue=queue, handle=message)
             await on_delivery(delivery)
 
-        consumer_tag = await amqp_queue.consume(_on_raw)
+        try:
+            # Apply QoS on the initial consume() — _ensure_consume_channel
+            # only re-applies after a recreate (avoids an AMQP RPC per
+            # consume-channel access).
+            await chan.set_qos(prefetch_count=concurrency)
+            amqp_queue = await chan.get_queue(queue)
+            consumer_tag = await amqp_queue.consume(_on_raw)
+        except ChannelNotFoundEntity:
+            # Die Queue ist weg: die naechste Deklaration legt sie neu an (MR 8).
+            # Bleibt roh, darauf baut PF-20 / E-083 auf.
+            self.invalidate_declaration(queue)
+            raise
+        except (aio_pika.exceptions.AMQPConnectionError, RuntimeError) as exc:
+            # Verbindungsabriss beim Anmelden (aiormq ``ConnectionClosed``,
+            # ``ChannelInvalidStateError``, ``RuntimeError`` aus aio_pika): wie
+            # in ``declare_queue`` ein ``BrokerConnectionError`` (F4-23, Review MR 8, H5a).
+            raise BrokerConnectionError(
+                f"consume {queue!r}: the connection was lost while subscribing: {exc!r}"
+            ) from exc
         self._consumer_watch.add(queue, amqp_queue, _on_raw, consumer_tag)
 
     @property

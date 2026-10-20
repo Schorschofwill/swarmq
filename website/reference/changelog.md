@@ -4,6 +4,25 @@ All notable changes to SwarmQ. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [0.14.1] — unreleased
+
+Patch release for 0.14.0. No new headers, Lua scripts or format
+changes: 0.14.1 runs next to 0.14.0 on the same queues and keys.
+
+### Fixed
+
+- **A connection loss while a worker subscribes is a
+  `BrokerConnectionError`.** If the connection dropped during
+  `set_qos`, the passive queue lookup or `basic.consume`, `consume()`
+  let the raw aiormq error through (`ConnectionClosed`,
+  `AMQPConnectionError`, `ChannelInvalidStateError`, `RuntimeError`),
+  so an `except BrokerConnectionError` around `start_worker()` (see
+  [Errors](errors.md)) did not catch it. It now arrives as
+  `BrokerConnectionError` with the original error as its cause, like
+  a connection loss in `declare_queue`. A missing queue stays
+  `ChannelNotFoundEntity`. `swarmq worker` still exits with 1 and is
+  restarted as before (F4-23).
+
 ## [0.14.0] — 2026-10-20
 
 0.14.0 is 0.14.0rc1 without code changes. Read
