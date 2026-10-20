@@ -21,6 +21,7 @@ tests:
   - tests/unit/broker/test_consumer_watch_shutdown.py::test_a_late_consume_answer_after_cancel_all_is_cancelled_at_once
   - tests/unit/broker/test_consumer_watch_shutdown.py::test_cancel_all_gives_the_rpc_the_emergency_timeout
   - tests/unit/worker/test_shutdown_budget_steps.py::test_hanging_cancel_consume_is_bounded_without_aborting_it
+  - tests/unit/broker/test_consumer_watch_shutdown.py::test_a_late_consume_answer_after_stop_is_cancelled_although_the_entry_is_still_listed
 ---
 
 **Entscheidung.** Der Consumer-Wächter bricht `basic.cancel` und `basic.consume` nie per `wait_for` ab. Begrenzt wird nur der Kanalbezug (`_RPC_TIMEOUT_S`, 2 s, im Takt und vor jedem RPC); das RPC selbst hat nur aiormqs eigene Frist als Notbremse (`_RPC_EMERGENCY_TIMEOUT_S`, 60 s). `stop()` wartet höchstens `_STOP_TIMEOUT_S` (5 s) auf einen laufenden Takt und koppelt ihn danach ab, statt ihn abzubrechen. Nach `stop()` bzw. `cancel_all` übernimmt der Wächter keine Neuanmeldung mehr; kommt eine `consume`-Antwort danach, wird der Tag sofort wieder abgemeldet. Im Shutdown wird `cancel_consume` bis zum Drain-Ende (mindestens `_SHUTDOWN_STEP_MIN_S`, bei SIGTERM im Recycling-Drain bis zum Anker) abgewartet, aber nicht abgebrochen; es läuft danach im Hintergrund weiter, bis der Broker antwortet, die Notbremse greift oder `broker.close()` den Kanal schließt.

@@ -515,8 +515,8 @@ prüft sie nicht.
   "pool": "io",
   "slots": 10,
   "configure": "myapp.hooks:setup",
-  "metrics_ports": [9000, 9001, 9002],
-  "health_ports": [9100, 9101, 9102]
+  "metrics_ports": [9000, 9002],
+  "health_ports": [9100, 9102]
 }
 ```
 
@@ -527,12 +527,12 @@ prüft sie nicht.
 | `module_origin` | `str \| null` | Aufgelöste Datei des Task-Moduls (`find_spec`). |
 | `reload` | `bool` | Ob `--reload` angefordert wurde. |
 | `watch_dirs` | `list[str] \| null` | Aufgelöste Watch-Verzeichnisse; `null` ohne `--reload`. |
-| `warnings` | `list[str]` | Nicht-fatale Befunde, z. B. ein `hard_timeout` über dem Consumer-Timeout des Brokers. |
+| `warnings` | `list[str]` | Nicht-fatale Befunde, je ein String mit dem Code vorn, z. B. `"reload_burst_conflict: --reload and --burst are not designed to be combined; …"`, wenn `--reload` und `--burst` zusammen angegeben sind. |
 | `error`, `error_type` | `str \| null` | Gesetzt, wenn `ok` `false` ist; `error_type` ist der Klassenname der Ausnahme (`ConfigurationError`, `ModuleNotFoundError`, `ArgparseError`, …). |
 | `pool` | `"io" \| "cpu"` | Wirksamer Pool. |
 | `slots` | `int` | Wirksame Concurrency je Prozess (Rechenslots im CPU-Modus). |
 | `configure` | `str \| null` | Die `--configure`-Angabe nach Syntax- und `find_spec`-Prüfung; das Callable selbst wird erst im Worker aufgelöst. |
-| `metrics_ports`, `health_ports` | `list[int] \| null` | Die genauen Ports, die die Slots `0..N-1` binden, `N` ist `--processes` oder die Obergrenze von `--autoscale`; `null`, wenn der Basisport ungesetzt ist. |
+| `metrics_ports`, `health_ports` | `list[int] \| null` | Der Portbereich, den die Slots `0..N-1` binden, als `[erster, letzter]` (beide inklusive), nicht die Liste aller Ports: Mit Basisport `9000` und `N = 3` deckt `[9000, 9002]` die Ports `9000`, `9001` und `9002` ab. `N` ist das Größte aus `--processes`, der Obergrenze von `--autoscale` und `--max-processes`. Bei `N = 2` sieht der Bereich wie eine genaue Liste aus (`[9000, 9001]`), bei `N = 1` sind beide Einträge gleich (`[9000, 9000]`). `null`, wenn der Basisport ungesetzt ist. |
 
 Jedes Payload trägt den vollen Feldsatz oben, auch bei einer
 gescheiterten Prüfung; Felder, die an der Stelle noch unbekannt sind,

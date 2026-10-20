@@ -18,6 +18,7 @@ tests:
   - tests/unit/process_manager/test_slot_cooldown.py::test_unlock_and_lock_events_name_the_cooldown
   - tests/unit/process_manager/test_slot_cooldown.py::test_channels_report_the_locked_slots
   - tests/unit/worker/test_locked_slots_metric.py::test_sampler_reports_the_locked_slots_of_the_supervisor
+  - tests/unit/process_manager/test_slot_cooldown.py::test_hang_budget_lock_holds_until_the_end_of_the_cooldown
 ---
 
 **Entscheidung.** Ist das Crash-Budget (5 Neustarts je Stunde) oder das Hang-Budget eines Slots erschöpft, wird der Slot für eine Abkühlzeit von 3600 s gesperrt statt dauerhaft. Sperre und Freigabe erzeugen ein Event (`worker_restart_limit_exceeded`/`hang_replacement_budget_exhausted`, `worker_slot_unlocked`), die Gauge `swarmq_supervisor_locked_slots` zeigt gesperrte Slots.

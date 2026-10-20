@@ -21,6 +21,7 @@ tests:
   - tests/unit/backend/test_valkey_connect_concurrency.py::test_cancelling_the_running_connect_closes_its_client_and_the_waiter_connects
   - tests/contracts/result_backend.py::ResultBackendContract::test_concurrent_connects_leave_one_usable_connection
   - tests/contracts/result_backend.py::ResultBackendContract::test_close_during_connect_ends_closed
+  - tests/unit/backend/test_valkey.py::test_stores_used_before_close_run_on_the_new_client_after_reconnect
 ---
 
 **Entscheidung.** `ValkeyBackend.connect()` und `close()` laufen unter einer gemeinsamen `asyncio.Lock` (`ValkeyConnection._lifecycle_lock`). Ein zweites `connect()` während eines laufenden Aufbaus wartet; ist der Aufbau gelungen, kehrt es ohne eigenen Client zurück und nutzt den verbundenen. Scheitert der laufende Aufbau oder wird er abgebrochen, versucht der Wartende es danach selbst, wie ein späterer Aufruf nach F4-13. Es gibt keinen geteilten Aufbau-Task: Ein Abbruch wirkt nur im Task des Aufrufers und schließt dessen eigenen Client. `close()` wartet ein laufendes `connect()` ab und schließt danach; es bleibt kein Client ohne `aclose()` zurück. Die Sperre hält nur `ValkeyConnection.close`; das Abwarten der Pub/Sub-Closer (`ValkeyResults.close`) und `_drop_stores` (`ValkeyBackend.close`) liegen außerhalb. Der Vertrag `ResultBackend.connect/close` verlangt dieses Verhalten von jeder Implementierung.

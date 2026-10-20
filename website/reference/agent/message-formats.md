@@ -509,8 +509,8 @@ Missing `SWARMQ_BROKER_URL`/`SWARMQ_BACKEND_URL` are not checked.
   "pool": "io",
   "slots": 10,
   "configure": "myapp.hooks:setup",
-  "metrics_ports": [9000, 9001, 9002],
-  "health_ports": [9100, 9101, 9102]
+  "metrics_ports": [9000, 9002],
+  "health_ports": [9100, 9102]
 }
 ```
 
@@ -521,12 +521,12 @@ Missing `SWARMQ_BROKER_URL`/`SWARMQ_BACKEND_URL` are not checked.
 | `module_origin` | `str \| null` | Resolved file of the task module (`find_spec`). |
 | `reload` | `bool` | Whether `--reload` was requested. |
 | `watch_dirs` | `list[str] \| null` | Resolved watch directories; `null` without `--reload`. |
-| `warnings` | `list[str]` | Non-fatal findings, e.g. a `hard_timeout` above the broker's consumer timeout. |
+| `warnings` | `list[str]` | Non-fatal findings, each a string led by its code, e.g. `"reload_burst_conflict: --reload and --burst are not designed to be combined; …"` when `--reload` and `--burst` are given together. |
 | `error`, `error_type` | `str \| null` | Set when `ok` is `false`; `error_type` is the exception class name (`ConfigurationError`, `ModuleNotFoundError`, `ArgparseError`, …). |
 | `pool` | `"io" \| "cpu"` | Effective pool. |
 | `slots` | `int` | Effective concurrency per process (compute slots in CPU mode). |
 | `configure` | `str \| null` | The `--configure` spec after syntax and `find_spec` validation; the callable itself is resolved only inside the worker. |
-| `metrics_ports`, `health_ports` | `list[int] \| null` | The exact ports the slots `0..N-1` will bind, `N` being `--processes` or the `--autoscale` upper bound; `null` when the base port is unset. |
+| `metrics_ports`, `health_ports` | `list[int] \| null` | The port range the slots `0..N-1` will bind, as `[first, last]` (both inclusive), not the list of every port: with the base port `9000` and `N = 3`, `[9000, 9002]` covers `9000`, `9001` and `9002`. `N` is the largest of `--processes`, the `--autoscale` upper bound and `--max-processes`. With `N = 2` the range looks like an exact list (`[9000, 9001]`), with `N = 1` both entries are equal (`[9000, 9000]`). `null` when the base port is unset. |
 
 Every payload carries the full field set above, also on a failed
 check; fields not known at that point are `null`. On an argparse error

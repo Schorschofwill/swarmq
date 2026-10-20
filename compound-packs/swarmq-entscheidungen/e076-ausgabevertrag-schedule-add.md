@@ -22,6 +22,7 @@ tests:
   - tests/unit/test_cli_schedule_add_contract.py::test_held_own_claim_without_entry_after_outage_reports_already_exists_false
   - tests/unit/test_cli_schedule_add_contract.py::test_held_own_claim_after_schedule_remove_reports_already_exists_false
   - tests/integration/test_cli_schedule.py::TestAddThenList::test_add_unique_duplicate_under_new_name_reports_no_existing_entry
+  - tests/unit/test_cli_schedule_add_contract.py::test_unique_add_reports_dedup_hash_and_unique_until
 ---
 
 **Entscheidung.** In `swarmq schedule add --format json` heißt `already_exists`: Unter dem Namen existiert ein Eintrag (der Grund, warum nichts gespeichert wurde). Bei einem Dedup-Duplikat (`--unique-for`, Claim gehört einem anderen Schedule) ist `already_exists` `false`; den Grund nennt `duplicate_of`. `inserted` bleibt unverändert. Das Feld wird in `cli.md` dokumentiert, mit Changelog-Hinweis. Eine eigene Regel zur CLI-Ausgabe gab es bisher nicht (E-062 regelt nur `--check`, E-058 nur die Meldung „already exists“ bei gleichem Namen).

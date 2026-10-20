@@ -25,6 +25,7 @@ tests:
   - tests/unit/test_cli.py::TestScheduleHandlerValidation::test_schedule_add_rejects_at_beyond_the_deadline_bound
   - tests/unit/test_cli.py::TestScheduleHandlerValidation::test_schedule_add_accepts_at_just_inside_the_deadline_bound
   - tests/unit/test_cli.py::TestScheduleHandlerValidation::test_schedule_add_rejects_at_just_beyond_the_deadline_bound
+  - tests/unit/test_cli_schedule_add_contract.py::test_naive_at_is_utc_even_in_another_local_zone
 ---
 
 **Entscheidung.** `schedule(delay=…)` verlangt ein endliches `delay` von höchstens `MAX_DEADLINE_S` (315 360 000 s, zehn Jahre, E-063); `delay < 0` bleibt wie bisher ein Fehler („delay must be >= 0“). `schedule(eta=…)` verlangt ein `eta` höchstens `MAX_DEADLINE_S` nach jetzt; ein `eta` in der Vergangenheit bleibt mit 1 s Toleranz ein Fehler. Verstöße ergeben `ValueError` mit dem Namen `delay` bzw. `eta`, und zwar vor jeder Nebenwirkung: vor `pre_enqueue`, Claim, Publish und Speichern (wie `unique_for`, E-056). Der genaue Grenzwert ist erlaubt. Ein naives `eta` liest der Client wie bisher als Ortszeit (`eta.timestamp()`); die Grenze gilt auf demselben Zeitstempel. Ein als Ortszeit nicht darstellbares naives `eta` (`datetime.max`) ergibt denselben `ValueError` statt des rohen Jahresfehlers. `swarmq schedule add --at` folgt derselben Grenze (`ConfigurationError`, Exit 1, vor dem Aufbau des Backends; ohne Zone als UTC gelesen wie bisher).
