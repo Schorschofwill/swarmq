@@ -767,6 +767,7 @@ class TestAutoscalerDuringDrain:
     - Der Sollwert hebt die Untergrenze, während der Autoskalierer einen Worker
       drainen lässt: Der Durchlauf füllt bis ``low`` auf, der Autoskalierer
       baut danach nicht gegen ihn ab (kein Hin und Her über viele Durchläufe).
+      Nach dem Fix geschrieben; hält das Verhalten fest und ist gegen be0e257 rot.
     """
 
     @pytest.mark.entscheidung("E-084")

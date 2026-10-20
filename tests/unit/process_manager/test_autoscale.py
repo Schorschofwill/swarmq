@@ -21,11 +21,13 @@ Test-Liste 0.14.2 (F4-25, F4-26, E-084; Plan 2026-10-20-2100, U2):
   Slot-Bestand startet nichts; nach seinem Exit startet einer im frei
   gewordenen Slot.
 - E-084 mit Spielraum (--max-processes): genau ein Start in einen
-  Spielraum-Slot, danach aktiv = MAX und kein weiterer Start.
+  Spielraum-Slot, danach aktiv = MAX und kein weiterer Start (nach dem Fix
+  geschrieben, gegen be0e257 rot).
 - E-084: Recycling-Ersatz während eines Drains -- der Slot im Übergang zählt
   einmal, kein Abbau unter MIN, der Ersatz wird nie gewählt.
-- E-084: Hang-Ersatz während eines Drains -- ebenso.
-- Regressionstest (E-024): erschöpftes Hang-Budget -- der Slot ist gesperrt,
+- E-084: Hang-Ersatz während eines Drains -- ebenso (beide nach dem Fix
+  geschrieben, gegen be0e257 rot).
+- Regressionstest (E-024, E-084): erschöpftes Hang-Budget -- der Slot ist gesperrt,
   der Vorgänger lebt drainend weiter und zählt nicht; in den gesperrten Slot
   startet nichts.
 - Ein Abbau ohne Kandidaten meldet DEBUG ``autoscale_down_deferred_no_candidate``
@@ -249,6 +251,7 @@ def test_without_headroom_a_draining_worker_holds_its_slot_until_it_exits(clock:
 
 @pytest.mark.entscheidung("E-084")
 def test_with_headroom_a_drain_lets_one_worker_start_in_a_headroom_slot(clock: FakeClock) -> None:
+    """Hält das Verhalten nach dem Fix fest (E-084); gegen be0e257 rot."""
     depth = [0]
     pm = _pm(clock, n=3, depth=depth, autoscale=(1, 3), max_processes=5)
     _drain_one_by_idle(pm, clock)
@@ -279,6 +282,7 @@ def _hang(pm: ProcessManager, slot: int) -> None:
 def test_a_slot_in_transition_during_a_drain_counts_once_and_its_replacement_stays(
     clock: FakeClock, replace: Any
 ) -> None:
+    """Hält das Verhalten nach dem Fix fest (E-084); gegen be0e257 rot."""
     pm = _pm(clock, n=3, depth=[0], autoscale=(2, 5))
     _drain_one_by_idle(pm, clock)  # Slot 2 draint, zwei nicht drainende = MIN
     replace(pm, 0)
@@ -293,13 +297,21 @@ def test_a_slot_in_transition_during_a_drain_counts_once_and_its_replacement_sta
     assert terminates_after == terminates_before
 
 
+@pytest.mark.entscheidung("E-084")
 def test_an_exhausted_hang_budget_locks_the_slot_and_its_draining_worker_does_not_count(clock: FakeClock) -> None:
-    """Regressionstest (E-024): Der gesperrte Slot gilt nicht als frei, der
-    hängende Vorgänger lebt bis zum SIGKILL mit ``expected_shutdown`` weiter."""
+    """Regressionstest (E-024, gegen be0e257 schon grün): Der gesperrte Slot
+    gilt nicht als frei, der hängende Vorgänger lebt bis zum SIGKILL mit
+    ``expected_shutdown`` weiter und zählt nicht als aktiv."""
     depth = [0]
     pm = _pm(clock, n=3, depth=depth, autoscale=(1, 5))
-    pm._hang_timestamps = [clock.now] * pm.hang_replacement_limit
-    _hang(pm, 0)
+    for _ in range(pm.hang_replacement_limit):  # das Budget im Fenster aufbrauchen
+        _hang(pm, 0)
+        (killed,) = [w for w in pm.workers.values() if w.worker_id == 0 and w.expected_shutdown]
+        as_mock(killed.process).is_alive.return_value = False
+        as_mock(killed.process).exitcode = -9
+        pm._check_dead_workers()
+    assert pm.slot_state(0) is SlotState.ACTIVE
+    _hang(pm, 0)  # Budget erschöpft: kein Ersatz, der Slot wird gesperrt
     assert pm.slot_state(0) is SlotState.LOCKED
     depth[0] = 2 * pm.SCALE_UP_THRESHOLD + 20  # über zwei, unter drei aktiven Workern
 

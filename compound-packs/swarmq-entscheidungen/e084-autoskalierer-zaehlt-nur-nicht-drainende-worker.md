@@ -25,6 +25,7 @@ tests:
   - tests/unit/process_manager/test_autoscale.py::test_without_headroom_a_draining_worker_holds_its_slot_until_it_exits
   - tests/unit/process_manager/test_autoscale.py::test_with_headroom_a_drain_lets_one_worker_start_in_a_headroom_slot
   - tests/unit/process_manager/test_autoscale.py::test_a_slot_in_transition_during_a_drain_counts_once_and_its_replacement_stays
+  - tests/unit/process_manager/test_autoscale.py::test_an_exhausted_hang_budget_locks_the_slot_and_its_draining_worker_does_not_count
   - tests/unit/process_manager/test_setpoint.py::TestAutoscalerDuringDrain::test_raised_lower_bound_during_a_drain_is_not_undone_by_the_autoscaler
 ---
 
