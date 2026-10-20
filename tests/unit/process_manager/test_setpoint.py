@@ -18,6 +18,8 @@ Test-Liste U5 (Pruefregeln R10, Lesen beim Start):
 from __future__ import annotations
 
 import multiprocessing
+import types
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -25,8 +27,10 @@ import pytest
 
 from swarmq.contracts.control import Setpoint, SetpointUnreadable
 from swarmq.process_manager import ProcessManager, setpoint
+from swarmq.process_manager import autoscale as autoscale_module
+from swarmq.process_manager import supervisor as supervisor_module
 from swarmq.process_manager.slots import SlotState
-from tests.unit.process_manager._helpers import _entry_stub, _fake_process, as_mock
+from tests.unit.process_manager._helpers import FakeClock, _entry_stub, _fake_process, as_mock
 
 
 class TestValidate:
@@ -49,6 +53,22 @@ class TestValidate:
         assert reason is not None
         assert "N..N" in reason
 
+    @pytest.mark.parametrize("sp", [Setpoint(1, 8), Setpoint(8, 8)])
+    def test_bounds_exactly_at_one_and_at_the_headroom_are_accepted(self, sp):
+        """T-F-19 (Teil ``setpoint.validate``), Mutant ``:36`` ``>`` -> ``>=``:
+        Die Obergrenze darf den Spielraum erreichen, die Untergrenze eins."""
+        assert setpoint.validate(sp, headroom=8, autoscaling=True) is None
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
+    """Virtuelle Uhr fuer Supervisor, Autoskalierer und Sollwert-Durchlauf zugleich."""
+    fake = FakeClock()
+    fake_time = types.SimpleNamespace(monotonic=fake, sleep=lambda _s: None)
+    for module in (supervisor_module, autoscale_module, setpoint):
+        monkeypatch.setattr(module, "time", fake_time)
+    return fake
+
 
 class FakeStore:
     """Sollwert-Speicher fuer die Fabrik-Seam: liefert ein festes Ergebnis oder scheitert."""
@@ -61,6 +81,7 @@ class FakeStore:
         self.status_ttls: list[float] = []
         self.status_keys: list[tuple[str, str]] = []
         self.reads = 0
+        self.read_groups: list[str] = []
 
     async def connect(self):
         if self.fail:
@@ -71,6 +92,7 @@ class FakeStore:
 
     async def read_setpoint(self, group):
         self.reads += 1
+        self.read_groups.append(group)
         if self.read_fail:
             raise ConnectionRefusedError("backend down")
         return self.result
@@ -464,3 +486,287 @@ class TestStatus:
         setpoint.read_at_start(pm)
         assert store.status_writes[-1]["effective"] == {"min": 3, "max": 3}
         assert store.status_writes[-1]["workers"] == 0  # vor dem ersten Kind
+
+    def test_ttl_outlasts_grace_and_term_with_the_default_interval(self):
+        """T-F-06, Mutant ``:210`` ``+ SETPOINT_SAMPLE_INTERVAL`` -> ``-``: Die Meldung
+        eines Supervisors im geordneten Abbau verfaellt nicht vor dessen Ende.
+
+        Bewusst nur relational und ohne Marker: die genaue Formel ist ein
+        offener Punkt in E-018."""
+        store = FakeStore(None)
+        pm = _pm(n=2, store=store, max_processes=8)
+        setpoint.read_at_start(pm)
+        assert pm.SETPOINT_SAMPLE_INTERVAL > 0
+        assert store.status_ttls[-1] > pm.shutdown_grace_s + pm.SHUTDOWN_TERM_S
+
+    @pytest.mark.parametrize(
+        ("autoscale", "stored", "expected"),
+        [
+            ((2, 4), None, True),
+            ((2, 4), Setpoint(3, 3), False),
+            (None, None, False),
+        ],
+        ids=["autoscaled-range", "autoscaled-but-fixed-setpoint", "fixed-group"],
+    )
+    def test_autoscaling_is_reported_only_for_an_autoscaled_range(self, autoscale, stored, expected):
+        """T-F-07, Mutant ``:229`` ``and low != high`` -> ``or``: Ein fester Sollwert
+        legt die Autoskalierung still, auch wenn die Gruppe sie eingeschaltet hat."""
+        store = FakeStore(stored)
+        kw: dict[str, Any] = {} if autoscale is None else {"autoscale": autoscale, "queue_depth_fn": lambda: 0}
+        pm = self._pm(store, **kw)
+        setpoint.tick(pm)
+        assert store.status_writes[-1]["autoscaling"] is expected
+
+    def test_reported_at_is_the_current_time_in_utc(self):
+        """T-F-07, Mutant ``:233`` ``datetime.now(UTC)`` -> ``datetime.now()``: Die
+        Zeitangabe traegt die Zone UTC, sonst ist sie zwischen Hosts nicht vergleichbar."""
+        store = FakeStore(None)
+        pm = self._pm(store)
+        setpoint.tick(pm)
+        reported = datetime.fromisoformat(store.status_writes[-1]["reported_at"])
+        assert reported.utcoffset() == timedelta(0)
+        assert abs(reported - datetime.now(UTC)) < timedelta(minutes=1)
+
+
+def _autoscaled_at(clock: FakeClock, n: int, store: FakeStore, *, depth: list[int], **kw: Any) -> ProcessManager:
+    """Autoskalierte Gruppe 2..4 (Spielraum 16) unter virtueller Uhr; Abtast-,
+    Abkuehl- und Leerlauffristen bleiben auf ihren Vorgaben. Die Worker sind
+    zum Zeitpunkt ``clock.now`` schon 100 s alt."""
+    clock.now -= 100.0
+    pm = _pm(
+        n=n,
+        store=store,
+        autoscale=kw.pop("autoscale", (2, 4)),
+        queue_depth_fn=lambda: depth[0],
+        max_processes=16,
+        **kw,
+    )
+    pm._start_all_workers()
+    clock.now += 100.0
+    return pm
+
+
+def _terminations(pm: ProcessManager) -> int:
+    """SIGTERMs an alle noch eingetragenen Prozesse (sanftes Ende)."""
+    return sum(as_mock(w.process).terminate.call_count for w in pm.workers.values())
+
+
+class TestApplyResult:
+    """T-F-05: Nur eine Aenderung der wirksamen Grenzen setzt die Buchhaltung
+    des Autoskalierers zurueck (KTD3). Beobachtet wird der Autoskalier-Takt in
+    derselben Runde bei Rueckstau 10 000.
+
+    Test-Liste:
+    - Ungelesen, fehlend (ohne vorherigen Sollwert), unlesbar, abgelehnt: der
+      Autoskalierer skaliert in derselben Runde hoch.
+    - Derselbe Sollwert ein zweites Mal gelesen: ebenso.
+    - Entfernter Sollwert mit Grenzen, bei denen ``reconcile`` nichts tut: der
+      Autoskalierer entscheidet in dieser Runde nicht.
+    Kein Test auf „Sollwert gleich den Startgrenzen“: der liefert bewusst
+    ``True`` (Quellenwechsel).
+    """
+
+    @pytest.mark.parametrize(
+        "store_kw",
+        [
+            {"fail": True},
+            {"result": None},
+            {"result": SetpointUnreadable("not json")},
+            {"result": Setpoint(2, 32)},
+        ],
+        ids=["unread", "absent", "unreadable", "rejected"],
+    )
+    def test_a_read_without_change_leaves_the_autoscaler_free_in_the_same_round(self, clock, store_kw):
+        """Mutanten ``return False`` -> ``return True`` in ``apply`` ``:96`` (unread),
+        ``:106`` (absent), ``:112`` (unreadable), ``:118`` (rejected)."""
+        depth = [10_000]
+        pm = _autoscaled_at(clock, 2, FakeStore(**store_kw), depth=depth)
+        setpoint.tick(pm)
+        pm._autoscale_tick()
+        assert len(pm.workers) == 3
+
+    def test_the_same_setpoint_read_a_second_time_leaves_the_autoscaler_free(self, clock):
+        """Mutant ``:122`` ``return False`` -> ``return True``: derselbe Sollwert ein
+        zweites Mal gelesen ist keine Aenderung."""
+        depth = [10_000]
+        store = FakeStore(Setpoint(2, 8))
+        pm = _autoscaled_at(clock, 2, store, depth=depth)
+        setpoint.tick(pm)
+        clock.now += 60.0
+        setpoint.tick(pm)
+        assert store.reads == 2
+        pm._autoscale_tick()
+        assert len(pm.workers) == 3
+
+    def test_a_removed_setpoint_is_a_change_even_when_reconcile_does_nothing(self, clock):
+        """Mutant ``:105`` ``return True`` -> ``return False``: 2..8 -> entfernt -> 2..4
+        bei zwei Workern; ``reconcile`` tut nichts, die Grenzen haben sich aber geaendert."""
+        depth = [10_000]
+        store = FakeStore(Setpoint(2, 8))
+        pm = _autoscaled_at(clock, 2, store, depth=depth)
+        setpoint.tick(pm)
+        clock.now += 60.0
+        store.result = None
+        setpoint.tick(pm)
+        assert pm.effective_bounds == (2, 4)
+        pm._autoscale_tick()
+        assert len(pm.workers) == 2
+
+
+class TestFollowUpRounds:
+    """T-F-10 (Sollwert-Teil): die Takte nach dem Lesen beim Start und nach
+    einer Aenderung, mit den Vorgabefristen unter virtueller Uhr.
+
+    Test-Liste:
+    - Nach dem Lesen beim Start liest der Durchlauf erst nach einem Intervall wieder.
+    - Nach einer Aenderung wartet der Autoskalierer die volle Abkuehlzeit ab.
+    - Nach einer Aenderung beginnt die Leerlauffrist von vorn.
+    """
+
+    def test_the_first_pass_after_the_start_read_waits_one_interval(self, clock):
+        """Mutant ``:84`` ``last_sample = time.monotonic()`` -> ``= None``."""
+        store = FakeStore(None)
+        pm = _pm(n=2, store=store, max_processes=8)
+        setpoint.read_at_start(pm)
+        clock.now += pm.SETPOINT_SAMPLE_INTERVAL / 2
+        setpoint.tick(pm)
+        assert store.reads == 1
+        clock.now += pm.SETPOINT_SAMPLE_INTERVAL / 2
+        setpoint.tick(pm)
+        assert store.reads == 2
+
+    def test_after_a_change_the_autoscaler_waits_the_full_cooldown(self, clock):
+        """Mutant ``:147`` ``_last_scale_decision = now`` -> ``= None`` (endet im
+        zweiten Takt in ``TypeError``)."""
+        depth = [10_000]
+        store = FakeStore(Setpoint(2, 8))
+        pm = _autoscaled_at(clock, 2, store, depth=depth)
+        setpoint.tick(pm)
+        clock.now += pm.AUTOSCALE_SAMPLE_INTERVAL
+        assert pm.AUTOSCALE_SAMPLE_INTERVAL < pm.SCALE_COOLDOWN_S
+        pm._autoscale_tick()
+        assert len(pm.workers) == 2  # Abtastung faellig, Abkuehlzeit noch nicht um
+        clock.now += pm.SCALE_COOLDOWN_S - pm.AUTOSCALE_SAMPLE_INTERVAL
+        pm._autoscale_tick()
+        assert len(pm.workers) == 3
+
+    def test_after_a_change_the_idle_window_starts_over(self, clock):
+        """Mutant ``:149`` ``_idle_since = None`` -> ``= ""`` (``TypeError`` im
+        naechsten Leerlauf-Takt); auch das Streichen der Zeile wird rot."""
+        depth = [0]
+        store = FakeStore(None)
+        pm = _autoscaled_at(clock, 3, store, depth=depth)
+        pm._autoscale_tick()  # Leerlauf beginnt jetzt
+        clock.now += 10.0
+        store.result = Setpoint(2, 8)
+        setpoint.tick(pm)  # Aenderung: Buchhaltung zurueck
+        clock.now += pm.SCALE_COOLDOWN_S
+        pm._autoscale_tick()  # Leerlauf beginnt neu
+        clock.now += pm.SCALE_DOWN_IDLE_S / 2
+        pm._autoscale_tick()
+        assert _terminations(pm) == 0  # 70 s nach dem ersten Leerlauf, aber erst 30 s nach dem Neubeginn
+        clock.now += pm.SCALE_DOWN_IDLE_S / 2
+        pm._autoscale_tick()
+        assert _terminations(pm) == 1
+
+
+class TestReconcile:
+    """T-F-21: Auswahl beim Abbau, Untergrenze ohne Autoskalierer, ``acted``.
+
+    Test-Liste:
+    - Ein gesenkter Sollwert beendet den juengsten Worker nach Startzeit, nicht den hoechsten Slot.
+    - Ohne Autoskalierer startet der Durchlauf einen sauber beendeten Slot nicht neu.
+    - Ein Abbau ohne Grenzaenderung setzt die Autoskalier-Buchhaltung zurueck.
+    - Ein Nachstarten ohne Grenzaenderung setzt sie ebenfalls zurueck.
+    """
+
+    def test_a_lowered_setpoint_drains_the_youngest_worker_by_start_time(self):
+        """Mutant ``:167`` ``max(`` -> ``min(``: Slot 0 traegt nach einem Ersatz den
+        juengsten Prozess, er geht zuerst."""
+        store = FakeStore(None)
+        pm = _pm(n=4, store=store, max_processes=8)
+        pm.SETPOINT_SAMPLE_INTERVAL = 0.0
+        pm._start_all_workers()
+        ages = {0: 400.0, 1: 100.0, 2: 300.0, 3: 200.0}
+        for info in pm.workers.values():
+            info.spawned_at = ages[info.worker_id]
+        store.result = Setpoint(3, 3)
+        setpoint.tick(pm)
+        assert _drained(pm) == [0]
+
+    def test_without_autoscaler_a_cleanly_exited_slot_is_not_restarted(self):
+        """Mutant ``:185`` ``floor = low if ... else pm._current_target()`` -> ``floor = low``."""
+        store = FakeStore(None)
+        pm = _pm(n=4, store=store, max_processes=8)
+        pm.SETPOINT_SAMPLE_INTERVAL = 0.0
+        pm._start_all_workers()
+        [finished] = [w for w in pm.workers.values() if w.worker_id == 3]
+        as_mock(finished.process).is_alive.return_value = False
+        as_mock(finished.process).exitcode = 0
+        pm._check_dead_workers()
+        spawned = as_mock(pm._ctx).Process.call_count
+        setpoint.tick(pm)
+        assert _live_slots(pm) == [0, 1, 2]
+        assert as_mock(pm._ctx).Process.call_count == spawned
+
+    def test_a_drain_without_a_bound_change_resets_the_autoscaler(self, clock):
+        """Mutant ``:189`` ``acted = True`` -> ``False``: der zweite Durchlauf mit
+        demselben Sollwert 1..1 zieht den Abbau nach; der Autoskalierer, dessen
+        Leerlauffrist schon um ist, beendet in derselben Runde keinen weiteren."""
+        depth = [0]
+        store = FakeStore(None)
+        pm = _autoscaled_at(clock, 3, store, depth=depth, autoscale=(1, 8))
+        old = {w.worker_id: pid for pid, w in pm.workers.items()}
+        for slot in (1, 2):  # Slots 1 und 2 im Uebergang
+            pm.workers[old[slot]].expected_shutdown = True
+            pm._start_worker(slot)
+        clock.now += 100.0  # Ersatzprozesse sind alt genug fuer den Autoskalierer
+        store.result = Setpoint(1, 1)
+        setpoint.tick(pm)  # Aenderung; nur Slot 0 war waehlbar
+        assert _drained(pm) == [0, 1, 2]
+        for pid in (old[0], old[1], old[2]):
+            as_mock(pm.workers[pid].process).is_alive.return_value = False
+            as_mock(pm.workers[pid].process).exitcode = 0
+        pm._check_dead_workers()
+        assert _live_slots(pm) == [1, 2]
+        clock.now += 40.0
+        pm._autoscale_tick()  # Leerlauf beginnt
+        clock.now += 70.0
+        setpoint.tick(pm)  # derselbe Sollwert: nur der Abbau
+        assert pm._setpoint.source == "setpoint"
+        assert _terminations(pm) == 1
+        pm._autoscale_tick()
+        assert _terminations(pm) == 1
+
+    def test_a_restart_without_a_bound_change_resets_the_autoscaler(self, clock):
+        """Mutant ``:197`` ``acted = True`` -> ``False``: ein sauber beendeter Worker
+        einer autoskalierten Gruppe wird bis zur Untergrenze nachgestartet; der
+        Autoskalierer entscheidet trotz Rueckstau in derselben Runde nicht."""
+        depth = [10_000]
+        store = FakeStore(Setpoint(3, 8))
+        pm = _autoscaled_at(clock, 3, store, depth=depth)
+        setpoint.tick(pm)
+        assert len(pm.workers) == 3
+        [finished] = [w for w in pm.workers.values() if w.worker_id == 2]
+        as_mock(finished.process).is_alive.return_value = False
+        as_mock(finished.process).exitcode = 0
+        pm._check_dead_workers()
+        assert _live_slots(pm) == [0, 1]
+        clock.now += 60.0
+        setpoint.tick(pm)  # derselbe Sollwert: nur das Nachstarten
+        assert _live_slots(pm) == [0, 1, 2]
+        pm._autoscale_tick()
+        assert len(pm.workers) == 3
+
+
+class TestGroupKey:
+    """T-F-22: gelesen wird der Sollwert der eigenen Gruppe, beim Start und im Takt."""
+
+    def test_start_read_and_pass_read_the_own_group(self):
+        """Mutanten ``:85`` und ``:144`` ``pm.group`` -> ``None``."""
+        store = FakeStore(None)
+        pm = _pm(n=2, store=store, max_processes=8)
+        pm.SETPOINT_SAMPLE_INTERVAL = 0.0
+        setpoint.read_at_start(pm)
+        setpoint.tick(pm)
+        assert store.read_groups == ["orders", "orders"]
