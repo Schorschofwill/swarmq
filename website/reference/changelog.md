@@ -4,7 +4,9 @@ All notable changes to SwarmQ. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
-## [0.14.2rc1] — unreleased
+## [0.14.2rc1] — 2026-10-20
+
+Release candidate for 0.14.2 (install with `pip install --pre`).
 
 Release candidate for 0.14.2 (install with `pip install --pre`).
 
