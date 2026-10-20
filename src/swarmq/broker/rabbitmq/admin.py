@@ -180,12 +180,6 @@ class RabbitMQAdmin(RabbitMQDelivery):
             out[key] = v
         return out
 
-    # Back-compat alias for any in-module caller still using the old name.
-    @staticmethod
-    def _extract_task_id(body: bytes) -> str | None:
-        task_id, _name, _payload = RabbitMQAdmin._parse_task_fields(body)
-        return task_id
-
     async def _drain_dlq_with_filter(  # verbatim aus rabbitmq.py:606 übernommen; Follow-Up 0.2.x
         self,
         queue_name: str,
@@ -657,12 +651,6 @@ class RabbitMQAdmin(RabbitMQDelivery):
         DLQ), this is exactly the "work that failed" backlog operators
         alert on."""
         return await self._throwaway_channel_message_count(f"{queue}.XQ")
-
-    # ------------------------------------------------------------------
-    # ------------------------------------------------------------------
-
-    async def _passive_message_count(self, name: str) -> int:
-        return await self._throwaway_channel_message_count(name)
 
 
 # Damit ``RabbitMQConnection`` im Modul referenziert bleibt (MRO-Dokumentation).
