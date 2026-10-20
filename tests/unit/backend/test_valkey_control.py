@@ -5,6 +5,8 @@ Test-Liste (U1):
 - Lesen ohne hinterlegten Sollwert liefert ``None``.
 - Lesen eines geschriebenen Sollwerts liefert Unter- und Obergrenze.
 - Unlesbarer Inhalt liefert ``SetpointUnreadable`` statt einer Ausnahme.
+- Gültiges JSON mit Grenzen, die keine ganzen Zahlen sind (Text, ``true``),
+  ist ebenfalls unlesbar (Testlücke D-5 der Runde 4).
 - Verbindungsfehler beim Lesen kommt als ``BackendConnectionError``.
 - Zweimaliges ``connect()`` öffnet keine zweite Verbindung.
 - Schreiben der Rückmeldung setzt das Verfallsdatum je Aufruf.
@@ -45,6 +47,30 @@ class TestReadSetpoint:
         result = await store.read_setpoint("orders")
         assert isinstance(result, SetpointUnreadable)
         assert result.reason
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            pytest.param(b'{"min": "1", "max": 3}', id="min-text"),
+            pytest.param(b'{"min": 1, "max": true}', id="max-bool"),
+            pytest.param(b'{"min": true, "max": 3}', id="min-bool"),
+            pytest.param(b'{"min": 1, "max": "3"}', id="max-text"),
+        ],
+    )
+    async def test_bounds_that_are_not_integers_read_as_unreadable(self, raw):
+        """Testlücke D-5 (Runde 4): Bisher war nur Nicht-JSON geprüft. Eine
+        Grenze als Text oder als JSON-Wahrheitswert (in Python ``bool``, also
+        auch ``int``) ist kein Sollwert; der Supervisor behandelt ihn wie eine
+        Ablehnung.
+
+        Gegenprobe-Mutanten: ``control.py`` in ``_decode_setpoint`` das erste
+        ``or`` → ``and``; alternativ ``or not isinstance(high, int)`` streichen."""
+        store, _ = _store(get=AsyncMock(return_value=raw))
+
+        result = await store.read_setpoint("orders")
+
+        assert isinstance(result, SetpointUnreadable)
+        assert raw.decode() in result.reason
 
     async def test_connection_failure_surfaces_as_backend_connection_error(self):
         store, _ = _store(get=AsyncMock(side_effect=ValkeyConnectionError("kapow")))

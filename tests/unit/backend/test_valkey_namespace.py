@@ -13,6 +13,8 @@ Test-Liste:
 - [x] ``keys=`` und ``namespace=`` zugleich -> ``ConfigurationError``
 - [x] ``namespace`` als lesbare Eigenschaft (fuer ``check`` und den Worker-Abgleich)
 - [x] Kontrollkanal (``ValkeySetpointStore``) mit Namensraum
+- [x] Abgleich mit einer Konfiguration ohne Namensraum: der aus der Umgebung
+      übernommene Namensraum fällt weg (Testlücke D-9 der Runde 4)
 """
 
 from __future__ import annotations
@@ -85,3 +87,26 @@ def test_the_control_channel_uses_the_namespace(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("SWARMQ_NAMESPACE", "app1")
 
     assert ValkeySetpointStore("valkey://x")._setpoint_key("g") == "app1:sq:control:setpoint:g"
+
+
+@pytest.mark.entscheidung("E-012")
+def test_reconciling_with_a_configuration_without_namespace_drops_the_environment_namespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Testlücke D-9 (Runde 4): Ohne ausdrücklichen Parameter übernimmt das
+    Backend den Namensraum der Konfiguration. Hat das Backend ihn aus
+    ``SWARMQ_NAMESPACE`` gelesen, die Konfiguration aber keinen, gilt danach
+    kein Namensraum: Kanäle ohne Präfix, und der Rückgabewert meldet ``None``.
+
+    Gegenprobe-Mutant: ``connection.py`` in ``reconcile_namespace``
+    ``_keyspace(configured or "")`` → ``_keyspace(configured)`` (liest dann
+    erneut die Umgebung)."""
+    monkeypatch.setenv("SWARMQ_NAMESPACE", "app1")
+    backend = ValkeyBackend("valkey://x")
+    from_environment = backend.namespace
+
+    effective = backend.reconcile_namespace(None)
+
+    assert from_environment == "app1"
+    assert (effective, backend.namespace) == (None, None)
+    assert backend.notify_channel_name("t1") == "sq:notify:t1"

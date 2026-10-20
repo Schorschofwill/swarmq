@@ -210,6 +210,79 @@ class TestValkeyBackendClose:
         await backend.close()
 
 
+class _RecordingValkey:
+    """Fake-Client, der jeden Befehl und jeden Skriptaufruf mitschreibt."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.connection_pool = Mock()  # close() sperrt den Pool
+
+    async def ping(self) -> bool:
+        return True
+
+    async def aclose(self) -> None:
+        return None
+
+    async def hmget(self, *_args: object) -> list[None]:
+        self.calls.append("hmget")
+        return [None, None]
+
+    async def get(self, *_args: object) -> None:
+        self.calls.append("get")
+
+    async def hexists(self, *_args: object) -> bool:
+        self.calls.append("hexists")
+        return False
+
+    async def time(self) -> tuple[int, int]:
+        self.calls.append("time")
+        return (1, 0)
+
+    def register_script(self, _source: str) -> AsyncMock:
+        async def run(**_kwargs: object) -> list[int]:
+            self.calls.append("script")
+            return [1, 0, 0]
+
+        return AsyncMock(side_effect=run)
+
+
+_STORE_USES = [
+    pytest.param(lambda b: b.execution_guard.peek("t-1", retry_count=0), id="execution_guard"),
+    pytest.param(lambda b: b.locks.current_owner("l"), id="locks"),
+    pytest.param(lambda b: b.rate_limit.check("t", max_requests=1, window_ms=1000), id="rate_limit"),
+    pytest.param(lambda b: b.chords.record_member("wf", "/h", "m1", expected=2, ttl_ms=1000), id="chords"),
+    pytest.param(lambda b: b.schedules.exists("s"), id="schedules"),
+]
+
+
+@pytest.mark.entscheidung("E-082")
+@pytest.mark.parametrize("use", _STORE_USES)
+async def test_stores_used_before_close_run_on_the_new_client_after_reconnect(use):
+    """Testlücke D-6 (Runde 4): Nach ``connect``/``close``/``connect`` laufen
+    die Stores des Backends über den neuen Client, auch wenn sie vor dem
+    ``close()`` schon benutzt wurden (E-082: connect nach close baut neu
+    auf). Der geschlossene Client bekommt keinen Befehl mehr.
+
+    Gegenprobe-Mutant: ``backend/valkey/__init__.py`` in ``_drop_stores`` die
+    Zeile ``self._execution_guard = None`` streichen, ebenso je Store einzeln
+    ``self._locks``, ``self._rate_limit``, ``self._chords``, ``self._schedules``
+    aus der Kettenzuweisung."""
+    old, new = _RecordingValkey(), _RecordingValkey()
+    backend = ValkeyBackend("valkey://localhost:6379/0", eviction_check="off")
+    with patch("swarmq.backend.valkey.connection.valkey.asyncio.Valkey.from_url", side_effect=[old, new]):
+        await backend.connect()
+        await use(backend)
+        await backend.close()
+        await backend.connect()
+    old_calls = list(old.calls)
+
+    await use(backend)
+
+    assert old.calls == old_calls
+    assert new.calls
+    await backend.close()
+
+
 class TestValkeyBackendStoreResult:
     async def test_store_result_calls_set_with_px(self):
         backend = ValkeyBackend("valkey://localhost:6379/0")

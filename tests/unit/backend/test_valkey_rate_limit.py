@@ -9,6 +9,8 @@ Test-Liste:
       viertes Review: bis dahin blieb er roh)
 - [x] viertes Review: dieselbe Einordnung wie die anderen Stores
       (``as_backend_error``) -- OOM/READONLY sind ein Ausfall
+- [x] Testlücke D-3 (Runde 4): Serverzeit aus ``TIME`` in Millisekunden
+      (``int``) an das Skript; die Fenster-Keys folgen derselben Zeit
 """
 
 from __future__ import annotations
@@ -75,3 +77,27 @@ async def test_self_healing_error_reply_is_an_outage(error):
         await store.check("t", max_requests=1, window_ms=1000)
 
     assert not isinstance(exc_info.value, BackendResponseError)
+
+
+async def test_check_passes_the_server_time_in_milliseconds_to_the_script():
+    """Testlücke D-3 (Runde 4): ``TIME`` liefert Sekunden und Mikrosekunden;
+    das Skript und die Fenster-Keys rechnen in Millisekunden derselben Uhr.
+    Aus ``(1_700_000_000, 999_999)`` wird ``1_700_000_000_999`` (abgerundet),
+    als ``int``; das Fenster von 1 s beginnt bei ``1_700_000_000_000``.
+
+    Gegenprobe-Mutant: ``rate_limit.py`` in ``RateLimiter.check``
+    ``+ int(microseconds) // 1000`` → ``- int(microseconds) // 1000``."""
+    client = MagicMock()
+    client.time = AsyncMock(return_value=(1_700_000_000, 999_999))
+    script = AsyncMock(return_value=[1, 0, 0])
+    client.register_script = MagicMock(return_value=script)
+    store = ValkeyRateLimitStore(client)
+
+    await store.check("t", max_requests=1, window_ms=1000)
+
+    assert script.await_args is not None
+    keys, args = script.await_args.kwargs["keys"], script.await_args.kwargs["args"]
+    assert args == [1, 1000, 1_700_000_000_999]
+    assert type(args[-1]) is int
+    assert "1700000000000" in keys[0]
+    assert "1699999999000" in keys[1]

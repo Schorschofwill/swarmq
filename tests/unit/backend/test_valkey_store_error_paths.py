@@ -25,6 +25,8 @@ Testliste:
 # [x] Lock-Store: acquire, release, renew, extend (Mutex und Semaphor), observe,
 #     force_release (Plan 0.14, U1: ein ``DEL``)
 # [x] Guard-Store: claim, renew, mark_done, mark_superseded, release
+# [x] Guard-Store: peek (F4-02, Testlücke D-1 der Runde 4, eigener Test mit
+#     Marker E-079, weil die Matrix oben unmarkiert bleibt)
 # [x] Rate-Limit-Store: check
 # [x] Chord-Store: record_member, record_and_check_complete
 # [x] Sollwert-Store (Kontrollkanal): read_setpoint, write_setpoint,
@@ -180,4 +182,40 @@ async def test_wrongtype_reply_surfaces_as_backend_response_error(call: Call) ->
     error = await _error_of(call(cause))
 
     assert isinstance(error, BackendResponseError), f"WRONGTYPE kam als {error!r} heraus"
+    assert error.__cause__ is cause
+
+
+def _peeking_guard(error: BaseException) -> ValkeyExecutionGuardStore:
+    """Guard-Store, dessen ``HMGET`` (der einzige Befehl von ``peek``) wirft."""
+    client, _, _ = fake_client(lambda _argv: error)
+    client.register_script = lambda source: FakeScript(sha=hashlib.sha1(source.encode()).hexdigest())
+    client.hmget = AsyncMock(side_effect=error)
+    return ValkeyExecutionGuardStore(client)
+
+
+@pytest.mark.entscheidung("E-079")
+@pytest.mark.parametrize(
+    ("make_error", "outage"),
+    [
+        *(pytest.param(p.values[0], True, id=p.id) for p in _OUTAGES),
+        pytest.param(_wrongtype, False, id="wrongtype"),
+    ],
+)
+async def test_guard_peek_classifies_driver_errors_like_the_other_store_calls(
+    make_error: Callable[[], BaseException], *, outage: bool
+) -> None:
+    """Testlücke D-1 (Runde 4): ``ValkeyExecutionGuardStore.peek`` (neu seit
+    F4-02) ordnet Treiberfehler wie alle anderen Store-Aufrufe über
+    ``as_backend_error`` ein. Das Gate fängt nur ``BackendConnectionError``;
+    ein roher Treiberfehler käme an ihm vorbei.
+
+    Gegenprobe-Mutant: ``execution_guard.py`` in ``peek``
+    ``await self._run("peek", self._client.hmget(...))`` →
+    ``await self._client.hmget(...)``."""
+    cause = make_error()
+
+    error = await _error_of(_peeking_guard(cause).peek("t-1", retry_count=0))
+
+    assert isinstance(error, BackendConnectionError), f"{type(cause).__name__} kam als {error!r} heraus"
+    assert isinstance(error, BackendResponseError) is not outage
     assert error.__cause__ is cause
