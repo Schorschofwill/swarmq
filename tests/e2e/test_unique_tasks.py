@@ -302,17 +302,26 @@ async def test_locking_and_unique_combined(
 async def test_ttl_expiry_race_owner_check_protects_second_task(
     rabbitmq_url: str,
     valkey_url: str,
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    """unique_for=1 + task that runs for ~1.5s: flag expires mid-run;
-    a second schedule within the window SETNX-succeeds (fresh flag).
-    When the first task completes, its completion release attempts
-    DEL but the Lua owner-check fails — the second task's flag
-    survives intact so its own completion can release it normally.
+    """unique_for=1 + a first task held past its TTL: the flag expires
+    mid-run, and a second schedule with the SAME args claims a fresh flag
+    (here with a per-call unique_for=30). When the first task completes,
+    its completion release runs the Lua owner-check and does not delete
+    the second task's flag: the flag still names the second task and a
+    third schedule with the same args is deduplicated onto it. Once the
+    second task completes, its own release clears the flag (30 s TTL, so
+    it is the release, not the expiry) and a new schedule runs fresh.
+
+    Each task waits on its own gate instead of sleeping, so the order is
+    fixed; a spy on the worker backend's ``release_unique`` tells when the
+    first task's release has run and what it returned.
     """
     queue = _unique_queue()
     task_name = _task_name("race")
-    run_count = asyncio.Event()
-    marker_hits: list[str] = []
+    gates = [asyncio.Event(), asyncio.Event()]
+    started = [asyncio.Event(), asyncio.Event()]
+    runs: list[str] = []
 
     class RaceTask(Task):
         task_info = TaskInfo(
@@ -324,12 +333,12 @@ async def test_ttl_expiry_race_owner_check_protects_second_task(
 
         @override
         async def run(self, tag: str) -> str:
-            marker_hits.append(tag)
-            # Run longer than unique_for so the flag expires mid-run.
-            await asyncio.sleep(1.3)
-            if len(marker_hits) >= 2:
-                run_count.set()
-            return tag
+            index = len(runs)
+            runs.append(tag)
+            if index < len(gates):
+                started[index].set()
+                await asyncio.wait_for(gates[index].wait(), timeout=15)
+            return f"{tag}-{index}"
 
     client_broker = RabbitMQBroker(rabbitmq_url)
     client_backend = ValkeyBackend(valkey_url)
@@ -337,26 +346,62 @@ async def test_ttl_expiry_race_owner_check_protects_second_task(
 
     async with client_app:
         await client_broker.declare_queue(queue)
+        valkey = client_backend._client
+        assert valkey is not None
 
-        async with _running_worker(rabbitmq_url, valkey_url, queue):
-            # First schedule; task starts running, flag TTL is 1s.
-            tid_1 = await client_app.schedule(task_name, tag="first")
-            # Wait past TTL expiry so a fresh SETNX can succeed, but
-            # while the first task is still mid-run.
-            await asyncio.sleep(1.1)
-            tid_2 = await client_app.schedule(task_name, tag="second")
-            # Distinct task_ids prove both enqueued successfully.
-            assert tid_1 != tid_2
+        async def flag_owners() -> list[str]:
+            owners: list[str] = []
+            async for key in valkey.scan_iter(match="*unique:*"):
+                value = await valkey.get(key)
+                if value is not None:
+                    owners.append(value.decode())
+            return owners
 
-            r1 = await client_app.get_result(tid_1, timeout=6)
-            r2 = await client_app.get_result(tid_2, timeout=6)
-            assert r1 == "first"
-            assert r2 == "second"
-            # Both tasks ran.
-            assert marker_hits == ["first", "second"]
+        async with _running_worker(rabbitmq_url, valkey_url, queue) as worker_app:
+            releases: dict[str, bool] = {}
+            real_release = worker_app.backend.release_unique
 
-            # Post-run: second task's completion released its own flag
-            # (owner-check prevented the first task from clobbering it).
-            # A third schedule with the same args gets a NEW task_id.
-            tid_3 = await client_app.schedule(task_name, tag="second")
-            assert tid_3 != tid_2  # fresh task_id, flag was cleared
+            async def spy_release(dedup_hash: str, owner: str, *, op_timeout: float | None = None) -> bool:
+                released: bool = await real_release(dedup_hash, owner, op_timeout=op_timeout)
+                releases[owner] = released
+                return released
+
+            monkeypatch.setattr(worker_app.backend, "release_unique", spy_release)
+
+            # First task runs and is held; its 1-second flag expires mid-run.
+            tid_1 = await client_app.schedule(task_name, tag="same")
+            await asyncio.wait_for(started[0].wait(), timeout=8)
+
+            async def first_flag_expired() -> bool:
+                return tid_1 not in await flag_owners()
+
+            assert await wait_until(first_flag_expired, timeout=8), "the first flag never expired"
+
+            # Same args: the expired flag lets the second task claim a fresh one.
+            tid_2 = await client_app.schedule(task_name, tag="same", unique_for=30)
+            assert tid_2 != tid_1, "after the expiry the same args must claim a fresh flag"
+            await asyncio.wait_for(started[1].wait(), timeout=8)
+
+            # First task completes; its release must leave the second's flag alone.
+            gates[0].set()
+            assert await client_app.get_result(tid_1, timeout=8) == "same-0"
+            assert await wait_until(lambda: tid_1 in releases, timeout=10), "the first release never ran"
+            assert releases[tid_1] is False, "the owner-check must refuse the first task's release"
+            owners = await flag_owners()
+            assert tid_2 in owners, "the second task's flag must survive the first release"
+            assert tid_1 not in owners
+            assert await client_app.schedule(task_name, tag="same") == tid_2, (
+                "while the second task runs, the same args are deduplicated onto it"
+            )
+
+            # Second task completes and releases its own flag.
+            gates[1].set()
+            assert await client_app.get_result(tid_2, timeout=8) == "same-1"
+            assert await wait_until(lambda: tid_2 in releases, timeout=10), "the second release never ran"
+            assert releases[tid_2] is True, "the second task releases its own flag"
+
+            tid_3 = await client_app.schedule(task_name, tag="same")
+            assert tid_3 not in (tid_1, tid_2), "after the release the same args run fresh"
+            assert await client_app.get_result(tid_3, timeout=8) == "same-2"
+
+    assert runs == ["same", "same", "same"]

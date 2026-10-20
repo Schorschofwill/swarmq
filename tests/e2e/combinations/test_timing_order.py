@@ -49,6 +49,7 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import TaskCancelledError, TaskError
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
+from tests.support.wait import wait_until
 
 from ._invariants import (
     SignalRecorder,
@@ -407,7 +408,10 @@ class TestCronCatchupUniqueCombo:
         flag is released and the next fire can proceed.
 
         Models the pattern: fire-1 runs, completes, unique released; fire-2
-        arrives after completion and runs independently.
+        with the SAME arguments arrives after completion and runs
+        independently. Same arguments share the dedup hash, so fire-2 only
+        gets a fresh task_id if fire-1's release really happened (30 s TTL,
+        no expiry in between).
         """
         queue = _uq("ccu-rel")
         task_name = _task_name("ccu_rel")
@@ -447,16 +451,31 @@ class TestCronCatchupUniqueCombo:
             ):
                 # Fire-1: schedule with arg=1.
                 tid1 = await app.schedule(task_name, 1)
-                # Wait for completion so unique flag is released.
                 result1 = await app.get_result(tid1, timeout=8.0)
                 assert result1 == 10
                 await asyncio.wait_for(first_done.wait(), timeout=5.0)
 
-                # Fire-2: now that unique is released, a new schedule succeeds.
-                tid2 = await app.schedule(task_name, 2)
+                # The result is visible before the release: notify, ack and
+                # the unique release in the handler's finally come after the
+                # store. Wait for the release itself while the worker runs
+                # (pattern from b9cde68).
+                valkey = backend._client
+                assert valkey is not None
+
+                async def unique_flag_released() -> bool:
+                    async for key in valkey.scan_iter(match="*unique:*"):
+                        if await valkey.get(key) == tid1.encode():
+                            return False
+                    return True
+
+                assert await wait_until(unique_flag_released, timeout=10), "unique flag never released"
+
+                # Fire-2 with the same arguments: only the release lets it through.
+                tid2 = await app.schedule(task_name, 1)
                 assert tid2 != tid1, "fire-2 must get a new task_id after unique flag released"
                 result2 = await app.get_result(tid2, timeout=8.0)
-                assert result2 == 20
+                assert result2 == 10
+                await asyncio.wait_for(second_done.wait(), timeout=5.0)
 
         assert call_count == 2
 
