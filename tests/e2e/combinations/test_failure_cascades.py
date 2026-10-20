@@ -452,7 +452,7 @@ class TestDLQRetryResultTTLCombo:
         queue = _uq("dlq-rt-exhaust")
         task_name = _task_name("dlq_rt_exhaust")
         attempts = 0
-        failed_event = asyncio.Event()
+        failures = 0
 
         class AlwaysFailRetryTask(Task):
             task_info = TaskInfo(
@@ -480,7 +480,8 @@ class TestDLQRetryResultTTLCombo:
 
         @app.on_signal(Signal.TASK_FAILED)
         async def _on_failed(**_: Any) -> None:
-            failed_event.set()
+            nonlocal failures
+            failures += 1
 
         async with app:
             await broker.declare_queue(queue)
@@ -491,9 +492,13 @@ class TestDLQRetryResultTTLCombo:
                 mirror_to=app._signal_dispatcher,
             ):
                 await app.schedule(task_name, 0)
-                await asyncio.wait_for(failed_event.wait(), timeout=12.0)
-                # Allow DLQ-move ack to propagate.
-                await asyncio.sleep(0.3)
+                # TASK_FAILED fires on every failed attempt, the first one
+                # included. Wait for the failure of the retry itself
+                # (max_retries=1: two attempts in total) instead of giving
+                # the retry a fixed head start after the first failure.
+                assert await wait_until(lambda: failures >= 2, timeout=12.0), (
+                    f"retry never failed: TASK_FAILED {failures} time(s), handler ran {attempts} time(s)"
+                )
 
         assert_at_least_once_held(attempts, expected_min=2)  # retried once
         # TASK_FAILED must have been emitted.
