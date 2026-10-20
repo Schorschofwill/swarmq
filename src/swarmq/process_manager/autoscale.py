@@ -14,7 +14,7 @@ import time
 from typing import Any
 
 from swarmq.logging import _error_fields, get_logger, sanitize_url
-from swarmq.process_manager.slots import SlotState, heading_slots
+from swarmq.process_manager.slots import drain_candidates, heading_slots
 
 logger = get_logger(__name__)
 
@@ -103,16 +103,7 @@ def scale_down_one(pm: Any) -> bool:
     would spawn a replacement and immediately kill it, producing
     pointless process churn.
     """
-    now = time.monotonic()
-    # KTD1: Slots im Uebergang (Alt- und Ersatzprozess) sind tabu — der
-    # Ersatz waere sonst als juengster Prozess der erste Kandidat.
-    eligible = {
-        pid: w
-        for pid, w in pm.workers.items()
-        if not w.expected_shutdown  # F4-25: kein zweites SIGTERM an einen drainenden Worker
-        and (now - w.spawned_at) >= pm.SCALE_MIN_AGE_S
-        and pm._slots.state(w.worker_id) is not SlotState.TRANSITION
-    }
+    eligible = drain_candidates(pm.workers, pm._slots, min_age_s=pm.SCALE_MIN_AGE_S, now=time.monotonic())
     if not eligible:
         logger.debug(
             "autoscale_down_deferred_all_young",

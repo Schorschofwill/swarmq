@@ -17,7 +17,7 @@ from typing import Any
 from swarmq.contracts.control import Setpoint, SetpointRead, SetpointUnreadable
 from swarmq.logging import get_logger
 from swarmq.process_manager.setpoint_store import SetpointUnread, read_setpoint_sync, write_status_sync
-from swarmq.process_manager.slots import SlotState
+from swarmq.process_manager.slots import drain_candidates, heading_slots
 
 logger = get_logger(__name__)
 
@@ -150,18 +150,9 @@ def tick(pm: Any) -> None:
     report(pm)
 
 
-def _heading_slots(pm: Any) -> set[int]:
-    """Slots mit mindestens einem Prozess, der nicht zum sanften Ende markiert ist."""
-    return {w.worker_id for w in pm.workers.values() if not w.expected_shutdown}
-
-
 def _drain_one(pm: Any) -> bool:
     """Juengsten Worker sanft beenden (Weg des Autoskalierers, ohne Mindestalter, R12)."""
-    eligible = {
-        pid: w
-        for pid, w in pm.workers.items()
-        if not w.expected_shutdown and pm._slots.state(w.worker_id) is not SlotState.TRANSITION
-    }
+    eligible = drain_candidates(pm.workers, pm._slots, min_age_s=0.0, now=time.monotonic())
     if not eligible:
         return False
     pid, info = max(eligible.items(), key=lambda kv: (kv[1].spawned_at, kv[1].worker_id))
@@ -179,7 +170,7 @@ def reconcile(pm: Any) -> bool:
     Durchlauf (KTD11): Slots im Uebergang oder gesperrte Slots bleiben aus,
     der naechste Durchlauf zieht nach. Liefert ``True``, wenn etwas geschah."""
     low, high = pm.effective_bounds
-    heading = len(_heading_slots(pm))
+    heading = len(heading_slots(pm.workers.values()))
     # Ohne Autoskalierung zaehlen gesperrte Slots und saubere Enden wie heute
     # gegen das Ziel; mit Autoskalierung fuellt der Durchlauf bis zur Untergrenze.
     floor = low if pm._autoscale is not None else pm._current_target()

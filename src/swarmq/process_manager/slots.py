@@ -13,7 +13,7 @@ import enum
 import math
 import multiprocessing.process
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 
 from swarmq.supervision import SupervisorChannel
@@ -129,3 +129,28 @@ def heading_slots(workers: Iterable[WorkerInfo]) -> set[int]:
     Übergang zählt über den Ersatz genau einmal (E-084).
     """
     return {w.worker_id for w in workers if not w.expected_shutdown}
+
+
+def drain_candidates(
+    workers: Mapping[int, WorkerInfo],
+    slots: SlotTable,
+    *,
+    min_age_s: float,
+    now: float,
+) -> dict[int, WorkerInfo]:
+    """Worker, die ein Abbau sanft beenden darf (E-084), nach PID.
+
+    Ausgenommen sind drainende Worker (``expected_shutdown``, kein zweites
+    SIGTERM, F4-25), Slots im Übergang (der Ersatz wäre sonst als jüngster
+    Prozess der erste Kandidat, KTD1) und Worker jünger als ``min_age_s``
+    (Autoskalierer: ``SCALE_MIN_AGE_S``; Sollwert-Durchlauf: 0, R12).
+    ``now`` kommt vom Aufrufer: Die Uhr lesen ``supervisor``, ``autoscale``
+    und ``setpoint``, dort ersetzen Tests sie.
+    """
+    return {
+        pid: w
+        for pid, w in workers.items()
+        if not w.expected_shutdown
+        and slots.state(w.worker_id) is not SlotState.TRANSITION
+        and (min_age_s <= 0 or now - w.spawned_at >= min_age_s)
+    }
