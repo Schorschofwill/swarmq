@@ -36,7 +36,8 @@ Tests der echten Probe stehen in
 # - [x] ohne ``execvpe`` (SIGTERM schon da, ``execvpe`` scheitert) ist die
 #       Maske danach wieder die alte; ein waehrenddessen eingetroffenes
 #       SIGTERM wird dann zugestellt (Rot per Mutation geprueft: die
-#       Wiederherstellung kam mit der Obvious Implementation des ersten Tests)
+#       Wiederherstellung kam mit der Obvious Implementation des ersten Tests);
+#       ``execvpe`` ist dabei gepatcht (X-5, Testlücken Runde 4)
 # Plan 0.14, U7 (a) -- der Rueckweg im echten Handler:
 # - [x] ein SIGTERM, das ein anderer Thread annimmt, waehrend ``reexec`` die
 #       Signale haelt: Der Handler im Hauptthread stellt es dort erneut zu,
@@ -326,7 +327,13 @@ def test_without_execvpe_the_mask_is_restored_and_a_held_sigterm_delivered(signa
         # ``test_a_sigterm_taken_by_another_thread_is_pending_again_before_execve``.
         _log_shutdown_signal=lambda: signal.pthread_kill(threading.get_ident(), signal.SIGTERM),
     )
-    with patch("swarmq.process_manager.reload.shutdown_logging"):
+    with (
+        patch("swarmq.process_manager.reload.shutdown_logging"),
+        # X-5 (Testlücken Runde 4): Ohne Patch ersetzte ein Fehler in der
+        # Pruefung (Mutant ``reload.py:171`` ``or`` -> ``and``) den
+        # pytest-Prozess per ``execvpe``; so scheitert nur dieser Test.
+        patch("swarmq.process_manager.reload.os.execvpe", side_effect=AssertionError("execvpe trotz SIGTERM")),
+    ):
         assert reexec(pm, 3) == 3
 
     assert _blocked() == before

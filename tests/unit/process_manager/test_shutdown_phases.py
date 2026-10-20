@@ -11,6 +11,8 @@ Test-Liste:
 - [x] PF-8 (E-018): Kind läuft über das Drain-Ende -> INFO ``shutdown_sigterm_escalation``
 - [x] Kind überlebt bis ``sigkill_at`` -> ERROR ``shutdown_sigkill_escalation``
 - [x] Kein Kind über dem Drain-Ende -> kein Eskalations-Event
+- [x] Unkillbare Worker: das Einsammeln nutzt den Rest des Budgets bis genau 30 s
+      (T-F-23, Testlücken Runde 4)
 """
 
 from __future__ import annotations
@@ -134,3 +136,16 @@ def test_child_surviving_until_sigkill_at_is_an_error(
         ("shutdown_sigterm_escalation", "info", 2),
         ("shutdown_sigkill_escalation", "error", 2),
     ]
+
+
+@pytest.mark.entscheidung("E-018")
+def test_unkillable_workers_are_collected_until_the_end_of_the_budget(clock: _VirtualTime) -> None:
+    """T-F-23 (Mutant ``supervisor.py:433`` ``started + budget.total`` →
+    ``started - budget.total``): Nach dem SIGKILL bei 28 s wartet das
+    Einsammeln bis zum Ende des Gesamtbudgets (30 s), nicht kürzer. Der
+    Bestand prüft nur ``<= 30``; mit verschobener Frist endete es bei 28 s."""
+    events: list[tuple[str, int, float]] = []
+    pm = _pm(clock, *(_worker(clock, pid, events, survives_kill=True) for pid in (1, 2, 3)))
+    pm._shutdown_all_workers()
+    pm._collect_zombies()
+    assert clock.now == pytest.approx(30.0)

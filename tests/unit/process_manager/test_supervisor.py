@@ -21,6 +21,16 @@ Reload (execvpe mit eingefrorenem argv/env), Orphan-Guard, FileWatcher."""
 #    keine Dateiaenderung).
 # 7. SIGTERM waehrend des Wartens nach Exit 78 unter --reload: Ende mit 0,
 #    kein Re-Exec.
+# Testlücken Runde 4 (Plan 2026-10-20-1500, U6):
+# 8. T-F-01: Ein übersprungener Worker (ohne Kanal, tot, schon in Beendigung,
+#    Recycler) verdeckt keinen hängenden Worker dahinter.
+# 9. T-F-02: Zwei überfällige ersetzte Worker: Jeder überlebende bekommt
+#    SIGKILL, auch hinter einem bereits beendeten.
+# 10. T-F-08: Eine Runde des Monitor-Loops mit Autoskalierer und Rückstau
+#     skaliert hoch.
+# 11. T-F-23: Autoskalierung mit min == max ist zulässig; ein verschwundener
+#     Worker (ProcessLookupError) hält SIGTERM/SIGKILL an die übrigen nicht
+#     auf; Worker starten im ``spawn``-Kontext.
 
 from __future__ import annotations
 
@@ -29,6 +39,7 @@ import signal
 import sys
 import threading
 import time
+import types
 from typing import Any, override
 from unittest.mock import MagicMock, patch
 
@@ -39,6 +50,7 @@ from swarmq.process_manager import (
     WorkerInfo,
 )
 from swarmq.process_manager import reload as reload_module
+from swarmq.process_manager import supervisor as supervisor_module
 from swarmq.process_manager.reload import ReloadController
 from swarmq.process_manager.slots import SlotState
 from tests.unit.process_manager._helpers import (
@@ -72,6 +84,26 @@ class TestProcessManagerCore:
                 autoscale=(5, 3),
                 queue_depth_fn=lambda: 0,
             )
+
+    def test_autoscale_accepts_equal_bounds(self):
+        """T-F-23 (Mutant ``supervisor.py:129`` ``max_w < min_w`` → ``<=``):
+        ``--autoscale 2:2`` ist eine feste Zahl, kein Fehler."""
+        pm = ProcessManager(
+            num_workers=1,
+            worker_entry=_entry_stub,
+            autoscale=(2, 2),
+            queue_depth_fn=lambda: 0,
+        )
+        assert pm.initial_workers == 2
+
+    def test_workers_start_in_the_spawn_context(self):
+        """T-F-23 (Mutant ``supervisor.py:169`` ``get_context("spawn")`` →
+        ``get_context("fork")``): Der Supervisor hat Threads (Datei-Wächter,
+        Log-Queue); ein ``fork`` daraus kann im Kind an einer geerbten Sperre
+        hängen. Der Kontext ist nur über ``pm._ctx`` sichtbar, einen
+        öffentlichen Weg ohne echte Kindprozesse gibt es nicht."""
+        pm = ProcessManager(num_workers=1, worker_entry=_entry_stub)
+        assert pm._ctx.get_start_method() == "spawn"
 
     def test_autoscale_requires_queue_depth_fn(self):
         with pytest.raises(ValueError, match="queue_depth_fn"):
@@ -201,6 +233,29 @@ class TestProcessManagerCore:
         pm._shutdown_all_workers()
         p.terminate.assert_called_once()
         p.kill.assert_called_once()
+
+    def test_a_vanished_worker_does_not_stop_the_signals_to_the_others(self, monkeypatch):
+        """T-F-23 (Mutant ``supervisor.py:417`` ``continue`` → ``break``):
+        Ist ein Worker schon weg (``ProcessLookupError``), bekommen die
+        übrigen trotzdem SIGTERM und SIGKILL. Virtuelle Uhr statt 30 s."""
+        clock = FakeClock()
+
+        def advance(seconds: float) -> None:
+            clock.now += seconds
+
+        monkeypatch.setattr(supervisor_module, "time", types.SimpleNamespace(monotonic=clock, sleep=advance))
+        pm = ProcessManager(num_workers=2, worker_entry=_entry_stub)
+        vanished = _fake_process(pid=1)
+        vanished.terminate.side_effect = ProcessLookupError
+        vanished.kill.side_effect = ProcessLookupError
+        stuck = _fake_process(pid=2)
+        pm.workers = {
+            1: WorkerInfo(process=vanished, worker_id=0),
+            2: WorkerInfo(process=stuck, worker_id=1),
+        }
+        pm._shutdown_all_workers()
+        stuck.terminate.assert_called_once()
+        stuck.kill.assert_called_once()
 
     def test_setup_signals_does_not_install_sigchld(self):
         """Härtung R2 P1-1: ein eigener SIGCHLD-``waitpid(-1)``-Reaper
@@ -1561,7 +1616,7 @@ class TestHeartbeatReplacement:
 
     def _pm(self, **kw) -> ProcessManager:
         pm = ProcessManager(
-            num_workers=1,
+            num_workers=kw.pop("num_workers", 1),
             worker_entry=_entry_stub,
             worker_args=(_make_test_cfg(),),
             heartbeat_timeout_s=kw.pop("timeout", 10.0),
@@ -1649,6 +1704,73 @@ class TestHeartbeatReplacement:
         assert as_mock(pm._ctx).Process.call_count == 2  # dritter Haenger: Budget erschoepft
         assert pm._exhausted_slots == 1
 
+    @pytest.mark.parametrize("skipped", ["no_channel", "dead", "terminating", "recycler"])
+    def test_a_skipped_worker_does_not_hide_a_hung_one_behind_it(self, skipped):
+        """T-F-01 (Mutanten ``restart_budget.py:76`` und ``:89`` ``continue`` →
+        ``break``): Die Prüfung läuft über alle Worker; ein übersprungener
+        Worker davor beendet sie nicht."""
+        pm = self._pm(timeout=10.0, num_workers=2)
+        pids = iter(range(500, 510))
+        as_mock(pm._ctx).Process = MagicMock(side_effect=lambda **_kw: _fake_process(pid=next(pids)))
+        first = WorkerInfo(process=_fake_process(pid=4), worker_id=0, channel=self._channel(time.monotonic()))
+        if skipped == "no_channel":
+            first.channel = None
+        elif skipped == "dead":
+            as_mock(first.process).is_alive.return_value = False
+        elif skipped == "terminating":
+            pm._terminating = [(first, time.monotonic() + 3600.0)]
+        else:
+            channel_of(first).request_recycle()
+        hung = WorkerInfo(process=_fake_process(pid=5), worker_id=1, channel=self._channel(time.monotonic() - 61))
+        pm.workers = {4: first, 5: hung}
+
+        pm._check_heartbeats()
+
+        assert hung.expected_shutdown is True
+        as_mock(hung.process).terminate.assert_called_once()
+        spawned = as_mock(pm._ctx).Process.call_count
+        assert spawned == (2 if skipped == "recycler" else 1)  # Ersatz für den Hänger (und den Recycler)
+
+    def _two_terminated_hung_workers(self, monkeypatch) -> tuple[ProcessManager, FakeClock, MagicMock, MagicMock]:
+        """Zwei hängende Worker, beide per ``_check_heartbeats`` ersetzt und mit SIGTERM bedacht."""
+        clock = FakeClock()
+        monkeypatch.setattr(supervisor_module, "time", types.SimpleNamespace(monotonic=clock, sleep=lambda _s: None))
+        pm = self._pm(timeout=10.0, num_workers=2)
+        pids = iter(range(500, 510))
+        as_mock(pm._ctx).Process = MagicMock(side_effect=lambda **_kw: _fake_process(pid=next(pids)))
+        first = _fake_process(pid=4)
+        second = _fake_process(pid=5)
+        pm.workers = {
+            4: WorkerInfo(process=first, worker_id=0, channel=self._channel(clock.now - 61)),
+            5: WorkerInfo(process=second, worker_id=1, channel=self._channel(clock.now - 61)),
+        }
+        pm._check_heartbeats()
+        first.terminate.assert_called_once()
+        second.terminate.assert_called_once()
+        return pm, clock, first, second
+
+    def test_every_overdue_replaced_worker_gets_sigkill(self, monkeypatch):
+        """T-F-02 (Mutant ``restart_budget.py:153`` ``continue`` → ``break``):
+        Nach der SIGTERM-Frist bekommen beide überlebenden Worker SIGKILL."""
+        pm, clock, first, second = self._two_terminated_hung_workers(monkeypatch)
+        clock.now += pm.SHUTDOWN_TERM_S
+        pm._escalate_terminating()
+        first.kill.assert_called_once()
+        second.kill.assert_called_once()
+        assert pm._terminating == []
+
+    def test_a_worker_that_ended_on_sigterm_does_not_shield_the_next_one(self, monkeypatch):
+        """T-F-02 (Mutant ``restart_budget.py:146`` ``continue`` → ``break``):
+        Der erste Worker endet auf SIGTERM, der zweite hängt weiter und
+        bekommt nach der Frist SIGKILL."""
+        pm, clock, first, second = self._two_terminated_hung_workers(monkeypatch)
+        first.is_alive.return_value = False
+        clock.now += pm.SHUTDOWN_TERM_S
+        pm._escalate_terminating()
+        first.kill.assert_not_called()
+        second.kill.assert_called_once()
+        assert pm._terminating == []
+
     def test_expected_shutdown_is_not_replaced_on_dead(self):
         import time
 
@@ -1660,6 +1782,42 @@ class TestHeartbeatReplacement:
         hung.exitcode = -9
         pm._check_dead_workers()
         assert as_mock(pm._ctx).Process.call_count == 1  # kein zweiter Ersatz durch den SIGKILL-Exit
+
+
+class TestMonitorLoopAutoscale:
+    """T-F-08 (Mutant ``supervisor.py:538`` ``self._autoscale is not None`` →
+    ``is None``): Der Monitor-Loop ruft den Autoskalierer. Eine Runde, der
+    gefälschte ``time.sleep`` am Rundenende beendet die Schleife (Muster der
+    Monitor-Loop-Tests; ``run()`` bräuchte echte Prozesse und Signale)."""
+
+    def test_one_round_with_a_backlog_scales_up(self):
+        pm = ProcessManager(
+            num_workers=2,
+            worker_entry=_entry_stub,
+            autoscale=(1, 5),
+            queue_depth_fn=lambda: 10_000,
+        )
+        pm._ctx = MagicMock()
+        pm._ctx.Process = MagicMock(return_value=_fake_process(pid=10))
+        pm.AUTOSCALE_SAMPLE_INTERVAL = 0.0
+        pm.SCALE_COOLDOWN_S = 0.0
+        _register(
+            pm,
+            WorkerInfo(process=_fake_process(pid=1), worker_id=0),
+            WorkerInfo(process=_fake_process(pid=2), worker_id=1),
+        )
+        rounds: list[float] = []
+
+        def end_of_round(seconds: float) -> None:
+            rounds.append(seconds)
+            pm._shutting_down = True
+
+        with patch("swarmq.process_manager.supervisor.time.sleep", side_effect=end_of_round):
+            assert pm._monitor_loop() == 0
+
+        assert len(rounds) == 1
+        assert sorted(pm.workers) == [1, 2, 10]
+        assert pm.slot_state(2) is SlotState.ACTIVE
 
 
 class TestRecycleIntent:
