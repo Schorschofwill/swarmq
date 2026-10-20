@@ -655,5 +655,5 @@ class ProcessManager(RestartBudget):
     def _autoscale_tick(self) -> None:
         autoscale.tick(self)
 
-    def _scale_down_one(self) -> None:
-        autoscale.scale_down_one(self)
+    def _scale_down_one(self) -> bool:
+        return autoscale.scale_down_one(self)
