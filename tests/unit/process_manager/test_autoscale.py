@@ -28,6 +28,8 @@ Test-Liste 0.14.2 (F4-25, F4-26, E-084; Plan 2026-10-20-2100, U2):
 - Regressionstest (E-024): erschöpftes Hang-Budget -- der Slot ist gesperrt,
   der Vorgänger lebt drainend weiter und zählt nicht; in den gesperrten Slot
   startet nichts.
+- Die Logsätze ``autoscale_up`` und ``autoscale_down`` nennen im Feld
+  ``draining`` die Zahl der drainenden Prozesse zum Zeitpunkt der Entscheidung.
 """
 
 from __future__ import annotations
@@ -303,3 +305,21 @@ def test_an_exhausted_hang_budget_locks_the_slot_and_its_draining_worker_does_no
 
     assert _heading(pm) == [1, 2, 3]
     assert pm.slot_state(0) is SlotState.LOCKED
+
+
+def test_scale_decisions_log_the_number_of_draining_processes(
+    clock: FakeClock, swarmq_logs: list[dict[str, Any]]
+) -> None:
+    depth = [0]
+    pm = _pm(clock, n=3, depth=depth, autoscale=(1, 5))
+    _drain_one_by_idle(pm, clock)
+    clock.now += pm.SCALE_COOLDOWN_S
+    depth[0] = 2 * pm.SCALE_UP_THRESHOLD + 20
+    autoscale_module.tick(pm)  # hoch, während Slot 2 draint
+    depth[0] = 0
+    _run(pm, clock, 2 * (pm.SCALE_COOLDOWN_S + pm.SCALE_DOWN_IDLE_S))  # wieder ab, Slot 2 draint noch
+
+    decisions = [
+        (e["event"], e.get("draining")) for e in swarmq_logs if e["event"] in {"autoscale_up", "autoscale_down"}
+    ]
+    assert decisions == [("autoscale_down", 0), ("autoscale_up", 1), ("autoscale_down", 1)]

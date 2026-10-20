@@ -70,6 +70,7 @@ def tick(pm: Any) -> None:
             "autoscale_up",
             depth=depth,
             active=active,
+            draining=_draining(pm),
             max_workers=max_w,
             slot=slot,
         )
@@ -124,6 +125,7 @@ def scale_down_one(pm: Any) -> bool:
         "autoscale_down",
         worker_id=info.worker_id,
         pid=target_pid,
+        draining=_draining(pm),
     )
     info.expected_shutdown = True
     try:
@@ -132,3 +134,8 @@ def scale_down_one(pm: Any) -> bool:
         # Already gone — bookkeeping will clean up in _check_dead.
         pass
     return True
+
+
+def _draining(pm: Any) -> int:
+    """Prozesse im Drain (``expected_shutdown``); erklärt im Log, warum ``active`` kleiner ist (E-084)."""
+    return sum(1 for w in pm.workers.values() if w.expected_shutdown)
