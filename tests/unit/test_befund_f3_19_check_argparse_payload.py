@@ -25,6 +25,7 @@ Testliste:
 # [x] ``ConfigurationError``-Pfad (Modul nicht auffindbar) → alle Vertragsschlüssel, Ports ``null``
 # [x] unerwartete Ausnahme → alle Vertragsschlüssel
 # [x] Erfolgspayload trägt genau die Vertragsschlüssel
+# [x] T-F-24: Fehler-Payload trägt die bekannten Werte (module, reload, warnings, pool, configure)
 """
 
 from __future__ import annotations
@@ -109,6 +110,27 @@ def test_configuration_error_payload_carries_every_contract_key(capsys: pytest.C
     assert not _CONTRACT_KEYS - payload.keys()
     assert payload["metrics_ports"] is None
     assert payload["health_ports"] is None
+
+
+@pytest.mark.entscheidung("E-062")
+@pytest.mark.usefixtures("clean_env")
+def test_configuration_error_payload_keeps_the_values_known_before_the_failure(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Testlücke T-F-24 (Runde 4): Der Fehler-Payload trägt die Werte, die vor
+    der gescheiterten Prüfung feststanden, nicht nur die Schlüssel.
+
+    Mutanten in ``check_cmd.py``: ``:74`` ``warnings=[]`` → ``None``;
+    ``:57`` ``module=getattr(args, "module", None)`` → ``None``;
+    ``:58`` ``reload=bool(getattr(args, "reload", False))`` → ``False``.
+    """
+    code = main(["worker", "--module=f3_19_does_not_exist", "--reload", "--configure", "json:loads", "--check"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert payload["error_type"] == "ConfigurationError"
+    assert (payload["module"], payload["reload"], payload["warnings"]) == ("f3_19_does_not_exist", True, [])
+    assert (payload["pool"], payload["configure"]) == ("io", "json:loads")
 
 
 @pytest.mark.usefixtures("clean_env")

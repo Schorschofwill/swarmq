@@ -24,6 +24,11 @@
 # E-081 (0.13.1, Plan 2026-04-23-001, E4):
 # 10. Ein roher Treiberfehler aus ``get_scheduler_leader`` endet über
 #     ``main`` mit Exit 1, ohne Ausgabe auf stdout; das Backend wird geschlossen.
+#
+# Testlücke T-F-17 (Runde 4): ``upcoming``
+# 11. Horizont 24 h: ein Termin in 23 h erscheint, einer in 25 h nicht.
+# 12. Sortiert nach Fire-Zeit, auch wenn der Store anders liefert; JSON-Schlüssel
+#     ``name``, ``fire_ts_ms``, ``fire_at``, ``task``, ``queue``, ``disabled``.
 
 from __future__ import annotations
 
@@ -32,8 +37,10 @@ import asyncio
 import io
 import json
 from contextlib import redirect_stdout
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
+import msgspec
 import pytest
 from valkey.exceptions import ConnectionError as ValkeyConnectionError
 from valkey.exceptions import TimeoutError as ValkeyTimeoutError
@@ -41,6 +48,7 @@ from valkey.exceptions import TimeoutError as ValkeyTimeoutError
 from swarmq.cli import schedule_cmd
 from swarmq.contracts import LeaderInfo
 from swarmq.exceptions import BackendConnectionError
+from swarmq.scheduler import ScheduleDefinition
 
 pytestmark = [pytest.mark.timeout(5)]
 
@@ -204,3 +212,86 @@ def test_raw_driver_error_from_the_leader_lookup_ends_with_exit_1(monkeypatch, c
     assert captured.out == ""
     assert str(error) in captured.err
     backend.close.assert_awaited_once()
+
+
+_NOW_MS = 1_800_000_000_000  # 2027-01-15 08:00:00 UTC
+_HOUR_MS = 3_600_000
+
+
+def _with_schedules(backend: MagicMock, *entries: tuple[str, int, ScheduleDefinition]) -> MagicMock:
+    """Store-Fake mit dem Vertrag von ``poll_due``: fällig bis ``now_ms``, in
+    der Reihenfolge der Einträge (bewusst nicht sortiert)."""
+
+    async def poll_due(now_ms: int, *, limit: int = 100) -> list[tuple[str, int, bytes]]:
+        due = [(name, score, msgspec.json.encode(defn)) for name, score, defn in entries if score <= now_ms]
+        return due[:limit]
+
+    backend.schedules.poll_due = poll_due
+    return backend
+
+
+def _defn(name: str, *, task: str = "t", queue: str = "default", disabled: bool = False) -> ScheduleDefinition:
+    return ScheduleDefinition(
+        schedule_name=name,
+        task_name=task,
+        args=(),
+        kwargs={},
+        queue=queue,
+        cron="0 1 * * *",
+        fire_ts_ms=0,
+        source="cli",
+        disabled=disabled,
+    )
+
+
+@pytest.fixture
+def frozen_wall_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(schedule_cmd, "time", SimpleNamespace(time=lambda: _NOW_MS / 1000))
+
+
+@pytest.mark.usefixtures("frozen_wall_clock")
+async def test_upcoming_looks_ahead_24_hours(monkeypatch) -> None:
+    """T-F-17, Mutant ``schedule_cmd.py:407`` ``24 * 3600 * 1000`` →
+    ``24 * 3600 / 1000``: der Blick reichte 86 ms statt 24 h voraus."""
+    backend = _with_schedules(
+        _backend(leader=None, version=None, workers={}),
+        ("in-25h", _NOW_MS + 25 * _HOUR_MS, _defn("in-25h")),
+        ("in-23h", _NOW_MS + 23 * _HOUR_MS, _defn("in-23h")),
+    )
+
+    data = json.loads(await _status(monkeypatch, backend, "json"))
+
+    assert [entry["name"] for entry in data["upcoming"]] == ["in-23h"]
+    assert data["now_ms"] == _NOW_MS
+
+
+@pytest.mark.usefixtures("frozen_wall_clock")
+async def test_upcoming_is_sorted_by_fire_time_with_the_documented_keys(monkeypatch) -> None:
+    """T-F-17, Mutanten ``schedule_cmd.py:409`` Sortierung streichen und
+    ``schedule_cmd.py:420`` ``"fire_at"`` → ``"XXfire_atXX"``."""
+    backend = _with_schedules(
+        _backend(leader=None, version=None, workers={}),
+        ("later", _NOW_MS + 2 * _HOUR_MS, _defn("later", task="report", queue="slow", disabled=True)),
+        ("sooner", _NOW_MS + _HOUR_MS, _defn("sooner")),
+    )
+
+    data = json.loads(await _status(monkeypatch, backend, "json"))
+
+    assert data["upcoming"] == [
+        {
+            "name": "sooner",
+            "fire_ts_ms": _NOW_MS + _HOUR_MS,
+            "fire_at": "2027-01-15T09:00:00+00:00",
+            "task": "t",
+            "queue": "default",
+            "disabled": False,
+        },
+        {
+            "name": "later",
+            "fire_ts_ms": _NOW_MS + 2 * _HOUR_MS,
+            "fire_at": "2027-01-15T10:00:00+00:00",
+            "task": "report",
+            "queue": "slow",
+            "disabled": True,
+        },
+    ]
