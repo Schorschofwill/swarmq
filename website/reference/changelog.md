@@ -4,6 +4,55 @@ All notable changes to SwarmQ. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [0.14.1rc1] — 2026-10-20
+
+Release candidate for 0.14.1 (install with `pip install --pre`).
+
+Patch release for 0.14.0. No new headers, Lua scripts or format
+changes: 0.14.1 runs next to 0.14.0 on the same queues and keys.
+
+### Fixed
+
+- **A connection loss while a worker subscribes is a
+  `BrokerConnectionError`.** If the connection dropped during
+  `set_qos`, the passive queue lookup or `basic.consume`, `consume()`
+  let the raw aiormq error through (`ConnectionClosed`,
+  `AMQPConnectionError`, `ChannelInvalidStateError`, `RuntimeError`),
+  so an `except BrokerConnectionError` around `start_worker()` (see
+  [Errors](errors.md)) did not catch it. It now arrives as
+  `BrokerConnectionError` with the original error as its cause, like
+  a connection loss in `declare_queue`. A missing queue stays
+  `ChannelNotFoundEntity`, also when it is deleted between the passive
+  lookup and `basic.consume`; in that case the next declaration now
+  creates it again. `swarmq worker` still exits with 1 and is
+  restarted as before (F4-23).
+- **A channel whose opening was cut off no longer comes back with a
+  reconnect.** aio-pika adds a robust channel to the connection's
+  restore set as soon as it is created, before it is open. When opening
+  the publish or consume channel ended after the broker had answered
+  `Channel.Open` and `Confirm.Select` but before `Basic.Qos` (the 10 s
+  limit for opening a channel, a cancelled caller, a dropped
+  transport), the channel stayed in that set, and every later reconnect
+  reopened it as an extra channel at the broker. swarmq now removes
+  such a channel from the restore set; the error the caller sees is
+  unchanged. The window is about one round trip, so this was rare. With
+  it, the channel count at the broker stays flat across reconnects as
+  0.14.0 promised (F4-24, E-078).
+
+### Upgrade notes
+
+1. **A connection loss while the worker subscribes is no longer an
+   `OSError`, `ConnectionError`, `AMQPConnectionError` or
+   `RuntimeError`.** If you embed `start_worker()` and catch the
+   connection loss with `except ConnectionError`, `except OSError`,
+   `except aiormq.exceptions.AMQPConnectionError` or
+   `except RuntimeError`, that handler no longer catches a connection
+   loss during the subscription. It now arrives as
+   `BrokerConnectionError` (a `SwarmQError`, not an `OSError`), with
+   the original error in `__cause__`. Catch `BrokerConnectionError`
+   instead, as shown in [Errors](errors.md). Under `swarmq worker`
+   nothing changes: the process exits with 1 and is restarted (E-057).
+
 ## [0.14.0] — 2026-10-20
 
 0.14.0 is 0.14.0rc1 without code changes. Read

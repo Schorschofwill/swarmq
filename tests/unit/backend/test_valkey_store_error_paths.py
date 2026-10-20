@@ -18,7 +18,8 @@ Bewusst nicht in der Matrix:
   unterscheidbar).
 
 Grenze gemockt: die registrierten Skripte, ``DEL`` (bzw. die Pipeline-Verbindung
-des Guard-Stores) werfen den Treiberfehler; ``TIME`` antwortet.
+des Guard-Stores, ``GET``/``SET``/``DEL`` des Sollwert-Stores) werfen den
+Treiberfehler; ``TIME`` antwortet.
 
 Testliste:
 # [x] Lock-Store: acquire, release, renew, extend (Mutex und Semaphor), observe,
@@ -26,6 +27,8 @@ Testliste:
 # [x] Guard-Store: claim, renew, mark_done, mark_superseded, release
 # [x] Rate-Limit-Store: check
 # [x] Chord-Store: record_member, record_and_check_complete
+# [x] Sollwert-Store (Kontrollkanal): read_setpoint, write_setpoint,
+#     clear_setpoint, read_status, write_status (Deferred Runde 4, U3/KTD3)
 """
 
 from __future__ import annotations
@@ -41,10 +44,12 @@ from valkey.exceptions import OutOfMemoryError, ResponseError
 from valkey.exceptions import TimeoutError as ValkeyTimeoutError
 
 from swarmq.backend.valkey.chords import ChordManager
+from swarmq.backend.valkey.control import ValkeySetpointStore
 from swarmq.backend.valkey.execution_guard import ValkeyExecutionGuardStore
 from swarmq.backend.valkey.locks import ValkeyLockStore
 from swarmq.backend.valkey.rate_limit import ValkeyRateLimitStore
 from swarmq.contracts import LockToken
+from swarmq.contracts.control import Setpoint
 from swarmq.exceptions import BackendConnectionError, BackendResponseError
 from tests.unit.backend._pipeline_fakes import FakeScript, fake_client
 
@@ -92,6 +97,15 @@ def _guard(error: BaseException) -> ValkeyExecutionGuardStore:
     return ValkeyExecutionGuardStore(client)
 
 
+def _setpoints(error: BaseException) -> ValkeySetpointStore:
+    """Sollwert-Store auf einem geliehenen Client, dessen ``GET``, ``SET`` und ``DEL`` werfen."""
+    client = MagicMock()
+    client.get = AsyncMock(side_effect=error)
+    client.set = AsyncMock(side_effect=error)
+    client.delete = AsyncMock(side_effect=error)
+    return ValkeySetpointStore(client=client)
+
+
 _MUTEX = LockToken(name="n", owner="o", max_concurrency=1)
 _SEMAPHORE = LockToken(name="n", owner="o", max_concurrency=3)
 
@@ -129,6 +143,11 @@ _CALLS: list[Any] = [
         lambda e: ChordManager(_script_client(e)).record_and_check_complete("wf", "/h", "m1", 2, 1_000),
         id="chord-record-and-check-complete",
     ),
+    pytest.param(lambda e: _setpoints(e).read_setpoint("g"), id="setpoint-read"),
+    pytest.param(lambda e: _setpoints(e).write_setpoint("g", Setpoint(low=1, high=2)), id="setpoint-write"),
+    pytest.param(lambda e: _setpoints(e).clear_setpoint("g"), id="setpoint-clear"),
+    pytest.param(lambda e: _setpoints(e).read_status("g", "s1"), id="setpoint-status-read"),
+    pytest.param(lambda e: _setpoints(e).write_status("g", "s1", {"ok": True}, ttl_s=1.0), id="setpoint-status-write"),
 ]
 
 

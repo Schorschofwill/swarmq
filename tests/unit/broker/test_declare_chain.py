@@ -16,6 +16,7 @@ Test-Liste:
 - [x] Cache: eine zweite Deklaration derselben Queue öffnet keinen Channel
 - [x] Cache: ``UnroutableMessage`` an eine Queue der Familie verwirft den Eintrag (F5)
 - [x] Cache: NOT_FOUND beim Consume verwirft den Eintrag
+- [x] Cache: NOT_FOUND aus ``basic.consume`` (Queue nach der passiven Abfrage gelöscht) verwirft den Eintrag
 - [x] effektives Delivery-Limit je Queue: Wert der Queue, -1 unbegrenzt (None), 0 bleibt 0,
       fehlend 20 (S1), classic und unbekannte Queue None
 - [x] Queue ohne Delivery-Limit: WARNING mit Hinweis auf den Broker-Default 20
@@ -264,6 +265,26 @@ async def test_not_found_on_consume_drops_the_cached_declaration() -> None:
     await broker.declare_queue("tasks")
     consume_channel = AsyncMock(is_closed=False)
     consume_channel.get_queue.side_effect = ChannelNotFoundEntity("NOT_FOUND - no queue 'tasks' in vhost '/'")
+    broker._consume_channel = consume_channel
+    del rabbit.queues["tasks"]
+
+    with pytest.raises(ChannelNotFoundEntity):
+        await broker.consume("tasks", AsyncMock(), concurrency=1)
+    await broker.declare_queue("tasks")
+
+    assert "tasks" in rabbit.queues
+
+
+async def test_not_found_from_basic_consume_drops_the_cached_declaration() -> None:
+    """Die Queue verschwindet zwischen passiver Abfrage und ``basic.consume``:
+    die rohe Ausnahme kommt durch, die Deklaration ist verworfen (F4-23)."""
+    rabbit = FakeRabbit()
+    broker = make_broker(rabbit)
+    await broker.declare_queue("tasks")
+    consume_channel = AsyncMock(is_closed=False)
+    consume_channel.get_queue.return_value.consume.side_effect = ChannelNotFoundEntity(
+        "NOT_FOUND - no queue 'tasks' in vhost '/'"
+    )
     broker._consume_channel = consume_channel
     del rabbit.queues["tasks"]
 

@@ -4,6 +4,58 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 [Keep a Changelog](https://keepachangelog.com/) und
 [Semantic Versioning](https://semver.org/).
 
+## [0.14.1rc1] — 2026-10-20
+
+Release-Candidate für 0.14.1 (Installation mit `pip install --pre`).
+
+Patch-Release für 0.14.0. Keine neuen Header, Lua-Skripte oder
+Formatänderungen: 0.14.1 läuft neben 0.14.0 auf denselben Queues und
+Schlüsseln.
+
+### Behoben
+
+- **Ein Verbindungsabriss beim Anmelden eines Workers ist ein
+  `BrokerConnectionError`.** Riss die Verbindung während `set_qos`, der
+  passiven Queue-Abfrage oder `basic.consume`, ließ `consume()` den rohen
+  aiormq-Fehler durch (`ConnectionClosed`, `AMQPConnectionError`,
+  `ChannelInvalidStateError`, `RuntimeError`); ein
+  `except BrokerConnectionError` um `start_worker()` (siehe
+  [Fehler](errors.md)) fing ihn nicht. Jetzt kommt er als
+  `BrokerConnectionError` mit dem ursprünglichen Fehler als Ursache an,
+  wie ein Verbindungsabriss in `declare_queue`. Eine fehlende Queue
+  bleibt `ChannelNotFoundEntity`, auch wenn sie zwischen der passiven
+  Abfrage und `basic.consume` gelöscht wird; die nächste Deklaration
+  legt sie dann wieder an. `swarmq worker` endet weiter mit
+  Exit 1 und wird wie bisher neu gestartet (F4-23).
+- **Ein Kanal, dessen Öffnen abgebrochen wurde, kommt mit einem
+  Reconnect nicht mehr wieder.** aio-pika trägt einen robusten Kanal
+  schon beim Anlegen in die Wiederherstellungsliste der Verbindung ein,
+  bevor er offen ist. Endete das Öffnen des Publish- oder Consume-Kanals,
+  nachdem der Broker `Channel.Open` und `Confirm.Select` beantwortet
+  hatte, aber vor `Basic.Qos` (die Frist von 10 s für das Öffnen eines
+  Kanals, ein abgebrochener Aufrufer, ein abgerissener Transport), blieb
+  der Kanal in dieser Liste, und jeder spätere Reconnect öffnete ihn als
+  zusätzlichen Kanal beim Broker. swarmq meldet einen solchen Kanal
+  jetzt ab; der Fehler, den der Aufrufer sieht, bleibt derselbe. Das
+  Fenster ist etwa eine Round-Trip-Zeit lang, der Fall war selten. Damit
+  bleibt die Kanalzahl beim Broker über Reconnects gleich, wie 0.14.0
+  zugesagt hat (F4-24, E-078).
+
+### Upgrade-Hinweise
+
+1. **Ein Verbindungsabriss beim Anmelden des Workers ist kein
+   `OSError`, `ConnectionError`, `AMQPConnectionError` oder
+   `RuntimeError` mehr.** Wer `start_worker()` eingebettet betreibt und
+   den Abriss mit `except ConnectionError`, `except OSError`,
+   `except aiormq.exceptions.AMQPConnectionError` oder
+   `except RuntimeError` fasst, fängt einen Verbindungsabriss beim
+   Anmelden der Queues damit nicht mehr. Er kommt jetzt als
+   `BrokerConnectionError` (ein `SwarmQError`, kein `OSError`) an, der
+   ursprüngliche Fehler steht in `__cause__`. Fangen Sie stattdessen
+   `BrokerConnectionError`, wie unter [Fehler](errors.md) gezeigt. Unter
+   `swarmq worker` ändert sich nichts: Der Prozess endet mit Exit 1 und
+   wird neu gestartet (E-057).
+
 ## [0.14.0] — 2026-10-20
 
 0.14.0 ist 0.14.0rc1 ohne Codeänderungen. Die Korrekturen und die

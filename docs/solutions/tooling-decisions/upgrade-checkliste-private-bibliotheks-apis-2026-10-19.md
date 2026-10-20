@@ -152,21 +152,41 @@ läuft. Tests wie oben.
 - **Tests:** `uv run just unit -k "consumer_watch or settle"` und
   `uv run just integration tests/integration/broker/test_consumer_timeout.py`.
 
-### `Connection.channel()` fängt `CancelledError` beim Öffnen nicht (7.0.0, seit 0.14, PF-20)
+### `Connection.channel()` fängt `CancelledError` beim Öffnen nicht (7.0.0, seit 0.14, PF-20; berichtigt 0.14.1)
 
 - **Verhalten:** `aiormq.Connection.channel` trägt den Kanal vor `channel.open()` in
-  `channels[n]` ein und räumt den Eintrag nur in `except Exception` wieder aus. Wird das
-  Öffnen abgebrochen (`wait_for`, `asyncio.timeout`), bleibt der Eintrag stehen, und
-  aio-pika kann den halb geöffneten Kanal nicht schließen (`Channel.close` meldet nur
-  „Channel not opened“).
+  `channels[n]` ein und räumt den Eintrag nur in `except Exception` wieder aus. Die
+  Folgen eines Abbruchs sind enger, als dieser Abschnitt bis 0.14.0 sagte
+  (Gegenprüfung 0.14.1, Proben `probe_2a`, `probe_2c`, `probe_2d_*`):
+  - **Im Ressourcenalarm entsteht kein Eintrag.** aio-pika wartet vor dem Öffnen
+    `transport.ready()` ab (`Channel._open`), und aiormqs `Connection.ready()` wartet
+    neben `connected` auch auf „unblocked“. Ein Abbruch im Alarm trifft dieses Warten,
+    nicht das Öffnen (`probe_2c`: `channels` bleibt `{1}` nach dem Fristablauf von
+    `_open_probe_channel` und von `_ensure_publish_channel`).
+  - **Ein Abbruch mitten im Öffnen räumt sich selbst auf.** Läuft das RPC
+    `Channel.Open` schon, fängt `Channel.rpc` den `CancelledError`, sendet
+    `Channel.Close(504)` (WARNING „Closing channel … because RPC call … cancelled“), und
+    der Eintrag verschwindet mit dem `Close-Ok` (`probe_2d_*`: nach höchstens 5 s
+    wieder `{1}`).
+  - **Nur ein Abbruch vor dem Anlaufen der inneren RPC-Task** (Eintrag schon gesetzt,
+    `Channel.Open` noch nicht geschrieben) lässt einen Eintrag ohne Broker-Kanal
+    stehen (`probe_2a`: `channels` behält `2`, beim Broker nur Kanal 1). Der Eintrag
+    belegt bis zum Ende der Verbindung eine Kanalnummer; aio-pika kann ihn nicht
+    schließen (`Channel.close` meldet nur „Channel not opened“). Einen halb offenen
+    Kanal beim Broker gibt es dabei nicht.
 - **Folge für swarmq:** `queue_exists_on_throwaway` in `broker/rabbitmq/robust_channels.py`
-  (aufgerufen von `_consume_queue_exists` in `connection.py`) bricht das Öffnen des Wegwerf-Kanals nicht ab (`asyncio.shield`), sondern wartet es
-  im `finally` ab und schließt den Kanal, beides zusammen höchstens `_RPC_TIMEOUT_S`
-  (E-083). `_open_probe_channel` in `arg_conflict.py` bricht das Öffnen dagegen mit
-  seiner Frist ab; dort ist die Verbindung dann ohnehin tot oder blockiert.
+  (aufgerufen von `_consume_queue_exists` in `connection.py`) bricht das Öffnen des
+  Wegwerf-Kanals nicht ab (`asyncio.shield`), sondern wartet es im `finally` ab und
+  schließt den Kanal, beides zusammen höchstens `_RPC_TIMEOUT_S` (E-083). Nötig ist das
+  nur für das schmale Fenster vor der RPC-Task; schaden kann es nicht.
+  `_open_probe_channel` in `arg_conflict.py` bricht das Öffnen dagegen mit seiner Frist
+  ab; im Alarm trifft der Abbruch das Warten auf „unblocked“ (siehe oben), sonst ist die
+  Verbindung ohnehin tot. Der Verdacht „halb offener Probe-Kanal“ ist NICHT HALTBAR
+  (Befundregister Runde 4, „NICHT HALTBAR“).
 - **Prüfen bei einem aiormq-Upgrade:** ob `channel()` den Eintrag auch bei einem
-  Abbruch ausräumt (`except BaseException` oder `finally`). Dann wäre das Abwarten
-  überflüssig, aber nicht falsch.
+  Abbruch ausräumt (`except BaseException` oder `finally`), ob `Channel.rpc` bei einem
+  Abbruch weiter `Channel.Close` sendet und ob `Connection.ready()` weiter auf
+  „unblocked“ wartet. Fällt eins davon weg, gilt die Einschätzung oben nicht mehr.
 - **Tests:** `uv run just unit -k consumer_watch_missing_queue`
   (`test_a_check_aborted_while_the_channel_opens_closes_the_channel_once_it_is_open`).
 
@@ -178,10 +198,19 @@ läuft. Tests wie oben.
   `_RobustConnection__channels` (ein `weakref.WeakSet` der `RobustChannel`) und entfernt
   daraus den verworfenen Publish-Kanal (`_discard_publish_channel` in
   `broker/rabbitmq/connection.py`, vor dem im Alarm zurückgestellten Close) und die
-  Kanäle, die `close()` auf einer injizierten Verbindung oder einem Pool schließt.
+  Kanäle, die `close()` auf einer injizierten Verbindung oder einem Pool schließt. Seit
+  0.14.1 (F4-24) auch den Publish- oder Consume-Kanal, dessen Öffnen in
+  `_ensure_channel_tracked` ohne Erfolg endet (Frist, Abbruch, Fehler; `try/finally`).
 - **Annahmen:** `RobustConnection.channel()` trägt jeden neuen Kanal in dieses
-  `WeakSet` ein, und `_on_connected` stellt nach einem Reconnect genau die Kanäle darin
-  wieder her. Ein Kanal, der nicht darin steht, wird nicht wieder geöffnet.
+  `WeakSet` ein, und zwar schon beim Anlegen, bevor er geöffnet ist (`channel()` ist
+  synchron, erst `await` öffnet). `_on_connected` stellt nach einem Reconnect genau die
+  Kanäle darin wieder her. Ein Kanal, der nicht darin steht, wird nicht wieder geöffnet.
+  Endet das Öffnen eines `RobustChannel` mit einer Ausnahme oder einem Abbruch, schließt
+  aio-pikas `Channel._open` (`except BaseException`, in 10.0.1 Z. 192–196) den
+  aiormq-Kanal selbst, nimmt ihn aber nicht aus dem `WeakSet`. Ein Abbruch erst in
+  `RobustChannel._on_open` (`Basic.Qos`, nach Open-Ok und Select-Ok) ließ den Kanal bis
+  0.14.0 darin, und jeder Reconnect öffnete ihn als Waise (F4-24, Probe D). swarmq
+  schließt darum nichts selbst, es meldet nur ab.
 - **Rückfall:** Ist das Attribut kein `WeakSet`, loggt swarmq je Verbindung einmal die
   WARNING `robust_channel_release_unavailable` und meldet nichts ab (fail-open). Ein
   verworfener oder geschlossener robuster Kanal kann dann nach einem Reconnect wieder
@@ -231,7 +260,10 @@ läuft. Tests wie oben.
   fail-open und injizierte Verbindung) und
   `uv run just integration -k befund_f4_20` (Garbage Collection aus, Abriss über die
   Management-API: beim Broker nur die lebenden Kanäle; Reconnect nach der Tiefe einer
-  gelöschten Queue binnen 10 s).
+  gelöschten Queue binnen 10 s). Für das abgebrochene Öffnen (F4-24):
+  `uv run just unit tests/unit/broker/test_befund_f4_24_aborted_channel_open.py` und
+  `uv run just integration tests/integration/broker/test_befund_f4_24_aborted_channel_open.py`
+  (`Basic.Qos` hängt, das Öffnen reißt die Frist, zwei Abrisse; Publish und Consume).
 
 ### Restore-Fenster und `reopen_callbacks` (öffentliches API, Ablauf, seit 0.14, F4-22)
 
