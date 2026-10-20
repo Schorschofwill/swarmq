@@ -8,10 +8,13 @@ erzeugen: Absturz mit Neustart (``_check_dead_workers`` -> ``_maybe_restart``,
 Budget und Sperre nach E-024), Ende eines Drains (Exit 0 eines Prozesses mit
 ``expected_shutdown``), Recycling (Vorgänger draint, Ersatz im selben Slot,
 wie ``_check_heartbeats``), Hang-Ersatz (``_replace_hung_worker``, mit
-erschöpfbarem Budget) und das Aufheben abgelaufener Sperren.
+erschöpfbarem Budget) und das Aufheben abgelaufener Sperren. Mit Spielraum
+(``--max-processes``) schreibt eine Regel Sollwerte des Kontrollkanals
+(oder entfernt sie); sie laufen durch den echten ``setpoint.tick`` samt
+``reconcile``, nur Lesen und Rückmelden am Speicher sind ersetzt.
 
-Zeit: ``time`` in ``process_manager.supervisor`` und
-``process_manager.autoscale`` läuft auf einer ``FakeClock``. Logsätze des
+Zeit: ``time`` in ``process_manager.supervisor``, ``process_manager.autoscale``
+und ``process_manager.setpoint`` läuft auf einer ``FakeClock``. Logsätze des
 Autoskalierers werden über einen Ersatz-Logger mitgeschrieben.
 
 Recycling und Hang-Ersatz treffen hier nur Slots, die nicht schon im
@@ -25,9 +28,9 @@ Invarianten (Quelle E-084):
 - A2 Höchstens ein ``autoscale_down`` je PID (über das Log, nicht über
   ``terminate``, das auch Hang-Ersatz schickt): Ein drainender Worker wird
   nie erneut gewählt (F4-25).
-- A3 Nach einem Abbau bleiben mindestens ``MIN`` Slots mit einem nicht
+- A3 Nach einem Abbau bleiben mindestens ``MIN`` (wirksame Untergrenze) Slots mit einem nicht
   drainenden Prozess (F4-26).
-- A4 Nach einem Hochskalieren sind höchstens ``MAX`` Slots mit einem nicht
+- A4 Nach einem Hochskalieren sind höchstens ``MAX`` (wirksame Obergrenze) Slots mit einem nicht
   drainenden Prozess besetzt.
 """
 
@@ -41,7 +44,8 @@ from unittest.mock import MagicMock, patch
 from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, initialize, invariant, rule
 
-from swarmq.process_manager import ProcessManager
+from swarmq.contracts.control import Setpoint
+from swarmq.process_manager import ProcessManager, setpoint
 from swarmq.process_manager import autoscale as autoscale_module
 from swarmq.process_manager import supervisor as supervisor_module
 from swarmq.process_manager.slots import SlotState, WorkerInfo, heading_slots
@@ -60,10 +64,14 @@ class AutoscaleMachine(RuleBasedStateMachine):
             patch.object(supervisor_module, "time", fake_time),
             patch.object(autoscale_module, "time", fake_time),
             patch.object(autoscale_module, "logger", self.logger),
+            patch.object(setpoint, "time", fake_time),
+            patch.object(setpoint, "read_setpoint_sync", lambda _factory, _group: self.stored),
+            patch.object(setpoint, "write_status_sync", lambda *_a, **_kw: None),
         ]
         for p in self._patches:
             p.start()
         self.depth = 0
+        self.stored: Setpoint | None = None
         self.pm: ProcessManager | None = None
         self.bounds = (1, 1)
 
@@ -87,7 +95,10 @@ class AutoscaleMachine(RuleBasedStateMachine):
             autoscale=bounds,
             queue_depth_fn=lambda: self.depth,
             max_processes=max_w + headroom if headroom else None,
+            setpoint_store_factory=MagicMock(),  # ersetzt: read_setpoint_sync/write_status_sync
+            group="g",
         )
+        pm.SETPOINT_SAMPLE_INTERVAL = 0.0  # die Regel bestimmt, wann gelesen wird
         pm._ctx = MagicMock()
         pids = iter(range(100, 100_000))
         pm._ctx.Process = MagicMock(side_effect=lambda **_kw: _fake_process(pid=next(pids)))
@@ -131,7 +142,7 @@ class AutoscaleMachine(RuleBasedStateMachine):
         downs_before = len(self._downs())
         ups_before = sum(1 for c in self.logger.info.call_args_list if c.args == ("autoscale_up",))
         autoscale_module.tick(self._pm())
-        min_w, max_w = self.bounds
+        min_w, max_w = self._pm().effective_bounds
         if len(self._downs()) > downs_before:
             assert self._heading() >= min_w, f"A3: nach dem Abbau {self._heading()} nicht drainende < MIN={min_w}"
         if sum(1 for c in self.logger.info.call_args_list if c.args == ("autoscale_up",)) > ups_before:
@@ -175,6 +186,17 @@ class AutoscaleMachine(RuleBasedStateMachine):
             return
         pm = self._pm()
         pm._replace_hung_worker(info, stale_s=pm.heartbeat_timeout_s + 1.0)
+
+    @rule(low=st.integers(1, 5), span=st.integers(0, 4), clear=st.booleans())
+    def write_setpoint(self, low: int, span: int, clear: bool) -> None:
+        """Kontrollkanal: Sollwert schreiben oder entfernen, dann ein Durchlauf."""
+        pm = self._pm()
+        if pm.max_processes is None:
+            return
+        headroom = int(pm.max_processes)
+        low = min(low, headroom)
+        self.stored = None if clear else Setpoint(low, min(headroom, low + span))
+        setpoint.tick(pm)
 
     @rule()
     def unlock_expired(self) -> None:
