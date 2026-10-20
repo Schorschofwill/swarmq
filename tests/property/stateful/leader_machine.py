@@ -72,8 +72,9 @@ Invarianten (Quelle):
   Meldung (letzte Meldung älter als ``live_window_ms``), ist bis zur
   nächsten Übernahme jeder Commit von ``static-1`` durch diesen Kandidaten
   ein Rückhalt auf
-  ``now + seen_interval`` ohne Publish; der erste Rückhalt seit Amtsantritt
-  oder seit dem letzten Fire von ``static-1`` sendet
+  ``now + seen_interval`` ohne Publish; der erste Rückhalt seit Amtsantritt,
+  seit dem letzten Fire von ``static-1`` oder seit einer Übernahme, die
+  ``static-1`` vergessen fand (``_held_crons - known``), sendet
   ``SCHEDULER_CRON_UNOWNED`` mit ``held=True``. Quelle: E-014,
   ``scheduler/unowned.py`` (``_is_unowned``, ``_hold_unowned``).
 - L9 Lebendigkeit (Regel ``settle``): Ohne Fehler hat das System nach höchstens
@@ -688,6 +689,11 @@ class LeaderMachine(AsyncStateMachine[LeaderEnv]):
         cand.adopted = True
         cand.reporting_at_adopt = self.reporting
         cand.unowned_at_adopt = self.reports_age and self.static_known and not self._static_reported_live()
+        if not self.static_known:
+            # Vergessen per ``remove_schedule``: die Übernahme gibt den
+            # Rückhalt frei (``_held_crons - known`` in ``_load_known_names``,
+            # ``scheduler/unowned.py``); der nächste Rückhalt ist ein Übergang.
+            cand.holding = False
         names_after, scores_after = self._store_view()
         self._check_adopt(names_before, scores_before, names_after, scores_after)
         self._after_tick()
