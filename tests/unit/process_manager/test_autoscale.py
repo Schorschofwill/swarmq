@@ -9,6 +9,10 @@ Test-Liste:
 - Die Leerlauffrist muss ganz verstrichen sein, bevor ein Worker geht.
 - Nach einem Hochskalieren beginnt die Leerlauffrist von vorn.
 - Nach einem Herunterskalieren beginnt die Leerlauffrist von vorn.
+
+Test-Liste 0.14.2 (F4-25, F4-26, E-084; Plan 2026-10-20-2100, U2):
+- Ein Abbau-Takt, in dem nur drainende oder zu junge Worker übrig sind,
+  schickt kein SIGTERM (F4-25).
 """
 
 from __future__ import annotations
@@ -117,3 +121,36 @@ def test_after_a_scale_down_the_idle_window_starts_over(clock: FakeClock) -> Non
     clock.now += pm.SCALE_DOWN_IDLE_S / 2
     autoscale_module.tick(pm)
     assert _drained(pm) == 1
+
+
+def _crash_and_restart(pm: ProcessManager, *slots: int) -> None:
+    """Die Worker der Slots stürzen ab; der Supervisor startet je einen jungen Ersatz."""
+    for info in pm.workers.values():
+        if info.worker_id in slots and not info.expected_shutdown:
+            as_mock(info.process).is_alive.return_value = False
+            as_mock(info.process).exitcode = 1
+    pm._check_dead_workers()
+
+
+def _drain_one_by_idle(pm: ProcessManager, clock: FakeClock) -> None:
+    """Ein Abbau-Takt nach voller Leerlauffrist (die Abkühlzeit ist vorbei)."""
+    autoscale_module.tick(pm)  # Leerlauf beginnt
+    clock.now += pm.SCALE_DOWN_IDLE_S
+    autoscale_module.tick(pm)
+
+
+@pytest.mark.befund("F4-25")
+def test_a_down_tick_with_only_draining_or_young_candidates_sends_no_sigterm(clock: FakeClock) -> None:
+    pm = _pm(clock, n=3, depth=[0], autoscale=(1, 5))
+    _drain_one_by_idle(pm, clock)
+    (draining,) = [w for w in pm.workers.values() if w.expected_shutdown]
+    clock.now += pm.SCALE_COOLDOWN_S
+    autoscale_module.tick(pm)  # Leerlauf beginnt: zwei nicht drainende Worker > MIN
+    clock.now += pm.SCALE_DOWN_IDLE_S - 10.0
+    _crash_and_restart(pm, 0, 1)  # beide Ersatzprozesse sind beim Abbau-Takt 10 s alt
+    clock.now += 10.0
+
+    autoscale_module.tick(pm)
+
+    as_mock(draining.process).terminate.assert_called_once()
+    assert [w for w in pm.workers.values() if w.expected_shutdown] == [draining]

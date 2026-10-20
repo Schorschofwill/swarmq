@@ -13,6 +13,7 @@ import enum
 import math
 import multiprocessing.process
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from swarmq.supervision import SupervisorChannel
@@ -119,3 +120,12 @@ class WorkerInfo:
     spawned_at: float = field(default_factory=time.monotonic)
     # Plan 2026-09-03-001 (R21/R22): Lebenszeichen-/Absichts-/Bestaetigungskanal.
     channel: SupervisorChannel | None = None
+
+
+def heading_slots(workers: Iterable[WorkerInfo]) -> set[int]:
+    """Slots mit mindestens einem Prozess, der nicht zum sanften Ende markiert ist.
+
+    Ein drainender Prozess (``expected_shutdown``) zählt nicht; ein Slot im
+    Übergang zählt über den Ersatz genau einmal (E-084).
+    """
+    return {w.worker_id for w in workers if not w.expected_shutdown}

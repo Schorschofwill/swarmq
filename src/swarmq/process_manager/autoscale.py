@@ -14,7 +14,7 @@ import time
 from typing import Any
 
 from swarmq.logging import _error_fields, get_logger, sanitize_url
-from swarmq.process_manager.slots import SlotState
+from swarmq.process_manager.slots import SlotState, heading_slots
 
 logger = get_logger(__name__)
 
@@ -77,8 +77,8 @@ def tick(pm: Any) -> None:
         pm._idle_since = None
         return
 
-    # Scale down: sustained idle.
-    if active > min_w and depth == 0:
+    # Scale down: sustained idle. F4-26: drainende Worker zählen nicht.
+    if len(heading_slots(pm.workers.values())) > min_w and depth == 0:
         if pm._idle_since is None:
             pm._idle_since = now
             return
@@ -107,7 +107,9 @@ def scale_down_one(pm: Any) -> None:
     eligible = {
         pid: w
         for pid, w in pm.workers.items()
-        if (now - w.spawned_at) >= pm.SCALE_MIN_AGE_S and pm._slots.state(w.worker_id) is not SlotState.TRANSITION
+        if not w.expected_shutdown  # F4-25: kein zweites SIGTERM an einen drainenden Worker
+        and (now - w.spawned_at) >= pm.SCALE_MIN_AGE_S
+        and pm._slots.state(w.worker_id) is not SlotState.TRANSITION
     }
     if not eligible:
         logger.debug(

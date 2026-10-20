@@ -13,8 +13,9 @@ V-E der Test-Runde 2026-10-20, Probe der Gegenprüfung).
   nicht drainenden Worker fallen unter ``MIN``. Erwartet: Es bleiben
   mindestens ``MIN`` nicht drainende Worker.
 
-Beide offen (Fix in 0.14.2 nach Georgs Freigabe); die Tests beschreiben das
-erwartete Verhalten und sind bis dahin ``xfail(strict=True)``.
+Beide behoben in 0.14.2 (Regel E-084: drainende Worker zählen für den
+Autoskalierer nicht und werden nicht erneut gewählt); die Tests laufen ohne
+``xfail`` und bleiben als Rückverweis mit ``befund`` markiert.
 
 Testliste:
 # [x] --autoscale 1,5, drei Worker: zweiter Abbau-Takt während eines langen
@@ -75,7 +76,6 @@ def _run(pm: ProcessManager, clock: FakeClock, seconds: float) -> None:
 
 
 @pytest.mark.befund("F4-25")
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="F4-25 offen (Fix in 0.14.2)")
 def test_a_down_tick_during_a_long_drain_leaves_the_draining_worker_alone(clock: FakeClock) -> None:
     pm = _pm(clock, n=3, autoscale=(1, 5))
     _run(pm, clock, _FIRST_DOWN_S)
@@ -90,7 +90,6 @@ def test_a_down_tick_during_a_long_drain_leaves_the_draining_worker_alone(clock:
 
 
 @pytest.mark.befund("F4-26")
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="F4-26 offen (Fix in 0.14.2)")
 def test_a_draining_slot_does_not_count_towards_the_lower_bound(clock: FakeClock) -> None:
     min_workers = 2
     pm = _pm(clock, n=3, autoscale=(min_workers, 5))
