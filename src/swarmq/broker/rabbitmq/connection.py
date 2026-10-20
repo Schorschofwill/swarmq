@@ -713,6 +713,14 @@ class RabbitMQConnection:
             replaced = channel
             if replaced is not None and await _restored_in_time(replaced):
                 return replaced, False
+            # aio-pika legt einen RobustChannel schon bei ``connection.channel()``
+            # ins WeakSet, vor dem Oeffnen. Endet das Oeffnen ohne Erfolg (Frist,
+            # Abbruch, Fehler), schliesst aio-pika den Unterbau selbst; ein
+            # Abbruch erst im ``Basic.Qos`` liesse den Kanal aber im WeakSet, und
+            # jeder Reconnect oeffnete ihn als Waise wieder (F4-24). Darum
+            # abmelden; ``CancelledError`` laeuft weiter durch.
+            opened: aio_pika.abc.AbstractChannel | None = None
+            succeeded = False
             try:
                 if attr == "_publish_channel" and self._publish_channel_factory is not None:
                     channel = await self._publish_channel_factory()
@@ -730,10 +738,14 @@ class RabbitMQConnection:
                         else connection.channel()
                     )
                     channel = await asyncio.wait_for(opened, timeout=_CHANNEL_READY_TIMEOUT_S)
+                succeeded = True
             except Exception as exc:
                 raise BrokerConnectionError(
                     f"channel reopen failed for {attr!r} on {sanitize_url(self._url)!r}: {exc}"
                 ) from exc
+            finally:
+                if not succeeded and opened is not None:
+                    release_channel(connection, opened)
             setattr(self, attr, channel)
             if replaced is not None and attr == "_publish_channel":
                 self._retire_replaced_channel(connection, replaced)

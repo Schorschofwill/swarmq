@@ -22,6 +22,18 @@ changes: 0.14.1 runs next to 0.14.0 on the same queues and keys.
   a connection loss in `declare_queue`. A missing queue stays
   `ChannelNotFoundEntity`. `swarmq worker` still exits with 1 and is
   restarted as before (F4-23).
+- **A channel whose opening was cut off no longer comes back with a
+  reconnect.** aio-pika adds a robust channel to the connection's
+  restore set as soon as it is created, before it is open. When opening
+  the publish or consume channel ended after the broker had answered
+  `Channel.Open` and `Confirm.Select` but before `Basic.Qos` (the 10 s
+  limit for opening a channel, a cancelled caller, a dropped
+  transport), the channel stayed in that set, and every later reconnect
+  reopened it as an extra channel at the broker. swarmq now removes
+  such a channel from the restore set; the error the caller sees is
+  unchanged. The window is about one round trip, so this was rare. With
+  it, the channel count at the broker stays flat across reconnects as
+  0.14.0 promised (F4-24, E-078).
 
 ## [0.14.0] — 2026-10-20
 

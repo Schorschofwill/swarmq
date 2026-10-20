@@ -23,6 +23,19 @@ Schlüsseln.
   wie ein Verbindungsabriss in `declare_queue`. Eine fehlende Queue
   bleibt `ChannelNotFoundEntity`. `swarmq worker` endet weiter mit
   Exit 1 und wird wie bisher neu gestartet (F4-23).
+- **Ein Kanal, dessen Öffnen abgebrochen wurde, kommt mit einem
+  Reconnect nicht mehr wieder.** aio-pika trägt einen robusten Kanal
+  schon beim Anlegen in die Wiederherstellungsliste der Verbindung ein,
+  bevor er offen ist. Endete das Öffnen des Publish- oder Consume-Kanals,
+  nachdem der Broker `Channel.Open` und `Confirm.Select` beantwortet
+  hatte, aber vor `Basic.Qos` (die Frist von 10 s für das Öffnen eines
+  Kanals, ein abgebrochener Aufrufer, ein abgerissener Transport), blieb
+  der Kanal in dieser Liste, und jeder spätere Reconnect öffnete ihn als
+  zusätzlichen Kanal beim Broker. swarmq meldet einen solchen Kanal
+  jetzt ab; der Fehler, den der Aufrufer sieht, bleibt derselbe. Das
+  Fenster ist etwa eine Round-Trip-Zeit lang, der Fall war selten. Damit
+  bleibt die Kanalzahl beim Broker über Reconnects gleich, wie 0.14.0
+  zugesagt hat (F4-24, E-078).
 
 ## [0.14.0] — 2026-10-20
 
