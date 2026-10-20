@@ -743,6 +743,8 @@ class TestHeartbeatWatcherOverTime:
         statt 2 s)."""
         import asyncio
 
+        interval = 2.0
+        watcher_tick_s = 0.3  # ``asyncio.sleep(0.3)`` im Watcher (``entry.py``), keine Konstante
         _VirtualEntryClock.install(monkeypatch)
         channel = _RecordingChannel(wanted=3)
 
@@ -754,13 +756,13 @@ class TestHeartbeatWatcherOverTime:
         monkeypatch.setattr("swarmq.cli.run_worker_async", fake_run)
 
         worker_subprocess_entry(
-            0, self._NEVER_SET, _make_test_cfg(heartbeat_interval_s=2.0), cast("SupervisorChannel", channel)
+            0, self._NEVER_SET, _make_test_cfg(heartbeat_interval_s=interval), cast("SupervisorChannel", channel)
         )
 
         assert len(channel.beats) >= 3
         gaps = [later - earlier for earlier, later in itertools.pairwise(channel.beats[:3])]
         assert channel.beats[0] == 0.0
-        assert all(2.0 <= gap < 2.0 + 0.3 + 1e-6 for gap in gaps), gaps
+        assert all(interval <= gap < interval + watcher_tick_s + 1e-6 for gap in gaps), gaps
 
     def test_shutdown_event_sends_sigterm_while_a_channel_is_attached(self, monkeypatch):
         """T-F-20 (SIGTERM mit Kanal), Mutant ``entry.py:205`` ``next_beat = now +
@@ -798,7 +800,6 @@ class TestHeartbeatWatcherOverTime:
         assert kills == [(os.getpid(), signal.SIGTERM)]
         assert len(channel.beats) >= 2
 
-    @pytest.mark.entscheidung("E-057")
     def test_fallback_after_a_broken_dict_config_keeps_the_json_format(self, monkeypatch, capfd):
         """T-F-20 (Rückfall-Format), Mutant ``entry.py:175``
         ``format=settings.format`` streichen: eine JSON-Gruppe bekäme ihre

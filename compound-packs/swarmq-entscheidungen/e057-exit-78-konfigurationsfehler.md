@@ -30,7 +30,6 @@ tests:
   - tests/unit/process_manager/test_supervisor.py::TestConfigErrorUnderReload::test_config_error_waits_for_the_next_file_change
   - tests/unit/process_manager/test_supervisor.py::TestConfigErrorUnderReload::test_the_file_watcher_trigger_restarts_via_reexec
   - tests/unit/process_manager/test_supervisor.py::TestConfigErrorUnderReload::test_shutdown_signal_while_waiting_ends_with_zero_without_reexec
-  - tests/unit/process_manager/test_entry.py::TestHeartbeatWatcherOverTime::test_fallback_after_a_broken_dict_config_keeps_the_json_format
   - tests/unit/process_manager/test_run.py::TestStartWiringGaps::test_one_missing_url_ends_with_the_config_code
 ---
 

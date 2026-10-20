@@ -729,9 +729,9 @@ class TestReconcile:
             as_mock(pm.workers[pid].process).exitcode = 0
         pm._check_dead_workers()
         assert _live_slots(pm) == [1, 2]
-        clock.now += 40.0
+        clock.now += pm.SCALE_COOLDOWN_S + pm.AUTOSCALE_SAMPLE_INTERVAL
         pm._autoscale_tick()  # Leerlauf beginnt
-        clock.now += 70.0
+        clock.now += pm.SCALE_DOWN_IDLE_S + pm.AUTOSCALE_SAMPLE_INTERVAL
         setpoint.tick(pm)  # derselbe Sollwert: nur der Abbau
         assert pm._setpoint.source == "setpoint"
         assert _terminations(pm) == 1

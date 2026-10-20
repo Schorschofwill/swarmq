@@ -39,7 +39,6 @@ from __future__ import annotations
 import asyncio
 import io
 import json
-import os
 import time
 from collections.abc import Iterator
 from contextlib import redirect_stdout
@@ -379,18 +378,18 @@ def frozen_wall_clock(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def berlin_local_time() -> Iterator[None]:
-    """Lokale Zeitzone Europe/Berlin (UTC+1 im Januar), danach zurück."""
-    previous = os.environ.get("TZ")
-    os.environ["TZ"] = "Europe/Berlin"
-    time.tzset()
-    try:
-        yield
-    finally:
-        if previous is None:
-            del os.environ["TZ"]
-        else:
-            os.environ["TZ"] = previous
+    """Lokale Zeitzone Europe/Berlin (UTC+1 im Januar), danach zurück.
+
+    Eigener ``MonkeyPatch``-Kontext statt der Fixture: Die C-Bibliothek liest
+    ``TZ`` erst beim ``tzset``, die Umgebung muss davor zurückgesetzt sein."""
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("TZ", "Europe/Berlin")
         time.tzset()
+        try:
+            yield
+        finally:
+            mp.undo()
+            time.tzset()
 
 
 async def _add_table(name: str, *extra: str) -> str:

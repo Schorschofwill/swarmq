@@ -20,7 +20,6 @@ tests:
   - tests/unit/broker/test_declare_adoption.py::test_differing_delivery_limit_is_adopted_with_warning
   - tests/unit/broker/test_declare_adoption.py::test_all_three_arguments_take_four_attempts
   - tests/unit/broker/test_declare_chain.py::test_unrecognized_refusal_reports_the_broker_message_without_advising_deletion
-  - tests/unit/broker/test_declare_adoption.py::test_only_the_first_strategy_adoption_is_info_later_ones_are_debug
 ---
 
 **Entscheidung.** Ein erkannter `PRECONDITION_FAILED` wegen geänderter Queue-Argumente wird zu `QueueArgumentsMismatch` (alt gegen neu in der Meldung, Exit 78) statt einer Neustartschleife. `x-delivery-limit` wird tolerant behandelt: Es gilt der vorhandene Wert, dazu die WARNING `queue_argument_adopted`. Jedes tolerierte Argument wird höchstens einmal übernommen (höchstens 4 Versuche). Ein unerkannter 406/403 bleibt `BrokerConnectionError`. Die Doku beschreibt die Migration.

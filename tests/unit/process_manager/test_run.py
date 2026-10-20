@@ -774,7 +774,6 @@ class TestStartWiringGaps:
         assert "SWARMQ_BROKER_URL and SWARMQ_BACKEND_URL must both be set" in capsys.readouterr().err
         PM.assert_not_called()
 
-    @pytest.mark.entscheidung("E-061")
     def test_explicit_concurrency_counts_against_the_assigned_cpus(self, monkeypatch):
         """T-F-18, Mutant ``run.py:124`` ``args.concurrency if
         getattr(args, "concurrency_source", "explicit") == "explicit" else None`` →

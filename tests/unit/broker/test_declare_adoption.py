@@ -419,7 +419,6 @@ async def test_every_active_declaration_is_durable() -> None:
     assert [call.kwargs.get("durable") for call in active] == [True] * (len(FAMILY_AND_TIERS) + 1)
 
 
-@pytest.mark.entscheidung("E-016")
 async def test_only_the_first_strategy_adoption_is_info_later_ones_are_debug(
     swarmq_logs: list[dict[str, Any]],
 ) -> None:

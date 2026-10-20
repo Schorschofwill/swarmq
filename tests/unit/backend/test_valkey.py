@@ -255,6 +255,7 @@ _STORE_USES = [
 ]
 
 
+@pytest.mark.timeout(5)
 @pytest.mark.entscheidung("E-082")
 @pytest.mark.parametrize("use", _STORE_USES)
 async def test_stores_used_before_close_run_on_the_new_client_after_reconnect(use):

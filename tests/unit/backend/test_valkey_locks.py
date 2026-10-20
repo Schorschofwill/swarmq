@@ -290,6 +290,7 @@ class TestValkeyLockStoreTokens:
         assert caught.value is error
 
 
+@pytest.mark.timeout(5)
 async def test_acquire_passes_the_server_time_in_milliseconds_to_the_script():
     """Testlücke D-3 (Runde 4): ``TIME`` liefert Sekunden und Mikrosekunden;
     das Skript bewertet Ablaufzeiten in Millisekunden derselben Uhr. Aus

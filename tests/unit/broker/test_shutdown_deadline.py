@@ -129,6 +129,7 @@ class TestReschedulingRunningPublishes:
 
 
 class TestReschedulingSkipsStaleDeadlines:
+    @pytest.mark.timeout(5)
     async def test_an_exited_deadline_does_not_stop_pulling_in_the_running_ones(self):
         """Lücke E-12, Mutant ``connection.py:534`` ``continue`` → ``break``.
 

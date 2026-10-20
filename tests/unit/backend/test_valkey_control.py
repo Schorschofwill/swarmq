@@ -48,6 +48,7 @@ class TestReadSetpoint:
         assert isinstance(result, SetpointUnreadable)
         assert result.reason
 
+    @pytest.mark.timeout(5)
     @pytest.mark.parametrize(
         "raw",
         [
