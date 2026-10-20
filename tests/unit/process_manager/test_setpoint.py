@@ -759,6 +759,52 @@ class TestReconcile:
         assert len(pm.workers) == 3
 
 
+class TestAutoscalerDuringDrain:
+    """E-084 (Plan 2026-10-20-2100, U2): Sollwert-Durchlauf und Autoskalierer
+    zählen im selben Monitor-Durchlauf gleich, auch während ein Worker draint.
+
+    Test-Liste:
+    - Der Sollwert hebt die Untergrenze, während der Autoskalierer einen Worker
+      drainen lässt: Der Durchlauf füllt bis ``low`` auf, der Autoskalierer
+      baut danach nicht gegen ihn ab (kein Hin und Her über viele Durchläufe).
+    """
+
+    @pytest.mark.entscheidung("E-084")
+    def test_raised_lower_bound_during_a_drain_is_not_undone_by_the_autoscaler(self, clock, monkeypatch):
+        depth = [0]
+        store = FakeStore(None)
+        pm = _autoscaled_at(clock, 3, store, depth=depth, autoscale=(1, 5))
+        pm._autoscale_tick()  # Leerlauf beginnt
+        clock.now += pm.SCALE_DOWN_IDLE_S
+        pm._autoscale_tick()
+        assert _drained(pm) == [2]  # Slot 2 draint und hält seinen Slot
+        store.result = Setpoint(3, 5)
+        passes = []
+
+        def beat_all() -> None:
+            for info in pm.workers.values():  # alle leben und melden sich, keiner hängt
+                assert info.channel is not None
+                info.channel.heartbeat.value = clock.now
+
+        def one_pass(_seconds: float) -> None:
+            passes.append(1)
+            clock.now += pm.SETPOINT_SAMPLE_INTERVAL
+            beat_all()
+            if len(passes) * pm.SETPOINT_SAMPLE_INTERVAL >= 3 * (pm.SCALE_COOLDOWN_S + pm.SCALE_DOWN_IDLE_S):
+                pm._shutting_down = True
+
+        monkeypatch.setattr(supervisor_module, "time", types.SimpleNamespace(monotonic=clock, sleep=one_pass))
+        beat_all()
+
+        pm._monitor_loop()
+
+        assert pm.effective_bounds == (3, 5)
+        assert _live_slots(pm) == [0, 1, 3]
+        assert _drained(pm) == [2]
+        for info in pm.workers.values():
+            assert as_mock(info.process).terminate.call_count == (1 if info.worker_id == 2 else 0)
+
+
 class TestGroupKey:
     """T-F-22: gelesen wird der Sollwert der eigenen Gruppe, beim Start und im Takt."""
 

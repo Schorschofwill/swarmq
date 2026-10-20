@@ -76,6 +76,7 @@ def _run(pm: ProcessManager, clock: FakeClock, seconds: float) -> None:
 
 
 @pytest.mark.befund("F4-25")
+@pytest.mark.entscheidung("E-084")
 def test_a_down_tick_during_a_long_drain_leaves_the_draining_worker_alone(clock: FakeClock) -> None:
     pm = _pm(clock, n=3, autoscale=(1, 5))
     _run(pm, clock, _FIRST_DOWN_S)
@@ -90,6 +91,7 @@ def test_a_down_tick_during_a_long_drain_leaves_the_draining_worker_alone(clock:
 
 
 @pytest.mark.befund("F4-26")
+@pytest.mark.entscheidung("E-084")
 def test_a_draining_slot_does_not_count_towards_the_lower_bound(clock: FakeClock) -> None:
     min_workers = 2
     pm = _pm(clock, n=3, autoscale=(min_workers, 5))

@@ -18,7 +18,13 @@ quelle:
   - src/swarmq/process_manager/slots.py (heading_slots, drain_candidates)
   - src/swarmq/process_manager/setpoint.py (reconcile zählt seit dem Kontrollkanal ebenso)
 tests:
+  - tests/unit/process_manager/test_befund_f4_25_26_autoscale_drain.py::test_a_down_tick_during_a_long_drain_leaves_the_draining_worker_alone
+  - tests/unit/process_manager/test_befund_f4_25_26_autoscale_drain.py::test_a_draining_slot_does_not_count_towards_the_lower_bound
   - tests/unit/process_manager/test_autoscale.py::test_a_draining_worker_does_not_count_towards_the_scale_up_threshold
+  - tests/unit/process_manager/test_autoscale.py::test_without_headroom_a_draining_worker_holds_its_slot_until_it_exits
+  - tests/unit/process_manager/test_autoscale.py::test_with_headroom_a_drain_lets_one_worker_start_in_a_headroom_slot
+  - tests/unit/process_manager/test_autoscale.py::test_a_slot_in_transition_during_a_drain_counts_once_and_its_replacement_stays
+  - tests/unit/process_manager/test_setpoint.py::TestAutoscalerDuringDrain::test_raised_lower_bound_during_a_drain_is_not_undone_by_the_autoscaler
 ---
 
 **Entscheidung.** Der Autoskalierer zählt als aktiv nur Slots mit einem Prozess, der nicht zum sanften Ende markiert ist (`expected_shutdown`, `heading_slots`). Diese Zahl gilt für alle drei Prüfungen: die Obergrenze `MAX`, die Schwelle `depth > aktiv × SCALE_UP_THRESHOLD` und die Untergrenze `MIN`. Ein Slot im Übergang (Recycling- oder Hang-Ersatz) zählt über den Ersatz genau einmal. Ein Abbau wählt nur Worker, die nicht drainen, nicht im Übergang liegen und mindestens `SCALE_MIN_AGE_S` alt sind (`drain_candidates`); ein drainender Worker bekommt vom Autoskalierer nie ein zweites SIGTERM. Findet ein Abbau-Takt keinen Kandidaten, ist er nicht verbraucht: Abkühlzeit und Leerlauf bleiben, der nächste Abtast-Takt versucht es erneut. Hochskaliert wird nur in einen freien Slot (`smallest_free()`); ein drainender Prozess hält seinen Slot bis zum Exit.

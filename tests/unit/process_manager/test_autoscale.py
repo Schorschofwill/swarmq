@@ -17,12 +17,24 @@ Test-Liste 0.14.2 (F4-25, F4-26, E-084; Plan 2026-10-20-2100, U2):
   Worker alt genug ist, baut der nächste Abtast-Takt ab (F4-25).
 - E-084: Ein drainender Worker zählt auch für die Schwelle des Hochskalierens
   nicht (Option b): drei Worker, einer draint, Tiefe 120 > 2 x 50 -> hoch.
+- Regressionstest (E-084) ohne Spielraum: Der drainende Worker hält seinen Slot, bei vollem
+  Slot-Bestand startet nichts; nach seinem Exit startet einer im frei
+  gewordenen Slot.
+- E-084 mit Spielraum (--max-processes): genau ein Start in einen
+  Spielraum-Slot, danach aktiv = MAX und kein weiterer Start.
+- E-084: Recycling-Ersatz während eines Drains -- der Slot im Übergang zählt
+  einmal, kein Abbau unter MIN, der Ersatz wird nie gewählt.
+- E-084: Hang-Ersatz während eines Drains -- ebenso.
+- Regressionstest (E-024): erschöpftes Hang-Budget -- der Slot ist gesperrt,
+  der Vorgänger lebt drainend weiter und zählt nicht; in den gesperrten Slot
+  startet nichts.
 """
 
 from __future__ import annotations
 
 import multiprocessing
 import types
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -30,6 +42,7 @@ import pytest
 from swarmq.process_manager import ProcessManager
 from swarmq.process_manager import autoscale as autoscale_module
 from swarmq.process_manager import supervisor as supervisor_module
+from swarmq.process_manager.slots import SlotState
 from tests.unit.process_manager._helpers import FakeClock, _entry_stub, _fake_process, as_mock
 
 
@@ -43,9 +56,17 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
     return fake
 
 
-def _pm(clock: FakeClock, n: int, depth: list[int], autoscale: tuple[int, int] = (2, 5)) -> ProcessManager:
+def _pm(
+    clock: FakeClock, n: int, depth: list[int], autoscale: tuple[int, int] = (2, 5), max_processes: int | None = None
+) -> ProcessManager:
     """Autoskalierte Gruppe mit ``n`` Workern, die zu ``clock.now`` schon 100 s alt sind."""
-    pm = ProcessManager(num_workers=n, worker_entry=_entry_stub, autoscale=autoscale, queue_depth_fn=lambda: depth[0])
+    pm = ProcessManager(
+        num_workers=n,
+        worker_entry=_entry_stub,
+        autoscale=autoscale,
+        queue_depth_fn=lambda: depth[0],
+        max_processes=max_processes,
+    )
     pm._ctx = MagicMock()
     pids = iter(range(100, 200))
     pm._ctx.Process = MagicMock(side_effect=lambda **_kw: _fake_process(pid=next(pids)))
@@ -189,3 +210,96 @@ def test_a_draining_worker_does_not_count_towards_the_scale_up_threshold(clock: 
     autoscale_module.tick(pm)
 
     assert sorted(w.worker_id for w in pm.workers.values() if not w.expected_shutdown) == [0, 1, 3]
+
+
+def _heading(pm: ProcessManager) -> list[int]:
+    """Slots mit einem nicht drainenden Prozess, aufsteigend."""
+    return sorted(w.worker_id for w in pm.workers.values() if not w.expected_shutdown)
+
+
+def _run(pm: ProcessManager, clock: FakeClock, seconds: float) -> None:
+    """Autoskalierer im Abtasttakt laufen lassen (ohne Reap)."""
+    end = clock.now + seconds
+    while clock.now < end:
+        autoscale_module.tick(pm)
+        clock.now += pm.AUTOSCALE_SAMPLE_INTERVAL
+
+
+@pytest.mark.entscheidung("E-084")
+def test_without_headroom_a_draining_worker_holds_its_slot_until_it_exits(clock: FakeClock) -> None:
+    """Regressionstest: Ohne --max-processes hat die Tabelle MAX Slots."""
+    depth = [0]
+    pm = _pm(clock, n=3, depth=depth, autoscale=(1, 3))
+    _drain_one_by_idle(pm, clock)
+    clock.now += pm.SCALE_COOLDOWN_S
+    depth[0] = 10_000
+
+    _run(pm, clock, 3 * pm.SCALE_COOLDOWN_S)
+    assert len(pm.workers) == 3
+    assert _heading(pm) == [0, 1]
+
+    _reap_drained(pm)
+    _run(pm, clock, pm.AUTOSCALE_SAMPLE_INTERVAL)
+    assert _heading(pm) == [0, 1, 2]
+
+
+@pytest.mark.entscheidung("E-084")
+def test_with_headroom_a_drain_lets_one_worker_start_in_a_headroom_slot(clock: FakeClock) -> None:
+    depth = [0]
+    pm = _pm(clock, n=3, depth=depth, autoscale=(1, 3), max_processes=5)
+    _drain_one_by_idle(pm, clock)
+    clock.now += pm.SCALE_COOLDOWN_S
+    depth[0] = 10_000
+
+    _run(pm, clock, 3 * pm.SCALE_COOLDOWN_S)
+
+    assert _heading(pm) == [0, 1, 3]  # aktiv = MAX
+    assert len(pm.workers) == 4  # plus der drainende, <= --max-processes
+
+
+def _recycle(pm: ProcessManager, slot: int) -> None:
+    """Recycling wie ``_check_heartbeats``: Vorgänger draint, Ersatz im selben Slot."""
+    (old,) = [w for w in pm.workers.values() if w.worker_id == slot and not w.expected_shutdown]
+    old.expected_shutdown = True
+    pm._start_worker(slot)
+
+
+def _hang(pm: ProcessManager, slot: int) -> None:
+    """Der Worker im Slot hängt; der Supervisor ersetzt ihn (oder sperrt den Slot)."""
+    (old,) = [w for w in pm.workers.values() if w.worker_id == slot and not w.expected_shutdown]
+    pm._replace_hung_worker(old, stale_s=pm.heartbeat_timeout_s + 1.0)
+
+
+@pytest.mark.entscheidung("E-084")
+@pytest.mark.parametrize("replace", [_recycle, _hang], ids=["recycling", "hang"])
+def test_a_slot_in_transition_during_a_drain_counts_once_and_its_replacement_stays(
+    clock: FakeClock, replace: Any
+) -> None:
+    pm = _pm(clock, n=3, depth=[0], autoscale=(2, 5))
+    _drain_one_by_idle(pm, clock)  # Slot 2 draint, zwei nicht drainende = MIN
+    replace(pm, 0)
+    (replacement,) = [w for w in pm.workers.values() if w.worker_id == 0 and not w.expected_shutdown]
+    terminates_before = {pid: as_mock(w.process).terminate.call_count for pid, w in pm.workers.items()}
+
+    _run(pm, clock, 3 * (pm.SCALE_COOLDOWN_S + pm.SCALE_DOWN_IDLE_S))
+
+    assert _heading(pm) == [0, 1]
+    as_mock(replacement.process).terminate.assert_not_called()
+    terminates_after = {pid: as_mock(w.process).terminate.call_count for pid, w in pm.workers.items()}
+    assert terminates_after == terminates_before
+
+
+def test_an_exhausted_hang_budget_locks_the_slot_and_its_draining_worker_does_not_count(clock: FakeClock) -> None:
+    """Regressionstest (E-024): Der gesperrte Slot gilt nicht als frei, der
+    hängende Vorgänger lebt bis zum SIGKILL mit ``expected_shutdown`` weiter."""
+    depth = [0]
+    pm = _pm(clock, n=3, depth=depth, autoscale=(1, 5))
+    pm._hang_timestamps = [clock.now] * pm.hang_replacement_limit
+    _hang(pm, 0)
+    assert pm.slot_state(0) is SlotState.LOCKED
+    depth[0] = 2 * pm.SCALE_UP_THRESHOLD + 20  # über zwei, unter drei aktiven Workern
+
+    autoscale_module.tick(pm)
+
+    assert _heading(pm) == [1, 2, 3]
+    assert pm.slot_state(0) is SlotState.LOCKED
