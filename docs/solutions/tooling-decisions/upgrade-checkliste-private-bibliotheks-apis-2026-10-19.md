@@ -198,10 +198,19 @@ läuft. Tests wie oben.
   `_RobustConnection__channels` (ein `weakref.WeakSet` der `RobustChannel`) und entfernt
   daraus den verworfenen Publish-Kanal (`_discard_publish_channel` in
   `broker/rabbitmq/connection.py`, vor dem im Alarm zurückgestellten Close) und die
-  Kanäle, die `close()` auf einer injizierten Verbindung oder einem Pool schließt.
+  Kanäle, die `close()` auf einer injizierten Verbindung oder einem Pool schließt. Seit
+  0.14.1 (F4-24) auch den Publish- oder Consume-Kanal, dessen Öffnen in
+  `_ensure_channel_tracked` ohne Erfolg endet (Frist, Abbruch, Fehler; `try/finally`).
 - **Annahmen:** `RobustConnection.channel()` trägt jeden neuen Kanal in dieses
-  `WeakSet` ein, und `_on_connected` stellt nach einem Reconnect genau die Kanäle darin
-  wieder her. Ein Kanal, der nicht darin steht, wird nicht wieder geöffnet.
+  `WeakSet` ein, und zwar schon beim Anlegen, bevor er geöffnet ist (`channel()` ist
+  synchron, erst `await` öffnet). `_on_connected` stellt nach einem Reconnect genau die
+  Kanäle darin wieder her. Ein Kanal, der nicht darin steht, wird nicht wieder geöffnet.
+  Endet das Öffnen eines `RobustChannel` mit einer Ausnahme oder einem Abbruch, schließt
+  aio-pikas `Channel._open` (`except BaseException`, in 10.0.1 Z. 192–196) den
+  aiormq-Kanal selbst, nimmt ihn aber nicht aus dem `WeakSet`. Ein Abbruch erst in
+  `RobustChannel._on_open` (`Basic.Qos`, nach Open-Ok und Select-Ok) ließ den Kanal bis
+  0.14.0 darin, und jeder Reconnect öffnete ihn als Waise (F4-24, Probe D). swarmq
+  schließt darum nichts selbst, es meldet nur ab.
 - **Rückfall:** Ist das Attribut kein `WeakSet`, loggt swarmq je Verbindung einmal die
   WARNING `robust_channel_release_unavailable` und meldet nichts ab (fail-open). Ein
   verworfener oder geschlossener robuster Kanal kann dann nach einem Reconnect wieder
@@ -251,7 +260,10 @@ läuft. Tests wie oben.
   fail-open und injizierte Verbindung) und
   `uv run just integration -k befund_f4_20` (Garbage Collection aus, Abriss über die
   Management-API: beim Broker nur die lebenden Kanäle; Reconnect nach der Tiefe einer
-  gelöschten Queue binnen 10 s).
+  gelöschten Queue binnen 10 s). Für das abgebrochene Öffnen (F4-24):
+  `uv run just unit tests/unit/broker/test_befund_f4_24_aborted_channel_open.py` und
+  `uv run just integration tests/integration/broker/test_befund_f4_24_aborted_channel_open.py`
+  (`Basic.Qos` hängt, das Öffnen reißt die Frist, zwei Abrisse; Publish und Consume).
 
 ### Restore-Fenster und `reopen_callbacks` (öffentliches API, Ablauf, seit 0.14, F4-22)
 
