@@ -21,7 +21,9 @@ Schlüsseln.
   [Fehler](errors.md)) fing ihn nicht. Jetzt kommt er als
   `BrokerConnectionError` mit dem ursprünglichen Fehler als Ursache an,
   wie ein Verbindungsabriss in `declare_queue`. Eine fehlende Queue
-  bleibt `ChannelNotFoundEntity`. `swarmq worker` endet weiter mit
+  bleibt `ChannelNotFoundEntity`, auch wenn sie zwischen der passiven
+  Abfrage und `basic.consume` gelöscht wird; die nächste Deklaration
+  legt sie dann wieder an. `swarmq worker` endet weiter mit
   Exit 1 und wird wie bisher neu gestartet (F4-23).
 - **Ein Kanal, dessen Öffnen abgebrochen wurde, kommt mit einem
   Reconnect nicht mehr wieder.** aio-pika trägt einen robusten Kanal
@@ -36,6 +38,21 @@ Schlüsseln.
   Fenster ist etwa eine Round-Trip-Zeit lang, der Fall war selten. Damit
   bleibt die Kanalzahl beim Broker über Reconnects gleich, wie 0.14.0
   zugesagt hat (F4-24, E-078).
+
+### Upgrade-Hinweise
+
+1. **Ein Verbindungsabriss beim Anmelden des Workers ist kein
+   `OSError`, `ConnectionError`, `AMQPConnectionError` oder
+   `RuntimeError` mehr.** Wer `start_worker()` eingebettet betreibt und
+   den Abriss mit `except ConnectionError`, `except OSError`,
+   `except aiormq.exceptions.AMQPConnectionError` oder
+   `except RuntimeError` fasst, fängt einen Verbindungsabriss beim
+   Anmelden der Queues damit nicht mehr. Er kommt jetzt als
+   `BrokerConnectionError` (ein `SwarmQError`, kein `OSError`) an, der
+   ursprüngliche Fehler steht in `__cause__`. Fangen Sie stattdessen
+   `BrokerConnectionError`, wie unter [Fehler](errors.md) gezeigt. Unter
+   `swarmq worker` ändert sich nichts: Der Prozess endet mit Exit 1 und
+   wird neu gestartet (E-057).
 
 ## [0.14.0] — 2026-10-20
 

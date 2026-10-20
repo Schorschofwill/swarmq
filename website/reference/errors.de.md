@@ -154,6 +154,8 @@ Seit 0.10.0 auch, wenn der Worker eine Zustellung bestätigt, neu
 einreiht oder an den DLX gibt, nachdem Kanal oder Verbindung verloren
 gingen; der Worker loggt `delivery_settle_failed`, und RabbitMQ stellt
 die unbestätigte Nachricht neu zu.
+Seit 0.14.1 auch, wenn die Verbindung abreißt, während der Worker seine
+Queues anmeldet; der ursprüngliche Fehler steht in `__cause__`.
 
 !!! warning "Ein Deadline-Fehler heißt nicht, dass nichts gesendet wurde"
 

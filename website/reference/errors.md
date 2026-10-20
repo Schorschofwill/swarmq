@@ -146,6 +146,8 @@ Since 0.10.0 also when the worker acknowledges, requeues or
 dead-letters a delivery after the channel or connection was lost; the
 worker logs `delivery_settle_failed`, and RabbitMQ redelivers the
 unacknowledged message.
+Since 0.14.1 also when the connection is lost while the worker
+subscribes its queues; the original error is in `__cause__`.
 
 !!! warning "A publish-deadline failure does not mean the message was not sent"
 
