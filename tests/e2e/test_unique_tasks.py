@@ -22,6 +22,7 @@ from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
+from tests.support.wait import wait_until
 
 # Worker drain + Valkey setup takes ~1s; 20s ceiling flags deadlocks
 # without burning CI time.
@@ -191,6 +192,21 @@ async def test_webhook_idempotency_across_retry_window(
 
             result = await client_app.get_result(tid_a, timeout=8)
             assert result == {"processed": "e-1"}
+
+            # The result is visible before the release: notify, ack and
+            # the unique release in the handler's finally come after the
+            # store. Wait for the release itself while the worker runs
+            # (same race as TestDLQUniqueForCombo::test_happy_path).
+            valkey = client_backend._client
+            assert valkey is not None
+
+            async def unique_flag_released() -> bool:
+                async for key in valkey.scan_iter(match="*unique:*"):
+                    if await valkey.get(key) == tid_a.encode():
+                        return False
+                return True
+
+            assert await wait_until(unique_flag_released, timeout=10), "unique flag never released"
 
             # After completion the flag is released: fresh schedule with
             # same args gets a NEW task_id and runs the task again.

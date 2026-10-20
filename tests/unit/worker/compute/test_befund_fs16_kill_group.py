@@ -16,12 +16,20 @@ Handler, ``trap``-Shell o. ae.) und meldet sich per Ready-Handshake.
 
 Echte Prozesse sind hier der Gegenstand des Befunds, deshalb Unit-Test mit
 echtem Fork (kein Broker, kein Valkey). Begruendung fuer > 100 ms: Fork,
-Handshake und Kill dauern rund 0,1 s; im Fehlerfall kommt das Wartefenster
-von 0,1 s fuer die Zustellung des SIGKILL an die Gruppe dazu (gemessen mit
-nachgestelltem ``killpg``: rund 15 ms). Alle erzeugten Prozesse (Kind
+Handshake und Kill dauern rund 0,1 s. Alle erzeugten Prozesse (Kind
 und Enkel) werden im ``finally`` per ``killpg``/``kill`` mit SIGKILL beendet,
 auch wenn der Test fehlschlaegt; der Enkel beendet sich ausserdem selbst
 nach spaetestens 10 s.
+
+Wartezeit nach dem Kill: Der Pool sendet das SIGKILL an die Gruppe synchron,
+bevor ``run`` zurueckkehrt (``_finalize``/``_kill_child``). Zustellung und
+Abraeumen des Enkels laufen danach asynchron im Kernel; unter CI-Last dauerte
+das schon laenger als 0,1 s (Tag-Pipeline 2964583856). E-036 sagt "die Gruppe
+stirbt", keine Frist. Der Test pollt deshalb bis zum Ende der Gruppe, mit
+einem Meldedeckel von ``_GROUP_GONE_DEADLINE_S``. Der Deckel liegt weit unter
+der Selbstbeendigung des Enkels (``_GC_SELF_EXIT_S``) und unter dem
+Test-Timeout: Ohne Kill der Gruppe lebt der Enkel bis zum Deckel und der
+Test wird rot (Gegenprobe: ``_sweep_group`` als No-op).
 
 Testliste:
 # [x] Fall a: Abbruch von run() (Watchdog/Drain/Cancel), Kind endet sauber auf
@@ -55,6 +63,8 @@ pytestmark = [
 ]
 
 _GC_SELF_EXIT_S = 10.0
+#: Meldedeckel fuer das Ende der Gruppe nach dem Kill (keine Zusage von E-036).
+_GROUP_GONE_DEADLINE_S = 3.0
 
 
 def _fs16_grandchild(report_fd: int, started_fd: int) -> None:
@@ -140,8 +150,11 @@ def _alive_members(pgid: int) -> list[int]:
     return alive
 
 
-def _wait_group_gone(pgid: int, timeout: float = 0.1) -> list[int]:
-    """Kurz auf die Zustellung eines bereits gesendeten SIGKILL warten."""
+def _wait_group_gone(pgid: int, timeout: float = _GROUP_GONE_DEADLINE_S) -> list[int]:
+    """Auf das Ende der Gruppe nach einem bereits gesendeten SIGKILL warten.
+
+    Kehrt zurueck, sobald kein Mitglied mehr lebt; ``timeout`` ist nur der
+    Meldedeckel, nach dem die noch lebenden Mitglieder gemeldet werden."""
     deadline = time.monotonic() + timeout
     while (alive := _alive_members(pgid)) and time.monotonic() < deadline:
         time.sleep(0.005)

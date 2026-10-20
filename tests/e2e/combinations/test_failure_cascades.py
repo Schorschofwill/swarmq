@@ -222,6 +222,23 @@ class TestDLQUniqueForCombo:
                 result = await app.get_result(tid, timeout=5)
                 assert result == 10
 
+                # The result is visible before the release: notify, ack and
+                # the unique release in the handler's finally come after the
+                # store. Leaving the context cancels start_worker() (abort
+                # path, no drain) and closes the worker backend, which can
+                # drop a release still in flight -- wait for the release
+                # itself while the worker runs (CI main pipeline 2964583684).
+                valkey = backend._client
+                assert valkey is not None
+
+                async def unique_flag_released() -> bool:
+                    async for key in valkey.scan_iter(match="*unique:*"):
+                        if await valkey.get(key) == tid.encode():
+                            return False
+                    return True
+
+                assert await wait_until(unique_flag_released, timeout=10), "unique flag never released"
+
         # After completion the unique flag must be released.
         broker2 = RabbitMQBroker(rabbitmq_url)
         backend2 = ValkeyBackend(valkey_url)
@@ -435,7 +452,7 @@ class TestDLQRetryResultTTLCombo:
         queue = _uq("dlq-rt-exhaust")
         task_name = _task_name("dlq_rt_exhaust")
         attempts = 0
-        failed_event = asyncio.Event()
+        failures = 0
 
         class AlwaysFailRetryTask(Task):
             task_info = TaskInfo(
@@ -463,7 +480,8 @@ class TestDLQRetryResultTTLCombo:
 
         @app.on_signal(Signal.TASK_FAILED)
         async def _on_failed(**_: Any) -> None:
-            failed_event.set()
+            nonlocal failures
+            failures += 1
 
         async with app:
             await broker.declare_queue(queue)
@@ -474,9 +492,13 @@ class TestDLQRetryResultTTLCombo:
                 mirror_to=app._signal_dispatcher,
             ):
                 await app.schedule(task_name, 0)
-                await asyncio.wait_for(failed_event.wait(), timeout=12.0)
-                # Allow DLQ-move ack to propagate.
-                await asyncio.sleep(0.3)
+                # TASK_FAILED fires on every failed attempt, the first one
+                # included. Wait for the failure of the retry itself
+                # (max_retries=1: two attempts in total) instead of giving
+                # the retry a fixed head start after the first failure.
+                assert await wait_until(lambda: failures >= 2, timeout=12.0), (
+                    f"retry never failed: TASK_FAILED {failures} time(s), handler ran {attempts} time(s)"
+                )
 
         assert_at_least_once_held(attempts, expected_min=2)  # retried once
         # TASK_FAILED must have been emitted.
