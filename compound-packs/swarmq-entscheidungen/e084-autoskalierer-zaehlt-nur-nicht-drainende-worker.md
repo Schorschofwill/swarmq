@@ -17,6 +17,7 @@ quelle:
   - src/swarmq/process_manager/autoscale.py (tick, scale_down_one)
   - src/swarmq/process_manager/slots.py (heading_slots, drain_candidates)
   - src/swarmq/process_manager/setpoint.py (reconcile zählt seit dem Kontrollkanal ebenso)
+  - tests/property/stateful/autoscale_machine.py (Invarianten A1–A4, ohne Marker)
 tests:
   - tests/unit/process_manager/test_befund_f4_25_26_autoscale_drain.py::test_a_down_tick_during_a_long_drain_leaves_the_draining_worker_alone
   - tests/unit/process_manager/test_befund_f4_25_26_autoscale_drain.py::test_a_draining_slot_does_not_count_towards_the_lower_bound
