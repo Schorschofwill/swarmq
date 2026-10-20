@@ -28,6 +28,13 @@ Test-Liste:
       (Review MR 10, P2-4; durch die Start-Deklaration vor ``report_queue_declarations``)
 - [x] unroutbare Stufe: nur die Stufe wird neu deklariert, nicht die Familie; die WARNING nennt die Stufe
       (Review MR 10, P2-3)
+
+Testlücken Runde 4 (Plan 2026-10-20-1500, U3):
+- [x] E-16: unroutbare Stufe, Neu-Deklarieren scheitert an einem Kanalfehler (403, nicht
+      am Verbindungsabriss, V-B): diese und die nächste Rückstellung gehen an ``{queue}.DQ``
+      (Mutant ``declarations.py`` ``self._ready_delay_tiers.discard(name)`` -> ``discard(None)``)
+- [x] E-18: erneutes Deklarieren der Familie deklariert bereite und abgelehnte Stufen nicht neu
+      (Mutant ``declarations.py`` ``tier not in … and tier not in …`` -> ``or``)
 """
 
 from __future__ import annotations
@@ -40,7 +47,7 @@ from unittest.mock import AsyncMock
 import pytest
 from aio_pika.exceptions import PublishError
 from aiormq.abc import DeliveredMessage
-from aiormq.exceptions import ConnectionClosed
+from aiormq.exceptions import ChannelAccessRefused, ConnectionClosed
 from pamqp.commands import Basic
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
@@ -304,3 +311,59 @@ async def test_unroutable_tier_redeclares_only_the_tier_and_names_it(swarmq_logs
     assert "tasks.DQ.1s" in rabbit.queues
     [entry] = [e for e in swarmq_logs if e["event"] == "own_queue_unroutable_redeclaring"]
     assert entry["queue"] == "tasks.DQ.1s"
+
+
+@pytest.mark.entscheidung("E-026")
+async def test_tier_refused_after_an_unroutable_publish_sends_this_and_later_deferrals_to_the_delay_queue(
+    swarmq_logs,
+) -> None:
+    """E-16: Die unroutbare Stufe verliert ihren Eintrag; scheitert ihr
+    Neu-Deklarieren an einem Kanalfehler (403), gehen diese und jede weitere
+    Rückstellung an ``{queue}.DQ``. Gegenprobe ``declarations.py:250``
+    ``discard(name)`` -> ``discard(None)``: rot."""
+    rabbit = FakeRabbit()
+    broker = make_broker(rabbit)
+    await broker.declare_queue("tasks")
+    cast("AsyncMock", broker._publish_channel).default_exchange.publish.side_effect = [
+        _returned("tasks.DQ.1s"),
+        None,
+        None,
+    ]
+
+    async def refusing_channel(**_: object) -> AsyncMock:
+        channel = AsyncMock(is_closed=False)
+        channel.declare_queue.side_effect = ChannelAccessRefused("ACCESS_REFUSED - access to queue 'tasks.DQ.1s'")
+        return channel
+
+    cast("AsyncMock", broker._connection).channel = AsyncMock(side_effect=refusing_channel)
+    first, second = _delivery(), _delivery()
+
+    await broker.retry_later(first, delay_ms=500, headers={})
+    await broker.retry_later(second, delay_ms=500, headers={})
+
+    assert _routing_keys(broker) == ["tasks.DQ.1s", "tasks.DQ", "tasks.DQ"]
+    assert broker.delay_tiers_unavailable("tasks") == 1
+    assert [e["tier"] for e in swarmq_logs if e["event"] == "delay_tier_unavailable"] == ["tasks.DQ.1s"]
+    cast("AsyncMock", first.handle).ack.assert_awaited_once()
+    cast("AsyncMock", second.handle).ack.assert_awaited_once()
+
+
+@pytest.mark.entscheidung("E-026")
+async def test_declaring_the_family_again_skips_ready_and_refused_tiers() -> None:
+    """E-18: Nach dem Verwerfen des Familien-Eintrags deklariert die nächste
+    Deklaration die Familie neu (die Kette mit passivem Declare zeigt es für
+    Haupt- und Delay-Queue), die Stufen aber
+    nicht: bereite bleiben bereit, abgelehnte bleiben aus. Gegenprobe
+    ``declarations.py:116`` ``… and tier not in self._unavailable_delay_tiers``
+    -> ``or``: rot."""
+    rabbit = FakeRabbit({"tasks.DQ.4s": {"x-queue-type": "classic"}})
+    broker = make_broker(rabbit)
+    await broker.declare_queue("tasks")
+
+    broker.invalidate_declaration("tasks")
+    await broker.declare_queue("tasks")
+
+    chains = _chains(rabbit)
+    assert [chains.count(name) for name in ("tasks", "tasks.DQ")] == [2, 2]
+    assert {tier: chains.count(tier) for tier in delay_tiers("tasks")} == dict.fromkeys(delay_tiers("tasks"), 1)
+    assert broker.delay_tiers_unavailable("tasks") == 1

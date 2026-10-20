@@ -15,6 +15,10 @@ Testliste:
 #     Publish-Versuch und ohne Wiederholung (Q14: nicht als allgemeiner
 #     BrokerConnectionError nach erschoepften Versuchen)
 # [x] frame_max nicht lesbar (Mock, getrennte Verbindung) -> 131072
+#
+# Testlücken Runde 4 (Plan 2026-10-20-1500, U3, Lücke E-18):
+# [x] genau frame_max/2 -> unverändert (Mutant ``<= limit`` -> ``< limit``)
+# [x] gekürzt genau frame_max/2 -> gekürzt, kein Fehler (Mutant ``size > limit`` -> ``>=``)
 """
 
 from typing import cast
@@ -27,6 +31,7 @@ from pamqp.common import FieldTable
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.broker.rabbitmq.header_guard import guard_headers, negotiated_frame_max
 from swarmq.exceptions import MessageHeadersTooLarge
+from swarmq.header_text import bounded_header_text
 
 _FRAME_MAX = 131_072
 
@@ -59,6 +64,26 @@ def test_headers_that_do_not_fit_even_when_bounded_raise() -> None:
 
     with pytest.raises(MessageHeadersTooLarge, match="65536"):
         guard_headers(headers, _FRAME_MAX)
+
+
+def test_headers_of_exactly_half_frame_max_stay_unchanged() -> None:
+    """E-18: Die Grenze ``frame_max / 2`` gehört noch dazu; nichts wird
+    gekürzt. Gegenprobe ``header_guard.py:33`` ``<= limit`` -> ``< limit``: rot."""
+    headers: FieldTable = {"x-swarmq-traceback": "E" * 20_000, "n": 1}
+    frame_max = 2 * _encoded_size(headers)
+
+    assert guard_headers(headers, frame_max) == {"x-swarmq-traceback": "E" * 20_000, "n": 1}
+
+
+def test_bounded_headers_of_exactly_half_frame_max_pass() -> None:
+    """E-18: Passen die gekürzten Header genau auf ``frame_max / 2``, gibt es
+    keinen Fehler. Gegenprobe ``header_guard.py:37`` ``size > limit`` ->
+    ``size >= limit``: rot."""
+    headers = {"x-swarmq-traceback": "E" * 20_000, "n": 1}
+    bounded: FieldTable = {"x-swarmq-traceback": bounded_header_text("E" * 20_000), "n": 1}
+    frame_max = 2 * _encoded_size(bounded)
+
+    assert guard_headers(headers, frame_max) == bounded
 
 
 def _broker(frame_max: object = None) -> RabbitMQBroker:
