@@ -42,6 +42,10 @@ the supervisor's `--autoscale` decisions change.
 - **`autoscale_up` and `autoscale_down` carry the field `draining`**,
   the number of draining processes at the decision, so the log explains
   why `active` is lower than the process count ([event catalog](logging.md#event-catalog)).
+- **The DEBUG record `autoscale_down_deferred_all_young` is now
+  `autoscale_down_deferred_no_candidate`**, with the new fields
+  `draining` and `transition`: a scale-down also finds no candidate
+  when the old workers drain or are being replaced.
 
 ### Upgrade notes
 

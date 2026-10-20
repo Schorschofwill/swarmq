@@ -43,6 +43,10 @@ Supervisors.
 - **`autoscale_up` und `autoscale_down` tragen das Feld `draining`**,
   die Zahl der drainenden Prozesse bei der Entscheidung; so erklärt das
   Log, warum `active` kleiner ist als die Prozesszahl ([Event-Katalog](logging.md#event-katalog)).
+- **Der DEBUG-Satz `autoscale_down_deferred_all_young` heißt jetzt
+  `autoscale_down_deferred_no_candidate`**, mit den neuen Feldern
+  `draining` und `transition`: Ein Abbau findet auch dann keinen
+  Kandidaten, wenn die alten Worker drainen oder ersetzt werden.
 
 ### Upgrade-Hinweise
 

@@ -28,6 +28,8 @@ Test-Liste 0.14.2 (F4-25, F4-26, E-084; Plan 2026-10-20-2100, U2):
 - Regressionstest (E-024): erschöpftes Hang-Budget -- der Slot ist gesperrt,
   der Vorgänger lebt drainend weiter und zählt nicht; in den gesperrten Slot
   startet nichts.
+- Ein Abbau ohne Kandidaten meldet DEBUG ``autoscale_down_deferred_no_candidate``
+  mit den drainenden und den Prozessen in Slots im Übergang.
 - Die Logsätze ``autoscale_up`` und ``autoscale_down`` nennen im Feld
   ``draining`` die Zahl der drainenden Prozesse zum Zeitpunkt der Entscheidung.
 """
@@ -323,3 +325,22 @@ def test_scale_decisions_log_the_number_of_draining_processes(
         (e["event"], e.get("draining")) for e in swarmq_logs if e["event"] in {"autoscale_up", "autoscale_down"}
     ]
     assert decisions == [("autoscale_down", 0), ("autoscale_up", 1), ("autoscale_down", 1)]
+
+
+def test_a_down_tick_without_candidates_names_draining_and_transition(
+    clock: FakeClock, swarmq_logs: list[dict[str, Any]]
+) -> None:
+    pm = _pm(clock, n=3, depth=[0], autoscale=(1, 5))
+    _drain_one_by_idle(pm, clock)  # Slot 2 draint
+    _recycle(pm, 0)  # Slot 0 im Übergang: Vorgänger draint, der Ersatz ist tabu
+    clock.now += pm.SCALE_COOLDOWN_S
+    autoscale_module.tick(pm)  # Leerlauf beginnt
+    clock.now += pm.SCALE_DOWN_IDLE_S - 10.0
+    _crash_and_restart(pm, 1)  # Slot 1: beim Abbau-Takt 10 s alter Ersatz
+    clock.now += 10.0
+
+    autoscale_module.tick(pm)
+
+    [entry] = [e for e in swarmq_logs if e["event"] == "autoscale_down_deferred_no_candidate"]
+    assert entry["log_level"] == "debug"
+    assert (entry["total"], entry["draining"], entry["transition"]) == (4, 2, 1)

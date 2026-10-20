@@ -14,7 +14,7 @@ import time
 from typing import Any
 
 from swarmq.logging import _error_fields, get_logger, sanitize_url
-from swarmq.process_manager.slots import drain_candidates, heading_slots
+from swarmq.process_manager.slots import SlotState, drain_candidates, heading_slots
 
 logger = get_logger(__name__)
 
@@ -107,9 +107,12 @@ def scale_down_one(pm: Any) -> bool:
     """
     eligible = drain_candidates(pm.workers, pm._slots, min_age_s=pm.SCALE_MIN_AGE_S, now=time.monotonic())
     if not eligible:
+        # DEBUG, weil der Satz bei Leerlauf ohne Kandidaten in jedem Abtast-Takt kommt (F4-25).
         logger.debug(
-            "autoscale_down_deferred_all_young",
+            "autoscale_down_deferred_no_candidate",
             total=len(pm.workers),
+            draining=_draining(pm),
+            transition=sum(1 for slot in range(len(pm._slots)) if pm._slots.state(slot) is SlotState.TRANSITION),
             min_age_s=pm.SCALE_MIN_AGE_S,
         )
         return False
