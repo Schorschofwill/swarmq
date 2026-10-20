@@ -59,8 +59,9 @@ def tick(pm: Any) -> None:
         return
 
     min_w, max_w = pm.effective_bounds  # Kontrollkanal (KTD12): Sollwert oder Startargumente
-    # R2: belegte Slots, ein Slot im Uebergang zaehlt einmal.
-    active = pm._slots.occupied()
+    # E-084: Slots mit einem nicht drainenden Prozess; ein Slot im Übergang
+    # zählt über den Ersatz einmal (R2), ein drainender Worker gar nicht.
+    active = len(heading_slots(pm.workers.values()))
 
     # Scale up: enough backlog to justify another worker.
     slot = pm._slots.smallest_free()
@@ -77,8 +78,8 @@ def tick(pm: Any) -> None:
         pm._idle_since = None
         return
 
-    # Scale down: sustained idle. F4-26: drainende Worker zählen nicht.
-    if len(heading_slots(pm.workers.values())) > min_w and depth == 0:
+    # Scale down: sustained idle.
+    if active > min_w and depth == 0:
         if pm._idle_since is None:
             pm._idle_since = now
             return

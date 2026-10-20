@@ -15,6 +15,8 @@ Test-Liste 0.14.2 (F4-25, F4-26, E-084; Plan 2026-10-20-2100, U2):
   schickt kein SIGTERM (F4-25).
 - Ein solcher Takt verbraucht weder Abkühlzeit noch Leerlauf: Sobald ein
   Worker alt genug ist, baut der nächste Abtast-Takt ab (F4-25).
+- E-084: Ein drainender Worker zählt auch für die Schwelle des Hochskalierens
+  nicht (Option b): drei Worker, einer draint, Tiefe 120 > 2 x 50 -> hoch.
 """
 
 from __future__ import annotations
@@ -174,3 +176,16 @@ def test_a_down_tick_without_candidates_is_not_used_up(clock: FakeClock) -> None
     autoscale_module.tick(pm)
 
     assert _drained(pm) == 2
+
+
+@pytest.mark.entscheidung("E-084")
+def test_a_draining_worker_does_not_count_towards_the_scale_up_threshold(clock: FakeClock) -> None:
+    depth = [0]
+    pm = _pm(clock, n=3, depth=depth, autoscale=(1, 5))
+    _drain_one_by_idle(pm, clock)
+    clock.now += pm.SCALE_COOLDOWN_S
+    depth[0] = 2 * pm.SCALE_UP_THRESHOLD + 20  # über zwei, unter drei aktiven Workern
+
+    autoscale_module.tick(pm)
+
+    assert sorted(w.worker_id for w in pm.workers.values() if not w.expected_shutdown) == [0, 1, 3]
