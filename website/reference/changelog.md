@@ -4,6 +4,74 @@ All notable changes to SwarmQ. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [0.14.2rc1] — 2026-10-20
+
+Release candidate for 0.14.2 (install with `pip install --pre`).
+
+Release candidate for 0.14.2 (install with `pip install --pre`).
+
+Patch release for 0.14.1. No new headers, Lua scripts, keys or format
+changes: 0.14.2 runs next to 0.14.1 on the same queues and keys. Only
+the supervisor's `--autoscale` decisions change.
+
+### Fixed
+
+- **A scale-down no longer hits a worker that is already draining.**
+  `--autoscale` picked the youngest worker old enough for a
+  scale-down, including one it had already sent SIGTERM. During a long
+  drain (longer than cooldown plus idle window, about 90 s) the next
+  scale-down sent that worker a second SIGTERM and stopped no other
+  worker. A draining worker is now never picked again. A scale-down
+  that finds no eligible worker (all draining, younger than 30 s or
+  being replaced) is no longer used up: cooldown and idle window stay,
+  and the next sample tries again (F4-25).
+- **Draining workers no longer count towards the autoscaler's lower
+  bound.** The autoscaler counted occupied slots, draining ones
+  included. After a crash replacement during a drain it could stop the
+  replacement, and the workers that were not draining fell below
+  `MIN`. Now only slots with a worker that is not draining count, and a
+  scale-down never takes them below `MIN` (F4-26).
+
+### Changed
+
+- **The autoscaler counts like the setpoint pass (E-084).** A draining
+  worker does not count as active for `MAX` and the scale-up threshold
+  either (50 messages per active worker). The setpoint pass of the
+  control channel has always counted this way. A draining worker keeps
+  its slot until it exits; a slot whose worker is being replaced
+  (recycling, hang) counts once. See
+  [autoscaling and draining workers](cli.md#autoscaling-and-draining-workers).
+- **`autoscale_up` and `autoscale_down` carry the field `draining`**,
+  the number of draining processes at the decision, so the log explains
+  why `active` is lower than the process count ([event catalog](logging.md#event-catalog)).
+- **The DEBUG record `autoscale_down_deferred_all_young` is now
+  `autoscale_down_deferred_no_candidate`**, with the new fields
+  `draining` and `transition`: a scale-down also finds no candidate
+  when the old workers drain or are being replaced.
+
+### Upgrade notes
+
+1. **During a drain the autoscaler scales up earlier.** The threshold
+   now divides the backlog by fewer active workers. With three workers,
+   one of them draining, a backlog of 120 starts a worker (120 > 2 × 50),
+   provided a slot is free (for example `--autoscale 1,5`); 0.14.1 waited
+   for more than 150.
+2. **With `--max-processes N` a worker may start in a headroom slot
+   while another drains.** At most `MAX` workers are active, but up to
+   `N − MAX` draining processes may run in addition: plan their memory,
+   and expect `workers` and `slots.occupied` in the
+   [control-channel status](cli.md#control-channel) to count them, as
+   well as a busy slot beyond `MAX` among the scrape targets. Under
+   `--autoscale`, `N` is checked at start only against the port ranges,
+   not against the CPUs (the CPU check applies to `--pool cpu`, which
+   `--autoscale` excludes).
+3. **Without `--max-processes` the scale-up still waits for the slot,
+   as in 0.14.1.** The slot table has `MAX` slots, and a draining worker
+   holds its slot until it exits. With `MAX − 1` active workers and one
+   draining, the group grows again only after the drain ends (a
+   scale-down drain at most `SWARMQ_SHUTDOWN_TIMEOUT`), even though the log now shows
+   `active` below `MAX`.
+
 ## [0.14.1] — 2026-10-20
 
 0.14.1 is 0.14.1rc1 without code changes. Read

@@ -550,8 +550,10 @@ class ProcessManager(RestartBudget):
         limit).
         With autoscale: the currently occupied slots (a slot in
         transition counts once, R2) since ``_autoscale_tick`` adjusts
-        independently; backfill only replaces crashed workers (not
-        those we scaled down deliberately).
+        independently. The backfill loop therefore starts nothing under
+        ``--autoscale``: a crashed worker is replaced by ``_maybe_restart``
+        alone, and a slot whose worker drains stays occupied until it
+        exits (E-084).
         """
         if self._autoscale is None:
             return max(0, self.effective_bounds[0] - self._exhausted_slots - self._clean_exits)
@@ -653,5 +655,5 @@ class ProcessManager(RestartBudget):
     def _autoscale_tick(self) -> None:
         autoscale.tick(self)
 
-    def _scale_down_one(self) -> None:
-        autoscale.scale_down_one(self)
+    def _scale_down_one(self) -> bool:
+        return autoscale.scale_down_one(self)

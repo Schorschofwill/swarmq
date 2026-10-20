@@ -236,7 +236,10 @@ scrape_configs:
 
 Mit `--autoscale MIN,MAX` alle `MAX` Targets eintragen; nicht laufende
 Slots erscheinen als `down`, was bei heruntergefahrenem Pool erwartet
-ist.
+ist. Mit `--max-processes N` alle `N` Targets eintragen: Seit 0.14.2 kann
+der Autoskalierer einen Worker in einem Spielraum-Slot starten, während
+ein anderer draint; ein Slot jenseits von `MAX` kann dann belegt sein,
+obwohl nur `MAX` Worker aktiv sind ([Autoskalierung und drainende Worker](cli.md#autoskalierung-und-drainende-worker)).
 
 ### Worker-Identität
 

@@ -14,7 +14,7 @@ import time
 from typing import Any
 
 from swarmq.logging import _error_fields, get_logger, sanitize_url
-from swarmq.process_manager.slots import SlotState
+from swarmq.process_manager.slots import SlotState, drain_candidates, heading_slots
 
 logger = get_logger(__name__)
 
@@ -59,8 +59,9 @@ def tick(pm: Any) -> None:
         return
 
     min_w, max_w = pm.effective_bounds  # Kontrollkanal (KTD12): Sollwert oder Startargumente
-    # R2: belegte Slots, ein Slot im Uebergang zaehlt einmal.
-    active = pm._slots.occupied()
+    # E-084: Slots mit einem nicht drainenden Prozess; ein Slot im Übergang
+    # zählt über den Ersatz einmal (R2), ein drainender Worker gar nicht.
+    active = len(heading_slots(pm.workers.values()))
 
     # Scale up: enough backlog to justify another worker.
     slot = pm._slots.smallest_free()
@@ -69,6 +70,7 @@ def tick(pm: Any) -> None:
             "autoscale_up",
             depth=depth,
             active=active,
+            draining=_draining(pm),
             max_workers=max_w,
             slot=slot,
         )
@@ -82,16 +84,20 @@ def tick(pm: Any) -> None:
         if pm._idle_since is None:
             pm._idle_since = now
             return
-        if now - pm._idle_since >= pm.SCALE_DOWN_IDLE_S:
-            scale_down_one(pm)
+        # F4-25: Ohne Kandidaten ist der Takt nicht verbraucht -- Abkühlzeit
+        # und Leerlauf bleiben, der nächste Abtast-Takt versucht es erneut.
+        if now - pm._idle_since >= pm.SCALE_DOWN_IDLE_S and scale_down_one(pm):
             pm._last_scale_decision = now
             pm._idle_since = None
     else:
         pm._idle_since = None
 
 
-def scale_down_one(pm: Any) -> None:
+def scale_down_one(pm: Any) -> bool:
     """Tell the youngest eligible worker to drain + exit (SIGTERM).
+
+    Returns ``True`` if a worker was chosen, ``False`` if none was eligible
+    (all draining, too young or in transition; F4-25).
 
     Workers younger than
     :attr:`SCALE_MIN_AGE_S` are excluded. Without this, a
@@ -99,23 +105,17 @@ def scale_down_one(pm: Any) -> None:
     would spawn a replacement and immediately kill it, producing
     pointless process churn.
     """
-    if not pm.workers:
-        return
-    now = time.monotonic()
-    # KTD1: Slots im Uebergang (Alt- und Ersatzprozess) sind tabu — der
-    # Ersatz waere sonst als juengster Prozess der erste Kandidat.
-    eligible = {
-        pid: w
-        for pid, w in pm.workers.items()
-        if (now - w.spawned_at) >= pm.SCALE_MIN_AGE_S and pm._slots.state(w.worker_id) is not SlotState.TRANSITION
-    }
+    eligible = drain_candidates(pm.workers, pm._slots, min_age_s=pm.SCALE_MIN_AGE_S, now=time.monotonic())
     if not eligible:
+        # DEBUG, weil der Satz bei Leerlauf ohne Kandidaten in jedem Abtast-Takt kommt (F4-25).
         logger.debug(
-            "autoscale_down_deferred_all_young",
+            "autoscale_down_deferred_no_candidate",
             total=len(pm.workers),
+            draining=_draining(pm),
+            transition=sum(1 for slot in range(len(pm._slots)) if pm._slots.state(slot) is SlotState.TRANSITION),
             min_age_s=pm.SCALE_MIN_AGE_S,
         )
-        return
+        return False
     # Youngest by spawn time among the eligible (R4) — oldest
     # workers have warmer caches. A low slot may carry the youngest
     # process after a replacement, so the slot number is no proxy;
@@ -128,6 +128,7 @@ def scale_down_one(pm: Any) -> None:
         "autoscale_down",
         worker_id=info.worker_id,
         pid=target_pid,
+        draining=_draining(pm),
     )
     info.expected_shutdown = True
     try:
@@ -135,3 +136,9 @@ def scale_down_one(pm: Any) -> None:
     except ProcessLookupError:
         # Already gone — bookkeeping will clean up in _check_dead.
         pass
+    return True
+
+
+def _draining(pm: Any) -> int:
+    """Prozesse im Drain (``expected_shutdown``); erklärt im Log, warum ``active`` kleiner ist (E-084)."""
+    return sum(1 for w in pm.workers.values() if w.expected_shutdown)

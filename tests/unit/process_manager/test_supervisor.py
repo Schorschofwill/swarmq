@@ -1133,6 +1133,16 @@ class TestScaleDownMinAge:
         p_old2.terminate.assert_called_once()
         p_young.terminate.assert_not_called()
 
+    def test_scale_down_one_reports_whether_it_chose_a_worker(self):
+        """F4-25 (0.14.2): ``True`` nach einem SIGTERM, ``False`` ohne Kandidaten."""
+        pm = self._pm_with_age(min_age_s=30.0)
+        now = time.monotonic()
+        old = _fake_process(pid=1)
+        _register(pm, WorkerInfo(process=old, worker_id=0, spawned_at=now - 120.0))
+        assert pm._scale_down_one() is True
+        assert pm._scale_down_one() is False  # der einzige Worker draint schon
+        old.terminate.assert_called_once()
+
 
 class TestReloadReentrancy:
     """R5.3 ce-review #10, seit U8 (KTD8): echte SIGHUP-Zustellung. Der

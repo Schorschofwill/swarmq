@@ -118,8 +118,8 @@ swarmq worker --module DOTTED.PATH [--app-dir DIR]
 | `--metrics-port PORT` | unset | **Base port** for Prometheus `/metrics`: the worker in slot `s` serves on `PORT + s`, so `--processes 3 --metrics-port 9000` occupies `9000-9002`. Requires `pip install 'swarmq[metrics]'`. Bind host: `SWARMQ_METRICS_HOST` (default `127.0.0.1`). See [base ports](configuration.md#observability). |
 | `--health-port PORT` | unset | **Base port** for `/health` + `/ready`, same slot offset as `--metrics-port`. Bind host: `SWARMQ_HEALTH_HOST` (default `127.0.0.1`). |
 | `--processes N`, `-p N` | `1` | Run N worker subprocesses in slots `0..N-1`. Since 0.5.0 every `swarmq worker` runs under the supervisor, also with `N = 1`: it restarts crashed workers (max 5 per hour) into the same slot, locks a slot that exceeds this for a 1 h cooldown (since 0.12; before, for good), replaces workers whose heartbeat stops, reloads on `SIGHUP` by re-executing itself with `os.execvpe()` and the argv (`sys.orig_argv`) and environment captured at start-up, so `python -m swarmq.cli worker ...` reloads too, and exits 0 once all workers ended cleanly (`--burst`). `SIGTERM` and `SIGINT` always end the supervisor, also while a reload is being checked or prepared. A configuration error in any worker ends the run after a single attempt with exit `78`. |
-| `--autoscale MIN,MAX` | unset | Enable queue-depth-driven autoscaling between `MIN` and `MAX` worker subprocesses. Implies `--processes`. Since 0.12 it counts only the messages ready in each queue itself, not the delay queues ([delay tiers](../explanation/delivery-semantics.md#delay-tiers)). |
-| `--max-processes N` | unset | **Enables the control channel** and declares the headroom: a setpoint stored in the backend may raise this supervisor to at most `N` worker processes. `N` must be at least `--processes` and the `--autoscale` upper bound; with `--pool cpu` it must not overbook the assigned CPUs (`N` without `--concurrency`, `N × --concurrency` with it). Without this flag the supervisor never reads or writes setpoints and behaves exactly as before. See [control channel](#control-channel). |
+| `--autoscale MIN,MAX` | unset | Enable queue-depth-driven autoscaling between `MIN` and `MAX` worker subprocesses. Implies `--processes`. Since 0.12 it counts only the messages ready in each queue itself, not the delay queues ([delay tiers](../explanation/delivery-semantics.md#delay-tiers)). Since 0.14.2 a draining worker does not count as active and is never picked again ([autoscaling and draining workers](#autoscaling-and-draining-workers)). |
+| `--max-processes N` | unset | **Enables the control channel** and declares the headroom: a setpoint stored in the backend may raise this supervisor to at most `N` worker processes. `N` must be at least `--processes` and the `--autoscale` upper bound; with `--pool cpu` it must not overbook the assigned CPUs (`N` without `--concurrency`, `N × --concurrency` with it). Without this flag the supervisor never reads or writes setpoints and behaves exactly as before. Under `--autoscale` the autoscaler may also start a worker in a headroom slot without any setpoint while another worker drains, up to `N` processes ([autoscaling and draining workers](#autoscaling-and-draining-workers)). See [control channel](#control-channel). |
 | `--group LABEL` | sorted set of `--queues` | Group key of the control channel. Every supervisor with the same key (in the same backend) follows the same setpoint, each on its own. Deployments that share a backend and serve the same queues need distinct labels, otherwise they steer each other. |
 | `--reload` | off | Watch task modules and trigger SIGHUP reload on change. Developer-only. Requires `pip install 'swarmq[reload]'`. A worker child that exits `78` (for example a `SyntaxError` in the task module) does not end the supervisor: it logs `worker_config_error`, starts no replacement, and restarts the workers after the next file change. A configuration error the parent process detects at start-up still ends with `78`. |
 | `--watch-dir PATH` | parent of `--module` source | Directory to watch (repeatable). Ignored without `--reload`. |
@@ -214,6 +214,38 @@ Burst mode for a cron-style batch drain:
 swarmq worker --module myapp.tasks --burst --burst-idle-timeout 10
 ```
 
+### Autoscaling and draining workers
+
+`--autoscale MIN,MAX` samples the queue depth every 10 seconds. It
+starts a worker when the backlog exceeds 50 messages per active worker
+and stops one gently (SIGTERM, the running task finishes) after 60
+seconds without backlog, with at least 30 seconds between two
+decisions.
+
+Since 0.14.2 a worker that drains -- after a scale-down, a lower
+setpoint, recycling or a hang replacement -- does not count as active,
+neither for `MIN` and `MAX` nor for the scale-up threshold, and a
+scale-down never picks it again. The setpoint pass of the
+[control channel](#control-channel) has always counted this way.
+A slot whose worker is being replaced (recycling, hang) counts once,
+through the replacement. A scale-down that finds no eligible worker
+(all draining, younger than 30 seconds or being replaced) is not used
+up: the next sample tries again.
+
+A draining worker keeps its slot until it exits. Without
+`--max-processes` the slot table has `MAX` slots, so while a worker
+drains the group cannot grow beyond the free slots, even under backlog;
+a scale-down drain is bounded by `SWARMQ_SHUTDOWN_TIMEOUT` (a recycling drain is not, E-018). With
+`--max-processes N` the autoscaler may start a worker in a free headroom
+slot while another drains: at most `MAX` workers are active, but up to
+`N − MAX` draining processes may run in addition. Plan memory for `N`
+processes. At start `N` is checked only against the port ranges; the CPU
+check applies to `--pool cpu`, which `--autoscale` excludes.
+
+If the active workers drop below `MIN` without a scale-down (a slot
+locked by the restart budget, a clean exit), the autoscaler does not
+restore the lower bound by itself; new backlog or a setpoint does.
+
 ### Control channel
 
 `--max-processes N` lets an operator (or a controlling service such as
@@ -231,7 +263,9 @@ switches autoscaling off for the group. The supervisor reads the key
 once before it spawns the first worker and then every 5 seconds. A
 higher lower bound starts the missing workers immediately, a lower
 upper bound drains the surplus workers gently (the running task
-finishes, then the process exits). Deleting the key restores the
+finishes, then the process exits). The setpoint pass and the autoscaler
+count alike: a draining worker does not count
+([autoscaling and draining workers](#autoscaling-and-draining-workers)). Deleting the key restores the
 start-up arguments. A new deploy therefore comes up with the last
 setpoint, not with the deployment file.
 

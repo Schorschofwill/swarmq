@@ -231,7 +231,10 @@ scrape_configs:
 
 With `--autoscale MIN,MAX` list `MAX` targets; slots that are not
 running are scraped as `down`, which is expected while the pool is
-scaled down.
+scaled down. With `--max-processes N` list `N` targets: since 0.14.2 the
+autoscaler may start a worker in a headroom slot while another worker
+drains, so a slot beyond `MAX` can be busy although only `MAX` workers
+are active ([autoscaling and draining workers](cli.md#autoscaling-and-draining-workers)).
 
 ### Worker identity
 

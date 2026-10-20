@@ -122,8 +122,8 @@ swarmq worker --module DOTTED.PATH [--app-dir DIR]
 | `--metrics-port PORT` | ungesetzt | **Basisport** für Prometheus `/metrics`: Der Worker in Slot `s` serviert auf `PORT + s`, `--processes 3 --metrics-port 9000` belegt also `9000-9002`. Braucht `pip install 'swarmq[metrics]'`. Bind-Host: `SWARMQ_METRICS_HOST` (Default `127.0.0.1`). Siehe [Basisports](configuration.de.md#observability). |
 | `--health-port PORT` | ungesetzt | **Basisport** für `/health` + `/ready`, derselbe Slot-Versatz wie bei `--metrics-port`. Bind-Host: `SWARMQ_HEALTH_HOST` (Default `127.0.0.1`). |
 | `--processes N`, `-p N` | `1` | Lässt N Worker-Subprozesse in den Slots `0..N-1` laufen. Seit 0.5.0 läuft jeder `swarmq worker` unter dem Supervisor, auch mit `N = 1`: Er startet gecrashte Worker im selben Slot neu (max 5 pro Stunde), sperrt einen Slot darüber hinaus für eine Abkühlzeit von 1 h (seit 0.12; vorher dauerhaft), ersetzt Worker ohne Lebenszeichen, reloaded auf `SIGHUP`, indem er sich per `os.execvpe()` mit den beim Start festgehaltenen argv (`sys.orig_argv`) und Environment neu startet – so reloaded auch `python -m swarmq.cli worker ...` –, und endet mit 0, sobald alle Worker sauber beendet sind (`--burst`). `SIGTERM` und `SIGINT` beenden den Supervisor immer, auch während ein Reload geprüft oder vorbereitet wird. Ein Konfigurationsfehler in einem beliebigen Worker beendet den Lauf nach genau einem Versuch mit Exit `78`. |
-| `--autoscale MIN,MAX` | ungesetzt | Aktiviert Queue-tiefen-getriebenes Autoscaling zwischen `MIN` und `MAX` Worker-Subprozessen. Impliziert `--processes`. Seit 0.12 zählt es nur die Nachrichten, die in der Queue selbst bereitliegen, nicht die Delay-Queues ([Delay-Stufen](../explanation/delivery-semantics.md#delay-stufen)). |
-| `--max-processes N` | ungesetzt | **Schaltet den Kontrollkanal ein** und erklärt den Spielraum: Ein im Backend hinterlegter Sollwert darf diesen Supervisor auf höchstens `N` Worker-Prozesse bringen. `N` muss mindestens `--processes` und die `--autoscale`-Obergrenze decken; mit `--pool cpu` darf es die zugeteilten CPUs nicht überbuchen (`N` ohne `--concurrency`, `N × --concurrency` mit). Ohne dieses Argument liest und schreibt der Supervisor keine Sollwerte und verhält sich exakt wie bisher. Siehe [Kontrollkanal](#kontrollkanal). |
+| `--autoscale MIN,MAX` | ungesetzt | Aktiviert Queue-tiefen-getriebenes Autoscaling zwischen `MIN` und `MAX` Worker-Subprozessen. Impliziert `--processes`. Seit 0.12 zählt es nur die Nachrichten, die in der Queue selbst bereitliegen, nicht die Delay-Queues ([Delay-Stufen](../explanation/delivery-semantics.md#delay-stufen)). Seit 0.14.2 zählt ein drainender Worker nicht als aktiv und wird nie erneut gewählt ([Autoskalierung und drainende Worker](#autoskalierung-und-drainende-worker)). |
+| `--max-processes N` | ungesetzt | **Schaltet den Kontrollkanal ein** und erklärt den Spielraum: Ein im Backend hinterlegter Sollwert darf diesen Supervisor auf höchstens `N` Worker-Prozesse bringen. `N` muss mindestens `--processes` und die `--autoscale`-Obergrenze decken; mit `--pool cpu` darf es die zugeteilten CPUs nicht überbuchen (`N` ohne `--concurrency`, `N × --concurrency` mit). Ohne dieses Argument liest und schreibt der Supervisor keine Sollwerte und verhält sich exakt wie bisher. Unter `--autoscale` kann der Autoskalierer während eines Drains auch ohne Sollwert einen Worker in einem Spielraum-Slot starten, bis zu `N` Prozesse ([Autoskalierung und drainende Worker](#autoskalierung-und-drainende-worker)). Siehe [Kontrollkanal](#kontrollkanal). |
 | `--group LABEL` | sortierte Menge der `--queues` | Gruppenschlüssel des Kontrollkanals. Jeder Supervisor mit demselben Schlüssel (im selben Backend) folgt demselben Sollwert, jeder für sich. Deployments, die sich ein Backend teilen und dieselben Queues bedienen, brauchen verschiedene Labels, sonst steuern sie einander. |
 | `--reload` | aus | Beobachtet Task-Module und triggert SIGHUP-Reload bei Änderung. Nur Developer. Braucht `pip install 'swarmq[reload]'`. Endet ein Worker-Kind mit `78` (etwa wegen eines `SyntaxError` im Task-Modul), endet der Supervisor nicht: Er loggt `worker_config_error`, startet keinen Ersatz und startet die Worker nach der nächsten Dateiänderung neu. Ein Konfigurationsfehler, den der Elternprozess beim Start erkennt, endet weiterhin mit `78`. |
 | `--watch-dir PATH` | Elternverzeichnis der `--module`-Quelle | Zu überwachendes Verzeichnis (wiederholbar). Ohne `--reload` ignoriert. |
@@ -218,6 +218,40 @@ Burst-Mode für einen Cron-Style-Batch-Drain:
 swarmq worker --module myapp.tasks --burst --burst-idle-timeout 10
 ```
 
+### Autoskalierung und drainende Worker
+
+`--autoscale MIN,MAX` tastet alle 10 Sekunden die Queue-Tiefe ab. Es
+startet einen Worker, wenn mehr als 50 Nachrichten je aktivem Worker
+anstehen, und beendet einen sanft (SIGTERM, der laufende Task wird
+fertig) nach 60 Sekunden ohne Rückstau; zwischen zwei Entscheidungen
+liegen mindestens 30 Sekunden.
+
+Seit 0.14.2 zählt ein Worker im Drain -- nach einem Abbau, einem
+gesenkten Sollwert, beim Recycling oder Hang-Ersatz -- nicht als aktiv,
+weder für `MIN` und `MAX` noch für die Schwelle des Hochskalierens, und
+ein Abbau wählt ihn nie erneut. Der Sollwert-Durchlauf des
+[Kontrollkanals](#kontrollkanal) hat schon immer so gezählt. Ein Slot,
+dessen Worker gerade ersetzt wird (Recycling, Hang), zählt einmal, über
+den Ersatz. Ein Abbau, der keinen wählbaren Worker findet (alle drainend,
+jünger als 30 Sekunden oder im Ersatz), ist nicht verbraucht: Die
+nächste Abtastung versucht es erneut.
+
+Ein drainender Worker hält seinen Slot bis zum Exit. Ohne
+`--max-processes` hat die Slot-Tabelle `MAX` Slots; während ein Worker
+draint, wächst die Gruppe darum nicht über die freien Slots hinaus, auch
+bei Rückstau. Ein Abbau-Drain ist durch `SWARMQ_SHUTDOWN_TIMEOUT` begrenzt (ein Recycling-Drain nicht, E-018). Mit
+`--max-processes N` kann der Autoskalierer während eines Drains einen
+Worker in einem freien Spielraum-Slot starten: Aktiv sind höchstens
+`MAX` Worker, zusätzlich können bis zu `N − MAX` drainende Prozesse
+laufen. Speicher für `N` Prozesse einplanen. Beim Start ist `N` nur gegen
+die Portbereiche geprüft; die CPU-Prüfung gilt für `--pool cpu`, das
+`--autoscale` ausschließt.
+
+Fallen die aktiven Worker ohne Abbau unter `MIN` (ein vom
+Neustart-Budget gesperrter Slot, ein sauberes Ende), stellt der
+Autoskalierer die Untergrenze nicht von selbst wieder her; das tun neuer
+Rückstau oder ein Sollwert.
+
 ### Kontrollkanal
 
 Mit `--max-processes N` ändert ein Betreiber (oder ein steuernder Dienst
@@ -235,7 +269,9 @@ Autoskalierung für die Gruppe ab. Der Supervisor liest den Schlüssel
 einmal, bevor er den ersten Worker startet, und danach alle 5 Sekunden.
 Eine höhere Untergrenze startet die fehlenden Worker sofort, eine
 niedrigere Obergrenze beendet die überzähligen Worker sanft (der laufende
-Task wird fertig, dann endet der Prozess). Wird der Schlüssel gelöscht,
+Task wird fertig, dann endet der Prozess). Sollwert-Durchlauf und
+Autoskalierer zählen gleich: Ein drainender Worker zählt nicht
+([Autoskalierung und drainende Worker](#autoskalierung-und-drainende-worker)). Wird der Schlüssel gelöscht,
 gelten wieder die Startargumente. Ein neuer Deploy fährt deshalb mit dem
 zuletzt gesetzten Sollwert hoch, nicht mit der Deployment-Datei.
 
