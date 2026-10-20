@@ -4,6 +4,68 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 [Keep a Changelog](https://keepachangelog.com/) und
 [Semantic Versioning](https://semver.org/).
 
+## [0.14.2rc1] — unveröffentlicht
+
+Release-Candidate für 0.14.2 (Installation mit `pip install --pre`).
+
+Patch-Release für 0.14.1. Keine neuen Header, Lua-Skripte, Schlüssel oder
+Formatänderungen: 0.14.2 läuft neben 0.14.1 auf denselben Queues und
+Schlüsseln. Es ändern sich nur die `--autoscale`-Entscheidungen des
+Supervisors.
+
+### Behoben
+
+- **Ein Abbau trifft keinen Worker mehr, der schon draint.**
+  `--autoscale` wählte für einen Abbau den jüngsten ausreichend alten
+  Worker, auch einen, dem es schon SIGTERM geschickt hatte. Während eines
+  langen Drains (länger als Abkühlzeit plus Leerlauffrist, rund 90 s)
+  bekam dieser Worker beim nächsten Abbau ein zweites SIGTERM, und kein
+  anderer Worker endete. Ein drainender Worker wird jetzt nie erneut
+  gewählt. Ein Abbau ohne wählbaren Worker (alle drainend, jünger als
+  30 s oder im Ersatz) ist nicht mehr verbraucht: Abkühlzeit und
+  Leerlauffrist bleiben, die nächste Abtastung versucht es erneut (F4-25).
+- **Drainende Worker zählen nicht mehr zur Untergrenze des
+  Autoskalierers.** Er zählte belegte Slots, drainende eingeschlossen.
+  Nach einem Absturz-Ersatz während eines Drains konnte er den Ersatz
+  abbauen, und die nicht drainenden Worker fielen unter `MIN`. Jetzt
+  zählen nur Slots mit einem Worker, der nicht draint, und ein Abbau
+  bringt sie nie unter `MIN` (F4-26).
+
+### Geändert
+
+- **Der Autoskalierer zählt wie der Sollwert-Durchlauf (E-084).** Ein
+  drainender Worker zählt auch für `MAX` und die Schwelle des
+  Hochskalierens (50 Nachrichten je aktivem Worker) nicht als aktiv. Der
+  Sollwert-Durchlauf des Kontrollkanals hat schon immer so gezählt. Ein
+  drainender Worker hält seinen Slot bis zum Exit; ein Slot, dessen
+  Worker gerade ersetzt wird (Recycling, Hang), zählt einmal. Siehe
+  [Autoskalierung und drainende Worker](cli.md#autoskalierung-und-drainende-worker).
+- **`autoscale_up` und `autoscale_down` tragen das Feld `draining`**,
+  die Zahl der drainenden Prozesse bei der Entscheidung; so erklärt das
+  Log, warum `active` kleiner ist als die Prozesszahl ([Event-Katalog](logging.md#event-katalog)).
+
+### Upgrade-Hinweise
+
+1. **Während eines Drains skaliert der Autoskalierer früher hoch.** Die
+   Schwelle teilt den Rückstau jetzt durch weniger aktive Worker. Bei
+   drei Workern, von denen einer draint, startet ein Rückstau von 120
+   einen Worker (120 > 2 × 50); 0.14.1 wartete auf mehr als 150.
+2. **Mit `--max-processes N` kann ein Worker in einem Spielraum-Slot
+   starten, während ein anderer draint.** Aktiv sind höchstens `MAX`
+   Worker, zusätzlich können bis zu `N − MAX` drainende Prozesse laufen:
+   ihren Speicher einplanen, und `workers` und `slots.occupied` im
+   [Status des Kontrollkanals](cli.md#kontrollkanal) zählen sie mit,
+   ebenso kann unter den Scrape-Targets ein Slot jenseits von `MAX`
+   belegt sein. Unter `--autoscale` ist `N` beim Start nur gegen die
+   Portbereiche geprüft, nicht gegen die CPUs (die CPU-Prüfung gilt für
+   `--pool cpu`, das `--autoscale` ausschließt).
+3. **Ohne `--max-processes` wartet das Hochskalieren weiter auf den
+   Slot, wie in 0.14.1.** Die Slot-Tabelle hat `MAX` Slots, und ein
+   drainender Worker hält seinen Slot bis zum Exit. Bei `MAX − 1` aktiven
+   Workern und einem drainenden wächst die Gruppe erst nach dem Ende des
+   Drains wieder (höchstens `SWARMQ_SHUTDOWN_TIMEOUT`), auch wenn das Log
+   jetzt `active` unter `MAX` zeigt.
+
 ## [0.14.1] — 2026-10-20
 
 0.14.1 ist 0.14.1rc1 ohne Codeänderungen. Die Korrekturen und der
