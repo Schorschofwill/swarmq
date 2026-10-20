@@ -33,6 +33,15 @@ Test-Liste:
 15. Broker: ``cancel_consume`` stoppt den Wächter und meldet den aktuellen
     (neu angemeldeten) Tag ab.
 16. Broker: ``start_consumer_watch`` startet den Wächter mit Takt und Hook.
+
+Testlücken Runde 4 (Plan 2026-10-20-1500, U4, Lücke E-10):
+17. Laufender Wächter taktet im Intervall von selbst, ohne ``request_check``.
+18. ``cancel_all`` überspringt einen Eintrag ohne Tag und meldet die übrigen ab.
+19. Ein Takt prüft nach einem Eintrag ohne Tag die übrigen Einträge weiter.
+20. Nach einer Neuanmeldung gilt der neue Channel als unverändert: ein
+    sofortiger ``basic.cancel`` des neuen Tags wird im selben Takt behoben.
+21. Nach einer Neuanmeldung beginnt die Schonfrist für einen ersetzten
+    Channel wieder bei null.
 """
 
 from __future__ import annotations
@@ -46,6 +55,7 @@ import pytest
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.broker.rabbitmq.consumer_watch import ConsumerWatch
 from tests.support.consumer_fakes import FakeChannel, FakeQueue, FakeUnderlay
+from tests.support.virtual_time import on_virtual_clock
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -349,6 +359,117 @@ class TestRunningWatch:
             await watch.stop()
         [failed] = [e for e in swarmq_logs if e["event"] == "consumer_watch_tick_failed"]
         assert failed["error_type"] == "RuntimeError"
+
+
+class TestPeriodicTick:
+    """E-10: Der Takt läuft auch ohne ``request_check`` (virtuelle Uhr)."""
+
+    @on_virtual_clock
+    async def test_running_watch_ticks_by_itself_once_the_interval_has_passed(self):
+        """Lücke E-10, Mutant ``consumer_watch.py:191`` ``suppress(TimeoutError)``
+        → ``suppress(None)`` (hilfsweise ``:136`` ``_run(interval_s)`` →
+        ``_run(None)``): Ohne Frist bzw. mit sterbendem Takt kommt der eigene
+        Cancel nie."""
+        watch, queue, callback = _watched()
+        await watch.tick()
+        watch.start(interval_s=30.0)
+        try:
+            queue.channel.underlay.consumers.pop("tag-1")
+
+            assert await watch.wait_cancelled("tag-1", timeout=29.0) is False
+            assert await watch.wait_cancelled("tag-1", timeout=2.0) is True
+        finally:
+            await watch.stop()
+
+        assert queue.consumed == [callback]
+        assert watch.tags() == [("q1", "q1-new-1")]
+
+
+def _pending_reregistration() -> tuple[ConsumerWatch, FakeQueue, FakeQueue]:
+    """Zwei Consumer auf einem Channel; der erste ist selbst abgemeldet und
+    wartet auf seine Neuanmeldung (Tag ``None``), der zweite ist aktiv."""
+    channel = FakeChannel(FakeUnderlay("tag-1", "tag-2"))
+    first, second = FakeQueue("q1", channel), FakeQueue("q2", channel)
+    watch = ConsumerWatch()
+    watch.add("q1", first, object(), "tag-1")
+    watch.add("q2", second, object(), "tag-2")
+    return watch, first, second
+
+
+async def _lose_reregistration(watch: ConsumerWatch, first: FakeQueue) -> None:
+    await watch.tick()
+    first.channel.underlay.consumers.pop("tag-1")
+    first.consume_error = RuntimeError("consume timed out")
+    await watch.tick()
+    first.consume_error = None
+    assert watch.tags() == [("q2", "tag-2")]
+
+
+class TestEntryWithoutTag:
+    """E-10: Ein Eintrag ohne Tag (Neuanmeldung ausstehend) hält die übrigen
+    Einträge nicht auf."""
+
+    async def test_cancel_all_skips_the_entry_without_tag_and_cancels_the_rest(self):
+        """Lücke E-10, Mutant ``consumer_watch.py:175`` ``continue`` → ``break``."""
+        watch, first, second = _pending_reregistration()
+        await _lose_reregistration(watch, first)
+
+        assert await watch.cancel_all() == []
+
+        assert first.cancelled == ["tag-1"]
+        assert second.cancelled == ["tag-2"]
+        assert watch.self_cancelled_tags == frozenset({"tag-1", "tag-2"})
+
+    async def test_a_tick_checks_the_remaining_entries_after_an_entry_without_tag(self):
+        """Lücke E-10, Mutant ``consumer_watch.py:262`` ``continue`` → ``break``."""
+        watch, first, second = _pending_reregistration()
+        await _lose_reregistration(watch, first)
+        second.channel.underlay.consumers.pop("tag-2")
+
+        await watch.tick()
+
+        assert second.cancelled == ["tag-2"]
+        assert watch.tags() == [("q1", "q1-new-1"), ("q2", "q2-new-1")]
+
+
+async def _reregistered_on_a_replaced_channel() -> tuple[ConsumerWatch, FakeQueue]:
+    watch, queue, _ = _watched()
+    await watch.tick()
+    queue.channel.underlay = FakeUnderlay()
+    await watch.tick()
+    await watch.tick()
+    assert watch.tags() == [("q1", "q1-new-1")]
+    return watch, queue
+
+
+class TestStateAfterReregistration:
+    """E-10: Die Neuanmeldung setzt den Vergleichszustand auf den neuen Tag."""
+
+    async def test_a_broker_cancel_right_after_the_reregistration_is_handled_in_one_tick(self):
+        """Lücke E-10, Mutant ``consumer_watch.py:339`` Zeile
+        ``entry.seen_on = underlay`` gestrichen: Der neue Channel gälte als
+        ersetzt, der Wächter wartete einen Takt zu lang."""
+        watch, queue = await _reregistered_on_a_replaced_channel()
+        queue.channel.underlay.consumers.pop("q1-new-1")  # basic.cancel vom Broker
+
+        await watch.tick()
+
+        assert queue.cancelled == ["tag-1", "q1-new-1"]
+        assert watch.tags() == [("q1", "q1-new-2")]
+
+    async def test_a_channel_replaced_right_after_the_reregistration_gets_the_full_grace_tick(self):
+        """Lücke E-10, Mutant ``consumer_watch.py:340``
+        ``entry.missing_ticks = 0`` → ``= 1``: aio-pikas Restore bekäme keinen
+        Takt mehr."""
+        watch, queue = await _reregistered_on_a_replaced_channel()
+        queue.channel.underlay = FakeUnderlay()
+
+        await watch.tick()
+
+        assert queue.cancelled == ["tag-1"]
+        assert watch.tags() == [("q1", "q1-new-1")]
+        await watch.tick()
+        assert queue.cancelled == ["tag-1", "q1-new-1"]
 
 
 class TestShutdown:

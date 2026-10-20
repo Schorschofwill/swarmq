@@ -9,6 +9,7 @@ Test-Liste:
 - [x] vorhandene Queue -> ``QueueStatus(message_count, consumer_count)``
 - [x] fehlende Queue -> ``None``, die naechste Queue ueber einen neuen Channel
 - [x] ohne Verbindung -> ``BrokerConnectionError``
+- [x] Transportfehler -> ``BrokerConnectionError`` mit dem Grund (Testlücken Runde 4, E-20)
 """
 
 from __future__ import annotations
@@ -66,3 +67,17 @@ async def test_without_connection_raises_broker_connection_error() -> None:
 
     with pytest.raises(BrokerConnectionError):
         await broker.queue_statuses(["old"])
+
+
+async def test_transport_error_is_a_broker_connection_error_with_the_reason() -> None:
+    """Lücke E-20 (Plan 2026-10-20-1500, U4), Mutant ``admin.py:648``
+    ``BrokerConnectionError(str(exc))`` → ``BrokerConnectionError(str(None))``."""
+    from swarmq.exceptions import BrokerConnectionError
+
+    channel = AsyncMock(is_closed=False)
+    channel.declare_queue.side_effect = ConnectionError("connection reset")
+
+    with pytest.raises(BrokerConnectionError, match=r"^connection reset$") as excinfo:
+        await _broker(channel).queue_statuses(["old"])
+
+    assert isinstance(excinfo.value.__cause__, ConnectionError)
