@@ -27,6 +27,8 @@ Testliste:
 # [x] shutdown_grace_s=1, Recycler, Beat vor 61 s -> SIGTERM, deadline_s=60
 # [x] shutdown_grace_s=100, heartbeat_timeout_s=60, Recycler, Beat vor 70 s
 #     -> kein SIGTERM (Frist 105, max statt Verkuerzung)
+# [x] shutdown_grace_s=100, Recycler, Beat vor 100 s -> kein SIGTERM: die Frist
+#     ist Gnade *plus* SIGTERM-Frist (105), nicht 95 (T-F-04, Testlücken Runde 4)
 # Eingefrorener Recycler: test_supervisor.py::
 #     test_acknowledged_recycler_that_freezes_in_drain_is_killed_not_replaced
 """
@@ -153,6 +155,22 @@ def test_recycling_keeps_the_longer_shutdown_grace(swarmq_logs: list[dict[str, A
     recycler, channel = _acknowledged_recycler(pm)
 
     channel.heartbeat.value = time.monotonic() - 70.0  # ueber heartbeat_timeout_s, unter 105
+    pm._check_heartbeats()
+
+    assert not _hung_events(swarmq_logs)
+    recycler.terminate.assert_not_called()
+
+
+@pytest.mark.entscheidung("E-018")
+def test_recycling_deadline_adds_the_sigterm_period_to_the_grace(swarmq_logs: list[dict[str, Any]]) -> None:
+    """T-F-04 (Mutant ``restart_budget.py:62`` ``self.shutdown_grace_s +
+    self.SHUTDOWN_TERM_S`` → ``- self.SHUTDOWN_TERM_S``): Der Bestand prüft mit
+    70 s Stille, das liegt auch unter 95 s. Mit 100 s Stille bei 100 s Gnade
+    liegt der Recycler noch in seiner Frist von 105 s."""
+    pm = _make_pm(shutdown_grace_s=100.0)
+    recycler, channel = _acknowledged_recycler(pm)
+
+    channel.heartbeat.value = time.monotonic() - 100.0  # über 95, unter 105
     pm._check_heartbeats()
 
     assert not _hung_events(swarmq_logs)
