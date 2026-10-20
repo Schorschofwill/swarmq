@@ -10,6 +10,9 @@ Test-Liste:
 - [x] ``dead_letter`` an die fehlende ``.XQ``: ebenso
 - [x] Neu-Deklarieren scheitert (beliebige Ausnahme) -> ``BrokerConnectionError``, Original unbestaetigt
 - [x] zweiter Versuch wieder unroutbar -> ``UnroutableMessage``, nur ein Neu-Deklarieren
+- [x] Testlücke E-18 (Plan 2026-10-20-1500, U3): Neu-Deklarieren bei geschlossener
+      Verbindung -> ``BrokerConnectionError``, kein Wegwerf-Channel, kein zweiter
+      Versuch (Mutant ``redeclare.py`` ``connection is None or connection.is_closed`` -> ``and``)
 """
 
 from __future__ import annotations
@@ -149,4 +152,21 @@ async def test_second_unroutable_publish_raises_after_a_single_redeclare() -> No
         await broker.retry_later(delivery, delay_ms=1000, headers={})
 
     assert _declared_names(throwaway) == ["tasks", "tasks.DQ", "tasks.XQ", *delay_tiers("tasks")]
+    cast("AsyncMock", delivery.handle).ack.assert_not_awaited()
+
+
+async def test_redeclare_on_a_closed_connection_fails_without_declaring() -> None:
+    """E-18: Ist die eigene Verbindung geschlossen, wird nichts neu deklariert
+    (auch nicht über den Rückfall auf den Publish-Channel) und nicht erneut
+    gesendet. Gegenprobe ``redeclare.py:59`` ``or`` -> ``and``: rot."""
+    broker, channel, _throwaway = _worker_broker(_returned("tasks.DQ"), None)
+    cast("AsyncMock", broker._connection).is_closed = True
+    delivery = _delivery()
+
+    with pytest.raises(BrokerConnectionError, match="not connected"):
+        await broker.retry_later(delivery, delay_ms=1000, headers={})
+
+    cast("AsyncMock", broker._connection).channel.assert_not_called()
+    channel.declare_queue.assert_not_awaited()
+    assert channel.default_exchange.publish.await_count == 1
     cast("AsyncMock", delivery.handle).ack.assert_not_awaited()

@@ -5,6 +5,8 @@ Test-Liste:
 - [x] ``unlock_expired`` hebt nur abgelaufene Sperren auf und liefert die Slots
 - [x] Crash-Budget sperrt mit ``SLOT_COOLDOWN_S``; vor Ablauf kein Ersatz
 - [x] Hang-Budget sperrt ebenfalls mit Abkuehlzeit; danach wird der Slot belegt
+- [x] Hang-Budget: eine Sekunde vor Ende der Abkühlzeit ist der Slot noch gesperrt
+      (T-F-03, Testlücken Runde 4)
 - [x] Entsperrter Slot mit lebendem Vorgaenger ist aktiv, nicht frei
 - [x] Event ``worker_slot_unlocked`` mit Slot und Abkuehlzeit; Sperr-Events nennen die Abkuehlzeit
 - [x] Kanal ``locked_slots``: der Supervisor schreibt die Zahl gesperrter Slots
@@ -91,6 +93,23 @@ def test_hang_budget_locks_for_the_cooldown_and_the_predecessor_keeps_the_slot(
     pm._unlock_expired_slots()
     # Der Vorgaenger lebt noch (SIGKILL nicht angekommen): der Slot ist belegt.
     assert pm.slot_state(0) is SlotState.ACTIVE
+
+
+@pytest.mark.entscheidung("E-024")
+def test_hang_budget_lock_holds_until_the_end_of_the_cooldown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """T-F-03 (Mutant ``restart_budget.py:126`` ``now + self.SLOT_COOLDOWN_S`` →
+    ``now - self.SLOT_COOLDOWN_S``): Die Sperre nach erschöpftem Hang-Budget
+    gilt die ganze Abkühlzeit, nicht nur bis zum ersten Entsperr-Durchlauf."""
+    clock = FakeClock()
+    pm = _pm(clock, monkeypatch, num_workers=1, heartbeat_timeout_s=10.0, delivery_limit=1)
+    hung = WorkerInfo(process=_fake_process(pid=5), worker_id=0)
+    _register(pm, hung)
+    pm._hang_timestamps = [clock.now] * pm.hang_replacement_limit
+    pm._replace_hung_worker(hung, stale_s=61.0)
+
+    clock.now += pm.SLOT_COOLDOWN_S - 1.0
+    pm._unlock_expired_slots()
+    assert pm.slot_state(0) is SlotState.LOCKED
 
 
 @pytest.mark.entscheidung("E-024")

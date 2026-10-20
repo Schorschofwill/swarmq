@@ -15,6 +15,7 @@ quelle:
 tests:
   - tests/unit/test_cli.py::TestRunWorkerAsync::test_configure_hook_runs_with_the_app_before_start
   - tests/unit/test_cli.py::TestRunWorkerAsync::test_async_configure_hook_is_awaited
+  - tests/unit/test_cli_multiprocess.py::TestCheckForwardsTheStartArguments::test_configure_hook_is_checked_and_reported
 ---
 
 **Entscheidung.** `swarmq worker` konstruiert seine eigene `SwarmQ`-App. Das Task-Modul liefert nur die Tasks. Signal-Handler und Middleware registriert man in einem Callable, das `--configure MODULE:CALLABLE` nach der App-Konstruktion und vor dem Start mit der App aufruft (ein Awaitable wird abgewartet; jede Ausnahme wird `ConfigurationError`, E-057).

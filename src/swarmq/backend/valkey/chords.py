@@ -16,15 +16,9 @@ from swarmq.exceptions import BackendConnectionError
 from swarmq.keyspace import KeySpace
 from swarmq.lua import load_script
 
-# Nur ohne Namensraum (Review MR 15, P2-3): ``chord_set_key`` und der
-# Store-Default nennen die Keys ohne Praefix; das Backend reicht seinen
-# KeySpace (``keys=``) durch.
+# Nur ohne Namensraum (Review MR 15, P2-3): der Store-Default nennt die Keys
+# ohne Praefix; das Backend reicht seinen KeySpace (``keys=``) durch.
 _DEFAULT_KEYS = KeySpace()
-
-
-def chord_set_key(wf_id: str, chord_id: str) -> str:
-    """Key for the per-chord completed-member set (SADD of task ids)."""
-    return _DEFAULT_KEYS.chord(wf_id, chord_id)
 
 
 class ChordManager:

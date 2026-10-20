@@ -184,8 +184,9 @@ names bounded, otherwise every distinct value creates its own series.
 
 #### Base ports and slots
 
-The supervisor runs its workers in slots `0..N-1`, where `N` is
-`--processes` or the upper bound of `--autoscale`. Each slot binds its
+The supervisor runs its workers in slots `0..N-1`, where `N` is the
+largest of `--processes`, the upper bound of `--autoscale` and
+`--max-processes`. Each slot binds its
 own observability ports, derived from the base port:
 
 | Slot | `/metrics` with `SWARMQ_METRICS_PORT=9000` | `/health` with `SWARMQ_HEALTH_PORT=9100` |
@@ -207,8 +208,11 @@ Two configurations are refused at startup with a `ConfigurationError`
 - metrics and health ranges that overlap — move one base port at least
   `N` ports away.
 
-The `--check` payload lists the exact ports as `metrics_ports` and
-`health_ports`, so an operator does not have to compute them.
+The `--check` payload reports both ranges as `metrics_ports` and
+`health_ports`, each as `[first, last]` with both ends inclusive, not
+as a list of every port: for the three slots above it prints
+`[9000, 9002]` and `[9100, 9102]`. With two slots the range
+`[9000, 9001]` looks like an exact port list, but it is still a range.
 
 #### Prometheus example
 

@@ -14,11 +14,18 @@ Test-Liste:
 - [x] injizierter Client -> keine Pruefung (kein Ergebnis)
 - [x] erneute Pruefung (Leader, stuendlich): Ergebnis mit ``used_memory``, Warnung bei Befund
 - [x] erneute Pruefung mit ``off`` -> ``None``, keine Abfrage
+- [x] Testlücke D-2 (Runde 4): ``maxmemory`` aus ``INFO memory``, wenn
+      ``CONFIG GET`` verboten ist (E-005: Grenze 0 ist sicher)
+- [x] Testlücke D-2: ``CONFIG GET`` fragt nach dem Muster ``maxmemory*``
+- [x] Testlücke D-2: ein hängender ``INFO``-Abschnitt in ``describe_valkey``
+      endet nach der Frist, die übrigen Angaben bleiben
+- [x] Testlücke D-2: ``count_keys`` genau am Limit ist vollständig
 """
 
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 from typing import Any, override
 
 import pytest
@@ -26,6 +33,8 @@ import valkey.asyncio
 from valkey.exceptions import NoPermissionError
 
 from swarmq.backend.valkey import ValkeyBackend
+from swarmq.backend.valkey.environment import count_keys, describe_valkey, probe_eviction
+from tests.support.virtual_time import on_virtual_clock
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -200,3 +209,116 @@ async def test_recheck_with_check_off_queries_nothing(monkeypatch: pytest.Monkey
 
     assert await backend.recheck_eviction() is None
     assert fake.calls == []
+
+
+@pytest.mark.entscheidung("E-005")
+@pytest.mark.parametrize(
+    ("maxmemory", "status"),
+    [pytest.param(0, "safe", id="ohne-grenze"), pytest.param(1_048_576, "unsafe", id="mit-grenze")],
+)
+async def test_maxmemory_comes_from_info_when_config_is_forbidden(maxmemory: int, status: str) -> None:
+    """Testlücke D-2 (Runde 4): Verbietet eine ACL ``CONFIG GET``, liest die
+    Prüfung Policy **und** ``maxmemory`` aus ``INFO memory``. Ohne Grenze
+    (``maxmemory`` 0) verdrängt Valkey nie, die Instanz ist sicher und
+    blockiert den Start nicht (E-005).
+
+    Gegenprobe-Mutant: ``environment.py`` in ``_from_info``
+    ``values.get("maxmemory")`` → ``values.get("MAXMEMORY")``."""
+    fake = _FakeValkey(info={"maxmemory_policy": "allkeys-lru", "maxmemory": maxmemory})
+
+    check = await probe_eviction(fake)
+
+    assert (check.status, check.policy, check.maxmemory) == (status, "allkeys-lru", maxmemory)
+
+
+class _PatternValkey(_FakeValkey):
+    """Beantwortet ``CONFIG GET`` wie Valkey: nur Parameter, die zum Muster passen."""
+
+    @override
+    async def config_get(self, pattern: str = "*", *args: Any, **kwargs: Any) -> dict[bytes, bytes]:
+        answer = await super().config_get(pattern, *args, **kwargs)
+        return {k: v for k, v in answer.items() if fnmatch.fnmatchcase(k.decode(), pattern)}
+
+
+async def test_config_get_asks_for_the_maxmemory_parameters() -> None:
+    """Testlücke D-2 (Runde 4): ``CONFIG GET`` nennt das Muster
+    ``maxmemory*``, das ``maxmemory-policy`` und ``maxmemory`` trifft. Das
+    Ergebnis stammt aus ``CONFIG`` (``INFO`` sagt hier bewusst etwas anderes).
+
+    Gegenprobe-Mutant: ``environment.py`` in ``_from_config``
+    ``"maxmemory*"`` → ``"XXmaxmemory*XX"``."""
+    fake = _PatternValkey(
+        config={b"maxmemory-policy": b"noeviction", b"maxmemory": b"4096", b"save": b""},
+        info={"maxmemory_policy": "allkeys-lru", "maxmemory": 1},
+    )
+
+    check = await probe_eviction(fake)
+
+    assert (check.status, check.policy, check.maxmemory) == ("safe", "noeviction", 4096)
+
+
+class _HangingServerSection(_FakeValkey):
+    """``INFO server`` hängt; die anderen Abschnitte antworten."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            config={b"maxmemory-policy": b"noeviction", b"maxmemory": b"0"},
+            info={"used_memory": 10, "aof_enabled": 1, "cluster_enabled": 0},
+        )
+        self.never = asyncio.Event()
+
+    @override
+    async def info(self, section: str | None = None, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        if section == "server":
+            await self.never.wait()
+        return await super().info(section, *args, **kwargs)
+
+
+@on_virtual_clock
+async def test_a_hanging_info_section_ends_after_the_time_limit() -> None:
+    """Testlücke D-2 (Runde 4): ``describe_valkey`` (``swarmq check``) begrenzt
+    jeden ``INFO``-Abschnitt; ein hängender Abschnitt liefert nach der Frist
+    unbekannte Werte, die übrigen Angaben bleiben. Virtuelle Uhr: Die Frist
+    von 2 s kostet keine Echtzeit.
+
+    Gegenprobe-Mutant: ``environment.py`` in ``_info_section``
+    ``asyncio.timeout(_PROBE_TIMEOUT_S)`` → ``asyncio.timeout(None)`` (unter der
+    virtuellen Uhr rot als ``RuntimeError`` „nichts geplant“: das Hängen)."""
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+
+    description = await describe_valkey(_HangingServerSection())
+
+    assert description["version"] is None
+    assert (description["eviction"], description["aof_enabled"], description["cluster_enabled"]) == (
+        "safe",
+        True,
+        False,
+    )
+    assert loop.time() - started == pytest.approx(2.0)
+
+
+class _ScanningValkey:
+    """``SCAN`` liefert die Seiten nacheinander; der Cursor 0 beendet die Zählung."""
+
+    def __init__(self, pages: list[tuple[int, list[bytes]]]) -> None:
+        self._pages = pages
+        self.scans = 0
+
+    async def scan(self, cursor: int, *, match: str, count: int) -> tuple[int, list[bytes]]:
+        page = self._pages[self.scans]
+        self.scans += 1
+        return page
+
+
+async def test_count_keys_exactly_at_the_limit_is_complete() -> None:
+    """Testlücke D-2 (Runde 4): Erreicht die Zählung genau das Limit, endet sie
+    sofort und meldet das Limit als vollständige Zahl; ``False`` gilt nur für
+    den Zeitablauf.
+
+    Gegenprobe-Mutant: ``environment.py`` in ``count_keys``
+    ``return limit, True`` → ``return limit, False``."""
+    fake = _ScanningValkey([(7, [b"a", b"b"]), (9, [b"c"]), (0, [b"d"])])
+
+    assert await count_keys(fake, "sq:*", limit=3) == (3, True)
+    assert fake.scans == 2

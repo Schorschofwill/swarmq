@@ -18,6 +18,7 @@ import pytest
 from swarmq.locking import SCHEDULER_LOCK_NAME
 from swarmq.scheduler import ScheduleDefinition, ScheduleStore
 from swarmq.scheduler.fire import SchedulerFire
+from swarmq.signals import Signal
 from tests.property.stateful.leader_machine import (
     CLI_CRON,
     STATIC_CRON,
@@ -25,6 +26,7 @@ from tests.property.stateful.leader_machine import (
     LeaderMachine,
     LockCall,
     PublishAttempt,
+    SignalSeen,
 )
 
 
@@ -251,6 +253,40 @@ def withdrawn_static_cron_is_held_not_dropped(machine: LeaderMachine) -> None:
     assert STATIC_CRON in machine.entries
 
 
+def removed_and_rereported_static_cron_is_held_again_with_a_signal(machine: LeaderMachine) -> None:
+    """E-014, L10: ``remove_schedule`` vergisst einen zurückgehaltenen
+    static-1, die nächste Übernahme gibt ihn frei (``_held_crons - known`` in
+    ``scheduler/unowned.py``). Meldet ihn danach ein Worker neu und verstummt,
+    ist der nächste Rückhalt wieder ein Übergang mit ``held=True``, auch
+    wenn static-1 dazwischen nicht gefeuert hat (Review Runde 4, P2-1)."""
+    _make_leader(machine, "A")
+    machine.report_static(None)
+    machine.adopt_tick("A")
+    machine.static_withdraw()
+    _advance_ticking(machine, 200)
+    machine.adopt_tick("A")
+    machine.poll_tick("A")
+    assert machine.cands["A"].holding
+    machine.remove_cron(STATIC_CRON)
+    machine.adopt_tick("A")
+    machine.report_static(None)
+    machine.adopt_tick("A")
+    machine.static_withdraw()
+    _advance_ticking(machine, 200)
+    machine.adopt_tick("A")
+    start = len(machine.events)
+
+    machine.poll_tick("A")
+
+    machine.verify()
+    held = [
+        e.kwargs["held"]
+        for e in machine.events[start:]
+        if isinstance(e, SignalSeen) and e.signal is Signal.SCHEDULER_CRON_UNOWNED
+    ]
+    assert held == [True]
+
+
 SCENARIOS: dict[str, Callable[[LeaderMachine], None]] = {
     "lock_expires_during_tick_commits_once": lock_expires_during_tick_commits_once,
     "oneshot_with_lost_insert_reply_is_in_the_fire_index": oneshot_with_lost_insert_reply_is_in_the_fire_index,
@@ -342,4 +378,7 @@ SABOTAGES: dict[str, Callable[[LeaderMachine], None]] = {
 # Cron-Meldungen nicht (``tests/integration/stateful/conftest.py``).
 FAKE_ONLY_SCENARIOS: dict[str, Callable[[LeaderMachine], None]] = {
     "withdrawn_static_cron_is_held_not_dropped": withdrawn_static_cron_is_held_not_dropped,
+    "removed_and_rereported_static_cron_is_held_again_with_a_signal": (
+        removed_and_rereported_static_cron_is_held_again_with_a_signal
+    ),
 }

@@ -727,3 +727,98 @@ class TestSchedulerSwitchReachesTheChildren:
 
     def test_environment_reaches_the_worker_config(self, monkeypatch):
         assert self._cfg(monkeypatch, env={"SWARMQ_SCHEDULER": "off"}).scheduler == "off"
+
+
+class TestStartWiringGaps:
+    """Testlücke T-F-18 (Runde 4): Verdrahtung beim Start, die bisher kein
+    Test festhielt.
+
+    Test-Liste:
+    - [x] nur eine der beiden URLs fehlt -> ``ConfigurationError`` (Exit 78), kein ``KeyError``
+    - [x] ausdrückliche Nebenläufigkeit zählt im Rechen-Pool gegen die CPU-Zuteilung
+    - [x] ``--configure`` erreicht die ``WorkerConfig``
+    - [x] ``delivery_limit`` aus der Konfiguration erreicht den Supervisor
+    - [x] ``--autoscale`` bekommt den Tiefen-Sampler aus der Admin-Fabrik
+    """
+
+    def _run(self, *, env=None, admin_factory=None, **over):
+        from swarmq.process_manager import run_multi_process_worker
+
+        args = TestReloadRoutingThroughCLI()._args(**over)
+        pm_mock = MagicMock()
+        pm_mock.run.return_value = 0
+        with (
+            patch.dict(os.environ, {**_URLS, **(env or {})}, clear=False),
+            patch("swarmq.process_manager.run.ProcessManager", return_value=pm_mock) as PM,
+            patch("swarmq.process_manager.check._validate_module_importable"),
+        ):
+            assert run_multi_process_worker(args, admin_factory=admin_factory) == 0
+        return PM.call_args.kwargs
+
+    @pytest.mark.entscheidung("E-057")
+    @pytest.mark.parametrize("present", sorted(_URLS))
+    def test_one_missing_url_ends_with_the_config_code(self, present, capsys):
+        """T-F-18, Mutant ``run.py:43`` ``if not broker_url or not backend_url`` →
+        ``and``: die fehlende URL endete als ``KeyError`` statt als
+        Konfigurationsfehler mit Exit 78."""
+        from swarmq.cli import main
+        from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
+        with (
+            patch.dict(os.environ, {present: _URLS[present]}, clear=True),
+            patch("swarmq.process_manager.run.ProcessManager") as PM,
+        ):
+            rc = main(["worker", "--module=json"])
+
+        assert rc == CONFIG_ERROR_EXIT_CODE
+        assert "SWARMQ_BROKER_URL and SWARMQ_BACKEND_URL must both be set" in capsys.readouterr().err
+        PM.assert_not_called()
+
+    def test_explicit_concurrency_counts_against_the_assigned_cpus(self, monkeypatch):
+        """T-F-18, Mutant ``run.py:124`` ``args.concurrency if
+        getattr(args, "concurrency_source", "explicit") == "explicit" else None`` →
+        ``None``: 3 Slots x Spielraum 3 = 9 Rechenslots auf 8 CPUs kämen durch."""
+        from swarmq.cli import main
+        from swarmq.supervision import CONFIG_ERROR_EXIT_CODE
+
+        monkeypatch.setattr("swarmq.slots._affinity_count", lambda: 8)
+        monkeypatch.setattr("swarmq.slots._cgroup_quota", lambda _path: None)
+        with (
+            patch.dict(os.environ, _URLS, clear=False),
+            patch("swarmq.process_manager.run.ProcessManager") as PM,
+        ):
+            rc = main(["worker", "--module=json", "--pool", "cpu", "--concurrency", "3", "--max-processes", "3"])
+
+        assert rc == CONFIG_ERROR_EXIT_CODE
+        PM.assert_not_called()
+
+    def test_configure_hook_reaches_the_worker_config(self):
+        """T-F-18, Mutant ``run.py:171`` ``configure=getattr(args, "configure", None)``
+        → ``configure=None``: die Kinder riefen den Hook nie auf."""
+        kwargs = self._run(configure="json:loads")
+
+        assert kwargs["worker_args"][0].configure == "json:loads"
+
+    def test_delivery_limit_reaches_the_supervisor(self):
+        """T-F-18, Mutant ``run.py:188`` ``delivery_limit=sq_config.delivery_limit``
+        weglassen: der Supervisor rechnete mit seinem Default."""
+        kwargs = self._run(env={"SWARMQ_DELIVERY_LIMIT": "7"})
+
+        assert kwargs.get("delivery_limit") == 7
+
+    def test_autoscale_gets_a_depth_sampler_from_the_admin_factory(self):
+        """T-F-18 (``admin_factory``), Mutant ``run.py:140`` ``queue_depth_fn =
+        _make_queue_depth_sampler(...)`` → ``queue_depth_fn = None``: der
+        Autoskalierer bekäme nie eine Queue-Tiefe."""
+        kwargs = self._run(autoscale=(1, 3), admin_factory=MagicMock())
+
+        assert callable(kwargs["queue_depth_fn"])
+        assert kwargs["autoscale"] == (1, 3)
+
+    def test_autoscale_without_admin_factory_is_a_config_error(self):
+        """T-F-18 (``admin_factory``), Gegenstück: ohne Fabrik kein stiller Start
+        ohne Sampler."""
+        from swarmq.exceptions import ConfigurationError
+
+        with pytest.raises(ConfigurationError, match="admin factory"):
+            self._run(autoscale=(1, 3))

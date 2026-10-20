@@ -22,11 +22,9 @@ from __future__ import annotations
 
 import asyncio
 import collections
-import importlib.metadata
 import json
 import os
 import subprocess
-import time
 from collections.abc import AsyncIterator, Callable
 
 import pytest
@@ -36,20 +34,21 @@ from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.client import Client
-from swarmq.keyspace import KeySpace
 from tests.compat._harness import (
     OLD_VERSION,
     REPO_ROOT,
     CompatWorker,
     consumer_count,
+    force_cron_fire,
     message_count,
     recorded_runs,
+    wait_leader,
+    wait_runs,
 )
 from tests.support.wait import wait_until
 
 pytestmark = [pytest.mark.compat, pytest.mark.timeout(90)]
 
-_KEYS = KeySpace(None)
 _CRON = "compat_cron"
 _CRON_MODULE = "tests.compat._compat_cron_tasks"
 _EVENT_TIMEOUT = 20.0
@@ -82,22 +81,16 @@ def producer(app: SwarmQ) -> Client:
 
 
 async def _wait_consumers(rabbitmq_url: str, queue: str, count: int) -> None:
+    """Einzige lokale Fassung eines ``_harness``-Helfers (Plan Testlücken Runde 4, X-6):
+    wartet auf *mindestens* ``count`` Consumer. ``wait_consumers`` aus ``_harness``
+    verlangt die genaue Zahl. Im Retry-Test läuft ``_wait_consumers(..., 1)`` auch
+    nach dem Start des zweiten Workers, wenn schon zwei Consumer anhängen können;
+    ``==`` wäre dort nicht deterministisch."""
+
     async def ready() -> bool:
         return await consumer_count(rabbitmq_url, queue) >= count
 
     assert await wait_until(ready, timeout=_EVENT_TIMEOUT), f"{count} consumers never attached to {queue}"
-
-
-async def _wait_runs(valkey_url: str, queue: str, name: str, count: int) -> list[tuple[str, str, int, str]]:
-    runs: list[tuple[str, str, int, str]] = []
-
-    async def enough() -> bool:
-        nonlocal runs
-        runs = [run for run in await recorded_runs(valkey_url, queue) if run[0] == name]
-        return len(runs) >= count
-
-    assert await wait_until(enough, timeout=_EVENT_TIMEOUT), f"expected {count} runs of {name}, got {runs}"
-    return runs
 
 
 # ---------------------------------------------------------------------------
@@ -143,47 +136,6 @@ async def test_retry_between_old_and_new_worker_on_one_queue(
 # ---------------------------------------------------------------------------
 
 
-async def _leader(valkey_url: str) -> tuple[int, str] | None:
-    """``(pid, version)`` des Leaders aus ``sq:{sched}:leader_version``."""
-    client = aio_valkey.Valkey.from_url(valkey_url)
-    try:
-        raw = await client.get(_KEYS.sched_leader_version())
-    finally:
-        await client.aclose()
-    if raw is None:
-        return None
-    owner, _, version = raw.decode().rpartition("|")
-    return int(owner.split(":")[1]), version
-
-
-async def _wait_leader(valkey_url: str, worker: CompatWorker) -> None:
-    """Leader ist ein Kind von ``worker`` (PID im Owner); die gemeldete Version
-    passt zur Laufzeit des Workers (0.11.1 bzw. Arbeitsstand)."""
-    expected = importlib.metadata.version("swarmq") if worker.runtime == "repo" else OLD_VERSION
-
-    async def is_leader() -> bool:
-        leader = await _leader(valkey_url)
-        return leader is not None and leader[1] == expected and leader[0] in worker.child_pids()
-
-    assert await wait_until(is_leader, timeout=_EVENT_TIMEOUT), (
-        f"{worker.runtime} never became leader (current: {await _leader(valkey_url)})"
-    )
-
-
-async def _force_fire(valkey_url: str) -> None:
-    """Fire-Index des Crons auf "fällig" setzen, sobald der Leader ihn angelegt hat."""
-    client = aio_valkey.Valkey.from_url(valkey_url)
-    try:
-
-        async def adopted() -> bool:
-            return await client.zscore(_KEYS.sched_zset(), _CRON) is not None
-
-        assert await wait_until(adopted, timeout=_EVENT_TIMEOUT), "leader never adopted the cron"
-        await client.zadd(_KEYS.sched_zset(), {_CRON: int(time.time() * 1000) - 1000})
-    finally:
-        await client.aclose()
-
-
 @pytest.mark.parametrize(("first", "second"), [("old", "new"), ("new", "old")])
 async def test_cron_fire_survives_leader_change(
     start_worker: StartWorker,
@@ -198,17 +150,17 @@ async def test_cron_fire_survives_leader_change(
     spec = {"old": (python_011, OLD_VERSION), "new": (python_repo, "repo")}
 
     leader = start_worker(*spec[first], module=_CRON_MODULE)
-    await _wait_leader(valkey_url, leader)
+    await wait_leader(valkey_url, leader, timeout=_EVENT_TIMEOUT)
     follower = start_worker(*spec[second], module=_CRON_MODULE)
     await _wait_consumers(rabbitmq_url, queue, 2)
 
-    await _force_fire(valkey_url)
-    await _wait_runs(valkey_url, queue, _CRON, 1)
+    await force_cron_fire(valkey_url, _CRON, timeout=_EVENT_TIMEOUT)
+    await wait_runs(valkey_url, queue, _CRON, 1, timeout=_EVENT_TIMEOUT)
 
     leader.stop()
-    await _wait_leader(valkey_url, follower)
-    await _force_fire(valkey_url)
-    runs = await _wait_runs(valkey_url, queue, _CRON, 2)
+    await wait_leader(valkey_url, follower, timeout=_EVENT_TIMEOUT)
+    await force_cron_fire(valkey_url, _CRON, timeout=_EVENT_TIMEOUT)
+    runs = await wait_runs(valkey_url, queue, _CRON, 2, timeout=_EVENT_TIMEOUT)
 
     follower.stop()
     runs = [run for run in await recorded_runs(valkey_url, queue) if run[0] == _CRON]
@@ -262,7 +214,7 @@ async def test_dlq_replay_by_new_cli_runs_on_old_worker(
     assert cli.returncode == 0, f"dlq retry failed: {cli.stdout!r} {cli.stderr!r}"
     assert json.loads(cli.stdout)
 
-    runs = await _wait_runs(valkey_url, queue, "compat_poison", 2)
+    runs = await wait_runs(valkey_url, queue, "compat_poison", 2, timeout=_EVENT_TIMEOUT)
     assert [(tid, attempt, runtime) for _, tid, attempt, runtime in runs] == [
         (task_id, 1, f"pypi-{OLD_VERSION}"),
         (task_id, 2, f"pypi-{OLD_VERSION}"),

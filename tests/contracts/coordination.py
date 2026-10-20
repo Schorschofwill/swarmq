@@ -325,6 +325,23 @@ class LockStoreContract:
         assert gone.owners == frozenset()
         assert gone.pttl_ms == -2
 
+    async def test_observe_reports_every_holder_of_a_full_semaphore(self, impl: LockStore) -> None:
+        """Testlücke D-10 (Runde 4): Ein Semaphor mit drei Haltern meldet alle
+        drei, nicht nur die ersten beiden (E-007: der Wartende vergleicht den
+        Fingerprint der Halter, um Bewegung zu erkennen).
+
+        Gegenprobe-Mutant: ``backend/valkey/locks.py`` in ``observe``
+        ``pipe.zrange(key, 0, -1)`` → ``pipe.zrange(key, 0, 1)``; Valkey-Seite
+        über ``uv run just integration -k contracts_valkey``."""
+        sem = _name("sem")
+        for owner in ("a", "b", "c"):
+            assert await impl.acquire(sem, owner=owner, ttl_ms=60_000, max_concurrency=3) is not None
+
+        seen = await impl.observe(sem, max_concurrency=3)
+
+        assert seen.owners == frozenset({"a", "b", "c"})
+        assert 0 < seen.pttl_ms <= 60_000
+
 
 @pytest.mark.timeout(5)
 class RateLimitStoreContract:

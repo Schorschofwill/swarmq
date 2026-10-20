@@ -26,6 +26,15 @@ Test-Liste:
 10. Ein hängendes Öffnen des Wegwerf-Channels endet nach
     ``declare_probe_timeout_s`` mit ``BrokerConnectionError`` (Q6).
 11. Review P2-1: Queue.Declare selbst hat keine Client-Frist (wie 0.11.0).
+
+Testlücken Runde 4 (Plan 2026-10-20-1500, U3, Lücke E-17):
+12. Ein werfendes ``close()`` des Wegwerf-Channels bricht die Deklaration nicht ab
+    (Mutant ``arg_conflict.py`` ``suppress(Exception)`` -> ``suppress(None)``).
+13. Ein hängendes ``close()`` endet nach ``declare_probe_timeout_s`` (virtuelle Uhr;
+    Mutant ``asyncio.wait_for(channel.close(), timeout=timeout_s)`` -> ``timeout=None``).
+14. Jede aktive Deklaration ist ``durable`` (Mutant ``durable=True`` -> ``False``).
+15. Nur die erste Übernahme von Strategy/Overflow ist INFO, jede weitere DEBUG
+    (Mutant ``self._info_logged = True`` -> ``False``).
 """
 
 from __future__ import annotations
@@ -40,6 +49,7 @@ from aio_pika.exceptions import ChannelInvalidStateError, ChannelPreconditionFai
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import BrokerConnectionError, QueueArgumentsMismatch
 from swarmq.queue_names import delay_tiers
+from tests.support.virtual_time import on_virtual_clock
 
 FAMILY_AND_TIERS = ["tasks", "tasks.DQ", "tasks.XQ", *delay_tiers("tasks")]
 
@@ -343,3 +353,81 @@ async def test_queue_without_delivery_limit_is_adopted_with_warning(swarmq_logs:
     assert "x-delivery-limit" not in _published(broker)["tasks"]
     [warning] = [e for e in swarmq_logs if e["event"] == "queue_argument_adopted"]
     assert (warning["log_level"], warning["argument"], warning["existing"]) == ("warning", "x-delivery-limit", None)
+
+
+async def test_a_failing_close_of_a_probe_channel_does_not_abort_the_declaration() -> None:
+    """E-17: Schließen ist best effort. Gegenprobe ``arg_conflict.py:132``
+    ``suppress(Exception)`` -> ``suppress(None)``: rot."""
+    probes = Probes({"tasks": [_strategy("tasks")]})
+    broker = _broker(probes)
+
+    async def open_with_failing_close() -> AsyncMock:
+        channel = await probes.open()
+        channel.close.side_effect = RuntimeError("channel already gone")
+        return channel
+
+    cast("AsyncMock", broker._connection).channel = AsyncMock(side_effect=open_with_failing_close)
+
+    await broker.declare_queue("tasks")
+
+    assert list(_published(broker)) == FAMILY_AND_TIERS
+    assert _published(broker)["tasks"]["x-dead-letter-strategy"] == "at-least-once"
+    assert all(channel.close.await_count == 1 for channel in probes.channels)
+
+
+@on_virtual_clock
+async def test_a_hanging_close_of_a_probe_channel_is_bounded_by_the_probe_timeout() -> None:
+    """E-17: Ein hängendes ``close()`` hält die Deklaration höchstens
+    ``declare_probe_timeout_s`` je Channel auf. Gegenprobe
+    ``arg_conflict.py:133`` ``timeout=timeout_s`` -> ``timeout=None``: rot
+    (die virtuelle Uhr meldet „nichts geplant“, die Deklaration hinge)."""
+    probes = Probes({})
+    broker = _broker(probes)
+    never = asyncio.Event()
+
+    async def hang() -> None:
+        await never.wait()
+
+    async def open_with_hanging_close() -> AsyncMock:
+        channel = await probes.open()
+        channel.close.side_effect = hang
+        return channel
+
+    cast("AsyncMock", broker._connection).channel = AsyncMock(side_effect=open_with_hanging_close)
+    started = asyncio.get_running_loop().time()
+
+    await broker.declare_queue("tasks")
+
+    assert list(_published(broker)) == FAMILY_AND_TIERS
+    assert asyncio.get_running_loop().time() - started == len(probes.channels) * broker.declare_probe_timeout_s
+
+
+async def test_every_active_declaration_is_durable() -> None:
+    """E-17: Queues überleben einen Broker-Neustart. Gegenprobe
+    ``arg_conflict.py:110`` ``durable=True`` -> ``durable=False``: rot."""
+    probes = Probes({"tasks": [_strategy("tasks")]})
+    broker = _broker(probes)
+
+    await broker.declare_queue("tasks")
+
+    active = [
+        call
+        for channel in probes.channels
+        for call in channel.declare_queue.await_args_list
+        if not call.kwargs.get("passive")
+    ]
+    assert [call.kwargs.get("durable") for call in active] == [True] * (len(FAMILY_AND_TIERS) + 1)
+
+
+async def test_only_the_first_strategy_adoption_is_info_later_ones_are_debug(
+    swarmq_logs: list[dict[str, Any]],
+) -> None:
+    """E-17: Die Übernahme der Strategy ist ab 0.12 Normalbetrieb; nur die
+    erste je Broker kommt als INFO. Gegenprobe ``arg_conflict.py:225``
+    ``self._info_logged = True`` -> ``False``: rot."""
+    broker = _broker(Probes({"tasks": [_strategy("tasks")], "tasks.DQ": [_strategy("tasks.DQ")]}))
+
+    await broker.declare_queue("tasks")
+
+    adopted = [e for e in swarmq_logs if e["event"] == "queue_argument_adopted"]
+    assert [(e["queue"], e["log_level"]) for e in adopted] == [("tasks", "info"), ("tasks.DQ", "debug")]

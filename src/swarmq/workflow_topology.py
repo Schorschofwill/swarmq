@@ -70,8 +70,8 @@ def _frontier(node: WorkflowNode, prefix: str) -> list[tuple[str, Signature]]:
     raise WorkflowValidationError(f"unknown node type {type(node).__name__}")
 
 
-# ``chord_set_key`` und ``ChordManager`` leben seit Plan U18 in
-# ``swarmq.backend.valkey.chords`` (U15 hat die KTD10-Re-Exports entfernt).
+# ``ChordManager`` lebt seit Plan U18 in ``swarmq.backend.valkey.chords``
+# (U15 hat die KTD10-Re-Exports entfernt).
 
 
 def workflow_step_task_id(wf_id: str, step_path: str) -> str:

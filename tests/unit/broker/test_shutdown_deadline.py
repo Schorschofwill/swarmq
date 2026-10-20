@@ -5,9 +5,13 @@ Plan 2026-08-28-001, U3 (R12 / AE7).
 Ohne die Kopplung bringt der Deckel im Herunterfahren nichts: Der
 Supervisor eskaliert nach seiner Gnadenfrist auf SIGKILL, waehrend ein
 Publish noch gegen seine deutlich laengere eigene Frist laeuft.
+
+Testlücken Runde 4 (Plan 2026-10-20-1500, U4, Lücke E-12):
+# [x] ein verlassener Deckel hält das Nachziehen der übrigen laufenden Deckel nicht auf
 """
 
 import asyncio
+from typing import cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -122,3 +126,33 @@ class TestReschedulingRunningPublishes:
 
             with pytest.raises(BrokerConnectionError):
                 await asyncio.wait_for(publish_task, timeout=2.0)
+
+
+class TestReschedulingSkipsStaleDeadlines:
+    @pytest.mark.timeout(5)
+    async def test_an_exited_deadline_does_not_stop_pulling_in_the_running_ones(self):
+        """Lücke E-12, Mutant ``connection.py:534`` ``continue`` → ``break``.
+
+        Seam: die private Menge ``_active_publish_timeouts`` (Plan, Spalte
+        „privat“). Ein verlassener Deckel ist dort nur in einem schmalen
+        Fenster, und die Reihenfolge einer Menge lässt sich nicht steuern;
+        deterministisch wird der Fall nur mit einer geordneten Folge, in der
+        der verlassene Deckel vor dem laufenden steht."""
+        broker = _broker(timeout=60.0)
+        loop = asyncio.get_running_loop()
+        # Von Hand betreten und verlassen: ein ``async with`` ohne ``await``
+        # darin bemängelt ruff (ASYNC100).
+        exited, running = asyncio.timeout(None), asyncio.timeout(None)
+        await exited.__aenter__()
+        await exited.__aexit__(None, None, None)
+        await running.__aenter__()
+        try:
+            broker._active_publish_timeouts = cast("set[asyncio.Timeout]", [exited, running])
+            at = loop.time() + 30.0
+
+            broker.set_publish_deadline(at)
+
+            assert running.when() == at
+        finally:
+            running.reschedule(None)
+            await running.__aexit__(None, None, None)

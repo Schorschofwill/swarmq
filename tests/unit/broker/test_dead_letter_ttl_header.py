@@ -25,6 +25,14 @@ Test-Liste:
     Body (Ablehnung durch den Worker) -> ``expiration`` und Ablage-Stempel
     gesetzt, keine Replay-ID; JSON mit ``task.id``, ohne ``task.name`` ->
     Generation und Replay-ID vorhanden (BZ-08, Review P2-22).
+
+Testlücken Runde 4 (Plan 2026-10-20-1500, U3, Lücke E-6):
+12. Zeitstempel als ``bool`` zählt wie fehlend: neu gestempelt, nicht als
+    uralt verworfen (Mutant ``admin.py`` ``_dead_lettered_at_ms``: ``or`` -> ``and``).
+13. Frist-Header ``0`` ist unlesbar, es gilt die eigene Frist ab jetzt
+    (Mutant ``_message_ttl_s``: ``value <= 0`` -> ``value < 0``).
+14. Genau am Fristende ist die Nachricht abgelaufen
+    (Mutant ``_stamp_or_expire``: ``remaining <= 0`` -> ``remaining < 0``).
 """
 
 from __future__ import annotations
@@ -32,6 +40,8 @@ from __future__ import annotations
 import json
 from typing import Any
 from unittest.mock import AsyncMock, Mock
+
+import pytest
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.contracts.message import Delivery
@@ -196,3 +206,46 @@ async def test_rejected_copy_with_task_id_but_without_name_gets_a_generation() -
     assert msg.properties.expiration == "7200000"
     assert msg.headers["x-swarmq-replay-id"].startswith("g")
     assert msg.headers["x-swarmq-dlq-gen"] == int(_NOW * 1000)
+
+
+@pytest.mark.timeout(5)
+@pytest.mark.entscheidung("E-028")
+async def test_boolean_timestamp_counts_as_missing_and_is_stamped_anew() -> None:
+    """E-6: ``True`` ist in Python ein ``int`` (1 ms nach der Epoche). Als
+    Zeitstempel gelesen, wäre die Nachricht seit Jahrzehnten abgelaufen und
+    fiele weg. Gegenprobe ``admin.py:51`` ``or`` -> ``and``: rot."""
+    broker = _dlq_broker(_incoming(headers={_AT: True, _TTL: 3_600_000}), ttl=7200.0)
+
+    entries, _ = await broker.list_dead_letters("tasks")
+
+    assert [e["task_id"] for e in entries] == ["t-1"]
+    [(_, msg)] = broker.published
+    assert msg.headers[_AT] == int(_NOW * 1000)
+    assert msg.properties.expiration == "7200000"
+
+
+@pytest.mark.timeout(5)
+async def test_zero_ttl_header_counts_as_missing() -> None:
+    """E-6: Eine Frist von 0 ms ist unlesbar; die Nachricht bekommt die
+    eigene Frist ab jetzt statt sofort zu verfallen. Gegenprobe
+    ``admin.py:88`` ``value <= 0`` -> ``value < 0``: rot."""
+    broker = _dlq_broker(_incoming(headers={_AT: _ago_ms(0), _TTL: 0}), ttl=7200.0)
+
+    entries, _ = await broker.list_dead_letters("tasks")
+
+    assert [e["task_id"] for e in entries] == ["t-1"]
+    [(_, msg)] = broker.published
+    assert msg.properties.expiration == "7200000"
+    assert msg.headers[_TTL] == 7_200_000
+
+
+@pytest.mark.timeout(5)
+async def test_message_exactly_at_the_end_of_its_ttl_is_dropped() -> None:
+    """E-6: Rest-TTL genau 0 heißt abgelaufen. Gegenprobe ``admin.py:465``
+    ``remaining <= 0`` -> ``remaining < 0``: rot."""
+    broker = _dlq_broker(_incoming("t-due", {_AT: _ago_ms(3600), _TTL: 3_600_000}), ttl=7200.0)
+
+    entries, scanned = await broker.list_dead_letters("tasks")
+
+    assert (entries, scanned) == ([], 0)
+    assert broker.published == []

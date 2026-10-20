@@ -3,6 +3,7 @@ Zeitgrenzen, Schließen, kein Backend-Import.
 
 Test-Liste (U2):
 - Erfolgreiches Lesen gibt den Sollwert zurück und schließt die Verbindung.
+- Gelesen wird der Sollwert der übergebenen Gruppe (T-F-22).
 - Überschrittene Zeitgrenze liefert „nicht gelesen" und schließt trotzdem.
 - Ausnahme beim Öffnen liefert „nicht gelesen" und protokolliert einmal.
 - Fehler beim Schließen verhindert nicht den gelesenen Wert.
@@ -29,6 +30,7 @@ class FakeStore:
         self.connect_error = connect_error
         self.close_error = close_error
         self.closed = False
+        self.read_groups: list[str] = []
         self.status_writes: list[tuple[str, str, dict[str, Any], float]] = []
 
     async def connect(self):
@@ -43,6 +45,7 @@ class FakeStore:
             raise self.close_error
 
     async def read_setpoint(self, group):
+        self.read_groups.append(group)
         return self.setpoint
 
     async def write_status(self, group, supervisor_id, status, *, ttl_s):
@@ -54,6 +57,12 @@ class TestReadSetpointSync:
         store = FakeStore(Setpoint(low=2, high=8))
         assert read_setpoint_sync(lambda: store, "orders") == Setpoint(low=2, high=8)
         assert store.closed is True
+
+    def test_reads_the_setpoint_of_the_given_group(self):
+        """T-F-22, Mutant ``setpoint_store.py:77`` ``read_setpoint(group)`` -> ``read_setpoint(None)``."""
+        store = FakeStore(Setpoint(low=2, high=8))
+        read_setpoint_sync(lambda: store, "orders")
+        assert store.read_groups == ["orders"]
 
     def test_timeout_yields_unread_and_still_closes(self, monkeypatch):
         monkeypatch.setattr("swarmq.process_manager.setpoint_store.READ_TIMEOUT_S", 0.1)

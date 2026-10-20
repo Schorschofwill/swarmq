@@ -226,3 +226,35 @@ class TestHeadroomWidensTheRanges:
         result = _check(processes=2, max_processes=16, metrics_port=9000, health_port=9100)
         assert result["metrics_ports"] == [9000, 9015]
         assert result["health_ports"] == [9100, 9115]
+
+
+class TestRangeBoundariesAreExact:
+    """Testlücke T-F-19 (Runde 4): die Grenzwerte des Bereichs-Guards genau
+    getroffen; bisher lagen alle Fälle mindestens einen Port daneben.
+
+    Test-Liste:
+    - [x] ein Bereich, der genau bei 65535 endet, ist erlaubt
+    - [x] läuft nur der zweite Bereich über 65535, wird er trotzdem abgelehnt
+    - [x] zwei Bereiche, die sich in genau einem Port berühren, überschneiden sich
+    """
+
+    def test_range_ending_exactly_at_the_upper_port_bound_passes(self):
+        """T-F-19, Mutant ``check.py:214`` ``rng[1] <= _MAX_TCP_PORT`` → ``<``."""
+        result = _check(processes=4, metrics_port=65532)
+
+        assert result["metrics_ports"] == [65532, 65535]
+
+    def test_health_range_is_checked_after_a_valid_metrics_range(self):
+        """T-F-19, Mutant ``check.py:215`` ``continue`` → ``break``: nach dem
+        gültigen Metrics-Bereich bliebe der Health-Bereich ungeprüft."""
+        with pytest.raises(ConfigurationError) as excinfo:
+            _check(processes=4, metrics_port=9000, health_port=65534)
+
+        assert "65534-65537" in str(excinfo.value)
+        assert "--health-port=65534" in str(excinfo.value)
+
+    def test_ranges_sharing_their_last_and_first_port_overlap(self):
+        """T-F-19, Mutant ``check.py:224`` ``health_range[0] <= metrics_range[1]``
+        → ``<``: metrics 9000-9003 und health 9003-9006 teilen Port 9003."""
+        with pytest.raises(ConfigurationError, match="overlap"):
+            _check(processes=4, metrics_port=9000, health_port=9003)

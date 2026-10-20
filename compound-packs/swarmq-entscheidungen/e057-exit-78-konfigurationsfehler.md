@@ -30,6 +30,7 @@ tests:
   - tests/unit/process_manager/test_supervisor.py::TestConfigErrorUnderReload::test_config_error_waits_for_the_next_file_change
   - tests/unit/process_manager/test_supervisor.py::TestConfigErrorUnderReload::test_the_file_watcher_trigger_restarts_via_reexec
   - tests/unit/process_manager/test_supervisor.py::TestConfigErrorUnderReload::test_shutdown_signal_while_waiting_ends_with_zero_without_reexec
+  - tests/unit/process_manager/test_run.py::TestStartWiringGaps::test_one_missing_url_ends_with_the_config_code
 ---
 
 **Entscheidung.** Jeder Konfigurationsfehler von `swarmq worker` endet nach einem einzigen Versuch mit Exit 78 (`EX_CONFIG`) und einem Logsatz `worker_config_error`, im Elternprozess wie im Kind. Dazu zählen `ConfigurationError`, jeder `ImportError` (einschließlich `ModuleNotFoundError`) und jeder `SyntaxError` beim Import des Task-Moduls. Andere Ausnahmen beim Import (etwa `TypeError` oder `ValueError` auf Modulebene, auch aus `TaskInfo(...)`) bleiben Exit 1. Verbindungsfehler zu Broker oder Backend bleiben Exit 1.

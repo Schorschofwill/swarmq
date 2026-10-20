@@ -66,6 +66,17 @@ Invarianten (Quelle):
   wird (bei laufender Meldung zwingend), plant ihn höchstens auf den nächsten
   Termin und entfernt ihn nie. Quelle: E-014, E-049 (Prune erst nach
   ``scheduler_prune_after_s``, hier nicht erreicht).
+- L10 Zurückhalten ist Pflicht (nur Fake-Stufe): Fand die Übernahme der
+  Amtszeit ``static-1`` bekannt (in ``report:known``, seit der letzten
+  Meldung nicht per ``remove_schedule`` vergessen), aber ohne lebende
+  Meldung (letzte Meldung älter als ``live_window_ms``), ist bis zur
+  nächsten Übernahme jeder Commit von ``static-1`` durch diesen Kandidaten
+  ein Rückhalt auf
+  ``now + seen_interval`` ohne Publish; der erste Rückhalt seit Amtsantritt,
+  seit dem letzten Fire von ``static-1`` oder seit einer Übernahme, die
+  ``static-1`` vergessen fand (``_held_crons - known``), sendet
+  ``SCHEDULER_CRON_UNOWNED`` mit ``held=True``. Quelle: E-014,
+  ``scheduler/unowned.py`` (``_is_unowned``, ``_hold_unowned``).
 - L9 Lebendigkeit (Regel ``settle``): Ohne Fehler hat das System nach höchstens
   12 Heartbeats einen Leader, und nach Übernahme und Poll ist kein Eintrag
   mehr fällig. Quelle: E-046.
@@ -87,7 +98,8 @@ Nicht nachgebildet: ``check_orphaned_queues`` (BZ-14), Unique-Oneshots
 (``cli_unique``, Lock-Maschine), Ausfälle von Poll und Commit, ein Wechsel der
 Cron-Ausdrücke und Zeitzonen, Prune nach 24 h. Die Valkey-Stufe verschiebt
 die Serverzeit der Cron-Meldungen nicht; dort bleibt eine Meldung lebendig,
-und der Rückhalt (E-014) tritt nur im Fake auf.
+und der Rückhalt (E-014) tritt nur im Fake auf. Die Pflicht L10 gilt deshalb
+nur gegen ``InMemoryBackend``.
 
 Annahmen der Umgebung: Alle Fristen und Zeitsprünge sind ganze Sekunden; die
 echte Laufzeit der Befehle eines Beispiels bleibt unter 1 s (Valkey-Stufe,
@@ -143,13 +155,12 @@ from swarmq.scheduler.cron_time import next_fire_ms
 from swarmq.scheduler.definition import parse_schedfire_key
 from swarmq.scheduler.reports import cron_fingerprint, live_window_ms
 from swarmq.signals import Signal, SignalDispatcher
-from tests.support.inmemory import FakeClock, InMemoryBroker
+from tests.support.inmemory import FakeClock, InMemoryBackend, InMemoryBroker
 from tests.support.stateful import AsyncStateMachine
 
 if TYPE_CHECKING:
     from swarmq.backend.valkey import ValkeyBackend
     from swarmq.contracts.coordination import LockStore
-    from tests.support.inmemory import InMemoryBackend
 
 CANDIDATES = ("A", "B")
 CLI_CRON = "cli-1"
@@ -464,6 +475,10 @@ class Cand:
     term_start_ms: int | None = None
     adopted: bool = False
     reporting_at_adopt: bool = False
+    # L10: static-1 bei der letzten Übernahme der Amtszeit verwaist (E-014),
+    # und ob der Loop ihn gerade zurückhält (``_held_crons``).
+    unowned_at_adopt: bool = False
+    holding: bool = False
     last_ok_ms: int | None = None
     series: Series = field(default_factory=Series)
     stepdown_at_ms: int | None = None
@@ -514,6 +529,12 @@ class LeaderMachine(AsyncStateMachine[LeaderEnv]):
         self._gen = 0
         self.reporting = False
         self.ever_reported = False
+        self.last_report_ms: int | None = None
+        # ``sq:{sched}:report:known`` enthält static-1: gemeldet und seither
+        # nicht per ``remove_schedule`` vergessen (``definition.py``).
+        self.static_known = False
+        # L10 nur im Fake: Valkey führt die Meldungen mit Serverzeit.
+        self.reports_age = isinstance(self.env.backend, InMemoryBackend)
         self.static_unique_for: int | None = None
         # Unique-Claim der Cron-Fires von static-1 (ein Hash für alle Fires):
         # gehalten bis ``static_claim_until_ms`` (E-011, BZ-09/B7).
@@ -608,6 +629,8 @@ class LeaderMachine(AsyncStateMachine[LeaderEnv]):
             if leader and not cand.was_leader:
                 cand.term_start_ms = self.now_ms
                 cand.adopted = False
+                cand.unowned_at_adopt = False
+                cand.holding = False
                 cand.series.reset()
             cand.was_leader = leader
 
@@ -665,9 +688,20 @@ class LeaderMachine(AsyncStateMachine[LeaderEnv]):
         self.run(adopt())
         cand.adopted = True
         cand.reporting_at_adopt = self.reporting
+        cand.unowned_at_adopt = self.reports_age and self.static_known and not self._static_reported_live()
+        if not self.static_known:
+            # Vergessen per ``remove_schedule``: die Übernahme gibt den
+            # Rückhalt frei (``_held_crons - known`` in ``_load_known_names``,
+            # ``scheduler/unowned.py``); der nächste Rückhalt ist ein Übergang.
+            cand.holding = False
         names_after, scores_after = self._store_view()
         self._check_adopt(names_before, scores_before, names_after, scores_after)
         self._after_tick()
+
+    def _static_reported_live(self) -> bool:
+        """Lebt eine Meldung von static-1 (``choose_reports``)?"""
+        window = live_window_ms(self.config.scheduler_seen_interval_s)
+        return self.last_report_ms is not None and self.last_report_ms >= self.now_ms - window
 
     def _check_adopt(
         self,
@@ -794,10 +828,43 @@ class LeaderMachine(AsyncStateMachine[LeaderEnv]):
             if not cand.adopted and term_age is not None:
                 assert term_age >= 5_000, f"{cand}: Publish {term_age} ms nach Amtsantritt vor der Übernahme (L7)"
         self._check_stepdown(cand, publishes, events)
+        self._check_unowned_held(cand, events)
         for commit in (e for e in events if isinstance(e, CommitCall)):
             self._check_commit(commit, events, entries_before)
         if any(isinstance(e, CommitCall) and e.cand == cand.name and not e.result for e in events):
             assert cand.loop.state != "leader", f"{cand}: Commit abgelehnt, trotzdem Leader (L1, E-047)"
+
+    def _check_unowned_held(self, cand: Cand, events: list[Event]) -> None:
+        """L10: nach einer Übernahme ohne lebende Meldung hält der Kandidat
+        static-1 zurück, der erste Rückhalt mit Signal (E-014)."""
+        attempts = [
+            e for e in events if isinstance(e, PublishAttempt) and e.cand == cand.name and e.name == STATIC_CRON
+        ]
+        commits = [e for e in events if isinstance(e, CommitCall) and e.cand == cand.name and e.name == STATIC_CRON]
+        if not (cand.adopted and cand.unowned_at_adopt):
+            if attempts or commits:
+                cand.holding = False  # gefeuert: ``_release_unowned``
+            return
+        assert not attempts, f"{cand}: verwaister static-1 publiziert {attempts} (E-014)"
+        signals = [
+            e.kwargs
+            for e in events
+            if isinstance(e, SignalSeen)
+            and e.cand == cand.name
+            and e.signal is Signal.SCHEDULER_CRON_UNOWNED
+            and e.kwargs["schedule_name"] == STATIC_CRON
+        ]
+        for commit in commits:
+            assert commit.next_ms == self.now_ms + self.seen_ms, (
+                f"{cand}: verwaister static-1 auf {commit.next_ms - self.now_ms} ms statt zurückgehalten (E-014)"
+            )
+        if commits and not cand.holding:
+            assert [kwargs["held"] for kwargs in signals] == [True], (
+                f"{cand}: erster Rückhalt von static-1 mit Signalen {signals} (E-014)"
+            )
+            cand.holding = True
+        elif commits:
+            assert not signals, f"{cand}: Signal {signals} ohne Übergang (E-014)"
 
     def _check_stepdown(self, cand: Cand, publishes: list[PublishAttempt], events: list[Event]) -> None:
         expected = False
@@ -927,6 +994,8 @@ class LeaderMachine(AsyncStateMachine[LeaderEnv]):
     def remove_cron(self, name: str) -> None:
         removed = self.run(self.admin.remove_schedule(name))
         assert removed is (name in self.entries), f"remove_schedule({name})={removed}"
+        if name == STATIC_CRON:
+            self.static_known = False
         self._forget(name)
 
     @rule(name=st.sampled_from((CLI_CRON, STATIC_CRON)))
@@ -957,6 +1026,8 @@ class LeaderMachine(AsyncStateMachine[LeaderEnv]):
         )
         self.reporting = True
         self.ever_reported = True
+        self.last_report_ms = self.now_ms
+        self.static_known = True
         self.static_unique_for = unique_for
 
     @rule(unique_for=st.sampled_from(STATIC_UNIQUE_FOR))
@@ -967,6 +1038,20 @@ class LeaderMachine(AsyncStateMachine[LeaderEnv]):
     def static_withdraw(self) -> None:
         """Der meldende Worker läuft mit neuem Code ohne ``static-1``."""
         self.reporting = False
+
+    @rule()
+    def static_withdraw_and_outlive(self) -> None:
+        """Der meldende Worker verstummt, die Loops laufen über das
+        Lebendigkeitsfenster der Meldung hinaus; danach übernimmt jeder Leader
+        die Meldungen und pollt bis zum nächsten Termin (L10). Ohne diese Regel
+        erreicht die Suche den Rückhalt (E-014) kaum: Sie braucht dafür mehr
+        als drei lange Zeitsprünge in Folge und eine Übernahme danach."""
+        self.static_withdraw()
+        window_s = live_window_ms(self.config.scheduler_seen_interval_s) // 1000
+        self.run_for(window_s + self.heartbeat_s, blocked=None)
+        for name in CANDIDATES:
+            self.adopt_tick(name)
+        self.run_for(self.seen_ms // 1000, blocked=None)
 
     def schedule_oneshot(self, delay_s: int, *, reply_lost: bool = False) -> str:
         client = self.lossy_client if reply_lost else self.client

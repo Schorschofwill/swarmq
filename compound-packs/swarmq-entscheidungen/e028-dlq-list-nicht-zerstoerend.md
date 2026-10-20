@@ -31,6 +31,12 @@ tests:
   - tests/unit/test_cli.py::TestDlqHandlerOrchestration::test_inspect_miss_reports_the_scan_limit_from_hit_limit
   - tests/unit/test_cli.py::TestDlqHandlerOrchestration::test_retry_miss_reports_the_scan_limit_from_hit_limit
   - tests/unit/test_cli.py::TestDlqHandlerOrchestration::test_retry_all_reports_truncation_from_hit_limit
+  - tests/unit/broker/test_dead_letter_ttl_header.py::test_boolean_timestamp_counts_as_missing_and_is_stamped_anew
+  - tests/unit/broker/test_dlq_read.py::test_inspect_stops_reading_after_a_match_in_the_middle
+  - tests/unit/broker/test_dlq_read.py::test_retry_routes_the_predecessor_back_and_only_the_match_to_the_main_queue
+  - tests/unit/test_cli.py::TestDlqHandlerOrchestration::test_inspect_miss_payload_names_task_and_queue
+  - tests/unit/test_cli.py::TestDlqHandlerOrchestration::test_retry_all_payload_says_all
+  - tests/unit/test_cli.py::TestDlqHandlerOrchestration::test_retry_miss_payload_reports_nothing_moved
 ---
 
 **Entscheidung.** `dlq list`/`dlq inspect` lesen über einen eigenen Channel mit `no_ack=False`, kopieren jede Nachricht ans Ende der DLQ und bestätigen das Original erst nach dem Confirm der Kopie. Abgelaufene Einträge (über `dead_letter_ttl_s`) werden beim Listen ohne Kopie bestätigt. Akzeptierte Grenze: Parallele `dlq list` sehen jeweils Teilmengen.

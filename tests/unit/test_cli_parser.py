@@ -142,3 +142,23 @@ class TestNoSchedulerOption:
 
     def test_default_is_none(self):
         assert self._parse().scheduler is None
+
+
+class TestGroupCommandsRequireASubcommand:
+    """Testlücke T-F-25 (Runde 4): ``swarmq schedule`` und ``swarmq dlq`` ohne
+    Unterbefehl enden als Argumentfehler mit Exit 2 (``cli.md``: Exit 2 für
+    falsche Argumente), statt still nichts zu tun.
+
+    Mutanten ``parser_ops.py:36`` (``schedule``) und ``:227`` (``dlq``)
+    ``required=True`` → ``required=False``.
+    """
+
+    @pytest.mark.parametrize("group", ["schedule", "dlq"])
+    def test_group_without_subcommand_exits_2(self, group, capsys):
+        from swarmq.cli import main
+
+        with pytest.raises(SystemExit) as excinfo:
+            main([group])
+
+        assert excinfo.value.code == 2
+        assert "SUBCOMMAND" in capsys.readouterr().err

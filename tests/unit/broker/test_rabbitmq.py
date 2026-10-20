@@ -1,4 +1,12 @@
-"""Unit tests for RabbitMQBroker."""
+"""Unit tests for RabbitMQBroker.
+
+Testlücken Runde 4 (Plan 2026-10-20-1500, U4), am Ende der Datei:
+# [x] E-11: Consume-Weg, ``connection.ready()`` kommt nie -> Fehler nach der Kanalfrist
+# [x] E-13: gescheitertes ``connect`` gibt die Verbindung an einen echten Pool zurück
+# [x] E-14: ein direkt gebauter Broker deckelt einen hängenden Publish mit dem Default
+# [x] E-15: ``ping`` bei geschlossener Verbindung, ohne Bereitschaft, mit Fehlergrund
+# [x] E-20: Fehlertexte (Quellenliste, injizierter Kanal, DLQ-Tiefe)
+"""
 
 import asyncio
 import json
@@ -14,6 +22,7 @@ import pytest
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import BrokerConnectionError, ConfigurationError, PublishIndeterminate
 from tests.support.rabbitmq_faults import HangingChannel, hanging_publish
+from tests.support.virtual_time import on_virtual_clock
 
 
 class TestRabbitMQBrokerInit:
@@ -1322,3 +1331,174 @@ class TestChannelCloseAfterUnblocked:
 
         assert calls == []
         assert asyncio.all_tasks() - before == set(), "the waiter ends with the close task"
+
+
+# --- Testlücken Runde 4 (Plan 2026-10-20-1500, U4) ---------------------------
+
+
+async def _never_ready() -> None:
+    """``connection.ready()`` einer Verbindung, die nie wieder bereit wird."""
+    await asyncio.Event().wait()
+
+
+class TestConsumeChannelReadyDeadline:
+    @pytest.mark.timeout(5)
+    @on_virtual_clock
+    async def test_consume_on_a_connection_that_never_gets_ready_fails_after_the_channel_deadline(self):
+        """Lücke E-11, Mutant ``connection.py:707``
+        ``timeout=_CHANNEL_READY_TIMEOUT_S`` → ``timeout=None``: Der
+        Consume-Weg hat keine äußere Publish-Frist; ohne die Kanalfrist hinge
+        ``consume`` (und mit ihm die Kanalsperre) unbegrenzt."""
+        conn = AsyncMock(is_closed=False)
+        conn.ready = _never_ready
+        broker = RabbitMQBroker(connection=conn)
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+
+        with pytest.raises(BrokerConnectionError, match=r"not ready after 10\.0s"):
+            await asyncio.wait_for(broker.consume("q1", AsyncMock(), concurrency=1), timeout=60.0)
+
+        assert loop.time() - start == pytest.approx(10.0)
+        conn.channel.assert_not_awaited()
+
+
+class TestInjectedPoolRelease:
+    @pytest.mark.timeout(5)
+    @on_virtual_clock
+    async def test_a_failed_connect_returns_the_connection_to_a_real_pool(self):
+        """Lücke E-13, Mutant ``connection.py:384``
+        ``__aexit__(type(exc), exc, exc.__traceback__)`` →
+        ``__aexit__(type(exc), exc)``: Der echte ``PoolItemContextManager``
+        verlangt drei Argumente; der verschluckte ``TypeError`` ließe die
+        Verbindung ausgeliehen, der Pool (Größe 1) wäre erschöpft.
+
+        Zugleich Lücke E-20 (``connection.py:389``): Der Fehlertext nennt den
+        Grund, Mutant ``BrokerConnectionError(str(exc))`` → ``str(None)``."""
+        conn = AsyncMock(is_closed=False)
+        conn.channel.side_effect = RuntimeError("channel boom")
+
+        async def construct() -> AsyncMock:
+            return conn
+
+        pool: aio_pika.pool.Pool[AsyncMock] = aio_pika.pool.Pool(construct, max_size=1)
+        broker = RabbitMQBroker(connection_pool=pool)
+
+        with pytest.raises(BrokerConnectionError, match=r"^channel boom$"):
+            await broker.connect()
+
+        async with asyncio.timeout(1.0), pool.acquire() as again:
+            assert again is conn
+
+
+class TestDefaultPublishDeadline:
+    @pytest.mark.timeout(5)
+    @on_virtual_clock
+    async def test_a_directly_constructed_broker_caps_a_hanging_publish_at_the_default(self):
+        """Lücke E-14, Mutant ``connection.py:213``
+        ``= _DEFAULT_PUBLISH_TIMEOUT_S`` → ``= None``: Ohne App bleibt der
+        Default von 120 s die einzige Grenze des Producer-Pfads."""
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        broker._connection = AsyncMock()
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+
+        with hanging_publish(broker), pytest.raises(BrokerConnectionError, match=r"120\.0"):
+            await asyncio.wait_for(broker.publish("tasks", b"{}"), timeout=600.0)
+
+        assert loop.time() - start == pytest.approx(120.0)
+
+
+class TestPing:
+    """Lücke E-15: ``ping`` war nur über die Integration geprüft."""
+
+    @pytest.mark.timeout(5)
+    async def test_ping_on_a_ready_connection_passes(self):
+        conn = AsyncMock(is_closed=False)
+        broker = RabbitMQBroker(connection=conn)
+
+        await broker.ping()
+
+        conn.ready.assert_awaited_once()
+
+    @pytest.mark.timeout(5)
+    async def test_ping_on_a_closed_connection_reports_not_connected(self):
+        """Mutant ``connection.py:427`` ``or self._connection.is_closed`` gestrichen."""
+        conn = AsyncMock(is_closed=True)
+        broker = RabbitMQBroker(connection=conn)
+
+        with pytest.raises(BrokerConnectionError, match=r"^broker not connected$"):
+            await broker.ping()
+
+        conn.ready.assert_not_awaited()
+
+    @pytest.mark.timeout(5)
+    @on_virtual_clock
+    async def test_ping_on_a_connection_that_never_gets_ready_fails_after_the_ping_deadline(self):
+        """Mutant ``connection.py:430`` ``timeout=_PING_TIMEOUT_S`` → ``None``."""
+        conn = AsyncMock(is_closed=False)
+        conn.ready = _never_ready
+        broker = RabbitMQBroker(connection=conn)
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+
+        with pytest.raises(BrokerConnectionError, match=r"not ready within 2\.0s"):
+            await asyncio.wait_for(broker.ping(), timeout=60.0)
+
+        assert loop.time() - start == pytest.approx(2.0)
+
+    @pytest.mark.timeout(5)
+    async def test_ping_passes_the_reason_of_a_failed_readiness_check_on(self):
+        """Mutant ``connection.py:434`` ``str(exc)`` → ``str(None)``."""
+        conn = AsyncMock(is_closed=False)
+        conn.ready.side_effect = RuntimeError("connection reset by peer")
+        broker = RabbitMQBroker(connection=conn)
+
+        with pytest.raises(BrokerConnectionError, match=r"^connection reset by peer$") as excinfo:
+            await broker.ping()
+
+        assert isinstance(excinfo.value.__cause__, RuntimeError)
+
+
+class TestErrorTexts:
+    """Lücke E-20: Fehlertexte, die CLI und Logs zeigen."""
+
+    @pytest.mark.parametrize(
+        ("sources", "named"),
+        [
+            ({"url": "amqp://localhost/", "connection": AsyncMock()}, "url, connection"),
+            (
+                {"url": "amqp://localhost/", "connection": AsyncMock(), "connection_pool": Mock()},
+                "url, connection, connection_pool",
+            ),
+            ({"connection": AsyncMock(), "connection_pool": Mock()}, "connection, connection_pool"),
+        ],
+    )
+    def test_several_sources_are_named_in_the_error(self, sources, named):
+        """Mutant ``connection.py:205`` ``', '.join(given)`` → ``'XX, XX'.join(given)``."""
+        with pytest.raises(ConfigurationError, match=rf"— got {named}$"):
+            RabbitMQBroker(**sources)
+
+    @pytest.mark.timeout(5)
+    @pytest.mark.parametrize("connection", [None, AsyncMock(is_closed=True)], ids=["none", "closed"])
+    async def test_dead_letter_depth_without_open_connection_says_not_connected(self, connection):
+        """Mutant ``connection.py:779`` ``"broker is not connected"`` →
+        ``"XXbroker is not connectedXX"`` (ebenso ``or`` → ``and``)."""
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        broker._connection = connection
+
+        with pytest.raises(BrokerConnectionError, match=r"^broker is not connected$"):
+            await broker.dead_letter_depth("tasks")
+
+    @pytest.mark.timeout(5)
+    async def test_dead_letter_depth_passes_the_transport_error_on(self):
+        """Mutant ``connection.py:794`` ``BrokerConnectionError(str(exc))`` →
+        ``BrokerConnectionError(str(None))``."""
+        broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+        conn = AsyncMock(is_closed=False)
+        broker._connection = conn
+        chan = AsyncMock(is_closed=False)
+        conn.channel = AsyncMock(return_value=chan)
+        chan.declare_queue = AsyncMock(side_effect=ConnectionError("gone"))
+
+        with pytest.raises(BrokerConnectionError, match=r"^gone$"):
+            await broker.dead_letter_depth("tasks")

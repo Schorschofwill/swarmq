@@ -10,6 +10,10 @@ Test-Liste 0.9.0 (Ausfall vs. Fehlerantwort):
    stellt dafuer nicht zurueck.
 2. Ein Transportfehler bleibt ein einfacher ``BackendConnectionError``.
 3. Dasselbe fuer ``release`` und ``renew``.
+
+Testlücke D-3 (Runde 4):
+4. ``acquire`` rechnet die Serverzeit aus ``TIME`` (Sekunden, Mikrosekunden)
+   in Millisekunden um und reicht sie als ``int`` an das Skript.
 """
 
 from __future__ import annotations
@@ -284,3 +288,26 @@ class TestValkeyLockStoreTokens:
             await store.current_owner("l")
 
         assert caught.value is error
+
+
+@pytest.mark.timeout(5)
+async def test_acquire_passes_the_server_time_in_milliseconds_to_the_script():
+    """Testlücke D-3 (Runde 4): ``TIME`` liefert Sekunden und Mikrosekunden;
+    das Skript bewertet Ablaufzeiten in Millisekunden derselben Uhr. Aus
+    ``(1_700_000_000, 999_999)`` wird ``1_700_000_000_999`` (abgerundet), als
+    ``int``.
+
+    Gegenprobe-Mutant: ``locks.py`` in ``LockManager.acquire``
+    ``+ int(microseconds) // 1000`` → ``- int(microseconds) // 1000``."""
+    client = MagicMock()
+    client.time = AsyncMock(return_value=(1_700_000_000, 999_999))
+    acquire_script = AsyncMock(return_value=1)
+    client.register_script = MagicMock(side_effect=[acquire_script, AsyncMock(), AsyncMock()])
+    store = ValkeyLockStore(client)
+
+    await store.acquire("l", owner="owner-a", ttl_ms=1000, max_concurrency=1)
+
+    assert acquire_script.await_args is not None
+    now_ms = acquire_script.await_args.kwargs["args"][-1]
+    assert now_ms == 1_700_000_000_999
+    assert type(now_ms) is int

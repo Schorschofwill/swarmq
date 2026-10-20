@@ -39,7 +39,11 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import time
+from collections.abc import Iterator
 from contextlib import redirect_stdout
+from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -353,3 +357,142 @@ async def test_other_error_while_storing_releases_the_own_claim(
         await _add("nightly", "--unique-for", "60")
 
     assert await _claim_owner(memory) is None
+
+
+# Testlücken Runde 4 (T-F-15, T-F-16): was ``schedule add`` speichert und ausgibt.
+# [x] T-F-16: gespeicherte Definition mit ``--unique-for`` (alle Felder)
+# [x] T-F-16: ohne ``--unique-for`` -> ``source="cli"``, kein ``dedup_hash``
+# [x] T-F-16: JSON-Felder ``dedup_hash`` und ``unique_until``
+# [x] T-F-16: Tabellentexte (angelegt, Name belegt, Dedup-Duplikat)
+# [x] T-F-15: erster Cron-Termin ist der nächste nach jetzt
+# [x] T-F-15: ``--at`` ohne Zeitzone gilt als UTC, auch bei ``TZ`` ungleich UTC
+
+_NOW_S = _NOW_MS / 1000  # 2027-01-15 08:00:00 UTC
+
+
+@pytest.fixture
+def frozen_wall_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``schedule add`` liest die Wanduhr über ``time.time``; fest auf ``_NOW_MS``."""
+    monkeypatch.setattr(schedule_cmd, "time", SimpleNamespace(time=lambda: _NOW_S))
+
+
+@pytest.fixture
+def berlin_local_time() -> Iterator[None]:
+    """Lokale Zeitzone Europe/Berlin (UTC+1 im Januar), danach zurück.
+
+    Eigener ``MonkeyPatch``-Kontext statt der Fixture: Die C-Bibliothek liest
+    ``TZ`` erst beim ``tzset``, die Umgebung muss davor zurückgesetzt sein."""
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("TZ", "Europe/Berlin")
+        time.tzset()
+        try:
+            yield
+        finally:
+            mp.undo()
+            time.tzset()
+
+
+async def _add_table(name: str, *extra: str) -> str:
+    ns = _build_parser().parse_args(["schedule", "add", name, "--cron", "0 1 * * *", "--task", "t", *extra])
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        await schedule_cmd._run_schedule_add(ns)
+    return buf.getvalue()
+
+
+@pytest.mark.usefixtures("frozen_wall_clock")
+async def test_unique_add_stores_the_full_definition(memory: InMemoryBackend) -> None:
+    """T-F-16, Mutanten ``schedule_cmd.py:285`` ``"cli_unique"`` → ``"cli"`` und
+    ``schedule_cmd.py:282`` ``queue=args.queue`` → ``queue=None``."""
+    await _add(
+        "nightly",
+        "--args",
+        "[1, 2]",
+        "--kwargs",
+        '{"a": 1}',
+        "--queue",
+        "orders",
+        "--unique-for",
+        "60",
+        "--unique-until",
+        "start",
+    )
+
+    stored = await ScheduleStore(memory).get_definition("nightly")
+
+    assert stored is not None
+    assert (stored.schedule_name, stored.task_name, stored.args, stored.kwargs) == ("nightly", "t", (1, 2), {"a": 1})
+    assert (stored.queue, stored.cron, stored.fire_ts_ms) == ("orders", "0 1 * * *", _ms(2027, 1, 16, 1))
+    assert (stored.source, stored.dedup_hash, stored.unique_until) == (
+        "cli_unique",
+        compute_dedup_hash("t", (1, 2), {"a": 1}),
+        "start",
+    )
+
+
+async def test_plain_add_stores_a_cli_definition_without_dedup(memory: InMemoryBackend) -> None:
+    """T-F-16, Gegenstück: ohne ``--unique-for`` bleibt die Quelle ``cli``."""
+    await _add("nightly")
+
+    stored = await ScheduleStore(memory).get_definition("nightly")
+
+    assert stored is not None
+    assert (stored.source, stored.dedup_hash, stored.queue) == ("cli", None, "default")
+
+
+@pytest.mark.entscheidung("E-076")
+async def test_unique_add_reports_dedup_hash_and_unique_until(memory: InMemoryBackend) -> None:
+    """T-F-16, Mutant ``schedule_cmd.py:196`` ``"unique_until"`` → ``"XXunique_untilXX"``."""
+    payload = await _add("nightly", "--unique-for", "60", "--unique-until", "start")
+
+    assert payload == {
+        "inserted": True,
+        "name": "nightly",
+        "already_exists": False,
+        "dedup_hash": compute_dedup_hash("t", (), {}),
+        "unique_until": "start",
+    }
+
+
+async def test_table_output_names_the_outcome(memory: InMemoryBackend) -> None:
+    """T-F-16 (Tabellentexte), Mutant ``schedule_cmd.py:205`` ``elif inserted:`` →
+    ``elif not inserted:`` (angelegt und abgelehnt tauschten die Zeilen)."""
+    added = await _add_table("nightly", "--unique-for", "60")
+    taken = await _add_table("nightly")
+    duplicate = await _add_table("nightly-copy", "--unique-for", "60")
+
+    assert added == "added schedule 'nightly'\n"
+    assert taken == ("schedule 'nightly' already exists; use 'schedule remove --permanent' first to replace it\n")
+    assert duplicate == (
+        "schedule 'nightly-copy' rejected — dedup flag already held by 'nightly' (args duplicate within 60s TTL)\n"
+    )
+
+
+@pytest.mark.usefixtures("frozen_wall_clock")
+async def test_first_cron_fire_is_the_next_one_after_now(memory: InMemoryBackend) -> None:
+    """T-F-15, Mutant ``schedule_cmd.py:155`` ``int(time.time() * 1000)`` →
+    ``int(time.time() / 1000)``: der erste Termin läge im Jahr 1970."""
+    await _add("nightly", cron="0 1 * * *")
+
+    stored = await ScheduleStore(memory).get_definition("nightly")
+
+    assert stored is not None
+    assert stored.fire_ts_ms == _ms(2027, 1, 16, 1)
+
+
+@pytest.mark.entscheidung("E-080")
+@pytest.mark.usefixtures("frozen_wall_clock", "berlin_local_time")
+async def test_naive_at_is_utc_even_in_another_local_zone(memory: InMemoryBackend) -> None:
+    """T-F-15 (``cli.md``: naiv = UTC), Mutant ``schedule_cmd.py:165``
+    ``dt = dt.replace(tzinfo=UTC)`` streichen: der Termin läge eine Stunde früher
+    (Europe/Berlin, UTC+1)."""
+    await _add("once", at="2027-01-20T12:00:00")
+
+    stored = await ScheduleStore(memory).get_definition("once")
+
+    assert stored is not None
+    assert stored.fire_ts_ms == _ms(2027, 1, 20, 12)
+
+
+def _ms(year: int, month: int, day: int, hour: int) -> int:
+    return int(datetime(year, month, day, hour, tzinfo=UTC).timestamp() * 1000)

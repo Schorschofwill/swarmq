@@ -13,6 +13,8 @@ Test-Liste:
 # [x] eine späte consume-Antwort, deren Abmeldung scheitert: geloggt, nicht übernommen
 # [x] ein abgekoppelter Takt endet mit dem Schließen des Kanals (kein hängender Task)
 # [x] ein abgekoppelter Takt meldet nach stop() keinen weiteren Eintrag neu an (Review U10)
+# [x] die consume-Antwort eines abgekoppelten Takts nach stop() (Eintrag noch geführt): Tag
+#     sofort abgemeldet, nicht übernommen (Testlücken Runde 4, E-10, virtuelle Uhr)
 # Kanalbezug vor dem RPC (aio-pika wartet dort auf ``connection.ready()``, ohne Frist):
 # [x] cancel_all bei getrennter Verbindung: endet nach timeout_s mit Fehler je Tag
 # [x] cancel_all gibt dem RPC die Notbremse mit
@@ -37,6 +39,7 @@ from pamqp.frame import unmarshal
 from swarmq.broker.rabbitmq import consumer_watch as consumer_watch_module
 from swarmq.broker.rabbitmq.consumer_watch import ConsumerWatch
 from tests.support.consumer_fakes import FakeChannel, FakeQueue, FakeUnderlay
+from tests.support.virtual_time import on_virtual_clock
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -258,6 +261,48 @@ async def test_a_detached_tick_registers_no_further_entry_after_stop(short_stop:
 
     assert first.cancelled == ["tag-1"]
     assert second.consumed == []
+
+
+@pytest.mark.entscheidung("E-053")
+@on_virtual_clock
+async def test_a_late_consume_answer_after_stop_is_cancelled_although_the_entry_is_still_listed(
+    swarmq_logs: list[dict[str, Any]],
+) -> None:
+    """Lücke E-10 (Plan 2026-10-20-1500, U4), Mutant ``consumer_watch.py:332``
+    ``self._stopping or entry not in self._entries`` → ``and``.
+
+    Anders als ``cancel_all`` lässt ``stop()`` die Einträge stehen. Die
+    Antwort eines abgekoppelten Takts muss trotzdem sofort wieder abgemeldet
+    werden; den Tag kennte sonst niemand mehr. Die volle Wartezeit von
+    ``stop()`` (5 s) läuft auf der virtuellen Uhr."""
+    queue = FakeQueue("q1", FakeChannel(FakeUnderlay("tag-1")))
+    entered, answer = asyncio.Event(), asyncio.Event()
+    plain_consume = queue.consume
+
+    async def slow_consume(callback: Any, timeout: float | None = None) -> str:
+        entered.set()
+        await answer.wait()
+        return await plain_consume(callback, timeout)
+
+    queue.consume = slow_consume  # type: ignore[method-assign]  # Test verzögert die Antwort
+    watch = ConsumerWatch()
+    watch.add("q1", queue, object(), "tag-1")
+    await watch.tick()
+    queue.channel.underlay.consumers.pop("tag-1")  # basic.cancel vom Broker
+    before = asyncio.all_tasks()
+    watch.start(interval_s=3600.0)
+    watch.request_check()
+    await asyncio.wait_for(entered.wait(), 1.0)
+    await watch.stop()
+    [detached] = asyncio.all_tasks() - before
+
+    answer.set()
+    await asyncio.wait_for(detached, 1.0)
+
+    assert queue.cancelled == ["tag-1", "q1-new-1"]
+    assert watch.self_cancelled_tags == frozenset({"tag-1", "q1-new-1"})
+    assert watch.tags() == []
+    assert not [e for e in swarmq_logs if e["event"] == "consumer_reregistered"]
 
 
 class _GatedQueue:

@@ -27,8 +27,11 @@ from __future__ import annotations
 # - [x] ``WorkerConfig.scheduler="off"`` landet in der Kind-Namespace und
 #       ergibt dort ``SwarmQConfig.scheduler == "off"``, auch wenn im Kind
 #       ``SWARMQ_SCHEDULER=on`` gesetzt ist
+import contextlib
+import itertools
+import json
 import os
-from typing import Any, override
+from typing import TYPE_CHECKING, Any, cast, override
 
 import pytest
 
@@ -36,6 +39,9 @@ from swarmq.process_manager import (
     worker_subprocess_entry,
 )
 from tests.unit.process_manager._helpers import _make_test_cfg
+
+if TYPE_CHECKING:
+    from swarmq.supervision import SupervisorChannel
 
 
 class TestWorkerSubprocessEntry:
@@ -657,3 +663,189 @@ class TestHardExitAfterTheDrain:
             assert ended.wait(2)
         finally:
             stderr.opened.set()
+
+
+class _VirtualEntryClock:
+    """Lässt ``worker_subprocess_entry`` auf der virtuellen Uhr laufen.
+
+    Der Watcher wartet mit echtem ``asyncio.sleep(0.3)`` in ``asyncio.run`` und
+    liest ``time.monotonic``; ``run_virtual`` greift dort nicht. Deshalb ersetzt
+    der Test ``asyncio.run`` durch einen Runner mit ``_VirtualTimeLoop`` und
+    ``entry.time.monotonic`` durch die Uhr dieser Loop. Sekunden virtueller
+    Zeit kosten so Millisekunden.
+    """
+
+    @staticmethod
+    def install(monkeypatch) -> None:
+        import asyncio
+        from types import SimpleNamespace
+
+        from swarmq.process_manager import entry as entry_module
+        from tests.support.virtual_time import _VirtualTimeLoop
+
+        def run_on_virtual_clock(main):
+            with asyncio.Runner(loop_factory=_VirtualTimeLoop) as runner:
+                return runner.run(main)
+
+        monkeypatch.setattr(asyncio, "run", run_on_virtual_clock)
+        monkeypatch.setattr(entry_module, "time", SimpleNamespace(monotonic=lambda: asyncio.get_running_loop().time()))
+
+
+class _RecordingChannel:
+    """Kanal-Fake: merkt sich die (virtuellen) Zeitpunkte der Schläge."""
+
+    def __init__(self, wanted: int) -> None:
+        import asyncio
+
+        self.beats: list[float] = []
+        self.enough = asyncio.Event()
+        self._wanted = wanted
+
+    def beat(self) -> None:
+        import asyncio
+
+        self.beats.append(asyncio.get_running_loop().time())
+        if len(self.beats) >= self._wanted:
+            self.enough.set()
+
+
+@pytest.fixture
+def reset_channel():
+    from swarmq import supervision as sv
+
+    yield
+    sv.set_current_channel(None)
+
+
+@pytest.mark.usefixtures("reset_channel")
+class TestHeartbeatWatcherOverTime:
+    """Testlücke T-F-20 (Runde 4): der Herzschlag-Watcher über mehrere Takte
+    und das Rückfall-Format.
+
+    ``TestHeartbeatWriter`` sieht nur den ersten Schlag, und
+    ``test_shutdown_event_triggers_sigterm_on_self`` läuft ohne Kanal. Beides
+    lief bisher in Echtzeit; hier auf der virtuellen Uhr (``_VirtualEntryClock``).
+
+    Test-Liste:
+    - [x] mehrere Schläge im Abstand ``heartbeat_interval_s``
+    - [x] SIGTERM auf sich selbst auch mit Kanal, nach mehreren Takten
+    - [x] Rückfall nach kaputter dictConfig behält das Format (JSON bleibt JSON)
+    - [x] ohne ``logging_settings`` gilt ``log_format`` der ``WorkerConfig``
+    - [x] die Namespace trägt die Queues als Liste
+    """
+
+    _NEVER_SET = type("Ev", (), {"is_set": staticmethod(lambda: False)})()
+
+    def test_channel_gets_a_beat_every_interval(self, monkeypatch):
+        """T-F-20, Mutanten ``entry.py:205`` ``next_beat = now + beat_interval`` →
+        ``next_beat = None`` (der zweite Takt endet in ``TypeError``, kein
+        weiterer Schlag) und ``entry.py:188`` ``or 5.0`` → ``and 5.0`` (Abstand 5 s
+        statt 2 s)."""
+        import asyncio
+
+        interval = 2.0
+        watcher_tick_s = 0.3  # ``asyncio.sleep(0.3)`` im Watcher (``entry.py``), keine Konstante
+        _VirtualEntryClock.install(monkeypatch)
+        channel = _RecordingChannel(wanted=3)
+
+        async def fake_run(ns):
+            with contextlib.suppress(TimeoutError):
+                async with asyncio.timeout(30):
+                    await channel.enough.wait()
+
+        monkeypatch.setattr("swarmq.cli.run_worker_async", fake_run)
+
+        worker_subprocess_entry(
+            0, self._NEVER_SET, _make_test_cfg(heartbeat_interval_s=interval), cast("SupervisorChannel", channel)
+        )
+
+        assert len(channel.beats) >= 3
+        gaps = [later - earlier for earlier, later in itertools.pairwise(channel.beats[:3])]
+        assert channel.beats[0] == 0.0
+        assert all(interval <= gap < interval + watcher_tick_s + 1e-6 for gap in gaps), gaps
+
+    def test_shutdown_event_sends_sigterm_while_a_channel_is_attached(self, monkeypatch):
+        """T-F-20 (SIGTERM mit Kanal), Mutant ``entry.py:205`` ``next_beat = now +
+        beat_interval`` → ``next_beat = None``: der Watcher stürbe im zweiten
+        Takt, der Worker bekäme nie SIGTERM."""
+        import asyncio
+        import signal
+
+        _VirtualEntryClock.install(monkeypatch)
+        channel = _RecordingChannel(wanted=1)
+        killed = asyncio.Event()
+        kills: list[tuple[int, int]] = []
+
+        def fake_kill(pid, sig):
+            kills.append((pid, sig))
+            killed.set()
+
+        class _SetAfterOneSecond:
+            @staticmethod
+            def is_set() -> bool:
+                return asyncio.get_running_loop().time() >= 1.0
+
+        async def fake_run(ns):
+            with contextlib.suppress(TimeoutError):
+                async with asyncio.timeout(30):
+                    await killed.wait()
+
+        monkeypatch.setattr("swarmq.process_manager.entry.os.kill", fake_kill)
+        monkeypatch.setattr("swarmq.cli.run_worker_async", fake_run)
+
+        worker_subprocess_entry(
+            0, _SetAfterOneSecond(), _make_test_cfg(heartbeat_interval_s=0.5), cast("SupervisorChannel", channel)
+        )
+
+        assert kills == [(os.getpid(), signal.SIGTERM)]
+        assert len(channel.beats) >= 2
+
+    def test_fallback_after_a_broken_dict_config_keeps_the_json_format(self, monkeypatch, capfd):
+        """T-F-20 (Rückfall-Format), Mutant ``entry.py:175``
+        ``format=settings.format`` streichen: eine JSON-Gruppe bekäme ihre
+        ``worker_config_error``-Zeile im Format ``human``."""
+        TestLoggingConfigErrorInTheChild._isolate_dict_config(monkeypatch)
+
+        with pytest.raises(SystemExit):
+            worker_subprocess_entry(
+                0,
+                self._NEVER_SET,
+                _make_test_cfg(logging_settings=_broken_log_config_settings(format="json")),
+            )
+
+        line = next(line for line in capfd.readouterr().err.splitlines() if "worker_config_error" in line)
+        assert line.startswith("{"), line
+        record = json.loads(line)
+        assert (record["event"], record["error_type"]) == ("worker_config_error", "LoggingConfigError")
+
+    def test_without_logging_settings_the_config_log_format_applies(self, monkeypatch, capfd):
+        """T-F-20 (Rückfall ohne ``logging_settings``), Mutant ``entry.py:61``
+        ``format=cfg.log_format`` streichen: das Kind schriebe ``human`` statt
+        des Formats der ``WorkerConfig``."""
+        from swarmq.exceptions import ConfigurationError
+
+        async def boom(ns):
+            raise ConfigurationError("no tasks registered")
+
+        monkeypatch.setattr("swarmq.cli.run_worker_async", boom)
+
+        with pytest.raises(SystemExit):
+            worker_subprocess_entry(0, self._NEVER_SET, _make_test_cfg(log_format="json", logging_settings=None))
+
+        line = next(line for line in capfd.readouterr().err.splitlines() if "worker_config_error" in line)
+        assert line.startswith("{"), line
+        assert json.loads(line)["error"] == "ConfigurationError: no tasks registered"
+
+    def test_namespace_carries_the_queues_as_a_list(self, monkeypatch):
+        """T-F-20 (Namensraum), Mutant ``entry.py:104`` ``list(kwargs["queues"])``
+        → ``None``: ``run_worker_async`` bekäme keine Queues."""
+        seen: list[object] = []
+
+        async def fake_run(ns):
+            seen.append(ns.queues)
+
+        monkeypatch.setattr("swarmq.cli.run_worker_async", fake_run)
+
+        worker_subprocess_entry(0, self._NEVER_SET, _make_test_cfg(queues=("orders", "billing")))
+
+        assert seen == [["orders", "billing"]]
