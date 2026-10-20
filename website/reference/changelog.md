@@ -4,6 +4,17 @@ All notable changes to SwarmQ. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [0.14.1] — 2026-10-20
+
+0.14.1 is 0.14.1rc1 without code changes. Read
+[0.14.1rc1](#0141rc1-2026-10-20) for the fixes and the upgrade note
+(an embedded `start_worker()` now sees a connection loss while the
+worker subscribes as `BrokerConnectionError`); they apply unchanged.
+Accepted by the load-test suite at 0.14.1rc1 (conformance, four smokes,
+`stufe1-1h`, no loss, broker channel count flat across the broker
+disconnect). Install with `pip install 'swarmq==0.14.*'`; `--pre` is no
+longer needed.
+
 ## [0.14.1rc1] — 2026-10-20
 
 Release candidate for 0.14.1 (install with `pip install --pre`).
