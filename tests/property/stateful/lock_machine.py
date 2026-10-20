@@ -43,6 +43,13 @@ Invarianten (Quelle):
   Ende frei (wie ``completion``). Quelle: E-034 samt Nachtrag FS-13.
 - I8 ``unique_for=None`` claimt nie und überstimmt den TaskInfo-Default; ohne
   Hash gibt es keine Freigabe. Quelle: E-033.
+- I9 Verlust wird gemeldet: Jede Lease, die ein Takt aus dem Keeper nimmt,
+  meldet er mit genau einem Ereignis aus ``task_lock_lost`` (Stage
+  ``running`` oder ``expired``) und ``lock_extend_unsupported``; bei
+  ``running`` hält der Store den Lock beobachtbar nicht mehr (``observe``).
+  Eine Lease, die der Takt behält, auch nach ``lock_extend_failed``, erzeugt
+  kein Verlustereignis. Quelle: E-022, ``worker/lock_keeper.py``
+  (``tick_once``, ``_extend``).
 
 Erlaubte Abweichungen (KTD3):
 
@@ -50,6 +57,11 @@ Erlaubte Abweichungen (KTD3):
   mindestens ein Fenster lang) läuft der Lock ab; der Handler läuft weiter,
   ein zweiter Halter darf erwerben, der Keeper meldet ``task_lock_lost``.
   Der betroffene Handler trägt danach ``excused``.
+- E-022, Valkey-Ausfall beim Verlängern (Regel ``tick_with_extend_fault``):
+  ``lock_extend_failed`` lässt die Lease im Keeper und die Frist im Store
+  unverändert; ein Store ohne ``extend`` (``lock_extend_unsupported``, Q15)
+  nimmt sie heraus, der Lock läuft nach seiner TTL ab. Der betroffene
+  Handler trägt danach ``excused``.
 - E-007: Ein Erwerb im Konflikt liefert ``None``; das Lock-Gate stellt
   zurück und wartet zeitbasiert. Kein Fehler.
 - E-052 (Restlücke F6): Läuft die Freigabe vor dem Erwerb, bleibt ein
@@ -99,9 +111,11 @@ from swarmq.worker.gates.lock import release_acquired_locks
 from swarmq.worker.lock_keeper import LockKeeper, keeper_tick_s, keeper_window_s
 from tests.support.inmemory import FakeClock, InMemoryBroker
 from tests.support.stateful import AsyncStateMachine
+from tests.unit._log_capture import capture_swarmq_logs
 
 if TYPE_CHECKING:
     from swarmq.backend.valkey import ValkeyBackend
+    from swarmq.contracts.coordination import LockStore
     from swarmq.worker.gates import WorkerBackend
     from tests.support.inmemory import InMemoryBackend
 
@@ -116,6 +130,10 @@ UNIQUE_TASK = "stateful_unique"
 UNIQUE_DEFAULT_FOR_S = 60
 UNIQUE_ARGS = (1, 2)
 UniqueMode = Literal["start", "completion"]
+ExtendFault = Literal["failed", "unsupported"]
+# Ereignisse, mit denen der Keeper eine Lease aus der Hand gibt (I9).
+LOSS_EVENTS = frozenset({"task_lock_lost", "lock_extend_unsupported"})
+KEEPER_EVENTS = LOSS_EVENTS | {"lock_extend_failed"}
 
 
 class _Missing:
@@ -266,6 +284,26 @@ class ReplyLostBackend:
         return getattr(self._inner, name)
 
 
+class FaultyExtend:
+    """Store eines Keepers: ``extend`` scheitert auf Wunsch (Regel
+    ``tick_with_extend_fault``), sonst geht er an den Store der Umgebung.
+    ``failed`` wirft wie ein Valkey-Ausfall (``lock_extend_failed``),
+    ``unsupported`` wie ein Store ohne ``extend`` (``lock_extend_unsupported``)."""
+
+    def __init__(self, inner: Callable[[], Any]) -> None:
+        self._inner = inner
+        self.fault: ExtendFault | None = None
+        self.hit: list[LockToken] = []
+
+    async def extend(self, token: LockToken, ttl_ms: int) -> bool:
+        if self.fault is not None:
+            self.hit.append(token)
+            if self.fault == "failed":
+                raise BackendConnectionError("valkey down (injected)")
+            raise NotImplementedError("store without extend (injected)")
+        return cast("bool", await self._inner().extend(token, ttl_ms=ttl_ms))
+
+
 async def _parked(_seconds: float) -> None:
     """``sleep`` des Keepers: die Hintergrundschleife ruht, die Maschine taktet."""
     await asyncio.Event().wait()
@@ -289,7 +327,8 @@ class LockMachine(AsyncStateMachine[LockEnv]):
             self.plains: list[Plain] = []
             self.messages: list[Message] = []
             self._seq = 0
-            self.keepers = {worker: self._new_keeper() for worker in WORKERS}
+            self.keeper_stores = {worker: FaultyExtend(lambda: self.env.backend.locks) for worker in WORKERS}
+            self.keepers = {worker: self._new_keeper(worker) for worker in WORKERS}
             self.broker = RecordingBroker(self.env.clock)
             self.run(self.broker.connect())
             self.registry = TaskRegistry()
@@ -307,8 +346,9 @@ class LockMachine(AsyncStateMachine[LockEnv]):
 
     # -- Hilfen ----------------------------------------------------------------
 
-    def _new_keeper(self) -> LockKeeper:
-        return LockKeeper(lambda: self.env.backend.locks, sleep=_parked, now=lambda: self.env.clock.now_ms() / 1000)
+    def _new_keeper(self, worker: str) -> LockKeeper:
+        store = cast("LockStore", self.keeper_stores[worker])
+        return LockKeeper(lambda: store, sleep=_parked, now=lambda: self.env.clock.now_ms() / 1000)
 
     def _next(self) -> int:
         self._seq += 1
@@ -359,11 +399,23 @@ class LockMachine(AsyncStateMachine[LockEnv]):
     async def _locks_acquire(self, name: str, owner: str, ttl_ms: int) -> LockToken | None:
         return await self.env.backend.locks.acquire(name, owner=owner, ttl_ms=ttl_ms, max_concurrency=1)
 
-    def _tick(self, worker: str) -> None:
-        """Ein Takt des Keepers von ``worker`` samt Prüfung von I4."""
+    def _tick(self, worker: str, fault: ExtendFault | None = None) -> None:
+        """Ein Takt des Keepers von ``worker`` samt Prüfung von I4 und I9;
+        ``fault`` lässt jedes ``extend`` dieses Takts scheitern."""
         keeper = self.keepers[worker]
         before = {h: (self.holder(h.token.name), self.now_ms) for h in self.handlers if h.worker == worker}
-        self.run(keeper.tick_once())
+        kept_before = [h for h in before if keeper.keeps(h.token)]
+        store = self.keeper_stores[worker]
+        store.fault, store.hit = fault, []
+        try:
+            with capture_swarmq_logs() as logs:
+                self.run(keeper.tick_once())
+        finally:
+            store.fault = None
+        for handler in before:
+            if handler.token in store.hit:
+                handler.excused = handler.excused or f"E-022 (lock_extend_{fault})"
+        self._check_loss_reported(worker, kept_before, logs)
         for handler, (hold, now) in before.items():
             handler.tended_ms = now
             if not keeper.keeps(handler.token):
@@ -389,6 +441,36 @@ class LockMachine(AsyncStateMachine[LockEnv]):
                 f"(Toleranz {tolerance} ms) (I4)"
             )
             hold.expires_ms = now + matching[0]
+
+    def _check_loss_reported(self, worker: str, kept_before: list[Handler], logs: list[dict[str, Any]]) -> None:
+        """I9: genau eine Verlustmeldung je herausgefallener Lease, keine für
+        eine behaltene. Geprüft gegen ``keeps`` und ``observe``, nicht gegen
+        das Modell (Toleranz der Valkey-Stufe)."""
+        keeper = self.keepers[worker]
+        entries: dict[str, list[dict[str, Any]]] = {}
+        for entry in logs:
+            if entry["event"] in KEEPER_EVENTS:
+                entries.setdefault(entry["task_id"], []).append(entry)
+        owners = {handler.token.owner for handler in kept_before}
+        assert set(entries) <= owners, f"{worker}: Meldung ohne gehaltene Lease {entries} (I9)"
+        for handler in kept_before:
+            own = entries.get(handler.token.owner, [])
+            assert all(entry["lock_name"] == handler.token.name for entry in own), f"{handler}: {own} (I9)"
+            losses = [entry for entry in own if entry["event"] in LOSS_EVENTS]
+            if keeper.keeps(handler.token):
+                assert not losses, f"{handler}: Lease behalten, trotzdem {losses} (I9, E-022)"
+                continue
+            events = [entry["event"] for entry in own]
+            assert len(losses) == 1, f"{handler}: Lease verloren mit {events} statt einer Verlustmeldung (I9, E-022)"
+            loss = losses[0]
+            if loss["event"] != "task_lock_lost":
+                continue
+            assert loss["stage"] in {"running", "expired"}, f"{handler}: task_lock_lost mit {loss['stage']} (I9)"
+            if loss["stage"] == "running":
+                observed = self.run(self.env.backend.locks.observe(handler.token.name, max_concurrency=1))
+                assert handler.token.owner not in observed.owners, (
+                    f"{handler}: task_lock_lost (running), der Store hält den Lock noch (I9)"
+                )
 
     # -- Locks mit Keeper ------------------------------------------------------
 
@@ -462,12 +544,23 @@ class LockMachine(AsyncStateMachine[LockEnv]):
     def crash_worker(self, worker: str) -> None:
         """SIGKILL: kein Release, die Locks laufen über ihre TTL ab (E-022)."""
         self.keepers[worker].close()
-        self.keepers[worker] = self._new_keeper()
+        self.keepers[worker] = self._new_keeper(worker)
         self.handlers = [h for h in self.handlers if h.worker != worker]
 
     @rule(worker=st.sampled_from(WORKERS))
     def tick(self, worker: str) -> None:
         self._tick(worker)
+
+    @rule(worker=st.sampled_from(WORKERS), fault=st.sampled_from(("failed", "unsupported")))
+    def tick_with_extend_fault(self, worker: str, fault: ExtendFault) -> None:
+        """Eine Sekunde später ein Takt, in dem jedes ``extend`` von ``worker``
+        scheitert (E-022, Q15). Die Sekunde macht die Leases fällig, die der
+        letzte Takt verlängert hat; die anderen Keeper takten normal."""
+        self.run(self.env.advance(1))
+        for other in WORKERS:
+            if other != worker and self.keepers[other].kept:
+                self._tick(other)
+        self._tick(worker, fault)
 
     @rule(seconds=st.integers(min_value=1, max_value=70), blocked=st.sampled_from((None, None, None, "w1", "w2")))
     def advance(self, seconds: int, blocked: str | None) -> None:
@@ -573,6 +666,17 @@ class LockMachine(AsyncStateMachine[LockEnv]):
         for handler in self.handlers:
             if handler.token.name == name:
                 handler.excused = handler.excused or "force_release (Operator-Pfad)"
+
+    @precondition(lambda self: bool(self.handlers))
+    @rule(data=st.data())
+    def take_over_handler_lock(self, data: st.DataObject) -> None:
+        """Der Lock eines laufenden Handlers geht an einen anderen Halter
+        (Operator-Pfad, dann ein neuer Erwerb): Der nächste fällige Takt
+        bekommt ``False`` von ``extend`` und meldet ``task_lock_lost`` (stage
+        ``running``, I9). Ohne diese Regel erreicht die Suche den Fall selten."""
+        handler = data.draw(st.sampled_from(self.handlers), label="handler")
+        self.force_release(handler.token.name)
+        self.plain_acquire(name=handler.token.name, ttl_ms=PLAIN_TTLS_MS[-1])
 
     # -- Unique ----------------------------------------------------------------
 
