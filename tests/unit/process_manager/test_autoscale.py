@@ -13,6 +13,8 @@ Test-Liste:
 Test-Liste 0.14.2 (F4-25, F4-26, E-084; Plan 2026-10-20-2100, U2):
 - Ein Abbau-Takt, in dem nur drainende oder zu junge Worker übrig sind,
   schickt kein SIGTERM (F4-25).
+- Ein solcher Takt verbraucht weder Abkühlzeit noch Leerlauf: Sobald ein
+  Worker alt genug ist, baut der nächste Abtast-Takt ab (F4-25).
 """
 
 from __future__ import annotations
@@ -154,3 +156,21 @@ def test_a_down_tick_with_only_draining_or_young_candidates_sends_no_sigterm(clo
 
     as_mock(draining.process).terminate.assert_called_once()
     assert [w for w in pm.workers.values() if w.expected_shutdown] == [draining]
+
+
+@pytest.mark.befund("F4-25")
+def test_a_down_tick_without_candidates_is_not_used_up(clock: FakeClock) -> None:
+    pm = _pm(clock, n=3, depth=[0], autoscale=(1, 5))
+    _drain_one_by_idle(pm, clock)
+    clock.now += pm.SCALE_COOLDOWN_S
+    autoscale_module.tick(pm)  # Leerlauf beginnt
+    clock.now += pm.SCALE_DOWN_IDLE_S - 10.0
+    _crash_and_restart(pm, 0, 1)
+    clock.now += 10.0
+    autoscale_module.tick(pm)  # kein Kandidat: die Ersatzprozesse sind 10 s alt
+    young_left = pm.SCALE_MIN_AGE_S - 10.0
+
+    clock.now += young_left  # jetzt sind sie alt genug, Abkühlzeit und Leerlauf liegen zurück
+    autoscale_module.tick(pm)
+
+    assert _drained(pm) == 2

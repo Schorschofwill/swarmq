@@ -82,16 +82,20 @@ def tick(pm: Any) -> None:
         if pm._idle_since is None:
             pm._idle_since = now
             return
-        if now - pm._idle_since >= pm.SCALE_DOWN_IDLE_S:
-            scale_down_one(pm)
+        # F4-25: Ohne Kandidaten ist der Takt nicht verbraucht -- Abkühlzeit
+        # und Leerlauf bleiben, der nächste Abtast-Takt versucht es erneut.
+        if now - pm._idle_since >= pm.SCALE_DOWN_IDLE_S and scale_down_one(pm):
             pm._last_scale_decision = now
             pm._idle_since = None
     else:
         pm._idle_since = None
 
 
-def scale_down_one(pm: Any) -> None:
+def scale_down_one(pm: Any) -> bool:
     """Tell the youngest eligible worker to drain + exit (SIGTERM).
+
+    Returns ``True`` if a worker was chosen, ``False`` if none was eligible
+    (all draining, too young or in transition; F4-25).
 
     Workers younger than
     :attr:`SCALE_MIN_AGE_S` are excluded. Without this, a
@@ -99,8 +103,6 @@ def scale_down_one(pm: Any) -> None:
     would spawn a replacement and immediately kill it, producing
     pointless process churn.
     """
-    if not pm.workers:
-        return
     now = time.monotonic()
     # KTD1: Slots im Uebergang (Alt- und Ersatzprozess) sind tabu — der
     # Ersatz waere sonst als juengster Prozess der erste Kandidat.
@@ -117,7 +119,7 @@ def scale_down_one(pm: Any) -> None:
             total=len(pm.workers),
             min_age_s=pm.SCALE_MIN_AGE_S,
         )
-        return
+        return False
     # Youngest by spawn time among the eligible (R4) — oldest
     # workers have warmer caches. A low slot may carry the youngest
     # process after a replacement, so the slot number is no proxy;
@@ -137,3 +139,4 @@ def scale_down_one(pm: Any) -> None:
     except ProcessLookupError:
         # Already gone — bookkeeping will clean up in _check_dead.
         pass
+    return True
