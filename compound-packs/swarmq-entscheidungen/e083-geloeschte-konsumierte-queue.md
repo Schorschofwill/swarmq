@@ -12,7 +12,7 @@ id: E-083
 datum: 2026-10-19
 status: gilt
 quelle:
-  - Georg 2026-10-19 (PF-20, Option (b) „eingrenzen und laut scheitern“; Teilfrage „kein automatisches Herunterfahren“ vom Orchestrator entschieden, Georg kann widersprechen)
+  - Georg 2026-10-19 (PF-20, Option (b) „eingrenzen und laut scheitern“; Teilfrage „kein automatisches Herunterfahren“ vom Orchestrator entschieden, von Georg am 2026-10-20 bestätigt)
   - docs/befunde/fehlersuche-runde-4-2026-10.md (PF-20, Verdacht D der Gegenprüfung 0.14, Proben probe_d_separate und probe_d_shared)
   - Commit 64a2f9e (0.14.0, Umsetzung mit Tests)
   - src/swarmq/broker/rabbitmq/consumer_watch.py (_queue_present, missing_queues)
@@ -55,4 +55,4 @@ Ist `_queues` nicht lesbar (aio-pika geändert), gilt fail-open: einmal je Kanal
 - `/ready` wird beim Fehlen sofort rot, nicht erst nach der Gnadenfrist; die Frist gilt nur für einen Consumer, der kurz fehlt und neu angemeldet wird.
 - Je Takt öffnet der Wächter für jede fehlende Queue einen Wegwerf-Kanal (passives Declare, dann Schließen).
 
-**Überdenken nur mit neuem Argument.** Georg kann der Teilfrage „kein automatisches Herunterfahren“ widersprechen (PF-20). Eingetragen am 2026-10-19 (0.14.0).
+**Überdenken nur mit neuem Argument.** Die Teilfrage „kein automatisches Herunterfahren“ hat Georg am 2026-10-20 bestätigt (PF-20). Eingetragen am 2026-10-19 (0.14.0).
