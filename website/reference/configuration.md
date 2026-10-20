@@ -184,8 +184,9 @@ names bounded, otherwise every distinct value creates its own series.
 
 #### Base ports and slots
 
-The supervisor runs its workers in slots `0..N-1`, where `N` is
-`--processes` or the upper bound of `--autoscale`. Each slot binds its
+The supervisor runs its workers in slots `0..N-1`, where `N` is the
+largest of `--processes`, the upper bound of `--autoscale` and
+`--max-processes`. Each slot binds its
 own observability ports, derived from the base port:
 
 | Slot | `/metrics` with `SWARMQ_METRICS_PORT=9000` | `/health` with `SWARMQ_HEALTH_PORT=9100` |

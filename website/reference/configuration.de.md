@@ -188,7 +188,8 @@ Task-Namen begrenzt, sonst erzeugt jeder neue Wert eine eigene Reihe.
 #### Basisports und Slots
 
 Der Supervisor betreibt seine Worker in den Slots `0..N-1`, wobei `N`
-`--processes` oder die Obergrenze von `--autoscale` ist. Jeder Slot
+das Größte aus `--processes`, der Obergrenze von `--autoscale` und
+`--max-processes` ist. Jeder Slot
 bindet eigene Beobachtungsports, abgeleitet vom Basisport:
 
 | Slot | `/metrics` mit `SWARMQ_METRICS_PORT=9000` | `/health` mit `SWARMQ_HEALTH_PORT=9100` |
