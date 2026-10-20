@@ -36,6 +36,11 @@ Review MR 12 (P2-2):
         deterministisch aus der Identitaet der XQ-Nachricht (Broker-DLX-
         Eintrag zweimal wiederholt -> dieselbe ID), verschieden fuer eine
         andere Identitaet; ``uuid4`` nur ohne Task-ID.
+
+Testlücken Runde 4 (Plan 2026-10-20-1500, U3, Lücke E-6):
+11. [x] ``x-swarmq-dlq-gen`` als ``float`` (fremder Producer) ist keine frische
+        Generation, auch wenn der Wert dem Zeitstempel gleicht: neue Replay-ID
+        (Mutant ``admin.py`` ``_fresh_generation``: ``or`` -> ``and``).
 """
 
 from __future__ import annotations
@@ -43,6 +48,8 @@ from __future__ import annotations
 import json
 from typing import Any
 from unittest.mock import AsyncMock, Mock
+
+import pytest
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.config import SwarmQConfig
@@ -242,3 +249,20 @@ async def test_dlq_retry_without_a_generation_derives_the_replay_id_from_the_ide
     await broker.retry_all_dead_letters("tasks")
     first, again, different = (msg.headers[_REPLAY] for _, msg in broker.published)
     assert first == again != different
+
+
+@pytest.mark.timeout(5)
+async def test_dlq_retry_does_not_take_a_float_generation_as_fresh() -> None:
+    """E-6: Nur ein ``int`` ist eine Generation. ``float(_AT_MS) == _AT_MS``
+    gälte sonst als frisch, und die Wiederholung liefe unter der alten
+    Replay-ID. Gegenprobe ``admin.py:63`` ``or`` -> ``and``: rot."""
+    gen = generation_id("t-1")
+    ttl = {"x-swarmq-dead-letter-ttl-ms": 7_200_000}
+    broker = _dlq_broker(_incoming({_REPLAY: gen, _AT: _AT_MS, _GEN: float(_AT_MS), **ttl}))
+
+    await broker.retry_dead_letter("tasks", "t-1")
+
+    [(routing_key, msg)] = broker.published
+    assert routing_key == "tasks"
+    assert msg.headers[_REPLAY] != gen
+    assert _GEN not in msg.headers

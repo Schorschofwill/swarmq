@@ -22,11 +22,17 @@ Test-Liste:
 7. 406 ohne "inequivalent arg" (Queue-Limit) → None.
 8. Delivery-Limit mit nicht-ganzzahligem Wert → None.
 9. Die übergebenen Argumente werden nicht verändert.
+
+Testlücken Runde 4 (Plan 2026-10-20-1500, U3, Lücke E-17):
+10. ``recognized_mismatch`` ohne lesbaren ``received``-Teil -> ``declared`` ist ``None``
+    (Mutant ``None if received is None`` -> ``None if received is None and False``).
+11. ohne lesbaren ``current``-Teil -> ``existing`` ist ``None``
+    (Mutant ``None if current is None`` -> ``None if current is None and False``).
 """
 
 from __future__ import annotations
 
-from swarmq.broker.rabbitmq.arg_conflict import adopt_existing_argument
+from swarmq.broker.rabbitmq.arg_conflict import adopt_existing_argument, recognized_mismatch
 
 _Q = "for queue 'tasks' in vhost '/': "
 _PREFIX = "PRECONDITION_FAILED - inequivalent arg"
@@ -102,3 +108,26 @@ def test_given_arguments_stay_unchanged() -> None:
     )
 
     assert arguments == BASE
+
+
+def test_recognized_mismatch_without_a_readable_received_part_has_no_declared_value() -> None:
+    """E-17: Gegenprobe ``arg_conflict.py:79`` ``None if received is None`` ->
+    ``None if received is None and False``: rot."""
+    mismatch = recognized_mismatch("tasks", _text("x-queue-type", "declared 'quorum' but current is 'classic'"))
+
+    assert mismatch is not None
+    assert (mismatch.queue, mismatch.argument, mismatch.declared, mismatch.existing) == (
+        "tasks",
+        "x-queue-type",
+        None,
+        "classic",
+    )
+
+
+def test_recognized_mismatch_without_a_readable_current_part_has_no_existing_value() -> None:
+    """E-17: Gegenprobe ``arg_conflict.py:80`` ``None if current is None`` ->
+    ``None if current is None and False``: rot."""
+    mismatch = recognized_mismatch("tasks", _text("x-queue-type", "received 'quorum' but current is unknown"))
+
+    assert mismatch is not None
+    assert (mismatch.declared, mismatch.existing) == ("quorum", None)
