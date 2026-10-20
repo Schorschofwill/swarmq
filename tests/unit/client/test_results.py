@@ -548,10 +548,12 @@ class TestClientProgress:
 # ---------------------------------------------------------------------------
 # BZ-23 (Plan 0.12.0, MR 5): Cancel-Flag überdauert Wartezeit und max_age
 # Test-Liste:
-# - [ ] verzögerter Task: Flag-TTL = Basis + (fire_ts - now)
-# - [ ] bekanntes max_age des verzögerten Tasks: + max_age + 300 s
-# - [ ] unlesbarer Oneshot-Eintrag: Basis-TTL
-# - [ ] Verbindungsfehler beim Lesen des Eintrags propagiert
+# - [x] verzögerter Task: Flag-TTL = Basis + (fire_ts - now)
+# - [x] bekanntes max_age des verzögerten Tasks: + max_age + 300 s
+# - [x] unlesbarer Oneshot-Eintrag: Basis-TTL
+# - [x] Verbindungsfehler beim Lesen des Eintrags propagiert
+# - [x] Oneshot-Eintrag ohne fire_ts_ms: keine Wartezeit, Basis-TTL
+#   (Testlücke E-19, Runde 4)
 # ---------------------------------------------------------------------------
 
 
@@ -627,3 +629,94 @@ async def test_cancel_propagates_connection_error_of_the_oneshot_lookup(client, 
     with pytest.raises(BackendConnectionError):
         await client.cancel("task-abc")
     backend.set_cancel_flag.assert_not_awaited()
+
+
+@pytest.mark.timeout(5)
+async def test_cancel_of_oneshot_entry_without_fire_time_adds_no_wait(client, backend, registry):
+    """E-19 (Testlücken Runde 4, U5): Ein Oneshot-Eintrag ohne ``fire_ts_ms``
+    verlängert die Flag-TTL nicht um eine Wartezeit; ohne ``max_age`` bleibt
+    es bei der Basis-TTL. Der Fall ist praktisch unerreichbar, der Test hält
+    die Absicherung trotzdem fest.
+
+    Gegenprobe: ``results.py:246`` ``if definition.fire_ts_ms is not None:``
+    → ``if True:`` ist rot (``TypeError`` im beobachteten ``cancel``).
+    """
+    import msgspec
+
+    from swarmq.scheduler.definition import ScheduleDefinition
+
+    entry = ScheduleDefinition(
+        schedule_name="oneshot:tid-1",
+        task_name="add",
+        args=(),
+        kwargs={},
+        queue="math",
+        cron=None,
+        fire_ts_ms=None,
+        source="cli",
+    )
+    backend.schedules.get = AsyncMock(return_value=msgspec.json.encode(entry))
+    backend.set_cancel_flag = AsyncMock(return_value=True)
+    assert registry.get_entry("add").task_info.max_age is None
+
+    assert await client.cancel("tid-1", ttl_ms=60_000) is True
+
+    backend.schedules.get.assert_awaited_once_with("oneshot:tid-1")
+    backend.set_cancel_flag.assert_awaited_once_with("tid-1", 60_000)
+
+
+# ---------------------------------------------------------------------------
+# Testlücken Runde 4, Paket U5 (Plan 2026-10-20-1500), E-19: Weitergabe der
+# Argumente in ``ClientResults``.
+# Test-Liste:
+# - [x] run reicht die ausdrückliche Queue an schedule weiter
+# - [x] get_result wartet auf genau die angefragte task_id
+# - [x] get_progress liest den Fortschritt genau der angefragten task_id
+# (Oneshot ohne fire_ts_ms: oben bei BZ-23; abgebrochenes Ergebnis ohne
+# ``task``: ``test_workflows.py`` über ``WorkflowHandle``)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.timeout(5)
+async def test_run_publishes_to_the_explicit_queue(client, broker, backend):
+    """E-19: ``run`` gibt ``queue`` an ``schedule`` weiter, auch wenn die
+    Registry eine andere Standard-Queue kennt (``math``).
+
+    Gegenprobe: ``results.py:187`` ``queue=queue`` → ``queue=None`` ist rot.
+    """
+    backend.get_result = AsyncMock(return_value=encode_result({"result": 3, "is_error": False}))
+
+    assert await client.run("add", 1, 2, queue="math-eilig", timeout=1) == 3
+
+    assert broker.publish.await_args is not None
+    assert broker.publish.await_args.args[0] == "math-eilig"
+
+
+@pytest.mark.timeout(5)
+async def test_get_result_waits_for_the_requested_task_id(client, backend):
+    """E-19: Das Warten im Backend gilt genau der angefragten ``task_id``.
+
+    Gegenprobe: ``results.py:81`` ``wait_for_result(task_id, …)`` →
+    ``wait_for_result(None, …)`` ist rot.
+    """
+    backend.get_result = AsyncMock(return_value=encode_result({"result": 7, "is_error": False}))
+
+    assert await client.get_result("tid-7", timeout=1) == 7
+
+    backend.wait_for_result.assert_awaited_once_with("tid-7", timeout=1)
+    backend.get_result.assert_awaited_once_with("tid-7")
+
+
+@pytest.mark.timeout(5)
+async def test_get_progress_reads_the_requested_task_id(client, backend):
+    """E-19: ``get_progress`` liest den Fortschritt genau der angefragten
+    ``task_id``.
+
+    Gegenprobe: ``results.py:102`` ``get_progress(task_id)`` →
+    ``get_progress(None)`` ist rot.
+    """
+    backend.get_progress = AsyncMock(return_value=None)
+
+    assert await client.get_progress("tid-p") is None
+
+    backend.get_progress.assert_awaited_once_with("tid-p")
