@@ -113,11 +113,9 @@ einen Slot und stellt danach neu zu.
   `{q}.DQ` ist beim Start im strengen Modus geprüft. Das ist also harmlos,
   aber nicht sichtbar.
 
-**P3 und P4:** Im Repo (Plan 0.14.2, Befundregister, Plan der Test-Runde,
-Git-Historie) und in den Notizen der Sitzungen sind für PF-21 nur P1 und P2
-festgehalten. Die Übergabe vom 2026-10-21 nennt „P3, P4 einbeziehen“, ohne
-Inhalt. **Was P3 und P4 waren, ließ sich nicht finden.** Bitte nachreichen,
-falls sie noch bekannt sind; diese Vorlage berücksichtigt sie nicht.
+Das Plan-Review hatte zu PF-21 nur diese zwei Punkte (P1, P2). Die
+Erwähnung von „P3, P4“ in der Übergabe vom 2026-10-21 war ein Versehen des
+Orchestrators; im Protokoll des Reviews gibt es dazu nichts.
 
 ## 4. Optionen
 
@@ -366,4 +364,3 @@ ziehen B bis E ohnehin nach; bei A gehört es zum Doku-Nachtrag.
 - **„Ohne WARNING“:** Für die erste, gescheiterte Rückstellung gibt es heute
   WARNING `own_queue_unroutable_redeclaring` und ERROR `retry_publish_failed`.
   Still sind die späteren Rückstellungen.
-- **P3/P4 des Plan-Reviews:** nicht auffindbar (Abschnitt 3).
