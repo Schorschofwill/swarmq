@@ -4,9 +4,18 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 [Keep a Changelog](https://keepachangelog.com/) und
 [Semantic Versioning](https://semver.org/).
 
-## [0.14.2rc1] — 2026-10-20
+## [0.14.2] — 2026-10-21
 
-Release-Candidate für 0.14.2 (Installation mit `pip install --pre`).
+0.14.2 ist 0.14.2rc1 ohne Codeänderungen. Die Korrekturen und die
+Upgrade-Hinweise (der Autoskalierer wählt und zählt Worker, die schon
+herunterfahren, nicht mehr mit) stehen unter
+[0.14.2rc1](#0142rc1-2026-10-20) und gelten unverändert. Abgenommen von
+der Loadsuite an 0.14.2rc1 (Konformität, vier Smokes einschließlich des
+Kanal-Smokes mit Autoskalierung, `stufe1-1h`, kein Verlust, Kanalzahl beim
+Broker gleich). Installation mit `pip install 'swarmq==0.14.*'`; `--pre`
+ist nicht mehr nötig.
+
+## [0.14.2rc1] — 2026-10-20
 
 Release-Candidate für 0.14.2 (Installation mit `pip install --pre`).
 
