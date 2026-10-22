@@ -364,3 +364,18 @@ ziehen B bis E ohnehin nach; bei A gehört es zum Doku-Nachtrag.
 - **„Ohne WARNING“:** Für die erste, gescheiterte Rückstellung gibt es heute
   WARNING `own_queue_unroutable_redeclaring` und ERROR `retry_publish_failed`.
   Still sind die späteren Rückstellungen.
+
+## 9. Entscheidung (2026-10-22)
+
+Georg: „ich folge deiner empfehlung bei pf-21“. Damit gilt je Frage die
+Empfehlung:
+
+1 D (präzisiert), 2 ja, 3 ja (fest 30 s), 4 ja (10 s), 5 ja, 6 ja,
+7 Nachtrag zu E-026, 8 ja (Patch 0.14.3, Abnahme mit Smokes und
+`stufe1-1h`).
+
+Offen aus Abschnitt 4 (Restrisiken), vom Orchestrator für die Umsetzung
+festgelegt: Die Familien-Deklaration überspringt eine ausstehende Stufe in
+der Pause **nicht**; sie deklariert sie wie heute mit und heilt sie bei
+Erfolg (INFO `delay_tier_restored`). Ein transienter Fehler dort lässt wie
+heute die Familien-Deklaration scheitern.
