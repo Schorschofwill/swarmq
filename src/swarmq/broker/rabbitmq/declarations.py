@@ -162,10 +162,13 @@ class RabbitMQDeclarations(RabbitMQConnection):
         voruebergehend gescheitert und die Pause vorbei ist (PF-21): Die
         Rueckstellung versucht es erneut, erst Neu-Deklarieren, dann Publish."""
         tier = delay_tier_for(queue_name, delay_ms)
-        retry_at = self._tier_retries.pending.get(tier)
-        if retry_at is None or self.monotonic() < retry_at:
+        if tier not in self._tier_retries.pending or self._delay_tier_paused(tier):
             return None
         return tier
+
+    def _delay_tier_paused(self, tier: str) -> bool:
+        retry_at = self._tier_retries.pending.get(tier)
+        return retry_at is not None and self.monotonic() < retry_at
 
     def delay_tiers_unavailable(self, queue: str) -> int:
         """Zahl der Delay-Stufen von ``queue``, deren Deklaration der Broker in
@@ -200,7 +203,9 @@ class RabbitMQDeclarations(RabbitMQConnection):
             logger.info("delay_tier_restored", queue=queue_name, tier=tier)
         return True
 
-    def _refuse_delay_tier(self, queue_name: str, tier: str, fallback: str, exc: BaseException) -> None:
+    def _refuse_delay_tier(
+        self, queue_name: str, tier: str, fallback: str, exc: BaseException, *, hint: str | None = None
+    ) -> None:
         """Die Stufe bleibt fuer diesen Prozess aus (E-026): WARNING, Gauge."""
         self._unavailable_delay_tiers.add(tier)
         self._tier_retries.pending.pop(tier, None)
@@ -210,7 +215,8 @@ class RabbitMQDeclarations(RabbitMQConnection):
             tier=tier,
             fallback=fallback,
             **_error_fields(exc),
-            hint=(
+            hint=hint
+            or (
                 "the delay tier could not be declared; delayed messages of this tier go to the "
                 ".DQ, where a long delay at its head holds back shorter ones. Check queue limits "
                 "and permissions for the pattern \\.DQ(\\.\\w+)?$, then restart the worker"
@@ -303,9 +309,10 @@ class RabbitMQDeclarations(RabbitMQConnection):
         ist. Lehnt der Broker sie ab, gilt ``{queue}.DQ`` fuer den Rest des
         Prozesses (E-026). Ein voruebergehender Fehler ist im Betrieb nicht
         fatal (PF-21): WARNING, die Rueckstellung geht an ``{queue}.DQ``."""
-        if tier in self._tier_retries.running:
-            # Hoechstens ein Versuch je Stufe gleichzeitig (PF-21): eine
-            # parallele Rueckstellung wartet nicht, sie geht an ``{queue}.DQ``.
+        if tier in self._tier_retries.running or self._delay_tier_paused(tier):
+            # Hoechstens ein Versuch je Stufe gleichzeitig und keiner in der
+            # Pause (PF-21, Review P3-2): die Rueckstellung wartet nicht, sie
+            # geht an ``{queue}.DQ``.
             return False
         self._tier_retries.running.add(tier)
         try:
@@ -322,7 +329,18 @@ class RabbitMQDeclarations(RabbitMQConnection):
             # Strenger Modus (E-017): beim Start fatal, im Betrieb wie eine
             # Ablehnung (PF-21; wie E-083 kein Herunterfahren im Betrieb).
             # Exit 78 kommt beim naechsten Start.
-            self._refuse_delay_tier(queue_name, tier, fallback, exc)
+            self._refuse_delay_tier(
+                queue_name,
+                tier,
+                fallback,
+                exc,
+                hint=(
+                    "the existing delay tier dead-letters at-most-once, which the strict mode "
+                    "at-least-once refuses; delayed messages of this tier go to the .DQ. Apply the "
+                    "at-least-once policy or delete the empty tier: otherwise the next start of the "
+                    "worker exits with 78"
+                ),
+            )
             return False
         except Exception as exc:  # noqa: BLE001 - jeder andere Fehler gilt als voruebergehend (PF-21), wird geloggt
             self._tier_retries.pending[tier] = self.monotonic() + DELAY_TIER_RETRY_PAUSE_S
