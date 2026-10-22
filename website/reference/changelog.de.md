@@ -26,7 +26,8 @@ des Laufs gelöscht wurde.
   Worker loggt die WARNING `delay_tier_redeclare_failed`, und nach einer
   Pause von 30 s legt die nächste Rückstellung dieser Stufe sie erneut an
   (bei Erfolg INFO `delay_tier_restored`). Höchstens ein Versuch je Stufe
-  läuft gleichzeitig, begrenzt auf 10 s statt der Publish-Frist (PF-21,
+  läuft gleichzeitig, begrenzt auf 10 s (oder eine kürzere
+  Publish-Frist) statt der Publish-Frist (PF-21,
   E-026).
 - **Der strenge Modus macht aus einer at-most-once-Stufe, die der Worker
   im Betrieb vorfindet, keine Neuzustellung mehr.** Mit

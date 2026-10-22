@@ -834,7 +834,7 @@ neu starten. Eine Stufe, die während des Laufs gelöscht wird, legt der
 nächste unroutbare Publish an sie einmal für sich allein neu an. Lehnt
 der Broker sie ab, gilt die Ablehnung oben. Seit 0.14.3 gilt: Scheitert
 der Versuch aus einem anderen Grund (Verbindung weg, keine Antwort
-binnen 10 s), geht diese Rückstellung an `{queue}.DQ`, der Worker loggt
+binnen 10 s oder dem kürzeren `SWARMQ_PUBLISH_TIMEOUT_S`), geht diese Rückstellung an `{queue}.DQ`, der Worker loggt
 die WARNING `delay_tier_redeclare_failed`, und 30 s lang gehen
 Rückstellungen dieser Stufe ohne neuen Versuch an `{queue}.DQ`. Die erste
 Rückstellung nach der Pause versucht es erneut, erst Neu-Anlegen, dann

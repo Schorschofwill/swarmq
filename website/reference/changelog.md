@@ -25,7 +25,7 @@ worker whose delay tier was deleted while it ran behaves differently.
   `delay_tier_redeclare_failed`, and after a pause of 30 s the next
   deferral of that tier declares it again (INFO `delay_tier_restored` on
   success). At most one attempt per tier runs at a time, bounded by
-  10 s instead of the publish deadline (PF-21, E-026).
+  10 s (or a shorter publish deadline) instead of the publish deadline (PF-21, E-026).
 - **The strict mode no longer turns a tier found at-most-once while the
   worker runs into a redelivery.** With
   `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=at-least-once` it now counts as a

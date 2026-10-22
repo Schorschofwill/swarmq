@@ -783,7 +783,8 @@ arguments), the worker keeps running. Its delays of that tier go to
 worker. A tier deleted while the worker runs is declared again, by
 itself, on the next unroutable publish to it, once. If the broker
 refuses it, the refusal above applies. Since 0.14.3, if the attempt
-fails for another reason (connection lost, no answer within 10 s), that
+fails for another reason (connection lost, no answer within 10 s or the shorter
+`SWARMQ_PUBLISH_TIMEOUT_S`), that
 deferral goes to `{queue}.DQ`, the worker logs the WARNING
 `delay_tier_redeclare_failed`, and for 30 s deferrals of that tier go
 to `{queue}.DQ` without a new attempt. The first deferral after the
