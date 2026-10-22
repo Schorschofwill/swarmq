@@ -781,8 +781,21 @@ arguments), the worker keeps running. Its delays of that tier go to
 `delay_tier_unavailable` once per tier and reports the gauge
 `swarmq_delay_tiers_unavailable{queue}`. Fix the cause and restart the
 worker. A tier deleted while the worker runs is declared again, by
-itself, on the next unroutable publish to it, once; if that fails,
-`{queue}.DQ` is used.
+itself, on the next unroutable publish to it, once. If the broker
+refuses it, the refusal above applies. Since 0.14.3, if the attempt
+fails for another reason (connection lost, no answer within 10 s), that
+deferral goes to `{queue}.DQ`, the worker logs the WARNING
+`delay_tier_redeclare_failed`, and for 30 s deferrals of that tier go
+to `{queue}.DQ` without a new attempt. The first deferral after the
+pause tries again, declaring first and publishing then; on success the
+worker logs the INFO `delay_tier_restored`. At most one attempt per tier
+runs at a time; a deferral meanwhile goes to `{queue}.DQ` at once. The
+gauge counts only refused tiers. In the strict mode
+`SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=at-least-once` an at-most-once tier
+found while the worker runs counts as a refusal; the worker exits with
+78 only on its next start. Up to 0.14.2 the deferral failed and was
+redelivered, and later deferrals of that tier went to `{queue}.DQ`
+without a log line until a restart.
 
 **Permissions and policies:** the configure and write permissions of
 the swarmq user must cover `{queue}.DQ.<tier>`. A policy written for the

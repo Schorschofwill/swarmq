@@ -831,8 +831,22 @@ gehen für den Rest des Prozesses an `{queue}.DQ`; er loggt die WARNING
 `delay_tier_unavailable` einmal je Stufe und meldet die Gauge
 `swarmq_delay_tiers_unavailable{queue}`. Ursache beheben und den Worker
 neu starten. Eine Stufe, die während des Laufs gelöscht wird, legt der
-nächste unroutbare Publish an sie einmal für sich allein neu an;
-scheitert das, gilt `{queue}.DQ`.
+nächste unroutbare Publish an sie einmal für sich allein neu an. Lehnt
+der Broker sie ab, gilt die Ablehnung oben. Seit 0.14.3 gilt: Scheitert
+der Versuch aus einem anderen Grund (Verbindung weg, keine Antwort
+binnen 10 s), geht diese Rückstellung an `{queue}.DQ`, der Worker loggt
+die WARNING `delay_tier_redeclare_failed`, und 30 s lang gehen
+Rückstellungen dieser Stufe ohne neuen Versuch an `{queue}.DQ`. Die erste
+Rückstellung nach der Pause versucht es erneut, erst Neu-Anlegen, dann
+Publish; bei Erfolg loggt der Worker die INFO `delay_tier_restored`.
+Höchstens ein Versuch je Stufe läuft gleichzeitig; eine Rückstellung in
+der Zwischenzeit geht sofort an `{queue}.DQ`. Die Gauge zählt nur
+abgelehnte Stufen. Im strengen Modus
+`SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=at-least-once` gilt eine
+at-most-once-Stufe, die der Worker im Betrieb vorfindet, als Ablehnung;
+mit 78 endet erst sein nächster Start. Bis 0.14.2 scheiterte die
+Rückstellung und wurde neu zugestellt, und spätere Rückstellungen dieser
+Stufe gingen ohne Logzeile bis zum Neustart an `{queue}.DQ`.
 
 **Rechte und Policies:** Die configure- und write-Rechte des
 swarmq-Benutzers müssen `{queue}.DQ.<stufe>` abdecken. Eine Policy für die
