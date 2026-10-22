@@ -689,6 +689,10 @@ class RabbitMQDelivery(RabbitMQDeclarations):
 
     async def retry_later(self, delivery: Delivery, *, delay_ms: int, headers: Mapping[str, Any]) -> None:
         target = self._delay_target(delivery.queue, delay_ms)
+        due = self.due_delay_tier(delivery.queue, delay_ms)
+        if due is not None and await self.restore_delay_tier(due):
+            # Nach der Pause (PF-21): erst Neu-Deklarieren, dann Publish.
+            target = due
 
         async def publish() -> None:
             nonlocal target
