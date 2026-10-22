@@ -4,6 +4,42 @@ All notable changes to SwarmQ. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [0.14.3rc1] — unreleased
+
+Patch release for 0.14.2. No new headers, Lua scripts, keys or format
+changes: 0.14.3 runs next to 0.14.2 on the same queues and keys. Only a
+worker whose delay tier was deleted while it ran behaves differently.
+
+### Fixed
+
+- **A delay tier that could not be declared again heals itself and is
+  no longer silent.** When a tier `{queue}.DQ.<tier>` was deleted while
+  the worker ran, the next deferral to it declared it again. If that
+  failed for a reason other than a refusal (connection lost, the
+  declaration hanging), the deferral failed with
+  `BrokerConnectionError` and was redelivered, and every later deferral
+  of that tier went to `{queue}.DQ` until a restart, without a log line
+  and without the gauge `swarmq_delay_tiers_unavailable`; behind a long
+  delay at the head of `{queue}.DQ` a short retry could wait hours. Now
+  the deferral goes to `{queue}.DQ` at once, the worker logs the WARNING
+  `delay_tier_redeclare_failed`, and after a pause of 30 s the next
+  deferral of that tier declares it again (INFO `delay_tier_restored` on
+  success). At most one attempt per tier runs at a time, bounded by
+  10 s instead of the publish deadline (PF-21, E-026).
+- **The strict mode no longer turns a tier found at-most-once while the
+  worker runs into a redelivery.** With
+  `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=at-least-once` it now counts as a
+  refusal: WARNING `delay_tier_unavailable`, the gauge, `{queue}.DQ` for
+  the rest of the process. The worker exits with 78 on its next start,
+  as before.
+
+### Upgrade notes
+
+1. **Fewer redeliveries, more `{queue}.DQ`.** A deferral whose tier
+   cannot be declared again is acked after its copy reached
+   `{queue}.DQ`; it no longer counts against `x-delivery-limit`. Alert
+   on `delay_tier_redeclare_failed` if you watch for deleted queues.
+
 ## [0.14.2] — 2026-10-21
 
 0.14.2 is 0.14.2rc1 without code changes. Read
