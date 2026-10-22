@@ -4,6 +4,47 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 [Keep a Changelog](https://keepachangelog.com/) und
 [Semantic Versioning](https://semver.org/).
 
+## [0.14.3rc1] — 2026-10-22
+
+Release-Candidate für 0.14.3 (Installation mit `pip install --pre`).
+
+Patch-Release für 0.14.2. Keine neuen Header, Lua-Skripte, Schlüssel oder
+Formatänderungen: 0.14.3 läuft neben 0.14.2 auf denselben Queues und
+Schlüsseln. Anders verhält sich nur ein Worker, dessen Delay-Stufe während
+des Laufs gelöscht wurde.
+
+### Behoben
+
+- **Eine Delay-Stufe, die sich nicht neu anlegen ließ, heilt selbst und
+  bleibt nicht mehr still.** Wurde eine Stufe `{queue}.DQ.<stufe>` während
+  des Laufs gelöscht, legte die nächste Rückstellung an sie sie neu an.
+  Scheiterte das aus einem anderen Grund als einer Ablehnung (Verbindung
+  weg, Deklaration hängt), scheiterte die Rückstellung mit
+  `BrokerConnectionError` und wurde neu zugestellt, und jede spätere
+  Rückstellung dieser Stufe ging bis zum Neustart an `{queue}.DQ`, ohne
+  Logzeile und ohne die Gauge `swarmq_delay_tiers_unavailable`; hinter
+  einer langen Wartezeit vorn in `{queue}.DQ` konnte ein kurzer Retry
+  Stunden warten. Jetzt geht die Rückstellung sofort an `{queue}.DQ`, der
+  Worker loggt die WARNING `delay_tier_redeclare_failed`, und nach einer
+  Pause von 30 s legt die nächste Rückstellung dieser Stufe sie erneut an
+  (bei Erfolg INFO `delay_tier_restored`). Höchstens ein Versuch je Stufe
+  läuft gleichzeitig, begrenzt auf 10 s (oder eine kürzere
+  Publish-Frist) statt der Publish-Frist (PF-21,
+  E-026).
+- **Der strenge Modus macht aus einer at-most-once-Stufe, die der Worker
+  im Betrieb vorfindet, keine Neuzustellung mehr.** Mit
+  `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=at-least-once` gilt sie jetzt als
+  Ablehnung: WARNING `delay_tier_unavailable`, Gauge, `{queue}.DQ` für den
+  Rest des Prozesses. Mit 78 endet wie bisher der nächste Start.
+
+### Upgrade-Hinweise
+
+1. **Weniger Neuzustellungen, mehr `{queue}.DQ`.** Eine Rückstellung,
+   deren Stufe sich nicht neu anlegen lässt, wird bestätigt, nachdem ihre
+   Kopie `{queue}.DQ` erreicht hat; sie zählt nicht mehr gegen
+   `x-delivery-limit`. Wer gelöschte Queues überwacht, alarmiert auf
+   `delay_tier_redeclare_failed`.
+
 ## [0.14.2] — 2026-10-21
 
 0.14.2 ist 0.14.2rc1 ohne Codeänderungen. Die Korrekturen und die

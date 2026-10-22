@@ -10,8 +10,10 @@ Stufe nur die Stufe (Review MR 10, P2-3) -- **einmal** ueber die Kette aus MR
 Wegwerf-Channels, nie der Publish-Channel: ein 406 risse dort parallele
 Publishes mit offenen Confirms ab; Uebernahme wie beim Start, Review MR 8,
 H1) und der Publish ein zweites Mal versucht. Im
-Hot-Path wird jede Ausnahme des Neu-Deklarierens zu ``BrokerConnectionError``;
-das Original bleibt unbestaetigt und kommt per Redelivery wieder.
+Hot-Path wird jede Ausnahme des Neu-Deklarierens der Familie zu
+``BrokerConnectionError``; das Original bleibt unbestaetigt und kommt per
+Redelivery wieder. Eine Delay-Stufe dagegen scheitert nicht (PF-21, E-026):
+geht ihr Neu-Deklarieren schief, nimmt der zweite Publish ``{queue}.DQ``.
 """
 
 from __future__ import annotations
@@ -42,10 +44,17 @@ async def publish_redeclaring_once(broker: Any, queue: str, publish: Callable[[]
         )
     else:
         return
-    try:
-        await redeclare_on_throwaway_channel(broker, queue)
-    except Exception as exc:
-        raise BrokerConnectionError(f"redeclaring queue {queue!r} after an unroutable publish failed: {exc}") from exc
+    if is_delay_tier(queue):
+        # Nur die Stufe, nicht die Familie (Review MR 10, P2-3). Scheitert
+        # das, geht der zweite Publish an ``{queue}.DQ`` (PF-21).
+        await broker.restore_delay_tier(queue)
+    else:
+        try:
+            await redeclare_on_throwaway_channel(broker, queue)
+        except Exception as exc:
+            raise BrokerConnectionError(
+                f"redeclaring queue {queue!r} after an unroutable publish failed: {exc}"
+            ) from exc
     await publish()
 
 
@@ -53,15 +62,11 @@ async def redeclare_on_throwaway_channel(broker: Any, queue: str) -> None:
     """Deklariert die Familie von ``queue`` (Haupt-Queue, ``.DQ``, ``.XQ``
     und Stufen) erneut ueber die Kette mit Uebernahme wie beim Start (Review
     MR 8, H1): Wegwerf-Channels, passives Declare, Uebernahme; danach sind
-    Cache und Argumente wieder gesetzt. Ist ``queue`` eine Delay-Stufe, nur
-    diese (Review MR 10, P2-3). Gedeckelt durch die Publish-Frist (Q6)."""
+    Cache und Argumente wieder gesetzt. Gedeckelt durch die Publish-Frist
+    (Q6)."""
     connection = broker._connection
     if connection is None or connection.is_closed:
         raise BrokerConnectionError("broker is not connected")
     async with asyncio.timeout(broker._effective_publish_timeout()):
-        if is_delay_tier(queue):
-            # Nur die Stufe, nicht die Familie (Review MR 10, P2-3).
-            await broker.redeclare_delay_tier(queue)
-            return
         broker.invalidate_declaration(queue)
         await broker.declare_queue(main_queue_of(queue))

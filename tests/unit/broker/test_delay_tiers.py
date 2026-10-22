@@ -35,6 +35,28 @@ Testlücken Runde 4 (Plan 2026-10-20-1500, U3):
       (Mutant ``declarations.py`` ``self._ready_delay_tiers.discard(name)`` -> ``discard(None)``)
 - [x] E-18: erneutes Deklarieren der Familie deklariert bereite und abgelehnte Stufen nicht neu
       (Mutant ``declarations.py`` ``tier not in … and tier not in …`` -> ``or``)
+
+PF-21 (Entscheidungsvorlage 2026-10-21, Variante D; E-026 Nachtrag): ein vorübergehend
+gescheitertes Neu-Deklarieren einer Stufe im Betrieb
+- [x] Verbindungsabriss: diese Rückstellung geht an ``{queue}.DQ``, Original bestätigt,
+      WARNING ``delay_tier_redeclare_failed`` (ersetzt den ``BrokerConnectionError`` von früher)
+- [x] hängendes Neu-Deklarieren: nach ``declare_probe_timeout_s`` abgebrochen, nicht erst nach der
+      Publish-Frist (ersetzt den Test mit der Publish-Frist)
+- [x] in der Pause von 30 s: Rückstellungen an die Stufe gehen ohne Versuch an ``{queue}.DQ``
+- [x] nach der Pause: erst Neu-Deklarieren, dann Publish an die Stufe; INFO ``delay_tier_restored``
+- [x] scheitert der Versuch nach der Pause erneut: ``{queue}.DQ`` und neue Pause
+- [x] höchstens ein Versuch je Stufe gleichzeitig: eine parallele Rückstellung geht sofort an ``{queue}.DQ``
+- [x] eine kürzere Shutdown-Restfrist begrenzt den Versuch
+- [x] Review P3-2: auch eine Rückstellung, deren Publish erst in der Pause zurückkommt, versucht es nicht
+- [x] Review P3-7: ein abgebrochener Versuch gibt die Stufe für den nächsten Versuch frei
+- [x] ist die Verbindung zu, gilt das als vorübergehend, und der Publish-Channel deklariert nichts
+      (wie früher ``redeclare_on_throwaway_channel``: ein 406 risse parallele Publishes ab)
+- [x] strenger Mismatch im Betrieb: Ablehnung wie E-026 (WARNING ``delay_tier_unavailable``, Gauge),
+      nicht fatal, danach kein Versuch mehr
+- [x] Ablehnung (403) beim Versuch nach der Pause: Stufe aus, kein weiterer Versuch
+- [x] die Familien-Deklaration heilt eine ausstehende Stufe mit (INFO ``delay_tier_restored``)
+- [x] scheitert auch der Publish an ``{queue}.DQ``: ``BrokerConnectionError``, Original unbestätigt
+      (mit der Shutdown-Restfrist)
 """
 
 from __future__ import annotations
@@ -121,9 +143,13 @@ async def test_tier_that_cannot_be_declared_falls_back_to_the_delay_queue_with_o
     cast("AsyncMock", second.handle).ack.assert_awaited_once()
 
 
-async def test_connection_loss_while_declaring_a_tier_leaves_the_original_unacked() -> None:
+@pytest.mark.entscheidung("E-026")
+@pytest.mark.befund("PF-21")
+async def test_connection_loss_while_redeclaring_a_tier_sends_this_deferral_to_the_delay_queue(swarmq_logs) -> None:
     # Seit Review MR 10 (P1-2) deklariert nur noch das Neu-Deklarieren nach
-    # einem unroutbaren Publish eine Stufe im Hot-Path.
+    # einem unroutbaren Publish eine Stufe im Hot-Path. PF-21: kein
+    # BrokerConnectionError mehr, also keine Neuzustellung und keine Schleife
+    # bis ``{queue}.XQ``; die zurückgegebene Kopie war die einzige.
     rabbit = FakeRabbit()
     broker = make_broker(rabbit)
     await broker.declare_queue("tasks")
@@ -131,37 +157,329 @@ async def test_connection_loss_while_declaring_a_tier_leaves_the_original_unacke
     cast("AsyncMock", broker._connection).channel = AsyncMock(side_effect=ConnectionClosed(320, "CONNECTION_FORCED"))
     delivery = _delivery()
 
-    with pytest.raises(BrokerConnectionError, match="tasks"):
+    await broker.retry_later(delivery, delay_ms=500, headers={})
+
+    assert _routing_keys(broker) == ["tasks.DQ.1s", "tasks.DQ"]
+    cast("AsyncMock", delivery.handle).ack.assert_awaited_once()
+    [entry] = [e for e in swarmq_logs if e["event"] == "delay_tier_redeclare_failed"]
+    assert entry["log_level"] == "warning"
+    assert (entry["queue"], entry["tier"], entry["fallback"]) == ("tasks", "tasks.DQ.1s", "tasks.DQ")
+    assert entry["error_type"] == "ConnectionClosed"
+    assert entry["retry_in_s"] == 30.0
+    assert broker.delay_tiers_unavailable("tasks") == 0
+
+
+def _hanging_channels(broker: RabbitMQBroker) -> asyncio.Event:
+    """Jede Deklaration auf einem neuen Wegwerf-Channel hängt, bis das
+    zurückgegebene Ereignis gesetzt ist."""
+    release = asyncio.Event()
+
+    async def hanging_channel(**_: object) -> AsyncMock:
+        channel = AsyncMock(is_closed=False)
+
+        async def declare_queue(*_: object, **__: object) -> None:
+            await release.wait()
+
+        channel.declare_queue = AsyncMock(side_effect=declare_queue)
+        return channel
+
+    cast("AsyncMock", broker._connection).channel = AsyncMock(side_effect=hanging_channel)
+    return release
+
+
+@pytest.mark.befund("PF-21")
+async def test_hanging_tier_redeclaration_is_bounded_by_the_probe_timeout_not_the_publish_deadline(
+    swarmq_logs,
+) -> None:
+    """Review-Punkt P2: Ein hängendes Anlegen belegte bis zur Publish-Frist
+    (Default 120 s) einen Slot. Ein abgebrochenes Anlegen läuft beim Broker
+    weiter; der nächste Versuch findet die Stufe."""
+    rabbit = FakeRabbit()
+    broker = make_broker(rabbit)
+    await broker.declare_queue("tasks")
+    cast("AsyncMock", broker._publish_channel).default_exchange.publish.side_effect = [_returned("tasks.DQ.1s"), None]
+    broker.publish_timeout_s = 60.0
+    broker.declare_probe_timeout_s = 0.05
+    _hanging_channels(broker)
+    delivery = _delivery()
+
+    await broker.retry_later(delivery, delay_ms=500, headers={})
+
+    assert _routing_keys(broker) == ["tasks.DQ.1s", "tasks.DQ"]
+    cast("AsyncMock", delivery.handle).ack.assert_awaited_once()
+    [entry] = [e for e in swarmq_logs if e["event"] == "delay_tier_redeclare_failed"]
+    assert entry["error_type"] == "TimeoutError"
+
+
+async def _tier_redeclaration_failed_once(rabbit: FakeRabbit, now: list[float], **attributes: Any) -> RabbitMQBroker:
+    """Ein Broker, dessen Neu-Deklarieren von ``tasks.DQ.1s`` einmal an einem
+    Verbindungsabriss gescheitert ist (Uhr ``now``); danach antwortet der
+    Broker wieder normal. Gesendet: ``tasks.DQ.1s`` (zurückgegeben), ``tasks.DQ``."""
+    broker = make_broker(rabbit, monotonic=lambda: now[0], **attributes)
+    await broker.declare_queue("tasks")
+    del rabbit.queues["tasks.DQ.1s"]
+    connection = cast("AsyncMock", broker._connection)
+    connection.channel = AsyncMock(side_effect=ConnectionClosed(320, "CONNECTION_FORCED"))
+    publish = cast("AsyncMock", broker._publish_channel).default_exchange.publish
+    publish.side_effect = [_returned("tasks.DQ.1s"), None]
+    await broker.retry_later(_delivery(), delay_ms=500, headers={})
+    connection.channel = AsyncMock(side_effect=rabbit.open)
+    publish.side_effect = None
+    return broker
+
+
+@pytest.mark.entscheidung("E-026")
+@pytest.mark.befund("PF-21")
+async def test_after_the_pause_the_next_deferral_declares_the_tier_again_and_uses_it(swarmq_logs) -> None:
+    rabbit = FakeRabbit()
+    now = [1_000.0]
+    broker = await _tier_redeclaration_failed_once(rabbit, now)
+    chains_before = len(_chains(rabbit))
+    now[0] += 30.0
+
+    await broker.retry_later(_delivery(), delay_ms=500, headers={})
+
+    assert _chains(rabbit)[chains_before:] == ["tasks.DQ.1s"]
+    assert "tasks.DQ.1s" in rabbit.queues
+    assert _routing_keys(broker) == ["tasks.DQ.1s", "tasks.DQ", "tasks.DQ.1s"]
+    [entry] = [e for e in swarmq_logs if e["event"] == "delay_tier_restored"]
+    assert entry["log_level"] == "info"
+    assert (entry["queue"], entry["tier"]) == ("tasks", "tasks.DQ.1s")
+
+
+@pytest.mark.entscheidung("E-026")
+@pytest.mark.befund("PF-21")
+async def test_during_the_pause_deferrals_go_to_the_delay_queue_without_an_attempt() -> None:
+    """Review-Punkt P2: ohne Pause kostete jede Rückstellung an die Stufe
+    einen Versuch. Gegenprobe ``monotonic() < retry_at`` -> ``False``: rot."""
+    rabbit = FakeRabbit()
+    now = [1_000.0]
+    broker = await _tier_redeclaration_failed_once(rabbit, now)
+    chains_before = len(_chains(rabbit))
+    now[0] += 29.9
+
+    await broker.retry_later(_delivery(), delay_ms=500, headers={})
+
+    assert _chains(rabbit)[chains_before:] == []
+    assert _routing_keys(broker) == ["tasks.DQ.1s", "tasks.DQ", "tasks.DQ"]
+
+
+@pytest.mark.befund("PF-21")
+async def test_a_failed_attempt_after_the_pause_starts_a_new_pause(swarmq_logs) -> None:
+    rabbit = FakeRabbit()
+    now = [1_000.0]
+    broker = await _tier_redeclaration_failed_once(rabbit, now)
+    cast("AsyncMock", broker._connection).channel = AsyncMock(side_effect=ConnectionClosed(320, "CONNECTION_FORCED"))
+    now[0] += 30.0
+    await broker.retry_later(_delivery(), delay_ms=500, headers={})
+    cast("AsyncMock", broker._connection).channel = AsyncMock(side_effect=rabbit.open)
+    chains_before = len(_chains(rabbit))
+    now[0] += 29.9
+
+    await broker.retry_later(_delivery(), delay_ms=500, headers={})
+
+    assert _chains(rabbit)[chains_before:] == []
+    assert _routing_keys(broker) == ["tasks.DQ.1s", "tasks.DQ", "tasks.DQ", "tasks.DQ"]
+    assert len([e for e in swarmq_logs if e["event"] == "delay_tier_redeclare_failed"]) == 2
+    assert not [e for e in swarmq_logs if e["event"] == "delay_tier_restored"]
+
+
+@pytest.mark.entscheidung("E-026")
+@pytest.mark.befund("PF-21")
+async def test_while_an_attempt_runs_a_parallel_deferral_goes_to_the_delay_queue_at_once() -> None:
+    """Höchstens ein Versuch je Stufe gleichzeitig (single-flight): sonst
+    belegte ein hängendes Anlegen bis zu ``concurrency`` Slots."""
+    rabbit = FakeRabbit()
+    now = [1_000.0]
+    broker = await _tier_redeclaration_failed_once(rabbit, now)
+    now[0] += 30.0
+    release = _hanging_channels(broker)
+    opened = asyncio.Event()
+    hanging = cast("AsyncMock", broker._connection).channel.side_effect
+
+    async def channel_opened(**kwargs: object) -> AsyncMock:
+        opened.set()
+        return cast("AsyncMock", await hanging(**kwargs))
+
+    cast("AsyncMock", broker._connection).channel = AsyncMock(side_effect=channel_opened)
+    first = asyncio.create_task(broker.retry_later(_delivery(), delay_ms=500, headers={}))
+    await opened.wait()
+
+    await broker.retry_later(_delivery(), delay_ms=500, headers={})
+
+    assert _routing_keys(broker) == ["tasks.DQ.1s", "tasks.DQ", "tasks.DQ"]
+    assert cast("AsyncMock", broker._connection).channel.await_count == 1
+    release.set()
+    await first
+
+
+@pytest.mark.befund("PF-21")
+async def test_a_shorter_shutdown_deadline_bounds_the_attempt() -> None:
+    """Beim Herunterfahren gilt die kürzere Restfrist; nach ihr geht auch
+    der Rückfall an ``{queue}.DQ`` nicht mehr auf die Leitung (FS-02), das
+    Original bleibt unbestätigt."""
+    rabbit = FakeRabbit()
+    broker = make_broker(rabbit)
+    await broker.declare_queue("tasks")
+    cast("AsyncMock", broker._publish_channel).default_exchange.publish.side_effect = [_returned("tasks.DQ.1s"), None]
+    broker.publish_timeout_s = 60.0
+    broker.declare_probe_timeout_s = 60.0
+    _hanging_channels(broker)
+    broker.set_publish_deadline(asyncio.get_running_loop().time() + 0.05)
+    delivery = _delivery()
+
+    with pytest.raises(BrokerConnectionError, match="shutdown publish deadline"):
         await broker.retry_later(delivery, delay_ms=500, headers={})
 
     assert _routing_keys(broker) == ["tasks.DQ.1s"]
     cast("AsyncMock", delivery.handle).ack.assert_not_awaited()
 
 
-async def test_hanging_tier_declaration_is_bounded_by_the_publish_deadline() -> None:
+@pytest.mark.entscheidung("E-026")
+@pytest.mark.befund("PF-21")
+async def test_strict_mode_mismatch_while_running_refuses_the_tier_instead_of_failing(swarmq_logs) -> None:
+    """Ein anderer Prozess hat die Stufe in der Pause at-most-once angelegt.
+    Im Betrieb gilt das wie eine Ablehnung (E-026), nicht fatal; Exit 78
+    kommt beim nächsten Start (E-017). Danach kein Versuch mehr."""
+    rabbit = FakeRabbit()
+    now = [1_000.0]
+    broker = await _tier_redeclaration_failed_once(rabbit, now, dead_letter_strategy="at-least-once")
+    rabbit.queues["tasks.DQ.1s"] = legacy("tasks")["tasks.DQ"]
+    now[0] += 30.0
+
+    await broker.retry_later(_delivery(), delay_ms=500, headers={})
+    chains_after_refusal = len(_chains(rabbit))
+    now[0] += 30.0
+    await broker.retry_later(_delivery(), delay_ms=500, headers={})
+
+    assert _routing_keys(broker) == ["tasks.DQ.1s", "tasks.DQ", "tasks.DQ", "tasks.DQ"]
+    assert len(_chains(rabbit)) == chains_after_refusal
+    assert broker.delay_tiers_unavailable("tasks") == 1
+    [entry] = [e for e in swarmq_logs if e["event"] == "delay_tier_unavailable"]
+    assert (entry["tier"], entry["error_type"]) == ("tasks.DQ.1s", "QueueArgumentsMismatch")
+    assert rabbit.queues["tasks.DQ.1s"] == legacy("tasks")["tasks.DQ"]
+
+
+@pytest.mark.befund("PF-21")
+async def test_a_refusal_after_the_pause_switches_the_tier_off_without_further_attempts(swarmq_logs) -> None:
+    rabbit = FakeRabbit()
+    now = [1_000.0]
+    broker = await _tier_redeclaration_failed_once(rabbit, now)
+
+    async def refusing_channel(**_: object) -> AsyncMock:
+        channel = AsyncMock(is_closed=False)
+        channel.declare_queue.side_effect = ChannelAccessRefused("ACCESS_REFUSED - access to queue 'tasks.DQ.1s'")
+        return channel
+
+    connection = cast("AsyncMock", broker._connection)
+    connection.channel = AsyncMock(side_effect=refusing_channel)
+    now[0] += 30.0
+    await broker.retry_later(_delivery(), delay_ms=500, headers={})
+    opened_after_refusal = connection.channel.await_count
+    now[0] += 30.0
+    await broker.retry_later(_delivery(), delay_ms=500, headers={})
+
+    assert connection.channel.await_count == opened_after_refusal
+    assert _routing_keys(broker) == ["tasks.DQ.1s", "tasks.DQ", "tasks.DQ", "tasks.DQ"]
+    assert broker.delay_tiers_unavailable("tasks") == 1
+    assert [e["tier"] for e in swarmq_logs if e["event"] == "delay_tier_unavailable"] == ["tasks.DQ.1s"]
+
+
+@pytest.mark.befund("PF-21")
+async def test_declaring_the_family_again_restores_a_pending_tier(swarmq_logs) -> None:
+    """Die Familien-Deklaration (nach einem unroutbaren Publish an ``.DQ``
+    oder ``.XQ``) deklariert eine ausstehende Stufe mit und heilt sie; danach
+    kein eigener Versuch mehr."""
+    rabbit = FakeRabbit()
+    now = [1_000.0]
+    broker = await _tier_redeclaration_failed_once(rabbit, now)
+    broker.invalidate_declaration("tasks")
+    await broker.declare_queue("tasks")
+    chains_after_family = len(_chains(rabbit))
+    now[0] += 30.0
+
+    await broker.retry_later(_delivery(), delay_ms=500, headers={})
+
+    assert len(_chains(rabbit)) == chains_after_family
+    assert _routing_keys(broker) == ["tasks.DQ.1s", "tasks.DQ", "tasks.DQ.1s"]
+    assert [e["tier"] for e in swarmq_logs if e["event"] == "delay_tier_restored"] == ["tasks.DQ.1s"]
+
+
+@pytest.mark.befund("PF-21")
+async def test_a_closed_connection_fails_the_attempt_without_declaring_on_the_publish_channel(swarmq_logs) -> None:
     rabbit = FakeRabbit()
     broker = make_broker(rabbit)
     await broker.declare_queue("tasks")
-    cast("AsyncMock", broker._publish_channel).default_exchange.publish.side_effect = [_returned("tasks.DQ.1s"), None]
-    broker.publish_timeout_s = 0.05
-    never = asyncio.Event()
-
-    async def hanging_channel(**_: object) -> AsyncMock:
-        channel = AsyncMock(is_closed=False)
-
-        async def declare_queue(*_: object, **__: object) -> None:
-            await never.wait()
-
-        channel.declare_queue = AsyncMock(side_effect=declare_queue)
-        return channel
-
-    cast("AsyncMock", broker._connection).channel = AsyncMock(side_effect=hanging_channel)
+    publish_channel = cast("AsyncMock", broker._publish_channel)
+    publish_channel.default_exchange.publish.side_effect = [_returned("tasks.DQ.1s"), None]
+    cast("AsyncMock", broker._connection).is_closed = True
     delivery = _delivery()
 
-    with pytest.raises(BrokerConnectionError, match="tasks"):
-        await broker.retry_later(delivery, delay_ms=500, headers={})
+    await broker.retry_later(delivery, delay_ms=500, headers={})
 
-    cast("AsyncMock", delivery.handle).ack.assert_not_awaited()
+    publish_channel.declare_queue.assert_not_awaited()
+    assert _routing_keys(broker) == ["tasks.DQ.1s", "tasks.DQ"]
+    [entry] = [e for e in swarmq_logs if e["event"] == "delay_tier_redeclare_failed"]
+    assert entry["error_type"] == "BrokerConnectionError"
+
+
+@pytest.mark.befund("PF-21")
+async def test_a_deferral_returned_during_the_pause_makes_no_attempt(swarmq_logs) -> None:
+    """Review P3-2: Rückstellungen, die ihr Ziel noch bei bereiter Stufe
+    gewählt haben, kommen erst nach dem gescheiterten Versuch unroutbar
+    zurück; sie gehen ohne zweiten Versuch und ohne zweite WARNING an ``.DQ``."""
+    rabbit = FakeRabbit()
+    now = [1_000.0]
+    broker = await _tier_redeclaration_failed_once(rabbit, now)
+    opened = cast("AsyncMock", broker._connection).channel
+
+    assert await broker.restore_delay_tier("tasks.DQ.1s") is False
+
+    opened.assert_not_awaited()
+    assert len([e for e in swarmq_logs if e["event"] == "delay_tier_redeclare_failed"]) == 1
+
+
+@pytest.mark.befund("PF-21")
+async def test_a_cancelled_attempt_frees_the_tier_for_the_next_attempt() -> None:
+    rabbit = FakeRabbit()
+    now = [1_000.0]
+    broker = await _tier_redeclaration_failed_once(rabbit, now)
+    now[0] += 30.0
+    release = _hanging_channels(broker)
+    opened = asyncio.Event()
+    hanging = cast("AsyncMock", broker._connection).channel.side_effect
+
+    async def channel_opened(**kwargs: object) -> AsyncMock:
+        opened.set()
+        return cast("AsyncMock", await hanging(**kwargs))
+
+    cast("AsyncMock", broker._connection).channel = AsyncMock(side_effect=channel_opened)
+    attempt = asyncio.create_task(broker.restore_delay_tier("tasks.DQ.1s"))
+    await opened.wait()
+    attempt.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await attempt
+    release.set()
+    cast("AsyncMock", broker._connection).channel = AsyncMock(side_effect=rabbit.open)
+
+    assert await broker.restore_delay_tier("tasks.DQ.1s") is True
+
+
+@pytest.mark.befund("PF-21")
+async def test_the_hint_for_a_strict_mode_mismatch_while_running_names_the_exit_on_restart(swarmq_logs) -> None:
+    """Review P3-4: Ein Neustart endet hier mit Exit 78; der allgemeine
+    Hinweis „restart the worker“ führte in die Irre."""
+    rabbit = FakeRabbit()
+    now = [1_000.0]
+    broker = await _tier_redeclaration_failed_once(rabbit, now, dead_letter_strategy="at-least-once")
+    rabbit.queues["tasks.DQ.1s"] = legacy("tasks")["tasks.DQ"]
+    now[0] += 30.0
+
+    await broker.retry_later(_delivery(), delay_ms=500, headers={})
+
+    [entry] = [e for e in swarmq_logs if e["event"] == "delay_tier_unavailable"]
+    assert "78" in entry["hint"]
+    assert "then restart the worker" not in entry["hint"]
 
 
 async def test_family_not_declared_by_this_process_uses_the_delay_queue() -> None:

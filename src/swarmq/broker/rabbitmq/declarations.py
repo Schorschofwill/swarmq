@@ -14,6 +14,11 @@ nicht fatal (Review MR 10, P1-2).
 
 from __future__ import annotations
 
+import asyncio
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from functools import cached_property
 from typing import Any
 
 import aio_pika
@@ -49,9 +54,32 @@ def _dead_letters_at_least_once(arguments: dict[str, Any]) -> bool:
     return all(arguments.get(key) == value for key, value in AT_LEAST_ONCE_ARGUMENTS.items())
 
 
+#: Pause nach einem voruebergehend gescheiterten Neu-Deklarieren einer
+#: Delay-Stufe im Betrieb (PF-21, E-026): so lange gehen Rueckstellungen an
+#: die Stufe ohne Versuch an ``{queue}.DQ``.
+DELAY_TIER_RETRY_PAUSE_S = 30.0
+
+
+@dataclass
+class _DelayTierRetries:
+    """Zustand je Prozess fuer Delay-Stufen, deren Neu-Deklarieren im Betrieb
+    voruebergehend gescheitert ist (PF-21)."""
+
+    #: Zeitpunkt (``monotonic``) des naechsten Versuchs je Stufe.
+    pending: dict[str, float] = field(default_factory=dict)
+    #: Stufen, deren Neu-Deklarieren gerade laeuft (hoechstens eins je Stufe).
+    running: set[str] = field(default_factory=set)
+
+
 class RabbitMQDeclarations(RabbitMQConnection):
     #: Obergrenze je Deklarationsversuch auf dem Wegwerf-Channel (Patch 0.11.1).
     declare_probe_timeout_s: float = _CHANNEL_READY_TIMEOUT_S
+    #: Uhr der Pause nach einem gescheiterten Neu-Deklarieren (PF-21).
+    monotonic: Callable[[], float] = staticmethod(time.monotonic)
+
+    @cached_property
+    def _tier_retries(self) -> _DelayTierRetries:
+        return _DelayTierRetries()
 
     # ------------------------------------------------------------------
     # Deklaration
@@ -129,6 +157,19 @@ class RabbitMQDeclarations(RabbitMQConnection):
             return fallback
         return tier if tier in self._ready_delay_tiers else fallback
 
+    def due_delay_tier(self, queue_name: str, delay_ms: int) -> str | None:
+        """Die Stufe einer Rueckstellung um ``delay_ms``, wenn ihr Neu-Deklarieren
+        voruebergehend gescheitert und die Pause vorbei ist (PF-21): Die
+        Rueckstellung versucht es erneut, erst Neu-Deklarieren, dann Publish."""
+        tier = delay_tier_for(queue_name, delay_ms)
+        if tier not in self._tier_retries.pending or self._delay_tier_paused(tier):
+            return None
+        return tier
+
+    def _delay_tier_paused(self, tier: str) -> bool:
+        retry_at = self._tier_retries.pending.get(tier)
+        return retry_at is not None and self.monotonic() < retry_at
+
     def delay_tiers_unavailable(self, queue: str) -> int:
         """Zahl der Delay-Stufen von ``queue``, deren Deklaration der Broker in
         diesem Prozess abgelehnt hat (BZ-01, MR 10; Gauge des Workers)."""
@@ -154,22 +195,33 @@ class RabbitMQDeclarations(RabbitMQConnection):
             # einer vorhandenen Queue. Die Rueckstellung geht an ``{queue}.DQ``;
             # die Stufe bleibt fuer diesen Prozess aus, damit nicht jede
             # Rueckstellung erneut einen 406 kostet.
-            self._unavailable_delay_tiers.add(tier)
-            logger.warning(
-                "delay_tier_unavailable",
-                queue=queue_name,
-                tier=tier,
-                fallback=fallback,
-                **_error_fields(exc),
-                hint=(
-                    "the delay tier could not be declared; delayed messages of this tier go to the "
-                    ".DQ, where a long delay at its head holds back shorter ones. Check queue limits "
-                    "and permissions for the pattern \\.DQ(\\.\\w+)?$, then restart the worker"
-                ),
-            )
+            self._refuse_delay_tier(queue_name, tier, fallback, exc)
             return False
         self._ready_delay_tiers.add(tier)
+        if self._tier_retries.pending.pop(tier, None) is not None:
+            # Auch die Familien-Deklaration heilt eine ausstehende Stufe (PF-21).
+            logger.info("delay_tier_restored", queue=queue_name, tier=tier)
         return True
+
+    def _refuse_delay_tier(
+        self, queue_name: str, tier: str, fallback: str, exc: BaseException, *, hint: str | None = None
+    ) -> None:
+        """Die Stufe bleibt fuer diesen Prozess aus (E-026): WARNING, Gauge."""
+        self._unavailable_delay_tiers.add(tier)
+        self._tier_retries.pending.pop(tier, None)
+        logger.warning(
+            "delay_tier_unavailable",
+            queue=queue_name,
+            tier=tier,
+            fallback=fallback,
+            **_error_fields(exc),
+            hint=hint
+            or (
+                "the delay tier could not be declared; delayed messages of this tier go to the "
+                ".DQ, where a long delay at its head holds back shorter ones. Check queue limits "
+                "and permissions for the pattern \\.DQ(\\.\\w+)?$, then restart the worker"
+            ),
+        )
 
     async def _declare_adopting(
         self,
@@ -251,12 +303,71 @@ class RabbitMQDeclarations(RabbitMQConnection):
             return
         self._declaration_cache.discard(main_queue_of(name))
 
-    async def redeclare_delay_tier(self, tier: str) -> None:
+    async def restore_delay_tier(self, tier: str) -> bool:
         """Deklariert nur die Stufe ``tier`` neu, nach einem unroutbaren
-        Publish an sie (Review MR 10, P2-3); lehnt der Broker sie ab, gilt
-        ``{queue}.DQ`` fuer den Rest des Prozesses."""
+        Publish an sie (Review MR 10, P2-3); ``True``, wenn sie danach Ziel
+        ist. Lehnt der Broker sie ab, gilt ``{queue}.DQ`` fuer den Rest des
+        Prozesses (E-026). Ein voruebergehender Fehler ist im Betrieb nicht
+        fatal (PF-21): WARNING, die Rueckstellung geht an ``{queue}.DQ``."""
+        if tier in self._tier_retries.running or self._delay_tier_paused(tier):
+            # Hoechstens ein Versuch je Stufe gleichzeitig und keiner in der
+            # Pause (PF-21, Review P3-2): die Rueckstellung wartet nicht, sie
+            # geht an ``{queue}.DQ``.
+            return False
+        self._tier_retries.running.add(tier)
+        try:
+            return await self._restore_delay_tier(tier)
+        finally:
+            self._tier_retries.running.discard(tier)
+
+    async def _restore_delay_tier(self, tier: str) -> bool:
         queue_name = main_queue_of(tier)
-        await self._declare_delay_tier(queue_name, tier, delay_queue_for(queue_name, 0))
+        fallback = delay_queue_for(queue_name, 0)
+        try:
+            return await self._declare_delay_tier_bounded(queue_name, tier, fallback)
+        except QueueArgumentsMismatch as exc:
+            # Strenger Modus (E-017): beim Start fatal, im Betrieb wie eine
+            # Ablehnung (PF-21; wie E-083 kein Herunterfahren im Betrieb).
+            # Exit 78 kommt beim naechsten Start.
+            self._refuse_delay_tier(
+                queue_name,
+                tier,
+                fallback,
+                exc,
+                hint=(
+                    "the existing delay tier dead-letters at-most-once, which the strict mode "
+                    "at-least-once refuses; delayed messages of this tier go to the .DQ. Apply the "
+                    "at-least-once policy or delete the empty tier: otherwise the next start of the "
+                    "worker exits with 78"
+                ),
+            )
+            return False
+        except Exception as exc:  # noqa: BLE001 - jeder andere Fehler gilt als voruebergehend (PF-21), wird geloggt
+            self._tier_retries.pending[tier] = self.monotonic() + DELAY_TIER_RETRY_PAUSE_S
+            logger.warning(
+                "delay_tier_redeclare_failed",
+                queue=queue_name,
+                tier=tier,
+                fallback=fallback,
+                **_error_fields(exc),
+                retry_in_s=DELAY_TIER_RETRY_PAUSE_S,
+                hint=(
+                    "declaring the deleted delay tier again failed; delayed messages of this tier go to "
+                    "the .DQ until a later attempt succeeds"
+                ),
+            )
+            return False
+
+    async def _declare_delay_tier_bounded(self, queue_name: str, tier: str, fallback: str) -> bool:
+        """``_declare_delay_tier`` mit eigener kurzer Frist statt der
+        Publish-Frist (PF-21, Review-Punkt P2), beim Herunterfahren mit der
+        kuerzeren Restfrist; ein abgebrochenes Anlegen laeuft beim Broker
+        weiter. Ohne offene Verbindung ``BrokerConnectionError``: sonst
+        deklarierte ``_declare_adopting`` auf dem Publish-Channel."""
+        if self._connection is None or self._connection.is_closed:
+            raise BrokerConnectionError("broker is not connected")
+        async with asyncio.timeout(min(self.declare_probe_timeout_s, self._effective_publish_timeout())):
+            return await self._declare_delay_tier(queue_name, tier, fallback)
 
     def _require_at_least_once(self, name: str, arguments: dict[str, Any]) -> None:
         """Strenger Modus ``at-least-once`` (BZ-19): eine Bestandsqueue ohne
