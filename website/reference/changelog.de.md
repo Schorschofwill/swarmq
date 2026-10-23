@@ -4,7 +4,14 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 [Keep a Changelog](https://keepachangelog.com/) und
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.14.4rc1] — 2026-10-23
+
+Release-Candidate für 0.14.4 (Installation mit `pip install --pre`).
+
+Patch-Release für 0.14.3. Keine neuen Header, Lua-Skripte, Schlüssel oder
+Formatänderungen: 0.14.4 läuft neben 0.14.3 auf denselben Queues und
+Schlüsseln. Anders verhält sich nur ein Worker, dessen Drain-Ende in den
+Retry- oder DLQ-Pfad eines gescheiterten Tasks fällt.
 
 ### Behoben
 
