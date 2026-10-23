@@ -18,7 +18,6 @@ geht ihr Neu-Deklarieren schief, nimmt der zweite Publish ``{queue}.DQ``.
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -63,10 +62,10 @@ async def redeclare_on_throwaway_channel(broker: Any, queue: str) -> None:
     und Stufen) erneut ueber die Kette mit Uebernahme wie beim Start (Review
     MR 8, H1): Wegwerf-Channels, passives Declare, Uebernahme; danach sind
     Cache und Argumente wieder gesetzt. Gedeckelt durch die Publish-Frist
-    (Q6)."""
+    (Q6), die ein beginnendes Herunterfahren nachzieht (F4-27)."""
     connection = broker._connection
     if connection is None or connection.is_closed:
         raise BrokerConnectionError("broker is not connected")
-    async with asyncio.timeout(broker._effective_publish_timeout()):
+    async with broker._bounded_until_shutdown(broker._effective_publish_timeout()):
         broker.invalidate_declaration(queue)
         await broker.declare_queue(main_queue_of(queue))

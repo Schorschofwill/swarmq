@@ -790,7 +790,9 @@ deferral goes to `{queue}.DQ`, the worker logs the WARNING
 to `{queue}.DQ` without a new attempt. The first deferral after the
 pause tries again, declaring first and publishing then; on success the
 worker logs the INFO `delay_tier_restored`. At most one attempt per tier
-runs at a time; a deferral meanwhile goes to `{queue}.DQ` at once. The
+runs at a time; a deferral meanwhile goes to `{queue}.DQ` at once. If
+the shutdown starts while an attempt runs, the attempt ends at the
+shutdown's remaining time like a running publish (since 0.14.4). The
 gauge counts only refused tiers. In the strict mode
 `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=at-least-once` an at-most-once tier
 found while the worker runs counts as a refusal; the worker exits with
@@ -862,7 +864,9 @@ missing drops the cache entry, and the next declaration creates the
 queue again. The effective delivery limit stays until a declaration
 succeeds again. A worker whose own `{queue}.DQ` or `{queue}.XQ` is
 missing declares the queue family again the same way, with adoption,
-and then publishes once more.
+and then publishes once more. If the shutdown starts meanwhile, declaring
+again ends at the shutdown's remaining time like a running publish, and
+the original is redelivered (since 0.14.4).
 
 **Operations:** every worker process, each child of a supervisor
 included, runs this chain on its own start. It logs its own INFO
