@@ -4,6 +4,30 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 [Keep a Changelog](https://keepachangelog.com/) und
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Behoben
+
+- **Ein Herunterfahren während des Neu-Anlegens einer gelöschten Queue
+  verliert keinen geplanten Lauf mehr.** Kam eine Retry- oder
+  Dead-Letter-Kopie als unroutbar zurück, weil ihre Delay-Stufe oder eine
+  Queue der Familie während des Laufs gelöscht wurde, legte der Worker sie
+  neu an. Begann dabei das Herunterfahren, zog dessen Restfrist diesen
+  Versuch nicht nach, anders als einen laufenden Publish: Er lief bis zu
+  seiner eigenen Frist weiter (Stufe 10 s, Familie
+  `SWARMQ_PUBLISH_TIMEOUT_S`), und am Drain-Ende brach der Worker ihn ab.
+  Bei einem Task aus einem Schedule wurde der Lauf dann als erledigt
+  markiert, obwohl die Nachricht unbestätigt war und neu zugestellt wurde;
+  die Neuzustellung lief nicht mehr. Dasselbe galt für jeden Drain-Abbruch,
+  der den Retry- oder DLQ-Pfad nach einem Fehler traf (Middleware
+  `on_retry`, Backend-Abfragen, Schließen eines Kanals). Jetzt endet der
+  Versuch an der Restfrist wie ein Publish, und ein Abbruch im Retry- oder
+  DLQ-Pfad einer `AT_LEAST_ONCE`-Zustellung markiert den Lauf nicht mehr
+  als erledigt und gibt ihr Unique-Flag nicht mehr frei (bisher konnte
+  dann ein Duplikat eingereiht werden); die Nachricht wird neu zugestellt.
+  Eine Unique-Freigabe nach der DLQ-Kopie bricht der Drain nicht mehr ab
+  (F4-27, E-026, E-001).
+
 ## [0.14.3] — 2026-10-22
 
 0.14.3 ist 0.14.3rc1 ohne Codeänderungen. Die Korrektur und der

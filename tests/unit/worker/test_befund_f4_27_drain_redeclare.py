@@ -9,7 +9,14 @@ der Fire ginge nach der Neuzustellung still verloren (wie FS-08).
 
 Test-Liste:
 - [x] Retry an eine geloeschte Stufe und DLQ an eine geloeschte ``.XQ``: kein
-      Completed-Marker, kein Ack, der Handler wird nicht vom Drain abgebrochen
+      Completed-Marker, keine Unique-Freigabe (V-R3), kein Ack, auch wenn das Schliessen des Wegwerf-Channels
+      suspendiert und der Drain-Abbruch dort landet (Review P1-1)
+- [x] Review P2-1: der Drain-Abbruch trifft ein anderes Warten im Fehlerpfad
+      (Late-Cancel-Prüfung im Backend): ebenfalls kein Completed-Marker, keine Freigabe
+- [x] Abgrenzung: ein Drain-Abbruch im Ergebnis-Tail nach einem erfolgreichen Lauf bleibt
+      terminal (Marker), die Neuzustellung laeuft den Task nicht noch einmal
+- [x] Review P2-1 (Nachreview): der Drain-Abbruch trifft die Unique-Freigabe nach DLQ-Kopie und
+      Ack; die Freigabe laeuft trotzdem zu Ende (keine Kopie und keine Neuzustellung holt sie nach)
 """
 
 from __future__ import annotations
@@ -26,6 +33,7 @@ from swarmq.task import Task, TaskInfo
 from swarmq.worker import Worker
 from tests.support.messages import make_message
 from tests.unit.broker.test_befund_f4_27_redeclare_deadline import _hanging_redeclaration
+from tests.unit.broker.test_declare_chain import FakeRabbit, make_broker
 from tests.unit.worker._helpers import _default_payload
 
 pytestmark = pytest.mark.timeout(5)
@@ -51,7 +59,6 @@ class FailingToDeadLetter(Task):
 
 
 @pytest.mark.befund("F4-27")
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="F4-27: Neu-Deklarieren wird nicht nachgezogen")
 @pytest.mark.parametrize(
     ("task_class", "routing_key"),
     [(FailingWithRetry, "default.DQ.4s"), (FailingToDeadLetter, "default.XQ")],
@@ -83,5 +90,129 @@ async def test_drain_end_during_a_redeclaration_writes_no_completed_marker(
     await asyncio.wait({handler})
 
     backend.schedules.mark_fire_completed.assert_not_awaited()
+    backend.release_unique.assert_not_awaited()
     msg.ack.assert_not_awaited()
-    assert not handler.cancelled()
+
+
+class FailingAfterRun(Task):
+    task_info = TaskInfo(name="f4-27-late-cancel", queues=["default"], max_retries=3)
+    finished: asyncio.Event | None = None
+
+    @override
+    async def run(self) -> None:
+        assert FailingAfterRun.finished is not None
+        FailingAfterRun.finished.set()
+        raise ValueError("boom")
+
+
+@pytest.mark.entscheidung("E-001")
+@pytest.mark.befund("F4-27")
+async def test_drain_end_during_the_late_cancel_check_writes_no_completed_marker(backend: Any, config: Any) -> None:
+    broker = make_broker(FakeRabbit())
+    await broker.declare_queue("default")
+    FailingAfterRun.finished = asyncio.Event()
+    checking = asyncio.Event()
+
+    async def is_cancelled(*_: object, **__: object) -> bool:
+        assert FailingAfterRun.finished is not None
+        if not FailingAfterRun.finished.is_set():
+            return False
+        checking.set()
+        await asyncio.Event().wait()  # Backend antwortet nicht vor dem Drain-Ende
+        return False
+
+    backend.is_cancelled = AsyncMock(side_effect=is_cancelled)
+    backend.release_unique = AsyncMock(return_value=True)
+    registry = TaskRegistry()
+    registry.register(FailingAfterRun)
+    worker = Worker(broker=broker, backend=backend, registry=registry, config=config)
+    worker._workflow_advancer = MagicMock()
+    msg = make_message(
+        _default_payload(name="f4-27-late-cancel", args=[], kwargs={}),
+        headers={"x-swarmq-schedfire": FIRE, HEADER_UNIQUE_HASH: UNIQUE},
+    )
+    msg.queue = "default"
+
+    handler = asyncio.create_task(worker._handle_message(msg))
+    await checking.wait()
+    handler.cancel()  # wie _drain_in_flight am Drain-Ende
+    await asyncio.wait({handler})
+
+    backend.schedules.mark_fire_completed.assert_not_awaited()
+    backend.release_unique.assert_not_awaited()
+    msg.ack.assert_not_awaited()
+
+
+class Succeeding(Task):
+    task_info = TaskInfo(name="f4-27-succeeding", queues=["default"])
+
+    @override
+    async def run(self) -> None:
+        return None
+
+
+@pytest.mark.entscheidung("E-001")
+@pytest.mark.befund("F4-27")
+async def test_drain_end_in_the_result_tail_after_success_stays_terminal(backend: Any, config: Any) -> None:
+    broker = make_broker(FakeRabbit())
+    await broker.declare_queue("default")
+    storing = asyncio.Event()
+
+    async def store_result(*_: object, **__: object) -> None:
+        storing.set()
+        await asyncio.Event().wait()  # Backend antwortet nicht vor dem Drain-Ende
+
+    backend.store_result = AsyncMock(side_effect=store_result)
+    registry = TaskRegistry()
+    registry.register(Succeeding)
+    worker = Worker(broker=broker, backend=backend, registry=registry, config=config)
+    worker._workflow_advancer = MagicMock()
+    msg = make_message(
+        _default_payload(name="f4-27-succeeding", args=[], kwargs={}),
+        headers={"x-swarmq-schedfire": FIRE},
+    )
+    msg.queue = "default"
+
+    handler = asyncio.create_task(worker._handle_message(msg))
+    await storing.wait()
+    handler.cancel()  # wie _drain_in_flight am Drain-Ende
+    await asyncio.wait({handler})
+
+    backend.schedules.mark_fire_completed.assert_awaited_once()
+
+
+@pytest.mark.befund("F4-27")
+async def test_drain_end_during_the_unique_release_after_the_dead_letter_copy_finishes_the_release(
+    backend: Any, config: Any
+) -> None:
+    broker = make_broker(FakeRabbit())
+    await broker.declare_queue("default")
+    releasing = asyncio.Event()
+    answer = asyncio.Event()
+    released: list[str] = []
+
+    async def release_unique(unique_hash: str, *_: object, **__: object) -> bool:
+        releasing.set()
+        await answer.wait()  # Backend antwortet erst nach dem Drain-Abbruch
+        released.append(unique_hash)
+        return True
+
+    backend.release_unique = AsyncMock(side_effect=release_unique)
+    registry = TaskRegistry()
+    registry.register(FailingToDeadLetter)
+    worker = Worker(broker=broker, backend=backend, registry=registry, config=config)
+    worker._workflow_advancer = MagicMock()
+    msg = make_message(
+        _default_payload(name=FailingToDeadLetter.task_info.name, args=[], kwargs={}),
+        headers={HEADER_UNIQUE_HASH: UNIQUE},
+    )
+    msg.queue = "default"
+
+    handler = asyncio.create_task(worker._handle_message(msg))
+    await releasing.wait()
+    handler.cancel()  # wie _drain_in_flight am Drain-Ende
+    await asyncio.wait({handler})
+    answer.set()
+    await asyncio.gather(*worker._detached_releases)  # wie _execute_shutdown vor backend.close
+
+    assert released == [UNIQUE]

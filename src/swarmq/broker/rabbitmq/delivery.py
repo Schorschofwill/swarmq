@@ -328,15 +328,10 @@ class RabbitMQDelivery(RabbitMQDeclarations):
         # eigenen zurueck, ein negatives Confirm bleibt stehen (E-041).
         maybe_sent: list[bool] = []
         try:
-            async with asyncio.timeout(timeout_s) as timeout_cm:
-                # Registrieren, damit ein beginnendes Herunterfahren diesen
-                # bereits laufenden Deckel nachziehen kann (R12, KTD9).
-                self._active_publish_timeouts.add(timeout_cm)
-                try:
-                    await self._wait_while_blocked(routing_key, blocked)
-                    return await self._publish_attempts(routing_key, msg, in_flight, maybe_sent, cancelling_at_entry)
-                finally:
-                    self._active_publish_timeouts.discard(timeout_cm)
+            # Ein beginnendes Herunterfahren zieht diesen Deckel nach (R12, KTD9).
+            async with self._bounded_until_shutdown(timeout_s):
+                await self._wait_while_blocked(routing_key, blocked)
+                return await self._publish_attempts(routing_key, msg, in_flight, maybe_sent, cancelling_at_entry)
         except asyncio.CancelledError as exc:
             # U4 (Plan 0.14, E-041, E-042): Der eigene Abbruch, bevor ein
             # Versuch gesendet haben kann (Blocked-Warten, Kanalaufbau,

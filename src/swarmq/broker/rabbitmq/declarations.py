@@ -15,8 +15,9 @@ nicht fatal (Review MR 10, P1-2).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Any
@@ -80,6 +81,19 @@ class RabbitMQDeclarations(RabbitMQConnection):
     @cached_property
     def _tier_retries(self) -> _DelayTierRetries:
         return _DelayTierRetries()
+
+    @contextlib.asynccontextmanager
+    async def _bounded_until_shutdown(self, timeout_s: float) -> AsyncGenerator[None]:
+        """``asyncio.timeout(timeout_s)``, den ein beginnendes Herunterfahren
+        nachzieht wie einen laufenden Publish (R12, KTD9, F4-27). Ohne
+        Nachziehen liefe ein Neu-Deklarieren bis zu seiner eigenen Frist, und
+        erst der Drain braeche es per ``CancelledError`` ab."""
+        async with asyncio.timeout(timeout_s) as timeout_cm:
+            self._active_publish_timeouts.add(timeout_cm)
+            try:
+                yield
+            finally:
+                self._active_publish_timeouts.discard(timeout_cm)
 
     # ------------------------------------------------------------------
     # Deklaration
@@ -366,7 +380,7 @@ class RabbitMQDeclarations(RabbitMQConnection):
         deklarierte ``_declare_adopting`` auf dem Publish-Channel."""
         if self._connection is None or self._connection.is_closed:
             raise BrokerConnectionError("broker is not connected")
-        async with asyncio.timeout(min(self.declare_probe_timeout_s, self._effective_publish_timeout())):
+        async with self._bounded_until_shutdown(min(self.declare_probe_timeout_s, self._effective_publish_timeout())):
             return await self._declare_delay_tier(queue_name, tier, fallback)
 
     def _require_at_least_once(self, name: str, arguments: dict[str, Any]) -> None:

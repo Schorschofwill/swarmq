@@ -33,7 +33,8 @@ pytestmark = pytest.mark.timeout(5)
 
 async def _hanging_redeclaration(routing_key: str) -> tuple[RabbitMQBroker, asyncio.Event, asyncio.Event]:
     """Broker, dessen erster Publish an *routing_key* unroutbar ist und
-    dessen Neu-Deklarieren haengt. Liefert das Ereignis "Wegwerf-Channel
+    dessen Neu-Deklarieren haengt; das Schliessen des Wegwerf-Channels
+    suspendiert wie in aiormq (Review F4-27, P1-1). Liefert das Ereignis "Wegwerf-Channel
     geoeffnet" und das zum Freigeben des Haengens."""
     rabbit = FakeRabbit()
     broker = make_broker(rabbit)
@@ -51,7 +52,11 @@ async def _hanging_redeclaration(routing_key: str) -> tuple[RabbitMQBroker, asyn
         async def declare_queue(*_: object, **__: object) -> None:
             await release.wait()
 
+        async def close(*_: object, **__: object) -> None:
+            await asyncio.sleep(0)  # wie aiormq: Schliessen suspendiert immer
+
         channel.declare_queue = AsyncMock(side_effect=declare_queue)
+        channel.close = AsyncMock(side_effect=close)
         return channel
 
     cast("AsyncMock", broker._connection).channel = AsyncMock(side_effect=hanging_channel)
@@ -72,7 +77,6 @@ async def _set_deadline_once_opened(broker: RabbitMQBroker, opened: asyncio.Even
 
 
 @pytest.mark.befund("F4-27")
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="F4-27: Neu-Deklarieren wird nicht nachgezogen")
 async def test_a_shutdown_deadline_set_during_a_tier_redeclaration_bounds_it() -> None:
     broker, opened, _release = await _hanging_redeclaration("tasks.DQ.1s")
     delivery = _delivery()
@@ -86,7 +90,6 @@ async def test_a_shutdown_deadline_set_during_a_tier_redeclaration_bounds_it() -
 
 
 @pytest.mark.befund("F4-27")
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="F4-27: Neu-Deklarieren wird nicht nachgezogen")
 async def test_a_shutdown_deadline_set_during_a_family_redeclaration_bounds_it() -> None:
     broker, opened, _release = await _hanging_redeclaration("tasks.XQ")
     delivery = _delivery()

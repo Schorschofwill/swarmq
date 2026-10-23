@@ -4,6 +4,29 @@ All notable changes to SwarmQ. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **A shutdown while a deleted queue is declared again no longer loses a
+  scheduled run.** When a retry or dead-letter copy came back unroutable
+  because its delay tier or a queue of the family had been deleted while
+  the worker ran, the worker declared it again. If the shutdown started
+  meanwhile, its remaining time did not bound that attempt, unlike a
+  running publish: the attempt ran on until its own deadline (tier 10 s,
+  family `SWARMQ_PUBLISH_TIMEOUT_S`), and at the end of the drain the
+  worker cancelled it. For a task from a schedule the run was then marked
+  done although the message was unacknowledged and redelivered; the
+  redelivery did not run any more. The same held for any drain
+  cancellation that hit the retry or dead-letter path after a failure
+  (middleware `on_retry`, backend queries, closing a channel). Now the
+  attempt ends at the remaining time like a publish, and a cancellation in
+  the retry or dead-letter path of an `AT_LEAST_ONCE` delivery no longer
+  marks the run done or releases its unique flag (which could let a
+  duplicate be enqueued); the message is redelivered. A unique release
+  after the dead-letter copy is no longer cancelled by the drain (F4-27,
+  E-026, E-001).
+
 ## [0.14.3] — 2026-10-22
 
 0.14.3 is 0.14.3rc1 without code changes. Read

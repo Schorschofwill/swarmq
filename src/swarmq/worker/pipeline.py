@@ -270,10 +270,10 @@ class Worker(WorkerLifecycle, WorkerShutdown):
         return decode.valid_workflow_id(message)
 
     async def _maybe_release_unique(self, message: Any, ctx: GateContext, task_info: TaskInfo | None = None) -> None:
-        """Siehe ``finalize.maybe_release_unique``."""
-        unique_hash = self._extract_valid_unique_hash(message)
-        await maybe_release_unique(
-            message, ctx, task_info, unique_hash=unique_hash, backend=self._backend, config=self._config
+        """Siehe ``finalize.maybe_release_unique``; ein Drain-Abbruch bricht sie nicht ab (F4-27, wie Lock-Release)."""
+        unique_hash, backend = self._extract_valid_unique_hash(message), self._backend
+        await self._detached(
+            maybe_release_unique(message, ctx, task_info, unique_hash=unique_hash, backend=backend, config=self._config)
         )
 
     @override
@@ -674,6 +674,8 @@ class Worker(WorkerLifecycle, WorkerShutdown):
             _di_scope = execution.di_scope
             _di_token = execution.di_token
 
+            # F4-27, E-001: ein Drain-Abbruch im Retry-/DLQ-Pfad endet wie dieser als Redelivered.
+            outcome = Redelivered if task_info.delivery is DeliveryMode.AT_LEAST_ONCE else outcome
             error_outcome = await self._resolve_error_path(message, ctx, execution, message_dict, chain, outcome)
             # Der Late-Cancel-Flip mutiert das ExecutionResult — die lokalen
             # Aliase (DI-Teardown im finally) nachziehen.
@@ -686,6 +688,7 @@ class Worker(WorkerLifecycle, WorkerShutdown):
             # 7.-11. Ergebnis-Tail (U20): Speichern, Benachrichtigung,
             # Cancel-Flag, Workflow-Advance-Seam und ALO-Ack leben in
             # worker/results.py.
+            outcome = Terminal.release_in_finally()  # der Tail behaelt den Terminal-Default
             outcome = await self._result_tail.finish(message, ctx, execution)
             return
 

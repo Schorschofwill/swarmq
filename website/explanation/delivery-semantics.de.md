@@ -840,7 +840,9 @@ Rückstellungen dieser Stufe ohne neuen Versuch an `{queue}.DQ`. Die erste
 Rückstellung nach der Pause versucht es erneut, erst Neu-Anlegen, dann
 Publish; bei Erfolg loggt der Worker die INFO `delay_tier_restored`.
 Höchstens ein Versuch je Stufe läuft gleichzeitig; eine Rückstellung in
-der Zwischenzeit geht sofort an `{queue}.DQ`. Die Gauge zählt nur
+der Zwischenzeit geht sofort an `{queue}.DQ`. Beginnt das
+Herunterfahren, während ein Versuch läuft, endet er an dessen Restfrist
+wie ein laufender Publish (seit 0.14.4). Die Gauge zählt nur
 abgelehnte Stufen. Im strengen Modus
 `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=at-least-once` gilt eine
 at-most-once-Stufe, die der Worker im Betrieb vorfindet, als Ablehnung;
@@ -916,7 +918,9 @@ und die nächste Deklaration legt die Queue neu an. Das effektive
 Delivery-Limit bleibt dabei erhalten, bis wieder eine Deklaration
 gelingt. Fehlt einem Worker seine eigene `{queue}.DQ` oder `{queue}.XQ`,
 deklariert er die Queue-Familie auf dieselbe Weise neu, mit Übernahme,
-und publiziert dann ein zweites Mal.
+und publiziert dann ein zweites Mal. Beginnt währenddessen das
+Herunterfahren, endet das Neu-Deklarieren an dessen Restfrist wie ein
+laufender Publish, und das Original wird neu zugestellt (seit 0.14.4).
 
 **Betrieb:** Jeder Worker-Prozess, auch jedes Kind eines Supervisors,
 durchläuft diese Kette bei seinem eigenen Start. Er schreibt seine
