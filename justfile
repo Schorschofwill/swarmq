@@ -109,6 +109,10 @@ coverage-gate:
 ratchet *values:
     {{uv_run}} python scripts/coverage_ratchet.py "$@"
 
+# A/B-Messung zweier Refs mit Urteil nach R5 (scripts/ab_messung.py --help); Wertungslaeufe nur auf celsius
+ab *args:
+    {{uv_run}} --group messung python scripts/ab_messung.py "$@"
+
 # --- Mutation im Container (Plan 2026-10-17-0941, U2; docker/mutation/README.md) ---
 # Docker-Kontext je Aufruf (nie `docker context use`); Standard ist der Lastserver.
 mutation_ctx := env("SWARMQ_MUTATION_CONTEXT", "lastserver")

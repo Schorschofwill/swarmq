@@ -30,6 +30,7 @@ Test-Liste:
 - [x] ein roter Durchgang macht den Lauf rot, der andere läuft trotzdem
 - [x] ein leerer Durchgang (Exit 5) zählt nicht als Fehler, zwei leere schon
 - [x] ``lint``, ``types``, ``chaos``, ``stress``, ``coverage-report``, ``coverage-gate``, ``ratchet`` rufen die CI-Befehle
+- [x] ``ab`` ruft das A/B-Messwerkzeug mit der Gruppe ``messung`` und reicht die Argumente durch (Plan 2026-10-24-1118, U7)
 
 Eingrenzen per Pfad (Plan 2026-10-15-1138, U16, R33):
 - [x] ``just integration <pfad>``: beide Durchgänge laufen nur den Pfad
@@ -279,6 +280,15 @@ def test_recipes_run_the_ci_commands(stub: dict[str, str], recipe: str, expected
     commands = [call.split("reload ")[-1].split(" rmq=")[0].split(" --randomly-seed")[0] for call in calls]
     assert commands == expected
     assert all(("lock=held" in call) is locked for call in calls)
+
+
+def test_ab_runs_the_measuring_tool_with_the_messung_group(stub: dict[str, str]) -> None:
+    result = _just(stub, "ab", "--a", "v1", "--b", "HEAD", "--befehl", "echo '{}'")
+
+    assert result.returncode == 0, result.stderr
+    [call] = _calls(stub)
+    assert "--group messung python scripts/ab_messung.py --a v1 --b HEAD --befehl echo '{}' rmq=" in call
+    assert "lock=free" in call
 
 
 def test_unit_runs_on_eight_workers_by_default(stub: dict[str, str]) -> None:
