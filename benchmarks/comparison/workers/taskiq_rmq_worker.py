@@ -61,7 +61,6 @@ async def failing_task(fail_count: int = 0) -> bool:
 
 @broker.task(task_name="garantie")
 async def garantie(kennung: str, dauer_ms: int = 1000) -> None:
-    # Gemeinsame Task des Garantie-Vergleichs (stoerungen/hauptbuch.py).
     await hauptbuch.garantie_async(kennung, dauer_ms)
 
 

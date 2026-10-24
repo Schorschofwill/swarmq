@@ -12,7 +12,7 @@ import asyncio
 import os
 from typing import Any
 
-from systems.base import ProzessWorker, cli
+from systems.base import NOCH_OFFEN, ProzessWorker, cli
 
 
 class DramatiqSystem(ProzessWorker):
@@ -65,13 +65,11 @@ class DramatiqSystem(ProzessWorker):
 
         nachricht = self._nachrichten[task_id]
         backend = self._worker_modul.result_backend
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        while True:
+
+        async def abfrage() -> Any:
             try:
                 return await asyncio.to_thread(backend.get_result, nachricht, block=False)
             except ResultMissing:
-                pass
-            if loop.time() >= deadline:
-                raise TimeoutError(f"Task {task_id} did not complete within {timeout}s")
-            await asyncio.sleep(poll_interval)
+                return NOCH_OFFEN
+
+        return await self.warte_auf_ergebnis(task_id, abfrage, timeout, poll_interval)

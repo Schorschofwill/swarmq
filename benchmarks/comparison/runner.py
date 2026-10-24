@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Runner des Vergleichs (Plan 2026-10-24-1118, U8, KTD13).
+"""Runner des Vergleichs (Plan 2026-10-24-1118, KTD13).
 
 Der Runner plant die Kombinationen aus System, Szenario und Profil reihum und
 startet jede in einem frischen Prozess mit dem Python der Vergleichsumgebung

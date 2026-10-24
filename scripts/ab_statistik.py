@@ -1,4 +1,4 @@
-"""Statistik des A/B-Messwerkzeugs (Plan 2026-10-24-1118, U7, KTD12, R5).
+"""Statistik des A/B-Messwerkzeugs (Plan 2026-10-24-1118, KTD12, R5).
 
 Nur reine Funktionen, reines Python (keine Abhängigkeit). ``scripts/ab_messung.py``
 ruft ``auswerten`` mit den Rohwerten beider Seiten auf.
@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import NamedTuple
 
-# KTD12: gesichert bei p < 0,05 (zweiseitig); Gewinn ab 5 % vom Median der A-Seite (Key Decision, session-settled).
+# KTD12: gesichert bei p < 0,05 (zweiseitig); Gewinn ab 5 % vom Median der A-Seite.
 ALPHA = 0.05
 SCHWELLE = 0.05
 
@@ -98,7 +98,6 @@ def auswerten(a: list[float], b: list[float], *, besser: Richtung, profile: bool
     if besser is Richtung.KLEINER:
         relativ = -relativ
     if test.p < ALPHA and relativ < 0:
-        # Jede gesicherte Verschlechterung zählt, auch unter der Schwelle.
         urteil = Urteil.VERSCHLECHTERUNG
     elif test.p >= ALPHA or relativ < SCHWELLE:
         urteil = Urteil.KEIN_GEWINN

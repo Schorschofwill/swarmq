@@ -1,4 +1,4 @@
-"""Valkey-Kosten je Task (Plan 2026-10-24-1118, U4, KTD6).
+"""Valkey-Kosten je Task (Plan 2026-10-24-1118, KTD6).
 
 Gezählt werden Befehle und Roundtrips gegen das Test-Valkey (Ports und
 Sperre setzt ``just kosten-valkey``), nicht Zeit (R10). Die Datenbank teilt

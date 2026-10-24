@@ -4,7 +4,7 @@ Der Worker läuft nicht im Runner, sondern als Kindprozess in einer eigenen
 Sitzung und damit eigener Prozessgruppe (PGID = PID; ``start_new_session``,
 weil uvloop ``process_group`` nicht kennt). Ein Signal an die Gruppe trifft so den Worker und
 die Prozesse, die seine CLI forkt (Celery-Pool, Dramatiq- und taskiq-Kinder),
-aber nie den Runner. Die Garantie-Störungen aus U9 bauen darauf auf.
+aber nie den Runner. Die Störungen des Garantie-Vergleichs bauen darauf auf.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ class WorkerProzess:
 
     @property
     def laeuft(self) -> bool:
-        """Ob der Worker gestartet und noch nicht beendet ist (etwa nach einer Störung, U9)."""
+        """Ob der Worker gestartet und noch nicht beendet ist (etwa nach einer Störung)."""
         return self._prozess is not None and self._prozess.returncode is None
 
     async def starten(self) -> int:

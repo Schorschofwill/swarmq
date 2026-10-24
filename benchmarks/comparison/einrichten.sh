@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Legt je System eine eigene Vergleichsumgebung an (Plan 2026-10-24-1118, U8).
+# Legt je System eine eigene Vergleichsumgebung an (Plan 2026-10-24-1118).
 #
 # Eigene Umgebungen, weil sich die Abhängigkeiten ausschließen (arq verlangt
 # redis<6, taskiq-redis redis>=8). Installiert wird exakt nach

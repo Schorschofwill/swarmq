@@ -1,4 +1,4 @@
-"""Sättigung der Methoden und Säulen (Plan 2026-10-24-1118, U5, KTD8, R12–R14).
+"""Sättigung der Methoden und Säulen (Plan 2026-10-24-1118, KTD8, R12–R14).
 
 Aufruf: ``uv run just saettigung``. Liest ``docs/befunde/methodenkatalog.md``
 und ``docs/befunde/saettigungsbuch.toml`` und gibt je Säule den Stand aus,
@@ -25,7 +25,7 @@ import tomllib
 from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from functools import partial
+from functools import cache, partial
 from pathlib import Path
 
 type Git = Callable[[list[str]], str]
@@ -37,7 +37,7 @@ SAEULEN = {"F": "Fehler", "Z": "Zuverlässigkeit", "A": "Angriffssicherheit", "P
 
 
 # KTD8: ENTSCHEIDUNG, NICHT HALTBAR und unbeantwortete „Entscheidung überdenken?“
-# zählen nicht. LÜCKE zählt (Georg, Plan 2026-10-24-1118).
+# zählen nicht. LÜCKE zählt (Plan 2026-10-24-1118).
 BESTAETIGT = frozenset({"FEHLER", "LÜCKE", "VERBESSERUNG"})
 
 # Anteil geänderter Zeilen eines Moduls seit dem Lauf-Commit, ab dem die
@@ -255,7 +255,13 @@ def main(*, wurzel: Path = _WURZEL, git: Git | None = None) -> int:
     katalog = lade_katalog(befunde / "methodenkatalog.md")
     buch = lade_buch(befunde / "saettigungsbuch.toml")
     git = git or _git_in(wurzel)
-    stand = staende(katalog, buch.laeufe, lambda modul, commit: aenderungsanteil(modul, commit, wurzel=wurzel, git=git))
+
+    # Mehrere Methoden teilen sich Modul und Lauf-Commit: git nur einmal je Paar fragen.
+    @cache
+    def anteil(modul: str, commit: str) -> float:
+        return aenderungsanteil(modul, commit, wurzel=wurzel, git=git)
+
+    stand = staende(katalog, buch.laeufe, anteil)
     print("\n".join(bericht(stand, buch.signale)))
     return 0
 

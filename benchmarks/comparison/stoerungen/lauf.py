@@ -1,4 +1,4 @@
-"""Eine Kombination des Garantie-Vergleichs (Plan 2026-10-24-1118, U9, KTD14, R21).
+"""Eine Kombination des Garantie-Vergleichs (Plan 2026-10-24-1118, KTD14, R21).
 
 Läuft als eigener Prozess im Python der Vergleichsumgebung des Systems
 (``garantie.py`` startet ihn mit ``-m stoerungen.lauf`` in
@@ -224,7 +224,7 @@ def main() -> None:
     import worker_prozess
 
     def _beenden(signum: int, _frame: object) -> None:
-        # Der Hänger-Wächter schickt SIGTERM: Worker mitnehmen (wie runner.einzeln).
+        # Der Hänger-Wächter schickt SIGTERM: Worker mitnehmen.
         worker_prozess.beende_alle()
         os._exit(128 + signum)
 

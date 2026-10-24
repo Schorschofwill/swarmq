@@ -1,4 +1,4 @@
-"""Hauptbuch des Garantie-Vergleichs (Plan 2026-10-24-1118, U9, KTD14).
+"""Hauptbuch des Garantie-Vergleichs (Plan 2026-10-24-1118, KTD14).
 
 Das Buch ist eine SQLite-Datei auf dem Host, in die Erzeuger und Worker der
 fünf Systeme aus eigenen Prozessen schreiben. Die Tests nutzen eine Datei im

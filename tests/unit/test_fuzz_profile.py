@@ -1,4 +1,4 @@
-"""Hypothesis-Profil ``ci`` der Fuzz-Suite (Plan 2026-10-24-1118, U1, KTD1, R10).
+"""Hypothesis-Profil ``ci`` der Fuzz-Suite (Plan 2026-10-24-1118, KTD1, R10).
 
 ``tests/fuzz/conftest.py`` lädt das Profil, wenn ``SWARMQ_FUZZ_PROFILE`` es
 nennt. Die Fuzz-Ziele setzen eigene ``@settings(max_examples=500,

@@ -62,7 +62,6 @@ def create_task_classes(queue: str) -> dict[str, type[Task]]:
             raise RuntimeError("Deliberate benchmark failure")
 
     class GarantieTask(Task):
-        # Gemeinsame Task des Garantie-Vergleichs (stoerungen/hauptbuch.py).
         task_info = TaskInfo(name="garantie", queues=[queue])
 
         async def run(self, kennung: str, dauer_ms: int = 1000) -> None:

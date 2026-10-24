@@ -1,4 +1,4 @@
-"""Basislinie der Kostensuite (Plan 2026-10-24-1118, U3, KTD7).
+"""Basislinie der Kostensuite (Plan 2026-10-24-1118, KTD7).
 
 Die Suite unter ``tests/kosten/`` misst zählbare Kosten je Szenario und
 vergleicht sie hier exakt mit ``tests/kosten/basislinie.toml``.
@@ -68,16 +68,16 @@ def _aufloesbare_verweise(grund: str, wurzel: Path) -> list[str]:
     for nummer in _ENTSCHEIDUNG.findall(grund):
         if any(pack.glob(f"e{nummer}-*.md")):
             gefunden.append(f"E-{nummer}")
-    register = [
-        datei.read_text(encoding="utf-8")
-        for datei in sorted((wurzel / "docs" / "befunde").glob("*.md"))
-        if datei.name != "README.md"
-    ]
-    for befund in _BEFUND.findall(grund):
-        if not _ENTSCHEIDUNG.fullmatch(befund) and any(
-            re.search(rf"\b{re.escape(befund)}\b", text) for text in register
-        ):
-            gefunden.append(befund)
+    befunde = [befund for befund in _BEFUND.findall(grund) if not _ENTSCHEIDUNG.fullmatch(befund)]
+    if befunde:
+        register = [
+            datei.read_text(encoding="utf-8")
+            for datei in sorted((wurzel / "docs" / "befunde").glob("*.md"))
+            if datei.name != "README.md"
+        ]
+        gefunden.extend(
+            befund for befund in befunde if any(re.search(rf"\b{re.escape(befund)}\b", text) for text in register)
+        )
     gefunden.extend(plan for plan in _PLAN.findall(grund) if (wurzel / plan).is_file())
     return gefunden
 

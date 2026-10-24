@@ -1,4 +1,4 @@
-"""Wertung des Hauptbuchs im Garantie-Vergleich (Plan 2026-10-24-1118, U9, KTD14, R21).
+"""Wertung des Hauptbuchs im Garantie-Vergleich (Plan 2026-10-24-1118, KTD14, R21).
 
 ``bilanz.py`` wertet die Zeilen eines Hauptbuchs rein funktional aus: keine
 Datei, keine Dienste. Das Modul liegt unter ``benchmarks/comparison`` und

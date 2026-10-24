@@ -1,4 +1,4 @@
-"""Ablauf des Garantie-Vergleichs unter Störungen (Plan 2026-10-24-1118, U9, KTD13, KTD14, R21).
+"""Ablauf des Garantie-Vergleichs unter Störungen (Plan 2026-10-24-1118, KTD13, KTD14, R21).
 
 Geprüft wird die Logik ohne Dienste: Ruhephase, Ausgang eines Publishs,
 Ziel jeder Störung, der eigene Compose-Stack und die Adressen, über die die
@@ -152,7 +152,7 @@ def test_without_the_variables_the_addresses_of_the_performance_comparison_stay(
     assert base.VALKEY_HOST == "localhost:6389"
 
 
-# Standard-, Test-, Chaos- und Vergleichsports samt Management (AGENTS.md, tests/chaos/, U8).
+# Standard-, Test-, Chaos- und Vergleichsports samt Management (AGENTS.md, tests/chaos/).
 BELEGTE_PORTS = frozenset({5672, 15672, 6379, 5699, 15699, 6399, 5698, 6398, 5682, 15682, 6389, 8474})
 
 

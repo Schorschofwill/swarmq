@@ -1,4 +1,4 @@
-# Eigener Stack des Garantie-Vergleichs (Plan 2026-10-24-1118, U9, KTD14).
+# Eigener Stack des Garantie-Vergleichs (Plan 2026-10-24-1118, KTD14).
 # Projektname swarmq-vergleich-stoerung (stack.PROJEKT). Clients erreichen
 # die Dienste nur über Toxiproxy; die Host-Ports stehen in stack.PORTS und
 # meiden Standard-, Test-, Chaos- und Vergleichsports.

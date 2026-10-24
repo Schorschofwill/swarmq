@@ -1,4 +1,4 @@
-"""Statistik des A/B-Messwerkzeugs (Plan 2026-10-24-1118, U7, KTD12, R5, AE2).
+"""Statistik des A/B-Messwerkzeugs (Plan 2026-10-24-1118, KTD12, R5, AE2).
 
 ``scripts/ab_statistik.py`` enthält nur reine Funktionen: zweiseitiger
 Mann-Whitney-U-Test, Hodges-Lehmann-Verschiebung und das Urteil. Gesichert
@@ -28,29 +28,16 @@ Test-Liste:
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 from pathlib import Path
-from types import ModuleType
 
 import pytest
+
+from tests.support.skripte import lade_skript
 
 pytestmark = pytest.mark.timeout(5)
 
 
-def _load() -> ModuleType:
-    path = Path(__file__).resolve().parents[2] / "scripts" / "ab_statistik.py"
-    spec = importlib.util.spec_from_file_location("ab_statistik", path)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    # dataclass braucht das Modul in sys.modules.
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-stat = _load()
+stat = lade_skript("ab_statistik", Path(__file__).resolve().parents[2] / "scripts" / "ab_statistik.py")
 
 _OHNE_BINDUNGEN = (
     [1012.4, 998.1, 1005.7, 1020.3, 990.2, 1001.8, 1015.0, 995.5, 1008.9, 1003.3],
@@ -109,7 +96,7 @@ def test_a_secured_eight_percent_throughput_gain_with_profiles_is_a_gain() -> No
 
 
 def test_a_secured_three_percent_throughput_gain_is_no_gain() -> None:
-    # AE2: gesichert, aber unter der 5-%-Schwelle (session-settled).
+    # AE2: gesichert, aber unter der 5-%-Schwelle.
     auswertung = stat.auswerten(_STREUUNG, _skaliert(1.03), besser=stat.Richtung.GROESSER, profile=True)
 
     assert auswertung.p < 0.05

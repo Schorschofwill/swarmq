@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
 import uuid
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -21,6 +23,9 @@ VERGLEICH_DIR = Path(__file__).resolve().parents[1]
 RABBITMQ_URL = os.environ.get("VERGLEICH_RABBITMQ_URL", "amqp://guest:guest@localhost:5682/")
 VALKEY_HOST = os.environ.get("VERGLEICH_VALKEY_HOST", "localhost:6389")
 
+#: Rückgabe einer Ergebnisabfrage, solange die Task nicht fertig ist; ein Ergebnis kann ``None`` sein.
+NOCH_OFFEN: Any = object()
+
 
 @runtime_checkable
 class TaskQueueSystem(Protocol):
@@ -28,7 +33,7 @@ class TaskQueueSystem(Protocol):
 
     Der Worker jedes Systems läuft als eigener Prozess über die CLI des
     Systems, nie im Runner. ``worker_pid`` nennt ihn, solange er läuft; ein
-    Signal an ihn trifft den Runner nicht (Grundlage der Störungen in U9).
+    Signal an ihn trifft den Runner nicht (Grundlage der Störungen im Garantie-Vergleich).
     Der Runner-Prozess ist nur Erzeuger und liest die Ergebnisse.
     """
 
@@ -122,6 +127,20 @@ class ProzessWorker:
             "VERGLEICH_BACKEND_URL": self.backend_url,
             "VERGLEICH_EINSTELLUNGEN": json.dumps(self.einstellungen),
         }
+
+    async def warte_auf_ergebnis(
+        self, task_id: str, abfrage: Callable[[], Awaitable[Any]], timeout: float, poll_interval: float
+    ) -> Any:
+        """Ruft ``abfrage`` bis zu einem Ergebnis außer ``NOCH_OFFEN`` auf, längstens ``timeout`` Sekunden."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            ergebnis = await abfrage()
+            if ergebnis is not NOCH_OFFEN:
+                return ergebnis
+            if loop.time() >= deadline:
+                raise TimeoutError(f"Task {task_id} did not complete within {timeout}s")
+            await asyncio.sleep(poll_interval)
 
     async def start_worker(self) -> None:
         if self._worker is not None:

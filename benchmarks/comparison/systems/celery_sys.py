@@ -12,7 +12,7 @@ import asyncio
 import os
 from typing import Any
 
-from systems.base import ProzessWorker, cli
+from systems.base import NOCH_OFFEN, ProzessWorker, cli
 
 
 class CelerySystem(ProzessWorker):
@@ -56,14 +56,13 @@ class CelerySystem(ProzessWorker):
         from celery import states
 
         backend = self._worker_modul.app.backend
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        while True:
+
+        async def abfrage() -> Any:
             meta = await asyncio.to_thread(backend.get_task_meta, task_id)
             if meta["status"] == states.SUCCESS:
                 return meta["result"]
             if meta["status"] in states.PROPAGATE_STATES:
                 raise RuntimeError(f"Task {task_id} failed: {meta['result']!r}")
-            if loop.time() >= deadline:
-                raise TimeoutError(f"Task {task_id} did not complete within {timeout}s")
-            await asyncio.sleep(poll_interval)
+            return NOCH_OFFEN
+
+        return await self.warte_auf_ergebnis(task_id, abfrage, timeout, poll_interval)

@@ -1,4 +1,4 @@
-"""Garantie-Vergleich unter Störungen (Plan 2026-10-24-1118, U9, KTD14, R21, R22).
+"""Garantie-Vergleich unter Störungen (Plan 2026-10-24-1118, KTD14, R21, R22).
 
 Startet den eigenen Compose-Stack (``compose.yml``, Projekt
 ``swarmq-vergleich-stoerung``), fährt jede Kombination aus System, Profil und

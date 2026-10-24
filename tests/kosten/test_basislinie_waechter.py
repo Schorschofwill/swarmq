@@ -1,4 +1,4 @@
-"""Wächter der Basislinie (Plan 2026-10-24-1118, U3, KTD7).
+"""Wächter der Basislinie (Plan 2026-10-24-1118, KTD7).
 
 Jeder Anstieg in der Historie von ``basislinie.toml`` trägt einen
 auflösbaren Verweis: ``E-nnn`` mit Datei im Pack, eine Befund-ID aus einem

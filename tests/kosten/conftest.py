@@ -1,4 +1,4 @@
-"""Kostensuite ohne Dienste (Plan 2026-10-24-1118, U3, KTD4, KTD5, KTD7).
+"""Kostensuite ohne Dienste (Plan 2026-10-24-1118, KTD4, KTD5, KTD7).
 
 Gemessen werden zählbare Kosten, keine Zeit (R10):
 
@@ -12,7 +12,7 @@ Gemessen werden zählbare Kosten, keine Zeit (R10):
 
 Allokationen (``tracemalloc``) sind nicht im Gate: Die Determinismusprobe
 vor dem Bau ergab über 20 Läufe keine identischen Zahlen (Stop condition aus
-KTD5, Georg entscheidet).
+KTD5).
 
 Die Fixture ``kosten`` vergleicht exakt mit ``basislinie.toml``. Mit
 ``SWARMQ_KOSTEN_MESSUNG=<datei>`` schreibt sie die Messung stattdessen als
@@ -23,7 +23,6 @@ Basislinie.
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import inspect
 import json
 import os
@@ -33,7 +32,6 @@ from collections import Counter
 from collections.abc import AsyncIterator, Callable, Coroutine, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from types import ModuleType
 from typing import Any, ClassVar, cast, override
 from unittest.mock import AsyncMock, Mock
 
@@ -50,6 +48,7 @@ from swarmq.worker import Worker
 from swarmq.workflow_orchestration import WorkflowAdvancer, WorkflowStepEnqueuer, workflow_step_task_id
 from tests.support.aiormq_transport import FakePublishChannel, FakeTransport
 from tests.support.inmemory import FakeClock, InMemoryBackend, InMemoryBroker
+from tests.support.skripte import lade_skript
 
 _WURZEL = Path(__file__).resolve().parents[2]
 QUEUE = "kosten"
@@ -60,7 +59,7 @@ _STORES = frozenset({"rate_limit", "locks", "chords", "schedules", "execution_gu
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    # Der Valkey-Teil (``tests/kosten/valkey``, U4) trägt ``kosten_valkey``
+    # Der Valkey-Teil (``tests/kosten/valkey``) trägt ``kosten_valkey``
     # und läuft nur mit Diensten.
     for item in items:
         pfad = str(item.fspath)
@@ -68,16 +67,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(pytest.mark.kosten)
 
 
-def _lade_skript() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("kosten_basislinie", _WURZEL / "scripts" / "kosten_basislinie.py")
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-basislinie_skript = _lade_skript()
+basislinie_skript = lade_skript("kosten_basislinie", _WURZEL / "scripts" / "kosten_basislinie.py")
 
 
 def lies_basislinie() -> dict[str, Any]:

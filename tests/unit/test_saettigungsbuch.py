@@ -1,4 +1,4 @@
-"""Guard für Methodenkatalog und Sättigungsbuch (Plan 2026-10-24-1118, U5, KTD9).
+"""Guard für Methodenkatalog und Sättigungsbuch (Plan 2026-10-24-1118, KTD9).
 
 ``docs/befunde/saettigungsbuch.toml`` hält Läufe und Signale fest,
 ``docs/befunde/methodenkatalog.md`` die Methoden und Module. Der Guard hält

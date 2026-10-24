@@ -1,4 +1,4 @@
-"""Zählbare Kosten je Task für die zentralen Pfade (Plan 2026-10-24-1118, U3, R7).
+"""Zählbare Kosten je Task für die zentralen Pfade (Plan 2026-10-24-1118, R7).
 
 Jedes Szenario misst einen Pfad vom ``schedule`` bis zur letzten
 Bestätigung und vergleicht exakt mit ``basislinie.toml`` (Fixture

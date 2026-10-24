@@ -5,7 +5,7 @@ U3.7 (``test_external_publish_fuzz.py``) needs the ``chaos_stack`` +
 Re-export them here so tests under ``tests/fuzz/`` can request them
 without forcing a nested directory layout.
 
-Profil ``ci`` (Plan 2026-10-24-1118, U1, KTD1): ``derandomize=True`` macht den
+Profil ``ci`` (Plan 2026-10-24-1118, KTD1): ``derandomize=True`` macht den
 Kurzlauf in der Pipeline deterministisch (R10). Gewählt wird es über
 ``SWARMQ_FUZZ_PROFILE``, nicht ``HYPOTHESIS_PROFILE``: Das liest die
 Property-Suite, die ``ci`` nicht kennt. Die eigenen ``@settings`` der Ziele

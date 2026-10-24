@@ -7,7 +7,6 @@ dieselben Klassen sehen.
 from __future__ import annotations
 
 import datetime as dt
-import importlib.util
 import re
 import sys
 import tomllib
@@ -15,20 +14,15 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+from tests.support.skripte import lade_skript
+
 _SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "saettigung.py"
 
 
 def _load() -> ModuleType:
     if "saettigung" in sys.modules:
         return sys.modules["saettigung"]
-    spec = importlib.util.spec_from_file_location("saettigung", _SCRIPT)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    # dataclasses löst Annotationen über sys.modules auf.
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    return lade_skript("saettigung", _SCRIPT)
 
 
 saettigung = _load()

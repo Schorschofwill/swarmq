@@ -1,4 +1,4 @@
-"""Hauptbuch des Garantie-Vergleichs (Plan 2026-10-24-1118, U9, KTD14).
+"""Hauptbuch des Garantie-Vergleichs (Plan 2026-10-24-1118, KTD14).
 
 Eine SQLite-Datei auf dem Host, damit keine der gestörten Komponenten das
 Buch mitreißt. Der Erzeuger schreibt jeden Publish mit Ausgang, die Worker
@@ -13,6 +13,7 @@ import asyncio
 import os
 import sqlite3
 import time
+from contextlib import closing
 from pathlib import Path
 
 from stoerungen.bilanz import Ausfuehrung, Publish
@@ -38,22 +39,15 @@ class Hauptbuch:
 
     def __init__(self, pfad: Path | str) -> None:
         self.pfad = Path(pfad)
-        db = self._verbindung()
-        try:
+        with closing(self._verbindung()) as db:
             db.executescript(_SCHEMA)
-        finally:
-            db.close()
 
     def _verbindung(self) -> sqlite3.Connection:
         return sqlite3.connect(self.pfad, timeout=30.0)
 
     def _schreiben(self, sql: str, *werte: object) -> None:
-        db = self._verbindung()
-        try:
-            with db:
-                db.execute(sql, werte)
-        finally:
-            db.close()
+        with closing(self._verbindung()) as db, db:
+            db.execute(sql, werte)
 
     def publish(self, kennung: str, ausgang: str) -> None:
         self._schreiben("INSERT INTO publish VALUES (?, ?, ?)", kennung, ausgang, time.time())
@@ -70,11 +64,8 @@ class Hauptbuch:
 
     def ereignis_zeit(self, art: str) -> float | None:
         """Erster Zeitpunkt des Ereignisses ``art``, ``None`` ohne Ereignis."""
-        db = self._verbindung()
-        try:
+        with closing(self._verbindung()) as db:
             [(zeit,)] = db.execute("SELECT MIN(zeit) FROM ereignis WHERE art = ?", (art,)).fetchall()
-        finally:
-            db.close()
         return None if zeit is None else float(zeit)
 
     def worker(self, pid: int) -> None:
@@ -82,18 +73,12 @@ class Hauptbuch:
         self._schreiben("INSERT INTO worker VALUES (?)", pid)
 
     def worker_pids(self) -> list[int]:
-        db = self._verbindung()
-        try:
+        with closing(self._verbindung()) as db:
             return [pid for (pid,) in db.execute("SELECT pid FROM worker")]
-        finally:
-            db.close()
 
     def _zahl(self, sql: str) -> int:
-        db = self._verbindung()
-        try:
+        with closing(self._verbindung()) as db:
             [(zahl,)] = db.execute(sql).fetchall()
-        finally:
-            db.close()
         return int(zahl)
 
     def laufend(self) -> int:
@@ -104,12 +89,9 @@ class Hauptbuch:
 
     def zeilen(self) -> tuple[list[Publish], list[Ausfuehrung]]:
         """Alle Publishes und Ausführungen für ``bilanz.bilanz``."""
-        db = self._verbindung()
-        try:
+        with closing(self._verbindung()) as db:
             publishes = [Publish(k, a) for k, a in db.execute("SELECT kennung, ausgang FROM publish")]
             ausfuehrungen = [Ausfuehrung(k, z) for k, z in db.execute("SELECT kennung, zeit FROM ausfuehrung")]
-        finally:
-            db.close()
         return publishes, ausfuehrungen
 
 

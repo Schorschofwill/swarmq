@@ -19,7 +19,7 @@
 # Lauf liesse sich sonst nicht nachstellen. Vorgabe per SWARMQ_TEST_SEED.
 # Mit SWARMQ_TEST_COVERAGE=1 laeuft pytest unter ``coverage run``.
 #
-# SWARMQ_TEST_MIN_TESTS=N (Plan 2026-10-24-1118, U1, KTD1): Wächter gegen
+# SWARMQ_TEST_MIN_TESTS=N (Plan 2026-10-24-1118, KTD1): Wächter gegen
 # leere Läufe, nur ohne --parallel. Der Lauf ist rot, wenn laut junit-Datei
 # weniger als N Tests ausgeführt (nicht übersprungen) wurden; ein Lauf mit nur
 # übersprungenen Tests endet sonst grün.

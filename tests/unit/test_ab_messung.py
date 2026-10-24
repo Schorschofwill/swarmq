@@ -1,4 +1,4 @@
-"""A/B-Messwerkzeug (Plan 2026-10-24-1118, U7, KTD12, R5).
+"""A/B-Messwerkzeug (Plan 2026-10-24-1118, KTD12, R5).
 
 ``scripts/ab_messung.py`` legt für zwei Refs je einen git-Worktree an, ruft
 den Messbefehl abwechselnd A, B, A, B auf, liest je Lauf eine Kennzahl aus

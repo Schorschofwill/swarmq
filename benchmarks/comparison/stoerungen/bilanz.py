@@ -1,4 +1,4 @@
-"""Wertung des Hauptbuchs im Garantie-Vergleich (Plan 2026-10-24-1118, U9, KTD14).
+"""Wertung des Hauptbuchs im Garantie-Vergleich (Plan 2026-10-24-1118, KTD14).
 
 Rein funktional: Die Funktion bekommt die Zeilen des Hauptbuchs und liefert
 die Bilanz einer Kombination aus System, Profil und Störung. Gezählt wird
@@ -55,7 +55,7 @@ class Bilanz:
 
     @property
     def leer(self) -> bool:
-        """Ohne bestätigten Publish oder ohne Ausführung hat der Lauf nichts gemessen (Verification U9)."""
+        """Ohne bestätigten Publish oder ohne Ausführung hat der Lauf nichts gemessen."""
         return self.bestaetigt == 0 or self.ausgefuehrt == 0
 
 

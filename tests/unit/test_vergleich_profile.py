@@ -1,4 +1,4 @@
-"""Profile des Vergleichsaufbaus (Plan 2026-10-24-1118, U8, KTD13, R19/R20).
+"""Profile des Vergleichsaufbaus (Plan 2026-10-24-1118, KTD13, R19/R20).
 
 ``benchmarks/comparison/garantieprofile.py`` hält je System die Profile
 ``ab_werk`` und ``stark`` als Daten. Tests und Methodik lesen dieselbe Quelle.
@@ -20,12 +20,12 @@ Test-Liste:
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 from pathlib import Path
 from types import ModuleType
 
 import pytest
+
+from tests.support.skripte import lade_skript
 
 PROFILE_PATH = Path(__file__).resolve().parents[2] / "benchmarks" / "comparison" / "garantieprofile.py"
 
@@ -35,14 +35,7 @@ SYSTEME = ("swarmq", "celery", "dramatiq", "arq", "taskiq")
 @pytest.fixture(scope="module")
 def profile() -> ModuleType:
     """Lädt die Profildatei per Pfad, ohne ``benchmarks/comparison`` in ``sys.path``."""
-    spec = importlib.util.spec_from_file_location("vergleich_garantieprofile", PROFILE_PATH)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    # Dataclasses lösen Annotationen über ``sys.modules`` auf.
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    return lade_skript("vergleich_garantieprofile", PROFILE_PATH)
 
 
 @pytest.mark.parametrize("system", SYSTEME)

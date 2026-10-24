@@ -1,4 +1,4 @@
-"""Valkey-Befehle und Roundtrips je Task (Plan 2026-10-24-1118, U4, R7, KTD6).
+"""Valkey-Befehle und Roundtrips je Task (Plan 2026-10-24-1118, R7, KTD6).
 
 Ein Task nacheinander: Das Auto-Pipelining (``script_pipeline.py``) bündelt
 die Aufrufe eines Event-Loop-Takts, bei Nebenläufigkeit hingen die

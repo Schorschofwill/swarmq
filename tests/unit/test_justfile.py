@@ -30,15 +30,15 @@ Test-Liste:
 - [x] ein roter Durchgang macht den Lauf rot, der andere läuft trotzdem
 - [x] ein leerer Durchgang (Exit 5) zählt nicht als Fehler, zwei leere schon
 - [x] ``lint``, ``types``, ``chaos``, ``stress``, ``coverage-report``, ``coverage-gate``, ``ratchet``, ``saettigung`` rufen die CI-Befehle
-- [x] ``ab`` ruft das A/B-Messwerkzeug mit der Gruppe ``messung`` und reicht die Argumente durch (Plan 2026-10-24-1118, U7)
+- [x] ``ab`` ruft das A/B-Messwerkzeug mit der Gruppe ``messung`` und reicht die Argumente durch (Plan 2026-10-24-1118)
 
-Kostensuite (Plan 2026-10-24-1118, U3):
+Kostensuite (Plan 2026-10-24-1118):
 - [x] ``kosten`` ruft die Suite unter ``tests/kosten`` mit Marker ``kosten``, ohne Sperre
 - [x] ``just all`` fährt ``kosten`` nach ``fuzz``
 - [x] ``kosten-basislinie <grund>`` misst in eine Datei und übergibt Grund und Datei dem Skript
 - [x] ein roter Messlauf schreibt keine Basislinie
 
-Valkey-Kosten (Plan 2026-10-24-1118, U4):
+Valkey-Kosten (Plan 2026-10-24-1118):
 - [x] ``kosten-valkey`` ruft die Suite unter ``tests/kosten/valkey`` mit Marker ``kosten_valkey``, unter der Sperre
 - [x] ``just all`` fährt ``kosten-valkey`` nach ``integration``
 - [x] ``kosten-basislinie <grund>`` misst beide Teile in dieselbe Datei, den Valkey-Teil unter der Sperre
@@ -53,16 +53,16 @@ Eingrenzen per Pfad (Plan 2026-10-15-1138, U16, R33):
 - [x] ``just property <pfad>`` und ``just stress <pfad>`` grenzen ein, der Marker bleibt
 - [x] ein nicht existierender Pfad: die Suite bleibt davor
 
-Wächter gegen leere Läufe (Plan 2026-10-24-1118, U1, KTD1, AE7):
+Wächter gegen leere Läufe (Plan 2026-10-24-1118, KTD1, AE7):
 - [x] ``SWARMQ_TEST_MIN_TESTS``: weniger ausgeführte Tests als verlangt (nur übersprungene) machen den Lauf rot
 - [x] genug ausgeführte Tests: der Lauf bleibt grün
 - [x] ohne ``SWARMQ_TEST_MIN_TESTS`` bleibt ein Lauf ohne ausgeführte Tests grün wie bisher
 - [x] ohne ``--junitxml`` des Aufrufers liest der Wächter eine eigene junit-Datei
 
-Garantie-Vergleich (Plan 2026-10-24-1118, U9):
+Garantie-Vergleich (Plan 2026-10-24-1118):
 - [x] ``vergleich-garantie`` ruft ``stoerungen.garantie`` in ``benchmarks/comparison`` ohne Sperre und reicht die Argumente durch
 
-Abhängigkeitsprüfung (Plan 2026-10-24-1118, U2, KTD2):
+Abhängigkeitsprüfung (Plan 2026-10-24-1118, KTD2):
 - [x] ``just audit`` ruft ``uv audit --frozen``
 - [x] der Exitcode von ``uv audit`` wird unverändert weitergereicht
 """
@@ -594,7 +594,7 @@ def test_kosten_basislinie_measures_into_a_file_and_hands_reason_and_file_to_the
     messen, messen_valkey, schreiben = _calls(stub)
     assert "pytest tests/kosten -m kosten" in messen
     assert "lock=free" in messen
-    # Der Valkey-Teil (U4) misst in dieselbe Datei, unter der Sperre und gegen die Testports.
+    # Der Valkey-Teil misst in dieselbe Datei, unter der Sperre und gegen die Testports.
     assert "pytest tests/kosten/valkey -m kosten_valkey" in messen_valkey
     assert "valkey=6399 lockheld=1 lock=held" in messen_valkey
     messung, messung_valkey = Path(stub["STUB_LOG"] + ".messung").read_text(encoding="utf-8").splitlines()

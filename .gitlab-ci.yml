@@ -14,7 +14,7 @@
 #       Verified: the full suite ran clean 3x under 6-way CPU saturation
 #       (heavier than the CI runner). A red e2e job is now a real regression.
 #     * fuzz: im Unit-Job, blockierend, deterministisch (Profil ci) und mit
-#       Wächter gegen leere Läufe (Plan 2026-10-24-1118, U1).
+#       Wächter gegen leere Läufe (Plan 2026-10-24-1118).
 #     * chaos: nicht in der Pipeline -- örtlich vor Releases, siehe den
 #       Block weiter unten und docs/testing/test-strategy.md.
 #   secret_detection runs in the test stage, next to the tests (it needs
@@ -163,7 +163,7 @@ lock-check:
     - uv lock --check
 
 # Bekannte Schwachstellen in den Abhängigkeiten aus uv.lock, per uv audit
-# gegen OSV (Plan 2026-10-24-1118, U2, KTD2). Blockierend nur, wenn der Branch
+# gegen OSV (Plan 2026-10-24-1118, KTD2). Blockierend nur, wenn der Branch
 # uv.lock oder pyproject.toml gegenüber main ändert: Es gibt nur
 # Branch-Pipelines, und ohne compare_to vergliche `changes` mit dem vorigen
 # Push. Sonst nur eine Warnung, damit eine neue CVE main nie ohne eigenes
@@ -198,11 +198,11 @@ abhaengigkeiten-pruefen:
 # Härtung R2 B1: the pure parser-fuzz suite joins the blocking gate — it is
 # service-free; previously NO CI job ever executed tests/fuzz, so the suite
 # was rotting unnoticed.
-# Plan 2026-10-24-1118, U1: SWARMQ_FUZZ_PROFILE=ci lädt das Hypothesis-Profil
+# Plan 2026-10-24-1118: SWARMQ_FUZZ_PROFILE=ci lädt das Hypothesis-Profil
 # mit derandomize (gleiche Beispiele in jedem Lauf, R10). SWARMQ_TEST_MIN_TESTS
 # macht den Lauf rot, wenn weniger Fuzz-Ziele ausgeführt als verlangt wurden,
 # etwa weil alle übersprungen sind (AE7, scripts/run-tests.sh). Die Zahl ist
-# die aktuelle Zahl der Ziele ohne Dienste; wer eins entfernt, senkt sie hier.
+# die aktuelle Zahl der Ziele ohne Dienste.
 unit-tests:
   extends: .uv-git
   stage: test
@@ -245,7 +245,7 @@ integration-tests:
   script:
     - $UV_RUN just integration -q --junitxml=junit-integration.xml
     # Valkey-Befehle und Roundtrips je Task exakt gegen tests/kosten/basislinie.toml
-    # (Plan 2026-10-24-1118, U4, KTD6), ohne Coverage wie just kosten.
+    # (Plan 2026-10-24-1118, KTD6), ohne Coverage wie just kosten.
     - SWARMQ_TEST_COVERAGE= $UV_RUN just kosten-valkey -q --junitxml=junit-kosten-valkey.xml
   artifacts: !reference [.coverage-data, artifacts]
 

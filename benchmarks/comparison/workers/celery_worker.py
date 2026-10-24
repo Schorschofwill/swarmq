@@ -50,7 +50,6 @@ def cpu_task(iterations: int = 10_000) -> bool:
 
 @app.task(name="garantie")
 def garantie(kennung: str, dauer_ms: int = 1000) -> None:
-    # Gemeinsame Task des Garantie-Vergleichs (stoerungen/hauptbuch.py).
     hauptbuch.garantie(kennung, dauer_ms)
 
 

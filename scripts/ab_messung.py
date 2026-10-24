@@ -1,4 +1,4 @@
-"""A/B-Messung zweier Refs (Plan 2026-10-24-1118, U7, KTD12, R5).
+"""A/B-Messung zweier Refs (Plan 2026-10-24-1118, KTD12, R5).
 
 Aufruf: ``uv run just ab --a <ref> --b <ref> --befehl <befehl> --kennzahl
 <schlüssel> --besser groesser|kleiner --ergebnis <datei.json> [--paare N]``.
@@ -86,11 +86,13 @@ def _profil(befehl: str, worktree: Path, ziel: Path) -> bool:
     return False
 
 
-def _messreihe(args: argparse.Namespace, worktrees: dict[str, Path], werte: dict[str, list[float]], paare: int) -> None:
+def _messreihe(
+    befehl: str, kennzahl: str, worktrees: dict[str, Path], werte: dict[str, list[float]], paare: int
+) -> None:
     """``paare`` Läufe je Seite, abwechselnd A, B, A, B."""
     for _ in range(paare):
         for seite, worktree in worktrees.items():
-            werte[seite].append(_lauf(args.befehl, worktree, args.kennzahl))
+            werte[seite].append(_lauf(befehl, worktree, kennzahl))
 
 
 def _messen(args: argparse.Namespace, tmp: Path) -> dict[str, object]:
@@ -106,11 +108,11 @@ def _messen(args: argparse.Namespace, tmp: Path) -> dict[str, object]:
         # Beide Seiten immer: Der Profillauf wärmt zugleich jede Seite gleich vor (etwa ``uv run``).
         profiliert = all([_profil(args.befehl, worktrees[seite], profile[seite]) for seite in seiten])  # noqa: C419 - beide Seiten, kein Kurzschluss
         paare = args.paare
-        _messreihe(args, worktrees, werte, paare)
+        _messreihe(args.befehl, args.kennzahl, worktrees, werte, paare)
         # KTD12: ungesichert nach den ersten Paaren, einmal auf 30 erweitern; dieses Ergebnis gilt.
         erweitert = paare < _ERWEITERT and mann_whitney_u(werte["a"], werte["b"]).p >= ALPHA
         if erweitert:
-            _messreihe(args, worktrees, werte, _ERWEITERT - paare)
+            _messreihe(args.befehl, args.kennzahl, worktrees, werte, _ERWEITERT - paare)
             paare = _ERWEITERT
     finally:
         for worktree in worktrees.values():

@@ -1,4 +1,4 @@
-"""Basislinie der Kostensuite (Plan 2026-10-24-1118, U3, KTD7).
+"""Basislinie der Kostensuite (Plan 2026-10-24-1118, KTD7).
 
 ``scripts/kosten_basislinie.py`` vergleicht gemessene Kosten je Szenario
 exakt mit ``tests/kosten/basislinie.toml`` (Ratsche in beide Richtungen) und
@@ -27,15 +27,15 @@ Test-Liste:
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import subprocess
 import sys
 import tomllib
 from pathlib import Path
-from types import ModuleType
 
 import pytest
+
+from tests.support.skripte import lade_skript
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -43,16 +43,7 @@ pytestmark = pytest.mark.timeout(5)
 _SKRIPT = Path(__file__).resolve().parents[2] / "scripts" / "kosten_basislinie.py"
 
 
-def _load() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("kosten_basislinie", _SKRIPT)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-kb = _load()
+kb = lade_skript("kosten_basislinie", _SKRIPT)
 
 _PY = "3.14.4"
 

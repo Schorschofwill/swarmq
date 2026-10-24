@@ -39,7 +39,7 @@ types:
     {{uv_run}} python -m mypy.stubtest msgpack croniter --mypy-config-file pyproject.toml --ignore-missing-stub
 
 # Bekannte Schwachstellen in den Abhängigkeiten aus uv.lock (OSV), wie der
-# CI-Job abhaengigkeiten-pruefen (Plan 2026-10-24-1118, U2, KTD2). Ausnahmen
+# CI-Job abhaengigkeiten-pruefen (Plan 2026-10-24-1118, KTD2). Ausnahmen
 # kommen als ``--ignore <ID>`` dazu, je mit Kommentar aus Grund und Signal-ID.
 audit:
     uv audit --frozen
@@ -59,20 +59,20 @@ fuzz *args:
     scripts/run-tests.sh --no-services --suite tests/fuzz --ignore tests/fuzz/test_external_publish_fuzz.py -m fuzz "$@"
 
 # Kostensuite ohne Dienste: zählbare Kosten je Task exakt gegen
-# tests/kosten/basislinie.toml (Plan 2026-10-24-1118, U3). Ohne Coverage, die
+# tests/kosten/basislinie.toml (Plan 2026-10-24-1118). Ohne Coverage, die
 # CI setzt dafür SWARMQ_TEST_COVERAGE leer.
 kosten *args:
     scripts/run-tests.sh --no-services --suite tests/kosten -m kosten "$@"
 
 # Basislinie der Kostensuite neu messen und schreiben; der Grund verweist auf
 # eine Entscheidung (E-nnn), einen Befund oder docs/plans/<datei>.md (KTD7).
-# Misst beide Teile, die Valkey-Kosten (U4) unter der Testsperre: Die Datei
+# Misst beide Teile, die Valkey-Kosten unter der Testsperre: Die Datei
 # enthält danach genau die gemessenen Szenarien.
 kosten-basislinie grund:
     messung="$(mktemp)"; trap 'rm -f "$messung"' EXIT; SWARMQ_KOSTEN_MESSUNG="$messung" scripts/run-tests.sh --no-services --suite tests/kosten -m kosten && SWARMQ_KOSTEN_MESSUNG="$messung" scripts/run-tests.sh --suite tests/kosten/valkey -m kosten_valkey && {{uv_run}} python scripts/kosten_basislinie.py "$1" "$messung"
 
 # Valkey-Kosten: Befehle und Roundtrips je Task exakt gegen
-# tests/kosten/basislinie.toml (Plan 2026-10-24-1118, U4, KTD6). Seriell, ein
+# tests/kosten/basislinie.toml (Plan 2026-10-24-1118, KTD6). Seriell, ein
 # Task nacheinander; unter der Testsperre gegen das Test-Valkey (6399).
 kosten-valkey *args:
     scripts/run-tests.sh --suite tests/kosten/valkey -m kosten_valkey "$@"
@@ -132,7 +132,7 @@ ratchet *values:
 ab *args:
     {{uv_run}} --group messung python scripts/ab_messung.py "$@"
 
-# Garantie-Vergleich unter Stoerungen (Plan 2026-10-24-1118, U9; benchmarks/comparison/METHODIK.md):
+# Garantie-Vergleich unter Stoerungen (Plan 2026-10-24-1118; benchmarks/comparison/METHODIK.md):
 # eigener Compose-Stack swarmq-vergleich-stoerung mit Toxiproxy, alle Systeme,
 # Profile und Stoerungen, am Ende ``down -v``. Vorher einmal
 # benchmarks/comparison/einrichten.sh; Argumente siehe ``--help``.

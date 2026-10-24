@@ -1,4 +1,4 @@
-"""Eigener Compose-Stack des Garantie-Vergleichs und Ziel jeder Störung (Plan 2026-10-24-1118, U9).
+"""Eigener Compose-Stack des Garantie-Vergleichs und Ziel jeder Störung (Plan 2026-10-24-1118).
 
 RabbitMQ, ein Valkey mit und eines ohne Persistenz, davor Toxiproxy. Alle
 Clients, Erzeuger wie Worker, sprechen nur über Toxiproxy mit den Diensten,
@@ -23,8 +23,7 @@ VALKEY_PERSISTENT = "valkey_neustart_persistent"
 VALKEY_FLUECHTIG = "valkey_neustart_fluechtig"
 
 #: Host-Port des Toxiproxy-Proxys je Compose-Dienst (``compose.yml``,
-#: ``toxiproxy.json``). Bewusst keiner der Standard-, Test-, Chaos- oder
-#: Vergleichsports (5672/6379, 5699/6399, 5698/6398, 5682/6389).
+#: ``toxiproxy.json``).
 PORTS = {"rabbitmq": 5686, "valkey": 6386, "valkey-fluechtig": 6387}
 #: Host-Port der Toxiproxy-API (Chaos-Tests nutzen 8474).
 ADMIN_PORT = 18476

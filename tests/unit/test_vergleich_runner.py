@@ -1,4 +1,4 @@
-"""Runner und Adapter des Vergleichsaufbaus (Plan 2026-10-24-1118, U8, KTD13, R19-R22).
+"""Runner und Adapter des Vergleichsaufbaus (Plan 2026-10-24-1118, KTD13, R19-R22).
 
 Die Module unter ``benchmarks/comparison/`` importieren sich gegenseitig über
 das Verzeichnis selbst (``from scenarios.base import ...``), wie beim Lauf

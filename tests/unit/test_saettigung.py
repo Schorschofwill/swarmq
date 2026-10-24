@@ -1,4 +1,4 @@
-"""Sättigung je Kombination aus Methode und Modul (Plan 2026-10-24-1118, U5, KTD8).
+"""Sättigung je Kombination aus Methode und Modul (Plan 2026-10-24-1118, KTD8).
 
 ``scripts/saettigung.py`` berechnet den Stand aus dem Sättigungsbuch, statt ihn
 zu speichern. Der git-Aufruf ist injiziert, deshalb laufen die Tests ohne

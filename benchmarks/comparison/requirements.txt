@@ -1,4 +1,4 @@
-# Gemeinsam für alle Vergleichsumgebungen (Plan 2026-10-24-1118, U8).
+# Gemeinsam für alle Vergleichsumgebungen (Plan 2026-10-24-1118).
 # Jedes System hat eine eigene Umgebung aus requirements-<system>.txt, weil
 # sich die Abhängigkeiten ausschließen (arq 0.28.0 verlangt redis<6,
 # taskiq-redis 1.2.4 redis>=8). Alle Versionen exakt gepinnt (KTD13, R22);

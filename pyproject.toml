@@ -118,7 +118,7 @@ tasks = [
 coverage = [
     "diff-cover>=10.6",
 ]
-# Profile für das A/B-Messwerkzeug (Plan 2026-10-24-1118, U7, KTD12): ``uv run just ab``.
+# Profile für das A/B-Messwerkzeug (Plan 2026-10-24-1118, KTD12): ``uv run just ab``.
 # Nicht in der CI; py-spy hat Wheels ``py2.py3-none`` (ohne Compiler, für 3.14), 0.4.2
 # profiliert 3.14 fehlerfrei.
 messung = [
@@ -162,7 +162,7 @@ faulthandler_timeout = 600
 # `pytest -m chaos` o.ä. — der Dev-Loop bleibt schnell (Regel in AGENTS.md:
 # jeder Unit-Test < 100 ms, keine feste Gesamtgrenze). Die Kostensuite läuft
 # nur über `just kosten`, ohne Coverage (Plan 2026-10-24-1118, KTD4), ihr
-# Valkey-Teil nur über `just kosten-valkey` (U4).
+# Valkey-Teil nur über `just kosten-valkey`.
 addopts = "-m 'not chaos and not stress and not soak and not property and not fuzz and not mutation and not compat and not kosten and not kosten_valkey'"
 markers = [
     "unit: unit tests",

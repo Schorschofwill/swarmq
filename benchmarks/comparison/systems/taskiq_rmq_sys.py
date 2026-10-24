@@ -7,11 +7,10 @@ startet den Broker ohne Lesekanal und schickt die Tasks mit ``kiq()``.
 
 from __future__ import annotations
 
-import asyncio
 import os
 from typing import Any
 
-from systems.base import ProzessWorker, cli
+from systems.base import NOCH_OFFEN, ProzessWorker, cli
 
 
 class TaskIQRabbitMQSystem(ProzessWorker):
@@ -61,14 +60,13 @@ class TaskIQRabbitMQSystem(ProzessWorker):
         if self._worker_modul is None:
             raise RuntimeError("TaskIQRabbitMQSystem.setup() has not been called")
         backend = self._worker_modul.broker.result_backend
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        while True:
-            if await backend.is_result_ready(task_id):
-                result = await backend.get_result(task_id)
-                if result.is_err:
-                    raise RuntimeError(f"Task {task_id} failed: {result.error}")
-                return result.return_value
-            if loop.time() >= deadline:
-                raise TimeoutError(f"Task {task_id} did not complete within {timeout}s")
-            await asyncio.sleep(poll_interval)
+
+        async def abfrage() -> Any:
+            if not await backend.is_result_ready(task_id):
+                return NOCH_OFFEN
+            result = await backend.get_result(task_id)
+            if result.is_err:
+                raise RuntimeError(f"Task {task_id} failed: {result.error}")
+            return result.return_value
+
+        return await self.warte_auf_ergebnis(task_id, abfrage, timeout, poll_interval)
