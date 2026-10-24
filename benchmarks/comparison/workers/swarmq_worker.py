@@ -16,6 +16,8 @@ import hashlib
 
 from swarmq.task import Task, TaskInfo
 
+from stoerungen import hauptbuch
+
 
 def create_task_classes(queue: str) -> dict[str, type[Task]]:
     """Return a mapping of *task_name -> Task subclass* bound to *queue*.
@@ -59,9 +61,17 @@ def create_task_classes(queue: str) -> dict[str, type[Task]]:
         async def run(self, fail_count: int = 0) -> bool:
             raise RuntimeError("Deliberate benchmark failure")
 
+    class GarantieTask(Task):
+        # Gemeinsame Task des Garantie-Vergleichs (stoerungen/hauptbuch.py).
+        task_info = TaskInfo(name="garantie", queues=[queue])
+
+        async def run(self, kennung: str, dauer_ms: int = 1000) -> None:
+            await hauptbuch.garantie_async(kennung, dauer_ms)
+
     return {
         "noop": NoopTask,
         "io_task": IoTask,
         "cpu_task": CpuTask,
         "failing_task": FailingTask,
+        "garantie": GarantieTask,
     }

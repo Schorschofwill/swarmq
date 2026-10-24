@@ -59,6 +59,9 @@ Wächter gegen leere Läufe (Plan 2026-10-24-1118, U1, KTD1, AE7):
 - [x] ohne ``SWARMQ_TEST_MIN_TESTS`` bleibt ein Lauf ohne ausgeführte Tests grün wie bisher
 - [x] ohne ``--junitxml`` des Aufrufers liest der Wächter eine eigene junit-Datei
 
+Garantie-Vergleich (Plan 2026-10-24-1118, U9):
+- [x] ``vergleich-garantie`` ruft ``stoerungen.garantie`` in ``benchmarks/comparison`` ohne Sperre und reicht die Argumente durch
+
 Abhängigkeitsprüfung (Plan 2026-10-24-1118, U2, KTD2):
 - [x] ``just audit`` ruft ``uv audit --frozen``
 - [x] der Exitcode von ``uv audit`` wird unverändert weitergereicht
@@ -607,3 +610,13 @@ def test_a_red_measurement_run_writes_no_baseline(stub: dict[str, str]) -> None:
     assert result.returncode != 0
     [messen] = _calls(stub)
     assert "pytest tests/kosten -m kosten" in messen
+
+
+def test_vergleich_garantie_runs_the_guarantee_comparison_without_the_lock(stub: dict[str, str]) -> None:
+    result = _just(stub, "vergleich-garantie", "--runs", "2")
+
+    assert result.returncode == 0, result.stderr
+    [call] = _calls(stub)
+    # Eigener Stack mit eigenen Ports (stoerungen/compose.yml), deshalb keine Testsperre.
+    assert call.startswith("args=run python -m stoerungen.garantie --runs 2 rmq=")
+    assert "lock=free" in call

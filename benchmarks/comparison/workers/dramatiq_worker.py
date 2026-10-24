@@ -18,6 +18,8 @@ from dramatiq.brokers.rabbitmq import RabbitmqBroker
 from dramatiq.results import Results
 from dramatiq.results.backends.redis import RedisBackend
 
+from stoerungen import hauptbuch
+
 QUEUE = os.environ["VERGLEICH_QUEUE"]
 EINSTELLUNGEN = json.loads(os.environ["VERGLEICH_EINSTELLUNGEN"])
 
@@ -50,6 +52,12 @@ def cpu_task(iterations: int = 10_000) -> bool:
     return True
 
 
+@dramatiq.actor(actor_name="garantie", queue_name=QUEUE, store_results=True)
+def garantie(kennung: str, dauer_ms: int = 1000) -> None:
+    # Gemeinsame Task des Garantie-Vergleichs (stoerungen/hauptbuch.py).
+    hauptbuch.garantie(kennung, dauer_ms)
+
+
 @dramatiq.actor(actor_name="failing_task", queue_name=QUEUE, store_results=True)
 def failing_task(fail_count: int = 0) -> bool:
     if fail_count > 0:
@@ -57,4 +65,10 @@ def failing_task(fail_count: int = 0) -> bool:
     return True
 
 
-AKTOREN = {"noop": noop, "io_task": io_task, "cpu_task": cpu_task, "failing_task": failing_task}
+AKTOREN = {
+    "noop": noop,
+    "io_task": io_task,
+    "cpu_task": cpu_task,
+    "failing_task": failing_task,
+    "garantie": garantie,
+}

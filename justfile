@@ -132,6 +132,13 @@ ratchet *values:
 ab *args:
     {{uv_run}} --group messung python scripts/ab_messung.py "$@"
 
+# Garantie-Vergleich unter Stoerungen (Plan 2026-10-24-1118, U9; benchmarks/comparison/METHODIK.md):
+# eigener Compose-Stack swarmq-vergleich-stoerung mit Toxiproxy, alle Systeme,
+# Profile und Stoerungen, am Ende ``down -v``. Vorher einmal
+# benchmarks/comparison/einrichten.sh; Argumente siehe ``--help``.
+vergleich-garantie *args:
+    cd benchmarks/comparison && uv run python -m stoerungen.garantie "$@"
+
 # Stand der Saettigung je Saeule aus Methodenkatalog und Saettigungsbuch (docs/befunde/, scripts/saettigung.py)
 saettigung:
     {{uv_run}} python scripts/saettigung.py

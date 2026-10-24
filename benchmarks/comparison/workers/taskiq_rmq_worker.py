@@ -17,6 +17,8 @@ from typing import Any
 from taskiq_aio_pika import AioPikaBroker, Queue, QueueType
 from taskiq_redis import RedisAsyncResultBackend
 
+from stoerungen import hauptbuch
+
 EINSTELLUNGEN = json.loads(os.environ["VERGLEICH_EINSTELLUNGEN"])
 
 _queue: dict[str, Any] = {"name": os.environ["VERGLEICH_QUEUE"]}
@@ -57,4 +59,16 @@ async def failing_task(fail_count: int = 0) -> bool:
     return True
 
 
-TASKS = {"noop": noop_task, "io_task": io_task, "cpu_task": cpu_task, "failing_task": failing_task}
+@broker.task(task_name="garantie")
+async def garantie(kennung: str, dauer_ms: int = 1000) -> None:
+    # Gemeinsame Task des Garantie-Vergleichs (stoerungen/hauptbuch.py).
+    await hauptbuch.garantie_async(kennung, dauer_ms)
+
+
+TASKS = {
+    "noop": noop_task,
+    "io_task": io_task,
+    "cpu_task": cpu_task,
+    "failing_task": failing_task,
+    "garantie": garantie,
+}

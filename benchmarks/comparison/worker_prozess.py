@@ -45,6 +45,11 @@ class WorkerProzess:
         """PID des Workers, solange er gestartet ist."""
         return None if self._prozess is None else self._prozess.pid
 
+    @property
+    def laeuft(self) -> bool:
+        """Ob der Worker gestartet und noch nicht beendet ist (etwa nach einer Störung, U9)."""
+        return self._prozess is not None and self._prozess.returncode is None
+
     async def starten(self) -> int:
         """Startet den Worker im Verzeichnis des Vergleichsaufbaus und liefert seine PID.
 

@@ -13,6 +13,8 @@ from typing import Any
 
 from arq.connections import RedisSettings
 
+from stoerungen import hauptbuch
+
 QUEUE = os.environ["VERGLEICH_QUEUE"]
 REDIS_SETTINGS = RedisSettings.from_dsn(os.environ["VERGLEICH_BACKEND_URL"])
 
@@ -39,7 +41,12 @@ async def failing_task(ctx: dict[str, Any], fail_count: int = 0) -> bool:
     return True
 
 
+async def garantie(ctx: dict[str, Any], kennung: str, dauer_ms: int = 1000) -> None:
+    # Gemeinsame Task des Garantie-Vergleichs (stoerungen/hauptbuch.py).
+    await hauptbuch.garantie_async(kennung, dauer_ms)
+
+
 class WorkerSettings:
-    functions = [noop, io_task, cpu_task, failing_task]
+    functions = [noop, io_task, cpu_task, failing_task, garantie]
     redis_settings = REDIS_SETTINGS
     queue_name = QUEUE

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -15,8 +16,10 @@ VERGLEICH_DIR = Path(__file__).resolve().parents[1]
 
 # Dienste aus ``docker-compose.yml`` des Vergleichs; bewusst weder Standard-
 # (5672/6379) noch Testports (5699/6399), damit kein Lauf fremde Daten trifft.
-RABBITMQ_URL = "amqp://guest:guest@localhost:5682/"
-VALKEY_HOST = "localhost:6389"
+# Der Garantie-Vergleich (``stoerungen/``) lenkt beide über die Variablen auf
+# seinen eigenen Stack hinter Toxiproxy; Worker erben sie.
+RABBITMQ_URL = os.environ.get("VERGLEICH_RABBITMQ_URL", "amqp://guest:guest@localhost:5682/")
+VALKEY_HOST = os.environ.get("VERGLEICH_VALKEY_HOST", "localhost:6389")
 
 
 @runtime_checkable
@@ -102,6 +105,11 @@ class ProzessWorker:
     @property
     def worker_pid(self) -> int | None:
         return None if self._worker is None else self._worker.pid
+
+    @property
+    def worker_laeuft(self) -> bool:
+        """Ob der Worker-Prozess läuft; nach einer Störung startet der Garantie-Vergleich ihn neu, wenn nicht."""
+        return self._worker is not None and self._worker.laeuft
 
     def worker_kommando(self) -> list[str]:
         raise NotImplementedError
