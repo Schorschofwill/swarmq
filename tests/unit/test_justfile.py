@@ -29,7 +29,7 @@ Test-Liste:
 - [x] junit-Datei des seriellen Durchgangs mit Endung ``-serial``
 - [x] ein roter Durchgang macht den Lauf rot, der andere läuft trotzdem
 - [x] ein leerer Durchgang (Exit 5) zählt nicht als Fehler, zwei leere schon
-- [x] ``lint``, ``types``, ``chaos``, ``stress``, ``coverage-report``, ``coverage-gate``, ``ratchet`` rufen die CI-Befehle
+- [x] ``lint``, ``types``, ``chaos``, ``stress``, ``coverage-report``, ``coverage-gate``, ``ratchet``, ``saettigung`` rufen die CI-Befehle
 - [x] ``ab`` ruft das A/B-Messwerkzeug mit der Gruppe ``messung`` und reicht die Argumente durch (Plan 2026-10-24-1118, U7)
 
 Kostensuite (Plan 2026-10-24-1118, U3):
@@ -279,6 +279,7 @@ def test_coverage_measures_every_suite_under_one_lock(stub: dict[str, str]) -> N
         ("coverage-report", ["coverage combine", "coverage xml", "coverage report"], False),
         ("coverage-gate", ["--group coverage python scripts/coverage_gate.py"], False),
         ("ratchet", ["python scripts/coverage_ratchet.py"], False),
+        ("saettigung", ["python scripts/saettigung.py"], False),
     ],
 )
 def test_recipes_run_the_ci_commands(stub: dict[str, str], recipe: str, expected: list[str], locked: bool) -> None:

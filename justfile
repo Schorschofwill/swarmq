@@ -124,6 +124,10 @@ ratchet *values:
 ab *args:
     {{uv_run}} --group messung python scripts/ab_messung.py "$@"
 
+# Stand der Saettigung je Saeule aus Methodenkatalog und Saettigungsbuch (docs/befunde/, scripts/saettigung.py)
+saettigung:
+    {{uv_run}} python scripts/saettigung.py
+
 # --- Mutation im Container (Plan 2026-10-17-0941, U2; docker/mutation/README.md) ---
 # Docker-Kontext je Aufruf (nie `docker context use`); Standard ist der Lastserver.
 mutation_ctx := env("SWARMQ_MUTATION_CONTEXT", "lastserver")
