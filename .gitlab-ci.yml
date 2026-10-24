@@ -244,6 +244,9 @@ integration-tests:
     SWARMQ_TEST_COVERAGE: "1"
   script:
     - $UV_RUN just integration -q --junitxml=junit-integration.xml
+    # Valkey-Befehle und Roundtrips je Task exakt gegen tests/kosten/basislinie.toml
+    # (Plan 2026-10-24-1118, U4, KTD6), ohne Coverage wie just kosten.
+    - SWARMQ_TEST_COVERAGE= $UV_RUN just kosten-valkey -q --junitxml=junit-kosten-valkey.xml
   artifacts: !reference [.coverage-data, artifacts]
 
 # Tier 2b — full e2e. BLOCKING, no reruns. The two confirmed flakiness causes

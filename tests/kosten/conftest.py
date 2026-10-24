@@ -30,7 +30,7 @@ import os
 import platform
 import tomllib
 from collections import Counter
-from collections.abc import AsyncIterator, Callable, Coroutine, Mapping
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
@@ -60,8 +60,11 @@ _STORES = frozenset({"rate_limit", "locks", "chords", "schedules", "execution_gu
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    # Der Valkey-Teil (``tests/kosten/valkey``, U4) trägt ``kosten_valkey``
+    # und läuft nur mit Diensten.
     for item in items:
-        if "tests/kosten/" in str(item.fspath):
+        pfad = str(item.fspath)
+        if "tests/kosten/" in pfad and "tests/kosten/valkey/" not in pfad:
             item.add_marker(pytest.mark.kosten)
 
 
@@ -214,27 +217,23 @@ class Pipeline:
             await asyncio.sleep(0)
 
 
-@pytest.fixture
-async def pipeline() -> AsyncIterator[Pipeline]:
-    clock = FakeClock()
-    broker, backend = InMemoryBroker(clock), InMemoryBackend(clock)
-    await broker.connect()
-    await backend.connect()
-    aufrufe: Counter[str] = Counter()
-    zaehlender_broker = cast("Any", Zaehlend(broker, "broker", aufrufe))
-    zaehlendes_backend = cast("Any", Zaehlend(backend, "backend", aufrufe))
+async def baue_pipeline(
+    clock: FakeClock, broker: Any, backend: Any, aufrufe: Counter[str], tasks: Iterable[type[Task]]
+) -> Pipeline:
+    """Client und Worker über *broker* und *backend*, verdrahtet wie
+    ``WorkerLifecycle._wire_coordination`` ohne Scheduler; der Worker
+    konsumiert ``QUEUE`` über ``Pipeline.abarbeiten``."""
     registry = TaskRegistry()
-    for task in (KostenOk, KostenRetry, KostenSchritt):
+    for task in tasks:
         registry.register(task)
     config = SwarmQConfig(broker_url="amqp://unused", backend_url="valkey://unused", queues=[QUEUE])
-    worker = Worker(broker=zaehlender_broker, backend=zaehlendes_backend, registry=registry, config=config)
-    # Wie ``WorkerLifecycle._wire_coordination``, ohne Scheduler.
-    worker._rate_limiter = zaehlendes_backend.rate_limit
-    worker._lock_manager = zaehlendes_backend.locks
-    worker._guard_store = zaehlendes_backend.execution_guard
+    worker = Worker(broker=broker, backend=backend, registry=registry, config=config)
+    worker._rate_limiter = backend.rate_limit
+    worker._lock_manager = backend.locks
+    worker._guard_store = backend.execution_guard
     worker._workflow_advancer = WorkflowAdvancer(
-        zaehlendes_backend,
-        zaehlendes_backend.chords,
+        backend,
+        backend.chords,
         publisher=WorkflowStepEnqueuer(
             publish=worker._publish_workflow_step,
             dispatch=worker._signal_dispatcher.dispatch,
@@ -245,13 +244,31 @@ async def pipeline() -> AsyncIterator[Pipeline]:
         unpack=lambda raw: decode_result(raw)["result"],
         ttl_ms=config.result_ttl * 1000,
     )
-    client = Client(broker=zaehlender_broker, backend=zaehlendes_backend, registry=registry)
+    client = Client(broker=broker, backend=backend, registry=registry)
     result = Pipeline(clock, client, worker, aufrufe)
 
     async def zustellen(delivery: Delivery) -> None:
         result.zustellungen.append(delivery)
 
     await broker.consume(QUEUE, zustellen, concurrency=1_000)
+    return result
+
+
+@pytest.fixture
+async def pipeline() -> AsyncIterator[Pipeline]:
+    clock = FakeClock()
+    broker, backend = InMemoryBroker(clock), InMemoryBackend(clock)
+    await broker.connect()
+    await backend.connect()
+    aufrufe: Counter[str] = Counter()
+    result = await baue_pipeline(
+        clock,
+        Zaehlend(broker, "broker", aufrufe),
+        Zaehlend(backend, "backend", aufrufe),
+        aufrufe,
+        (KostenOk, KostenRetry, KostenSchritt),
+    )
+    aufrufe.clear()  # das ``consume`` des Aufbaus gehört zu keinem Szenario
     yield result
     await broker.close()
     await backend.close()

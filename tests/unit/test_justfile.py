@@ -38,6 +38,11 @@ Kostensuite (Plan 2026-10-24-1118, U3):
 - [x] ``kosten-basislinie <grund>`` misst in eine Datei und übergibt Grund und Datei dem Skript
 - [x] ein roter Messlauf schreibt keine Basislinie
 
+Valkey-Kosten (Plan 2026-10-24-1118, U4):
+- [x] ``kosten-valkey`` ruft die Suite unter ``tests/kosten/valkey`` mit Marker ``kosten_valkey``, unter der Sperre
+- [x] ``just all`` fährt ``kosten-valkey`` nach ``integration``
+- [x] ``kosten-basislinie <grund>`` misst beide Teile in dieselbe Datei, den Valkey-Teil unter der Sperre
+
 Eingrenzen per Pfad (Plan 2026-10-15-1138, U16, R33):
 - [x] ``just integration <pfad>``: beide Durchgänge laufen nur den Pfad
 - [x] ``just e2e <pfad>::<test>`` grenzt auf die Node-ID ein
@@ -205,6 +210,7 @@ def test_all_holds_the_lock_once_across_every_suite(stub: dict[str, str]) -> Non
         "tests/kosten",
         "tests/integration",
         "tests/integration",
+        "tests/kosten/valkey",
         "tests/e2e",
         "tests/e2e",
     ]
@@ -276,6 +282,7 @@ def test_coverage_measures_every_suite_under_one_lock(stub: dict[str, str]) -> N
         ("chaos", ["pytest -m chaos"], True),
         ("stress", ["pytest tests/stress -m stress"], True),
         ("kosten", ["pytest tests/kosten -m kosten"], False),
+        ("kosten-valkey", ["pytest tests/kosten/valkey -m kosten_valkey"], True),
         ("coverage-report", ["coverage combine", "coverage xml", "coverage report"], False),
         ("coverage-gate", ["--group coverage python scripts/coverage_gate.py"], False),
         ("ratchet", ["python scripts/coverage_ratchet.py"], False),
@@ -581,10 +588,14 @@ def test_kosten_basislinie_measures_into_a_file_and_hands_reason_and_file_to_the
     result = _just(stub, "kosten-basislinie", "Grund E-026")
 
     assert result.returncode == 0, result.stderr
-    messen, schreiben = _calls(stub)
+    messen, messen_valkey, schreiben = _calls(stub)
     assert "pytest tests/kosten -m kosten" in messen
     assert "lock=free" in messen
-    [messung] = Path(stub["STUB_LOG"] + ".messung").read_text(encoding="utf-8").splitlines()
+    # Der Valkey-Teil (U4) misst in dieselbe Datei, unter der Sperre und gegen die Testports.
+    assert "pytest tests/kosten/valkey -m kosten_valkey" in messen_valkey
+    assert "valkey=6399 lockheld=1 lock=held" in messen_valkey
+    messung, messung_valkey = Path(stub["STUB_LOG"] + ".messung").read_text(encoding="utf-8").splitlines()
+    assert messung_valkey == messung
     assert f"python scripts/kosten_basislinie.py Grund E-026 {messung} rmq=" in schreiben
 
 

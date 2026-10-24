@@ -65,9 +65,17 @@ kosten *args:
     scripts/run-tests.sh --no-services --suite tests/kosten -m kosten "$@"
 
 # Basislinie der Kostensuite neu messen und schreiben; der Grund verweist auf
-# eine Entscheidung (E-nnn), einen Befund oder docs/plans/<datei>.md (KTD7)
+# eine Entscheidung (E-nnn), einen Befund oder docs/plans/<datei>.md (KTD7).
+# Misst beide Teile, die Valkey-Kosten (U4) unter der Testsperre: Die Datei
+# enthält danach genau die gemessenen Szenarien.
 kosten-basislinie grund:
-    messung="$(mktemp)"; trap 'rm -f "$messung"' EXIT; SWARMQ_KOSTEN_MESSUNG="$messung" scripts/run-tests.sh --no-services --suite tests/kosten -m kosten && {{uv_run}} python scripts/kosten_basislinie.py "$1" "$messung"
+    messung="$(mktemp)"; trap 'rm -f "$messung"' EXIT; SWARMQ_KOSTEN_MESSUNG="$messung" scripts/run-tests.sh --no-services --suite tests/kosten -m kosten && SWARMQ_KOSTEN_MESSUNG="$messung" scripts/run-tests.sh --suite tests/kosten/valkey -m kosten_valkey && {{uv_run}} python scripts/kosten_basislinie.py "$1" "$messung"
+
+# Valkey-Kosten: Befehle und Roundtrips je Task exakt gegen
+# tests/kosten/basislinie.toml (Plan 2026-10-24-1118, U4, KTD6). Seriell, ein
+# Task nacheinander; unter der Testsperre gegen das Test-Valkey (6399).
+kosten-valkey *args:
+    scripts/run-tests.sh --suite tests/kosten/valkey -m kosten_valkey "$@"
 
 # Integration gegen RabbitMQ und Valkey: parallel auf SWARMQ_TEST_WORKERS Prozessen,
 # je in eigener vhost und Valkey-Datenbank (tests/support/services.py), danach
@@ -92,7 +100,7 @@ stress *args:
 all:
     scripts/with-test-lock.sh {{just_executable()}} --justfile {{justfile()}} _all
 
-_all: unit property fuzz kosten integration e2e
+_all: unit property fuzz kosten integration kosten-valkey e2e
 
 # Unit, Integration und e2e unter Coverage, zusammengefuehrt (unter einer Sperre)
 coverage:
