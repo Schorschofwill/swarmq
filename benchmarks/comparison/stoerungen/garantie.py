@@ -53,12 +53,17 @@ def tabelle(eintraege: list[dict[str, Any]]) -> str:
     """Bilanzen als Markdown-Tabelle; ein leerer oder gescheiterter Lauf zeigt keine Zahlen."""
     zeilen = [_KOPF]
     for e in eintraege:
-        zahlen = [str(e["bilanz"][s]) if e["bilanz"] else "-" for s in _SPALTEN]
+        zahlen = [str(e["bilanz"][s]) if e["status"] == "ok" else "-" for s in _SPALTEN]
         neustart = "ja" if e["worker_neustart"] else "nein"
         zeilen.append(
             f"| {e['system']} | {e['profil']} | {e['stoerung']} | {e['status']} | {' | '.join(zahlen)} | {neustart} |"
         )
     return "\n".join(zeilen) + "\n"
+
+
+def lauf_status(ausgang: str, *, leer: bool) -> str:
+    """Status einer Kombination: ``leer`` nur ohne Fehler; ein gescheiterter Lauf behält seinen Ausgang."""
+    return "leer" if leer and ausgang == "ok" else ausgang
 
 
 async def _stack_herstellen() -> None:
@@ -113,11 +118,11 @@ async def _kombination(k: runner.Kombination, ordner: Path, args: argparse.Names
     try:
         ergebnis = bilanz(*buch.zeilen(), valkey_datenverlust=buch.ereignis_zeit(VALKEY_DATENVERLUST))
     except LeeresHauptbuch:
-        eintrag["status"] = "leer"
+        leer = True
     else:
         eintrag["bilanz"] = asdict(ergebnis)
-        if ergebnis.leer and ausgang.status == "ok":
-            eintrag["status"] = "leer"
+        leer = ergebnis.leer
+    eintrag["status"] = lauf_status(ausgang.status, leer=leer)
     pfad.with_suffix(".json").write_text(json.dumps(eintrag, indent=2))
     return eintrag
 

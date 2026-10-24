@@ -67,9 +67,11 @@ kosten *args:
 # Basislinie der Kostensuite neu messen und schreiben; der Grund verweist auf
 # eine Entscheidung (E-nnn), einen Befund oder docs/plans/<datei>.md (KTD7).
 # Misst beide Teile, die Valkey-Kosten unter der Testsperre: Die Datei
-# enthält danach genau die gemessenen Szenarien.
+# enthält danach genau die gemessenen Szenarien. Ohne Test-Valkey würden die
+# sechs Valkey-Kostentests übersprungen; SWARMQ_TEST_MIN_TESTS macht den Lauf
+# dann rot, und das Skript bricht ab, wenn Szenarien fehlen.
 kosten-basislinie grund:
-    messung="$(mktemp)"; trap 'rm -f "$messung"' EXIT; SWARMQ_KOSTEN_MESSUNG="$messung" scripts/run-tests.sh --no-services --suite tests/kosten -m kosten && SWARMQ_KOSTEN_MESSUNG="$messung" scripts/run-tests.sh --suite tests/kosten/valkey -m kosten_valkey && {{uv_run}} python scripts/kosten_basislinie.py "$1" "$messung"
+    messung="$(mktemp)"; trap 'rm -f "$messung"' EXIT; SWARMQ_KOSTEN_MESSUNG="$messung" scripts/run-tests.sh --no-services --suite tests/kosten -m kosten && SWARMQ_KOSTEN_MESSUNG="$messung" SWARMQ_TEST_MIN_TESTS=6 scripts/run-tests.sh --suite tests/kosten/valkey -m kosten_valkey && {{uv_run}} python scripts/kosten_basislinie.py "$1" "$messung"
 
 # Valkey-Kosten: Befehle und Roundtrips je Task exakt gegen
 # tests/kosten/basislinie.toml (Plan 2026-10-24-1118, KTD6). Seriell, ein

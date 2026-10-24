@@ -42,6 +42,7 @@ Valkey-Kosten (Plan 2026-10-24-1118):
 - [x] ``kosten-valkey`` ruft die Suite unter ``tests/kosten/valkey`` mit Marker ``kosten_valkey``, unter der Sperre
 - [x] ``just all`` fährt ``kosten-valkey`` nach ``integration``
 - [x] ``kosten-basislinie <grund>`` misst beide Teile in dieselbe Datei, den Valkey-Teil unter der Sperre
+- [x] ``kosten-basislinie``: ein Valkey-Teil mit übersprungenen Tests (kein Test-Valkey) schreibt keine Basislinie
 
 Eingrenzen per Pfad (Plan 2026-10-15-1138, U16, R33):
 - [x] ``just integration <pfad>``: beide Durchgänge laufen nur den Pfad
@@ -588,6 +589,8 @@ def test_audit_passes_the_exit_code_of_uv_audit_through(stub: dict[str, str], rc
 
 
 def test_kosten_basislinie_measures_into_a_file_and_hands_reason_and_file_to_the_script(stub: dict[str, str]) -> None:
+    stub["STUB_JUNIT"] = _junit(tests=6, skipped=0)
+
     result = _just(stub, "kosten-basislinie", "Grund E-026")
 
     assert result.returncode == 0, result.stderr
@@ -610,6 +613,18 @@ def test_a_red_measurement_run_writes_no_baseline(stub: dict[str, str]) -> None:
     assert result.returncode != 0
     [messen] = _calls(stub)
     assert "pytest tests/kosten -m kosten" in messen
+
+
+def test_kosten_basislinie_writes_no_baseline_when_the_valkey_part_skipped_its_tests(stub: dict[str, str]) -> None:
+    # Ohne Test-Valkey überspringt die Session-Fixture alle sechs Valkey-Kostentests (Exit 0).
+    stub["STUB_JUNIT"] = _junit(tests=6, skipped=6)
+
+    result = _just(stub, "kosten-basislinie", "Grund E-026")
+
+    assert result.returncode != 0
+    assert "0 Tests ausgeführt" in result.stderr
+    _, messen_valkey = _calls(stub)  # kein dritter Aufruf: Das Skript schrieb nichts
+    assert "pytest tests/kosten/valkey -m kosten_valkey" in messen_valkey
 
 
 def test_vergleich_garantie_runs_the_guarantee_comparison_without_the_lock(stub: dict[str, str]) -> None:

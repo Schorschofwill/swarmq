@@ -7,6 +7,7 @@ schleichendes Wachstum sichtbar, auch wenn jemand die Datei von Hand ändert.
 
 Test-Liste:
 - [x] kein Anstieg der Historie ohne auflösbaren Verweis
+- [x] die Historie, von leer nachgespielt, ergibt genau ``werte`` (keine Handänderung)
 """
 
 from __future__ import annotations
@@ -20,3 +21,7 @@ _WURZEL = Path(__file__).resolve().parents[2]
 
 def test_every_rise_in_the_history_carries_a_resolvable_reference() -> None:
     assert basislinie_skript.unbelegte_anstiege(lies_basislinie(), _WURZEL) == []
+
+
+def test_replaying_the_history_yields_exactly_the_values() -> None:
+    assert basislinie_skript.handaenderungen(lies_basislinie()) == []

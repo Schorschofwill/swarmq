@@ -21,6 +21,8 @@ Test-Liste:
 - [x] ein Worker-Prozess meldet, ob er noch läuft
 - [x] ein Adapter meldet, ob sein Worker läuft
 - [x] die Ergebnistabelle zeigt je Kombination alle Spalten der Bilanz, einen leeren oder gescheiterten Lauf ohne Zahlen
+- [x] ein gescheiterter Lauf mit Bilanz erscheint in der Tabelle ohne Zahlen
+- [x] ein gescheiterter Lauf behält seinen Status, auch wenn das Hauptbuch leer ist; nur ein Lauf ohne Fehler wird ``leer``
 """
 
 from __future__ import annotations
@@ -257,3 +259,36 @@ def test_the_result_table_shows_every_balance_column_and_no_numbers_for_an_empty
 
     assert "| celery | ab_werk | sigkill | ok | 90 | 60 | 30 | 3 | 1 | 2 | 4 | nein |" in zeilen
     assert "| arq | stark | netztrennung | leer | - | - | - | - | - | - | - | ja |" in zeilen
+
+
+def test_a_failed_run_with_a_balance_shows_no_numbers_in_the_result_table(
+    vergleich: Callable[[str], ModuleType],
+) -> None:
+    garantie = vergleich("stoerungen.garantie")
+    zahlen = dict.fromkeys(
+        ("bestaetigt", "unbestimmt", "abgelehnt", "ausgefuehrt", "verluste", "duplikate", "duplikate_e077"), 5
+    )
+    eintrag = {
+        "run": 1,
+        "system": "swarmq",
+        "profil": "stark",
+        "stoerung": "sigkill",
+        "status": "fehler",
+        "bilanz": zahlen,
+        "worker_neustart": False,
+    }
+
+    zeilen = garantie.tabelle([eintrag]).splitlines()
+
+    assert "| swarmq | stark | sigkill | fehler | - | - | - | - | - | - | - | nein |" in zeilen
+
+
+def test_a_failed_run_keeps_its_status_and_only_a_run_without_error_becomes_empty(
+    vergleich: Callable[[str], ModuleType],
+) -> None:
+    garantie = vergleich("stoerungen.garantie")
+
+    assert garantie.lauf_status("fehler", leer=True) == "fehler"
+    assert garantie.lauf_status("haenger", leer=True) == "haenger"
+    assert garantie.lauf_status("ok", leer=True) == "leer"
+    assert garantie.lauf_status("ok", leer=False) == "ok"

@@ -158,11 +158,43 @@ def unbelegte_anstiege(basislinie: Mapping[str, Any], wurzel: Path) -> list[str]
     return gemeldet
 
 
+def handaenderungen(basislinie: Mapping[str, Any]) -> list[str]:
+    """Abweichungen der ``werte`` von der nachgespielten Historie, also
+    Handänderungen ohne Historieneintrag (Wächter, KTD7)."""
+    nachgespielt: dict[str, dict[str, int]] = {}
+    for eintrag in basislinie["historie"]:
+        for aenderung in eintrag["aenderungen"]:
+            metriken = nachgespielt.setdefault(aenderung["szenario"], {})
+            if "neu" in aenderung:
+                metriken[aenderung["metrik"]] = aenderung["neu"]
+            else:
+                # Nur ``alt``: Die Metrik fiel weg (``aktualisiere``).
+                metriken.pop(aenderung["metrik"], None)
+    werte: Mapping[str, Mapping[str, int]] = basislinie["werte"]
+    gemeldet: list[str] = []
+    for szenario in sorted(nachgespielt.keys() | werte.keys()):
+        historie, datei = nachgespielt.get(szenario, {}), werte.get(szenario, {})
+        for metrik in sorted(historie.keys() | datei.keys()):
+            if historie.get(metrik) != datei.get(metrik):
+                gemeldet.append(
+                    f"{szenario}: {metrik} laut Historie {historie.get(metrik)}, in werte {datei.get(metrik)}; "
+                    f"{_NACHFUEHREN}"
+                )
+    return gemeldet
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Basislinie der Kostensuite neu schreiben")
     parser.add_argument("grund", help="Grund mit Verweis: E-nnn, Befund-ID oder docs/plans/<datei>.md")
     parser.add_argument("messung", type=Path, help="JSON-Zeilen der Kostensuite (SWARMQ_KOSTEN_MESSUNG)")
     parser.add_argument("--wurzel", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument(
+        "--entfernen",
+        action="append",
+        default=[],
+        metavar="SZENARIO",
+        help="Szenario ohne Messung ausdrücklich aus der Basislinie nehmen (mehrfach möglich)",
+    )
     args = parser.parse_args(argv)
     fehler = grund_fehler(args.grund, args.wurzel)
     if fehler is not None:
@@ -177,6 +209,16 @@ def main(argv: list[str]) -> int:
         if pfad.exists()
         else {"python": python, "werte": {}, "historie": []}
     )
+    # Ein Teil ohne Messung (etwa kein Test-Valkey, alle Tests übersprungen)
+    # darf seine Szenarien nicht still löschen.
+    fehlend = sorted(alt["werte"].keys() - messung.keys() - set(args.entfernen))
+    if fehlend:
+        print(
+            f"Szenarien der Basislinie fehlen in der Messung: {', '.join(fehlend)}; "
+            "lief jeder Teil? Entfernen nur ausdrücklich mit --entfernen <szenario>",
+            file=sys.stderr,
+        )
+        return 2
     neu = aktualisiere(alt, messung, python, args.grund, datetime.date.today().isoformat())
     pfad.parent.mkdir(parents=True, exist_ok=True)
     pfad.write_text(als_toml(neu), encoding="utf-8")

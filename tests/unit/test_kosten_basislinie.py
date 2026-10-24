@@ -22,6 +22,10 @@ Test-Liste:
 - [x] ohne Änderung entsteht kein Historieneintrag
 - [x] die geschriebene Datei liest ``tomllib`` wieder als dieselben Daten
 - [x] Wächter: ein Anstieg in der Historie ohne auflösbaren Verweis wird gemeldet
+- [x] Wächter: ``werte``, die vom Nachspielen der Historie abweichen (Handänderung), werden gemeldet
+- [x] Wächter: eine Änderung nur mit ``alt`` entfernt beim Nachspielen die Metrik, ein leeres Szenario verschwindet
+- [x] das Skript bricht ab, wenn ein Szenario der alten Basislinie in der Messung fehlt
+- [x] mit ``--entfernen <szenario>`` fällt das Szenario ausdrücklich aus der Basislinie
 - [x] das Skript als Prozess: ohne Grund Exit 2, mit Grund schreibt es die Datei
 """
 
@@ -253,6 +257,46 @@ def test_the_guard_reports_a_rise_in_the_history_without_a_resolvable_reference(
     assert "neue Metrik ohne Verweis" in gemeldet[1]
 
 
+def test_the_guard_reports_values_that_differ_from_the_replayed_history() -> None:
+    basislinie = {
+        "python": _PY,
+        "werte": {"retry": {"broker.publish": 1}},
+        "historie": [
+            {
+                "datum": "2026-10-24",
+                "grund": "E-026",
+                "python": _PY,
+                "aenderungen": [{"szenario": "retry", "metrik": "broker.publish", "neu": 2}],
+            }
+        ],
+    }
+
+    [gemeldet] = kb.handaenderungen(basislinie)
+
+    assert "retry: broker.publish" in gemeldet
+    assert "2" in gemeldet
+    assert "1" in gemeldet
+
+
+def test_replaying_a_change_with_only_an_old_value_removes_the_metric() -> None:
+    def eintrag(*aenderungen: dict[str, object]) -> dict[str, object]:
+        return {"datum": "2026-10-24", "grund": "E-026", "python": _PY, "aenderungen": list(aenderungen)}
+
+    basislinie = {
+        "python": _PY,
+        "werte": {"publish": {"broker.publish": 1}},
+        "historie": [
+            eintrag(
+                {"szenario": "publish", "metrik": "broker.publish", "neu": 1},
+                {"szenario": "valkey_retry", "metrik": "valkey.SET", "neu": 1},
+            ),
+            eintrag({"szenario": "valkey_retry", "metrik": "valkey.SET", "alt": 1}),
+        ],
+    }
+
+    assert kb.handaenderungen(basislinie) == []
+
+
 def _skript(wurzel: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(_SKRIPT), *args, "--wurzel", str(wurzel)],
@@ -293,3 +337,45 @@ def test_the_script_with_a_reason_writes_the_measured_values_and_a_history_entry
     [eintrag] = geschrieben["historie"]
     assert eintrag["grund"] == grund
     assert len(eintrag["aenderungen"]) == 2
+
+
+def _alte_basislinie(wurzel: Path, **werte: dict[str, int]) -> Path:
+    pfad = wurzel / "tests" / "kosten" / "basislinie.toml"
+    pfad.parent.mkdir(parents=True)
+    aenderungen = [
+        {"szenario": szenario, "metrik": metrik, "neu": wert}
+        for szenario, metriken in werte.items()
+        for metrik, wert in metriken.items()
+    ]
+    historie = [{"datum": "2026-10-24", "grund": "E-026", "python": _PY, "aenderungen": aenderungen}]
+    pfad.write_text(kb.als_toml({"python": _PY, "werte": werte, "historie": historie}), encoding="utf-8")
+    return pfad
+
+
+def test_the_script_aborts_when_a_scenario_of_the_old_baseline_is_missing(wurzel: Path) -> None:
+    """Etwa der Valkey-Teil, wenn kein Test-Valkey lief: Seine Szenarien fielen sonst still weg."""
+    pfad = _alte_basislinie(wurzel, publish={"broker.publish": 1}, valkey_retry={"valkey.SET": 1})
+    vorher = pfad.read_text(encoding="utf-8")
+    messung = _messung(wurzel, publish={"broker.publish": 2})
+
+    result = _skript(wurzel, "Grund E-026", str(messung))
+
+    assert result.returncode == 2
+    assert "valkey_retry" in result.stderr
+    assert "--entfernen" in result.stderr
+    assert pfad.read_text(encoding="utf-8") == vorher
+
+
+def test_with_entfernen_the_scenario_leaves_the_baseline_explicitly(wurzel: Path) -> None:
+    pfad = _alte_basislinie(wurzel, publish={"broker.publish": 1}, valkey_retry={"valkey.SET": 1})
+    messung = _messung(wurzel, publish={"broker.publish": 1})
+
+    result = _skript(wurzel, "Grund E-026", str(messung), "--entfernen", "valkey_retry")
+
+    assert result.returncode == 0, result.stderr
+    geschrieben = tomllib.loads(pfad.read_text(encoding="utf-8"))
+    assert geschrieben["werte"] == {"publish": {"broker.publish": 1}}
+    assert geschrieben["historie"][-1]["aenderungen"] == [
+        {"szenario": "valkey_retry", "metrik": "valkey.SET", "alt": 1}
+    ]
+    assert kb.handaenderungen(geschrieben) == []

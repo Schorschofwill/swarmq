@@ -24,6 +24,9 @@ Test-Liste:
 - [x] nach dem Lauf sind die Worktrees entfernt
 - [x] ein relativer Ergebnispfad gilt ab dem Aufrufverzeichnis, die Profile liegen daneben
 - [x] ein scheiternder Messbefehl: Abbruch mit Meldung, Worktrees entfernt
+- [x] der Messbefehl sieht das äußere venv nicht (``just ab`` läuft unter ``uv run``):
+      kein ``VIRTUAL_ENV``, dessen ``bin`` nicht im ``PATH``
+- [x] py-spy aus dem äußeren venv wird gefunden, sein Kind sieht das venv nicht
 """
 
 from __future__ import annotations
@@ -261,3 +264,64 @@ def test_a_relative_result_path_keeps_the_profiles_next_to_it(tmp_path: Path, en
     assert ergebnis["urteil"] == "Gewinn"
     assert (repo / "ab-profil-a.svg").exists()
     assert (repo / "ab-profil-b.svg").exists()
+
+
+# Ein venv wie das, das ``uv run`` für ``just ab`` setzt: ``VIRTUAL_ENV`` und dessen ``bin`` vorn im ``PATH``.
+# Ein bloßes ``python`` im Messbefehl träfe sonst den Interpreter (und das editierbare swarmq) des
+# Haupt-Checkouts statt des Worktrees.
+def _aeusseres_venv(tmp_path: Path, env: dict[str, str]) -> Path:
+    venv = tmp_path / "venv"
+    (venv / "bin").mkdir(parents=True)
+    python = venv / "bin" / "python"
+    python.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    python.chmod(0o755)
+    env["VIRTUAL_ENV"] = str(venv)
+    env["PATH"] = f"{venv / 'bin'}{os.pathsep}{env['PATH']}"
+    env["UMGEBUNG_LOG"] = str(tmp_path / "umgebung.log")
+    return venv
+
+
+def test_the_command_does_not_see_the_outer_venv(tmp_path: Path, env: dict[str, str]) -> None:
+    repo = _repo(tmp_path, _BASIS, [wert * 1.08 for wert in _BASIS])
+    venv = _aeusseres_venv(tmp_path, env)
+    befehl = 'echo "${VIRTUAL_ENV:-leer} $(command -v python || echo keins)" >> "$UMGEBUNG_LOG"; bash mess.sh'
+
+    result = _messen(repo, env, "--befehl", befehl)
+
+    assert result.returncode == 0, result.stderr
+    zeilen = Path(env["UMGEBUNG_LOG"]).read_text(encoding="utf-8").splitlines()
+    assert len(zeilen) == 20
+    assert all(zeile.split(" ")[0] == "leer" for zeile in zeilen)
+    assert all(not zeile.split(" ")[1].startswith(str(venv)) for zeile in zeilen)
+
+
+# py-spy-Stub im äußeren venv (Gruppe ``messung``): protokolliert die Umgebung, die das profilierte Kind erbt.
+_PY_SPY_IM_VENV = """#!/usr/bin/env bash
+out=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--output" ]]; then out="$2"; fi
+  shift
+done
+echo "${VIRTUAL_ENV:-leer} $(command -v python || echo keins)" >> "$UMGEBUNG_LOG"
+echo profil > "$out"
+"""
+
+
+def test_py_spy_from_the_outer_venv_is_found_and_its_child_does_not_see_the_venv(
+    tmp_path: Path, env: dict[str, str]
+) -> None:
+    repo = _repo(tmp_path, _BASIS, [wert * 1.08 for wert in _BASIS])
+    venv = _aeusseres_venv(tmp_path, env)
+    stub = venv / "bin" / "py-spy"
+    stub.write_text(_PY_SPY_IM_VENV, encoding="utf-8")
+    stub.chmod(0o755)
+    env["PATH"] = env["PATH"].replace(f"{tmp_path / 'bin'}{os.pathsep}", "")
+
+    result = _messen(repo, env)
+
+    assert result.returncode == 0, result.stderr
+    assert _ergebnis(repo)["urteil"] == "Gewinn"
+    zeilen = Path(env["UMGEBUNG_LOG"]).read_text(encoding="utf-8").splitlines()
+    assert len(zeilen) == 2
+    assert all(zeile.split(" ")[0] == "leer" for zeile in zeilen)
+    assert all(not zeile.split(" ")[1].startswith(str(venv)) for zeile in zeilen)

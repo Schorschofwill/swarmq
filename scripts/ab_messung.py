@@ -17,6 +17,9 @@ Ablauf:
   mindestens 10 Paare. Die letzte nicht leere Zeile seiner Standardausgabe
   ist ein JSON-Objekt; ``--kennzahl`` nennt den Schlüssel, Ebenen mit Punkt
   (``latenz.p99``).
+- Messbefehl und Profillauf sehen das venv nicht, unter dem ``just ab``
+  läuft (``VIRTUAL_ENV`` und dessen ``bin`` im ``PATH``): Ein bloßes
+  ``python`` träfe sonst auf beiden Seiten den Haupt-Checkout.
 - Ist der Unterschied nach den ersten Paaren nicht gesichert (p ≥ 0,05),
   wird einmal auf 30 Paare erweitert, und dieses Ergebnis gilt.
 - Statistik und Urteil: ``scripts/ab_statistik.py``. Die Ergebnisdatei hält
@@ -29,6 +32,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -64,8 +69,25 @@ def _kennzahl(ausgabe: str, schluessel: str) -> float:
     return float(wert)
 
 
+def _umgebung() -> dict[str, str]:
+    """Umgebung ohne das äußere venv: ``just ab`` läuft unter ``uv run``.
+
+    Sonst träfe ein bloßes ``python`` im Messbefehl auf beiden Seiten den Interpreter und das
+    editierbare swarmq des Haupt-Checkouts statt des Worktrees.
+    """
+    umgebung = dict(os.environ)
+    venv = umgebung.pop("VIRTUAL_ENV", None)
+    if venv is not None:
+        bin_dir = Path(venv) / "bin"
+        pfade = umgebung.get("PATH", "").split(os.pathsep)
+        umgebung["PATH"] = os.pathsep.join(pfad for pfad in pfade if Path(pfad) != bin_dir)
+    return umgebung
+
+
 def _lauf(befehl: str, worktree: Path, schluessel: str) -> float:
-    lauf = subprocess.run(["bash", "-c", befehl], cwd=worktree, capture_output=True, text=True, check=False)
+    lauf = subprocess.run(
+        ["bash", "-c", befehl], cwd=worktree, env=_umgebung(), capture_output=True, text=True, check=False
+    )
     if lauf.returncode != 0:
         msg = f"Messbefehl in {worktree} endete mit {lauf.returncode}:\n{lauf.stderr.strip()}"
         raise _AbbruchError(msg)
@@ -73,9 +95,21 @@ def _lauf(befehl: str, worktree: Path, schluessel: str) -> float:
 
 
 def _profil(befehl: str, worktree: Path, ziel: Path) -> bool:
+    # py-spy stammt aus dem äußeren venv (Gruppe ``messung``): vor dem Bereinigen auflösen.
     lauf = subprocess.run(
-        ["py-spy", "record", "--subprocesses", "--output", str(ziel), "--", "bash", "-c", befehl],
+        [
+            shutil.which("py-spy") or "py-spy",
+            "record",
+            "--subprocesses",
+            "--output",
+            str(ziel),
+            "--",
+            "bash",
+            "-c",
+            befehl,
+        ],
         cwd=worktree,
+        env=_umgebung(),
         capture_output=True,
         text=True,
         check=False,
