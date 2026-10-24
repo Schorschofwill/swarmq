@@ -11,7 +11,7 @@ unterschiedlichen Ausführungs-Stufen.
 | `tests/integration/` | `integration` | ✓ | pre-merge | Broker / Backend mit echtem Docker |
 | `tests/e2e/` | `e2e` | ✓ | pre-merge | Vollstack (Client + Worker + RabbitMQ + Valkey) |
 | `tests/property/` | `property` | – | jeder Push (im `unit-tests`-Job) | Hypothesis property-based |
-| `tests/fuzz/test_parser_fuzz.py` | `fuzz` | – | jeder Push (im `unit-tests`-Job) | Byte-Fuzz auf Parser |
+| `tests/fuzz/` ohne `test_external_publish_fuzz.py` | `fuzz` | – | jeder Push (im `unit-tests`-Job) | Byte- und Text-Fuzz auf Parser, Header, Cron, Konfiguration |
 | `tests/fuzz/test_external_publish_fuzz.py` | `fuzz` | – | örtlich vor Releases | AMQP-Header-Fuzz, braucht den Chaos-Stack |
 | `tests/chaos/` | `chaos` | – | örtlich vor Releases | Toxiproxy + Container-Restart + Crash |
 | `tests/stress/` | `stress` | – | manuell in der Pipeline | hohe Parallelität (10 worker × 1000 tasks) |
@@ -71,7 +71,7 @@ niemand für eine Zusicherung hält.
 |---|---|
 | `lint-and-types` | `just lint` und `just types` (siehe „Lint, Format und Typen“) |
 | `lock-check` | `uv.lock` ist zum `pyproject.toml` synchron |
-| `unit-tests` | `just unit`, `just property`, `just fuzz`, unter Coverage |
+| `unit-tests` | `just unit`, `just property`, `just fuzz` (deterministisch, mit Wächter gegen leere Läufe, siehe unten), unter Coverage |
 | `integration-tests` | `just integration` gegen RabbitMQ und Valkey, unter Coverage |
 | `e2e-tests` | `just e2e`, unter Coverage |
 | `coverage-combine` | nur wenn die drei Test-Jobs grün sind: `just coverage-report` (zusammenführen, `coverage.xml` für die MR-Anzeige, `fail_under`) und `just coverage-gate` |
@@ -93,6 +93,17 @@ CI (kein zweiter Broker) und zählen für den Ratchet nicht.
 Beide werden faktisch nie gestartet; wer Last messen will, fährt sie von
 Hand an oder örtlich.
 
+**Fuzz in der Pipeline.** Der `unit-tests`-Job fährt `just fuzz` mit
+`SWARMQ_FUZZ_PROFILE=ci` und `SWARMQ_TEST_MIN_TESTS` (Plan 2026-10-24-1118,
+U1). Das Profil `ci` aus `tests/fuzz/conftest.py` setzt `derandomize=True`:
+Jeder Lauf prüft dieselben Beispiele (Determinismus-Regel aus `AGENTS.md`).
+`scripts/run-tests.sh` zählt danach die ausgeführten Tests in der
+junit-Datei. Sind es weniger als verlangt, etwa weil alle Ziele übersprungen
+wurden, ist der Job rot, obwohl kein Test fehlschlägt. So meldete der alte
+Chaos-Job „1 passed, 40 skipped“ als Erfolg. Örtlich und in tiefen Runden
+läuft `just fuzz` ohne die Variablen zufällig, also mit neuen Beispielen je
+Lauf.
+
 **Nicht in der Pipeline**: Chaos und der Chaos-gestützte Fuzz-Lauf — siehe
 den Abschnitt darüber. Mutation-Testing gibt es als `scripts/run_mutation.sh`
 und läuft nur von Hand.
@@ -103,9 +114,11 @@ ist leer. Frühere Fassungen dieses Dokuments nannten
 Dateien lagen im Repo, das Projekt liegt aber auf GitLab, und sie sind nie
 gelaufen. Sie sind entfernt.
 
-## Chaos und Fuzz — örtlich, vor jedem Release
+## Chaos und Chaos-gestützter Fuzz — örtlich, vor jedem Release
 
-Beide Suiten laufen **nicht** in der Pipeline. Der Chaos-Job dort trug
+Chaos und der Fuzz-Lauf `tests/fuzz/test_external_publish_fuzz.py` laufen
+**nicht** in der Pipeline; die übrigen Fuzz-Ziele laufen im `unit-tests`-Job
+(siehe oben). Der Chaos-Job dort trug
 `allow_failure: false` und hielt Branch-Pipelines blockiert, bis er grün
 war; geprüft hat er nie etwas. Die beiden einzigen Läufe (2026-09-15 und
 2026-09-22) meldeten „1 passed, 40 skipped" in 1,17 Sekunden und gingen

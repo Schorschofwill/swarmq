@@ -38,6 +38,12 @@ types:
     {{uv_run}} basedpyright
     {{uv_run}} python -m mypy.stubtest msgpack croniter --mypy-config-file pyproject.toml --ignore-missing-stub
 
+# Bekannte Schwachstellen in den Abhängigkeiten aus uv.lock (OSV), wie der
+# CI-Job abhaengigkeiten-pruefen (Plan 2026-10-24-1118, U2, KTD2). Ausnahmen
+# kommen als ``--ignore <ID>`` dazu, je mit Kommentar aus Grund und Signal-ID.
+audit:
+    uv audit --frozen
+
 # Unit-Suite (ohne Dienste): parallel auf SWARMQ_TEST_WORKERS Prozessen, danach
 # die ``timing``-Tests (enges Zeitbudget gegen die echte Uhr) allein
 unit *args:

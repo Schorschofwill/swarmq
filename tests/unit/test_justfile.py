@@ -40,6 +40,16 @@ Eingrenzen per Pfad (Plan 2026-10-15-1138, U16, R33):
 - [x] ``just unit <pfad>`` grenzt beide Durchgänge ein, keine Sperre
 - [x] ``just property <pfad>`` und ``just stress <pfad>`` grenzen ein, der Marker bleibt
 - [x] ein nicht existierender Pfad: die Suite bleibt davor
+
+Wächter gegen leere Läufe (Plan 2026-10-24-1118, U1, KTD1, AE7):
+- [x] ``SWARMQ_TEST_MIN_TESTS``: weniger ausgeführte Tests als verlangt (nur übersprungene) machen den Lauf rot
+- [x] genug ausgeführte Tests: der Lauf bleibt grün
+- [x] ohne ``SWARMQ_TEST_MIN_TESTS`` bleibt ein Lauf ohne ausgeführte Tests grün wie bisher
+- [x] ohne ``--junitxml`` des Aufrufers liest der Wächter eine eigene junit-Datei
+
+Abhängigkeitsprüfung (Plan 2026-10-24-1118, U2, KTD2):
+- [x] ``just audit`` ruft ``uv audit --frozen``
+- [x] der Exitcode von ``uv audit`` wird unverändert weitergereicht
 """
 
 from __future__ import annotations
@@ -67,6 +77,17 @@ echo "args=$* rmq=${SWARMQ_TEST_RABBITMQ_PORT:-} valkey=${SWARMQ_TEST_VALKEY_POR
 lockheld=${SWARMQ_TEST_LOCK_HELD:-} lock=$held excl=${SWARMQ_TEST_EXCLUSIVE:-}" >> "$STUB_LOG"
 if [[ -n "${STUB_ORPHAN:-}" ]]; then (sleep 5 >/dev/null 2>&1 &) ; fi
 if [[ -n "${STUB_SLEEP:-}" ]]; then sleep "$STUB_SLEEP"; fi
+# STUB_JUNIT: Inhalt der junit-Datei, die pytest unter --junitxml schriebe
+if [[ -n "${STUB_JUNIT:-}" ]]; then
+    previous=""
+    for arg in "$@"; do
+        case "$previous|$arg" in
+            --junitxml\\|*) printf '%s' "$STUB_JUNIT" > "$arg" ;;
+            *"|--junitxml="*) printf '%s' "$STUB_JUNIT" > "${arg#--junitxml=}" ;;
+        esac
+        previous="$arg"
+    done
+fi
 rc="STUB_RC_${SWARMQ_TEST_EXCLUSIVE:-none}"
 exit "${!rc:-0}"
 """
@@ -472,3 +493,65 @@ def test_a_missing_path_keeps_the_suite_so_pytest_reports_it(stub: dict[str, str
     parallel, serial = _calls(stub)
     assert f"pytest -n 8 --dist loadgroup tests/integration {missing} --randomly-seed" in parallel
     assert f"pytest tests/integration {missing} --randomly-seed" in serial
+
+
+def _junit(tests: int, skipped: int) -> str:
+    return (
+        '<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests">'
+        f'<testsuite name="pytest" errors="0" failures="0" skipped="{skipped}" tests="{tests}" time="0.1">'
+        "</testsuite></testsuites>"
+    )
+
+
+def test_a_run_with_fewer_executed_tests_than_the_minimum_fails(stub: dict[str, str], tmp_path: Path) -> None:
+    stub |= {"SWARMQ_TEST_MIN_TESTS": "1", "STUB_JUNIT": _junit(tests=31, skipped=31)}
+
+    result = _just(stub, "fuzz", f"--junitxml={tmp_path / 'junit-fuzz.xml'}")
+
+    assert result.returncode != 0
+    assert "0 Tests ausgeführt" in result.stderr
+
+
+def test_a_run_with_enough_executed_tests_passes(stub: dict[str, str], tmp_path: Path) -> None:
+    stub |= {"SWARMQ_TEST_MIN_TESTS": "30", "STUB_JUNIT": _junit(tests=31, skipped=1)}
+
+    result = _just(stub, "fuzz", f"--junitxml={tmp_path / 'junit-fuzz.xml'}")
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_without_a_minimum_a_run_of_skipped_tests_stays_green(stub: dict[str, str], tmp_path: Path) -> None:
+    stub["STUB_JUNIT"] = _junit(tests=31, skipped=31)
+
+    result = _just(stub, "fuzz", f"--junitxml={tmp_path / 'junit-fuzz.xml'}")
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_without_a_junit_file_from_the_caller_the_guard_uses_its_own(stub: dict[str, str]) -> None:
+    stub |= {"SWARMQ_TEST_MIN_TESTS": "1", "STUB_JUNIT": _junit(tests=31, skipped=31)}
+
+    result = _just(stub, "fuzz", "-q")
+
+    assert result.returncode != 0
+    assert "0 Tests ausgeführt" in result.stderr
+    [call] = _calls(stub)
+    assert "--junitxml=" in call
+
+
+def test_audit_runs_uv_audit_against_the_frozen_lock(stub: dict[str, str]) -> None:
+    result = _just(stub, "audit")
+
+    assert result.returncode == 0, result.stderr
+    [call] = _calls(stub)
+    assert call.startswith("args=audit --frozen rmq=")
+    assert "lock=free" in call
+
+
+@pytest.mark.parametrize("rc", [1, 2])
+def test_audit_passes_the_exit_code_of_uv_audit_through(stub: dict[str, str], rc: int) -> None:
+    stub["STUB_RC_none"] = str(rc)
+
+    result = _just(stub, "audit")
+
+    assert result.returncode == rc
