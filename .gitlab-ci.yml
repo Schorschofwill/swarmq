@@ -54,6 +54,11 @@ variables:
   # The cache volume and the job's venv are different filesystems.
   UV_LINK_MODE: "copy"
   UV_FROZEN: "1"
+  # Exakt das Python aus .python-version, als von uv verwalteter Build statt
+  # des Image-Pythons: Der Tag python3.14-bookworm-slim floatet, und die
+  # Modulzahlen der Kostensuite hängen an Version und Build (Plan
+  # 2026-10-24-1118, KTD5).
+  UV_PYTHON_PREFERENCE: "only-managed"
   # Canonical uv invocation: test deps + the reload extra the hot-reload
   # tests need. Keep every test job using this so the resolved env matches.
   # `uv run` also installs the default dependency groups `lint` and `typing`
@@ -206,6 +211,9 @@ unit-tests:
     - $UV_RUN just unit -q --junitxml=junit-unit.xml
     - $UV_RUN just property -q --junitxml=junit-property.xml
     - SWARMQ_FUZZ_PROFILE=ci SWARMQ_TEST_MIN_TESTS=31 $UV_RUN just fuzz -q --junitxml=junit-fuzz.xml
+    # Ohne Coverage: Sie lädt eigene Module in jedes Kind, die Modulzahlen
+    # liefen sonst zwischen CI und lokal auseinander (Plan 2026-10-24-1118, KTD4).
+    - SWARMQ_TEST_COVERAGE= $UV_RUN just kosten -q --junitxml=junit-kosten.xml
   artifacts: !reference [.coverage-data, artifacts]
 
 # Tier 2a — integration against real RabbitMQ + Valkey (deterministic).

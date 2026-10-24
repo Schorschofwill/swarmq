@@ -160,8 +160,9 @@ faulthandler_timeout = 600
 # Default-Ausschluss der opt-in-Suiten (E2E-Hardening U1.2). Chaos,
 # Stress, Soak, Property, Fuzz, Mutation, Compat laufen nur explizit via
 # `pytest -m chaos` o.ä. — der Dev-Loop bleibt schnell (Regel in AGENTS.md:
-# jeder Unit-Test < 100 ms, keine feste Gesamtgrenze).
-addopts = "-m 'not chaos and not stress and not soak and not property and not fuzz and not mutation and not compat'"
+# jeder Unit-Test < 100 ms, keine feste Gesamtgrenze). Die Kostensuite läuft
+# nur über `just kosten`, ohne Coverage (Plan 2026-10-24-1118, KTD4).
+addopts = "-m 'not chaos and not stress and not soak and not property and not fuzz and not mutation and not compat and not kosten'"
 markers = [
     "unit: unit tests",
     "integration: integration tests",
@@ -177,6 +178,7 @@ markers = [
     "befund(id): Nachweis eines Befunds aus docs/befunde/ (offen mit xfail strict=True; nach dem Fix ohne xfail als Rückverweis)",
     "compat: Mischbetrieb mit swarmq 0.11.0, 0.11.1, 0.12.0, 0.12.3 und 0.13.1 aus PyPI (tests/compat, opt-in, braucht Netz zu PyPI)",
     "spike: Charakterisierung des Broker-Verhaltens (tests/integration/spikes, RabbitMQ 4.3 und 4.2)",
+    "kosten: zählbare Kosten je Task gegen tests/kosten/basislinie.toml (tests/kosten, opt-in über just kosten)",
 ]
 
 [tool.coverage.run]

@@ -1,0 +1,92 @@
+# Basislinie der Kostensuite (Plan 2026-10-24-1118, U3, KTD7).
+# Nicht von Hand ändern: uv run just kosten-basislinie "<Grund mit Verweis>"
+# schreibt die Werte neu und hängt einen Historieneintrag an.
+
+python = "3.14.4"
+
+[werte.einfacher_task]
+"backend.execution_guard.claim" = 1
+"backend.execution_guard.mark_done" = 1
+"backend.is_cancelled" = 1
+"backend.notify_result" = 1
+"backend.store_result" = 1
+"broker.ack" = 1
+"broker.publish" = 1
+
+[werte.import_swarmq]
+module = 151
+
+[werte.import_swarmq_cli]
+module = 421
+
+[werte.publish]
+"amqp.frames" = 3
+"broker.publish" = 1
+
+[werte.retry]
+"backend.execution_guard.claim" = 2
+"backend.execution_guard.mark_done" = 1
+"backend.execution_guard.mark_superseded" = 1
+"backend.is_cancelled" = 3
+"backend.notify_result" = 1
+"backend.store_result" = 1
+"broker.ack" = 1
+"broker.publish" = 1
+"broker.retry_later" = 1
+
+[werte.worker_start]
+module = 670
+
+[werte.workflow_kette]
+"backend.compare_and_store_workflow_state" = 2
+"backend.execution_guard.claim" = 2
+"backend.execution_guard.mark_done" = 2
+"backend.get_workflow_state" = 2
+"backend.is_cancelled" = 2
+"backend.is_workflow_cancelled" = 4
+"backend.notify_result" = 2
+"backend.notify_workflow" = 1
+"backend.store_result" = 2
+"backend.store_workflow_state" = 1
+"broker.ack" = 2
+"broker.publish" = 2
+
+[[historie]]
+datum = "2026-10-24"
+grund = "Erste Basislinie der Kostensuite (docs/plans/2026-10-24-1118-chore-qualitaetsablauf-plan.md, U3)"
+python = "3.14.4"
+aenderungen = [
+    { szenario = "einfacher_task", metrik = "backend.execution_guard.claim", neu = 1 },
+    { szenario = "einfacher_task", metrik = "backend.execution_guard.mark_done", neu = 1 },
+    { szenario = "einfacher_task", metrik = "backend.is_cancelled", neu = 1 },
+    { szenario = "einfacher_task", metrik = "backend.notify_result", neu = 1 },
+    { szenario = "einfacher_task", metrik = "backend.store_result", neu = 1 },
+    { szenario = "einfacher_task", metrik = "broker.ack", neu = 1 },
+    { szenario = "einfacher_task", metrik = "broker.publish", neu = 1 },
+    { szenario = "import_swarmq", metrik = "module", neu = 151 },
+    { szenario = "import_swarmq_cli", metrik = "module", neu = 421 },
+    { szenario = "publish", metrik = "amqp.frames", neu = 3 },
+    { szenario = "publish", metrik = "broker.publish", neu = 1 },
+    { szenario = "retry", metrik = "backend.execution_guard.claim", neu = 2 },
+    { szenario = "retry", metrik = "backend.execution_guard.mark_done", neu = 1 },
+    { szenario = "retry", metrik = "backend.execution_guard.mark_superseded", neu = 1 },
+    { szenario = "retry", metrik = "backend.is_cancelled", neu = 3 },
+    { szenario = "retry", metrik = "backend.notify_result", neu = 1 },
+    { szenario = "retry", metrik = "backend.store_result", neu = 1 },
+    { szenario = "retry", metrik = "broker.ack", neu = 1 },
+    { szenario = "retry", metrik = "broker.publish", neu = 1 },
+    { szenario = "retry", metrik = "broker.retry_later", neu = 1 },
+    { szenario = "worker_start", metrik = "module", neu = 670 },
+    { szenario = "workflow_kette", metrik = "backend.compare_and_store_workflow_state", neu = 2 },
+    { szenario = "workflow_kette", metrik = "backend.execution_guard.claim", neu = 2 },
+    { szenario = "workflow_kette", metrik = "backend.execution_guard.mark_done", neu = 2 },
+    { szenario = "workflow_kette", metrik = "backend.get_workflow_state", neu = 2 },
+    { szenario = "workflow_kette", metrik = "backend.is_cancelled", neu = 2 },
+    { szenario = "workflow_kette", metrik = "backend.is_workflow_cancelled", neu = 4 },
+    { szenario = "workflow_kette", metrik = "backend.notify_result", neu = 2 },
+    { szenario = "workflow_kette", metrik = "backend.notify_workflow", neu = 1 },
+    { szenario = "workflow_kette", metrik = "backend.store_result", neu = 2 },
+    { szenario = "workflow_kette", metrik = "backend.store_workflow_state", neu = 1 },
+    { szenario = "workflow_kette", metrik = "broker.ack", neu = 2 },
+    { szenario = "workflow_kette", metrik = "broker.publish", neu = 2 },
+]

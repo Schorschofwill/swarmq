@@ -32,6 +32,12 @@ Test-Liste:
 - [x] ``lint``, ``types``, ``chaos``, ``stress``, ``coverage-report``, ``coverage-gate``, ``ratchet`` rufen die CI-Befehle
 - [x] ``ab`` ruft das A/B-Messwerkzeug mit der Gruppe ``messung`` und reicht die Argumente durch (Plan 2026-10-24-1118, U7)
 
+Kostensuite (Plan 2026-10-24-1118, U3):
+- [x] ``kosten`` ruft die Suite unter ``tests/kosten`` mit Marker ``kosten``, ohne Sperre
+- [x] ``just all`` fährt ``kosten`` nach ``fuzz``
+- [x] ``kosten-basislinie <grund>`` misst in eine Datei und übergibt Grund und Datei dem Skript
+- [x] ein roter Messlauf schreibt keine Basislinie
+
 Eingrenzen per Pfad (Plan 2026-10-15-1138, U16, R33):
 - [x] ``just integration <pfad>``: beide Durchgänge laufen nur den Pfad
 - [x] ``just e2e <pfad>::<test>`` grenzt auf die Node-ID ein
@@ -76,6 +82,7 @@ held=free
 if [[ -n "${STUB_LOCK:-}" ]] && ! flock -n "$STUB_LOCK" true 2>/dev/null; then held=held; fi
 echo "args=$* rmq=${SWARMQ_TEST_RABBITMQ_PORT:-} valkey=${SWARMQ_TEST_VALKEY_PORT:-} \
 lockheld=${SWARMQ_TEST_LOCK_HELD:-} lock=$held excl=${SWARMQ_TEST_EXCLUSIVE:-}" >> "$STUB_LOG"
+if [[ -n "${SWARMQ_KOSTEN_MESSUNG:-}" ]]; then echo "$SWARMQ_KOSTEN_MESSUNG" >> "$STUB_LOG.messung"; fi
 if [[ -n "${STUB_ORPHAN:-}" ]]; then (sleep 5 >/dev/null 2>&1 &) ; fi
 if [[ -n "${STUB_SLEEP:-}" ]]; then sleep "$STUB_SLEEP"; fi
 # STUB_JUNIT: Inhalt der junit-Datei, die pytest unter --junitxml schriebe
@@ -195,6 +202,7 @@ def test_all_holds_the_lock_once_across_every_suite(stub: dict[str, str]) -> Non
         "tests/unit",
         "tests/property",
         "tests/fuzz",
+        "tests/kosten",
         "tests/integration",
         "tests/integration",
         "tests/e2e",
@@ -267,6 +275,7 @@ def test_coverage_measures_every_suite_under_one_lock(stub: dict[str, str]) -> N
         ),
         ("chaos", ["pytest -m chaos"], True),
         ("stress", ["pytest tests/stress -m stress"], True),
+        ("kosten", ["pytest tests/kosten -m kosten"], False),
         ("coverage-report", ["coverage combine", "coverage xml", "coverage report"], False),
         ("coverage-gate", ["--group coverage python scripts/coverage_gate.py"], False),
         ("ratchet", ["python scripts/coverage_ratchet.py"], False),
@@ -565,3 +574,24 @@ def test_audit_passes_the_exit_code_of_uv_audit_through(stub: dict[str, str], rc
     result = _just(stub, "audit")
 
     assert result.returncode == rc
+
+
+def test_kosten_basislinie_measures_into_a_file_and_hands_reason_and_file_to_the_script(stub: dict[str, str]) -> None:
+    result = _just(stub, "kosten-basislinie", "Grund E-026")
+
+    assert result.returncode == 0, result.stderr
+    messen, schreiben = _calls(stub)
+    assert "pytest tests/kosten -m kosten" in messen
+    assert "lock=free" in messen
+    [messung] = Path(stub["STUB_LOG"] + ".messung").read_text(encoding="utf-8").splitlines()
+    assert f"python scripts/kosten_basislinie.py Grund E-026 {messung} rmq=" in schreiben
+
+
+def test_a_red_measurement_run_writes_no_baseline(stub: dict[str, str]) -> None:
+    stub["STUB_RC_none"] = "1"
+
+    result = _just(stub, "kosten-basislinie", "Grund E-026")
+
+    assert result.returncode != 0
+    [messen] = _calls(stub)
+    assert "pytest tests/kosten -m kosten" in messen
