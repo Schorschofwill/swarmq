@@ -1,0 +1,27 @@
+# Vergleichsumgebung für taskiq: das System und alle transitiven Abhängigkeiten,
+# aufgelöst für Python 3.14 (uv pip freeze, 2026-10-24).
+-r requirements.txt
+aio-pika==10.0.1
+aiohappyeyeballs==2.7.1
+aiohttp==3.14.5
+aiormq==7.0.0
+aiosignal==1.4.0
+annotated-types==0.8.0
+anyio==4.15.1
+attrs==26.1.0
+frozenlist==1.8.0
+idna==3.20
+multidict==7.2.0
+pamqp==4.0.1
+propcache==0.5.4
+pycron==3.3.0
+pydantic==2.14.1
+pydantic-core==2.50.1
+redis==8.1.0
+taskiq==0.13.0
+taskiq-aio-pika==0.6.1
+taskiq-dependencies==1.5.7
+taskiq-redis==1.2.4
+typing-extensions==4.16.0
+typing-inspection==0.4.4
+yarl==1.25.1

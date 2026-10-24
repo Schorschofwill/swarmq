@@ -22,11 +22,12 @@ async def run_quorum_classic(
     Returns a combined result; the runner should call this once.
     The scenario internally runs both variants and prints comparison.
     """
+    from garantieprofile import STARK
     from systems.swarmq_sys import SwarmQSystem
 
     results = []
     for queue_type, label in [("quorum", "swarmq-quorum"), ("classic", "swarmq-classic")]:
-        system = SwarmQSystem(queue_type=queue_type)
+        system = SwarmQSystem(profil=STARK, queue_type=queue_type)
         system.name = label
 
         await system.setup()

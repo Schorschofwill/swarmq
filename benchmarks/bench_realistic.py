@@ -28,7 +28,7 @@ from valkey.asyncio import Valkey
 
 
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5692/")
-VALKEY_URL = os.getenv("VALKEY_URL", "valkey://localhost:6399/0")
+VALKEY_URL = os.getenv("VALKEY_URL", "valkey://localhost:6392/0")
 QUEUE_NAME = "bench_realistic"
 STREAM_KEY = f"{QUEUE_NAME}:stream"
 

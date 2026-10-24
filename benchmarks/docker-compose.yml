@@ -20,7 +20,7 @@ services:
   valkey:
     image: valkey/valkey:8-alpine
     ports:
-      - "6399:6379"
+      - "6392:6379"
     # appendonly yes = AOF Persistenz (realistischer Betrieb)
     command: valkey-server --appendonly yes --save "" --maxmemory 512mb --maxmemory-policy noeviction
     volumes:

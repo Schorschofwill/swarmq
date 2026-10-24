@@ -1,0 +1,6 @@
+# Vergleichsumgebung für dramatiq: das System und alle transitiven Abhängigkeiten,
+# aufgelöst für Python 3.14 (uv pip freeze, 2026-10-24).
+-r requirements.txt
+dramatiq==2.2.1
+pika==1.4.4
+redis==8.1.0

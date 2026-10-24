@@ -23,13 +23,14 @@ async def run_polling_interval(
     Prints a comparison table.
     Returns the result for the 10ms interval (the benchmark default).
     """
+    from garantieprofile import STARK
     from systems.swarmq_sys import SwarmQSystem
 
     default_result = None
     intervals = [0.001, 0.01, 0.05, 0.2]
 
     for poll_interval in intervals:
-        system = SwarmQSystem()
+        system = SwarmQSystem(profil=STARK)
         system.name = f"swarmq-poll{int(poll_interval * 1000)}ms"
 
         await system.setup()

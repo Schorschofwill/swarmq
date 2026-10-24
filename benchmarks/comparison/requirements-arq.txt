@@ -1,0 +1,8 @@
+# Vergleichsumgebung für arq: das System und alle transitiven Abhängigkeiten,
+# aufgelöst für Python 3.14 (uv pip freeze, 2026-10-24).
+-r requirements.txt
+arq==0.28.0
+click==8.5.0
+hiredis==3.5.0
+pyjwt==2.15.1
+redis==5.3.1

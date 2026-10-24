@@ -30,6 +30,8 @@ class BenchmarkResult:
     latencies: list[float] = field(default_factory=list)  # seconds
     total_duration: float = 0.0  # seconds
     memory_peak_mb: float = 0.0
+    #: Versionen, Images, Host und Profil des Laufs (``runner.metadaten``).
+    meta: dict[str, Any] = field(default_factory=dict)
 
     @property
     def p50(self) -> float:
@@ -64,6 +66,7 @@ class BenchmarkResult:
             "latency_p95_ms": round(self.p95 * 1000, 3),
             "latency_p99_ms": round(self.p99 * 1000, 3),
             "latency_count": len(self.latencies),
+            **self.meta,
         }
 
 
@@ -221,13 +224,38 @@ def aggregate_runs(results: list[BenchmarkResult]) -> AggregatedResult:
 
 
 def save_result(result: BenchmarkResult, results_dir: Path) -> Path:
-    """Save a BenchmarkResult as JSON to the results directory."""
+    """Save a BenchmarkResult as JSON; ohne Metadaten wird nichts geschrieben."""
+    daten = result.to_dict()
+    pruefe_ergebnis(daten)
     results_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = int(time.time())
-    filename = f"{result.scenario_name}_{result.system_name}_{timestamp}.json"
+    # Nanosekunden: Zwei Läufe derselben Kombination in einer Sekunde überschreiben sich nicht.
+    filename = f"{result.scenario_name}_{result.system_name}_{daten['profil']}_{time.time_ns()}.json"
     path = results_dir / filename
-    path.write_text(json.dumps(result.to_dict(), indent=2))
+    path.write_text(json.dumps(daten, indent=2))
     return path
+
+
+#: Pflichtfelder jeder Ergebnisdatei (Plan 2026-10-24-1118, U8): ohne sie ist
+#: ein Lauf weder nachstellbar noch einem Profil zuzuordnen (R22).
+METADATEN = ("versionen", "images", "host", "profil")
+
+
+class UngueltigesErgebnis(ValueError):
+    """Eine Ergebnisdatei ohne die Metadaten, die der Vergleich verlangt."""
+
+
+def pruefe_ergebnis(ergebnis: dict[str, Any]) -> None:
+    """Lehnt ein Ergebnis ab, dem eines der Felder aus ``METADATEN`` fehlt oder leer ist."""
+    fehlend = [feld for feld in METADATEN if not ergebnis.get(feld)]
+    if fehlend:
+        raise UngueltigesErgebnis(f"Ergebnis ohne {', '.join(fehlend)}")
+
+
+def lade_ergebnis(path: Path) -> dict[str, Any]:
+    """Liest eine Ergebnisdatei und prüft ihre Metadaten."""
+    ergebnis = json.loads(path.read_text())
+    pruefe_ergebnis(ergebnis)
+    return ergebnis
 
 
 def load_results(results_dir: Path) -> list[dict[str, Any]]:
