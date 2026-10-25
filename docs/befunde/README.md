@@ -43,7 +43,7 @@ Dazu kommt eine fünfte Einstufung:
 
 ### Eine Runde
 
-1. **Takt:** je Minor-Release (R11), bis Georg einen anderen festlegt. Jede Runde bekommt einen eigenen Plan unter `docs/plans/`.
+1. **Takt:** alle 14 Tage, festgelegt von Georg am 2026-10-25 (statt je Minor-Release nach R11: Minor-Releases kamen teils mehrmals pro Woche). Gezählt wird ab dem Ende der vorigen Runde. Jede Runde bekommt einen eigenen Plan unter `docs/plans/`.
 2. **Beginn:** `uv run just audit` fahren und jeden Treffer als offenes Signal ins Sättigungsbuch `saettigungsbuch.toml` eintragen. Dann mit `uv run just saettigung` die Kombinationen wählen, die am wenigsten abgedeckt und nicht gesättigt sind, und die Auswahl damit begründen (R13).
 3. **Methoden** aus dem Methodenkatalog `methodenkatalog.md`. In Angriffssicherheit und Performance beginnt jede Untersuchung bei einem Signal aus dem Buch (R15). Die Lese-Methode gibt es nur bei Fehler und Zuverlässigkeit (R17). Wie der Konkurrenz-Katalog vorgeht, steht dort bei M-F-06, M-A-03 und M-P-03 (R16).
 4. **Ergebnis:** ein gegengeprüftes Register mit Nachweis-Tests, Produktfragen und Fix-Plan. Umgesetzt wird erst nach Georgs Ok (R18).
