@@ -15,6 +15,7 @@ Test-Liste:
 - [x] ``benchmarks/docker-compose.yml`` und der Vergleichsaufbau nutzen keinen Testport
 - [x] die Images des Vergleichsaufbaus sind exakt gepinnt
 - [x] jede Abhängigkeit der Vergleichsumgebungen ist mit ``==`` gepinnt
+- [x] die Pins der swarmq-Umgebung entsprechen ``uv.lock`` (gemessen wird swarmq, wie es ausgeliefert wird)
 - [x] ein Worker-Prozess läuft mit eigener PID und endet mit ``stoppen()``
 - [x] jeder Adapter liefert nach dem Start die PID eines laufenden Worker-Prozesses, die nicht die des Runners ist
 - [x] jeder Adapter startet den Worker über die CLI seines Systems
@@ -29,6 +30,8 @@ Test-Liste:
 - [x] Metadaten und Ergebnisdatei nennen die Parallelität; ohne sie wird ein Ergebnis abgelehnt
 - [x] der Bericht trennt die Parallelitäten eines Systems
 - [x] die Entscheidungsregeln des Berichts vergleichen bei gleicher Parallelität
+- [x] eine Zahl als Parallelität setzt genau so viele gleichzeitige Tasks
+- [x] ``semaphore_scale`` variiert die Worker-Parallelität von swarmq, nicht nur die Ergebnisabfrage
 """
 
 from __future__ import annotations
@@ -41,6 +44,7 @@ import os
 import re
 import signal
 import sys
+import tomllib
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import ModuleType
@@ -202,6 +206,17 @@ def test_jede_abhaengigkeit_der_vergleichsumgebung_ist_exakt_gepinnt(system: str
         assert re.fullmatch(r"[A-Za-z0-9_.-]+(\[[a-z,]+\])?==\d+(\.\d+)*(\.post\d+)?", pin), pin
 
 
+def test_pins_der_swarmq_umgebung_entsprechen_uv_lock() -> None:
+    """Nach einem Update in ``uv.lock`` (etwa wegen einer CVE) liefe der Vergleich sonst mit alten Versionen."""
+    lock = tomllib.loads((BENCHMARKS_DIR.parent / "uv.lock").read_text())
+    im_lock = {paket["name"]: paket["version"] for paket in lock["package"] if "version" in paket}
+    zeilen = (VERGLEICH_DIR / "requirements-swarmq.txt").read_text().splitlines()
+    pins = dict(zeile.strip().split("==") for zeile in zeilen if "==" in zeile and not zeile.lstrip().startswith("#"))
+
+    assert pins
+    assert {name: version for name, version in pins.items() if im_lock.get(name) != version} == {}
+
+
 def _laeuft(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -302,6 +317,59 @@ def test_adapter_mit_gleicher_parallelitaet_fuehrt_zehn_tasks_gleichzeitig_aus(
 
     assert adapter.worker_kommando() == ab_werk.worker_kommando() + argumente
     assert adapter.worker_umgebung() == {**ab_werk.worker_umgebung(), **umgebung}
+
+
+@pytest.mark.parametrize(
+    ("system", "argumente"),
+    [
+        ("swarmq", ["--processes", "1", "--concurrency", "25"]),
+        ("dramatiq", ["--processes", "1", "--threads", "25"]),
+    ],
+)
+def test_eine_zahl_als_parallelitaet_setzt_genau_so_viele_gleichzeitige_tasks(
+    vergleich: Callable[[str], ModuleType],
+    system: str,
+    argumente: list[str],
+) -> None:
+    adapter = vergleich("runner").get_systems()[system](profil="stark", parallelitaet="25")
+    ab_werk = vergleich("runner").get_systems()[system](profil="stark")
+    ab_werk.queue = adapter.queue
+
+    assert adapter.worker_kommando() == ab_werk.worker_kommando() + argumente
+
+
+@pytest.mark.timeout(5)
+async def test_semaphore_scale_variiert_die_worker_parallelitaet_von_swarmq(
+    vergleich: Callable[[str], ModuleType],
+) -> None:
+    """Gemeint ist die Sättigung von swarmqs Worker-Semaphore (``--concurrency``), nicht der Abfrage im Erzeuger."""
+    szenario = vergleich("scenarios.semaphore_scale")
+    gestartet: list[str] = []
+
+    class Schein:
+        name = "swarmq"
+
+        def __init__(self, *, parallelitaet: str) -> None:
+            self.parallelitaet = parallelitaet
+
+        async def setup(self) -> None: ...
+
+        async def start_worker(self) -> None:
+            gestartet.append(self.parallelitaet)
+
+        async def enqueue(self, task_name: str, payload: dict[str, object]) -> str:
+            return task_name
+
+        async def get_result(self, task_id: str, timeout: float = 30.0, poll_interval: float = 0.01) -> bool:
+            return True
+
+        async def stop_worker(self) -> None: ...
+
+        async def teardown(self) -> None: ...
+
+    await szenario.run_semaphore_scale(Schein, n=2, sleep_ms=0)
+
+    assert gestartet == ["1", "5", "10", "25", "50", "100", "200"]
 
 
 PARALLELITAETS_SCHALTER = frozenset({"--concurrency", "-c", "--processes", "-p", "--threads", "-t", "--workers", "-w"})

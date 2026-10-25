@@ -46,11 +46,15 @@ services:
       retries: 15
 
   toxiproxy:
-    # Version wie tests/chaos/compose.yml (KTD14); die Proxys legt toxiproxy.json an.
+    # Version wie tests/chaos/compose.yml (KTD14). Die Proxys stehen unten
+    # unter ``configs``: Compose kopiert sie in den Container, statt eine
+    # Datei des Hosts einzubinden, so läuft der Stack auch auf einem
+    # entfernten Docker-Host (scripts/vergleich-entfernt.sh).
     image: ghcr.io/shopify/toxiproxy:2.9.0
     command: ["-host=0.0.0.0", "-config=/config/toxiproxy.json"]
-    volumes:
-      - ./toxiproxy.json:/config/toxiproxy.json:ro
+    configs:
+      - source: toxiproxy
+        target: /config/toxiproxy.json
     ports:
       - "18476:8474"
       - "5686:5672"
@@ -67,3 +71,13 @@ services:
 volumes:
   rabbitmq_data:
   valkey_data:
+
+configs:
+  toxiproxy:
+    # Je Dienst ein Proxy; Namen wie stack.PROXYS, Host-Ports oben wie stack.PORTS.
+    content: |
+      [
+        {"name": "rabbitmq", "listen": "0.0.0.0:5672", "upstream": "rabbitmq:5672", "enabled": true},
+        {"name": "valkey", "listen": "0.0.0.0:6379", "upstream": "valkey:6379", "enabled": true},
+        {"name": "valkey-fluechtig", "listen": "0.0.0.0:6380", "upstream": "valkey-fluechtig:6379", "enabled": true}
+      ]

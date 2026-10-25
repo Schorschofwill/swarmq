@@ -38,6 +38,25 @@ uv run just vergleich-garantie --runs 2      # alle Systeme, Profile und Störun
 uv run just vergleich-garantie --systems swarmq,celery --stoerungen sigkill   # Auswahl
 ```
 
+Auf dem Messhost (celsius) läuft der Vergleich nur in Containern; dort
+liegen weder Repo noch Umgebungen noch Ergebnisse. Gesteuert wird vom eigenen
+Rechner über den Docker-Kontext des Hosts:
+
+```bash
+scripts/vergleich-entfernt.sh starten celsius performance --runs 3   # oder: garantie --runs 3, ab --a … --b …
+scripts/vergleich-entfernt.sh status celsius
+scripts/vergleich-entfernt.sh abholen celsius benchmarks/comparison/wertung/<datum>
+```
+
+`starten` baut aus einem sauberen Klon des aktuellen Commits das Image
+`swarmq-vergleich:<commit>` (`Dockerfile`: Python und uv wie die CI, die fünf
+Umgebungen aus `einrichten.sh`, Docker-CLI mit Compose) und startet den Lauf
+im Hintergrund. Der Lauf-Container nutzt das Netz und den Docker-Socket des
+Hosts, startet seine Dienste selbst und räumt sie am Ende ab
+(`im-container.sh`). `abholen` kopiert Ergebnisse und Log und entfernt
+Container und Image. Deshalb bindet kein Compose-Stack des Vergleichs eine
+Datei des Hosts ein; die Proxys von Toxiproxy stehen in `stoerungen/compose.yml`.
+
 Voraussetzungen: Docker mit Compose, `uv`, Python 3.14 (die Umgebungen legt
 `einrichten.sh` mit `uv venv --python 3.14` an). Das Rezept startet den
 eigenen Stack (Compose-Projekt `swarmq-vergleich-stoerung`), fährt alle
