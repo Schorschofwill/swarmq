@@ -4,9 +4,31 @@ Der Vergleich stellt swarmq neben Celery, Dramatiq, arq und taskiq (Plan
 `docs/plans/2026-10-24-1118-chore-qualitaetsablauf-plan.md`, R19 bis R22). Er
 hat zwei Teile: Performance bei gleicher Garantie (`runner.py`, U8) und
 Garantien unter gleichen Störungen (`stoerungen/`, U9). Dieses Dokument
-beschreibt den Garantie-Teil. Methode, Skripte, Konfiguration und Ergebnisse
+beschreibt vor allem den Garantie-Teil. Methode, Skripte, Konfiguration und Ergebnisse
 sind öffentlich und nachstellbar; veröffentlicht wird auch, wo swarmq
 verliert (R22).
+
+## Parallelität im Performance-Teil
+
+Ab Werk führen die Systeme sehr verschieden viele Tasks gleichzeitig aus
+(24 Kerne: swarmq 10, arq 10, Celery 24, Dramatiq 192, taskiq 200). Ein
+Durchsatz ab Werk misst deshalb zum Teil nur diese Zahl. Der Performance-Teil
+läuft darum in zwei Parallelitäten (`runner.py --parallelitaet`,
+`parallelitaet.py`): `gleich` setzt für jedes System 10 gleichzeitige Tasks,
+in einem Prozess, wo das System es erlaubt (Celery im Prefork-Pool: zehn
+Kindprozesse); `ab_werk` lässt die Werkseinstellung stehen, so wie Nutzer
+die Systeme betreiben. Der Bericht weist beide getrennt aus; die
+Entscheidungsregeln vergleichen bei `gleich`. Der Garantie-Teil läuft immer
+ab Werk, denn dort ist das Verhalten ab Werk die Frage.
+
+## Veröffentlichung
+
+Veröffentlicht werden nur Wertungsläufe auf der Referenzmaschine celsius,
+keine Laptop-Läufe. Die Ergebnisse erscheinen als Seite unter
+`website/explanation/`, mit swarmq-Version, Maschine und Datum je Zahl und
+einem Verweis auf Methodik, Rohdaten und Rezepte hier. Dazu gehören die
+Grenzen jedes Systems, etwa dass Dramatiq keine Quorum-Queues kennt und sein
+Profil `stark` deshalb klassische dauerhafte Queues nutzt.
 
 ## Nachstellen
 

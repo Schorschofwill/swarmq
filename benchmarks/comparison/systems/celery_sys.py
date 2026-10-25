@@ -12,6 +12,7 @@ import asyncio
 import os
 from typing import Any
 
+from parallelitaet import AB_WERK
 from systems.base import NOCH_OFFEN, ProzessWorker, cli
 
 
@@ -21,12 +22,12 @@ class CelerySystem(ProzessWorker):
     name: str = "celery"
     valkey_db = 2
 
-    def __init__(self, *, profil: str) -> None:
-        super().__init__(profil=profil)
+    def __init__(self, *, profil: str, parallelitaet: str = AB_WERK) -> None:
+        super().__init__(profil=profil, parallelitaet=parallelitaet)
         self._worker_modul: Any = None
 
     def worker_kommando(self) -> list[str]:
-        return [cli("celery"), "-A", "workers.celery_worker", "worker"]
+        return [cli("celery"), "-A", "workers.celery_worker", "worker", *self.parallelitaet_argumente]
 
     async def setup(self) -> None:
         os.environ.update(self.worker_umgebung())

@@ -38,10 +38,10 @@ def load_results(results_dir: Path) -> list[dict]:
 def group_results(
     results: list[dict],
 ) -> dict[str, dict[str, list[dict]]]:
-    """Group by scenario_name -> "system_name/profil" -> [results]."""
+    """Group by scenario_name -> "system_name/profil/parallelitaet" -> [results]."""
     grouped: dict[str, dict[str, list[dict]]] = defaultdict(lambda: defaultdict(list))
     for r in results:
-        grouped[r["scenario_name"]][f"{r['system_name']}/{r['profil']}"].append(r)
+        grouped[r["scenario_name"]][f"{r['system_name']}/{r['profil']}/{r['parallelitaet']}"].append(r)
     return grouped
 
 
@@ -112,8 +112,8 @@ def check_decision_rules(grouped: dict[str, dict[str, list[dict]]]) -> None:
     # SwarmQ vs TaskIQ throughput (noop scenario)
     if "noop" in grouped:
         noop = grouped["noop"]
-        swarmq_tp = median([r["throughput"] for r in noop.get("swarmq/stark", [])])
-        taskiq_tp = median([r["throughput"] for r in noop.get("taskiq/stark", [])])
+        swarmq_tp = median([r["throughput"] for r in noop.get("swarmq/stark/gleich", [])])
+        taskiq_tp = median([r["throughput"] for r in noop.get("taskiq/stark/gleich", [])])
 
         if swarmq_tp > 0 and taskiq_tp > 0:
             ratio = swarmq_tp / taskiq_tp
@@ -127,8 +127,8 @@ def check_decision_rules(grouped: dict[str, dict[str, list[dict]]]) -> None:
     # P99 latency comparison
     if "latency" in grouped:
         lat = grouped["latency"]
-        swarmq_p99 = median([r["latency_p99_ms"] for r in lat.get("swarmq/stark", [])])
-        taskiq_p99 = median([r["latency_p99_ms"] for r in lat.get("taskiq/stark", [])])
+        swarmq_p99 = median([r["latency_p99_ms"] for r in lat.get("swarmq/stark/gleich", [])])
+        taskiq_p99 = median([r["latency_p99_ms"] for r in lat.get("taskiq/stark/gleich", [])])
 
         if swarmq_p99 > 0 and taskiq_p99 > 0:
             ratio = swarmq_p99 / taskiq_p99

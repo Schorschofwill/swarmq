@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from parallelitaet import AB_WERK
 from systems.base import ProzessWorker, cli
 
 
@@ -19,8 +20,8 @@ class ArqSystem(ProzessWorker):
     name: str = "arq"
     valkey_db = 4
 
-    def __init__(self, *, profil: str) -> None:
-        super().__init__(profil=profil)
+    def __init__(self, *, profil: str, parallelitaet: str = AB_WERK) -> None:
+        super().__init__(profil=profil, parallelitaet=parallelitaet)
         self._pool: Any = None
 
     def worker_kommando(self) -> list[str]:

@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from parallelitaet import AB_WERK
 from systems.base import NOCH_OFFEN, ProzessWorker, cli
 
 
@@ -19,15 +20,15 @@ class TaskIQRabbitMQSystem(ProzessWorker):
     name: str = "taskiq"
     valkey_db = 1
 
-    def __init__(self, *, profil: str) -> None:
-        super().__init__(profil=profil)
+    def __init__(self, *, profil: str, parallelitaet: str = AB_WERK) -> None:
+        super().__init__(profil=profil, parallelitaet=parallelitaet)
         self._worker_modul: Any = None
 
     def worker_kommando(self) -> list[str]:
         kommando = [cli("taskiq"), "worker", "workers.taskiq_rmq_worker:broker"]
         if "ack_type" in self.einstellungen:
             kommando += ["--ack-type", self.einstellungen["ack_type"]]
-        return kommando
+        return kommando + self.parallelitaet_argumente
 
     async def setup(self) -> None:
         os.environ.update(self.worker_umgebung())

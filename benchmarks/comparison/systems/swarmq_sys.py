@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from parallelitaet import AB_WERK
 from systems.base import RABBITMQ_URL, VALKEY_HOST, ProzessWorker, cli
 
 
@@ -28,8 +29,8 @@ class SwarmQSystem(ProzessWorker):
     name: str = "swarmq"
     valkey_db = 0
 
-    def __init__(self, *, profil: str, queue_type: str = "quorum") -> None:
-        super().__init__(profil=profil)
+    def __init__(self, *, profil: str, parallelitaet: str = AB_WERK, queue_type: str = "quorum") -> None:
+        super().__init__(profil=profil, parallelitaet=parallelitaet)
         self._queue_type = queue_type
         self._broker: Any = None
         self._backend: Any = None
@@ -41,7 +42,15 @@ class SwarmQSystem(ProzessWorker):
         return f"valkey://{VALKEY_HOST}/{self.valkey_db}"
 
     def worker_kommando(self) -> list[str]:
-        return [cli("swarmq"), "worker", "--module", "workers.swarmq_cli", "--queues", self.queue]
+        return [
+            cli("swarmq"),
+            "worker",
+            "--module",
+            "workers.swarmq_cli",
+            "--queues",
+            self.queue,
+            *self.parallelitaet_argumente,
+        ]
 
     def worker_umgebung(self) -> dict[str, str]:
         return {

@@ -11,6 +11,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+import parallelitaet as parallelitaet_von
 from garantieprofile import profil as profil_von
 from worker_prozess import WorkerProzess
 
@@ -96,8 +97,9 @@ class ProzessWorker:
     #: Valkey-Datenbank für die Ergebnisse dieses Systems, getrennt von den anderen.
     valkey_db: int = 0
 
-    def __init__(self, *, profil: str) -> None:
+    def __init__(self, *, profil: str, parallelitaet: str = parallelitaet_von.AB_WERK) -> None:
         self.profil = profil
+        self.parallelitaet = parallelitaet
         self.einstellungen: dict[str, Any] = profil_von(self.name, profil).einstellungen
         # Frische Queue je Lauf: Reste eines früheren Laufs verfälschen keine Messung.
         self.queue = f"bench-{uuid.uuid4().hex[:8]}"
@@ -126,7 +128,13 @@ class ProzessWorker:
             "VERGLEICH_BROKER_URL": RABBITMQ_URL,
             "VERGLEICH_BACKEND_URL": self.backend_url,
             "VERGLEICH_EINSTELLUNGEN": json.dumps(self.einstellungen),
+            **parallelitaet_von.umgebung(self.name, self.parallelitaet),
         }
+
+    @property
+    def parallelitaet_argumente(self) -> list[str]:
+        """CLI-Argumente, die ``worker_kommando()`` für die gewählte Parallelität anhängt."""
+        return parallelitaet_von.argumente(self.name, self.parallelitaet)
 
     async def warte_auf_ergebnis(
         self, task_id: str, abfrage: Callable[[], Awaitable[Any]], timeout: float, poll_interval: float

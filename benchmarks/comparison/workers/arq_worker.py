@@ -49,3 +49,8 @@ class WorkerSettings:
     functions = [noop, io_task, cpu_task, failing_task, garantie]
     redis_settings = REDIS_SETTINGS
     queue_name = QUEUE
+
+
+# Gleiche Parallelität im Performance-Vergleich (``parallelitaet.py``); ohne die Variable gilt arqs Werkswert.
+if "VERGLEICH_MAX_JOBS" in os.environ:
+    WorkerSettings.max_jobs = int(os.environ["VERGLEICH_MAX_JOBS"])

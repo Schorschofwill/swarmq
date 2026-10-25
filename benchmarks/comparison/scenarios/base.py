@@ -229,15 +229,17 @@ def save_result(result: BenchmarkResult, results_dir: Path) -> Path:
     pruefe_ergebnis(daten)
     results_dir.mkdir(parents=True, exist_ok=True)
     # Nanosekunden: Zwei Läufe derselben Kombination in einer Sekunde überschreiben sich nicht.
-    filename = f"{result.scenario_name}_{result.system_name}_{daten['profil']}_{time.time_ns()}.json"
+    filename = (
+        f"{result.scenario_name}_{result.system_name}_{daten['profil']}_{daten['parallelitaet']}_{time.time_ns()}.json"
+    )
     path = results_dir / filename
     path.write_text(json.dumps(daten, indent=2))
     return path
 
 
 #: Pflichtfelder jeder Ergebnisdatei (Plan 2026-10-24-1118): ohne sie ist
-#: ein Lauf weder nachstellbar noch einem Profil zuzuordnen (R22).
-METADATEN = ("versionen", "images", "host", "profil")
+#: ein Lauf weder nachstellbar noch einem Profil und einer Parallelität zuzuordnen (R22).
+METADATEN = ("versionen", "images", "host", "profil", "parallelitaet")
 
 
 class UngueltigesErgebnis(ValueError):

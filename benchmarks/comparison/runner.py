@@ -9,10 +9,11 @@ Vergleich geht weiter.
 
 Usage:
     python runner.py --scenario noop,io_bound --systems all --profile ab_werk,stark --runs 3
+    python runner.py --scenario all --systems all --parallelitaet gleich
     python runner.py --scenario all --systems all
 
 Intern (eine Kombination, im Python der Systemumgebung):
-    python runner.py --einzeln --systems celery --scenario noop --profile stark
+    python runner.py --einzeln --systems celery --scenario noop --profile stark --parallelitaet gleich
 """
 
 from __future__ import annotations
@@ -31,6 +32,8 @@ from pathlib import Path
 from typing import Any
 
 from garantieprofile import PAKETE, PROFILNAMEN, STARK
+from parallelitaet import AB_WERK
+from parallelitaet import NAMEN as PARALLELITAETEN
 from scenarios.base import save_result
 
 VERGLEICH_DIR = Path(__file__).parent
@@ -41,12 +44,13 @@ VENVS_DIR = VERGLEICH_DIR / ".venvs"
 
 @dataclass(frozen=True)
 class Kombination:
-    """Ein Lauf eines Szenarios gegen ein System in einem Profil."""
+    """Ein Lauf eines Szenarios gegen ein System in einem Profil und einer Parallelität (``parallelitaet.py``)."""
 
     run: int
     szenario: str
     profil: str
     system: str
+    parallelitaet: str = AB_WERK
 
 
 def reihenfolge(
@@ -54,6 +58,7 @@ def reihenfolge(
     szenarien: list[str],
     profile: list[str],
     runs: int,
+    parallelitaeten: tuple[str, ...] | list[str] = (AB_WERK,),
 ) -> list[Kombination]:
     """Alle Kombinationen, reihum über die Systeme (KTD13).
 
@@ -61,9 +66,10 @@ def reihenfolge(
     Hintergrundlast) alle Systeme gleich trifft statt eines im Block.
     """
     return [
-        Kombination(run, szenario, profil, system)
+        Kombination(run, szenario, profil, system, parallelitaet)
         for run in range(1, runs + 1)
         for szenario in szenarien
+        for parallelitaet in parallelitaeten
         for profil in profile
         for system in systeme
     ]
@@ -121,14 +127,15 @@ def _images(compose: Path) -> dict[str, str]:
     return images
 
 
-def metadaten(system: str, profil: str) -> dict[str, Any]:
-    """Versionen, Image-Tags, Host und Profil eines Laufs (R22).
+def metadaten(system: str, profil: str, parallelitaet: str) -> dict[str, Any]:
+    """Versionen, Image-Tags, Host, Profil und Parallelität eines Laufs (R22).
 
     Die Versionen kommen aus der Umgebung, in der der Lauf tatsächlich
     stattfindet; fehlt eine Verteilung, bricht der Lauf ab.
     """
     return {
         "profil": profil,
+        "parallelitaet": parallelitaet,
         "versionen": {paket: importlib.metadata.version(paket) for paket in PAKETE[system]},
         "images": _images(COMPOSE_PATH),
         "host": {
@@ -197,10 +204,12 @@ def kind_kommando(kombination: Kombination, venvs: Path) -> list[str]:
         kombination.szenario,
         "--profile",
         kombination.profil,
+        "--parallelitaet",
+        kombination.parallelitaet,
     ]
 
 
-async def einzeln(system: str, szenario: str, profil: str) -> None:
+async def einzeln(system: str, szenario: str, profil: str, parallelitaet: str) -> None:
     """Eine Kombination im aktuellen Prozess: Szenario laufen lassen, Ergebnis mit Metadaten speichern."""
     import worker_prozess
 
@@ -213,11 +222,11 @@ async def einzeln(system: str, szenario: str, profil: str) -> None:
     signal.signal(signal.SIGTERM, _beenden)
 
     scenario_fn = {**get_scenarios(), **get_swarmq_scenarios()}[szenario]
-    system_cls = functools.partial(get_systems()[system], profil=profil)
+    system_cls = functools.partial(get_systems()[system], profil=profil, parallelitaet=parallelitaet)
     result = await scenario_fn(system_cls)
-    result.meta = metadaten(system, profil)
+    result.meta = metadaten(system, profil, parallelitaet)
     pfad = save_result(result, RESULTS_DIR)
-    print(f"  {result.system_name}/{profil}: {result.throughput:.0f} tasks/s -> {pfad.name}")
+    print(f"  {result.system_name}/{profil}/{parallelitaet}: {result.throughput:.0f} tasks/s -> {pfad.name}")
 
 
 def _auswahl(wert: str, alle: list[str]) -> list[str]:
@@ -234,9 +243,12 @@ def plane(args: argparse.Namespace) -> list[Kombination]:
     unbekannt += [s for s in systeme if s not in PAKETE]
     profile = _auswahl(args.profile, list(PROFILNAMEN))
     unbekannt += [p for p in profile if p not in PROFILNAMEN]
+    parallelitaeten = _auswahl(args.parallelitaet, list(PARALLELITAETEN))
+    unbekannt += [p for p in parallelitaeten if p not in PARALLELITAETEN]
     if unbekannt:
         raise SystemExit(f"Unbekannt: {', '.join(unbekannt)}")
-    return reihenfolge(systeme, [s for s in szenarien if s in allgemein], profile, args.runs) + reihenfolge(
+    allgemeine = [s for s in szenarien if s in allgemein]
+    return reihenfolge(systeme, allgemeine, profile, args.runs, parallelitaeten) + reihenfolge(
         ["swarmq"], [s for s in szenarien if s in nur_swarmq], [STARK], args.runs
     )
 
@@ -255,7 +267,7 @@ async def main(args: argparse.Namespace) -> int:
     ausgaenge = []
     for nummer, kombination in enumerate(plan, start=1):
         k = kombination
-        print(f"[{nummer}/{len(plan)}] run {k.run} {k.szenario}/{k.system}/{k.profil}", flush=True)
+        print(f"[{nummer}/{len(plan)}] run {k.run} {k.szenario}/{k.system}/{k.profil}/{k.parallelitaet}", flush=True)
         ausgang = await fuehre_aus(k, kind_kommando(k, args.venvs), zeitlimit=args.zeitlimit)
         if ausgang.status != "ok":
             print(f"  {ausgang.status.upper()}")
@@ -264,7 +276,7 @@ async def main(args: argparse.Namespace) -> int:
     nicht_ok = [a for a in ausgaenge if a.status != "ok"]
     for a in nicht_ok:
         k = a.kombination
-        print(f"{a.status}: run {k.run} {k.szenario}/{k.system}/{k.profil}")
+        print(f"{a.status}: run {k.run} {k.szenario}/{k.system}/{k.profil}/{k.parallelitaet}")
     print("Done. Run `python report.py` to see results.")
     return 1 if nicht_ok else 0
 
@@ -285,6 +297,11 @@ def parse_args() -> argparse.Namespace:
         "--profile",
         default="all",
         help="Comma-separated profiles (ab_werk, stark) or 'all' (default: all)",
+    )
+    parser.add_argument(
+        "--parallelitaet",
+        default="all",
+        help="Comma-separated worker concurrency settings (gleich, ab_werk) or 'all' (default: all)",
     )
     parser.add_argument(
         "--runs",
@@ -317,6 +334,6 @@ if __name__ == "__main__":
             loop_factory = uvloop.new_event_loop
         except ImportError:
             loop_factory = None
-        asyncio.run(einzeln(args.systems, args.scenario, args.profile), loop_factory=loop_factory)
+        asyncio.run(einzeln(args.systems, args.scenario, args.profile, args.parallelitaet), loop_factory=loop_factory)
         sys.exit(0)
     sys.exit(asyncio.run(main(args)))

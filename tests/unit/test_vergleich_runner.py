@@ -10,8 +10,8 @@ Python-Prozess.
 
 Test-Liste:
 - [x] die Reihenfolge ist reihum über die Systeme, nicht blockweise
-- [x] eine Ergebnisdatei ohne Versionen, Images, Host oder Profil wird abgelehnt
-- [x] die Metadaten eines Laufs nennen Versionen, Image-Tags, Host und Profil
+- [x] eine Ergebnisdatei ohne Versionen, Images, Host, Profil oder Parallelität wird abgelehnt
+- [x] die Metadaten eines Laufs nennen Versionen, Image-Tags, Host, Profil und Parallelität
 - [x] ``benchmarks/docker-compose.yml`` und der Vergleichsaufbau nutzen keinen Testport
 - [x] die Images des Vergleichsaufbaus sind exakt gepinnt
 - [x] jede Abhängigkeit der Vergleichsumgebungen ist mit ``==`` gepinnt
@@ -23,6 +23,12 @@ Test-Liste:
 - [x] der Bericht lässt Ergebnisse ohne Metadaten weg
 - [x] ``save_result`` schreibt die Metadaten mit und verweigert ein Ergebnis ohne sie
 - [x] ``beende_alle`` tötet jeden laufenden Worker (für den SIGTERM-Handler des Kombinationsprozesses)
+- [x] mit Parallelität ``gleich`` führt jeder Adapter 10 Tasks gleichzeitig aus, in einem Prozess, wo das System es erlaubt
+- [x] mit Parallelität ``ab_werk`` (Standard) setzt kein Adapter etwas daran
+- [x] die Kombinationen laufen in jeder gewählten Parallelität, und der Kindprozess erfährt sie
+- [x] Metadaten und Ergebnisdatei nennen die Parallelität; ohne sie wird ein Ergebnis abgelehnt
+- [x] der Bericht trennt die Parallelitäten eines Systems
+- [x] die Entscheidungsregeln des Berichts vergleichen bei gleicher Parallelität
 """
 
 from __future__ import annotations
@@ -80,6 +86,26 @@ def test_reihenfolge_ist_reihum_ueber_die_systeme(vergleich: Callable[[str], Mod
     assert [k.system for k in plan] == ["a", "b", "c", "a", "b", "c"]
 
 
+def test_jede_kombination_laeuft_in_jeder_gewaehlten_parallelitaet_und_das_kind_erfaehrt_sie(
+    vergleich: Callable[[str], ModuleType],
+    tmp_path: Path,
+) -> None:
+    runner = vergleich("runner")
+
+    plan = runner.reihenfolge(
+        systeme=["a", "b"], szenarien=["noop"], profile=["stark"], runs=1, parallelitaeten=["gleich", "ab_werk"]
+    )
+
+    assert [(k.parallelitaet, k.system) for k in plan] == [
+        ("gleich", "a"),
+        ("gleich", "b"),
+        ("ab_werk", "a"),
+        ("ab_werk", "b"),
+    ]
+    kommando = runner.kind_kommando(plan[0], tmp_path)
+    assert kommando[kommando.index("--parallelitaet") + 1] == "gleich"
+
+
 def _vollstaendiges_ergebnis() -> dict[str, object]:
     return {
         "system_name": "celery",
@@ -87,13 +113,14 @@ def _vollstaendiges_ergebnis() -> dict[str, object]:
         "params": {"n": 10},
         "throughput": 100.0,
         "profil": "stark",
+        "parallelitaet": "gleich",
         "versionen": {"celery": "5.6.3", "kombu": "5.6.2"},
         "images": {"rabbitmq": "rabbitmq:4.3.6-management"},
         "host": {"name": "celsius"},
     }
 
 
-@pytest.mark.parametrize("fehlt", ["versionen", "images", "host", "profil"])
+@pytest.mark.parametrize("fehlt", ["versionen", "images", "host", "profil", "parallelitaet"])
 def test_ergebnis_ohne_metadaten_wird_abgelehnt(
     vergleich: Callable[[str], ModuleType],
     tmp_path: Path,
@@ -117,13 +144,16 @@ def test_vollstaendiges_ergebnis_wird_geladen(vergleich: Callable[[str], ModuleT
     assert base.lade_ergebnis(datei) == _vollstaendiges_ergebnis()
 
 
-def test_metadaten_nennen_versionen_images_host_und_profil(vergleich: Callable[[str], ModuleType]) -> None:
+def test_metadaten_nennen_versionen_images_host_profil_und_parallelitaet(
+    vergleich: Callable[[str], ModuleType],
+) -> None:
     """swarmq ist in der Testumgebung installiert; die anderen Systeme nur in ihren Vergleichsumgebungen."""
     runner = vergleich("runner")
 
-    meta = runner.metadaten("swarmq", "stark")
+    meta = runner.metadaten("swarmq", "stark", "gleich")
 
     assert meta["profil"] == "stark"
+    assert meta["parallelitaet"] == "gleich"
     assert meta["versionen"]["swarmq"] == importlib.metadata.version("swarmq")
     assert meta["versionen"]["aio-pika"] == importlib.metadata.version("aio-pika")
     assert meta["images"] == {"rabbitmq": "rabbitmq:4.3.6-management", "valkey": "valkey/valkey:8.1.10-alpine"}
@@ -245,6 +275,50 @@ def test_adapter_startet_den_worker_ueber_die_cli_seines_systems(
     assert kommando[1 : len(erwartet)] == erwartet[1:]
 
 
+@pytest.mark.parametrize(
+    ("system", "argumente", "umgebung"),
+    [
+        ("swarmq", ["--processes", "1", "--concurrency", "10"], {}),
+        ("celery", ["--concurrency", "10"], {}),
+        ("dramatiq", ["--processes", "1", "--threads", "10"], {}),
+        ("arq", [], {"VERGLEICH_MAX_JOBS": "10"}),
+        ("taskiq", ["--workers", "1", "--max-async-tasks", "10"], {}),
+    ],
+)
+def test_adapter_mit_gleicher_parallelitaet_fuehrt_zehn_tasks_gleichzeitig_aus(
+    vergleich: Callable[[str], ModuleType],
+    system: str,
+    argumente: list[str],
+    umgebung: dict[str, str],
+) -> None:
+    """Ab Werk reichen die Systeme von 10 (swarmq, arq) bis 200 (taskiq) gleichzeitigen Tasks.
+
+    Celery kennt im Prefork-Pool keinen Prozess mit mehreren Tasks; dort sind es zehn Kindprozesse.
+    arq liest ``max_jobs`` aus ``WorkerSettings``, das der Worker aus der Umgebung setzt.
+    """
+    adapter = vergleich("runner").get_systems()[system](profil="stark", parallelitaet="gleich")
+    ab_werk = vergleich("runner").get_systems()[system](profil="stark")
+    ab_werk.queue = adapter.queue
+
+    assert adapter.worker_kommando() == ab_werk.worker_kommando() + argumente
+    assert adapter.worker_umgebung() == {**ab_werk.worker_umgebung(), **umgebung}
+
+
+PARALLELITAETS_SCHALTER = frozenset({"--concurrency", "-c", "--processes", "-p", "--threads", "-t", "--workers", "-w"})
+
+
+@pytest.mark.parametrize("system", SYSTEME)
+def test_adapter_ab_werk_laesst_die_parallelitaet_des_systems_stehen(
+    vergleich: Callable[[str], ModuleType],
+    system: str,
+) -> None:
+    adapter = vergleich("runner").get_systems()[system](profil="stark")
+
+    assert not PARALLELITAETS_SCHALTER & set(adapter.worker_kommando())
+    assert not any(schalter.startswith("--max-async-tasks") for schalter in adapter.worker_kommando())
+    assert "VERGLEICH_MAX_JOBS" not in adapter.worker_umgebung()
+
+
 @pytest.mark.timeout(5)
 async def test_haenger_waechter_beendet_die_kombination_nach_dem_zeitlimit(
     vergleich: Callable[[str], ModuleType],
@@ -281,7 +355,32 @@ def test_bericht_trennt_die_profile_eines_systems(vergleich: Callable[[str], Mod
 
     gruppiert = report.group_results([ab_werk, stark])
 
-    assert gruppiert["noop"] == {"celery/ab_werk": [ab_werk], "celery/stark": [stark]}
+    assert gruppiert["noop"] == {"celery/ab_werk/gleich": [ab_werk], "celery/stark/gleich": [stark]}
+
+
+def test_bericht_trennt_die_parallelitaeten_eines_systems(vergleich: Callable[[str], ModuleType]) -> None:
+    report = vergleich("report")
+    gleich = _vollstaendiges_ergebnis()
+    ab_werk = {**_vollstaendiges_ergebnis(), "parallelitaet": "ab_werk"}
+
+    gruppiert = report.group_results([gleich, ab_werk])
+
+    assert gruppiert["noop"] == {"celery/stark/gleich": [gleich], "celery/stark/ab_werk": [ab_werk]}
+
+
+def test_entscheidungsregeln_vergleichen_bei_gleicher_parallelitaet(
+    vergleich: Callable[[str], ModuleType],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Ab Werk verarbeitet taskiq 20-mal so viele Tasks gleichzeitig wie swarmq; das Verhältnis sagte dann wenig."""
+    report = vergleich("report")
+    swarmq = {**_vollstaendiges_ergebnis(), "system_name": "swarmq", "throughput": 50.0}
+    taskiq = {**_vollstaendiges_ergebnis(), "system_name": "taskiq", "throughput": 200.0}
+    taskiq_ab_werk = {**taskiq, "parallelitaet": "ab_werk", "throughput": 50.0}
+
+    report.check_decision_rules(report.group_results([swarmq, taskiq, taskiq_ab_werk]))
+
+    assert "Throughput ratio (SwarmQ/TaskIQ): 0.25" in capsys.readouterr().out
 
 
 def test_bericht_laesst_ergebnisse_ohne_metadaten_weg(
@@ -302,7 +401,7 @@ def test_bericht_laesst_ergebnisse_ohne_metadaten_weg(
 
 def test_gespeichertes_ergebnis_traegt_die_metadaten(vergleich: Callable[[str], ModuleType], tmp_path: Path) -> None:
     base = vergleich("scenarios.base")
-    meta = {key: _vollstaendiges_ergebnis()[key] for key in ("versionen", "images", "host", "profil")}
+    meta = {key: _vollstaendiges_ergebnis()[key] for key in ("versionen", "images", "host", "profil", "parallelitaet")}
     result = base.make_result("celery", "noop", {"n": 1}, [0.01], 0.01)
     result.meta = meta
 

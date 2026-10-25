@@ -12,6 +12,7 @@ import asyncio
 import os
 from typing import Any
 
+from parallelitaet import AB_WERK
 from systems.base import NOCH_OFFEN, ProzessWorker, cli
 
 
@@ -21,13 +22,13 @@ class DramatiqSystem(ProzessWorker):
     name: str = "dramatiq"
     valkey_db = 3
 
-    def __init__(self, *, profil: str) -> None:
-        super().__init__(profil=profil)
+    def __init__(self, *, profil: str, parallelitaet: str = AB_WERK) -> None:
+        super().__init__(profil=profil, parallelitaet=parallelitaet)
         self._worker_modul: Any = None
         self._nachrichten: dict[str, Any] = {}
 
     def worker_kommando(self) -> list[str]:
-        return [cli("dramatiq"), "workers.dramatiq_worker"]
+        return [cli("dramatiq"), "workers.dramatiq_worker", *self.parallelitaet_argumente]
 
     def worker_umgebung(self) -> dict[str, str]:
         umgebung = super().worker_umgebung()
