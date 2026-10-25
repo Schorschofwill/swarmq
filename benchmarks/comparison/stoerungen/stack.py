@@ -22,13 +22,12 @@ NETZTRENNUNG = "netztrennung"
 VALKEY_PERSISTENT = "valkey_neustart_persistent"
 VALKEY_FLUECHTIG = "valkey_neustart_fluechtig"
 
-#: Host-Port des Toxiproxy-Proxys je Compose-Dienst (``compose.yml``,
-#: ``toxiproxy.json``).
+#: Host-Port des Toxiproxy-Proxys je Compose-Dienst (``compose.yml``).
 PORTS = {"rabbitmq": 5686, "valkey": 6386, "valkey-fluechtig": 6387}
 #: Host-Port der Toxiproxy-API (Chaos-Tests nutzen 8474).
 ADMIN_PORT = 18476
 ADMIN_URL = f"http://localhost:{ADMIN_PORT}"
-#: Proxys in ``toxiproxy.json``, je einer je Dienst.
+#: Proxys unter ``configs`` in ``compose.yml``, je einer je Dienst.
 PROXYS = list(PORTS)
 
 

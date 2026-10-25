@@ -152,13 +152,11 @@ def get_scenarios() -> dict[str, object]:
     from scenarios.noop import run_noop
     from scenarios.io_bound import run_io_bound
     from scenarios.latency import run_latency
-    from scenarios.scaling import run_scaling
 
     return {
         "noop": run_noop,
         "io_bound": run_io_bound,
         "latency": run_latency,
-        "scaling": run_scaling,
     }
 
 

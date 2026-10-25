@@ -1,5 +1,0 @@
-[
-  {"name": "rabbitmq", "listen": "0.0.0.0:5672", "upstream": "rabbitmq:5672", "enabled": true},
-  {"name": "valkey", "listen": "0.0.0.0:6379", "upstream": "valkey:6379", "enabled": true},
-  {"name": "valkey-fluechtig", "listen": "0.0.0.0:6380", "upstream": "valkey-fluechtig:6379", "enabled": true}
-]
