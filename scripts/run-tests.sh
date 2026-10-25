@@ -18,6 +18,11 @@
 # ausgegeben: pytest-randomly selbst zeigt ihn mit -q nicht, und ein roter
 # Lauf liesse sich sonst nicht nachstellen. Vorgabe per SWARMQ_TEST_SEED.
 # Mit SWARMQ_TEST_COVERAGE=1 laeuft pytest unter ``coverage run``.
+#
+# SWARMQ_TEST_MIN_TESTS=N (Plan 2026-10-24-1118, KTD1): Wächter gegen
+# leere Läufe, nur ohne --parallel. Der Lauf ist rot, wenn laut junit-Datei
+# weniger als N Tests ausgeführt (nicht übersprungen) wurden; ein Lauf mit nur
+# übersprungenen Tests endet sonst grün.
 set -euo pipefail
 
 original=("$@")
@@ -73,10 +78,47 @@ run() {
     uv run --extra test --extra reload "${runner[@]}" "$@" "--randomly-seed=${seed}"
 }
 
+# Pfad aus ``--junitxml`` der pytest-Argumente, leer ohne.
+junit_path() {
+    local previous="" arg junit=""
+    for arg in "$@"; do
+        case "$previous|$arg" in
+            --junitxml\|* | --junit-xml\|*) junit="$arg" ;;
+            *"|--junitxml="* | *"|--junit-xml="*) junit="${arg#*=}" ;;
+        esac
+        previous="$arg"
+    done
+    echo "$junit"
+}
+
+# Zählt die ausgeführten Tests der junit-Datei $1 gegen SWARMQ_TEST_MIN_TESTS.
+check_min_tests() {
+    local xml total=0 skipped=0
+    xml="$(<"$1")"
+    [[ "$xml" =~ \<testsuite\ [^\>]*\ tests=\"([0-9]+)\" ]] && total="${BASH_REMATCH[1]}"
+    [[ "$xml" =~ \<testsuite\ [^\>]*\ skipped=\"([0-9]+)\" ]] && skipped="${BASH_REMATCH[1]}"
+    local executed=$((total - skipped))
+    if ((executed < SWARMQ_TEST_MIN_TESTS)); then
+        echo "${executed} Tests ausgeführt, verlangt sind mindestens ${SWARMQ_TEST_MIN_TESTS} (SWARMQ_TEST_MIN_TESTS)" >&2
+        exit 1
+    fi
+}
+
 if has_path_arg "$@"; then suite=(); fi
 set -- "${suite[@]}" "$@"
 if [[ -z "$workers" ]]; then
+    if [[ -z "${SWARMQ_TEST_MIN_TESTS:-}" ]]; then
+        run "$@"
+        exit
+    fi
+    junit="$(junit_path "$@")"
+    if [[ -z "$junit" ]]; then
+        junit="$(mktemp --suffix=.xml)"
+        trap 'rm -f "$junit"' EXIT
+        set -- "$@" "--junitxml=${junit}"
+    fi
     run "$@"
+    check_min_tests "$junit"
     exit
 fi
 

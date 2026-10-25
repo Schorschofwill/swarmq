@@ -1,0 +1,69 @@
+# Eigener Stack des Garantie-Vergleichs (Plan 2026-10-24-1118, KTD14).
+# Projektname swarmq-vergleich-stoerung (stack.PROJEKT). Clients erreichen
+# die Dienste nur über Toxiproxy; die Host-Ports stehen in stack.PORTS und
+# meiden Standard-, Test-, Chaos- und Vergleichsports.
+
+services:
+  rabbitmq:
+    # Dasselbe Abbild wie Performance-Vergleich und Chaos-Tests.
+    image: rabbitmq:4.3.6-management
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      # Wie tests/chaos/compose.yml: erst grün, wenn der AMQP-Port annimmt.
+      test: ["CMD", "gosu", "rabbitmq", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 3s
+      timeout: 10s
+      retries: 20
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 2g
+
+  valkey:
+    # Mit Persistenz: AOF mit fsync je Schreibbefehl, so überlebt jeder
+    # bestätigte Schreibvorgang den Neustart.
+    image: valkey/valkey:8.1.10-alpine
+    command: ["valkey-server", "--appendonly", "yes", "--appendfsync", "always", "--maxmemory", "512mb", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - valkey_data:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+  valkey-fluechtig:
+    # Ohne Persistenz wie der Performance-Vergleich: Ein Neustart leert alles (E-077).
+    image: valkey/valkey:8.1.10-alpine
+    command: ["valkey-server", "--appendonly", "no", "--save", "", "--maxmemory", "512mb", "--maxmemory-policy", "noeviction"]
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+  toxiproxy:
+    # Version wie tests/chaos/compose.yml (KTD14); die Proxys legt toxiproxy.json an.
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    command: ["-host=0.0.0.0", "-config=/config/toxiproxy.json"]
+    volumes:
+      - ./toxiproxy.json:/config/toxiproxy.json:ro
+    ports:
+      - "18476:8474"
+      - "5686:5672"
+      - "6386:6379"
+      - "6387:6380"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      valkey-fluechtig:
+        condition: service_healthy
+
+volumes:
+  rabbitmq_data:
+  valkey_data:

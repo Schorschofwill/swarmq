@@ -29,7 +29,20 @@ Test-Liste:
 - [x] junit-Datei des seriellen Durchgangs mit Endung ``-serial``
 - [x] ein roter Durchgang macht den Lauf rot, der andere läuft trotzdem
 - [x] ein leerer Durchgang (Exit 5) zählt nicht als Fehler, zwei leere schon
-- [x] ``lint``, ``types``, ``chaos``, ``stress``, ``coverage-report``, ``coverage-gate``, ``ratchet`` rufen die CI-Befehle
+- [x] ``lint``, ``types``, ``chaos``, ``stress``, ``coverage-report``, ``coverage-gate``, ``ratchet``, ``saettigung`` rufen die CI-Befehle
+- [x] ``ab`` ruft das A/B-Messwerkzeug mit der Gruppe ``messung`` und reicht die Argumente durch (Plan 2026-10-24-1118)
+
+Kostensuite (Plan 2026-10-24-1118):
+- [x] ``kosten`` ruft die Suite unter ``tests/kosten`` mit Marker ``kosten``, ohne Sperre
+- [x] ``just all`` fährt ``kosten`` nach ``fuzz``
+- [x] ``kosten-basislinie <grund>`` misst in eine Datei und übergibt Grund und Datei dem Skript
+- [x] ein roter Messlauf schreibt keine Basislinie
+
+Valkey-Kosten (Plan 2026-10-24-1118):
+- [x] ``kosten-valkey`` ruft die Suite unter ``tests/kosten/valkey`` mit Marker ``kosten_valkey``, unter der Sperre
+- [x] ``just all`` fährt ``kosten-valkey`` nach ``integration``
+- [x] ``kosten-basislinie <grund>`` misst beide Teile in dieselbe Datei, den Valkey-Teil unter der Sperre
+- [x] ``kosten-basislinie``: ein Valkey-Teil mit übersprungenen Tests (kein Test-Valkey) schreibt keine Basislinie
 
 Eingrenzen per Pfad (Plan 2026-10-15-1138, U16, R33):
 - [x] ``just integration <pfad>``: beide Durchgänge laufen nur den Pfad
@@ -40,6 +53,19 @@ Eingrenzen per Pfad (Plan 2026-10-15-1138, U16, R33):
 - [x] ``just unit <pfad>`` grenzt beide Durchgänge ein, keine Sperre
 - [x] ``just property <pfad>`` und ``just stress <pfad>`` grenzen ein, der Marker bleibt
 - [x] ein nicht existierender Pfad: die Suite bleibt davor
+
+Wächter gegen leere Läufe (Plan 2026-10-24-1118, KTD1, AE7):
+- [x] ``SWARMQ_TEST_MIN_TESTS``: weniger ausgeführte Tests als verlangt (nur übersprungene) machen den Lauf rot
+- [x] genug ausgeführte Tests: der Lauf bleibt grün
+- [x] ohne ``SWARMQ_TEST_MIN_TESTS`` bleibt ein Lauf ohne ausgeführte Tests grün wie bisher
+- [x] ohne ``--junitxml`` des Aufrufers liest der Wächter eine eigene junit-Datei
+
+Garantie-Vergleich (Plan 2026-10-24-1118):
+- [x] ``vergleich-garantie`` ruft ``stoerungen.garantie`` in ``benchmarks/comparison`` ohne Sperre und reicht die Argumente durch
+
+Abhängigkeitsprüfung (Plan 2026-10-24-1118, KTD2):
+- [x] ``just audit`` ruft ``uv audit --frozen``
+- [x] der Exitcode von ``uv audit`` wird unverändert weitergereicht
 """
 
 from __future__ import annotations
@@ -65,8 +91,20 @@ held=free
 if [[ -n "${STUB_LOCK:-}" ]] && ! flock -n "$STUB_LOCK" true 2>/dev/null; then held=held; fi
 echo "args=$* rmq=${SWARMQ_TEST_RABBITMQ_PORT:-} valkey=${SWARMQ_TEST_VALKEY_PORT:-} \
 lockheld=${SWARMQ_TEST_LOCK_HELD:-} lock=$held excl=${SWARMQ_TEST_EXCLUSIVE:-}" >> "$STUB_LOG"
+if [[ -n "${SWARMQ_KOSTEN_MESSUNG:-}" ]]; then echo "$SWARMQ_KOSTEN_MESSUNG" >> "$STUB_LOG.messung"; fi
 if [[ -n "${STUB_ORPHAN:-}" ]]; then (sleep 5 >/dev/null 2>&1 &) ; fi
 if [[ -n "${STUB_SLEEP:-}" ]]; then sleep "$STUB_SLEEP"; fi
+# STUB_JUNIT: Inhalt der junit-Datei, die pytest unter --junitxml schriebe
+if [[ -n "${STUB_JUNIT:-}" ]]; then
+    previous=""
+    for arg in "$@"; do
+        case "$previous|$arg" in
+            --junitxml\\|*) printf '%s' "$STUB_JUNIT" > "$arg" ;;
+            *"|--junitxml="*) printf '%s' "$STUB_JUNIT" > "${arg#--junitxml=}" ;;
+        esac
+        previous="$arg"
+    done
+fi
 rc="STUB_RC_${SWARMQ_TEST_EXCLUSIVE:-none}"
 exit "${!rc:-0}"
 """
@@ -173,8 +211,10 @@ def test_all_holds_the_lock_once_across_every_suite(stub: dict[str, str]) -> Non
         "tests/unit",
         "tests/property",
         "tests/fuzz",
+        "tests/kosten",
         "tests/integration",
         "tests/integration",
+        "tests/kosten/valkey",
         "tests/e2e",
         "tests/e2e",
     ]
@@ -245,9 +285,12 @@ def test_coverage_measures_every_suite_under_one_lock(stub: dict[str, str]) -> N
         ),
         ("chaos", ["pytest -m chaos"], True),
         ("stress", ["pytest tests/stress -m stress"], True),
+        ("kosten", ["pytest tests/kosten -m kosten"], False),
+        ("kosten-valkey", ["pytest tests/kosten/valkey -m kosten_valkey"], True),
         ("coverage-report", ["coverage combine", "coverage xml", "coverage report"], False),
         ("coverage-gate", ["--group coverage python scripts/coverage_gate.py"], False),
         ("ratchet", ["python scripts/coverage_ratchet.py"], False),
+        ("saettigung", ["python scripts/saettigung.py"], False),
     ],
 )
 def test_recipes_run_the_ci_commands(stub: dict[str, str], recipe: str, expected: list[str], locked: bool) -> None:
@@ -258,6 +301,15 @@ def test_recipes_run_the_ci_commands(stub: dict[str, str], recipe: str, expected
     commands = [call.split("reload ")[-1].split(" rmq=")[0].split(" --randomly-seed")[0] for call in calls]
     assert commands == expected
     assert all(("lock=held" in call) is locked for call in calls)
+
+
+def test_ab_runs_the_measuring_tool_with_the_messung_group(stub: dict[str, str]) -> None:
+    result = _just(stub, "ab", "--a", "v1", "--b", "HEAD", "--befehl", "echo '{}'")
+
+    assert result.returncode == 0, result.stderr
+    [call] = _calls(stub)
+    assert "--group messung python scripts/ab_messung.py --a v1 --b HEAD --befehl echo '{}' rmq=" in call
+    assert "lock=free" in call
 
 
 def test_unit_runs_on_eight_workers_by_default(stub: dict[str, str]) -> None:
@@ -472,3 +524,114 @@ def test_a_missing_path_keeps_the_suite_so_pytest_reports_it(stub: dict[str, str
     parallel, serial = _calls(stub)
     assert f"pytest -n 8 --dist loadgroup tests/integration {missing} --randomly-seed" in parallel
     assert f"pytest tests/integration {missing} --randomly-seed" in serial
+
+
+def _junit(tests: int, skipped: int) -> str:
+    return (
+        '<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests">'
+        f'<testsuite name="pytest" errors="0" failures="0" skipped="{skipped}" tests="{tests}" time="0.1">'
+        "</testsuite></testsuites>"
+    )
+
+
+def test_a_run_with_fewer_executed_tests_than_the_minimum_fails(stub: dict[str, str], tmp_path: Path) -> None:
+    stub |= {"SWARMQ_TEST_MIN_TESTS": "1", "STUB_JUNIT": _junit(tests=31, skipped=31)}
+
+    result = _just(stub, "fuzz", f"--junitxml={tmp_path / 'junit-fuzz.xml'}")
+
+    assert result.returncode != 0
+    assert "0 Tests ausgeführt" in result.stderr
+
+
+def test_a_run_with_enough_executed_tests_passes(stub: dict[str, str], tmp_path: Path) -> None:
+    stub |= {"SWARMQ_TEST_MIN_TESTS": "30", "STUB_JUNIT": _junit(tests=31, skipped=1)}
+
+    result = _just(stub, "fuzz", f"--junitxml={tmp_path / 'junit-fuzz.xml'}")
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_without_a_minimum_a_run_of_skipped_tests_stays_green(stub: dict[str, str], tmp_path: Path) -> None:
+    stub["STUB_JUNIT"] = _junit(tests=31, skipped=31)
+
+    result = _just(stub, "fuzz", f"--junitxml={tmp_path / 'junit-fuzz.xml'}")
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_without_a_junit_file_from_the_caller_the_guard_uses_its_own(stub: dict[str, str]) -> None:
+    stub |= {"SWARMQ_TEST_MIN_TESTS": "1", "STUB_JUNIT": _junit(tests=31, skipped=31)}
+
+    result = _just(stub, "fuzz", "-q")
+
+    assert result.returncode != 0
+    assert "0 Tests ausgeführt" in result.stderr
+    [call] = _calls(stub)
+    assert "--junitxml=" in call
+
+
+def test_audit_runs_uv_audit_against_the_frozen_lock(stub: dict[str, str]) -> None:
+    result = _just(stub, "audit")
+
+    assert result.returncode == 0, result.stderr
+    [call] = _calls(stub)
+    assert call.startswith("args=audit --frozen rmq=")
+    assert "lock=free" in call
+
+
+@pytest.mark.parametrize("rc", [1, 2])
+def test_audit_passes_the_exit_code_of_uv_audit_through(stub: dict[str, str], rc: int) -> None:
+    stub["STUB_RC_none"] = str(rc)
+
+    result = _just(stub, "audit")
+
+    assert result.returncode == rc
+
+
+def test_kosten_basislinie_measures_into_a_file_and_hands_reason_and_file_to_the_script(stub: dict[str, str]) -> None:
+    stub["STUB_JUNIT"] = _junit(tests=6, skipped=0)
+
+    result = _just(stub, "kosten-basislinie", "Grund E-026")
+
+    assert result.returncode == 0, result.stderr
+    messen, messen_valkey, schreiben = _calls(stub)
+    assert "pytest tests/kosten -m kosten" in messen
+    assert "lock=free" in messen
+    # Der Valkey-Teil misst in dieselbe Datei, unter der Sperre und gegen die Testports.
+    assert "pytest tests/kosten/valkey -m kosten_valkey" in messen_valkey
+    assert "valkey=6399 lockheld=1 lock=held" in messen_valkey
+    messung, messung_valkey = Path(stub["STUB_LOG"] + ".messung").read_text(encoding="utf-8").splitlines()
+    assert messung_valkey == messung
+    assert f"python scripts/kosten_basislinie.py Grund E-026 {messung} rmq=" in schreiben
+
+
+def test_a_red_measurement_run_writes_no_baseline(stub: dict[str, str]) -> None:
+    stub["STUB_RC_none"] = "1"
+
+    result = _just(stub, "kosten-basislinie", "Grund E-026")
+
+    assert result.returncode != 0
+    [messen] = _calls(stub)
+    assert "pytest tests/kosten -m kosten" in messen
+
+
+def test_kosten_basislinie_writes_no_baseline_when_the_valkey_part_skipped_its_tests(stub: dict[str, str]) -> None:
+    # Ohne Test-Valkey überspringt die Session-Fixture alle sechs Valkey-Kostentests (Exit 0).
+    stub["STUB_JUNIT"] = _junit(tests=6, skipped=6)
+
+    result = _just(stub, "kosten-basislinie", "Grund E-026")
+
+    assert result.returncode != 0
+    assert "0 Tests ausgeführt" in result.stderr
+    _, messen_valkey = _calls(stub)  # kein dritter Aufruf: Das Skript schrieb nichts
+    assert "pytest tests/kosten/valkey -m kosten_valkey" in messen_valkey
+
+
+def test_vergleich_garantie_runs_the_guarantee_comparison_without_the_lock(stub: dict[str, str]) -> None:
+    result = _just(stub, "vergleich-garantie", "--runs", "2")
+
+    assert result.returncode == 0, result.stderr
+    [call] = _calls(stub)
+    # Eigener Stack mit eigenen Ports (stoerungen/compose.yml), deshalb keine Testsperre.
+    assert call.startswith("args=run python -m stoerungen.garantie --runs 2 rmq=")
+    assert "lock=free" in call

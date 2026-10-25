@@ -1,0 +1,338 @@
+# Sättigungsbuch (Plan docs/plans/2026-10-24-1118-chore-qualitaetsablauf-plan.md, U5, KTD8, KTD10)
+#
+# Läufe und Signale der tiefen Runden. Methoden und Module stehen in
+# docs/befunde/methodenkatalog.md, den Stand berechnet `uv run just saettigung`.
+# Der Guard tests/unit/test_saettigungsbuch.py prüft das Schema.
+#
+# [[lauf]]: id (L-nnn), datum, commit (Stand des geprüften Codes), methode,
+#   modul, umfang (Zahl, 0 = ohne nachgewiesenen Prüfumfang, zählt nicht),
+#   einheit, befunde = [{ id, einstufung }] mit der ID aus einem Register unter
+#   docs/befunde/ und der Einstufung FEHLER, LÜCKE, VERBESSERUNG, ENTSCHEIDUNG
+#   oder NICHT HALTBAR. Nur FEHLER, LÜCKE und VERBESSERUNG zählen als Befund.
+# [[signal]]: id (S-nnn), quelle, saeule, modul, fundstelle, beschreibung,
+#   dringlichkeit (normal, dringend), status (offen; untersucht mit lauf = "L-nnn";
+#   verworfen mit grund).
+#
+# Rückfüllung (2026-10-24): Aufgenommen sind nur Läufe der Runden 2 und 4, deren
+# Prüfumfang die Register und Rechercheberichte zahlenmäßig belegen und deren
+# Befunde sich der Methode und dem Modul zuordnen lassen. Die Fundstelle steht
+# je Lauf als Kommentar. Nicht aufgenommen, weil der Prüfumfang fehlt: die
+# Lese-Methoden der Runden 2 und 3 und „Betrieb über Zeit“ (nur Zahlen von
+# Prüfpunkten bzw. Befunden). Nicht aufgenommen, weil die Zuordnung zu einem
+# Modul fehlt: Zustandsmodelle, Störungsinjektion, Chaos-Baseline und die
+# Betriebsabläufe 4 bis 6 der Runde 4, der Cron-Fuzz der Runde 4 sowie aus
+# Runde 2 die Mutation von client, workflow_orchestration und backoff.
+
+# --- Runde 2, swarmq v0.12.0 (ac989a3), 2026-10-13 -------------------------
+# Mutation mit mutmut 3 gegen tests/unit. Belegt ist nur die Zahl der
+# gesichteten Überlebenden, nicht die aller Mutanten; daher die eigene Einheit.
+
+[[lauf]]
+# Gruppe A: 703 Überlebende (fehlersuche-runde-2-recherche/4-mutation-A.md:3),
+# Gruppe B: 558 (4-mutation-B.md:3 „Blöcke“, :186 „Mutanten“), beide unter worker/.
+# Befunde: Spalte „Quellen“ (MA-n, MB-n) in fehlersuche-runde-2-2026-10.md:24-47;
+# FS-18 = MA-3 (4-mutation-A.md:50, 5-gegenpruefung-A.md:247), FS-25 = MB-6
+# (4-mutation-B.md:130, 5-gegenpruefung-B.md:260), FS-26 = MB-7 (5-gegenpruefung-C.md:145).
+id = "L-001"
+datum = 2026-10-13
+commit = "ac989a3"
+methode = "M-F-03"
+modul = "worker"
+umfang = 1261
+einheit = "gesichtete Überlebende"
+befunde = [
+    { id = "FS-05", einstufung = "FEHLER" },
+    { id = "FS-12", einstufung = "FEHLER" },
+    { id = "FS-13", einstufung = "FEHLER" },
+    { id = "FS-16", einstufung = "FEHLER" },
+    { id = "FS-19", einstufung = "FEHLER" },
+    { id = "FS-20", einstufung = "FEHLER" },
+    { id = "FS-23", einstufung = "FEHLER" },
+    { id = "FS-24", einstufung = "FEHLER" },
+    { id = "FS-28", einstufung = "FEHLER" },
+    { id = "FS-30", einstufung = "FEHLER" },
+    { id = "FS-18", einstufung = "ENTSCHEIDUNG" },
+    { id = "FS-25", einstufung = "LÜCKE" },
+    { id = "FS-26", einstufung = "LÜCKE" },
+]
+
+[[lauf]]
+# Gruppe C, Scheduler-Module: loop 46, unroutable 42, sync 31, fire 23,
+# stepdown 21, übrige 92 (4-mutation-C.md:81). FS-14 = MC-1 (4-mutation-C.md:12),
+# FS-31 (4-mutation-C.md:40); Register fehlersuche-runde-2-2026-10.md:31, :48.
+id = "L-002"
+datum = 2026-10-13
+commit = "ac989a3"
+methode = "M-F-03"
+modul = "scheduler"
+umfang = 255
+einheit = "gesichtete Überlebende"
+befunde = [{ id = "FS-14", einstufung = "FEHLER" }, { id = "FS-31", einstufung = "FEHLER" }]
+
+[[lauf]]
+# Gruppe C, backend/valkey/results.py 81 und schedules.py 69 (4-mutation-C.md:81).
+# FS-15 (fehlersuche-runde-2-2026-10.md:40).
+id = "L-003"
+datum = 2026-10-13
+commit = "ac989a3"
+methode = "M-F-03"
+modul = "backend"
+umfang = 150
+einheit = "gesichtete Überlebende"
+befunde = [{ id = "FS-15", einstufung = "FEHLER" }]
+
+[[lauf]]
+# Gruppe C, broker/rabbitmq/delivery.py 81 und publish_phase.py 3
+# (4-mutation-C.md:81); kein Fehlerverdacht im Broker (4-mutation-C.md, Teil 1).
+id = "L-004"
+datum = 2026-10-13
+commit = "ac989a3"
+methode = "M-F-03"
+modul = "broker"
+umfang = 84
+einheit = "gesichtete Überlebende"
+befunde = []
+
+[[lauf]]
+# Gruppe C, keyspace.py 2 (4-mutation-C.md:81). FS-27 (4-mutation-C.md:32;
+# fehlersuche-runde-2-2026-10.md:46).
+id = "L-005"
+datum = 2026-10-13
+commit = "ac989a3"
+methode = "M-F-03"
+modul = "keyspace"
+umfang = 2
+einheit = "gesichtete Überlebende"
+befunde = [{ id = "FS-27", einstufung = "FEHLER" }]
+
+# --- Runde 4, swarmq 0.12.3 (b424584), 2026-10-17 --------------------------
+# Die Rechercheberichte nennen 0.12.3 bzw. Branch-Commits ohne Änderung unter
+# src/swarmq gegenüber b424584 (fehlersuche-runde-4-2026-10.md:2).
+
+[[lauf]]
+# Mutation Lauf A (tests/unit), Gruppe E, broker/rabbitmq: Summe der Mutanten
+# aller Status aus fehlersuche-runde-4-recherche/3a-mutation-lauf-a.md:64-72.
+# F4-04 = R4M-E-02 (3c-sichtung-E.md:187; fehlersuche-runde-4-2026-10.md:82).
+id = "L-006"
+datum = 2026-10-17
+commit = "b424584"
+methode = "M-F-03"
+modul = "broker"
+umfang = 1724
+einheit = "Mutanten"
+befunde = [{ id = "F4-04", einstufung = "FEHLER" }]
+
+[[lauf]]
+# Mutation Lauf A, Gruppe E, client/results.py 119 und client/workflows.py 196
+# (3a-mutation-lauf-a.md:73-74). F4-03 = R4M-E-01 (3c-sichtung-E.md:196),
+# R4M-E-01b ENTSCHEIDUNG (fehlersuche-runde-4-2026-10.md:113).
+id = "L-007"
+datum = 2026-10-17
+commit = "b424584"
+methode = "M-F-03"
+modul = "client"
+umfang = 315
+einheit = "Mutanten"
+befunde = [{ id = "F4-03", einstufung = "FEHLER" }, { id = "R4M-E-01b", einstufung = "ENTSCHEIDUNG" }]
+
+[[lauf]]
+# Mutation Lauf A, Gruppe F, process_manager: Summe aus
+# 3a-mutation-lauf-a.md:87-99. Sichtung ohne Fehler (3c-sichtung-F.md:212-222).
+id = "L-008"
+datum = 2026-10-17
+commit = "b424584"
+methode = "M-F-03"
+modul = "process_manager"
+umfang = 2080
+einheit = "Mutanten"
+befunde = []
+
+[[lauf]]
+# Mutation Lauf A, Gruppe F, cli: nur die vier gesichteten Module check_cmd 437,
+# dlq_cmd 358, parser_ops 831, schedule_cmd 513 (3a-mutation-lauf-a.md:77, :78,
+# :82, :84; Begrenzung 3c-sichtung-F.md:10). Die übrigen 2343 Mutanten des
+# Pakets wurden nicht gesichtet und zählen nicht. F4-05 = R4M-F-03, PF-6 und
+# PF-7 = R4M-F-01/-02 (3c-sichtung-F.md:224-225).
+id = "L-009"
+datum = 2026-10-17
+commit = "b424584"
+methode = "M-F-03"
+modul = "cli"
+umfang = 2139
+einheit = "Mutanten"
+befunde = [
+    { id = "F4-05", einstufung = "FEHLER" },
+    { id = "PF-6", einstufung = "LÜCKE" },
+    { id = "PF-7", einstufung = "LÜCKE" },
+]
+
+[[lauf]]
+# Mutation Lauf B (tests/unit und tests/integration/backend), backend/valkey:
+# 3b-mutation-lauf-b.md:46 (Summe). Gruppe D wurde nur in der Schnittmenge von
+# Lauf A und B gesichtet (3c-sichtung-D.md:9), deshalb kein eigener Lauf A für
+# backend. F4-11 = R4M-D-01, F4-12/F4-13 = R4M-D-02/-03 (3c-sichtung-D.md:114-118),
+# PF-16 (6-gegenpruefung-M.md:287).
+id = "L-010"
+datum = 2026-10-17
+commit = "b424584"
+methode = "M-F-04"
+modul = "backend"
+umfang = 1113
+einheit = "Mutanten"
+befunde = [
+    { id = "F4-11", einstufung = "FEHLER" },
+    { id = "F4-12", einstufung = "FEHLER" },
+    { id = "F4-13", einstufung = "FEHLER" },
+    { id = "PF-16", einstufung = "LÜCKE" },
+]
+
+[[lauf]]
+# Fuzz, test_header_text_fuzz.py: 4 Tests zu je 500 Beispielen
+# (fehlersuche-runde-4-recherche/5-fuzz.md:42, max_examples :29). Ohne Treffer (:9-12).
+id = "L-011"
+datum = 2026-10-17
+commit = "b424584"
+methode = "M-F-05"
+modul = "header_text"
+umfang = 2000
+einheit = "Beispiele"
+befunde = []
+
+[[lauf]]
+# Fuzz gegen worker: test_counter_headers_fuzz.py 8 Tests (5-fuzz.md:37), davon
+# einer gegen identity (tests/fuzz/test_counter_headers_fuzz.py:347), dazu
+# test_lock_template_fuzz.py 2 (:39) und test_error_info_fuzz.py 4 (:41):
+# 13 Tests zu je 500 Beispielen. F4-07 = R4F-01 (5-fuzz.md:64), F4-10, PF-14 und
+# R4F-10 (5-fuzz.md:92; fehlersuche-runde-4-2026-10.md:70, :136, :150).
+id = "L-012"
+datum = 2026-10-17
+commit = "b424584"
+methode = "M-F-05"
+modul = "worker"
+umfang = 6500
+einheit = "Beispiele"
+befunde = [
+    { id = "F4-07", einstufung = "FEHLER" },
+    { id = "F4-10", einstufung = "FEHLER" },
+    { id = "PF-14", einstufung = "LÜCKE" },
+    { id = "R4F-10", einstufung = "NICHT HALTBAR" },
+]
+
+[[lauf]]
+# Fuzz gegen identity: 1 Test zu 500 Beispielen in test_counter_headers_fuzz.py
+# (5-fuzz.md:37; Test tests/fuzz/test_counter_headers_fuzz.py:347). Ohne Treffer (5-fuzz.md:9-12).
+id = "L-013"
+datum = 2026-10-17
+commit = "b424584"
+methode = "M-F-05"
+modul = "identity"
+umfang = 500
+einheit = "Beispiele"
+befunde = []
+
+[[lauf]]
+# Fuzz, test_config_env_fuzz.py: 4 Tests zu je 500 Beispielen gegen
+# SwarmQConfig() (5-fuzz.md:40, :73). F4-08 (5-fuzz.md:78, :111); PF-10 und PF-11
+# sitzen in config_validation.py (5-fuzz.md:122, :133), getroffen über SwarmQConfig().
+id = "L-014"
+datum = 2026-10-17
+commit = "b424584"
+methode = "M-F-05"
+modul = "config"
+umfang = 2000
+einheit = "Beispiele"
+befunde = [
+    { id = "F4-08", einstufung = "FEHLER" },
+    { id = "PF-10", einstufung = "LÜCKE" },
+    { id = "PF-11", einstufung = "LÜCKE" },
+]
+
+[[lauf]]
+# Betriebsabläufe 1 (Kontrollkanal unter Last, process_manager/setpoint.py) und
+# 2 (Hot-Reload unter Last, process_manager/reload.py), je 3 Läufe
+# (fehlersuche-runde-4-recherche/4-betrieb.md:24-25, :46, :92).
+# R4B-01 ENTSCHEIDUNG (4-betrieb.md:113; fehlersuche-runde-4-2026-10.md:114).
+id = "L-015"
+datum = 2026-10-17
+commit = "b424584"
+methode = "M-Z-03"
+modul = "process_manager"
+umfang = 2
+einheit = "Abläufe"
+befunde = [{ id = "R4B-01", einstufung = "ENTSCHEIDUNG" }]
+
+[[lauf]]
+# Betriebsablauf 3, CLI gegen echte Daten: 16 Befehlsfälle in einem Lauf
+# (4-betrieb.md:26, Tabelle :140-155, :165), ohne Verdacht.
+id = "L-016"
+datum = 2026-10-17
+commit = "b424584"
+methode = "M-Z-03"
+modul = "cli"
+umfang = 1
+einheit = "Abläufe"
+befunde = []
+
+# --- Signale ----------------------------------------------------------------
+# KTD3: die sechs begründeten `noqa: S` in src sind die ersten Signale der
+# Säule Angriffssicherheit (Stand 2026-10-24).
+
+[[signal]]
+id = "S-001"
+quelle = "ruff S301"
+saeule = "Angriffssicherheit"
+modul = "worker"
+fundstelle = "src/swarmq/worker/compute/pool.py:439"
+beschreibung = "pickle.loads auf Daten aus dem eigenen Kindprozess des CPU-Pools"
+dringlichkeit = "normal"
+status = "offen"
+
+[[signal]]
+id = "S-002"
+quelle = "ruff S301"
+saeule = "Angriffssicherheit"
+modul = "worker"
+fundstelle = "src/swarmq/worker/compute/envelope.py:115"
+beschreibung = "pickle-Rundreise eigener Daten zur Prüfung der Picklebarkeit"
+dringlichkeit = "normal"
+status = "offen"
+
+[[signal]]
+id = "S-003"
+quelle = "ruff S311"
+saeule = "Angriffssicherheit"
+modul = "backoff"
+fundstelle = "src/swarmq/backoff.py:35"
+beschreibung = "random.uniform für den Retry-Jitter (exponentiell)"
+dringlichkeit = "normal"
+status = "offen"
+
+[[signal]]
+id = "S-004"
+quelle = "ruff S311"
+saeule = "Angriffssicherheit"
+modul = "backoff"
+fundstelle = "src/swarmq/backoff.py:39"
+beschreibung = "random.uniform für den Retry-Jitter (linear)"
+dringlichkeit = "normal"
+status = "offen"
+
+[[signal]]
+id = "S-005"
+quelle = "ruff S603"
+saeule = "Angriffssicherheit"
+modul = "logging_file"
+fundstelle = "src/swarmq/logging_file.py:204"
+beschreibung = "subprocess.Popen mit festen Argumenten und sys.executable, ohne Shell"
+dringlichkeit = "normal"
+status = "offen"
+
+[[signal]]
+id = "S-006"
+quelle = "ruff S606"
+saeule = "Angriffssicherheit"
+modul = "process_manager"
+fundstelle = "src/swarmq/process_manager/reload.py:178"
+beschreibung = "os.execvpe beim Hot-Reload mit dem argv-Snapshot des Starts, ohne Shell"
+dringlichkeit = "normal"
+status = "offen"

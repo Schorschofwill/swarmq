@@ -13,12 +13,14 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+from scenarios.base import UngueltigesErgebnis, lade_ergebnis
+
 RESULTS_DIR = Path(__file__).parent / "results"
 
 # Systems using RabbitMQ as broker
-RABBITMQ_SYSTEMS = {"swarmq", "swarmq-quorum", "swarmq-classic", "taskiq-rmq"}
-# Systems using Redis/Valkey as broker
-REDIS_SYSTEMS = {"taskiq", "celery", "dramatiq"}
+RABBITMQ_SYSTEMS = {"swarmq", "swarmq-quorum", "swarmq-classic", "taskiq", "celery", "dramatiq"}
+# Systems using Redis/Valkey as broker; arq ist ein eigener Vergleich (KTD13)
+REDIS_SYSTEMS = {"arq"}
 
 
 def load_results(results_dir: Path) -> list[dict]:
@@ -27,8 +29,8 @@ def load_results(results_dir: Path) -> list[dict]:
         return results
     for f in sorted(results_dir.glob("*.json")):
         try:
-            results.append(json.loads(f.read_text()))
-        except (json.JSONDecodeError, OSError) as exc:
+            results.append(lade_ergebnis(f))
+        except (json.JSONDecodeError, OSError, UngueltigesErgebnis) as exc:
             print(f"Warning: skipping {f.name}: {exc}", file=sys.stderr)
     return results
 
@@ -36,10 +38,10 @@ def load_results(results_dir: Path) -> list[dict]:
 def group_results(
     results: list[dict],
 ) -> dict[str, dict[str, list[dict]]]:
-    """Group by scenario_name -> system_name -> [results]."""
+    """Group by scenario_name -> "system_name/profil/parallelitaet" -> [results]."""
     grouped: dict[str, dict[str, list[dict]]] = defaultdict(lambda: defaultdict(list))
     for r in results:
-        grouped[r["scenario_name"]][r["system_name"]].append(r)
+        grouped[r["scenario_name"]][f"{r['system_name']}/{r['profil']}/{r['parallelitaet']}"].append(r)
     return grouped
 
 
@@ -62,8 +64,9 @@ def format_table(headers: list[str], rows: list[list[str]], col_widths: list[int
 
 def is_cross_broker(systems: set[str]) -> bool:
     """Check if comparison involves systems with different brokers."""
-    has_rmq = bool(systems & RABBITMQ_SYSTEMS)
-    has_redis = bool(systems & REDIS_SYSTEMS)
+    names = {system.split("/")[0] for system in systems}
+    has_rmq = bool(names & RABBITMQ_SYSTEMS)
+    has_redis = bool(names & REDIS_SYSTEMS)
     return has_rmq and has_redis
 
 
@@ -109,8 +112,8 @@ def check_decision_rules(grouped: dict[str, dict[str, list[dict]]]) -> None:
     # SwarmQ vs TaskIQ throughput (noop scenario)
     if "noop" in grouped:
         noop = grouped["noop"]
-        swarmq_tp = median([r["throughput"] for r in noop.get("swarmq", [])])
-        taskiq_tp = median([r["throughput"] for r in noop.get("taskiq", [])])
+        swarmq_tp = median([r["throughput"] for r in noop.get("swarmq/stark/gleich", [])])
+        taskiq_tp = median([r["throughput"] for r in noop.get("taskiq/stark/gleich", [])])
 
         if swarmq_tp > 0 and taskiq_tp > 0:
             ratio = swarmq_tp / taskiq_tp
@@ -124,8 +127,8 @@ def check_decision_rules(grouped: dict[str, dict[str, list[dict]]]) -> None:
     # P99 latency comparison
     if "latency" in grouped:
         lat = grouped["latency"]
-        swarmq_p99 = median([r["latency_p99_ms"] for r in lat.get("swarmq", [])])
-        taskiq_p99 = median([r["latency_p99_ms"] for r in lat.get("taskiq", [])])
+        swarmq_p99 = median([r["latency_p99_ms"] for r in lat.get("swarmq/stark/gleich", [])])
+        taskiq_p99 = median([r["latency_p99_ms"] for r in lat.get("taskiq/stark/gleich", [])])
 
         if swarmq_p99 > 0 and taskiq_p99 > 0:
             ratio = swarmq_p99 / taskiq_p99

@@ -1,6 +1,6 @@
 services:
   rabbitmq:
-    image: rabbitmq:4-management-alpine
+    image: rabbitmq:4.3.6-management
     ports:
       - "5682:5672"
       - "15682:15672"
@@ -21,7 +21,7 @@ services:
           memory: 2g
 
   valkey:
-    image: valkey/valkey:8-alpine
+    image: valkey/valkey:8.1.10-alpine
     ports:
       - "6389:6379"
     command: valkey-server --appendonly no --save "" --maxmemory 512mb --maxmemory-policy noeviction

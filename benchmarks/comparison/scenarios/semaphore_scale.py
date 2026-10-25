@@ -23,13 +23,14 @@ async def run_semaphore_scale(
     Prints a progression table for each level.
     Returns the result for the default concurrency (10).
     """
+    from garantieprofile import STARK
     from systems.swarmq_sys import SwarmQSystem
 
     default_result = None
     levels = [1, 5, 10, 25, 50, 100, 200]
 
     for concurrency in levels:
-        system = SwarmQSystem()
+        system = SwarmQSystem(profil=STARK)
         system.name = f"swarmq-c{concurrency}"
 
         await system.setup()
