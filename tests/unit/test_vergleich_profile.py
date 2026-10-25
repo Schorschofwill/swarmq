@@ -80,11 +80,11 @@ def test_celery_deklariert_exklusive_kontroll_und_event_queues_fuer_rabbitmq_4(
     assert celery.beleg.strip()
 
 
-def test_dramatiq_stark_setzt_confirm_delivery_und_prefetch_eins(profile: ModuleType) -> None:
-    """``confirm_delivery`` ist ein Argument von ``RabbitmqBroker``, der Prefetch die Umgebungsvariable des Workers."""
+def test_dramatiq_stark_setzt_confirm_delivery_und_prefetch_eins_je_thread(profile: ModuleType) -> None:
+    """``confirm_delivery`` ist ein Argument von ``RabbitmqBroker``; den Prefetch je Thread rechnet der Adapter um."""
     einstellungen = profile.profil("dramatiq", "stark").einstellungen
 
-    assert einstellungen == {"confirm_delivery": True, "dramatiq_queue_prefetch": 1}
+    assert einstellungen == {"confirm_delivery": True, "prefetch_je_thread": 1}
     assert profile.profil("dramatiq", "ab_werk").einstellungen == {}
 
 

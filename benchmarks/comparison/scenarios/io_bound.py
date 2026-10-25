@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 
 from scenarios.base import (
+    ABFRAGE,
     BenchmarkResult,
     make_result,
     run_timed_batch_concurrent,
@@ -16,7 +17,7 @@ async def run_io_bound(
     system_cls: type,
     n: int = 1000,
     sleep_ms: int = 10,
-    concurrency: int = 10,
+    concurrency: int = ABFRAGE,
 ) -> BenchmarkResult:
     """Enqueue N I/O tasks, gather results with bounded concurrency.
 
@@ -24,7 +25,7 @@ async def run_io_bound(
         system_cls: TaskQueueSystem class to instantiate
         n: Number of tasks
         sleep_ms: Simulated I/O duration per task (ms)
-        concurrency: Max concurrent result fetches
+        concurrency: Max concurrent result fetches; so hoch, dass sie den Worker nicht begrenzen
     """
     system = system_cls()
 

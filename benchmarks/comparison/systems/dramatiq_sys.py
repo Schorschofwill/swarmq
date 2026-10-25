@@ -12,8 +12,11 @@ import asyncio
 import os
 from typing import Any
 
-from parallelitaet import AB_WERK
+from parallelitaet import AB_WERK, anzahl
 from systems.base import NOCH_OFFEN, ProzessWorker, cli
+
+#: Threads je Worker-Prozess ab Werk (``dramatiq --threads``, dramatiq 2.2.1: dramatiq/cli.py).
+THREADS_AB_WERK = 8
 
 
 class DramatiqSystem(ProzessWorker):
@@ -32,8 +35,10 @@ class DramatiqSystem(ProzessWorker):
 
     def worker_umgebung(self) -> dict[str, str]:
         umgebung = super().worker_umgebung()
-        if "dramatiq_queue_prefetch" in self.einstellungen:
-            umgebung["dramatiq_queue_prefetch"] = str(self.einstellungen["dramatiq_queue_prefetch"])
+        if "prefetch_je_thread" in self.einstellungen:
+            # Dramatiq liest den Prefetch je Prozess; jeder Prozess hat so viele Threads wie gleichzeitige Tasks.
+            threads = anzahl(self.parallelitaet) or THREADS_AB_WERK
+            umgebung["dramatiq_queue_prefetch"] = str(self.einstellungen["prefetch_je_thread"] * threads)
         return umgebung
 
     async def setup(self) -> None:

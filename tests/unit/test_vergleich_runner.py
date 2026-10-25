@@ -32,6 +32,9 @@ Test-Liste:
 - [x] die Entscheidungsregeln des Berichts vergleichen bei gleicher Parallelität
 - [x] eine Zahl als Parallelität setzt genau so viele gleichzeitige Tasks
 - [x] ``semaphore_scale`` variiert die Worker-Parallelität von swarmq, nicht nur die Ergebnisabfrage
+- [x] Dramatiq holt im Profil ``stark`` eine Nachricht je Thread, bei jeder Parallelität
+- [x] io_bound reiht nebenläufig ein, damit das Einreihen nicht den Durchsatz des Workers begrenzt
+- [x] io_bound fragt Ergebnisse so breit ab, dass die Abfrage nicht den Durchsatz des Workers begrenzt
 """
 
 from __future__ import annotations
@@ -295,7 +298,8 @@ def test_adapter_startet_den_worker_ueber_die_cli_seines_systems(
     [
         ("swarmq", ["--processes", "1", "--concurrency", "10"], {}),
         ("celery", ["--concurrency", "10"], {}),
-        ("dramatiq", ["--processes", "1", "--threads", "10"], {}),
+        # Prefetch je Prozess: eine Nachricht je Thread wie ab Werk (8 Threads), hier für zehn.
+        ("dramatiq", ["--processes", "1", "--threads", "10"], {"dramatiq_queue_prefetch": "10"}),
         ("arq", [], {"VERGLEICH_MAX_JOBS": "10"}),
         ("taskiq", ["--workers", "1", "--max-async-tasks", "10"], {}),
     ],
@@ -370,6 +374,81 @@ async def test_semaphore_scale_variiert_die_worker_parallelitaet_von_swarmq(
     await szenario.run_semaphore_scale(Schein, n=2, sleep_ms=0)
 
     assert gestartet == ["1", "5", "10", "25", "50", "100", "200"]
+
+
+@pytest.mark.parametrize(("parallelitaet", "prefetch"), [("ab_werk", "8"), ("gleich", "10"), ("25", "25")])
+def test_dramatiq_stark_holt_eine_nachricht_je_thread(
+    vergleich: Callable[[str], ModuleType],
+    parallelitaet: str,
+    prefetch: str,
+) -> None:
+    """``dramatiq_queue_prefetch`` gilt je Worker-Prozess, nicht je Thread (dramatiq 2.2.1, dramatiq/worker.py).
+
+    Prefetch 1 hieße bei zehn Threads in einem Prozess: eine Nachricht auf einmal, der Worker arbeitet seriell.
+    Gemeint ist wie bei Celerys ``worker_prefetch_multiplier = 1`` eine Nachricht je gleichzeitigem Task;
+    ab Werk startet Dramatiq acht Threads je Prozess.
+    """
+    adapter = vergleich("runner").get_systems()["dramatiq"](profil="stark", parallelitaet=parallelitaet)
+
+    assert adapter.worker_umgebung()["dramatiq_queue_prefetch"] == prefetch
+
+
+class Zaehler:
+    """Schein-System, das zählt, wie viele Aufrufe von ``enqueue`` gleichzeitig laufen."""
+
+    name = "schein"
+
+    def __init__(self, **_: object) -> None:
+        self.laufend = 0
+        self.hoechstens = 0
+
+    async def setup(self) -> None: ...
+
+    async def start_worker(self) -> None: ...
+
+    async def enqueue(self, task_name: str, payload: dict[str, object]) -> str:
+        self.laufend += 1
+        self.hoechstens = max(self.hoechstens, self.laufend)
+        await asyncio.sleep(0)  # gibt die Schleife frei, wie ein Publish, der auf den Broker wartet
+        self.laufend -= 1
+        return task_name
+
+    async def get_result(self, task_id: str, timeout: float = 30.0, poll_interval: float = 0.01) -> bool:
+        return True
+
+    async def stop_worker(self) -> None: ...
+
+    async def teardown(self) -> None: ...
+
+
+@pytest.mark.timeout(5)
+async def test_io_bound_reiht_nebenlaeufig_ein(vergleich: Callable[[str], ModuleType]) -> None:
+    """Nacheinander eingereiht begrenzt der Publish (rund 5 ms mit Confirms) den Durchsatz auf etwa 200 Tasks/s.
+
+    Gemessen werden soll der Worker unter I/O-Last; auf celsius lag am 2026-10-25 bei jedem System P50 bei
+    der halben Gesamtdauer, und die Parallelität des Workers änderte nichts.
+    """
+    systeme: list[Zaehler] = []
+
+    def neu(**kwargs: object) -> Zaehler:
+        systeme.append(Zaehler(**kwargs))
+        return systeme[-1]
+
+    await vergleich("scenarios.io_bound").run_io_bound(neu, n=20, sleep_ms=0)
+
+    assert systeme[0].hoechstens > 1
+
+
+@pytest.mark.timeout(5)
+async def test_io_bound_fragt_so_breit_ab_wie_semaphore_scale(vergleich: Callable[[str], ModuleType]) -> None:
+    """Jede Abfrage wartet ``poll_interval`` (10 ms): zehn gleichzeitige deckeln bei rund 1000 Tasks/s.
+
+    Ab Werk führt Dramatiq 160 Tasks gleichzeitig aus; die Abfrage darf den Worker nicht begrenzen.
+    Die Breite steht in jeder Ergebnisdatei (``params.concurrency``).
+    """
+    ergebnis = await vergleich("scenarios.io_bound").run_io_bound(Zaehler, n=20, sleep_ms=0)
+
+    assert ergebnis.params["concurrency"] == max(vergleich("scenarios.semaphore_scale").STUFEN)
 
 
 PARALLELITAETS_SCHALTER = frozenset({"--concurrency", "-c", "--processes", "-p", "--threads", "-t", "--workers", "-w"})

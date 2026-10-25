@@ -21,6 +21,16 @@ die Systeme betreiben. Der Bericht weist beide getrennt aus; die
 Entscheidungsregeln vergleichen bei `gleich`. Der Garantie-Teil läuft immer
 ab Werk, denn dort ist das Verhalten ab Werk die Frage.
 
+`io_bound` und `semaphore_scale` sollen den Worker messen, nicht den
+Erzeuger: Sie reihen mit zehn gleichzeitigen Publishes ein, sammeln jedes
+Ergebnis ab seinem Einreihen ein und fragen bis zu 200 Ergebnisse
+gleichzeitig ab (`scenarios/base.py`). Bis `b18499a9` reihten beide erst alle
+Tasks nacheinander ein und sammelten danach mit zehn Abfragen ein; auf
+celsius lag `io_bound` damit bei fast jedem System um 200 Tasks/s, P50 bei der
+halben Gesamtdauer, und die Parallelität des Workers änderte nichts. Solche
+Läufe sind für `io_bound` und `semaphore_scale` nicht verwertbar, ebenso Dramatiq
+im Profil `stark`: Es holte bis dahin eine Nachricht je Prozess statt je Thread.
+
 ## Veröffentlichung
 
 Veröffentlicht werden nur Wertungsläufe auf der Referenzmaschine celsius,
@@ -104,7 +114,7 @@ Schlüssel, Begründungen und Belege stehen dort. Kurz:
 |---|---|
 | swarmq | feste Garantien, beide Profile gleich; frische Quorum-Queue je Lauf (E-017) |
 | Celery | `task_acks_late`, `task_reject_on_worker_lost`, Quorum-Queue, `confirm_publish`, Prefetch 1 |
-| Dramatiq | `confirm_delivery`, Prefetch 1; klassische Queues (Dramatiq kennt keine Quorum-Queues) |
+| Dramatiq | `confirm_delivery`, Prefetch 1 je Thread (`dramatiq_queue_prefetch` gilt je Prozess); klassische Queues (Dramatiq kennt keine Quorum-Queues) |
 | arq | Werkseinstellung (arq hat keine stärkere) |
 | taskiq | `--ack-type when_saved`, Quorum-Queue (beides schon Werkswert) |
 
