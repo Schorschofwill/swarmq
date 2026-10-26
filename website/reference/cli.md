@@ -7,7 +7,8 @@ resolves its settings once in the supervisor (flag, then env var, then
 default) and passes the resolved values to its worker subprocesses and
 compute children; they do not re-read the environment, so a flag wins
 in every process. This holds for every worker option that has an env
-var twin (queues, concurrency, pool, burst, priorities, ports, logging).
+var twin (queues, concurrency, pool, burst, priorities, scheduler, ports,
+logging).
 `swarmq worker --check` resolves the same way and validates exactly the
 values the workers would get. An embedded `SwarmQ(...)` app is not
 affected: there the `SwarmQ`/`SwarmQConfig` keyword arguments apply
@@ -18,7 +19,7 @@ first and `SWARMQ_*` variables override them.
 ```text
 swarmq [--version]
 swarmq worker   --module DOTTED.PATH [options]
-swarmq schedule (list | add | remove | status) [options]
+swarmq schedule (list | add | remove | status | prune) [options]
 swarmq dlq      (list | inspect | retry | purge) [options]
 swarmq inspect  --module DOTTED.PATH [--app-dir DIR] [--format FORMAT]
 swarmq check    [--format FORMAT]
@@ -30,7 +31,7 @@ swarmq check    [--format FORMAT]
 |---|---|
 | `0` | Success or graceful shutdown |
 | `1` | Runtime error: broker or backend unreachable, `swarmq dlq`/`schedule` failed at runtime. Retrying later is the right response. Also every configuration error of `swarmq schedule`, `swarmq dlq` and `swarmq inspect` (missing `SWARMQ_BROKER_URL`/`SWARMQ_BACKEND_URL`, invalid `--args`/`--kwargs` JSON, invalid `--cron`/`--at`, `inspect --module` not found or registering no tasks) and every failure of `swarmq worker --check`, including argparse errors. Exception: an invalid `SWARMQ_NAMESPACE` ends every command with `78` (see below). |
-| `2` | Bad arguments (argparse-detected usage error), also `swarmq dlq retry` with both a `task_id` and `--all` or with neither (message on stderr). Not under `swarmq worker --check`, which reports argparse errors as JSON with exit `1`. |
+| `2` | Bad arguments (argparse-detected usage error: unknown or missing option, a value of the wrong type, a count below `1` such as `--limit 0`, `--unique-for` above `315360000`, a non-existent `--watch-dir`), also `swarmq dlq retry` with both a `task_id` and `--all` or with neither (message on stderr). Not under `swarmq worker --check`, which reports argparse errors as JSON with exit `1`. |
 | `3` | `swarmq dlq inspect` / `swarmq dlq retry <task_id>` found no matching DLQ entry |
 | `78` | Configuration error of `swarmq worker` (`EX_CONFIG`): `ConfigurationError`, task module not importable (any `ImportError`, including `ModuleNotFoundError`, or `SyntaxError` while importing it or its package `__init__`; other exceptions at module level stay `1`, and so does an `ImportError` raised later while the worker runs), `--configure` hook failed (also an `ImportError` or `SyntaxError` in the hook module), port range invalid, invalid logging settings or logging config file (`LoggingConfigError`). Emitted by the parent process and by the supervisor when a worker child exits `78` (not under `--reload`, see there). Retrying without a change is pointless. `swarmq check`: a worker would refuse to start in this environment (evicting Valkey `maxmemory-policy` under `SWARMQ_VALKEY_EVICTION_CHECK=strict`, or any `SWARMQ_*` value the worker rejects, checked before connecting). `swarmq schedule`, `dlq`, `inspect` and `check`: an invalid `SWARMQ_NAMESPACE`, checked before any connection. |
 | `130` | Interrupted by Ctrl-C (`KeyboardInterrupt`, 128 + `SIGINT`) outside the command's own handling, for example while modules are imported. A running command or worker treats Ctrl-C as a graceful shutdown and exits `0`. |
@@ -112,17 +113,17 @@ swarmq worker --module DOTTED.PATH [--app-dir DIR]
 | `--log-lifecycle-level LEVEL` | `DEBUG` | Level of the `task_received` and `task_started` events. Env var: `SWARMQ_LOG_LIFECYCLE_LEVEL`. |
 | `--log-drain-timeout SECONDS` | `5` | Upper bound for every flush of the log queues: at exit, before a reload, before each compute result. Records not written in time count as dropped. Must be greater than 0 and at most `threading.TIMEOUT_MAX`, otherwise exit `78`. Env var: `SWARMQ_LOG_DRAIN_TIMEOUT`. See [Logging](logging.md#bounded-flushing). |
 | `--burst` | off | Exit cleanly once all queues have been idle for `--burst-idle-timeout` seconds. Env var: `SWARMQ_BURST_MODE`. |
-| `--burst-idle-timeout SECONDS` | `5.0` | Seconds of queue silence required before `--burst` exits. Env var: `SWARMQ_BURST_IDLE_TIMEOUT`. |
+| `--burst-idle-timeout SECONDS` | `5.0` | Seconds of queue silence required before `--burst` exits; the idle clock starts when the worker is ready and restarts with every delivery. Must be a finite number `> 0` (else exit `2`). Ignored without `--burst`. Env var: `SWARMQ_BURST_IDLE_TIMEOUT`. |
 | `--no-scheduler` | scheduler on | Keep this worker out of the scheduler leader election. It still reports its crons. Crons, `delay`/`eta` tasks and oneshots fire only while another worker on the same Valkey and namespace is leader. Env var: `SWARMQ_SCHEDULER=off` ([turning the scheduler off](../guides/scheduling-and-retries.md#turning-the-scheduler-off-on-single-workers)). |
-| `--priorities` | off | Auto-declare + consume the `{queue}.high`/`.normal`/`.low` triplet for every queue. Env var: `SWARMQ_PRIORITIES`. Without it, publishing a task with `TaskInfo(priority="high"\|"low")` raises `UnroutableMessage` (from 0.12; before, the message was dropped silently). |
+| `--priorities` | off | Declare and consume `{queue}.high`, `{queue}` and `{queue}.low` for every queue (`priority="normal"` uses the plain queue). Env var: `SWARMQ_PRIORITIES`. Without it, publishing a task with `TaskInfo(priority="high"\|"low")` raises `UnroutableMessage` (from 0.12; before, the message was dropped silently). |
 | `--metrics-port PORT` | unset | **Base port** for Prometheus `/metrics`: the worker in slot `s` serves on `PORT + s`, so `--processes 3 --metrics-port 9000` occupies `9000-9002`. Requires `pip install 'swarmq[metrics]'`. Bind host: `SWARMQ_METRICS_HOST` (default `127.0.0.1`). See [base ports](configuration.md#observability). |
 | `--health-port PORT` | unset | **Base port** for `/health` + `/ready`, same slot offset as `--metrics-port`. Bind host: `SWARMQ_HEALTH_HOST` (default `127.0.0.1`). |
-| `--processes N`, `-p N` | `1` | Run N worker subprocesses in slots `0..N-1`. Since 0.5.0 every `swarmq worker` runs under the supervisor, also with `N = 1`: it restarts crashed workers (max 5 per hour) into the same slot, locks a slot that exceeds this for a 1 h cooldown (since 0.12; before, for good), replaces workers whose heartbeat stops, reloads on `SIGHUP` by re-executing itself with `os.execvpe()` and the argv (`sys.orig_argv`) and environment captured at start-up, so `python -m swarmq.cli worker ...` reloads too, and exits 0 once all workers ended cleanly (`--burst`). `SIGTERM` and `SIGINT` always end the supervisor, also while a reload is being checked or prepared. A configuration error in any worker ends the run after a single attempt with exit `78`. |
-| `--autoscale MIN,MAX` | unset | Enable queue-depth-driven autoscaling between `MIN` and `MAX` worker subprocesses. Implies `--processes`. Since 0.12 it counts only the messages ready in each queue itself, not the delay queues ([delay tiers](../explanation/delivery-semantics.md#delay-tiers)). Since 0.14.2 a draining worker does not count as active and is never picked again ([autoscaling and draining workers](#autoscaling-and-draining-workers)). |
+| `--processes N`, `-p N` | `1` | Run N worker subprocesses in slots `0..N-1` (`N >= 1`). Since 0.5.0 every `swarmq worker` runs under the supervisor, also with `N = 1`: it restarts crashed workers (max 5 per hour) into the same slot, locks a slot that exceeds this for a 1 h cooldown (since 0.12; before, for good), replaces workers whose heartbeat stops, reloads on `SIGHUP` by re-executing itself with `os.execvpe()` and the argv (`sys.orig_argv`) and environment captured at start-up, so `python -m swarmq.cli worker ...` reloads too, and exits 0 once all workers ended cleanly (`--burst`). `SIGTERM` and `SIGINT` always end the supervisor, also while a reload is being checked or prepared. A configuration error in any worker ends the run after a single attempt with exit `78`. |
+| `--autoscale MIN,MAX` | unset | Enable queue-depth-driven autoscaling between `MIN` and `MAX` worker subprocesses (`1 <= MIN <= MAX`, else exit `2`). Implies `--processes`; the start count is `--processes` clamped into `[MIN, MAX]`. Since 0.12 it counts only the messages ready in each queue itself, not the delay queues ([delay tiers](../explanation/delivery-semantics.md#delay-tiers)). Since 0.14.2 a draining worker does not count as active and is never picked again ([autoscaling and draining workers](#autoscaling-and-draining-workers)). |
 | `--max-processes N` | unset | **Enables the control channel** and declares the headroom: a setpoint stored in the backend may raise this supervisor to at most `N` worker processes. `N` must be at least `--processes` and the `--autoscale` upper bound; with `--pool cpu` it must not overbook the assigned CPUs (`N` without `--concurrency`, `N × --concurrency` with it). Without this flag the supervisor never reads or writes setpoints and behaves exactly as before. Under `--autoscale` the autoscaler may also start a worker in a headroom slot without any setpoint while another worker drains, up to `N` processes ([autoscaling and draining workers](#autoscaling-and-draining-workers)). See [control channel](#control-channel). |
 | `--group LABEL` | sorted set of `--queues` | Group key of the control channel. Every supervisor with the same key (in the same backend) follows the same setpoint, each on its own. Deployments that share a backend and serve the same queues need distinct labels, otherwise they steer each other. |
-| `--reload` | off | Watch task modules and trigger SIGHUP reload on change. Developer-only. Requires `pip install 'swarmq[reload]'`. A worker child that exits `78` (for example a `SyntaxError` in the task module) does not end the supervisor: it logs `worker_config_error`, starts no replacement, and restarts the workers after the next file change. A configuration error the parent process detects at start-up still ends with `78`. |
-| `--watch-dir PATH` | parent of `--module` source | Directory to watch (repeatable). Ignored without `--reload`. |
+| `--reload` | off | Watch task modules and trigger SIGHUP reload on change. Developer-only. Requires `pip install 'swarmq[reload]'`; without `watchfiles` the start ends with exit `78` (`--check`: `1`). A worker child that exits `78` (for example a `SyntaxError` in the task module) does not end the supervisor: it logs `worker_config_error`, starts no replacement, and restarts the workers after the next file change. A configuration error the parent process detects at start-up still ends with `78`. |
+| `--watch-dir PATH` | parent of `--module` source | Directory to watch (repeatable). Must be an existing directory outside `/proc`, `/sys` and `/dev`, else exit `2`. Ignored without `--reload` (with a WARNING). |
 | `--check` | off | Dry-run validation: verify `--module` is importable (`--check` imports it, with the module's output on stderr, and runs the [dependency-injection check](api.md#dependency-injection-dishka) of the worker start on the tasks the import registers), that a `--configure` spec has the form `MODULE:CALLABLE` and its module can be found (without importing it), with `--reload` that `watchfiles` is installed + watch-dirs resolve, that the observability port ranges fit below 65535 and do not overlap, that the logging settings are valid and a `--log-config` file loads and is accepted by `dictConfig` (probed in a separate interpreter), that `--pool cpu` is not combined with `--autoscale`, and that `--max-processes` is not below `--processes` or the `--autoscale` upper bound and does not overbook the assigned CPUs with `--pool cpu`. It also builds the worker configuration from the `SWARMQ_*` variables like the supervisor's pre-flight, so every value the start rejects with exit `78` fails here too (for example `SWARMQ_SCHEDULER=maybe` or `SWARMQ_CONCURRENCY=0`). Missing `SWARMQ_BROKER_URL`/`SWARMQ_BACKEND_URL` are not checked (`--check` runs in build steps without secrets); the start then still ends with `78`. Prints a JSON summary including `metrics_ports` and `health_ports` (each the port range the slots will bind as `[first, last]`, both inclusive, not a list of every port) and exits `0`/`1` without starting the supervisor or touching broker/backend. Payload: [message formats](agent/message-formats.md#swarmq-worker-check-payload). |
 
 ### Examples
@@ -406,6 +407,9 @@ swarmq schedule add nightly-billing \
 swarmq schedule remove NAME [--permanent] [--format (table|json)]
 ```
 
+A name that does not exist is a no-op (exit `0`). `--format json`
+prints `removed` (whether anything changed), `permanent` and `name`.
+
 Without `--permanent`, the schedule is disabled but kept; it stays
 disabled when its code changes. With `--permanent`, it is hard-deleted,
 and a mark from pruning a disabled cron (`[<namespace>:]sq:{sched}:disabled`) is
@@ -422,7 +426,8 @@ swarmq schedule status [--limit N] [--format (table|json)]
 ```
 
 Prints the current leader worker (if any), its swarmq version, the
-next N schedules due within 24 hours (`--limit`, default `10`) and the
+next N schedules due within 24 hours (`--limit`, default `10`, at least
+`1`) and the
 workers that report crons, with their swarmq versions.
 
 ```text

@@ -1,9 +1,9 @@
 # Signals
 
-You want a handler to run on a specific task lifecycle event —
-record a metric when a task fails, emit an audit log when a task is
-cancelled, notify Slack when a scheduler leader swaps. Signals are
-the in-process pub/sub layer for those events.
+You want a handler to run on a specific lifecycle event: record a
+metric when a task fails, write an audit log when a task is cancelled,
+notify Slack when the scheduler leader changes. Signals are the
+in-process pub/sub layer for those events.
 
 ## Prerequisites
 
@@ -32,11 +32,11 @@ async def on_task_failed(task_id, task_name, exception, **kwargs):
     )
 ```
 
-The handler must be async. It runs inline after the event is
-dispatched — no separate event loop, no worker thread.
+The handler must be async. It runs inline when the event is
+dispatched: no separate event loop, no worker thread.
 
 Always end the parameter list with `**kwargs`. The worker passes every
-key from the table below — `TASK_FAILED` also carries `queue` — and a
+key from the table below (`TASK_FAILED` also carries `queue`), and a
 handler with a fixed signature fails with `TypeError` on each dispatch
 (caught and logged as `signal_handler_error`, so the handler silently
 never does its job). New keys can appear in later releases.
@@ -99,29 +99,29 @@ not collide with SwarmQ's built-in ones (`task_failed`,
 | Signal | Fires | Kwargs |
 |---|---|---|
 | `TASK_ENQUEUED` | After a successful `schedule()`; with `delay`/`eta` once the task is stored, not at fire time (cron fires do not dispatch it) | `task_id`, `task_name`, `queue` |
-| `TASK_STARTED` | Before `run()` is called | `task_id`, `task_name`, `queue` |
-| `TASK_COMPLETED` | After `run()` succeeds | `task_id`, `task_name`, `queue`, `duration_ms` |
-| `TASK_FAILED` | After **every** failed attempt (`run()` raised or timed out), before the retry-or-DLQ decision | `task_id`, `task_name`, `queue`, `exception` (string) |
+| `TASK_STARTED` | After `pre_execute`, before `pre_execution()` and `run()` | `task_id`, `task_name`, `queue` |
+| `TASK_COMPLETED` | After `run()` and `post_execution()` succeeded | `task_id`, `task_name`, `queue`, `duration_ms` |
+| `TASK_FAILED` | After **every** failed attempt (`run()`, `pre_execution()` or `post_execution()` raised, or a soft or hard timeout), before the retry-or-DLQ decision | `task_id`, `task_name`, `queue`, `exception` (string) |
 | `TASK_RETRYING` | Before a retry is published (not when a message is deferred because the backend is unreachable before execution; that deferral fires no signal) | `task_id`, `task_name`, `queue`, `retry_count` (the upcoming attempt's retry number), `delay` (seconds) |
-| `TASK_CANCELLED` | When a cancel flag is observed mid-run | `task_id`, `task_name`, `queue` |
-| `TASK_EXPIRED` | When `max_age` is exceeded at pickup; the message goes to the DLQ | `task_id`, `task_name`, `queue`, `age_s`, `max_age_s` |
-| `TASK_LOCKED` | When the task's lock is held by another execution at pickup (lock conflict); the message is requeued with a delay | `task_id`, `task_name`, `lock_name`, `lock_conflict_count` |
+| `TASK_CANCELLED` | When the worker sees the cancel flag, while the task runs or when it picks up a message cancelled before it started | `task_id`, `task_name`, `queue` |
+| `TASK_EXPIRED` | When `max_age` is exceeded at pickup; the message goes to the DLQ (without `TASK_DLQ`) | `task_id`, `task_name`, `queue`, `age_s`, `max_age_s` |
+| `TASK_LOCKED` | When the task's lock is held by another execution at pickup (lock conflict); the message is deferred through the delay queue | `task_id`, `task_name`, `lock_name`, `lock_conflict_count` |
 | `TASK_RATE_LIMITED` | When the rate limiter defers a message | `task_id`, `task_name`, `retry_after_ms`, `remaining`, `rate_limit_count` |
-| `TASK_DUPLICATE_DETECTED` | When a unique-task SETNX loses the race | `existing_task_id`, `task_name`, `dedup_hash`, `source`[, `batch_index`] |
-| `TASK_DLQ` | Once, when a message is terminally dead-lettered by the worker (retry exhaustion, `NoRetry`, delivery limit or execution guard orphan limit reached) | `task_id`, `task_name`, `queue`, `error` |
-| `TASK_REJECTED` | When the worker rejects a message it cannot run — oversized body, undecodable body, broken middleware-chain factory (a copy with retention in `.XQ`, the broker's dead-letter exchange as fallback) — when a dead-letter publish failed and the message goes to the broker's dead-letter exchange without diagnostic headers, and when it dead-letters an unregistered task after `SWARMQ_UNKNOWN_TASK_GRACE_S` (after `TASK_DLQ`) | `queue`, `reason`, `task_id`, `task_name`, `error` |
+| `TASK_DUPLICATE_DETECTED` | When a `unique_for` claim finds the flag of another task | `existing_task_id`, `task_name`, `dedup_hash`, `source` (`client.schedule`, `client.schedule_deferred`, `client.schedule_many` or `scheduler.fire`)[, `batch_index`] |
+| `TASK_DLQ` | Once, when the worker dead-letters a message with an error result: retries used up, `NoRetry` or an exception outside `retry_exceptions`, delivery limit, execution guard orphan limit, end of a lock wait (`LockWaitExceeded`), a lock template that cannot be rendered, or an unregistered task after `SWARMQ_UNKNOWN_TASK_GRACE_S` | `task_id`, `task_name`, `queue`, `error` |
+| `TASK_REJECTED` | When the worker rejects a message it cannot run (oversized or undecodable body, broken middleware-chain factory; a copy with retention goes to `.XQ`, the broker's dead-letter exchange is the fallback), when a dead-letter publish failed and the message goes to the broker's dead-letter exchange without diagnostic headers, and when it dead-letters an unregistered task after `SWARMQ_UNKNOWN_TASK_GRACE_S` (after `TASK_DLQ`) | `queue`, `reason`, `task_id`, `task_name`, `error` |
 | `TASK_UNKNOWN_DEFERRED` | Once per deferral of a message whose task this worker does not register, within `SWARMQ_UNKNOWN_TASK_GRACE_S` (rolling deploy) | `task_id`, `task_name`, `queue`, `delay` (seconds), `unknown_since` (Unix ms) |
 | `WORKFLOW_STEP_ENQUEUED` | After each workflow step is published (by `app.apply()` or the advancer in the worker), in addition to `TASK_ENQUEUED` | `task_id`, `task_name`, `queue`, `workflow_id`, `step_path` |
-| `WORKER_ONLINE` / `WORKER_SHUTDOWN` | Worker lifecycle | `worker_id` |
+| `WORKER_ONLINE` / `WORKER_SHUTDOWN` | Worker start and shutdown | `worker_id` |
 | `WORKER_HEARTBEAT` | Periodic liveness tick of the worker's metrics sampler | `worker_id`, `uptime_seconds` |
 | `WORKER_RECYCLING` | A compute child (`kind="compute_child"`) or the worker itself (`kind="worker"`) is recycled by RSS or task count | `worker_id`, `kind`, `slot`, `reason` (`rss`/`tasks`/`forced`), `value` |
-| `SCHEDULER_LEADER` / `SCHEDULER_STANDBY` / `SCHEDULER_HEARTBEAT` | Scheduler leader transitions | `worker_id` |
-| `SCHEDULER_LEADER_HANDOVER` / `SCHEDULER_LEADER_FAILOVER` | Leader swap sources | `worker_id` |
+| `SCHEDULER_LEADER` / `SCHEDULER_STANDBY` / `SCHEDULER_HEARTBEAT` | This worker became leader, is (or went back to) standby, or renewed its leader lock | `worker_id` |
+| `SCHEDULER_LEADER_HANDOVER` / `SCHEDULER_LEADER_FAILOVER` | This leader releases its lock at shutdown, or this worker took over after the previous leader's lock expired | `worker_id` |
 | `SCHEDULER_FIRE_SKIPPED` | Catch-up after downtime skipped cron occurrences | `worker_id`, `schedule_name`, `skipped_count` |
 | `SCHEDULER_CRON_CONFLICT` | Several definitions of one static cron live for more than 10 minutes (leader, every adoption tick while it lasts) | `worker_id`, `schedule_name`, `fingerprints` |
 | `SCHEDULER_LEADER_OUTDATED` | The scheduler leader runs a swarmq below the minimum leader version (currently 0.12; `outdated=True`, once per leader), or a current leader follows (`outdated=False`); see [leader version](scheduling-and-retries.md#leader-version) | `worker_id`, `leader`, `leader_version` (`None` = before 0.10.0), `outdated` |
 | `SCHEDULER_CRON_UNOWNED` | The leader starts holding a static cron that no live worker reports and it does not register itself (`held=True`), or releases it again (`held=False`); once per transition | `worker_id`, `schedule_name`, `task_name`, `held`, `held_count` |
-| `SCHEDULER_VALKEY_CHECKED` | The leader checked Valkey's eviction policy and memory again, at most once per hour (since 0.12) | `worker_id`, `status`, `policy`, `maxmemory`, `used_memory` |
+| `SCHEDULER_VALKEY_CHECKED` | The leader checked Valkey's eviction policy and memory again, at most once per hour (since 0.12) | `worker_id`, `status` (`safe`, `unsafe` or `unknown`), `policy`, `maxmemory` (`0` = no limit, `None` = unknown), `used_memory` |
 | `SCHEDULER_QUEUE_ORPHANED` | The leader found a reported queue with messages, no consumer and no live worker reporting it (`orphaned=True`), or it is no longer orphaned (`orphaned=False`); once per transition (since 0.12) | `worker_id`, `queue`, `orphaned`, `message_count`, `orphaned_count` |
 | `SCHEDULER_FIRE_UNROUTABLE` | The leader's publish was returned because the queue does not exist: a lost cron fire (`kind="cron_lost"`) or a deferred task dropped after `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S` (`kind="oneshot_dropped"`) | `worker_id`, `schedule_name`, `queue`, `kind` |
 
@@ -137,6 +137,9 @@ terminal one.
 The `TASK_DUPLICATE_DETECTED` signal's `batch_index` key is present only
 when the source is `client.schedule_many` — use
 `kwargs.get("batch_index")` to avoid `KeyError`.
+
+`TASK_DLQ` does not fire for a `max_age` expiry (that is
+`TASK_EXPIRED`) or for messages the worker rejects (`TASK_REJECTED`).
 
 `TASK_REJECTED` carries `reason` from a fixed set: `body_too_large`,
 `undecodable`, `unregistered_task`, `middleware_chain_factory`,
@@ -158,7 +161,7 @@ when you need `workflow_id` or `step_path`.
 
 ### The `worker_id` field
 
-Every `WORKER_*`, `SCHEDULER_*` and `WORKER_RECYCLING` payload carries
+Every `WORKER_*` and `SCHEDULER_*` payload carries
 the worker's stable identity: `<base>:<slot>` under the supervisor
 (`web-3:0`, `web-3:1`, …) and `<base>:p<pid>` for an embedded worker
 (`web-3:p41872`). `<base>` is `SWARMQ_WORKER_ID` or the hostname. The
@@ -168,9 +171,9 @@ per-worker dashboards; see
 
 ## Error semantics
 
-Handler exceptions are **caught per-handler** and logged at WARNING.
-The dispatch loop continues to the next handler; the signal does
-not abort the task or the worker.
+Handler exceptions are **caught per handler** and logged at WARNING.
+The dispatch loop continues to the next handler; a failing handler
+does not abort the task or the worker.
 
 ```python
 @app.on_signal(Signal.TASK_COMPLETED)
@@ -185,8 +188,16 @@ traceback attached (`--log-format human`):
 2026-10-06T10:02:13.511204Z [warning  ] signal_handler_error           [swarmq.signals] error='this is fine' error_type=RuntimeError handler=broken signal=task_completed
 ```
 
-and moves on. This is intentional — a buggy metrics handler must not
-be able to poison task execution.
+and moves on. This is intentional: a buggy metrics handler must not
+be able to break task execution.
+
+Only `Exception` is caught; an `asyncio.CancelledError` (shutdown)
+passes through. Handlers for `WORKER_ONLINE`, `WORKER_SHUTDOWN` and
+`WORKER_HEARTBEAT` are cut off after 10 s, those for
+`WORKER_RECYCLING` after 5 s, each with the WARNING
+`signal_handler_timeout`, so a hanging handler cannot block the start
+or the shutdown. All other signals wait for their handlers without a
+limit.
 
 ## Multiple handlers per signal
 
@@ -248,8 +259,8 @@ app.add_middleware(SentryMiddleware())
 
 ### Slack notification for DLQ drops
 
-`TASK_DLQ` fires once per dead-lettered message, after the retries
-are used up (or on `NoRetry`); `error` is the error message:
+`TASK_DLQ` fires once per dead-lettered message, for example after
+the retries are used up or on `NoRetry`; `error` is the error message:
 
 ```python
 @app.on_signal(Signal.TASK_DLQ)
@@ -264,9 +275,9 @@ async def alert(task_id, task_name, queue, error, **kwargs):
 ### Alert on rejected messages
 
 `TASK_REJECTED` means the worker could not even start the task: the
-body was too large, undecodable, or named a task this worker does not
-know. None of these are retried, so they deserve a separate alert from
-ordinary DLQ traffic:
+body was too large or undecodable, or it named a task this worker
+still did not know after the grace period. None of these are retried,
+so they deserve an alert separate from ordinary DLQ traffic:
 
 ```python
 @app.on_signal(Signal.TASK_REJECTED)
@@ -316,8 +327,12 @@ async def count(task_id, task_name, exception, **kwargs):
 - **Do not block the loop.** Handlers run inline. A handler that
   does synchronous I/O (`requests.post`, `time.sleep`) stalls the
   worker's event loop and backs up every concurrent task.
+- **Keep `SCHEDULER_HEARTBEAT` handlers short.** They run in the
+  leader's election tick without a time limit; a handler that takes
+  longer than about 10 to 15 s (defaults) makes a healthy leader step
+  down (`SCHEDULER_STANDBY`, then `SCHEDULER_LEADER_FAILOVER`).
 - **Do not mutate shared state without a lock.** Handler
-  concurrency follows task concurrency — two tasks finishing at the
+  concurrency follows task concurrency: two tasks finishing at the
   same moment fire two `TASK_COMPLETED` handlers.
 
 ## Verify
@@ -339,9 +354,9 @@ module-level `app` in `myapp/tasks.py`.
 
 ## See also
 
-- [`Signal` enum](../reference/api.md#enum-signal) — full list with
+- [`Signal` enum](../reference/api.md#enum-signal): full list with
   payload schemas
-- [Middleware](middleware.md) — when you need per-task wrappers
+- [Middleware](middleware.md): when you need per-task wrappers
   instead
-- [Rate limiting](rate-limiting.md) — example consumer of
+- [Rate limiting](rate-limiting.md): example consumer of
   `TASK_RATE_LIMITED`

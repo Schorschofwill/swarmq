@@ -1,25 +1,29 @@
 # Test-Strategie
 
-Das Test-Universum von SwarmQ teilt sich in **sechs** Suiten mit
-unterschiedlichen Ausführungs-Stufen.
+Die Tests von SwarmQ liegen in neun Suiten unter `tests/` mit
+unterschiedlichen Ausführungsstufen. Dazu kommen zwei Verzeichnisse ohne
+eigene Tests: `tests/contracts/` (Vertrags-Suiten, die Unit- und
+Integrationstests gegen In-Memory-Fakes bzw. echte Dienste aufrufen) und
+`tests/support/` (gemeinsame Helfer, Ports, Isolation).
 
 ## Suiten und Marker
 
-| Verzeichnis | Marker | Default | Stufe | Zweck |
-|---|---|---|---|---|
-| `tests/unit/` | `unit` | ✓ | pre-merge | reine Logik, keine externe Infra |
-| `tests/integration/` | `integration` | ✓ | pre-merge | Broker / Backend mit echtem Docker |
-| `tests/e2e/` | `e2e` | ✓ | pre-merge | Vollstack (Client + Worker + RabbitMQ + Valkey) |
-| `tests/property/` | `property` | – | jeder Push (im `unit-tests`-Job) | Hypothesis property-based |
-| `tests/fuzz/` ohne `test_external_publish_fuzz.py` | `fuzz` | – | jeder Push (im `unit-tests`-Job) | Byte- und Text-Fuzz auf Parser, Header, Cron, Konfiguration |
-| `tests/fuzz/test_external_publish_fuzz.py` | `fuzz` | – | örtlich vor Releases | AMQP-Header-Fuzz, braucht den Chaos-Stack |
-| `tests/chaos/` | `chaos` | – | örtlich vor Releases | Toxiproxy + Container-Restart + Crash |
-| `tests/stress/` | `stress` | – | manuell in der Pipeline | hohe Parallelität (10 worker × 1000 tasks) |
-| `tests/soak/` | `soak` | – | manuell in der Pipeline | 1h Last-Test mit Leak-Detection |
-| `tests/compat/` | `compat` | – | örtlich, je MR des Plans 0.12.0 und vor Releases der 0.12- bis 0.14-Reihe | Mischbetrieb mit swarmq aus PyPI (Q2): Basis 0.11.1, Rollback-Grenze 0.11.0, für die 0.12-Reihe die Basen 0.12.0 und 0.12.3, für die 0.13-Reihe die Basis 0.13.1 (`test_mixed_operation_0_13.py`, seit 0.14); braucht Netz zu PyPI |
-| `tests/integration/spikes/` | `spike` (+ `integration`) | ✓ | pre-merge | Charakterisierung RabbitMQ 4.3.6 und 4.2.9 (Spikes S1–S9) |
+| Verzeichnis | Marker | Default | Rezept | Stufe | Zweck |
+|---|---|---|---|---|---|
+| `tests/unit/` | `unit` (automatisch) | ✓ | `just unit` | jeder Push | reine Logik, keine Dienste |
+| `tests/integration/` | `integration` (automatisch) | ✓ | `just integration` | jeder Push | Broker / Backend gegen echtes RabbitMQ und Valkey; darin `stateful/` (Hypothesis-Zustandsmaschinen gegen Valkey) |
+| `tests/e2e/` | `e2e` (automatisch) | ✓ | `just e2e` | jeder Push | Vollstack (Client + Worker + RabbitMQ + Valkey); darin `combinations/`, deren Toxiproxy- und Absturztests zusätzlich `chaos` tragen |
+| `tests/property/` | `property` | – | `just property` | jeder Push (im `unit-tests`-Job) | Hypothesis property-based, darin `stateful/` (Zustandsmaschinen ohne Dienste) |
+| `tests/fuzz/` außer `test_external_publish_fuzz.py` | `fuzz` | – | `just fuzz` | jeder Push (im `unit-tests`-Job) | Fuzz ohne Dienste: Parser, Cron, Konfiguration aus Env, Header, Zähler-Header, Lock-Vorlagen, Fehlerinfo |
+| `tests/fuzz/test_external_publish_fuzz.py` | `fuzz` | – | `just chaos` | örtlich vor Releases | AMQP-Header-Fuzz, braucht den Chaos-Stack |
+| `tests/chaos/` | `chaos` | – | `just chaos` | örtlich vor Releases | Toxiproxy + Container-Restart + Crash |
+| `tests/stress/` | `stress` | – | `just stress` | manuell in der Pipeline | hohe Parallelität (10 Worker × 1000 Tasks) |
+| `tests/soak/` | `soak` | – | keins | manuell in der Pipeline | Dauerlast mit Leak-Erkennung; Standard 60 s, `SWARMQ_SOAK_HOURS=1` für eine Stunde |
+| `tests/compat/` | `compat` | – | keins | örtlich, je MR des Plans 0.12.0 und vor Releases der 0.12- bis 0.14-Reihe | Mischbetrieb mit swarmq aus PyPI (Q2): Basis 0.11.1, Rollback-Grenze 0.11.0, für die 0.12-Reihe die Basen 0.12.0 und 0.12.3, für die 0.13-Reihe die Basis 0.13.1 (`test_mixed_operation_0_13.py`, seit 0.14); braucht Netz zu PyPI |
+| `tests/integration/spikes/` | `spike` (+ `integration`) | ✓ | `just integration` | jeder Push | Charakterisierung RabbitMQ 4.3.6 und 4.2.9 (Spikes S1–S9) |
 
-`addopts` in `pyproject.toml` schliesst opt-in-Marker per Default aus,
+`addopts` in `pyproject.toml` schließt die opt-in-Marker (`chaos`, `stress`,
+`soak`, `property`, `fuzz`, `mutation`, `compat`) per Default aus,
 damit der Dev-Loop schnell bleibt. Für Unit-Tests gilt die Regel aus
 `AGENTS.md`: jeder Unit-Test < 100 ms, Richtwert rund 15 ms im Mittel. Eine
 feste Grenze für die Gesamtlaufzeit gibt es nicht — sie darf mit der Zahl der
@@ -85,7 +89,7 @@ darf nicht sinken, neue und geänderte Zeilen müssen zu 100 % abgedeckt sein
 (diff-cover). Auf `main` und bei Tags entfällt der Vergleich. Die Untergrenze
 hebt `uv run just ratchet` an (kleinster der letzten drei `main`-Werte minus
 0,5 Prozentpunkte, abgerundet; die Schwankung lag bei Einführung bei 0,01).
-Stand: `fail_under = 96` (2026-10-15).
+Stand: `fail_under = 96` (gesetzt 2026-10-15, unverändert bis 0.14.4).
 Örtlich misst `uv run just coverage`; örtliche Werte liegen tiefer als die der
 CI (kein zweiter Broker) und zählen für den Ratchet nicht.
 
@@ -105,8 +109,10 @@ läuft `just fuzz` ohne die Variablen zufällig, also mit neuen Beispielen je
 Lauf.
 
 **Nicht in der Pipeline**: Chaos und der Chaos-gestützte Fuzz-Lauf — siehe
-den Abschnitt darüber. Mutation-Testing gibt es als `scripts/run_mutation.sh`
-und läuft nur von Hand.
+den Abschnitt darunter — sowie Mutation-Testing. Mutmut läuft von Hand in
+einem Container über einen Docker-Kontext (`uv run just mutation-starten a|b`,
+`mutation-holen`, `mutation-abbauen`; `docker/mutation/README.md`).
+Das alte `scripts/run_mutation.sh` mit mutmut-2-Optionen ist entfernt.
 
 **Es gibt keine Zeitpläne.** Weder nightly noch weekly: `pipeline_schedules`
 ist leer. Frühere Fassungen dieses Dokuments nannten
@@ -139,8 +145,9 @@ Standard-Suite (Unit, Integration, E2E) gegen den Teststack:
 uv run just all
 ```
 
-Erwartung (Stand 2026-10-14): alle Suiten grün, rund 4360 Unit-, 590
-Integrations- und 270 e2e-Tests.
+Erwartung: alle Suiten grün. Größenordnung am 2026-10-14: rund 4360 Unit-,
+590 Integrations- und 270 e2e-Tests; am 2026-10-24 sammelte die
+Unit-Suite 5950 Tests.
 
 Dann das vollständige Chaos-Gate über alle opt-in-Marker. Es umfasst
 `tests/chaos` (eigene Compose-Stacks), den Chaos-gestützten Fuzz-Lauf
@@ -251,9 +258,10 @@ Standardports, und diese Hosts sind nicht lokal.
 ## Lint, Format und Typen
 
 Plan `docs/plans/2026-10-11-1200-chore-ruff-mypy-ausbau-plan.md`. Die Werkzeuge
-stehen in den Dependency-Groups `lint` (ruff, prek) und `typing` (mypy,
-basedpyright, Stubs); `uv sync` und `uv run` ziehen beide über
-`default-groups` mit.
+stehen in den Dependency-Groups `lint` (ruff, prek), `typing` (mypy,
+basedpyright, Stubs) und `tasks` (just); `uv sync` und `uv run` ziehen alle
+drei über `default-groups` mit. Die Gruppe `coverage` (diff-cover) braucht
+nur `just coverage-gate`.
 
 `uv run just lint` prüft Format und Lint, `uv run just types` die Typen; die
 CI ruft dieselben Rezepte auf.
@@ -289,7 +297,7 @@ die Ports selbst.
 
 ```bash
 # Dev-Loop (Unit-Suite auf 8 Prozessen per pytest-xdist; SWARMQ_TEST_WORKERS
-# aendert die Zahl, SWARMQ_TEST_WORKERS=0 laesst sie in einem Prozess laufen;
+# ändert die Zahl, SWARMQ_TEST_WORKERS=0 lässt sie in einem Prozess laufen;
 # danach die timing-Tests allein)
 uv run just unit
 
@@ -298,7 +306,7 @@ uv run just unit
 uv run just integration
 uv run just e2e
 
-# Nur eine Datei oder ein Test (beide Durchgaenge, gleiche Sperre und Ports)
+# Nur eine Datei oder ein Test (beide Durchgänge, gleiche Sperre und Ports)
 uv run just integration tests/integration/test_x.py
 uv run just e2e tests/e2e/test_x.py::test_y
 
@@ -314,8 +322,16 @@ uv run just chaos tests/chaos
 # Property-Tests im thorough-Profil
 HYPOTHESIS_PROFILE=thorough uv run just property
 
-# Soak (default 60s; opt-in 1h via env); ohne eigenes Rezept
+# Soak (Standard 60 s; 1 h per Env); ohne eigenes Rezept und ohne Sperre.
+# Eigene Port-Standards 5673/6380 (Dev-Stack docker-compose.swarmq-dev.yml),
+# nicht die Testports; SWARMQ_TEST_*_PORT überschreibt sie.
 SWARMQ_SOAK_HOURS=1 uv run --extra test pytest tests/soak -m soak
+
+# Stress gegen die Testcontainer (mit Sperre; das Rezept setzt die Testports)
+uv run just stress
+
+# Mutation-Testing im Container (docker/mutation/README.md)
+uv run just mutation-starten a
 
 # Mischbetrieb ältere Version / Arbeitsstand: legt pro Sitzung je ein venv
 # mit swarmq==0.11.1, 0.11.0, 0.12.0, 0.12.3 und 0.13.1 an (Abhängigkeiten
@@ -404,19 +420,27 @@ sie fehl. Örtlich: `docker compose up -d rabbitmq42`.
 ## Chaos-Architektur
 
 Hybrid-Isolation:
-- **E2E** nutzt das langlebige Dev-Stack (`docker-compose.dev.yml` auf Ports `:5673` / `:6380`).
+- **Integration und E2E** laufen gegen die Testcontainer (5699/6399, siehe
+  „Ports und Schutz vor fremden Stacks“); die Toxiproxy-Kombinationen in
+  `tests/e2e/combinations` setzen einen Toxiproxy davor (siehe oben).
 - **Chaos** startet pro Test-Klasse einen frischen Compose-Stack (`tests/chaos/compose.yml`) auf randomisierten Ports. Toxiproxy sitzt als Layer-7-Proxy davor.
-- **Stress + Soak** nutzen das Dev-Stack — sie testen Throughput, nicht Failure-Modes.
+- **Stress und Soak** haben eigene Port-Standards und zielen ohne
+  Port-Variablen auf den Dev-Stack (`docker-compose.swarmq-dev.yml`,
+  5673/6380); `uv run just stress` setzt die Testports. Sie messen Durchsatz
+  und Speicher, keine Fehlerbilder.
 
 ## Flaky-Quarantäne (U4.4 Phase-1)
 
-Manuell. `scripts/flaky_quarantine.py` liest pytest-JSON-Reports der
-letzten N Nightly-Läufe und identifiziert Tests die ≥3× konsekutiv
-gescheitert sind. Operator entscheidet über Skip / Fix.
+`scripts/flaky_quarantine.py` liest Berichte im Format von
+`pytest-json-report` und meldet Tests, die in mindestens drei Berichten
+gescheitert sind; wer es aufruft, entscheidet über Fix oder Skip. Das
+Skript ist derzeit ohne Datenquelle: Es gibt keine nächtlichen Läufe, und
+`pytest-json-report` ist keine Abhängigkeit. Die CI schreibt JUnit-XML,
+und rote Tests werden ohnehin nicht wiederholt, sondern repariert.
 
 ## Spike-Findings (geschützt durch Tests)
 
 - ValkeyBackend Retry-Policy → `tests/unit/backend/test_valkey.py` + chaos-recovery
-- Pub/Sub Resubscribe → `tests/unit/test_client.py::TestClientProgress::test_*_resubscribes_*` + `tests/chaos/test_network_chaos.py::test_pubsub_disconnect_resubscribe`
+- Pub/Sub Resubscribe → `tests/unit/backend/test_valkey_results.py` (`*_resubscribe*`) + `tests/chaos/test_network_chaos.py::TestNetworkChaos::test_pubsub_disconnect_resubscribe_via_watch_progress`
 - aio_pika Channel-Recreate → `tests/integration/broker/test_rabbitmq_reconnect.py`
 - Broker-Verhalten für den Plan 0.12.0 (406-Texte, Delivery-Limit, globales QoS, Delivery-Count, `x-death`, Blocked-Zustand, Stufen-TTL) → `tests/integration/spikes/` (S1–S9, je 4.3.6 und 4.2.9)

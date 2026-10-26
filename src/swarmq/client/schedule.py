@@ -599,17 +599,6 @@ class ClientScheduling(ClientScheduleResolve):
                 state["task_names"][i] = entry["task_name"]
                 state["resolved_queues"][i] = entry["queue"]
                 state["dedup_headers"][i] = headers
-                state["encoded_messages"][i] = encode_json(
-                    {
-                        "task": {
-                            "id": entry["task_id"],
-                            "queue": entry["queue"],
-                            "name": entry["task_name"],
-                        },
-                        "args": list(entry["args"]),
-                        "kwargs": entry["kwargs"],
-                    }
-                )
                 message_dict: MessageContext = {
                     "task_id": entry["task_id"],
                     "task_name": entry["task_name"],
@@ -622,6 +611,20 @@ class ClientScheduling(ClientScheduleResolve):
 
                 # pre_enqueue: exception aborts the whole batch.
                 await chain.run_pre_enqueue(message_dict)
+                # Erst danach kodieren: In-place-Änderungen an ``kwargs``
+                # (dasselbe dict) kommen an, ``args`` bleibt das Original
+                # (E-059, wie ``schedule()``; DP-02).
+                state["encoded_messages"][i] = encode_json(
+                    {
+                        "task": {
+                            "id": entry["task_id"],
+                            "queue": entry["queue"],
+                            "name": entry["task_name"],
+                        },
+                        "args": list(entry["args"]),
+                        "kwargs": entry["kwargs"],
+                    }
+                )
         except BaseException:
             await self._batch_rollback_claims(prepped, setnx_tasks, setnx_results, setnx_errors)
             raise

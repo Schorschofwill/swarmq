@@ -1,20 +1,18 @@
 # Erläuterungen
 
-Hintergrundlektüre — das *Warum* hinter SwarmQs Designentscheidungen.
-Diese Seiten sind Prosa, nicht Anleitung. Lies sie, um ein mentales
-Modell aufzubauen, auf das du zurückgreifen kannst, wenn etwas
-Ungewöhnliches passiert.
+Hintergrundlektüre: das *Warum* hinter SwarmQ. Diese Seiten sind
+Prosa, keine Anleitung. Lies sie, um ein mentales Modell aufzubauen,
+auf das du zurückgreifen kannst, wenn etwas Ungewöhnliches passiert,
+oder bevor du entscheidest, ob ein neuer Anwendungsfall zu SwarmQ passt.
 
-- [Architektur](architecture.md) — wie Broker, Backend, Workers und
-  Clients zusammenpassen und wo State lebt.
-- [Zustellungssemantik](delivery-semantics.md) — at-least-once,
-  Ack-Timing, Redelivery-Szenarien und der Idempotenzvertrag, den
-  dein Task-Code einhalten muss.
-- [Designentscheidungen](design-decisions.md) — getroffene Trade-offs,
-  geprüfte Alternativen und die Dinge, die bewusst weggelassen
-  wurden.
+- [Architektur](architecture.md): Client, Broker, Worker, Supervisor
+  und Backend; das Prozessmodell, die Pipeline einer Nachricht, der
+  Scheduler, Workflows, die Queue-Topologie und wo jeder Zustand lebt.
+- [Zustellungssemantik](delivery-semantics.md): at-least-once, wann der
+  Worker bestätigt, woher Duplikate kommen, der Ausführungsschutz,
+  Delay-Stufen und die Idempotenz, die dein Task-Code liefern muss.
+- [Designentscheidungen](design-decisions.md): die Abwägungen hinter dem
+  Design, die geprüften Alternativen und was bewusst weggelassen wurde.
 
-Nutze diese Seiten als Kontext, wenn die Referenz „was" beantwortet,
-du aber „warum" brauchst. Sie sind auch der schnellste Weg, zu
-verstehen, ob ein neuer Anwendungsfall zu SwarmQs Shape passt,
-bevor du Code schreibst.
+Die [Referenz](../reference/index.md) beantwortet das *Was*; diese
+Seiten beantworten das *Warum*.

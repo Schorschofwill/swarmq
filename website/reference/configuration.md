@@ -23,8 +23,35 @@ Precedence depends on how SwarmQ runs:
 | `SWARMQ_BROKER_URL` | AMQP URL for RabbitMQ, e.g. `amqp://guest:guest@localhost:5672/`. |
 | `SWARMQ_BACKEND_URL` | Valkey/Redis URL for results and shared state, e.g. `valkey://localhost:6379/0`. |
 
-The CLI prints a descriptive error if either is missing; see the
-[error catalog](errors.md#configurationerror).
+`swarmq worker` needs both, `swarmq schedule` the backend URL,
+`swarmq dlq` the broker URL, `swarmq check` the backend URL (the broker
+URL only for its `queues` section); `swarmq inspect` needs neither. The
+CLI prints a descriptive error if one is missing; see the
+[error catalog](errors.md#configurationerror). An embedded app passes
+the URLs to `RabbitMQBroker(...)` and `ValkeyBackend(...)` instead.
+
+### Value formats
+
+- An empty variable counts as unset.
+- Switches (`SWARMQ_BURST_MODE`, `SWARMQ_PRIORITIES`,
+  `SWARMQ_EXECUTION_GUARD`, `SWARMQ_DEAD_LETTER_TERMINAL_FAILURES`,
+  `SWARMQ_LOG_QUEUE`, `SWARMQ_CONFIGURE_LOGGING`, `SWARMQ_LOG_JSON`):
+  `true`, `1`, `yes` and `on` mean on, `false`, `0`, `no` and `off`
+  mean off, in any case. Any other value is a configuration error (exit
+  `78`; before 0.15 it meant off without a word, `on` too).
+- Whole numbers (`SWARMQ_CONCURRENCY`, `SWARMQ_RESULT_TTL`,
+  `SWARMQ_SHUTDOWN_TIMEOUT`, `SWARMQ_DELIVERY_LIMIT`,
+  `SWARMQ_RECYCLE_*`, `SWARMQ_EXECUTION_GUARD_MAX_ORPHANS`,
+  `SWARMQ_MAX_MESSAGE_BODY_BYTES`, `SWARMQ_MALLOC_*`,
+  `SWARMQ_COMPUTE_THREAD_LIMIT`, `SWARMQ_LOG_QUEUE_SIZE`, the ports)
+  must parse as an integer; `1.5` is a `ConfigurationError`. All other
+  numbers take a decimal.
+- Lists (`SWARMQ_QUEUES`, `SWARMQ_LOGGER_LEVELS`) are comma-separated;
+  blanks around the entries and empty entries are dropped.
+- Unless a row says otherwise (`>= 0`, a range, a relation), every
+  number on this page must be `> 0`.
+- `SWARMQ_MAIN_MODULE` and `SWARMQ_FORKSERVER_LOG_SENTINEL` are set by
+  swarmq itself for the forkserver of `--pool cpu`; do not set them.
 
 ### Worker behaviour
 
@@ -45,19 +72,19 @@ start (since 0.13.0).
 |---|---|---|
 | `SWARMQ_QUEUES` | `default` | Comma-separated queue names the worker consumes. |
 | `SWARMQ_CONCURRENCY` | `10` (io) / assigned CPUs (cpu) | Maximum tasks in flight per worker process. Must be between `1` and `65535` (it becomes the AMQP prefetch, a short; since 0.13.0, larger values are a `ConfigurationError`, exit `78`). With `SWARMQ_POOL=cpu` the number of compute slots; see [`--concurrency`](cli.md#options). The CPU default (CPU affinity and cgroup quota, rounded up) also applies to an embedded `SwarmQConfig(pool="cpu")` without `concurrency` (since 0.12.3; before, 10); an explicit `concurrency` always wins. |
-| `SWARMQ_RESULT_TTL` | `86400` | Seconds that stored results live in Valkey. A whole number in the environment; the `SwarmQConfig` argument also takes a `float` (such as `timedelta(...).total_seconds()`), which is rounded up to whole seconds. |
-| `SWARMQ_RETRY_MAX_DELAY` | `3600.0` | Cap on retry backoff in seconds. |
+| `SWARMQ_RESULT_TTL` | `86400` | Seconds that stored results live in Valkey. Must be `>= 0`; `0` stores no results (a waiting `get_result()` then times out). A whole number in the environment; the `SwarmQConfig` argument also takes a `float` (such as `timedelta(...).total_seconds()`), which is rounded up to whole seconds. Task progress and workflow state live as long. |
+| `SWARMQ_RETRY_MAX_DELAY` | `3600.0` | Cap on retry backoff in seconds. Only checked for finiteness and the upper bound; use a value `>= 0`. Also raises the defaults of `SWARMQ_SCHEDULER_DEDUP_TTL` and `SWARMQ_EXECUTION_GUARD_DONE_TTL_S`. |
 | `SWARMQ_SHUTDOWN_TIMEOUT` | `30` | Total shutdown budget in seconds from SIGTERM (since 0.12; before, only the drain): draining in-flight tasks, releasing locks, the scheduler handover, closing connections and, under the supervisor, its SIGTERM/SIGKILL escalation all fit in it. The drain ends 5 s (at most half) before the end; under the supervisor the escalation ends 2 s before it. Set Kubernetes `terminationGracePeriodSeconds` and Docker `stop_grace_period` to at least this value plus 15 s ([shutdown budget](../explanation/delivery-semantics.md#shutdown-budget)). `0` aborts at once: under the supervisor SIGTERM and SIGKILL follow without waiting, and locks and the leader role expire through their TTL (allowed under `swarmq worker` since 0.12.3; before, it stopped the start with a traceback). A negative value is a `ConfigurationError` (exit `78`). |
 | `SWARMQ_PUBLISH_TIMEOUT_S` | `120.0` | Upper bound on a complete publish, including internal retries. A publish that exceeds it fails with a broker connection error instead of waiting indefinitely for a confirm that a silently dead transport will never deliver. During graceful shutdown the shorter of this value and the remaining shutdown grace period applies. |
 | `SWARMQ_DELIVERY_LIMIT` | `20` | Delivery budget for quorum queues (`x-delivery-limit`); ignored for classic queues. Once a message has been delivered this many times, the broker itself dead-letters it — the safety net that stops a task which reliably kills the process (SIGSEGV/OOM) from being redelivered forever without ever reaching `max_retries`. The default covers three to four task-level retries per delivery plus headroom for broker hiccups. That headroom is narrower since the publish deadline: a publish that breaks its deadline inside the worker redelivers the in-flight message instead of acking it, and each round costs one delivery. Before each such hand-back the worker waits up to 5 s (growing with the delivery count), so the default budget lasts more than a minute. The worker also counts `x-acquired-count` (RabbitMQ 4.3, which does not count a requeue in `x-delivery-count`). Raise it if you must ride out longer broker outages; lower it to force a tighter delivery window. Existing queues keep the limit they were created with; the worker then dead-letters at the smaller of both values minus one ([effective delivery limit](../explanation/delivery-semantics.md#effective-delivery-limit)). Must be `> 0` and at most `9223372036854775807` (2^63 − 1, AMQP long long; sent to RabbitMQ as `x-delivery-limit`). Larger values are a configuration error (exit `78`; since 0.13.0, before exit `1`). |
-| `SWARMQ_QUEUE_TYPE` | `quorum` | `quorum` (recommended) or `classic` RabbitMQ queue type. Only quorum queues carry `x-delivery-limit`; without it a message that keeps hanging workers is redelivered without bound (the worker warns at startup). Changing it for existing queues fails with `QueueArgumentsMismatch` (exit 78); [migrate](../explanation/delivery-semantics.md#changing-queue-arguments) the queues instead. |
-| `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY` | `auto` | Dead-lettering of quorum queues. `auto`: new queues get `x-dead-letter-strategy=at-least-once` and `x-overflow=reject-publish` (not `{queue}.XQ`), existing queues keep their arguments and one WARNING `queue_dead_letter_at_most_once` per process lists those without at-least-once. `at-least-once`: as `auto`, but an existing queue without at-least-once (strategy and `x-overflow=reject-publish`) fails with `QueueArgumentsMismatch` (exit 78); not allowed with `SWARMQ_QUEUE_TYPE=classic` (`ConfigurationError`). `legacy`: the arguments of 0.11 (at-most-once), no warning ([dead-lettering guarantee](../explanation/delivery-semantics.md#dead-lettering-guarantee)). |
-| `SWARMQ_BROKER_PUBLISH_CONNECTION` | `separate` | `separate`: a worker consumes and acknowledges over a second RabbitMQ connection, opened by its first `consume()`; publishes (retry, dead-letter and deferral copies, workflow steps, cron fires) keep the first one. During a resource alarm (memory, disk) RabbitMQ blocks only connections that publish, so acknowledgements keep flowing. A producer that never consumes keeps one connection. `shared`: one connection as before 0.12. With an injected `connection=`/`connection_pool=` it is always `shared` ([broker resource alarm](../explanation/architecture.md#failure-domains)). |
-| `SWARMQ_POOL` | `io` | `io` or `cpu` — see the [CPU mode guide](../guides/cpu-mode.md). |
-| `SWARMQ_RECYCLE_RSS_MB` | unset (`250` in CPU mode) | Recycle a process after a task once its RSS exceeds this many MB. IO worker: opt-in self-recycling; CPU mode: threshold for reused DI children. |
-| `SWARMQ_RECYCLE_MAX_TASKS` | unset (`1000` in CPU mode) | Recycle a process after this many tasks (second line behind the RSS threshold). |
+| `SWARMQ_QUEUE_TYPE` | `quorum` | `quorum` (recommended) or `classic` RabbitMQ queue type (lower case; anything else is a `ConfigurationError`). Only quorum queues carry `x-delivery-limit`; without it a message that keeps hanging workers is redelivered without bound (the worker warns at startup). Changing it for existing queues fails with `QueueArgumentsMismatch` (exit 78); [migrate](../explanation/delivery-semantics.md#changing-queue-arguments) the queues instead. |
+| `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY` | `auto` | Dead-lettering of quorum queues. `auto`: new queues get `x-dead-letter-strategy=at-least-once` and `x-overflow=reject-publish` (not `{queue}.XQ`), existing queues keep their arguments and one WARNING `queue_dead_letter_at_most_once` per process lists those without at-least-once. `at-least-once`: as `auto`, but an existing queue without at-least-once (strategy and `x-overflow=reject-publish`) fails with `QueueArgumentsMismatch` (exit 78); not allowed with `SWARMQ_QUEUE_TYPE=classic` (`ConfigurationError`). `legacy`: the arguments of 0.11 (at-most-once), no warning. Any other value is a `ConfigurationError` ([dead-lettering guarantee](../explanation/delivery-semantics.md#dead-lettering-guarantee)). |
+| `SWARMQ_BROKER_PUBLISH_CONNECTION` | `separate` | `separate`: a worker consumes and acknowledges over a second RabbitMQ connection, opened by its first `consume()`; publishes (retry, dead-letter and deferral copies, workflow steps, cron fires) keep the first one. During a resource alarm (memory, disk) RabbitMQ blocks only connections that publish, so acknowledgements keep flowing. A producer that never consumes keeps one connection. `shared`: one connection as before 0.12. With an injected `connection=`/`connection_pool=` it is always `shared`. Any other value is a `ConfigurationError` ([broker resource alarm](../explanation/architecture.md#failure-domains)). |
+| `SWARMQ_POOL` | `io` | `io` or `cpu` — see the [CPU mode guide](../guides/cpu-mode.md). Anything else is a `ConfigurationError` (exit `78`). |
+| `SWARMQ_RECYCLE_RSS_MB` | unset (`250` in CPU mode) | Recycle a process after a task once its RSS exceeds this many MB. IO worker: opt-in self-recycling; CPU mode: threshold for reused DI children. Must be `> 0` when set. |
+| `SWARMQ_RECYCLE_MAX_TASKS` | unset (`1000` in CPU mode) | Recycle a process after this many tasks (second line behind the RSS threshold). Must be `> 0` when set. |
 | `SWARMQ_HEARTBEAT_INTERVAL_S` | `5` | How often the worker writes its liveness timestamp for the supervisor. |
-| `SWARMQ_HEARTBEAT_TIMEOUT_S` | `60` | After this long without a heartbeat the supervisor replaces the worker (SIGTERM, then SIGKILL). Must exceed the interval and every legitimate loop stall; keep it below RabbitMQ's heartbeat detection. A worker that recycles itself gets at least this long between two heartbeats (or `SWARMQ_SHUTDOWN_TIMEOUT` + 5 s, whichever is larger) before the supervisor kills it; a scale-down drain gets `SWARMQ_SHUTDOWN_TIMEOUT` + 5 s. |
+| `SWARMQ_HEARTBEAT_TIMEOUT_S` | `60` | After this long without a heartbeat the supervisor replaces the worker (SIGTERM, then SIGKILL). Must be greater than `SWARMQ_HEARTBEAT_INTERVAL_S` (otherwise `ConfigurationError`) and every legitimate loop stall; keep it below RabbitMQ's heartbeat detection. A worker that recycles itself gets at least this long between two heartbeats (or `SWARMQ_SHUTDOWN_TIMEOUT` + 5 s, whichever is larger) before the supervisor kills it; a scale-down drain gets `SWARMQ_SHUTDOWN_TIMEOUT` + 5 s. |
 | `SWARMQ_CONSUMER_TIMEOUT_S` | `1800` | The broker's `consumer_timeout`; the worker warns when a task's `hard_timeout` exceeds it. |
 | `SWARMQ_CONSUMER_WATCH_INTERVAL_S` | `5.0` | Seconds between two checks of the [consumer watch](../explanation/delivery-semantics.md#consumer-timeout): a consumer the broker ended (`basic.cancel` from RabbitMQ 4.3, channel close up to 4.2) is cancelled and registered again within two intervals. Must be `> 0`. |
 | `SWARMQ_CONSUMER_READY_GRACE_S` | `30.0` | `/ready` reports the worker not ready once a consumed queue has had no active consumer for longer than this. Must be `> 0`. Never use `/ready` as a liveness probe. |
@@ -82,7 +109,7 @@ start (since 0.13.0).
 | `SWARMQ_BACKEND_DEFER_MAX_DELAY` | `60.0` | Upper bound for the doubled wait in seconds, before the ±20 % variation (so a single wait can be up to 1.2 times this value); must be at least `SWARMQ_BACKEND_DEFER_BASE_DELAY`. Bounds how long a message can wait after the backend is back. |
 | `SWARMQ_BURST_MODE` | `false` | If `true`, worker exits after `SWARMQ_BURST_IDLE_TIMEOUT` seconds of queue silence. |
 | `SWARMQ_BURST_IDLE_TIMEOUT` | `5.0` | Seconds of idle needed before burst exits. |
-| `SWARMQ_PRIORITIES` | `false` | If `true`, auto-declare and consume the `.high`/`.normal`/`.low` triplet for every queue. |
+| `SWARMQ_PRIORITIES` | `false` | If `true`, declare and consume `{queue}.high`, `{queue}` and `{queue}.low` for every queue (`priority="normal"` uses the plain queue). Without it, publishing a task with `priority="high"` or `"low"` raises `UnroutableMessage`. |
 | `SWARMQ_MAX_MESSAGE_BODY_BYTES` | `16777216` | Upper bound for an incoming task message body (16 MiB). Must be `> 0`. A larger body is not decoded: the worker logs `message_body_too_large` and routes the message to the DLQ (`TASK_REJECTED` with reason `body_too_large`). |
 
 ### Logging
@@ -113,7 +140,9 @@ before env var) and hands the result to its worker subprocesses and
 compute children, which do not read the environment again. The same
 CLI > env > default order applies to every other worker option with a
 flag (see [CLI reference](cli.md)). Invalid values end `swarmq worker`
-with exit `78`. `swarmq check` predicts this start: every `SWARMQ_*`
+with exit `78`. The levels are accepted in any case, in `swarmq
+worker`, in `--log-level` and in an embedded `SwarmQ(...)` (before 0.15
+the last two accepted only upper case). `swarmq check` predicts this start: every `SWARMQ_*`
 value the worker would reject ends `check` with exit `78` before any
 connection, and `swarmq worker --check` reports it with `ok: false`
 (since 0.12.3).
@@ -125,8 +154,8 @@ connection, and `swarmq worker --check` reports it with `ok: false`
 | `SWARMQ_SCHEDULER` | `on` | `off` keeps this worker out of the scheduler leader election (also `swarmq worker --no-scheduler`). It still reports its crons, version and queues, so the leader does not prune its crons. Crons, `delay`/`eta` tasks and oneshots fire only while another worker on the same Valkey and namespace runs with `on`; with `off` everywhere nothing fires. Any other value is a `ConfigurationError` (exit `78`). Workers before this release ignore the variable ([turning the scheduler off](../guides/scheduling-and-retries.md#turning-the-scheduler-off-on-single-workers)). |
 | `SWARMQ_SCHEDULER_POLL_INTERVAL` | `1.0` | Seconds between scheduler tick polls. |
 | `SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL` | `10.0` | Seconds between leader heartbeat renewals. |
-| `SWARMQ_SCHEDULER_LOCK_TTL` | `30.0` | Leader lock TTL; must be `≥ 2 × heartbeat_interval`. |
-| `SWARMQ_SCHEDULER_DEDUP_TTL` | `max(60, retry_max_delay + 300)` | Dedup TTL for scheduler-originated dispatches; the lower bound of the completed marker, whose TTL follows the time the fire waited in the queue (`2 × wait + 300`, capped at `max_age + 300` and `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S`). |
+| `SWARMQ_SCHEDULER_LOCK_TTL` | `30.0` | Leader lock TTL; must be `≥ 2 × SWARMQ_SCHEDULER_HEARTBEAT_INTERVAL`. |
+| `SWARMQ_SCHEDULER_DEDUP_TTL` | `max(60, retry_max_delay + 300)` | Must be `> 0` and at least `SWARMQ_RETRY_MAX_DELAY`. Dedup TTL for scheduler-originated dispatches; the lower bound of the completed marker, whose TTL follows the time the fire waited in the queue (`2 × wait + 300`, capped at `max_age + 300` and `SWARMQ_EXECUTION_GUARD_BACKLOG_TTL_S`). |
 | `SWARMQ_SCHEDULER_INFLIGHT_TTL` | `300.0` | TTL of the schedule-fire claim a worker holds while a scheduled task runs. A claim that could not be released blocks a redelivery of the same fire as a duplicate for at most this long. |
 | `SWARMQ_SCHEDULER_TIMEZONE` | *unset* (UTC) | IANA zone for cron expressions of tasks without their own `TaskInfo.timezone`, e.g. `Europe/Berlin`. `UTC` and `Etc/UTC` mean UTC. An unknown zone is a configuration error. Change it in the same deploy as the expressions it affects; prefer the zone per task ([time zones](../guides/scheduling-and-retries.md#time-zones)). |
 | `SWARMQ_SCHEDULER_SEEN_INTERVAL_S` | `60.0` | Seconds between [cron reports](../guides/scheduling-and-retries.md#cron-reports-and-the-leader): every worker reports its static crons at start and then at this interval; the leader adopts reported crons at the same interval. A report stays live for three intervals. Must be `> 0`; use the same value in every app on one Valkey. |
@@ -262,7 +291,7 @@ All ports are validated at config-time: a bad value raises
 
 | Variable | Default | Description |
 |---|---|---|
-| `SWARMQ_DEFAULT_FORMAT` | *TTY-detect* | Overrides the default `--format` for output-shaped CLI subcommands (`schedule list/add/remove/status`, `dlq list/inspect/retry/purge`, `inspect`). Accepts `table` or `json`; any other value (typo, empty string) is ignored silently and the TTY-aware default applies (`table` on a terminal, `json` on a pipe). An explicit `--format` on the command line always wins. |
+| `SWARMQ_DEFAULT_FORMAT` | *TTY-detect* | Overrides the default `--format` of every subcommand that has one (`schedule list/add/remove/status/prune`, `dlq list/inspect/retry/purge`, `inspect`, `check`). Accepts `table` or `json` in any case; any other value (typo, empty string) is ignored silently and the TTY-aware default applies (`table` on a terminal, `json` on a pipe). An explicit `--format` on the command line always wins. |
 
 ### Valkey requirements
 
@@ -429,9 +458,19 @@ lowercase. In an embedded app env vars always win when both are set
 (`swarmq worker` resolves CLI flags before env vars instead) — pass kwargs only
 when you need a non-default that you do not want in the shell
 environment. One exception to the naming rule: `SWARMQ_LOG_FORMAT` sets
-the field `log_json`. `worker_id=` sets the base of the
-[worker identity](#worker-identity); an embedded worker has no slot,
+the field `log_json` (`True` for `json`). `worker_id=` sets the base of
+the [worker identity](#worker-identity); an embedded worker has no slot,
 so `metrics_port` and `health_port` are bound as given.
+
+Types follow the variables: `queues` is a `list[str]`, `logger_levels`
+a tuple of `(name, level)` pairs, `dead_letter_ttl_s=None` means
+unlimited, and `scheduler_dedup_ttl`, `scheduler_publish_stepdown_s` and
+`execution_guard_done_ttl_s` take `None` for their computed default.
+`broker_url` and `backend_url` come from `broker` and `backend`;
+passing them, or any keyword that is not a field, raises `TypeError`.
+The remaining fields (`worker_slot`, `logging_settings`,
+`resolved_fields`, `bind_retry_budget_s`) are set by `swarmq worker`
+for its subprocesses; leave them alone.
 
 `SwarmQ(...)` does not configure logging. The logging fields
 (`log_level`, `log_json`, `log_config`, `configure_logging`,
@@ -454,8 +493,8 @@ definition time and cannot be mutated afterwards.
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `name` | `str` | *required* | Canonical task name used by the client. Max 255 chars. |
-| `queues` | `list[str]` | *required, ≥1* | Queue names the task is published to. The client uses `queues[0]` unless an explicit `queue=` is passed. |
-| `priority` | `"high" \| "normal" \| "low"` | `"normal"` | With `--priorities`, routes to `{queue}.high`/`.low`. |
+| `queues` | `list[str]` | *required, ≥1* | Queue names the task is published to (stored as a tuple). The client uses `queues[0]` unless an explicit `queue=` is passed. |
+| `priority` | `"high" \| "normal" \| "low"` | `"normal"` | `"high"`/`"low"` publish to `{queue}.high`/`{queue}.low`, which exist only with `--priorities`/`SWARMQ_PRIORITIES` (otherwise `UnroutableMessage`). Any other value raises `ValueError`. |
 | `delivery` | `DeliveryMode` | `AT_LEAST_ONCE` | Alternative: `FIRE_AND_FORGET`. |
 
 ### Timeouts
@@ -469,10 +508,10 @@ definition time and cannot be mutated afterwards.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `max_retries` | `int` | `0` | Number of retry attempts before DLQ. `0` means no retries. |
-| `retry_backoff` | `str` | `"exponential"` | One of `"exponential"`, `"linear"`, `"fixed"`. |
+| `max_retries` | `int` | `0` | Number of retry attempts before DLQ. `0` means no retries; a negative value raises `ValueError`. |
+| `retry_backoff` | `str` | `"exponential"` | One of `"exponential"`, `"linear"`, `"fixed"`; anything else raises `ValueError`. |
 | `retry_base_delay` | `float` | `1.0` | Base delay (seconds) for the backoff formula. Must be `≥ 0`. |
-| `retry_exceptions` | `tuple[type[BaseException], ...] \| None` | `None` | Whitelist — only these exceptions trigger a retry. `None` retries any exception. |
+| `retry_exceptions` | `list[type[BaseException]] \| None` | `None` | Whitelist — only these exceptions trigger a retry (stored as a tuple). `None` retries any exception. |
 | `dead_letter` | `bool \| None` | `None` | Dead-letter terminal failures of this task (`NoRetry`, exception outside `retry_exceptions`, retries exhausted). `False` stores the error result and acknowledges instead; `None` follows `SWARMQ_DEAD_LETTER_TERMINAL_FAILURES`. See [Dead letter queues](../guides/dead-letter-queues.md#switching-off-dead-lettering-of-task-failures). |
 
 ### Rate limiting
@@ -485,8 +524,8 @@ definition time and cannot be mutated afterwards.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `lock` | `str \| None` | `None` | Lock name; can be a format string like `"user-{user_id}"`. Requires `hard_timeout`. |
-| `max_concurrency` | `int` | `1` | With `lock`: max concurrent executions. `1` is a mutex; `> 1` is a semaphore. Requires `lock`. |
+| `lock` | `str \| None` | `None` | Lock name; can be a format string like `"user-{user_id}"`. Requires `hard_timeout` (the lock TTL is `hard_timeout + 30` s). Empty or whitespace only raises `ValueError`. |
+| `max_concurrency` | `int` | `1` | With `lock`: max concurrent executions. `1` is a mutex; `> 1` is a semaphore. Must be `>= 1`; a value other than `1` requires `lock`. |
 
 ### Scheduling (cron)
 
@@ -511,7 +550,7 @@ an older worker reports it (`scheduler_cron_report_invalid`).
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `unique_for` | `int \| None` | `None` | Seconds; enables dedup on `(task_name, args, kwargs)` within the TTL. `0`, negative values, `inf` and `nan` are rejected, and so is a value above `315360000` (ten years, since 0.13.0). A `float` such as `timedelta(...).total_seconds()` is accepted and rounded up to the next second. |
+| `unique_for` | `int \| None` | `None` | Seconds; enables dedup on `(task_name, args, kwargs)` within the TTL. `0`, negative values, `inf`, `nan` and negative values are rejected, and so is a value above `315360000` (ten years, since 0.13.0). A `float` such as `timedelta(...).total_seconds()` is accepted and rounded up to the next second. |
 | `unique_until` | `"start" \| "completion"` | `"completion"` | When to release the dedup flag. `"start"` releases at worker pickup; `"completion"` at terminal state. |
 
 ### Expiry
@@ -524,7 +563,7 @@ an older worker reports it (`scheduler_cron_report_invalid`).
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `result_ttl` | `int \| None` | `None` | Per-task override for `SwarmQConfig.result_ttl`. A `float` is accepted and rounded up to the next second; `inf` and `nan` are rejected, and so is a value above `315360000` (ten years, since 0.13.0; for "keep forever" set a long but finite TTL). |
+| `result_ttl` | `int \| None` | `None` | Per-task override for `SwarmQConfig.result_ttl`; `0` stores no result. A `FIRE_AND_FORGET` task without its own value stores no result either. A `float` is accepted and rounded up to the next second; `inf`, `nan` and negative values are rejected, and so is a value above `315360000` (ten years, since 0.13.0; for "keep forever" set a long but finite TTL). |
 
 ## Validation behaviour
 

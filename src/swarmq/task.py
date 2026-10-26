@@ -170,6 +170,10 @@ class TaskInfo:
 
     def __post_init__(self) -> None:
         # E-055: float-Sekunden (``timedelta(...).total_seconds()``) als int.
+        # Der Bereich wird auf dem Rohwert geprüft, sonst wird -0.5 still zu 0
+        # (DP-03, wie ``SwarmQConfig.result_ttl``).
+        if isinstance(self.result_ttl, int | float) and self.result_ttl < 0:
+            raise ValueError(f"result_ttl must be >= 0, got {self.result_ttl}")
         object.__setattr__(self, "result_ttl", whole_seconds(self.result_ttl, "result_ttl"))
         check_deadline_bound("result_ttl", self.result_ttl)
         self._validate_identity_and_retry()
@@ -204,6 +208,9 @@ class TaskInfo:
             raise ValueError(
                 f"retry_backoff must be one of {sorted(_VALID_BACKOFF_STRATEGIES)}, got {self.retry_backoff!r}"
             )
+        if self.max_retries < 0:
+            # E-087: wie die Nachbarfelder, statt still wie 0 zu wirken.
+            raise ValueError(f"max_retries must be >= 0, got {self.max_retries}")
         if self.retry_base_delay < 0:
             raise ValueError("retry_base_delay must be >= 0")
 

@@ -4,6 +4,64 @@ All notable changes to SwarmQ. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [0.15.0rc1] — 2026-10-26
+
+Release candidate for 0.15.0 (install with `pip install --pre`).
+
+Three changes reject values that were accepted so far (breaking): unknown
+switch values in the environment, a negative `max_retries` and a negative
+`result_ttl`. Valid configurations behave as before. No new headers, keys
+or format changes: 0.15.0 runs next to 0.14.4 on the same queues and keys.
+The rate-limit script keeps its keys and only returns a shorter
+`retry_after`. Findings and decisions in
+`docs/befunde/doku-pruefung-2026-10.md`.
+
+### Changed (breaking)
+
+- **Switch variables accept `on`/`off` and reject unknown values.** Every
+  bool variable (`SWARMQ_PRIORITIES`, `SWARMQ_BURST_MODE`,
+  `SWARMQ_EXECUTION_GUARD`, `SWARMQ_DEAD_LETTER_TERMINAL_FAILURES`,
+  `SWARMQ_LOG_QUEUE`, `SWARMQ_LOG_JSON`, `SWARMQ_CONFIGURE_LOGGING`) reads
+  `true`/`1`/`yes`/`on` and `false`/`0`/`no`/`off` in any case. Any other
+  value is a `ConfigurationError` (worker and `swarmq check`: exit 78).
+  Until now every unknown value meant off without a word, so
+  `SWARMQ_PRIORITIES=on` created no priority queues (E-086).
+- **`TaskInfo(max_retries=...)` rejects negative values** with
+  `ValueError`; until now `-1` acted like `0` (E-087).
+- **`TaskInfo(result_ttl=...)` rejects negative values.** `-1` failed only
+  when the result was stored and the task ran again up to the delivery
+  limit; `-0.5` became `0` ("do not store") without a word (DP-03).
+
+### Fixed
+
+- **A rate limit reaches its throughput under a backlog.** A rejected
+  message waited for the end of the fixed window and came back together
+  with all others at the boundary, where the previous window still counts
+  in full. Under a backlog a `100/m` limit ran about 50 tasks a minute.
+  Now the copy waits until the sliding estimate drops below the limit, plus
+  a jitter of up to two slot intervals that doubles with every further
+  rejection of the same message (at most one window) (DP-01).
+- **`schedule_many()` publishes `kwargs` changed in `pre_enqueue`.** The
+  batch was encoded before the hook ran, so an in-place change of a
+  middleware (for example a tenant field) was lost, unlike in `schedule()`
+  (DP-02, E-059).
+- **The log level is case-insensitive everywhere.** `SwarmQConfig(
+  log_level="debug")`, `SWARMQ_LOG_LEVEL=debug` in an embedded app and
+  `swarmq worker --log-level debug` now work like `DEBUG`; only
+  `SWARMQ_LOG_LEVEL` in the worker did so far (E-086).
+- **Help and hint texts.** `--concurrency` names `--max-processes` as the
+  divisor of the cpu default (DP-04); `schedule list` names the key
+  `sq:{sched}:defs` (DP-05); `reload_aborted_alive_children` advises to
+  restart the supervisor instead of sending SIGHUP, since it exits with 0
+  (DP-06).
+- **Agent spec.** `errors.json` lists the exit code of
+  `ConfigurationError` per command in `exit_code_by_command`: 1 for
+  `schedule`, `dlq`, `inspect` and `worker --check` (DP-07).
+
+### Removed
+
+- `scripts/run_mutation.sh` (mutmut 2 options); use `just mutation-*`.
+
 ## [0.14.4] — 2026-10-23
 
 0.14.4 is 0.14.4rc1 without code changes. Read

@@ -1,13 +1,11 @@
 # Build your first email worker
 
-By the end of this tutorial you will have a running SwarmQ worker
-that accepts email-send requests, enforces a rate limit, retries on
-transient failures, routes permanent failures to a dead-letter
-queue, and emits a metric on every lifecycle event. You will also
-have recovered a failed message by hand. Hands-on time: 45–60
-minutes. Nothing below depends on later sections — if you get stuck,
-restart at the previous chapter with the cumulative code shown at
-its end.
+In this tutorial you build a worker that sends (pretend) emails. Step by
+step it learns to retry transient failures, respect a rate limit, report
+lifecycle events through signal handlers, and move permanent failures to
+a dead-letter queue — which you then replay by hand. Plan about 45
+minutes. Each chapter ends with the complete state of your files, so you
+can pick up again at any chapter boundary.
 
 ## What you will build
 
@@ -23,41 +21,34 @@ sequenceDiagram
     App->>MQ: publish message
     MQ->>W: deliver
     W->>V: rate-limit check
-    W->>W: Task.run(...) → "sent"
+    W->>W: SendEmail.run(...)
     W->>V: store result
     W->>MQ: ack
-    App->>V: read result
-    App-->>Script: "sent to <addr>"
+    V-->>App: result
+    App-->>Script: "sent to <addr>: ..."
 ```
 
-Three files on your disk, one shell per process:
-
-- `tasks.py` — the `SendEmail` task.
-- `enqueue.py` — a one-shot client.
-- `docker-compose.yml` — RabbitMQ and Valkey (copy from the repo).
+You work in one directory and two terminals: terminal 1 runs the
+worker, terminal 2 runs the client scripts.
 
 ## Prerequisites
 
-- Python 3.14 or newer.
-- Docker with Compose v2.
-- A package manager. Commands below use [`uv`](https://docs.astral.sh/uv/);
-  swap to `pip`/`poetry` if you prefer.
-- Ten minutes. Grab them up front — the tutorial breaks at chapter
-  boundaries, but a single chapter runs ~5 minutes on the first
-  pass and less on repeats.
+- Python 3.14 or newer
+- Docker with Compose v2
+- [`uv`](https://docs.astral.sh/uv/) (or `python3.14 -m venv` and `pip`)
 
-## Chapter 1 — Infrastructure and the minimum task
+## Chapter 1 — Infrastructure and a first task
 
-Create a fresh directory and a virtualenv:
+Create a project directory and a virtualenv:
 
 ```bash
 mkdir swarmq-tutorial && cd swarmq-tutorial
-uv venv
+uv venv --python 3.14
 source .venv/bin/activate
 uv pip install swarmq
 ```
 
-Drop in a `docker-compose.yml`:
+Add a `docker-compose.yml` for RabbitMQ and Valkey:
 
 ```yaml title="docker-compose.yml"
 services:
@@ -83,18 +74,16 @@ services:
       retries: 10
 ```
 
-Start it and verify:
-
 ```bash
 docker compose up -d
 docker compose ps
 ```
 
-Both services should report `healthy` within 10–15 seconds. The
-RabbitMQ management UI at <http://localhost:15672> (guest/guest)
-is optional but useful for peeking at queues later.
+Both services report `healthy` after 10–15 seconds. The RabbitMQ
+management UI at <http://localhost:15672> (guest/guest) is optional but
+handy for looking at queues later.
 
-Define the minimum task:
+Now the task:
 
 ```python title="tasks.py"
 from swarmq import Task, TaskInfo
@@ -111,26 +100,23 @@ class SendEmail(Task):
         return f"sent to {to}: {subject!r}"
 ```
 
-Sanity check from the CLI:
+Check that SwarmQ finds it. `swarmq inspect` only imports the module and
+connects to nothing:
 
 ```bash
-export SWARMQ_BROKER_URL="amqp://guest:guest@localhost:5672/"
-export SWARMQ_BACKEND_URL="valkey://localhost:6379/0"
-
 swarmq inspect --module tasks
 ```
-
-You should see one row:
 
 ```text
 TASK        QUEUES  DELIVERY       RETRIES  RATE_LIMIT  LOCK  UNIQUE_FOR  UNIQUE_UNTIL  CRON
 send_email  emails  at_least_once  0        -           -     -           -             -
 ```
 
-If `swarmq inspect` cannot find your module, make sure the shell is
-in the same directory as `tasks.py` and the virtualenv is active.
+In a terminal you get this table; piped into another program, the same
+command prints JSON (`--format` chooses). If the module is not found, run
+the command from the directory that contains `tasks.py`.
 
-### Cumulative state — end of Chapter 1
+### State at the end of chapter 1
 
 ```text
 swarmq-tutorial/
@@ -140,25 +126,28 @@ swarmq-tutorial/
 
 ## Chapter 2 — Start a worker, enqueue from a client
 
-In **terminal 1**, with the env vars still set:
+In **terminal 1** (virtualenv active), set the connection URLs and start
+the worker:
 
 ```bash
-swarmq worker --module tasks --queues emails --log-format human
+export SWARMQ_BROKER_URL="amqp://guest:guest@localhost:5672/"
+export SWARMQ_BACKEND_URL="valkey://localhost:6379/0"
+
+swarmq worker --module tasks --queues emails
 ```
 
-The worker logs `worker_started` and waits. Do not close this
-terminal.
+The worker logs `worker_started`, declares the queue `emails` and waits.
+Start the worker before the first client: a publish to a queue that does
+not exist yet fails with `UnroutableMessage`.
 
-In **terminal 2**, create the client script:
+In **terminal 2** (`source .venv/bin/activate`), create the client:
 
 ```python title="enqueue.py"
 import asyncio
 
-from swarmq import SwarmQ
-from swarmq.broker.rabbitmq import RabbitMQBroker
-from swarmq.backend.valkey import ValkeyBackend
+from swarmq import RabbitMQBroker, SwarmQ, ValkeyBackend
 
-import tasks  # noqa: F401 — registers SendEmail
+import tasks  # noqa: F401  (registers SendEmail in this process)
 
 
 async def main() -> None:
@@ -178,35 +167,31 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-Run it:
-
 ```bash
 python enqueue.py
 ```
-
-You should see:
 
 ```text
 client received: sent to alice@example.com: 'Welcome'
 ```
 
-In terminal 1, the worker log shows `task_succeeded` with the same
-`task_id` and its `duration_ms`. The round-trip works. (`task_received`
-and `task_started` are logged at DEBUG; add
-`--log-lifecycle-level INFO` to see them too.)
+In terminal 1, the worker logs `task_succeeded` with the `task_id` and
+`duration_ms`. (`task_received` and `task_started` are logged at DEBUG;
+start the worker with `--log-lifecycle-level INFO` to see them too.)
 
 ### What happened
 
-1. `enqueue.py` opened a connection to RabbitMQ and Valkey.
-2. `app.run("send_email", ...)` called `schedule()` (publishing to
-   the `emails` queue) and then waited on `get_result()` with a
-   10-second budget.
-3. The worker consumed the message, called `SendEmail().run()`,
-   stored the result in Valkey, and ack'd.
-4. `get_result()` woke up on the Pub/Sub notify and returned the
-   result.
+1. `enqueue.py` connected to RabbitMQ and Valkey when it entered
+   `async with`.
+2. `app.run("send_email", ...)` looked up the task in its registry,
+   published the message to the queue `emails` (`schedule()`), and then
+   waited up to 10 seconds for the result (`get_result()`).
+3. The worker received the message, called `SendEmail().run(...)`,
+   stored the return value in Valkey, and acknowledged the message.
+4. `get_result()` was notified through Valkey Pub/Sub and returned the
+   value.
 
-### Cumulative state — end of Chapter 2
+### State at the end of chapter 2
 
 ```text
 swarmq-tutorial/
@@ -215,13 +200,13 @@ swarmq-tutorial/
 └── tasks.py
 ```
 
-## Chapter 3 — Add retries and a rate limit
+## Chapter 3 — Retries and a rate limit
 
-Emails go to an unreliable provider. Give the task a retry budget
-and a rate limit so one runaway call does not blow the 3rd-party
-quota:
+The email provider is unreliable and has a quota. Give the task a retry
+budget and a rate limit, and simulate a provider that fails 30 % of the
+time:
 
-```python title="tasks.py"
+```python title="tasks.py" hl_lines="1 10-13 17-18"
 import random
 
 from swarmq import Task, TaskInfo
@@ -243,21 +228,27 @@ class SendEmail(Task):
         return f"sent to {to}: {subject!r}"
 ```
 
-Stop the worker in terminal 1 (Ctrl+C), then restart it — worker
-processes re-read the task definitions on startup:
+- `max_retries=3` — up to three more attempts after the first. Any
+  exception counts as retryable unless you restrict it with
+  `retry_exceptions`.
+- `retry_backoff="exponential"`, `retry_base_delay=1.0` — wait about 1,
+  2, then 4 seconds between attempts (each with up to 2× random jitter).
+- `rate_limit="5/s"` — at most five starts per second. The limit lives
+  in Valkey and applies to all workers together.
+
+The worker loads task code once at startup. Stop it with ++ctrl+c++ and
+start it again:
 
 ```bash
-swarmq worker --module tasks --queues emails --log-format human
+swarmq worker --module tasks --queues emails
 ```
 
-Schedule a burst from terminal 2 to exercise both features:
+In terminal 2, send a burst of twelve emails at once:
 
 ```python title="burst.py"
 import asyncio
 
-from swarmq import SwarmQ
-from swarmq.broker.rabbitmq import RabbitMQBroker
-from swarmq.backend.valkey import ValkeyBackend
+from swarmq import RabbitMQBroker, SwarmQ, ValkeyBackend
 
 import tasks  # noqa: F401
 
@@ -267,14 +258,16 @@ async def main() -> None:
     backend = ValkeyBackend("valkey://localhost:6379/0")
 
     async with SwarmQ(broker, backend) as app:
-        coros = [
-            app.run("send_email",
-                    to=f"user-{i}@example.com",
-                    subject=f"Burst message {i}",
-                    timeout=60)
+        calls = [
+            app.run(
+                "send_email",
+                to=f"user-{i}@example.com",
+                subject=f"Burst message {i}",
+                timeout=60,
+            )
             for i in range(12)
         ]
-        results = await asyncio.gather(*coros, return_exceptions=True)
+        results = await asyncio.gather(*calls, return_exceptions=True)
         for i, result in enumerate(results):
             print(i, result)
 
@@ -282,56 +275,48 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-Run `python burst.py`. Watch terminal 1. You should see:
-
-- Some tasks complete on the first attempt.
-- Some raise: a `task_failed` line (with `error_type` and `error`),
-  then `task_retrying` with a growing `delay_ms` field, then
-  eventually `task_succeeded` on retry.
-- When more than 5 tasks land in a single second,
-  `task_rate_limited` lines appear with `retry_after_ms` before the
-  eventual `task_succeeded`.
-
-All 12 calls in terminal 2 eventually print
-`sent to user-N@example.com: 'Burst message N'` — the retries and
-rate-limit waits are invisible to the caller, just longer round
-trips.
-
-### Cumulative state — end of Chapter 3
-
-```python title="tasks.py"
-import random
-
-from swarmq import Task, TaskInfo
-
-
-class SendEmail(Task):
-    task_info = TaskInfo(
-        name="send_email",
-        queues=["emails"],
-        max_retries=3,
-        retry_backoff="exponential",
-        retry_base_delay=1.0,
-        rate_limit="5/s",
-    )
-
-    async def run(self, to: str, subject: str) -> str:
-        if random.random() < 0.3:
-            raise RuntimeError("smtp temporarily unavailable")
-        return f"sent to {to}: {subject!r}"
+```bash
+python burst.py
 ```
 
-## Chapter 4 — Add a signal handler for metrics
+Watch terminal 1:
 
-A signal handler is the lightweight way to observe every task
-lifecycle event. Add one for `TASK_DLQ` (the task is given up after
-its retries and dead-lettered) and one for `TASK_RATE_LIMITED`.
-`TASK_FAILED` would fire after every failed attempt, retries
-included, so it is the wrong hook for "this email was not sent".
-End every handler's parameter list with `**kwargs`: the worker passes
-more keys than the handler names (for example `queue`).
+- Most tasks succeed on the first attempt (`task_succeeded`).
+- A failed attempt logs `task_failed` (with `error_type` and `error`),
+  followed by `task_retrying` with `retry_count` and `delay_ms`; a later
+  attempt usually succeeds.
+- Messages over the limit of five per second log `task_rate_limited`
+  with `retry_after_ms` and run a moment later.
 
-```python title="tasks.py"
+In terminal 2, all twelve lines usually read
+`sent to user-N@example.com: 'Burst message N'`: retries and rate-limit
+waits only make the round trip longer. Now and then a task fails all four
+attempts (about 1 in 120). Its line then shows a `TaskError`, and the
+worker moves the message to the dead-letter queue — chapter 5 covers
+that.
+
+### State at the end of chapter 3
+
+```text
+swarmq-tutorial/
+├── burst.py
+├── docker-compose.yml
+├── enqueue.py
+└── tasks.py        # with max_retries, backoff and rate_limit
+```
+
+## Chapter 4 — Signal handlers
+
+Signal handlers let you react to lifecycle events, for example to count
+metrics or alert. Add two at the end of `tasks.py`:
+
+- `Signal.TASK_DLQ` fires once when a task is given up and dead-lettered.
+  (`TASK_FAILED` fires after every failed attempt, retries included, so
+  it is the wrong hook for "this email was not sent".)
+- `Signal.TASK_RATE_LIMITED` fires whenever the rate limit holds a
+  message back.
+
+```python title="tasks.py" hl_lines="1 4 6 25-38"
 import logging
 import random
 
@@ -372,115 +357,54 @@ def install_handlers(app: SwarmQ) -> None:
         )
 ```
 
-Handlers need a `SwarmQ` instance to register on, so they cannot
-live at module import time. The worker CLI builds its own `SwarmQ`
-internally, which means signal handlers registered from `tasks.py`
-need a hook.
+Handlers are `async` functions and always end with `**kwargs`: the worker
+passes more keys than a handler names (for example `queue`), and later
+releases may add more.
 
-The simplest hook: call `install_handlers(app)` from a module
-attribute the worker evaluates. Put it at the bottom of `tasks.py`
-and re-use it from the client:
+A handler belongs to a `SwarmQ` app, and these signals fire in the
+worker. `swarmq worker` builds its own app, so handlers on an app you
+create in `tasks.py` would never run. Instead, the worker calls a
+function of yours with its app before it starts: pass it as
+`--configure MODULE:CALLABLE`. Restart the worker in terminal 1:
 
-```python title="tasks.py (append)"
-# The worker imports this module. We do not have the app instance
-# here yet — so expose install_handlers() for both worker-side and
-# client-side code to call.
+```bash
+swarmq worker --module tasks --queues emails --configure tasks:install_handlers
 ```
 
-And call it from the client:
+Run `python burst.py` again in terminal 2. The worker log now contains
+`RATE_LIMIT` lines from your handler next to SwarmQ's own events, and —
+rarely, when a task fails all attempts — a `DEAD_LETTERED` line. The
+worker's logging setup covers your own loggers too, so `tutorial` needs
+no configuration.
 
-```python title="enqueue.py"
-import asyncio
+!!! tip "Running the worker inside your own program"
+    Instead of the CLI you can start the worker with
+    `await app.start_worker()` on an app you build yourself and register
+    the handlers on it directly. Your program then owns logging: SwarmQ
+    configures none (see the
+    [Logging reference](../reference/logging.md)). For a first worker the
+    CLI is simpler.
 
-from swarmq import SwarmQ
-from swarmq.broker.rabbitmq import RabbitMQBroker
-from swarmq.backend.valkey import ValkeyBackend
-
-import tasks
-
-
-async def main() -> None:
-    broker = RabbitMQBroker("amqp://guest:guest@localhost:5672/")
-    backend = ValkeyBackend("valkey://localhost:6379/0")
-
-    async with SwarmQ(broker, backend) as app:
-        tasks.install_handlers(app)
-        result = await app.run(
-            "send_email",
-            to="alice@example.com",
-            subject="Welcome",
-            timeout=30,
-        )
-        print("client received:", result)
-
-
-asyncio.run(main())
-```
-
-For the worker side, switch to the programmatic entry instead of
-the CLI so you own the `SwarmQ` object:
-
-```python title="worker.py"
-import asyncio
-import logging
-
-from swarmq import SwarmQ
-from swarmq.broker.rabbitmq import RabbitMQBroker
-from swarmq.backend.valkey import ValkeyBackend
-from swarmq.logging import build_formatter
-
-import tasks
-
-
-async def main() -> None:
-    # SwarmQ() does not configure logging — your program does.
-    handler = logging.StreamHandler()
-    handler.setFormatter(build_formatter(json=False, colors=False))
-    logging.basicConfig(level=logging.INFO, handlers=[handler])
-
-    broker = RabbitMQBroker("amqp://guest:guest@localhost:5672/")
-    backend = ValkeyBackend("valkey://localhost:6379/0")
-
-    async with SwarmQ(broker, backend, queues=["emails"]) as app:
-        tasks.install_handlers(app)
-        await app.start_worker()
-
-
-asyncio.run(main())
-```
-
-Unlike `swarmq worker`, an app that embeds `SwarmQ(...)` owns its
-logging: SwarmQ only hands its events to your handlers. A bare
-`logging.basicConfig(level=logging.INFO)` would show just the event
-names; `build_formatter` from `swarmq.logging` also renders the fields
-(`task_id`, `duration_ms`, …) and your own `tutorial` lines. The
-[Logging reference](../reference/logging.md) has recipes for JSON and
-structlog setups.
-
-Stop the CLI worker in terminal 1 and run `python worker.py`
-instead. Re-run `python burst.py` in terminal 2. The worker log
-now includes the `RATE_LIMIT` line and — for the small fraction of
-tasks that exhaust all 3 retries — a `DEAD_LETTERED` line.
-
-### Cumulative state — end of Chapter 4
+### State at the end of chapter 4
 
 ```text
 swarmq-tutorial/
+├── burst.py
 ├── docker-compose.yml
 ├── enqueue.py
-├── burst.py
-├── tasks.py
-└── worker.py
+└── tasks.py        # plus install_handlers()
 ```
 
-## Chapter 5 — Trigger a DLQ route and recover
+## Chapter 5 — Dead-letter a message and replay it
 
-`RuntimeError` retries until the budget is gone. To trigger a DLQ
-route on the first try, use `NoRetry`:
+Some failures are permanent: retrying a rejected address only wastes
+time. Raise `NoRetry` to send the message to the dead-letter queue right
+away. Change the import and the start of `run()`:
 
-```python title="tasks.py"
+```python title="tasks.py (excerpt)"
 from swarmq import NoRetry, Signal, SwarmQ, Task, TaskInfo
-# ... (rest unchanged)
+
+# ... SendEmail.task_info unchanged ...
 
     async def run(self, to: str, subject: str) -> str:
         if to.endswith("@nope.invalid"):
@@ -490,101 +414,132 @@ from swarmq import NoRetry, Signal, SwarmQ, Task, TaskInfo
         return f"sent to {to}: {subject!r}"
 ```
 
-Restart the worker to pick up the new task body.
+Restart the worker (same command as in chapter 4). Then send a message
+that will be rejected. This script uses `schedule()`, which returns the
+task ID without waiting:
 
-Send a message that will be rejected:
-
-```bash
-python -c "
+```python title="reject.py"
 import asyncio
-from swarmq import SwarmQ
-from swarmq.broker.rabbitmq import RabbitMQBroker
-from swarmq.backend.valkey import ValkeyBackend
-import tasks
 
-async def main():
+from swarmq import RabbitMQBroker, SwarmQ, ValkeyBackend
+
+import tasks  # noqa: F401
+
+
+async def main() -> None:
     async with SwarmQ(
-        RabbitMQBroker('amqp://guest:guest@localhost:5672/'),
-        ValkeyBackend('valkey://localhost:6379/0'),
+        RabbitMQBroker("amqp://guest:guest@localhost:5672/"),
+        ValkeyBackend("valkey://localhost:6379/0"),
     ) as app:
-        tid = await app.schedule('send_email',
-                                  to='spammy@nope.invalid',
-                                  subject='nope')
-        print('scheduled', tid)
+        task_id = await app.schedule(
+            "send_email", to="spammy@nope.invalid", subject="nope"
+        )
+        print("scheduled", task_id)
+
 
 asyncio.run(main())
-"
 ```
 
-The worker logs `task_failed` and `task_sent_to_dlq`, publishes the
-message to `emails.XQ` and acks the original; your `TASK_DLQ` handler
-adds its `DEAD_LETTERED` line. Inspect:
+```bash
+python reject.py
+```
+
+The worker logs `task_failed`, then `task_sent_to_dlq`: it stored an
+error result, copied the message to the dead-letter queue `emails.XQ`
+and acknowledged the original. Your `TASK_DLQ` handler adds its
+`DEAD_LETTERED` line.
+
+Look at the dead-letter queue. The `swarmq dlq` commands need
+`SWARMQ_BROKER_URL`, so set it in terminal 2 as well:
 
 ```bash
+export SWARMQ_BROKER_URL="amqp://guest:guest@localhost:5672/"
 swarmq dlq list --queue emails
 ```
 
 ```text
-TASK_ID                               TASK_NAME    RETRIES  ERROR_PREVIEW                 BODY_BYTES
-01HV....                              send_email   -        rejected recipient: ...       104
+TASK_ID                               TASK_NAME   RETRIES  ERROR_PREVIEW                            BODY_BYTES
+019a1c2e-5f3b-7d40-8a6e-2b9c4d1e0f7a  send_email  -        rejected recipient: spammy@nope.invalid  98
 ```
 
-`swarmq dlq inspect` shows the full headers (including
-`x-swarmq-traceback`) and the decoded body. Suppose you decide to
-retry — after deploying a fix that handles the invalid domain:
+`RETRIES` is `-` because the message never went through a retry. Your
+task ID and body size will differ. `swarmq dlq inspect <task_id> --queue
+emails` shows all headers and the decoded arguments. Listing is safe:
+the messages stay in the queue.
+
+Now fix the cause. Say the team decides that invalid addresses should be
+skipped, not rejected. Change the check in `run()`:
+
+```python title="tasks.py (excerpt)"
+        if to.endswith("@nope.invalid"):
+            log.warning("skipping invalid recipient %s", to)
+            return f"skipped {to}"
+```
+
+Restart the worker so it runs the new code, then replay the message
+with the task ID from `dlq list`:
 
 ```bash
-swarmq dlq retry 01HV....... --queue emails
+swarmq dlq retry 019a1c2e-5f3b-7d40-8a6e-2b9c4d1e0f7a --queue emails
 ```
 
-The worker picks it up immediately. This time the fix catches the
-`.invalid` suffix and the task completes.
+The worker picks the message up again, logs your `skipping invalid
+recipient` line and `task_succeeded`. A replay starts with a fresh retry
+budget.
 
-Alternatively, for the cases where you do not want to retry at
-all:
+Messages you do not want to keep can be deleted in one go:
 
 ```bash
 swarmq dlq purge --queue emails
 ```
 
-deletes every DLQ message in one call. Irreversible — use when you
-know the messages are not worth keeping.
+This cannot be undone. Unattended, dead-lettered messages expire after
+7 days (`SWARMQ_DEAD_LETTER_TTL_S`).
 
-### Cumulative state — end of Chapter 5
+### State at the end of chapter 5
 
-Your `tasks.py` now covers `NoRetry` for hard rejects, retries for
-transient failures, a rate limit for throughput discipline, and
-two signal handlers for observability. `worker.py` runs the worker
-in-process; `enqueue.py` and `burst.py` exercise the scheduler.
+```text
+swarmq-tutorial/
+├── burst.py
+├── docker-compose.yml
+├── enqueue.py
+├── reject.py
+└── tasks.py        # skips invalid recipients, retries the rest
+```
 
 ## Wrap-up
 
-You built a task queue that:
+Your worker now:
 
-- **Deduplicates the easy mistakes.** Add `unique_for=60` to
-  `TaskInfo` if you want the same `(to, subject)` call within 60 s
-  to collapse to one message.
-- **Bounds upstream contention.** `rate_limit="5/s"` is enforced
-  across every worker in the fleet.
-- **Recovers from transient failures.** `max_retries=3` with
-  exponential backoff, with the option to short-circuit via
-  `NoRetry` when the failure is permanent.
-- **Isolates poison messages.** DLQ routing via `NoRetry` or
-  exhaustion; recoverable with `swarmq dlq retry`.
-- **Surfaces what is happening.** Signal handlers turn task events
-  into log lines, metrics, or Slack notifications.
+- **Retries transient failures** with exponential backoff
+  (`max_retries`, `retry_backoff`) and stops early with `NoRetry` when a
+  failure is permanent.
+- **Respects an upstream quota.** `rate_limit="5/s"` holds across every
+  worker that shares the Valkey.
+- **Isolates messages it cannot process** in `emails.XQ`, where you
+  inspect, replay or purge them with `swarmq dlq`.
+- **Reports what happens** through signal handlers registered with
+  `--configure`.
 
-The same pattern scales from a single worker on your laptop to a
-multi-process deployment behind an autoscaler — see
-[`swarmq worker --autoscale`](../reference/cli.md#swarmq-worker).
+One more option to try: `unique_for=60` in `TaskInfo` deduplicates
+enqueues. While a task with the same arguments is still waiting or
+running (at most 60 seconds), a second `schedule()` returns the first
+task's ID instead of sending another email.
+
+The same setup grows from one worker on your laptop to many processes
+— see `--processes` and `--autoscale` in
+[`swarmq worker`](../reference/cli.md#swarmq-worker).
 
 ## Next steps
 
-- [Middleware](../guides/middleware.md) — when a signal handler is
-  not enough and you need per-task wrappers.
-- [Locking and deduplication](../guides/locking-and-dedup.md) —
-  serialise executions of the same key across the fleet.
+- [Signals](../guides/signals.md) — every signal and its arguments.
+- [Middleware](../guides/middleware.md) — when you need to wrap each
+  task, not just observe it.
+- [Scheduling and retries](../guides/scheduling-and-retries.md) —
+  `delay`/`eta`, crons and backoff details.
 - [Dead letter queues](../guides/dead-letter-queues.md) — the full
-  operator workflow for DLQ recovery.
-- [Architecture](../explanation/architecture.md) — what actually
-  runs behind `schedule()` and `run()`.
+  operator workflow, retention and alerting.
+- [Locking and deduplication](../guides/locking-and-dedup.md) —
+  `unique_for` and locks across workers.
+- [Architecture](../explanation/architecture.md) — what runs behind
+  `schedule()` and `run()`.

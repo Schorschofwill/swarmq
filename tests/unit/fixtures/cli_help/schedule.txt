@@ -7,7 +7,7 @@ removes static crons no worker has reported for scheduler_prune_after_s;
 
 positional arguments:
   SUBCOMMAND
-    list      List all schedules in [<namespace>:]sq:sched:defs.
+    list      List all schedules in [<namespace>:]sq:{sched}:defs.
     add       Create a new schedule (insert-if-absent).
     remove    Disable or permanently delete a schedule.
     status    Show current leader + next-N due schedules.

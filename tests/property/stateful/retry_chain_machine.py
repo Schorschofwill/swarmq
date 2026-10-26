@@ -665,7 +665,12 @@ class RetryChainMachine(AsyncStateMachine[ChainEnv]):
         elapsed = now - window_ts
         estimated = previous * (1.0 - elapsed / RATE_WINDOW_MS) + current
         if estimated >= RATE_MAX:
-            return False, window_ts, max(1, math.ceil(RATE_WINDOW_MS - elapsed))
+            # Bis die Schätzung wieder unter dem Limit liegt (DP-01).
+            if current < RATE_MAX:
+                wait = RATE_WINDOW_MS * (previous - (RATE_MAX - current)) // previous + 1 - elapsed
+            else:
+                wait = RATE_WINDOW_MS - elapsed + RATE_WINDOW_MS * (current - RATE_MAX) // current + 1
+            return False, window_ts, max(1, math.ceil(wait))
         return True, window_ts, 0
 
     def predict(self, pending: Pending, act: Act, *, copy_failure: bool) -> Expect:
@@ -717,7 +722,12 @@ class RetryChainMachine(AsyncStateMachine[ChainEnv]):
                     "retry_later",
                     "rate_limit",
                     copy_retry_count=rc,
-                    delay_ms=(retry_after, retry_after),
+                    # Jitter bis (Fenster / Limit) · 2^Zähler, höchstens ein
+                    # Fenster (DP-01).
+                    delay_ms=(
+                        retry_after,
+                        retry_after + int(min(RATE_WINDOW_MS, RATE_WINDOW_MS / RATE_MAX * 2 ** min(rl_count, 16))),
+                    ),
                     guard_after=claimed,  # Lease vor dem Publish freigegeben
                     rate_limit_count=rl_count,
                 )

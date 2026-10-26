@@ -125,7 +125,7 @@ Einstiegspunkt ist das `justfile`: `uv run just` listet die Rezepte (`unit`, `pr
 
 ```
 src/swarmq/<modul>.py          → tests/unit/test_<modul>.py
-src/swarmq/broker/rabbitmq.py  → tests/unit/broker/test_rabbitmq.py
+src/swarmq/worker/retry.py     → tests/unit/worker/test_retry.py
 docs/solutions/                — dokumentierte Lösungen zu vergangenen Problemen (Bugs, Best Practices, Async-Patterns), nach Kategorie organisiert mit YAML-Frontmatter (module, tags, problem_type)
 ```
 

@@ -1,8 +1,8 @@
 site_name: SwarmQ
-site_description: Async-first Python task queue on RabbitMQ and Valkey.
+site_description: Async-first Python task queue on RabbitMQ and Valkey – durable by default, fast where it counts.
 site_url: https://swarmq.readthedocs.io/
-repo_url: https://github.com/gstricker/swarmq
-repo_name: gstricker/swarmq
+repo_url: https://github.com/Schorschofwill/swarmq
+repo_name: Schorschofwill/swarmq
 copyright: © 2026 SwarmQ
 
 docs_dir: website
@@ -12,8 +12,8 @@ theme:
   name: material
   custom_dir: overrides
   language: en
-  logo: assets/logo.svg
-  favicon: assets/favicon.svg
+  logo: assets/brand/swarmq-icon-light.svg
+  favicon: assets/brand/swarmq-favicon.svg
   font:
     text: Inter
     code: JetBrains Mono
@@ -65,7 +65,7 @@ extra_css:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/gstricker/swarmq
+      link: https://github.com/Schorschofwill/swarmq
     - icon: fontawesome/brands/python
       link: https://pypi.org/project/swarmq/
   version:

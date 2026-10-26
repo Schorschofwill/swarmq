@@ -1,24 +1,21 @@
 # Getting Started
 
-From a fresh virtualenv to a running worker processing tasks in under
-five minutes. No entrypoint boilerplate, no config files required.
+From an empty directory to a worker that processes your first task in
+about five minutes. No entrypoint boilerplate, no config files.
 
 ## Prerequisites
 
-SwarmQ needs a RabbitMQ broker and a Valkey (or Redis) backend. The
-repository ships a `docker-compose.yml` that brings both up locally.
-
-- Python **3.14+**
-- RabbitMQ **4.2 or 4.3** (quorum queues) and Valkey **8** or later
-  ([Valkey requirements](reference/configuration.md#valkey-requirements))
-- Docker, or a running RabbitMQ + Valkey pair you control
-- A package manager — examples use [`uv`](https://docs.astral.sh/uv/)
+- Python **3.14** or newer
+- RabbitMQ **4.2 or 4.3** and Valkey **8** or newer — the next section
+  starts both with Docker
+- A package manager; the examples use [`uv`](https://docs.astral.sh/uv/)
 
 ## Install
 
 === "uv"
 
     ```bash
+    uv init hello-swarmq --python 3.14 && cd hello-swarmq
     uv add swarmq
     uv run swarmq --version
     ```
@@ -26,6 +23,7 @@ repository ships a `docker-compose.yml` that brings both up locally.
 === "pip"
 
     ```bash
+    python3.14 -m venv .venv && source .venv/bin/activate
     pip install swarmq
     swarmq --version
     ```
@@ -37,41 +35,74 @@ repository ships a `docker-compose.yml` that brings both up locally.
     poetry run swarmq --version
     ```
 
-!!! note
-    SwarmQ pulls `aio-pika`, `valkey`, and `msgpack` as direct
-    dependencies. The library is pure Python — no C extensions to
-    build.
+The commands below assume an active virtualenv. With uv, prefix them
+with `uv run` (`uv run swarmq worker ...`, `uv run python enqueue.py`).
 
-## Start the broker
+!!! note "Dependencies and extras"
+    SwarmQ is pure Python. It pulls `aio-pika`, `valkey`, `msgspec`,
+    `msgpack`, `structlog`, `croniter` and `tzdata`; all ship wheels for
+    Python 3.14, so nothing is compiled. Optional extras:
+    `swarmq[metrics]` (Prometheus `/metrics`), `swarmq[reload]`
+    (`swarmq worker --reload`), `swarmq[dishka]` (dependency injection)
+    and `swarmq[fast]` (`orjson` and `libvalkey`; `libvalkey` needs a
+    C toolchain).
 
-Bring up RabbitMQ and Valkey. The compose file in the repo includes
-healthchecks, so workers wait for both services to be ready.
+## Start RabbitMQ and Valkey { #start-the-broker }
+
+Save this as `docker-compose.yml`:
+
+```yaml title="docker-compose.yml"
+services:
+  rabbitmq:
+    image: rabbitmq:4.3-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  valkey:
+    image: valkey/valkey:8
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+```
 
 ```bash
 docker compose up -d
 docker compose ps
 ```
 
-You should see both containers reporting `healthy`. If you already run
-RabbitMQ and Valkey elsewhere, skip this step and adjust the URLs in
-the next sections.
+Wait until both containers report `healthy`.
+
+!!! tip "Using your own RabbitMQ and Valkey"
+    Skip this step and adjust the URLs below. Valkey must not evict
+    keys: run it with `maxmemory-policy noeviction` or without a
+    `maxmemory` limit, otherwise the worker refuses to start (exit
+    `78`). See [Valkey requirements](reference/configuration.md#valkey-requirements).
 
 ## Define your first task
 
-A task is a Python class that inherits from `Task` and declares its
-identity through a `TaskInfo` descriptor. The body lives in an
-`async def run(...)` method. Subclassing `Task` registers the class
-automatically — no decorator call needed.
+A task is a class that inherits from `Task`, describes itself in a
+`task_info = TaskInfo(...)` class attribute and does its work in
+`async def run(...)`. Subclassing registers the task; there is no
+decorator.
 
 ```python title="myapp/tasks.py"
-from swarmq.task import Task, TaskInfo
+from swarmq import Task, TaskInfo
 
 
 class Greet(Task):
-    # Identity, queue routing, and limits live here.
     task_info = TaskInfo(
-        name="greet",
-        queues=["default"],
+        name="greet",         # what clients call; not the class name
+        queues=["default"],   # the first queue is where it is published
         max_retries=2,
     )
 
@@ -80,39 +111,104 @@ class Greet(Task):
 ```
 
 !!! note
-    The `name` in `TaskInfo` is what the client and scheduler refer to
-    the task by — not the class name. Choose a stable, collision-free
-    string. Renaming it is a breaking change for any scheduled payloads
-    already in the queue.
+    Clients and the scheduler address the task by `name`. Pick a stable
+    string: renaming it breaks messages that are already queued under the
+    old name.
 
 ## Run a worker
 
-No entrypoint file, no `celery -A app worker`-style wrapper. Point the
-CLI at your task module and start consuming.
+Point the CLI at your task module. Run it from the project directory:
+the worker puts the working directory first on the import path
+(`--app-dir` names another one).
 
 ```bash
 export SWARMQ_BROKER_URL="amqp://guest:guest@localhost:5672/"
 export SWARMQ_BACKEND_URL="valkey://localhost:6379/0"
 
-swarmq worker --module myapp.tasks --queues default --concurrency 10
+swarmq worker --module myapp.tasks --queues default
 ```
 
-The worker imports `myapp.tasks`, registers every `Task` subclass it
-finds, connects to the broker and backend, and starts consuming.
+The worker imports `myapp.tasks`, registers every `Task` subclass in
+it, declares the queue `default`, and starts consuming with up to 10
+tasks in parallel (`--concurrency`). Leave it running.
 
 !!! tip
-    For JSON logs fit for Loki, Datadog, or CloudWatch, add
-    `--log-format json`. The process handles ++ctrl+c++ and `SIGTERM`
-    with a graceful drain — in-flight tasks finish before the process
-    exits.
+    `--log-format json` gives one JSON object per line for Loki, Datadog
+    or CloudWatch. ++ctrl+c++ and `SIGTERM` shut the worker down
+    gracefully: it stops taking new messages and lets running tasks
+    finish within `SWARMQ_SHUTDOWN_TIMEOUT` (default 30 s, the total
+    budget). `swarmq worker --check` validates module and settings
+    without connecting.
 
-!!! note
-    `swarmq worker` sets up logging for its own processes. An app that
-    embeds `SwarmQ(...)` does not get any logging configuration from
-    SwarmQ — configure it yourself. A bare
-    `logging.basicConfig(level=logging.INFO)` shows only the event
-    names (`INFO:swarmq.task:task_succeeded`); to see the fields
-    (`task_id`, `duration_ms`, …) use SwarmQ's formatter:
+## Enqueue from your app
+
+In a second terminal, build a `SwarmQ` app from a broker and a backend,
+enter it with `async with`, and call `run()`. It enqueues the task by
+name and waits for the result.
+
+```python title="enqueue.py"
+import asyncio
+
+from swarmq import RabbitMQBroker, SwarmQ, ValkeyBackend
+
+import myapp.tasks  # noqa: F401  (registers "greet" in this process too)
+
+
+async def main() -> None:
+    broker = RabbitMQBroker("amqp://guest:guest@localhost:5672/")
+    backend = ValkeyBackend("valkey://localhost:6379/0")
+
+    async with SwarmQ(broker, backend) as app:
+        result = await app.run("greet", who="world", timeout=10)
+        print(result)
+
+
+asyncio.run(main())
+```
+
+```bash
+python enqueue.py
+```
+
+The client looks the task up in its own registry to find the queue, so
+it imports the task module as well; without it `run()` raises
+`TaskNotFoundError`. The `async with` block opens and closes the broker
+connections and the Valkey pool — without it nothing is connected.
+
+### Enqueue now, collect later
+
+To not wait, split `run()` into `schedule()` and `get_result()`.
+`schedule()` returns the task ID, which you can store and resolve later,
+from any process:
+
+```python
+async with SwarmQ(broker, backend) as app:
+    task_id = await app.schedule("greet", who="world")
+    # ... other work, or hand task_id to another process ...
+    result = await app.get_result(task_id, timeout=30)
+```
+
+`get_result()` raises `ResultNotReadyError` when the timeout passes
+first, and `TaskError` when the task failed.
+
+## Check the round trip
+
+- The client prints `hello, world`.
+- The worker logs a `task_succeeded` line for `greet` with its `task_id`
+  and `duration_ms`.
+
+If it does not work:
+
+- `UnroutableMessage` in the client: the queue does not exist yet.
+  Workers declare their queues, so start the worker first.
+- The client waits until its timeout: the worker does not consume
+  `default`, or the two processes use different broker or backend URLs.
+
+!!! note "Logging in your own process"
+    `swarmq worker` configures logging for its processes. A process that
+    embeds `SwarmQ(...)`, like `enqueue.py`, gets no logging setup from
+    SwarmQ; configure it yourself. To see SwarmQ's event fields
+    (`task_id`, `duration_ms`, …) there, use its formatter:
 
     ```python
     import logging
@@ -124,87 +220,24 @@ finds, connects to the broker and backend, and starts consuming.
     logging.basicConfig(level=logging.INFO, handlers=[handler])
     ```
 
-    If slow handlers must not block the event loop, pass
-    `log_queue=True` to `SwarmQ(...)` (see the
-    [opt-in log queue](reference/logging.md#opt-in-log-queue)). The
-    [Logging reference](reference/logging.md) has recipes for JSON and
-    structlog setups.
-
-## Enqueue from your app
-
-On the client side, build a `SwarmQ` app from broker and backend
-instances, enter its async context, and call `run()` — which enqueues
-the task by name and waits for the result in one step.
-
-```python title="enqueue.py"
-import asyncio
-
-from swarmq import SwarmQ
-from swarmq.broker.rabbitmq import RabbitMQBroker
-from swarmq.backend.valkey import ValkeyBackend
-
-# Importing the task module triggers class registration on the client
-# side as well, so the registry knows the task name.
-import myapp.tasks  # noqa: F401
-
-
-async def main() -> None:
-    broker = RabbitMQBroker("amqp://guest:guest@localhost:5672/")
-    backend = ValkeyBackend("valkey://localhost:6379/0")
-
-    async with SwarmQ(broker, backend) as app:
-        result = await app.run("greet", who="world", timeout=10)
-        print(result)  # "hello, world"
-
-
-asyncio.run(main())
-```
-
-!!! warning
-    The `async with` block manages both the broker connection and the
-    Valkey pool. Forgetting it leaks AMQP channels and keeps Valkey
-    connections open until garbage collection.
-
-### Fire-and-return-later
-
-When you don't want to wait, split `run` into `schedule` + `get_result`.
-`schedule` returns a `task_id` you can persist and pick up later.
-
-```python
-async with SwarmQ(broker, backend) as app:
-    task_id = await app.schedule("greet", who="world")
-    # ... do other work, or hand task_id to another process ...
-    result = await app.get_result(task_id, timeout=30)
-```
-
-## Verify the round-trip
-
-With the worker running in one terminal and the enqueue script in
-another, you should see:
-
-- The client prints `hello, world`.
-- The worker log shows a `task_succeeded` line for the `greet` task,
-  with its `task_id` and `duration_ms`.
-
-If nothing happens, check that the worker's `--queues` list contains
-`default` and that both processes point at the same broker and backend
-URLs.
+    The [Logging reference](reference/logging.md) covers JSON, structlog
+    and the [opt-in log queue](reference/logging.md#opt-in-log-queue).
 
 ## Next steps
 
-You now have a worker consuming tasks end-to-end. From here, the guides
-cover the concepts you'll reach for in any non-trivial project.
+| Topic | When you need it |
+|---|---|
+| [Defining tasks](guides/defining-tasks.md) | Queue routing, arguments, timeouts, reserved parameter names |
+| [Scheduling and retries](guides/scheduling-and-retries.md) | `delay`/`eta`, crons, retry backoff |
+| [Dead letter queues](guides/dead-letter-queues.md) | Failed messages: inspect, retry, purge |
+| [Rate limiting](guides/rate-limiting.md) | Third-party quotas, self-protection |
+| [Locking and deduplication](guides/locking-and-dedup.md) | One run at a time, no duplicate enqueues |
+| [Signals](guides/signals.md) and [Middleware](guides/middleware.md) | Metrics, tracing, audit trails |
+| [Workflows](guides/workflows.md) | Chains, groups and chords of tasks |
+| [Testing tasks](guides/testing-tasks.md) | Unit tests without a broker |
+| [Deployment](guides/deployment.md) | Rollout, shutdown, production settings |
 
-| Topic | When you need it | Link |
-|---|---|---|
-| **Defining tasks** | Queue routing, retries, timeouts, rate limits | [Guide](guides/defining-tasks.md) |
-| **Middleware** | Cross-cutting concerns: logging, tracing, auth | [Guide](guides/middleware.md) |
-| **Rate limiting** | Third-party API quotas, self-protection | [Guide](guides/rate-limiting.md) |
-| **Retries & DLQ** | Transient failures, poison-message isolation | [Guide](guides/dead-letter-queues.md) |
-| **Signals** | Lifecycle hooks, metrics, audit trails | [Guide](guides/signals.md) |
-| **Testing tasks** | Unit tests without a broker | [Guide](guides/testing-tasks.md) |
-
-Looking for a longer, guided walkthrough? The
-[first-email-worker tutorial](tutorials/first-email-worker.md) builds
-the same round-trip and then extends it with retries, a middleware,
-and a signal handler.
+For a guided walkthrough, the
+[first email worker tutorial](tutorials/first-email-worker.md) builds
+the same round trip and adds retries, a rate limit, signal handlers and
+dead-letter recovery.

@@ -11,8 +11,8 @@ only-include = ["src"]
 
 [project]
 name = "swarmq"
-version = "0.14.4"
-description = "Async task manager for Python 3.14+ using RabbitMQ and Valkey"
+version = "0.15.0rc1"
+description = "Async-first task queue for Python 3.14+ on RabbitMQ and Valkey"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -131,6 +131,12 @@ default-groups = ["lint", "typing", "tasks"]
 [project.scripts]
 swarmq = "swarmq.cli:console_main"
 
+[project.urls]
+Homepage = "https://github.com/Schorschofwill/swarmq"
+Documentation = "https://swarmq.readthedocs.io/"
+Repository = "https://github.com/Schorschofwill/swarmq"
+Changelog = "https://swarmq.readthedocs.io/en/latest/reference/changelog/"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/swarmq"]
 
@@ -169,11 +175,11 @@ markers = [
     "integration: integration tests",
     "e2e: end-to-end tests",
     "slow: slow-running tests",
-    "chaos: chaos-engineering tests (docker + toxiproxy, opt-in, nightly)",
-    "stress: high-parallelism stress tests (opt-in, nightly)",
-    "soak: long-running soak tests (opt-in, weekly)",
-    "property: hypothesis property-based tests (opt-in, nightly thorough)",
-    "fuzz: byte/json fuzzing tests (opt-in, nightly)",
+    "chaos: chaos-engineering tests (docker + toxiproxy, opt-in, local before releases)",
+    "stress: high-parallelism stress tests (opt-in, manual pipeline job)",
+    "soak: long-running soak tests (opt-in, manual pipeline job)",
+    "property: hypothesis property-based tests (opt-in, every push in the unit-tests job)",
+    "fuzz: byte/json fuzzing tests (opt-in, every push in the unit-tests job; external publish fuzz needs the chaos stack)",
     "mutation: marker for mutmut configuration (not invoked directly)",
     "entscheidung(id): schreibt eine Entscheidung aus compound-packs/swarmq-entscheidungen/ fest (ID E-nnn)",
     "befund(id): Nachweis eines Befunds aus docs/befunde/ (offen mit xfail strict=True; nach dem Fix ohne xfail als Rückverweis)",

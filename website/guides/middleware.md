@@ -1,9 +1,9 @@
 # Middleware
 
-Wrap every task lifecycle event — enqueue, execute, error, retry —
-with your own logic. Middleware is the right place for logging,
-tracing, metrics, correlation IDs, and any other concern you want to
-apply uniformly across tasks.
+Wrap every task lifecycle event (enqueue, execute, error, retry) with
+your own logic. Middleware is the right place for logging, tracing,
+metrics, correlation IDs and any other concern you want to apply
+uniformly across tasks.
 
 ## When to use middleware
 
@@ -22,18 +22,31 @@ every task.
 
 ## The six hooks
 
-| Hook | Where it runs | Called | Exception behaviour |
+| Hook | Runs in | Called | If it raises |
 |---|---|---|---|
-| `pre_enqueue` | Client | Before `broker.publish`, or before a `delay`/`eta` task is stored | Propagates — aborts the enqueue |
-| `post_enqueue` | Client | After the broker confirms, or after a `delay`/`eta` task is stored | Swallowed — logged at ERROR |
-| `pre_execute` | Worker | After delivery, before `Task.run()` | Swallowed — logged at ERROR |
-| `post_execute` | Worker | After `run()` succeeds | Swallowed — logged at ERROR |
-| `on_error` | Worker | When `run()` raises | Swallowed — logged at ERROR |
-| `on_retry` | Worker | When a retry is scheduled | Swallowed — logged at ERROR |
+| `pre_enqueue` | Enqueuing process | Before the publish, or before a `delay`/`eta` task is stored | Propagates and aborts the enqueue |
+| `post_enqueue` | Enqueuing process | After the broker confirmed the publish, or after a `delay`/`eta` task was stored | Logged, chain continues |
+| `pre_execute` | Worker | After the worker's checks (rate limit, lock, …), before `pre_execution()` and `run()` | Logged, chain continues |
+| `post_execute` | Worker | After `run()` and `post_execution()` succeeded | Logged, chain continues |
+| `on_error` | Worker | After every failed attempt: `run()`, `pre_execution()` or `post_execution()` raised, or a soft or hard timeout | Logged, chain continues |
+| `on_retry` | Worker | When a retry is decided, before the retry copy is published | Logged, chain continues |
 
-Only `pre_enqueue` can veto the operation. Every other hook is
-observational: it can record, log, or augment state, but raising
-there will not change the task's path.
+Only `pre_enqueue` can veto. Every other hook only observes: an
+exception there is logged as `middleware_hook_failed` (ERROR, logger
+`swarmq.middleware`, with `hook`, `middleware` and the traceback), the
+remaining middleware still run, and the task's path does not change.
+
+Worker hooks run only for a delivery that reaches execution. A message
+that is deferred (rate limit, lock conflict, unknown task), expires
+through `max_age`, is cancelled before it starts or is rejected sees no
+worker hook. `on_retry` gets `retry_count` (the number of the upcoming
+retry, also set as `message["retry_count"]`) and `delay` in seconds.
+
+For an immediate `schedule()` with `unique_for`, the dedup flag is
+claimed before `pre_enqueue`: a duplicate returns the existing task ID
+without running any enqueue hook. `schedule_many()` runs `pre_enqueue`
+for every element before the first publish; one veto aborts the whole
+batch.
 
 ### Deferred tasks (`delay`/`eta`)
 
@@ -49,20 +62,25 @@ Unlike an immediate `schedule()`, a deferred call that turns out to be
 a duplicate (`unique_for`) has already passed `pre_enqueue`: the
 middleware sees `pre_enqueue` without a following `post_enqueue`. Do
 not rely on `post_enqueue` alone to clean up state you keep per call.
+The dedup hash is taken from the arguments before the middleware, so a
+`kwargs` value the middleware adds on every call does not defeat dedup.
 
 ### Workflow steps
 
-`pre_enqueue` and `post_enqueue` also run for every workflow step —
+`pre_enqueue` and `post_enqueue` also run for every workflow step:
 from `app.apply()` for the initial front and from the advancer inside
 the worker for every following step. The context of such a step has
 `delivery_mode="at_least_once"` regardless of the task's declaration
 and two extra keys, `workflow_id` and `step_path`, that ordinary
 `schedule()` calls do not carry. `pre_enqueue` runs for all steps of a
-front before the first one is published; if it raises, no step of that
-front is published, the workflow is marked failed with the exception's
-class name and the triggering message is acked.
+front before the first one is published. If it raises in `apply()`,
+the exception reaches the caller and nothing is stored or published. If
+it raises in the worker, no step of that front is published, the
+workflow is marked `failed` with the exception's type and message
+(`get()` raises `TaskError`) and the triggering message is acked
+([failure modes](workflows.md#failure-modes)).
 
-A `pre_enqueue` that assumes client-side context (a request id, an
+A `pre_enqueue` that assumes client-side context (a request ID, an
 auth token) therefore has to tolerate its absence, or check
 `message.get("workflow_id")` and skip the enforcement for workflow
 steps.
@@ -143,8 +161,8 @@ for the full field list.
 
 ## Registering middleware
 
-Call `app.add_middleware(instance)`. Order matters — the chain runs
-forward on `pre_*` hooks and in reverse on `post_*`, `on_error`,
+Call `app.add_middleware(instance)`. Order matters: the chain runs
+forward on `pre_*` hooks and in reverse on `post_*`, `on_error` and
 `on_retry` (classic "around" semantics).
 
 ```python
@@ -154,7 +172,7 @@ app.add_middleware(TimingMiddleware())
 app.add_middleware(AuthContextMiddleware())  # innermost
 ```
 
-Registration is safe at any time — before or after `start_worker()`
+Registration is safe at any time, before or after `start_worker()`
 and before or after `schedule()`. The chain is resolved per
 operation, so newly added middleware is visible from the next call.
 
@@ -165,7 +183,7 @@ worker's app. Workflow follow-up steps are published by the advancer
 in the worker, so their `pre_enqueue` and `post_enqueue` run on the
 worker's app too. `swarmq worker` builds its own app, so middleware
 added to a module-level `app` in `myapp/tasks.py` never runs in the
-worker. Add it in a `--configure` hook — this includes enqueue
+worker. Add it in a `--configure` hook; this includes enqueue
 middleware that must see every workflow step:
 
 ```python title="myapp/hooks.py"
@@ -198,12 +216,14 @@ flowchart LR
     B2 --> A2[A.post_execute]
 ```
 
-On error, the forward chain still runs (`pre_execute` each), `run`
-raises, then `on_error` runs in reverse for every middleware.
+On error, the forward chain still runs (`pre_execute` each), the
+attempt fails, then `on_error` runs in reverse for every middleware,
+followed by `on_retry` in reverse if a retry is decided.
 
-A cancel (`app.cancel()`) is not an error: after `pre_execute`,
-neither `on_error` nor `post_execute` runs; only the `TASK_CANCELLED`
-signal fires.
+A cancel (`app.cancel()`) is not an error. A task cancelled while it
+runs gets `pre_execute` but neither `on_error` nor `post_execute`; a
+task cancelled before it starts gets no worker hook at all. In both
+cases only the `TASK_CANCELLED` signal fires.
 
 ## Sharing state between hooks
 
@@ -213,17 +233,17 @@ Three idioms, in order of preference:
    example above. Clean up on `post_execute` and `on_error`, and on
    the `TASK_CANCELLED` signal for cancelled tasks (see the hook under
    [registering middleware](#registering-middleware)); otherwise every
-   cancelled task leaves an entry behind. Works because middleware is
-   singleton per `SwarmQ` app.
+   cancelled task leaves an entry behind. This works because each
+   middleware instance is shared by all tasks of its `SwarmQ` app.
 2. **Context vars.** Use `contextvars.ContextVar` for values that
    should propagate across `await` boundaries into the task body
-   itself — OpenTelemetry trace IDs, request IDs.
+   itself, such as OpenTelemetry trace IDs or request IDs.
 3. **A subclass of `Middleware`** that owns its own state and does
    not expose it externally.
 
-Avoid stashing mutable state on the `MessageContext` dict — it is
-typed as a specific shape and adding ad-hoc keys will silently drift
-from the contract.
+Avoid stashing mutable state on the `MessageContext` dict: it is
+typed as a specific shape, and ad-hoc keys silently drift from the
+contract.
 
 ## Changing task arguments in `pre_execute`
 
@@ -244,6 +264,12 @@ reference. The change lives only in the current attempt. A retry
 delivers the original message body again and `pre_execute` runs again,
 so the hook must make the same change on every attempt.
 
+In `pre_enqueue` the same rule applies to `message["kwargs"]` of a
+`schedule()` or `schedule_many()` call: an in-place change is published
+with the task (with `delay`/`eta` it is stored and published at fire
+time; `schedule_many()` before 0.15 published the unchanged `kwargs`). A change to
+`message["args"]` does not reach the message.
+
 ## What middleware should **not** do
 
 - **Reassign `message["args"]` or `message["kwargs"]` in
@@ -253,11 +279,11 @@ so the hook must make the same change on every attempt.
 - **Emit new messages via `broker.publish`.** Use `app.schedule()`
   instead so the middleware stack and signals fire correctly.
 - **Sleep or block on slow I/O inside `pre_execute`.** Every
-  `pre_execute` hook runs on the hot path before `run()` starts.
-  Keep it microseconds-fast.
-- **Catch and swallow task exceptions.** Let them propagate. The
-  worker decides retry-vs-DLQ based on the exception class and the
-  retry budget — suppressing the exception breaks that contract.
+  `pre_execute` hook runs on the hot path before `run()` starts and
+  holds a concurrency slot. Keep it fast.
+- **Expect to change the outcome from `on_error`.** The exception has
+  already been recorded; the worker decides retry or DLQ from the
+  exception class and the retry budget, whatever the hook does.
 
 ## Verify
 
@@ -276,8 +302,8 @@ hook adds the middleware. Middleware added to a module-level `app` in
 
 ## See also
 
-- [`Middleware` API](../reference/api.md#class-middleware) — full
+- [`Middleware` API](../reference/api.md#class-middleware): full
   hook list and signatures
-- [Signals](signals.md) — for per-event handlers that do not need to
-  wrap every task
-- [Defining tasks](defining-tasks.md) — where `TaskInfo` options sit
+- [Signals](signals.md): per-event handlers that do not need to wrap
+  every task
+- [Defining tasks](defining-tasks.md): where `TaskInfo` options sit

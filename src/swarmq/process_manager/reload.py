@@ -145,9 +145,10 @@ def reexec(pm: Any, retcode: int) -> int:
             alive_count=len(alive),
             alive_pids=[w.process.pid for w in alive],
             hint=(
-                "re-send SIGHUP once all workers have exited; "
-                "a D-state process (uninterruptible kernel wait) "
-                "may require host-level intervention"
+                "the supervisor exits without reloading; restart it "
+                "once all workers have exited; a D-state process "
+                "(uninterruptible kernel wait) may require host-level "
+                "intervention"
             ),
         )
         # Return 0 (clean exit): systemd / k8s must NOT restart us —

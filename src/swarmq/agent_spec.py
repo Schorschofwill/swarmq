@@ -73,7 +73,8 @@ def _spec_version() -> str:
 #
 # Fields: origin is library or task_code, when lists lifecycle stages,
 # retriable is yes, no, controlled or n/a, dlq_on_uncaught is yes, no or n/a,
-# exit_code_on_cli is an int or None, transport_field is a str or None.
+# exit_code_on_cli is an int or None, transport_field is a str or None;
+# optional exit_code_by_command maps commands to codes where they differ.
 _ERROR_SEMANTICS: dict[str, dict[str, Any]] = {
     "SwarmQError": {
         "origin": "library",
@@ -85,12 +86,22 @@ _ERROR_SEMANTICS: dict[str, dict[str, Any]] = {
     },
     "ConfigurationError": {
         # `swarmq worker` endet mit EX_CONFIG (78); schedule/dlq/inspect mit 1
-        # (siehe CLI-Exit-Codes).
+        # (siehe CLI-Exit-Codes). ``exit_code_on_cli`` bleibt der Code des
+        # Worker-Starts, die Zuordnung je Befehl steht daneben (DP-07).
         "origin": "library",
         "when": ["startup", "cli"],
         "retriable": "no",
         "dlq_on_uncaught": "n/a",
         "exit_code_on_cli": CONFIG_ERROR_EXIT_CODE,
+        "exit_code_by_command": {
+            "swarmq worker": CONFIG_ERROR_EXIT_CODE,
+            "swarmq check": CONFIG_ERROR_EXIT_CODE,
+            "swarmq worker --check": 1,
+            "swarmq schedule": 1,
+            "swarmq dlq": 1,
+            "swarmq inspect": 1,
+            "invalid SWARMQ_NAMESPACE (any command)": CONFIG_ERROR_EXIT_CODE,
+        },
         "transport_field": "stderr line",
     },
     "QueueArgumentsMismatch": {
@@ -499,7 +510,8 @@ def _arg_type(action: argparse.Action) -> str:
         return "bool"
     if isinstance(action, argparse._VersionAction):
         return "version"
-    if action.type is None:
+    if action.type is None or action.type is str.upper:
+        # ``str.upper`` normalisiert nur die Schreibung (``--log-level``, E-086).
         return "str"
     # Custom validators surface their intent (e.g. _positive_int → positive_int).
     return getattr(action.type, "__name__", str(action.type)).lstrip("_")

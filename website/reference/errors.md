@@ -1,8 +1,9 @@
 # Error catalog
 
-Every exception SwarmQ raises descends from `SwarmQError`. The table
-below gives the catch-all; the sections after it are the per-class
-entries with **When raised**, **Cause**, and **Recovery**.
+Every exception SwarmQ raises descends from `SwarmQError`, with two
+documented exceptions [outside the hierarchy](#outside-the-hierarchy-forksourcerejected).
+The table below is the overview; the sections after it describe each
+class with **When raised**, **Cause** and **Recovery**.
 
 ```python
 from swarmq import SwarmQError
@@ -28,17 +29,17 @@ except SwarmQError as exc:
 | `MessageHeadersTooLarge` | `BrokerConnectionError` | Message headers do not fit into half of `frame_max`, even with long texts truncated; nothing was sent |
 | `UnroutableMessage` | `BrokerConnectionError` | The broker returned a publish: no queue with this name exists; nothing was delivered |
 | `BrokerPublishBlocked` | `BrokerConnectionError` | The broker blocked the publish connection (resource alarm) for the whole publish deadline; nothing was sent |
-| `PublishRejected` | `BrokerConnectionError` | The broker rejected the publish to this queue in every attempt (negative publisher confirm); the connection is healthy |
+| `PublishRejected` | `BrokerConnectionError` | The broker rejected the publish to this queue (negative publisher confirm on the last of 5 attempts); the connection is healthy |
 | `BackendConnectionError` | `SwarmQError` | Cannot reach Valkey |
 | `BackendResponseError` | `BackendConnectionError` | Valkey answered an operation with an error (`WRONGTYPE`, script error) |
-| `TaskNotFoundError` | `SwarmQError` | `schedule()` called with an unknown task name |
+| `TaskNotFoundError` | `SwarmQError` | `schedule()`, `schedule_many()` or `run()` with a task name the app does not register; also the error type of a DLQ copy for a task no worker knows |
 | `LockWaitExceeded` | `SwarmQError` | Never raised: error type of a DLQ copy whose wait for a task lock ended (stalled holder or `SWARMQ_LOCK_WAIT_MAX_S`) |
 | `RedeliveryLimitError` | `SwarmQError` | Never raised: error type of a DLQ copy whose deliveries were handed back until the delivery limit |
-| `TaskError` | `SwarmQError` | The task body raised; propagated to `get_result()` |
+| `TaskError` | `SwarmQError` | The task ended with an error result; raised by `get_result()`, `run()` and a failed workflow's `handle.get()` |
 | `TaskCancelledError` | `TaskError` | `get_result()` or `app.run()` on a task cancelled with `app.cancel(task_id)`; the task itself sees `asyncio.CancelledError` |
-| `ResultNotReadyError` | `SwarmQError` | `get_result()` timed out before a result landed |
+| `ResultNotReadyError` | `SwarmQError` | `get_result()`, `get_results()`, `run()` or `handle.get()` timed out before a result landed |
 | `ResultExpiredError` | `SwarmQError` | Currently never raised (reserved); an expired result raises `ResultNotReadyError` |
-| `ResultSerializationError` | `SwarmQError` | Result cannot be msgpack-serialised |
+| `ResultSerializationError` | `SwarmQError` | Arguments cannot be JSON-encoded, or a stored result cannot be decoded |
 | `Retry` | `SwarmQError` | Control flow — raised by task code to request a retry |
 | `NoRetry` | `SwarmQError` | Control flow — raised by task code to bypass retries |
 | `SoftTimeoutError` | `SwarmQError` | Task exceeded `soft_timeout`; `run()` was cancelled (the task sees `CancelledError`) |
@@ -77,8 +78,12 @@ the library or the CLI parser detects a misconfigured input.
 - `--args` / `--kwargs` for `swarmq schedule add` not valid JSON.
 
 **Recovery.** Fix the config and restart. The error message names
-the offending field. `swarmq worker` logs one structured
-`worker_config_error` line and exits `78`:
+the offending field. `swarmq worker` makes one attempt, logs one
+structured `worker_config_error` line and exits `78` (`EX_CONFIG`); the
+supervisor does not restart it. An `ImportError` or `SyntaxError` while
+importing the task module ends the same way; other import errors and
+connection errors to the broker or backend exit `1`
+(E-057):
 
 ```text
 [error    ] worker_config_error            [swarmq.cli] error='ConfigurationError: SWARMQ_BROKER_URL and SWARMQ_BACKEND_URL must both be set' error_type=ConfigurationError hint='fix the configuration and start again; no restart attempted' source=supervisor
@@ -253,12 +258,25 @@ example a full disk), `BUSY` (a long-running script) and `NOREPLICAS`
 
 ## `TaskNotFoundError`
 
-**When raised.** `app.schedule("name", ...)` with a name no
-registered `Task` subclass declared in its `TaskInfo`.
+**When raised.** By `app.schedule()`, `app.schedule_many()` and
+`app.run()` when no `Task` subclass imported into the producer process
+declares that name in its `TaskInfo`. Nothing is sent. A bare `Client`
+without a registry does not raise; it sends the message and logs the
+WARNING `client_task_defaults_unresolved` once per task name, because
+it cannot apply the task's defaults (dedup, priority). `swarmq schedule
+add` does not validate the name either.
+
+On the worker the name appears as the error type of a DLQ copy: a
+worker that does not register the task defers the message with backoff
+for up to `SWARMQ_UNKNOWN_TASK_GRACE_S` (default 900 s, `0` turns the
+grace period off), so a rolling deploy does not lose new tasks. Only
+then does it dead-letter the message with `error_type=TaskNotFoundError`
+and log `task_not_found`.
 
 **Cause.** Typo, task module not imported, task not subclassed from
 `swarmq.Task`, or the module imported but the class inside it not
-evaluated (e.g. behind a conditional).
+evaluated (e.g. behind a conditional). On the worker side also a
+producer that was deployed before the workers that know the task.
 
 **Recovery.**
 
@@ -267,17 +285,22 @@ swarmq inspect --module myapp.tasks
 ```
 
 lists every registered task. If your task is missing, its module is
-not being imported when the worker loads, or the class is guarded by
-a `if TYPE_CHECKING:` block.
+not being imported, or the class is guarded by an `if TYPE_CHECKING:`
+block. Deploy workers before producers; a message that reached the DLQ
+this way can be replayed with `swarmq dlq retry` once a worker knows
+the task.
 
 ## `TaskError`
 
-**When raised.** `await app.get_result(task_id)` when the task body
-raised an uncaught exception and exhausted (or was never going to
-use) its retry budget.
+**When raised.** By `get_result()`, `get_results()` and `app.run()`
+when the stored result is an error result: the task body raised and
+its retry budget is used up (or it was never retried), or the worker
+ended the task itself (hard timeout, expiry, lost compute child, a
+result it could not serialize). A workflow handle's `get()` raises it
+when the workflow failed.
 
 **Cause.** Any exception your `run()` method let escape. The original
-exception class is lost across the wire; the error message contains
+exception object does not cross the wire; the error message contains
 the string the worker stored (`""` for an exception without text).
 `error_class` names the class (advisory): `module.qualname`, e.g.
 `builtins.ValueError`; in CPU mode the class reported by the compute
@@ -303,7 +326,9 @@ transient class is retried instead of DLQ'd.
 
 **When raised.** On the client: `get_result()` and `app.run()` raise
 it when the stored result carries the cancel flag, and a workflow
-handle raises it for a cancelled workflow. Never inside the task body:
+handle raises it for a cancelled workflow. Subclass of `TaskError`;
+the attribute `task_id` names the task (for a workflow: the workflow
+id). Never inside the task body:
 the worker cancels the running `run()` coroutine, so the task sees
 `asyncio.CancelledError`. Clean up in `finally`, or catch
 `asyncio.CancelledError`, clean up and re-raise it. In CPU mode the
@@ -329,8 +354,10 @@ except TaskCancelledError:
 
 ## `ResultNotReadyError`
 
-**When raised.** `get_result(task_id, timeout=T)` after T seconds
-with no result in Valkey.
+**When raised.** `get_result(task_id, timeout=T)` and `app.run(...,
+timeout=T)` after T seconds with no result in Valkey (`timeout=0` reads
+once). `get_results()` raises it with the ids still missing, a workflow
+handle's `get(timeout=T)` when the workflow has not finished in time.
 
 **Cause.** The task is still running, the worker died, the task was
 DLQ'd without storing a result, the result expired after its
@@ -362,15 +389,26 @@ effect.
 
 ## `ResultSerializationError`
 
-**When raised.** Worker stored-result phase — the return value of
-`run()` is not msgpack-compatible.
+**When raised.** On the producer by `schedule()` when the arguments
+cannot be JSON-encoded; nothing is sent. On the client by
+`get_result()` when a stored result cannot be decoded, for example a
+result written by a newer SwarmQ version with a type this version does
+not know.
 
-**Cause.** You returned a class that msgpack does not know how to
-encode. Common offenders: live file handles, SQLAlchemy ORM objects,
+A return value of `run()` that msgpack cannot encode does **not** raise
+it at the caller: the worker logs `result_serialization_failed`, stores
+an error result instead and acks the message (no retry). `get_result()`
+then raises `TaskError` with
+`error_class == "swarmq.exceptions.ResultSerializationError"`.
+
+**Cause.** An argument or return value of a type the encoders do not
+know. Common offenders: live file handles, SQLAlchemy ORM objects,
 `asyncio.Task` instances, custom classes without a conversion hook.
 
-**Recovery.** Convert to a plain `dict`, `list`, `str`, `int`,
-`float`, `bool`, `bytes`, or combinations thereof before returning.
+**Recovery.** Convert to plain `dict`, `list`, `str`, `int`, `float`,
+`bool`, `None` or combinations thereof. Results additionally support
+`bytes`, `datetime`, `date`, `time`, `Decimal`, `UUID`, `set` and
+`frozenset`.
 
 ```python
 class FetchUser(Task):
@@ -409,8 +447,11 @@ class SendEmail(Task):
 If `delay` is `None`, the worker applies the configured backoff
 strategy (`retry_backoff`, `retry_base_delay`). A negative `delay` is
 treated as 0 (retry immediately) and still counts against
-`max_retries`; `inf` and `nan` raise `ValueError` when `Retry` is
-created.
+`max_retries`. `inf`, `nan` and values above 315 360 000 s (ten years)
+raise `ValueError` when `Retry` is created; raised from a task, that
+`ValueError` is an ordinary task error and follows `retry_exceptions`
+and the backoff
+(E-060).
 
 `Retry` retries even when the task sets `retry_exceptions` without
 listing it. It counts against `max_retries`: when the budget is used
@@ -425,7 +466,9 @@ go straight to the DLQ.
 **Cause.** Not an error. Raise it when the failure is permanent and
 retrying would waste the budget.
 
-**Recovery.** As with `Retry`, this is the intended usage:
+**Recovery.** As with `Retry`, this is the intended usage. The text
+passed to `NoRetry` is kept in its `reason` attribute and becomes the
+error message:
 
 ```python
 from swarmq import NoRetry
@@ -442,8 +485,8 @@ class ChargeCard(Task):
 ```
 
 The task lands in `{queue}.XQ` immediately. Recover it with
-`swarmq dlq retry <task_id>` after you fix the input, or
-`swarmq dlq purge --queue payments` to clear the backlog.
+`swarmq dlq retry --queue payments <task_id>` after you fix the input,
+or clear the backlog with `swarmq dlq purge --queue payments`.
 
 ## `SoftTimeoutError`
 
@@ -681,9 +724,9 @@ unchecked, as before 0.12.
 ## `PublishRejected`
 
 **When raised.** By a publish (`send()`, `schedule()`, workflow steps,
-cron fires, worker copies) when RabbitMQ answers every one of the 5
-attempts with a negative publisher confirm (`basic.nack`). Subclass of
-`BrokerConnectionError`; the message text is the same as before 0.12
+cron fires, worker copies) when all 5 attempts failed and the last one
+was answered with a negative publisher confirm (`basic.nack`). Subclass
+of `BrokerConnectionError`; the message text is the same as before 0.12
 (`publish to '<queue>' failed after 5 attempts: …`).
 
 **Cause.** The queue refuses the message, not the connection: a full

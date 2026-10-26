@@ -76,6 +76,15 @@
       "dlq_on_uncaught": "n/a",
       "doc": null,
       "exception_class": "swarmq.exceptions.ConfigurationError",
+      "exit_code_by_command": {
+        "invalid SWARMQ_NAMESPACE (any command)": 78,
+        "swarmq check": 78,
+        "swarmq dlq": 1,
+        "swarmq inspect": 1,
+        "swarmq schedule": 1,
+        "swarmq worker": 78,
+        "swarmq worker --check": 1
+      },
       "exit_code_on_cli": 78,
       "init_params": [],
       "module": "swarmq.exceptions",

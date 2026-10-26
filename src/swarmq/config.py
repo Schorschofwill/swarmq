@@ -14,6 +14,7 @@ from swarmq.keyspace import validate_namespace
 from swarmq.logging_settings import (
     VALID_LOG_FORMATS,
     LoggingSettings,
+    parse_env_bool,
     parse_logger_levels,
     split_csv,
 )
@@ -148,7 +149,7 @@ def parse_env_value(kind: str, raw: str, env_name: str) -> object:
         # ``none`` schaltet eine Frist ab (Plan 2026-10-08-1541, KTD6).
         return None if raw.strip().lower() == "none" else _parse_float(raw, env_name)
     if kind == "bool":
-        return raw.lower() in ("true", "1", "yes")
+        return parse_env_bool(raw, env_name)
     if kind == "csv":
         return [q.strip() for q in raw.split(",") if q.strip()]
     if kind == "port":
@@ -352,7 +353,8 @@ class SwarmQConfig(ConfigValidation):
     burst_mode: bool = False
     burst_idle_timeout: float = 5.0
     # R4.3 Task Priorities. When True, every queue in ``queues`` gets
-    # auto-expanded to its high/.normal/.low triplet on declare + consume,
+    # auto-expanded to its .high/base/.low triplet (normal is the base
+    # queue itself) on declare + consume,
     # with weighted prefetch ratios (3:2:1) so high-priority work gets
     # proportionally more in-flight slots under saturation. Opt-in so
     # existing single-queue deployments stay on their one-queue topology.
@@ -464,7 +466,7 @@ class SwarmQConfig(ConfigValidation):
     #: Die Felder, die ``_apply_logging_settings`` aus ``logging_settings``
     #: setzt. ``log_queue`` gehoert nicht dazu: ``LoggingSettings`` kennt den
     #: eingebetteten Opt-in nicht, ``SWARMQ_LOG_QUEUE`` bleibt also die einzige
-    #: Quelle -- und als ``bool`` kann der Wert nicht ungueltig sein.
+    #: Quelle; einen ungültigen Wert lehnt ``parse_env_bool`` ab (E-086).
     _SETTINGS_FIELDS: ClassVar[frozenset[str]] = frozenset(
         {
             "log_level",

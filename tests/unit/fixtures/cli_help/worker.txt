@@ -40,8 +40,8 @@ options:
   --concurrency N       Maximum tasks executed in parallel (default: 10). With
                         --pool cpu this is the number of compute slots; the
                         default is then the number of CPUs assigned to the
-                        worker (affinity and cgroup quota), divided by
-                        --processes.
+                        worker (affinity and cgroup quota), divided by --max-
+                        processes if set, otherwise by --processes.
   --pool {io,cpu}       Execution pool (default: io). 'cpu' runs every task
                         body in a compute child forked from a pre-warmed
                         forkserver: the loop process never computes,

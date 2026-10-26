@@ -17,7 +17,9 @@
 -- Returns {allowed, remaining, retry_after_ms}
 --   allowed         0 | 1
 --   remaining       integer >= 0, estimated remaining requests in the window
---   retry_after_ms  integer, always 0 when allowed, >= 1 when rate-limited
+--   retry_after_ms  integer, always 0 when allowed, >= 1 when rate-limited:
+--                   time until the estimate drops below max_requests
+--                   (or, for max_requests == 0, until the next window)
 --
 -- Edge cases are explicit:
 --   window_size_ms <= 0  -> return {0, 0, 0} (division-by-zero guard)
@@ -46,8 +48,31 @@ local elapsed_ratio = (now_ms - window_start_ms) / window_size_ms
 local estimated_count = previous_count * (1.0 - elapsed_ratio) + current_count
 
 if estimated_count >= max_requests then
-    local remaining_window_ms = window_size_ms - (now_ms - window_start_ms)
-    local retry_after = math.max(1, math.ceil(remaining_window_ms))
+    -- retry_after: the earliest time the estimate drops below the limit
+    -- again, assuming no further admissions (DP-01). Waiting for the end
+    -- of the fixed window instead returns every rejected caller at the
+    -- boundary, where the previous window still counts in full, and
+    -- halves the throughput under a backlog.
+    -- The boundaries are computed in integers: with floats, 1 - 55/100
+    -- is 0.44999..., and an exact boundary would land on the moment the
+    -- estimate equals the limit (still rejected).
+    local elapsed_ms = now_ms - window_start_ms
+    local wait_ms
+    if max_requests <= 0 then
+        -- Never any headroom: check again at the next window.
+        wait_ms = window_size_ms - elapsed_ms
+    elseif current_count < max_requests then
+        -- Within this window: previous * (W - t) / W + current < max,
+        -- i.e. t > W * (previous - (max - current)) / previous.
+        local numerator = window_size_ms * (previous_count - (max_requests - current_count))
+        wait_ms = (numerator - numerator % previous_count) / previous_count + 1 - elapsed_ms
+    else
+        -- Only in the next window: current * (W - t) / W < max,
+        -- i.e. t > W * (current - max) / current.
+        local numerator = window_size_ms * (current_count - max_requests)
+        wait_ms = (window_size_ms - elapsed_ms) + (numerator - numerator % current_count) / current_count + 1
+    end
+    local retry_after = math.max(1, math.ceil(wait_ms))
     local remaining = math.max(0, math.floor(max_requests - estimated_count))
     return {0, remaining, retry_after}
 end

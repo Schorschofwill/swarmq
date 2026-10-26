@@ -5,115 +5,161 @@ hide:
   - toc
 ---
 
-# Eine Task-Queue, die dir nicht im Weg steht.
+<div class="swarmq-hero" markdown>
 
-Async-first Python-Tasks auf RabbitMQ und Valkey. Ein Befehl startet
-einen Worker, Middleware und Signals, die sich komponieren lassen,
-Rate-Limits und Retries, die nicht überraschen.
+![SwarmQ](assets/brand/swarmq-stacked-light.svg#only-light)
+![SwarmQ](assets/brand/swarmq-stacked-dark.svg#only-dark)
+
+# Die async-first Task-Queue, die <span class="swarmq-gold">keine Arbeit verliert.</span>
+
+Python-Tasks auf RabbitMQ-Quorum-Queues und Valkey. Ein Befehl startet einen
+überwachten, selbst skalierenden Worker; Retries, Rate-Limits, Locks, Workflows und Cron
+sind im Kern enthalten.
 
 [Schnellstart :material-arrow-right:](getting-started.md){ .md-button .md-button--primary }
-[API-Referenz](reference/api.md){ .md-button }
+[Warum SwarmQ](#warum-swarmq){ .md-button }
 
----
-
-## In fünf Minuten einsatzbereit
-
-Task definieren, Worker starten, aus deiner App enqueuen. Kein
-Entrypoint-Boilerplate, keine Config-Dateien.
-
-```python title="tasks.py"
-from swarmq.task import Task, TaskInfo
-
-
-class Greet(Task):
-    task_info = TaskInfo(name="greet", queues=["default"])
-
-    async def run(self, who: str) -> str:
-        return f"hello, {who}"
-```
-
-```bash title="shell"
-export SWARMQ_BROKER_URL="amqp://guest:guest@localhost:5672/"
-export SWARMQ_BACKEND_URL="valkey://localhost:6379/0"
-
-swarmq worker --module tasks
-```
-
-Der [Schnellstart](getting-started.md) führt durch den vollständigen
-Roundtrip — Installation, Broker, Worker, Client, Ergebnis.
-
----
-
-## Alles, was ein echter Worker braucht
-
-<div class="grid cards" markdown>
-
-- :material-check-decagram:{ .lg .middle } **At-least-once-Zustellung**
-
-    ---
-
-    RabbitMQ-gestützte Acks, Retries mit exponentiellem, linearem
-    oder festem Backoff, DLQ-Routing bei Budget-Erschöpfung.
-
-- :material-lightning-bolt:{ .lg .middle } **Async von Grund auf**
-
-    ---
-
-    Gebaut auf `asyncio` und `aio-pika`. Semaphor-begrenzte
-    Concurrency pro Worker, keine Thread-Hacks.
-
-- :material-layers-triple:{ .lg .middle } **Middleware & Signals**
-
-    ---
-
-    Sechs Middleware-Hooks mit Stack-Semantik, 23 Lifecycle-Signals
-    und ein `@on_signal`-Decorator.
-
-- :material-speedometer:{ .lg .middle } **Rate-Limiting**
-
-    ---
-
-    Sliding-Window-Counter via Lua auf Valkey. Deklariere `"100/m"`
-    auf dem Task — die Prüfung passiert vor der Ausführung.
-
-- :material-lock:{ .lg .middle } **Locks & Dedup**
-
-    ---
-
-    Task-Level-Mutex und -Semaphor, plus Unique-Task-Keys für
-    idempotentes Scheduling.
-
-- :material-console:{ .lg .middle } **Ein-Befehl-Worker**
-
-    ---
-
-    `swarmq worker --module myapp.tasks`. Graceful `SIGTERM`-Drain,
-    ein Supervisor, der abgestürzte Worker neu startet, mehrere
-    Prozesse, Autoscaling und ein CPU-Pool für rechenlastige Tasks.
-
-- :material-sitemap:{ .lg .middle } **Workflows**
-
-    ---
-
-    Tasks mit `chain`, `group` und `chord` komponieren. Die Worker
-    schalten den Workflow weiter; `app.apply(...)` liefert ein Handle,
-    auf das du warten, das du abbrechen oder per `workflow_id` wieder
-    aufnehmen kannst. Siehe den
-    [Workflow-Guide](guides/workflows.md).
-
-- :material-text-box-search:{ .lg .middle } **Strukturiertes Logging**
-
-    ---
-
-    Human- oder JSON-Ausgabe über eine nicht blockierende Queue,
-    Task-Kontext an jedem Event, auf Wunsch deine eigene `dictConfig`.
-    Siehe die [Logging-Referenz](reference/logging.md).
+<div class="swarmq-badges">
+<span>durchgehend async def</span><span>standardmäßig at-least-once</span><span>Python 3.14+</span><span>MIT</span>
+</div>
 
 </div>
 
 ---
 
-## Wohin als Nächstes
+## In fünf Minuten einsatzbereit
+
+Task definieren, Worker starten, aus der App einplanen. Kein Entrypoint-Boilerplate,
+keine Konfigurationsdateien.
+
+=== "tasks.py"
+
+    ```python
+    from swarmq import Task, TaskInfo
+
+
+    class Greet(Task):
+        task_info = TaskInfo(name="greet", queues=["default"], rate_limit="100/m")
+
+        async def run(self, who: str) -> str:
+            return f"hello, {who}"
+    ```
+
+=== "Shell"
+
+    ```bash
+    export SWARMQ_BROKER_URL="amqp://guest:guest@localhost:5672/"
+    export SWARMQ_BACKEND_URL="valkey://localhost:6379/0"
+
+    swarmq worker --module tasks --autoscale 1,4
+    ```
+
+=== "app.py"
+
+    ```python
+    import asyncio
+
+    from swarmq import RabbitMQBroker, SwarmQ, ValkeyBackend
+
+    import tasks  # registriert Greet
+
+
+    async def main() -> None:
+        app = SwarmQ(
+            RabbitMQBroker("amqp://guest:guest@localhost:5672/"),
+            ValkeyBackend("valkey://localhost:6379/0"),
+        )
+        async with app:
+            print(await app.run("greet", who="world"))  # hello, world
+
+
+    asyncio.run(main())
+    ```
+
+Der [Schnellstart](getting-started.md) führt durch den ganzen Weg – Installation,
+Broker, Worker, Client, Ergebnis.
+
+---
+
+## Warum SwarmQ
+
+<div class="grid cards" markdown>
+
+- :material-lightning-bolt:{ .lg .middle } **Async bis in den Kern**
+
+    ---
+
+    Worker sind durchgehend `asyncio`. Tausende I/O-lastige Tasks teilen sich einen
+    Event-Loop mit begrenzter Parallelität – ohne Thread-Pools, ohne neuen Loop je Job.
+
+- :material-shield-check:{ .lg .middle } **Standardmäßig at-least-once**
+
+    ---
+
+    Quorum-Queues, Ack nach der Ausführung, ein Zustelllimit und eine
+    [Dead-Letter-Queue](guides/dead-letter-queues.md) mit Recovery-CLI. Ausfälle
+    verzögern Arbeit, sie verwerfen sie nicht. Siehe
+    [Zustellungssemantik](explanation/delivery-semantics.md).
+
+- :material-cpu-64-bit:{ .lg .middle } **CPU-Last neben dem Loop**
+
+    ---
+
+    `--pool cpu` führt Task-Rümpfe in Rechenkindern aus einem vorgewärmten Forkserver
+    aus. Hard-Timeout und Abbruch beenden das Kind, nie den Worker. Siehe
+    [CPU-Modus](guides/cpu-mode.md).
+
+- :material-tune-variant:{ .lg .middle } **Steuerung im Kern**
+
+    ---
+
+    Verteilte [Rate-Limits](guides/rate-limiting.md),
+    [Locks und eindeutige Tasks](guides/locking-and-dedup.md) je Schlüssel, Prioritäten,
+    Ablauf, Abbruch und Fortschritt – atomar in Valkey per Lua.
+
+- :material-sitemap:{ .lg .middle } **Workflows, die enden**
+
+    ---
+
+    `chain`, `group` und `chord` mit `|`-Syntax. Ein fehlgeschlagener Schritt weckt jeden
+    Wartenden, statt zu hängen. Siehe [Workflows](guides/workflows.md).
+
+- :material-clock-outline:{ .lg .middle } **Verlässlicher Cron**
+
+    ---
+
+    IANA-Zeitzone je Task, feste Regel für Zeitumstellungen, Leader-Wahl mit Failover –
+    keine doppelten Läufe über mehrere Instanzen. Siehe
+    [Scheduling und Retries](guides/scheduling-and-retries.md).
+
+- :material-server-network:{ .lg .middle } **Vom ersten Tag an betreibbar**
+
+    ---
+
+    Supervisor als Standard, Autoscaling, ein Kontrollkanal zur Laufzeit,
+    Prometheus-Metriken, `/health` und `/ready`. Siehe
+    [Ausrollen und Upgraden](guides/deployment.md).
+
+- :material-text-box-search:{ .lg .middle } **Lesbare Logs**
+
+    ---
+
+    Menschlich lesbar oder JSON über eine nicht blockierende Queue, Task-Kontext an jedem
+    Ereignis, eigene `dictConfig` oder structlog. Siehe
+    [Logging-Referenz](reference/logging.md).
+
+- :material-puzzle:{ .lg .middle } **Erweiterbar**
+
+    ---
+
+    Sechs [Middleware](guides/middleware.md)-Hooks, 30 Lifecycle-[Signals](guides/signals.md)
+    und optionale Dependency Injection mit Dishka.
+
+</div>
+
+---
+
+## Wie es weitergeht
 
 <div class="grid cards" markdown>
 
@@ -121,41 +167,38 @@ Roundtrip — Installation, Broker, Worker, Client, Ergebnis.
 
     ---
 
-    Folge dem [First-Email-Worker-Tutorial](tutorials/first-email-worker.md)
-    und baue einen kompletten Worker von Grund auf.
+    Das [Tutorial zum ersten E-Mail-Worker](tutorials/first-email-worker.md) baut einen
+    vollständigen Worker von Grund auf.
 
 - :material-book-open-variant:{ .lg .middle } **Ein Problem lösen**
 
     ---
 
-    Spring direkt in einen [How-to-Guide](guides/index.md) — Tasks
-    definieren, Retries, Rate-Limiting, Locking, Middleware.
+    Direkt zu einem [How-to-Guide](guides/index.md) – Retries, Rate-Limiting, Locking,
+    Workflows, CPU-Modus, Deployment, Tests.
 
 - :material-file-tree:{ .lg .middle } **Etwas nachschlagen**
 
     ---
 
-    Die [API-Referenz](reference/api.md) und die
-    [CLI-Referenz](reference/cli.md) dokumentieren jede öffentliche
-    Oberfläche.
+    Die Referenzen zu [API](reference/api.md), [CLI](reference/cli.md) und
+    [Konfiguration](reference/configuration.md) beschreiben jede öffentliche Schnittstelle.
 
 - :material-head-cog:{ .lg .middle } **Das Design verstehen**
 
     ---
 
     [Architektur](explanation/architecture.md) und
-    [Zustellungssemantik](explanation/delivery-semantics.md) erklären
-    die Trade-offs hinter der Library.
+    [Designentscheidungen](explanation/design-decisions.md) erklären die Abwägungen
+    hinter der Bibliothek.
 
 </div>
 
 ---
 
-!!! info "Pre-Release"
-    SwarmQ ist aktuell in v0.10 und in aktiver Entwicklung. Der Core-
-    Roundtrip, Retries, DLQ, Middleware, Signals, Rate-Limiting,
-    Locking, Deduplizierung, der Scheduler, Workflows, der
-    CPU-Worker-Modus, strukturiertes Logging, Metriken und
-    Health-Endpunkte sind drin. APIs können sich vor v1.0 noch
-    verschieben — siehe den [Changelog](reference/changelog.md) für
-    Breaking Changes.
+!!! info "Stand: 0.14"
+    SwarmQ ist vor 1.0 und in aktiver Entwicklung. Jedes Release besteht mehr als 7 000
+    Tests (Unit, Integration, e2e, Chaos, Property, Fuzz) und einen Abnahmelauf einer
+    eigenen Lasttest-Suite. Produktiv setzt es bisher nur der Autor ein, und APIs können
+    sich vor 1.0 noch ändern – Breaking Changes sind im [Changelog](reference/changelog.md)
+    markiert.

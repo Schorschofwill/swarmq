@@ -1,250 +1,393 @@
 # Designentscheidungen
 
-SwarmQs öffentliche Oberfläche ist bewusst klein. Jede Entscheidung
-auf dieser Seite war ein expliziter Trade-off zwischen Flexibilität
-und einer Library, die auch nach einem Jahr in einem echten Team
-noch verständlich bleibt. Das Format: **Entscheidung**, geprüfte
-Alternativen, warum SwarmQ diese gewählt hat.
+Die öffentliche Oberfläche von SwarmQ ist absichtlich klein. Jede
+Entscheidung auf dieser Seite tauscht Flexibilität gegen eine
+Bibliothek, die ein Team auch nach einem Jahr im Betrieb noch
+durchschaut. Jeder Abschnitt folgt demselben Aufbau: die
+**Entscheidung**, die Alternativen, der Grund und was sie dich kostet.
+
+Bewusst entschiedenes Verhalten ist in einem Entscheidungsregister im
+Repository festgehalten, eine Regel je Entscheidung mit einer Kennung
+wie `E-072`. Diese Seite nennt die Kennungen, wo ein Abschnitt auf
+einer beruht. Überrascht dich im Betrieb etwas von dieser Liste, ist es
+eine bekannte Abwägung, kein Fehler.
+
+## At-least-once, nie exactly-once
+
+**Entscheidung.** Jeder Task läuft mindestens einmal. SwarmQ verringert
+Duplikate, wo es kann, verspricht aber keine Ausführung genau einmal.
+
+**Geprüfte Alternativen.** Exactly-once über verteilte Transaktionen
+oder einen Fencing-Dienst; at-most-once (Ack vor dem Lauf) als Default.
+
+**Warum.** Kein System aus Queue und Worker kann exactly-once ohne Hilfe
+der Anwendung garantieren: Ein Worker kann immer nach der Nebenwirkung
+und vor dem Ack sterben. Arbeit still zu verlieren ist schlimmer, als
+sie zweimal auszuführen. Also wählt SwarmQ at-least-once und macht
+Duplikate dann selten. Der [Ausführungsschutz](delivery-semantics.md#ausfuhrungsschutz)
+überspringt eine Neuzustellung einer schon erledigten Ausführung, ein
+Replay aus der DLQ ist eine neue Ausführung (E-009), und ein geplantes
+Fire, dessen Worker abstürzte, läuft erneut, statt verworfen zu werden
+(E-046). `FIRE_AND_FORGET`-Tasks entscheiden sich ausdrücklich für
+at-most-once.
+
+**Was es dich kostet.** Task-Körper müssen idempotent sein; siehe
+[Idempotenz-Erwartungen](delivery-semantics.md#idempotenz-erwartungen).
+
+## Ack erst nach dem gespeicherten Ergebnis
+
+**Entscheidung.** Ein Worker bestätigt eine `AT_LEAST_ONCE`-Nachricht
+erst, wenn ihr terminaler Zustand dauerhaft ist: das Ergebnis in Valkey
+gespeichert oder die Retry- oder Dead-Letter-Kopie vom Broker bestätigt.
+Scheitert das Speichern des Ergebnisses, wiederholt der Worker es etwa
+eine halbe Minute lang, bevor er die Nachricht zurückgibt (E-072). Eine
+Dead-Letter-Kopie, die sicher in `{queue}.XQ` liegt, gilt als terminal,
+auch wenn danach das Ack des Originals scheitert (E-043).
+
+**Geprüfte Alternativen.** Ack beim Empfang (schnell, verliert bei
+jedem Absturz Arbeit); Ack nach `run()`, aber vor dem Speichern
+(verliert Ergebnisse bei einem Backend-Ausfall).
+
+**Warum.** Das Ack ist der einzige Punkt, an dem der Broker eine
+Nachricht vergisst. Liegt es hinter dem dauerhaften Speichern, bleibt
+nach einem Absturz an jeder Stelle entweder die Nachricht oder das
+Ergebnis, nie keins von beiden.
+
+**Was es dich kostet.** Ein Valkey-Ausfall, der länger dauert als die
+Speicherwiederholung, lässt fertige Tasks erneut laufen, und der
+Task-Slot bleibt belegt, solange der Worker wiederholt.
+
+## Retries laufen über Delay-Queues, nie `requeue=True`
+
+**Entscheidung.** Ein Retry publiziert eine frische Kopie der Nachricht
+mit eigener Ablaufzeit in eine Delay-Queue und bestätigt das Original,
+sobald der Broker die Kopie bestätigt hat. RabbitMQ bringt die Kopie
+nach Ablauf nach `{queue}` zurück. Sieben Delay-Stufen von 1 s bis 1 h
+verhindern, dass kurze Wartezeiten hinter langen hängen (E-026).
+Rückstellungen, die keine Retries sind (Rate-Limit, Lock-Konflikt,
+Backend-Ausfall, Ausführungsschutz, unbekannter Task), nutzen denselben
+Mechanismus.
+
+**Geprüfte Alternativen.** `basic.nack(requeue=True)` mit einem Sleep im
+Worker; Wiederholen innerhalb von `run()`; das Delayed-Message-Plugin
+von RabbitMQ.
+
+**Warum.** `requeue=True` gibt die Nachricht sofort dem nächsten freien
+Consumer, das lässt den Broker heißlaufen und verbrennt das
+Retry-Budget in Millisekunden. Eine Delay-Queue liefert exponentiellen,
+linearen oder festen Backoff gratis (`fixed` wartet genau `base_delay`,
+ohne Jitter, E-023), hält die Slots des Workers für andere Arbeit frei
+und braucht kein Broker-Plugin. Ein Backend-Ausfall stellt über
+dieselben Queues zurück, statt an Ort und Stelle neu einzureihen, was
+das Zustelllimit nach etwa 20 Runden aufbrauchen würde.
+
+**Was es dich kostet.** Einen zusätzlichen Publish je Retry, sieben
+Delay-Stufen je Queue (21 mit Prioritäten) und innerhalb einer Stufe
+eine Wartezeit bis zum Vierfachen der verlangten. Wartezeiten über eine
+Stunde teilen sich `{queue}.DQ` und können sich gegenseitig blockieren.
 
 ## Async-first-API, kein Sync-Adapter
 
-**Entscheidung.** Jede öffentliche Coroutine ist `async def`. Es
-gibt keinen synchronen Wrapper, der im Hintergrund eine Event-Loop
-laufen lässt.
+**Entscheidung.** Jede öffentliche Koroutine ist `async def`. Es gibt
+keinen synchronen Wrapper, der unter der Haube eine Event-Loop startet.
 
-**Geprüfte Alternativen.** Ein Sync-Shim (die Celery-
-Kompatibilitäts-Form), damit Tasks aus jedem Python-Code geplant
-werden können. Zwei APIs — eine sync, eine async — nebeneinander.
+**Geprüfte Alternativen.** Ein Sync-Shim, damit Tasks aus beliebigem
+Python-Code eingeplant werden können; zwei parallele APIs, eine
+synchron, eine asynchron.
 
-**Warum nur async.** Python-3.11+-asyncio ist für die I/O-gebundene
-Arbeit, die eine Task-Queue tatsächlich verrichtet, konkurrenzfähig
-zu `anyio`, uvloop und threaded Executors. Ein Sync-Shim würde ein
-`asyncio.run()`-pro-Aufruf-Muster erzwingen, das in langlebigen
-Prozessen Event-Loops leakt und still zerbricht, wenn es aus einer
-bestehenden Loop aufgerufen wird. Beide Formen anzubieten
-verdoppelt die Testmatrix und ermutigt Nutzer, die weniger sichere
-zu wählen.
+**Warum nur async.** asyncio auf Python 3.14 ist schnell genug für die
+I/O-lastige Arbeit einer Task-Queue. Ein Sync-Shim erzwingt
+`asyncio.run()` je Aufruf, das lässt in langlebigen Prozessen
+Event-Loops liegen und bricht, wenn es aus einer laufenden Loop
+aufgerufen wird. Zwei APIs verdoppeln die Testmatrix und verleiten
+dazu, die unsicherere zu wählen. Für CPU-lastige Task-Körper gibt es
+den [CPU-Modus](../guides/cpu-mode.md) statt Threads.
 
-**Was dich das kostet.** Wenn deine App nicht schon async ist,
-brauchst du einen Entrypoint. Für Einmal-Scheduler:
-`asyncio.run(main())` innerhalb `main()`. Für Web-Apps: den
-Async-Lifespan deines Frameworks (FastAPI, Starlette, Quart,
-Django Async Views).
+**Was es dich kostet.** Ist deine App noch nicht async, brauchst du
+einen Einstiegspunkt: `asyncio.run(main())` für Skripte, den async
+Lifespan deines Frameworks für Web-Apps (FastAPI, Starlette, Quart,
+Django-async-Views).
 
-## Klassen-basierte `Task` mit deklarativem `TaskInfo`
+## Klassenbasierte `Task` mit deklarativem `TaskInfo`
 
-**Entscheidung.** Tasks erben von `swarmq.Task` und deklarieren
-ihre Identität über ein Klassen-Level-Feld `task_info =
-TaskInfo(...)`. Registrierung passiert automatisch bei der
-Klassendefinition.
+**Entscheidung.** Tasks erben von `swarmq.Task` und deklarieren ihre
+Identität in einem Klassenattribut `task_info = TaskInfo(...)`. Eine
+Klasse registriert sich bei ihrer Definition, und `TaskInfo` prüft jedes
+Feld beim Import des Task-Moduls (E-065).
 
-**Geprüfte Alternativen.** Dekorierte Async-Funktionen
-(`@app.task`), die Form, die Celery und arq nutzen.
+**Geprüfte Alternativen.** Dekorierte async-Funktionen (`@app.task`),
+wie bei Celery und arq.
 
-**Warum Klassen.** Task-Metadaten — Queue-Routing, Retry-Policy,
-Rate-Limit, Lock-Key, Timeouts, Cron-Expression, Dedup-TTL — sind
-viel deklarative Config, um sie durch einen Decorator zu fädeln.
-Sie auf eine Dataclass zu legen, hält Tasks inspizierbar:
-`SendEmail.task_info.max_retries` ist ein einfaches Attribut-Read.
-Es macht auch `swarmq inspect --module myapp.tasks` trivial: laufe
-durch die registrierten Klassen und drucke ihr `task_info`.
+**Warum Klassen.** Task-Metadaten (Queue, Retry-Policy, Rate-Limit,
+Lock, Timeouts, Cron, Dedup, Ablauf) sind viel Konfiguration für einen
+Dekorator. Auf einer Dataclass bleiben sie inspizierbar:
+`SendEmail.task_info.max_retries` ist ein einfacher Attributzugriff, und
+`swarmq inspect` geht einfach die registrierten Klassen durch. Die
+Prüfung beim Import macht aus einem Tippfehler im Cron-Ausdruck einen
+Startfehler statt eines Crons, der still nie feuert. `run()` darf keine
+Parameternamen tragen, die `schedule()` selbst nutzt (`delay`, `eta`,
+`unique_for`, `unique_until`); sonst scheitert schon der Bau der Klasse
+(E-064).
 
-**Was dich das kostet.** Etwas mehr Zeremonie pro Task (drei Zeilen
-Klassendefinition statt eines Decorators). Im Gegenzug ist jeder
-Task ein stabiler Typ, über den dein IDE, Typechecker und Tests
-reasonieren können.
+**Was es dich kostet.** Ein paar Zeilen mehr je Task als ein Dekorator.
+Dafür ist jeder Task ein stabiler Typ, mit dem IDE, Typprüfer und Tests
+arbeiten können.
 
 ## JSON auf dem Draht, msgpack im Speicher
 
-**Entscheidung.** Task-Nachrichten werden als `msgspec`-kodiertes
-JSON transportiert. Task-Ergebnisse werden mit `msgpack` kodiert.
-Keine Unterstützung für `pickle`, protobuf oder Avro.
+**Entscheidung.** Task-Nachrichten sind JSON, kodiert mit `msgspec`.
+Ergebnisse sind msgpack. Kein `pickle`, kein Protobuf, kein Avro.
 
-**Geprüfte Alternativen.** `pickle` (Celerys Default, rundheraus
-abgelehnt — es deserialisiert beliebige Klassen, jede
-Deserialisierung ist ein potenzieller RCE). Protobuf (Schema-
-Registry-Overhead für eine Single-Language-Library). JSON für
-beides (Ergebnisse können Datetimes, Decimals, Bytes enthalten —
-msgpack verarbeitet die nativ).
+**Geprüfte Alternativen.** `pickle` (früherer Default von Celery,
+sofort verworfen: Deserialisieren kann beliebigen Code ausführen).
+Protobuf (eine Schema-Registry für eine Bibliothek in nur einer
+Sprache). JSON für beides (Ergebnisse enthalten oft datetimes, Decimals
+oder Bytes, die msgpack direkt behält).
 
-**Warum diese Aufteilung.** JSON-auf-dem-Draht bedeutet, dass eine
-Nachricht ohne Tooling inspizierbar ist — `rabbitmqadmin get` oder
-`swarmq dlq inspect` zeigen dir einen lesbaren Payload.
-Msgpack-im-Speicher hält die nativen Python-Typen, die dein Task
-zurückgegeben hat, intakt, ohne dass du von Hand serialisieren
-musst. Beide Formate sind schnell, sicher und deterministisch.
+**Warum diese Aufteilung.** Eine JSON-Nachricht ist ohne Werkzeug
+lesbar: `swarmq dlq inspect` oder die RabbitMQ-Oberfläche zeigen dir den
+Inhalt. msgpack behält die Python-Typen, die dein Task zurückgab, ohne
+handgeschriebene Serialisierung. Beide sind schnell, sicher und
+deterministisch; das hält auch den Dedup-Hash von `unique_for` stabil.
 
-**Was dich das kostet.** Task-Argumente müssen JSON-kompatibel sein.
-Alles Exotische (NumPy-Arrays, Custom Classes) muss vor dem
-Scheduling konvertiert werden. Das ist ein Feature, kein Bug: es
-zwingt deinen Task-Vertrag, sprach-neutral zu bleiben.
+**Was es dich kostet.** Task-Argumente müssen JSON-kompatibel sein.
+Wandle NumPy-Arrays oder eigene Klassen vor dem Einplanen um. Das hält
+deinen Task-Vertrag sprachneutral.
 
-## Separates Backend für Ergebnisse
+## Ergebnisse in Valkey, nicht im Broker
 
-**Entscheidung.** Ergebnisse leben in Valkey, nicht in RabbitMQ. Der
-einzige Job des Brokers ist, Task-Nachrichten zu transportieren.
+**Entscheidung.** Ergebnisse, Fortschritt und Workflow-Zustand liegen in
+Valkey. Der Broker trägt nur Task-Nachrichten.
 
-**Geprüfte Alternativen.** Ergebnisse in eine RPC-Reply-Queue zu
-publishen (Celerys Default-Modus mit
-`CELERY_TASK_IGNORE_RESULT=False`). Eine Results-Only-Queue mit
-Correlation-ID-Matching.
+**Geprüfte Alternativen.** RPC-Antwort-Queues; eine Ergebnis-Queue mit
+Zuordnung über Correlation-IDs.
 
-**Warum ein separates Backend.** RabbitMQ-Queues sind schwache
-Key-Value-Stores: ein Ergebnis zu konsumieren mutiert State,
-Ergebnisse haben keine TTL, und die Frage „Was war das Ergebnis
-von Task X" erfordert eine Suche. Valkey gibt dir `GET
-sq:result:{task_id}` mit O(1)-Lookup und einer beim Schreiben
-gesetzten TTL. Es ist auch der Ort, an dem Rate-Limiter,
-Lock-Manager und Scheduler bereits leben — ein Connection-Pool,
-nicht zwei.
+**Warum.** RabbitMQ-Queues sind schlechte Key-Value-Speicher: Ein
+Ergebnis zu lesen verbraucht es, es gibt keine TTL je Key, und „was war
+das Ergebnis von Task X“ verlangt eine Suche. Valkey beantwortet
+`GET sq:result:{task_id}` in O(1), mit einer beim Schreiben gesetzten
+TTL, und hält ohnehin Rate-Limiter, Locks und Scheduler: ein
+Verbindungspool statt zwei.
 
-**Was dich das kostet.** Einen Service mehr zu betreiben. SwarmQ
-liefert eine `docker-compose.yml`, die beide für die Entwicklung
-co-lokiert.
+**Was es dich kostet.** Einen zweiten Dienst mit Regeln: keine
+verdrängende `maxmemory-policy`, AOF-Persistenz, kein Cluster-Modus
+([Valkey-Anforderungen](../reference/configuration.md#valkey-anforderungen)).
 
-## Keine Celery-Kompatibilitäts-Shims
+## Beim Start scheitern, nicht um drei Uhr nachts
 
-**Entscheidung.** SwarmQ bietet keinen Migrations-Layer für
-Celery-Apps. Deine Tasks sind nicht plug-kompatibel mit
-`@celery.task`.
+**Entscheidung.** Ein Worker verweigert den Start mit Exit-Code 78, wenn
+seine Konfiguration nicht funktionieren kann: ein ungültiger Wert, ein
+Import- oder Syntaxfehler im Task-Modul (E-057), Queue-Argumente, die
+der vorhandenen Queue widersprechen (E-016), ein Valkey, das Keys
+verdrängen darf (E-005), eine unendliche Frist (E-063). Der Supervisor
+startet einen solchen Worker nicht neu. `swarmq check` und
+`swarmq worker --check` sagen dieselbe Weigerung voraus, ohne zu
+starten (E-006, E-062).
 
-**Geprüfte Alternativen.** Ein `swarmq.compat.celery`-Modul, das
-Celerys API auf SwarmQs Interna abbildet, damit eine migrierende
-Codebasis ihre bestehenden `@app.task(bind=True)`-Decorators
-behalten kann.
+**Geprüfte Alternativen.** Trotzdem starten und warnen; mit Exit 1
+abbrechen und den Orchestrator neu starten lassen.
 
-**Warum kein Shim.** Celerys öffentliche Oberfläche ist riesig —
-Request-Context, Eager-Mode, Routers, die Canvas-DSL, Custom
-Serializer, Custom Result Backends, Signal-Namen, Exception-
-Klassen. Einen sinnvollen Subset abzudecken lässt Nutzer mit dem
-überrascht zurück, was unterstützt ist und was nicht, und der
-Shim-Code ist größer als SwarmQ selbst. Ein sauberer Port, der
-idiomatisches SwarmQ schreibt, ist sowohl einfacher als auch
-produziert Code, der besser altert.
+**Warum.** Jeder dieser Fehler zeigt sich sonst Stunden später als
+doppelte oder verlorene Arbeit. Exit 78 (`EX_CONFIG`) sagt Orchestrator
+und Betreiber, dass ein Neustart nicht hilft.
 
-**Was dich das kostet.** Der initiale Port ist echte Arbeit:
-schreibe `@app.task` als `class Task(swarmq.Task)` um und passe
-die Task-Signatur an. Was du zurückbekommst, ist eine kleinere,
-besser vorhersagbare Library.
+**Was es dich kostet.** Ein falsch konfigurierter Rollout bleibt
+sichtbar stehen: Unter Kubernetes gehen die Pods in
+`CrashLoopBackOff`. Lass `swarmq check` vor dem Deployment laufen
+([Deployment](../guides/deployment.md)).
 
-## Ein Queue-Typ per Default: RabbitMQ-Quorum-Queues
+## Quorum-Queues mit Dead-Lettering at-least-once
 
-**Entscheidung.** Queues werden als
-[Quorum-Queues](https://www.rabbitmq.com/quorum-queues.html)
-deklariert, außer `queue_type="classic"` ist gesetzt.
+**Entscheidung.** Queues sind
+[Quorum-Queues](https://www.rabbitmq.com/docs/quorum-queues), außer
+`SWARMQ_QUEUE_TYPE=classic` ist gesetzt. Neue Queues bekommen
+`x-dead-letter-strategy=at-least-once` mit `x-overflow=reject-publish`;
+vorhandene Queues behalten ihre Argumente, und der Worker warnt (E-017).
 
-**Geprüfte Alternativen.** Classic-Mirrored-Queues (upstream
-deprecated). Streams (Append-Log-Semantik, falsche Form für Tasks).
+**Geprüfte Alternativen.** Klassische gespiegelte Queues (upstream
+entfernt), Streams (Append-Log-Semantik, falsche Form für Tasks),
+vorhandene Queues automatisch umstellen (nur durch Löschen möglich).
 
-**Warum Quorum.** Raft-basierte Replikation mit deterministischem
-Failover, native `x-delivery-limit`-Unterstützung, natives
-DLX-Handling. Keine Mirrored-Queue-Eigenheiten, kein
-Mirror-Policy-Tuning, keine Split-Brain-Edge-Cases. Für eine
-Workload in der Größenordnung der SwarmQ-Ziel-Deployments sind
-Quorum-Queues die Default-Empfehlung von RabbitMQ selbst.
+**Warum Quorum.** Raft-Replikation mit vorhersehbarem Failover, ein
+natives Zustelllimit und natives Dead-Lettering, ohne Tuning von
+Mirror-Policies. RabbitMQ selbst empfiehlt sie für dauerhafte Arbeit.
+Ihr Default-Dead-Lettering ist at-most-once und kann bei einem
+Leader-Wechsel einen Retry verlieren, daher wählen neue Queues
+at-least-once.
 
-**Was dich das kostet.** Sehr leicht höherer Per-Message-Overhead
-als eine Classic-Queue auf einem einzelnen Node. Im Gegenzug ist
-das Überleben eines Node-Verlusts eingebaut.
+**Was es dich kostet.** Etwas mehr Aufwand je Nachricht als eine
+klassische Queue auf einem Knoten. Eine vorhandene Queue umzustellen ist
+ein ausdrücklicher Betreiberschritt
+([Queue-Argumente ändern](delivery-semantics.md#queue-argumente-andern)).
 
-## Signals als In-Process-Pub/Sub, kein Broker
+## Workflows ohne Orchestrator
 
-**Entscheidung.** SwarmQs `Signal`-System ist in-process:
-registrierte Handler werden im Worker (oder Client) ausgeführt,
-der das Event emittiert hat.
+**Entscheidung.** `chain`, `group` und `chord` bauen auf gewöhnlichen
+Task-Nachrichten auf. Einen Orchestrator-Prozess gibt es nicht: Der
+Worker, der einen Schritt beendet, schaltet den Workflow in Valkey
+weiter und publiziert die nächsten Schritte. Schritte müssen ein
+Ergebnis speichern, daher werden `FIRE_AND_FORGET`-Schritte abgelehnt
+(E-039). Ein Schritt, der endgültig scheitert, lässt sofort den ganzen
+Workflow scheitern (E-040).
 
-**Geprüfte Alternativen.** Lifecycle-Events an ein Broker-Topic zu
-publishen, damit mehrere Services abonnieren können.
+**Geprüfte Alternativen.** Ein zentraler Orchestrator-Dienst; gar keine
+Workflow-Primitive, sodass die Komposition per `await app.run(...)` in
+einem Eltern-Task geschieht.
 
-**Warum in-process.** Signals in dieser Library decken operative
-Belange ab — Metriken, Logging, Tracing, Sentry-Integration. Diese
-Konsumenten leben ohnehin im Worker, also ist ein Netzwerk-Hop
-reiner Kostenfaktor. Ein Broker-publiziertes Event-System ist eine
-separate Sorge, die Anwendungscode auf Basis des eigenen Topics
-bauen kann.
+**Warum.** Ein Eltern-Task, der auf seine Kinder wartet, hält die ganze
+Zeit einen Slot und verliert bei jedem Absturz seinen Stand. Das
+Weiterschalten im Worker braucht keinen zusätzlichen Prozess und erbt
+die Zustellgarantien der Schritte. Durch das sofortige Scheitern wartet
+`get()` nie auf einen Timeout bei einem Workflow, der schon verloren
+ist.
 
-**Was dich das kostet.** Nichts an der Signal-Grenze. Wenn du
-cross-process-Events willst, `schedule()` du einen Folge-Task aus
-deinem Handler — was die Form ist, die du ohnehin wolltest.
+**Was es dich kostet.** Feste Grenzen (Tiefe 10, 1000 Gruppenmitglieder),
+einen Workflow-Zustand, der nur so lange lebt wie `result_ttl`, und eine
+API-Form (`Task.s()`, `Task.si()`), die an Celerys Canvas angelehnt,
+aber nicht damit kompatibel ist. Siehe [Workflows](../guides/workflows.md).
 
-## Retries gehen durch eine Delay-Queue, nie `requeue=True`
+## Ein eingebetteter Scheduler mit Leader
 
-**Entscheidung.** Jeder Retry publisht eine frische Nachricht in
-eine Delay-Queue und lässt RabbitMQ vor der Redelivery warten.
-SwarmQ ruft auf dem Primär-Retry-Pfad nie
-`basic.nack(requeue=True)` auf.
+**Entscheidung.** Jeder Worker bettet den Scheduler ein; einer davon
+hält einen Leader-Lock in Valkey und publiziert fällige Crons und
+verzögerte Tasks. Statische Crons kommen aus `TaskInfo`; Worker melden
+sie, und der Leader hält Crons zurück oder entfernt sie, wenn kein
+Worker sie mehr meldet (E-014, E-049). Ein kurzer Doppel-Leader wird
+hingenommen; der Fire-Claim im Worker verwirft seine doppelten Publishes
+(E-047).
 
-**Geprüfte Alternativen.** Requeue-an-Ort-und-Stelle mit
-client-seitigem Sleep vor dem Ack. Retry innerhalb des
-`run()`-Aufrufs.
+**Geprüfte Alternativen.** Ein eigener Scheduler-Prozess (Celery beat),
+Crons im Orchestrator (Kubernetes-`CronJob`), ein Konsensdienst für
+Fencing.
 
-**Warum die Delay-Queue.** `requeue=True` stellt die Nachricht
-sofort irgendeinem verfügbaren Consumer zu, was den Broker in
-einer Hot-Loop ausbeutet und das Retry-Budget in Millisekunden
-verbrennt. Eine Delay-Queue gibt dir gratis exponentielles /
-lineares / festes Backoff und hält die Prefetch-Slots des Workers
-offen für andere Arbeit.
+**Warum.** Ein eigener Prozess ist eine Sache mehr, die man ausrollen,
+überwachen und einzigartig halten muss. Jeder Worker kann binnen einer
+Lock-TTL übernehmen. Echtes Fencing bräuchte einen Konsensdienst, den
+SwarmQ nicht voraussetzt, und der Fire-Claim macht einen doppelten
+Publish harmlos.
 
-Dasselbe gilt, wenn Valkey bei einer Prüfung vor der Ausführung
-(Schedule-Fire-Dedup, Cancel-Check, Rate-Limit, Lock) nicht erreichbar
-ist: Der Worker stellt eine Kopie mit eigenem Backoff über die
-Delay-Queue zurück, statt an derselben Stelle neu einzureihen; auf
-einem Broker, der Requeues zählt, wäre das Zustelllimit sonst nach
-etwa 20 Runden aufgebraucht. Siehe
-[Zustellsemantik](delivery-semantics.md#was-den-ack-abbricht).
+**Was es dich kostet.** Ein Fire kann nach einem Absturz zweimal laufen
+(mindestens einmal, E-046), und Crons pausieren bei einem Failover bis
+zu einer Lock-TTL. Setze `SWARMQ_SCHEDULER=off` auf Workern, die nie
+führen sollen.
 
-**Was dich das kostet.** Leicht mehr AMQP-Traffic pro Retry (ein
-zusätzliches Publish + ein DLX-Route). Im Gegenzug hören
-Retry-Stürme auf zu existieren.
+## Signale als In-Process-Pub/Sub, kein Broker
 
-## `--module` ist zwingend
+**Entscheidung.** Signal-Handler werden in dem Prozess abgewartet, der
+das Ereignis ausgelöst hat (Worker oder Client).
 
-**Entscheidung.** Jeder `swarmq worker`-Aufruf verlangt
-`--module package.name`. Es gibt keine Auto-Discovery von Tasks im
-Working Directory.
+**Geprüfte Alternativen.** Lebenszyklus-Ereignisse in ein Broker-Topic
+publizieren, damit andere Dienste sie abonnieren können.
 
-**Geprüfte Alternativen.** Scannen von `sys.path`, Lesen einer
-Config-Datei oder Übernahme von `celery -A`-Auto-Magic.
+**Warum In-Process.** Signale decken Betriebsbelange ab: Metriken,
+Logging, Tracing, Fehlerberichte. Diese Verbraucher leben ohnehin im
+Worker, ein Netzwerksprung kostet also nur. Ein dienstübergreifender
+Ereignisbus ist ein eigenes Thema, das du auf einem eigenen Topic bauen
+kannst.
 
-**Warum explizit.** Der Modul-Import ist, wo deine Task-Registry
-gebaut wird. Explizit zu sein bedeutet:
+**Was es dich kostet.** Nichts an der Signalgrenze. Für Ereignisse
+zwischen Prozessen plane aus deinem Handler einen Folge-Task ein.
 
-- CI und Container-Images deklarieren es einmal, an einer Stelle.
-- Ein Typo zeigt sich als `ImportError` beim Prozess-Start, nicht
-  als leere Registry drei Stunden später.
-- `swarmq inspect --module ...` nutzt dasselbe Argument.
+## Ein Cancel ist kein Fehler
 
-**Was dich das kostet.** Ein Flag auf der Kommandozeile. Wert es.
+**Entscheidung.** Ein abgebrochener Task endet als abgebrochen: Der Task
+sieht `asyncio.CancelledError`, der Aufrufer von `get_result()` bekommt
+`TaskCancelledError`, die Middleware sieht weder `on_error` noch
+`post_execute`, nur das Signal `TASK_CANCELLED` kommt, und kein Retry
+folgt (E-068).
 
-## YAGNI bei Dingen, die offensichtlich wirken
+**Geprüfte Alternativen.** Einen Cancel als Fehler behandeln, der durch
+Retry und Fehler-Hooks läuft.
 
-Ein paar Features, die vernünftig klingen, sind bewusst nicht
-drin:
+**Warum.** Ein Cancel ist eine Entscheidung, keine Störung. Ihn als
+Fehler zu zählen, löste Retries, Alarme und Fehler-Tracking für etwas
+aus, das der Betreiber verlangt hat.
 
-- **Workflow-Primitive** (`chain`, `group`, `chord`). Celerys
-  Canvas-DSL ist mächtig, wird aber selten gut genutzt;
-  Application-Level-Orchestrierung mit `await app.run(...)`
-  innerhalb eines Eltern-Tasks ist besser debugbar.
-- **Multi-Broker-Routing.** Ein RabbitMQ pro SwarmQ-App. Brauchst
-  du Isolation, betreibe zwei Apps.
-- **Datenbank-als-Broker / DB-als-Backend.** Postgres-Queueing ist
-  ein feines Werkzeug für kleine Workloads; im SwarmQ-Ziel-Scale
-  ist das RabbitMQ-plus-Valkey-Paar die bessere Wahl, und beides
-  zu unterstützen würde die Wartungsoberfläche verdoppeln.
-- **Eingebautes Web-Dashboard.** Prometheus + deine bestehenden
-  Dashboards (Grafana, Datadog, was auch immer läuft) decken das
-  korrekt ab. Siehe
-  [`swarmq[metrics]`](../reference/cli.md#swarmq-worker) für den
-  Prometheus-Exporter.
+**Was es dich kostet.** Aufräumarbeit, die auch bei einem Cancel laufen
+muss, gehört in einen `finally`-Block oder den Finalizer der Middleware,
+nicht in `on_error`.
 
-Falls eins davon für echte Nutzer zu einem echten Blocker wird,
-kann die Entscheidung überdacht werden. Bis dahin sind die
-laufenden Kosten eines Features, das „irgendwann nützlich ist",
-höher als die Kosten, nein zu sagen.
+## `--module` ist Pflicht, Hooks kommen über `--configure`
+
+**Entscheidung.** Jeder `swarmq worker` braucht `--module package.name`.
+Tasks werden nicht automatisch gesucht. Der Worker baut seine eigene
+`SwarmQ`-App; Middleware und Signal-Handler registriert ein Callable,
+das du mit `--configure MODULE:CALLABLE` übergibst (E-069).
+
+**Geprüfte Alternativen.** `sys.path` durchsuchen, eine
+Konfigurationsdatei lesen, Celerys Suche per `-A app`, eine modulweite
+`app` aus dem Task-Modul übernehmen.
+
+**Warum ausdrücklich.** Beim Import des Moduls entsteht die
+Task-Registry. Ist er ausdrücklich, deklarieren Container-Images ihn
+einmal, ein Tippfehler scheitert beim Start mit Exit 78, statt eine
+leere Registry zu hinterlassen, und `swarmq inspect` nutzt dasselbe
+Argument. Eine modulweite `app` im Task-Modul gibt es noch nicht, wenn
+die CLI ihre eigene baut; darauf registrierte Handler blieben still
+wirkungslos.
+
+**Was es dich kostet.** Ein Flag und, wenn du Middleware oder Signale
+nutzt, eine kleine Hook-Funktion.
+
+## Der Namensraum trennt Valkey, der vhost trennt RabbitMQ
+
+**Entscheidung.** `SWARMQ_NAMESPACE` präfixt jeden Valkey-Key, jeden
+Kanal, den Scheduler-Leader und den Kontrollkanal. Queue-Namen bekommen
+nie ein Präfix; Apps, die sich einen RabbitMQ teilen, nutzen getrennte
+vhosts (E-012).
+
+**Geprüfte Alternativen.** Auch Queue-Namen präfixen.
+
+**Warum.** Mehrere Apps auf einem Valkey teilten sich Locks,
+Rate-Limits, Dedup-Claims und den Leader. RabbitMQ hat mit vhosts schon
+eine eigene Trennung, und präfixierte Queue-Namen hätten jede
+vorhandene Topologie gebrochen.
+
+**Was es dich kostet.** Zwei Apps im selben vhost teilen sich ihre
+Queues, auch mit verschiedenen Namensräumen. Eine App in einen
+Namensraum umzuziehen braucht eine geplante Migration
+([Namensraum](../reference/configuration.md#namensraum-mehrere-apps-auf-einem-valkey)).
+
+## Keine Celery-Kompatibilitätsschicht
+
+**Entscheidung.** SwarmQ hat keine Migrationsschicht für Celery-Apps;
+Tasks sind nicht steckerkompatibel mit `@celery.task`.
+
+**Geprüfte Alternativen.** Ein Modul `swarmq.compat.celery`, das
+Celerys API auf SwarmQ abbildet.
+
+**Warum.** Celerys Oberfläche ist riesig: Request-Kontext, Eager-Modus,
+Router, Canvas, eigene Serialisierer und Ergebnis-Backends,
+Signalnamen, Ausnahmeklassen. Jede brauchbare Teilmenge ließe Nutzer
+raten, was unterstützt ist, und die Schicht würde größer als SwarmQ
+selbst. Ein sauberer Umbau ist einfacher und altert besser.
+
+**Was es dich kostet.** Einen echten Umbau: Schreibe jedes `@app.task`
+als `Task`-Subklasse um und passe seine Signatur an.
+
+## Bewusst weggelassen
+
+- **Eine synchrone Client-API.** Siehe [Async-first](#async-first-api-kein-sync-adapter).
+- **Routing über mehrere Broker.** Ein RabbitMQ je App; für Trennung
+  zwei Apps betreiben.
+- **Datenbank als Broker oder Backend.** Postgres als Queue passt zu
+  kleinen Lasten; es neben RabbitMQ und Valkey zu unterstützen,
+  verdoppelte den Wartungsaufwand.
+- **Ein eingebautes Web-Dashboard.** SwarmQ stellt Prometheus-Metriken
+  ([`--metrics-port`](../reference/cli.md#swarmq-worker)),
+  Health-Endpunkte und den [Kontrollkanal](../reference/cli.md#kontrollkanal)
+  bereit; Dashboards und Steuerdienste bauen außerhalb der Bibliothek
+  darauf auf.
+- **Valkey-Cluster-Modus.** Keys tragen Hash-Tags, aber SwarmQ läuft und
+  wird getestet gegen einen einzelnen Primary.
+
+Wird eines davon zu einem echten Hindernis, lässt sich die Entscheidung
+mit einem neuen Argument überdenken. Bis dahin kostet „wahrscheinlich
+irgendwann nützlich“ mehr als ein Nein.
 
 ## Siehe auch
 
-- [Architektur](architecture.md) — wie die Drei-Rollen-Topologie
-  diese Entscheidungen umsetzt
-- [Zustellungssemantik](delivery-semantics.md) — der
-  at-least-once-Vertrag, auf dem das Design ruht
+- [Architektur](architecture.md): wie die Teile diese Entscheidungen
+  umsetzen
+- [Zustellungssemantik](delivery-semantics.md): der
+  at-least-once-Vertrag im Detail

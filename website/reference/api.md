@@ -68,11 +68,25 @@ async with SwarmQ(broker, backend) as app:
 |---|---|---|
 | `broker` | `RabbitMQBroker` | Connected at `__aenter__`. |
 | `backend` | `ValkeyBackend` | Connected at `__aenter__`. |
-| `**config_kwargs` | — | Forwarded to `SwarmQConfig`. See [Configuration](configuration.md). |
+| `**config_kwargs` | — | Forwarded to `SwarmQConfig`. See [Configuration](configuration.md#swarmqconfig-kwargs). |
+
+**Raises.** `ConfigurationError` for an invalid configuration value
+(also from a `SWARMQ_*` variable) or a namespace that differs between
+backend and configuration; `TypeError` for an unknown keyword and for
+`broker_url`/`backend_url`, which `SwarmQ` takes from `broker` and
+`backend`.
+
+**Attributes.** `broker`, `backend`, `config` (the resolved
+`SwarmQConfig`), `registry` (the tasks registered at construction),
+`client` (the underlying `swarmq.client.Client`) and
+`middleware_chain` (a fresh chain of the middleware registered so
+far).
 
 **Notes.** A single `SwarmQ` instance is safe to share across
 coroutines on the same event loop. Do *not* share it across
-processes — each process builds its own.
+processes — each process builds its own. Every `Task` subclass defined
+before `SwarmQ(...)` is constructed lands in its registry; import your
+task modules first.
 
 ### `__aenter__` / `__aexit__`
 
@@ -109,7 +123,12 @@ async def schedule(
 ) -> str
 ```
 
-Enqueue a task and return its `task_id`.
+Enqueue a task and return its `task_id`. `SwarmQ.schedule` is declared
+as `(task_name, *args, **kwargs)` and passes everything on to
+`Client.schedule`, which has the keyword parameters shown above.
+`delay`, `eta`, `unique_for` and `unique_until` are therefore never
+task arguments: a task whose `run()` accepts one of these names raises
+`ValueError` at class definition.
 
 **Parameters**
 
@@ -245,7 +264,11 @@ async def run(
 ```
 
 Schedule a task and wait for its result. Convenience wrapper around
-`schedule()` + `get_result()`.
+`schedule()` + `get_result()`. Every keyword except `timeout` and
+`polling` goes to `schedule()`, so `queue`, `delay`, `eta`,
+`unique_for` and `unique_until` work as there. `timeout` and `polling`
+behave as in `get_result()`; `timeout` counts from the end of
+`schedule()`, so with `delay` it must cover the delay too.
 
 **Raises.** Everything `schedule()` raises, plus `ResultNotReadyError`
 on timeout, `TaskError` on task failure, `TaskCancelledError` on
@@ -272,7 +295,9 @@ async def get_result(
 Block until the task result is available, or `timeout` elapses.
 
 Internally subscribes to `[<namespace>:]sq:notify:{task_id}` on Valkey for a
-push-based wait, with 5ms-interval polling as a fallback. When
+push-based wait of about one second, with 5ms-interval polling as a
+fallback after that. `polling` has no effect; it is kept for
+compatibility (E-030). When
 `timeout=0`, performs a single `GET` without Pub/Sub. A negative
 `timeout` or `nan` counts as already expired: one `GET`, then
 `ResultNotReadyError` if there is no result yet (since 0.12.3; before,
@@ -485,6 +510,22 @@ exception propagates. With `pool="cpu"` it raises
 the pool rejected a silently restarted forkserver; see the
 [error catalog](errors.md#outside-the-hierarchy-forksourcerejected).
 
+## `class Client`
+
+`swarmq.client.Client` is the producer side behind `SwarmQ`, available
+as `app.client`. Its methods match those of `SwarmQ` above, except for
+three that take a lifetime that `SwarmQ` derives from `result_ttl`:
+
+```python
+async def cancel(self, task_id: str, ttl_ms: int = 86_400_000) -> bool
+async def apply(self, workflow, *, state_ttl_ms: int = 86_400_000) -> WorkflowHandle
+async def workflow(self, workflow_id: str, *, cancel_ttl_ms: int | None = None) -> WorkflowHandle
+```
+
+`SwarmQ` passes `max(24 h, result_ttl)` as `ttl_ms` and
+`cancel_ttl_ms`, and `result_ttl` as `state_ttl_ms`. Take the client
+from `app.client`, which has the registry, middleware and signals wired.
+
 ## `class TaskInfo`
 
 Frozen declarative config for a task. Field validation runs at
@@ -495,7 +536,6 @@ not at first schedule.
 TaskInfo(
     name: str,
     queues: list[str],
-    *,
     soft_timeout: int | None = None,
     hard_timeout: int | None = None,
     delivery: DeliveryMode = DeliveryMode.AT_LEAST_ONCE,
@@ -508,6 +548,7 @@ TaskInfo(
     lock: str | None = None,
     max_concurrency: int = 1,
     cron: str | None = None,
+    catchup: bool = False,
     unique_for: float | None = None,
     unique_until: Literal["start", "completion"] = "completion",
     max_age: int | None = None,
@@ -526,7 +567,8 @@ fraction is rounded up to the next second, `inf` and `nan` raise
 `soft_timeout` and `hard_timeout` must be greater than 0: `nan`, `-inf`,
 `0`, negative values and `False` raise `ValueError`, a non-number such as
 a `timedelta` raises `TypeError`, each naming the field (since 0.13.1).
-`soft_timeout=inf` stays allowed. Field semantics and validation rules live
+`soft_timeout=inf` stays allowed. `catchup=True` is reserved and raises
+`ValueError`. Field semantics and validation rules live
 in [Configuration reference — TaskInfo fields](configuration.md#taskinfo-fields).
 
 ## `next_fire_times()`
@@ -586,8 +628,11 @@ class Task:
 
 - `update_progress(current, total, message="")` — record progress.
   Throttled to one write per 500 ms per task instance; the final
-  update (`current == total`) always flushes. Safe no-op outside a
-  worker context (unit tests).
+  update (`current >= total`) always flushes, once per instance. A
+  no-op outside a worker context (unit tests), for `total <= 0` and
+  for `current < 0`. Best effort: a Valkey error is logged and does not
+  fail the task. The progress lives as long as the task's result
+  (`result_ttl`).
 
 ### Workflow signatures
 
@@ -747,6 +792,32 @@ not include it. `worker_id` is `<base>:<slot>` under the supervisor
 and `<base>:p<pid>` embedded; see
 [worker identity](configuration.md#worker-identity).
 
+The enum values are the lowercase names (`Signal.TASK_FAILED.value ==
+"task_failed"`); they appear as `signal` in the log events
+`signal_handler_error` and `signal_handler_timeout`.
+
+## `class SignalDispatcher`
+
+The registry behind `app.on_signal()`; every `SwarmQ` owns one.
+
+```python
+SignalDispatcher()
+
+def connect(self, signal: Signal, handler: AsyncHandler) -> None
+def on_signal(self, signal: Signal) -> Callable[[AsyncHandler], AsyncHandler]
+async def dispatch(self, signal: Signal, *, handler_timeout: float | None = None,
+                   **kwargs: Any) -> None
+```
+
+- `connect()` appends an async handler; `on_signal()` is its decorator
+  form. Registering the same handler twice calls it twice.
+- `dispatch()` awaits the handlers one after another in registration
+  order and passes `kwargs` to each. A handler that raises an
+  `Exception` is logged as `signal_handler_error` and the next one runs;
+  `asyncio.CancelledError` propagates. `handler_timeout` bounds each
+  handler on its own (`signal_handler_timeout`) and is not passed to the
+  handlers.
+
 ## Workflow primitives
 
 ```python
@@ -756,7 +827,16 @@ sig(task_name: str, *args, immutable: bool = False, **kwargs) -> Signature
 chain(*steps) -> Chain              # also: a | b | c
 group(*members) -> Group            # or group(iterable)
 chord(header: Group, body) -> Chord # also: group(...) | body
+
+Signature(task_name: str, args: tuple = (), kwargs: dict | None = None,
+          *, immutable: bool = False)
 ```
+
+A `Signature` has the attributes `task_name`, `args` (tuple), `kwargs`
+(dict) and `immutable`. `to_dict()` / `Signature.from_dict()` convert
+it to and from the stored topology form. `Task.s()`/`Task.si()`
+reject a `FIRE_AND_FORGET` task at construction; `sig()` and the
+constructor leave that check to run time.
 
 | Primitive | Result |
 |---|---|
@@ -1211,7 +1291,7 @@ from swarmq import (
 )
 
 HealthChecker(broker, backend, *, timeout_s: float = 2.0, checks=None)
-HealthServer(checker, *, host="127.0.0.1", port=8080, liveness_started=None)
+HealthServer(checker, *, host="127.0.0.1", port=8080, liveness_started: float | None = None)
 serve_health(checker, *, host="127.0.0.1", port=8080)       # async context manager
 
 Metrics(registry=None, namespace="swarmq")
@@ -1229,12 +1309,21 @@ install_signal_collectors(dispatcher: SignalDispatcher, metrics: Metrics) -> Non
   [consumer timeout](../explanation/delivery-semantics.md#consumer-timeout))
   and, in CPU mode, `"compute"`. Until 0.10.x the only extra check was
   `compute_check=`; pass `checks={"compute": ...}` instead.
-- `HealthServer` serves `/health` (always `200` with `uptime_s`) and
-  `/ready` (`200` or `503` with the `check_all()` snapshot).
+- `HealthServer` serves `/health` (always `200` with `status` and
+  `uptime_s`, counted from `liveness_started` as a `time.monotonic()`
+  value, default: construction) and `/ready` (`200` or `503` with the
+  `check_all()` snapshot); any other path is `404`. `await start()` binds,
+  `await stop()` closes.
 - `Metrics` holds the [metric catalog](configuration.md#metric-catalog)
-  in its own `CollectorRegistry`; without `prometheus_client`
-  (`pip install 'swarmq[metrics]'`) every metric is a no-op.
-- `MetricsServer` serves `/metrics` from a `Metrics` instance.
+  in its own `CollectorRegistry` (or `registry`, with the metric name
+  prefix `namespace`); without `prometheus_client`
+  (`pip install 'swarmq[metrics]'`) every metric is a no-op, `enabled`
+  is `False` and `render()` returns an empty body.
+- `MetricsServer` serves `/metrics` (`render()` of the `Metrics`
+  instance; other paths `404`), with `start()`/`stop()` like
+  `HealthServer`.
+- `serve_health()` and `serve_metrics()` are async context managers that
+  start the server on enter and stop it on exit.
 - `install_signal_collectors()` registers the signal handlers that
   update the task counters, gauges and the duration histogram.
 
@@ -1251,13 +1340,52 @@ import them from `swarmq.exceptions`. `BrokerPublishBlocked` and
 `PublishRejected` can be imported from `swarmq` since 0.12.3; code that
 must also run on 0.12.0–0.12.2 imports them from `swarmq.exceptions`.
 Detailed semantics and `When raised` / `Cause` / `Recovery` for each
-class live in the [error catalog](errors.md). `ForkSourceRejected`,
-raised by an embedded CPU worker, is a `RuntimeError` in
-`swarmq.supervision`.
+class live in the [error catalog](errors.md). Two classes sit outside
+the hierarchy: `ForkSourceRejected`, raised by an embedded CPU worker,
+is a `RuntimeError` in `swarmq.supervision`, and
+`swarmq.exceptions.PublishCancelledUnsent` is an
+`asyncio.CancelledError` (see the 0.14.0 contract notes above).
+
+Hierarchy of the classes in `swarmq.__all__`:
+
+```text
+SwarmQError
+├── ConfigurationError
+│   ├── QueueArgumentsMismatch
+│   └── LoggingConfigError
+├── BrokerConnectionError
+│   ├── PublishIndeterminate
+│   ├── MessageHeadersTooLarge
+│   ├── UnroutableMessage
+│   ├── BrokerPublishBlocked
+│   └── PublishRejected
+├── BackendConnectionError
+│   └── BackendResponseError
+├── TaskError
+│   └── TaskCancelledError
+├── TaskNotFoundError, RedeliveryLimitError, LockWaitExceeded
+├── ResultNotReadyError, ResultExpiredError, ResultSerializationError
+├── WorkflowValidationError, WorkflowNotFound, WorkflowResultExpired
+└── Retry, NoRetry, SoftTimeoutError
+```
+
+`TaskCancelledError` is a `TaskError`: catch it first when you handle
+both. Constructors with their own parameters (all others take the usual
+`Exception` arguments):
+
+| Class | Constructor | Attributes |
+|---|---|---|
+| `Retry` | `Retry(delay: float \| None = None)` | `delay` |
+| `NoRetry` | `NoRetry(reason: str = "")` | `reason` |
+| `TaskError` | `TaskError(*args, error_class: str \| None = None)` | `error_class` |
+| `TaskCancelledError` | `TaskCancelledError(task_id: str \| None = None)` | `task_id`, `error_class` (`None`) |
+| `QueueArgumentsMismatch` | `QueueArgumentsMismatch(queue, argument, declared, existing, hint="")` | `queue`, `argument`, `declared`, `existing` |
+| `LoggingConfigError` | `LoggingConfigError(path: str, cause: BaseException)` | `path`, `__cause__` |
 
 `Retry(delay=...)` clamps a negative delay to `0` (retry immediately,
-counted against `max_retries`) and raises `ValueError` for `inf` and
-`nan` when it is created (since 0.12.3).
+counted against `max_retries`). It raises `ValueError` for `inf` and
+`nan` (since 0.12.3) and for a delay above `315360000` seconds (since
+0.13.1) when it is created. `delay=None` uses the task's backoff.
 
 ## See also
 

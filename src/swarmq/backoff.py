@@ -79,6 +79,38 @@ def backend_defer_delay(
     return float(min(base_delay * 2**exponent, max_delay) * uniform(*_DEFER_JITTER))
 
 
+# Höchster Exponent der Rate-Limit-Streuung; 2**16 Platzabstände übersteigen
+# jedes Fenster (das Limit ist eine ganze Zahl >= 1).
+_MAX_RATE_LIMIT_EXPONENT = 16
+
+
+def rate_limit_requeue_delay_ms(
+    retry_after_ms: int,
+    *,
+    window_ms: int,
+    max_requests: int,
+    bounces: int,
+    uniform: Callable[[float, float], float] | None = None,
+) -> int:
+    """Wartezeit einer vom Rate-Limit abgewiesenen Nachricht (DP-01).
+
+    ``retry_after_ms`` aus ``sliding_window_counter.lua`` plus Jitter,
+    gleichverteilt bis ``(window_ms / max_requests) * 2**bounces``,
+    höchstens ein Fenster. Ohne Jitter kämen alle im selben Moment
+    Abgewiesenen gleichzeitig zurück, nur einer bekäme den freien Platz.
+    ``bounces`` ist der Zähler ``x-swarmq-rate-limit-count`` (ab 1); je
+    öfter eine Nachricht abgewiesen wurde, desto weiter streut sie, so
+    bleibt die Zahl der Prüfungen bei Rückstand begrenzt. ``uniform`` ist
+    die Zufallsquelle (Tests); ohne Angabe ``random.uniform``, beim Aufruf
+    nachgeschlagen.
+    """
+    slot_ms = window_ms / max_requests if max_requests > 0 else window_ms
+    exponent = min(max(bounces, 1), _MAX_RATE_LIMIT_EXPONENT)
+    spread_ms = min(window_ms, slot_ms * 2**exponent)
+    draw = uniform if uniform is not None else random.uniform
+    return retry_after_ms + int(draw(0.0, spread_ms))
+
+
 def nominal_defer_total(attempts: int, base: float, cap: float) -> float:
     """Summe der nominellen Wartezeiten (ohne Jitter) der ersten
     ``attempts`` Zurueckstellungen, wie ``backend_defer_delay``."""

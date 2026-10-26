@@ -1,19 +1,19 @@
 # Tasks testen
 
-Du willst einen Task unit-testen, ohne RabbitMQ oder Valkey auf dem
-Host laufen zu lassen. SwarmQ-Tasks sind einfache Python-Klassen —
-der schnellste Weg ist, sie zu instanziieren und `run()` direkt
-aufzurufen. Integration-Tests decken dann die Teile ab, die
-wirklich die Infrastruktur brauchen.
+Du willst einen Task testen, ohne dass RabbitMQ oder Valkey auf dem
+Host laufen. Ein SwarmQ-Task ist eine gewöhnliche Python-Klasse:
+Unit-Tests instanziieren sie und rufen `run()` direkt auf.
+Integrationstests decken danach die Teile ab, die die Infrastruktur
+brauchen.
 
 ## Voraussetzungen
 
-- Ein Task, definiert in deinem Projekt (`myapp/tasks.py`).
-- `pytest` installiert (`pip install pytest pytest-asyncio`).
+- Ein Task in deinem Projekt (`myapp/tasks.py`).
+- `pytest` und `pytest-asyncio` (`pip install pytest pytest-asyncio`).
 
 ## `run()` direkt unit-testen
 
-Der einfachste Test: `run()` als Coroutine aufrufen.
+Rufe `run()` als Coroutine auf:
 
 ```python title="tests/test_tasks.py"
 import pytest
@@ -30,14 +30,31 @@ async def test_send_email_returns_message_id():
     assert result == "sent to a@example.com"
 ```
 
-Kein Broker, kein Backend, keine `SwarmQ`-Anwendung. `Task`-
-Subklassen sind reguläre Python-Klassen — das Framework greift
-erst, wenn ein Worker ihre Nachrichten konsumiert.
+Kein Broker, kein Backend, keine `SwarmQ`-Anwendung: Das Framework
+kommt erst ins Spiel, wenn ein Worker die Nachrichten des Tasks
+konsumiert.
 
-## Testen mit Dependencies
+Zwei Dinge leistet ein direkter Aufruf nicht:
 
-Nutzt dein Task geteilte Dependencies (SMTP-Client, HTTP-Session,
-DB-Pool), injiziere sie im Konstruktor und override in Tests:
+- **Serialisierung.** Der Worker übergibt `run()` die aus JSON
+  dekodierten Argumente, ein `datetime` kommt also als `str` an, ein
+  `tuple` als `list`
+  ([Argumente und Rückgabewerte](defining-tasks.md#argumente-und-ruckgabewerte)).
+  Übergib die Werte in der Form, in der der Worker sie liefert.
+- **Lebenszyklus.** `pre_execution`, `post_execution`, Timeouts,
+  Retries und Middleware laufen nur im Worker.
+
+Definiere Task-Klassen in Modulen, nicht innerhalb von Testfunktionen.
+Jede Unterklasse mit `task_info` landet in einer prozessweiten Liste,
+und `SwarmQ(...)` wirft `ConfigurationError` (`Task '…' is already
+registered`), wenn zwei Klassen denselben Namen tragen.
+
+## Testen mit Abhängigkeiten
+
+Nutzt dein Task gemeinsame Abhängigkeiten (SMTP-Client, HTTP-Session,
+DB-Pool), nimm sie als Konstruktor-Argumente entgegen und übergib im
+Test Attrappen. Der Worker baut den Task mit `SendEmail()`, darum
+braucht jeder Konstruktor-Parameter einen Standardwert:
 
 ```python title="myapp/tasks.py"
 class SendEmail(Task):
@@ -53,6 +70,7 @@ class SendEmail(Task):
 ```python title="tests/test_tasks.py"
 from unittest.mock import AsyncMock
 
+
 @pytest.mark.asyncio
 async def test_send_email_calls_smtp():
     smtp = AsyncMock()
@@ -65,20 +83,27 @@ async def test_send_email_calls_smtp():
     smtp.send.assert_awaited_once_with("a@example.com", "Hi")
 ```
 
-Dieses Pattern hält auch den Task selbst sauber — die Dependency
-ist ein expliziter Konstruktor-Arg, kein Modul-Level-Global.
+!!! note "Tasks mit `FromDishka`-Parametern"
+    Ein Task, dessen `run()` mit
+    [`FromDishka[...]`](../reference/api.md#dependency-injection-dishka)
+    annotierte Parameter nimmt, lässt sich nicht direkt aufrufen:
+    `run()` wirft `RuntimeError` („No active SwarmQ request scope“),
+    auch wenn du den Parameter selbst übergibst. Halte die Logik in
+    einer gewöhnlichen Klasse oder Funktion, die du direkt testest, und
+    decke den injizierten Task mit einem Integrationstest ab.
 
-## Progress-Updates testen
+## Fortschrittsmeldungen testen
 
-`update_progress()` ist ein No-Op, wenn kein Worker den Task
-gewired hat (`_backend` und `_task_id` sind `None`). Das bedeutet:
-Unit-Tests rufen ihn safe auf, ohne Valkey zu brauchen.
+`update_progress()` tut nichts, solange kein Worker den Task
+verdrahtet hat (`_backend` und `_task_id` sind `None`). Unit-Tests
+können es also ohne Valkey aufrufen.
 
-Wenn du asserten musst, dass Progress emittiert wurde, wire ein
+Um zu prüfen, dass Fortschritt geschrieben wurde, setze ein
 Mock-Backend:
 
 ```python
 from unittest.mock import AsyncMock
+
 
 @pytest.mark.asyncio
 async def test_report_emits_progress():
@@ -92,19 +117,23 @@ async def test_report_emits_progress():
     assert task._backend.set_progress.await_count >= 1
 ```
 
-Framework-interne Attrs (`_backend`, `_task_id`,
-`_result_ttl_ms`) sind bewusst zuweisbar, damit Tests Mocks
-installieren können, ohne die Klasse zu monkey-patchen.
+Die Attribute `_backend`, `_task_id` und `_result_ttl_ms` sind
+absichtlich zuweisbar, Tests brauchen also kein Monkeypatching.
+Schreibvorgänge sind auf einen je 500 ms gedrosselt, die letzte
+Meldung (`current == total`) geht immer durch; zähle mit `>=`, nicht
+mit `==`.
 
 ## Middleware testen
 
-Middleware ist eine einfache Klasse; konstruiere eine und rufe
-ihre Hooks mit einem synthetisierten `MessageContext` auf:
+Eine Middleware ist eine gewöhnliche Klasse. Erzeuge sie und rufe ihre
+Hooks mit einem `MessageContext` auf; der ist ein `TypedDict` und zur
+Laufzeit ein gewöhnliches `dict`:
 
 ```python
 import logging
 
 import pytest
+
 from myapp.middleware import TimingMiddleware
 
 
@@ -129,25 +158,22 @@ async def test_timing_middleware_logs_duration(caplog):
     assert record.duration_ms >= 0
 ```
 
-Das `message`-Dict kann literal konstruiert werden —
-`MessageContext` ist ein `TypedDict`, also zur Laufzeit ein
-einfaches `dict`.
-
-`caplog` sieht das Event, weil die
+`caplog` sieht das Ereignis, weil die
 [Beispiel-Middleware](middleware.md#eine-middleware-schreiben) über
-`swarmq.logging.get_logger` loggt und damit gewöhnliche
-`logging`-Records erzeugt: Der Event-Name ist die Record-Nachricht,
-jedes Feld ein Record-Attribut. Eine Middleware, die mit einem
+`swarmq.logging.get_logger` loggt. Das erzeugt gewöhnliche
+`logging`-Records: Der Ereignisname ist die Record-Nachricht, jedes
+Feld ein Record-Attribut. Eine Middleware, die mit einem
 unkonfigurierten `structlog.get_logger()` loggt, schreibt stattdessen
-auf stdout und erreicht `caplog` nie.
+nach stdout und erreicht `caplog` nie.
 
 ## Signal-Handler testen
 
-Instanziiere `SignalDispatcher` direkt, registriere den Handler
-und dispatche manuell:
+Erzeuge einen `SignalDispatcher`, registriere den Handler und löse das
+Signal selbst aus:
 
 ```python
 import pytest
+
 from swarmq import Signal
 from swarmq.signals import SignalDispatcher
 
@@ -161,8 +187,8 @@ async def test_on_task_failed_records_the_attempt():
     async def on_failed(task_id, task_name, exception, **kwargs):
         captured.append((task_id, task_name, exception))
 
-    # Dispatch the payload the worker sends: every key, and the
-    # exception as its message string.
+    # Die Nutzlast, die der Worker sendet: jeder Schlüssel, die
+    # Ausnahme als Nachrichtentext.
     await dispatcher.dispatch(
         Signal.TASK_FAILED,
         task_id="t-1",
@@ -174,25 +200,29 @@ async def test_on_task_failed_records_the_attempt():
     assert captured == [("t-1", "send_email", "boom")]
 ```
 
-Dispatche das vollständige Payload aus der
-[Signal-Tabelle](signals.md#verfugbare-signals). Ein Test, der `queue`
-weglässt, besteht auch für einen Handler mit fester Signatur, der im
-echten Worker dann mit `TypeError` scheitert.
+- Löse das Signal mit der vollständigen Nutzlast aus der
+  [Signal-Tabelle](signals.md#verfugbare-signals) aus. Ein Test, der
+  `queue` weglässt, besteht auch für einen Handler mit fester Signatur,
+  der dann im echten Worker mit `TypeError` scheitert.
+- `dispatch()` fängt und loggt jede Ausnahme eines Handlers, ein
+  `assert` im Handler lässt den Test also nie scheitern. Halte fest,
+  was der Handler sieht, und prüfe danach, wie oben.
 
-## Integration-Tests mit echter Infrastruktur
+## Integrationstests mit echter Infrastruktur
 
-Für den Roundtrip (schedule → Worker läuft → Ergebnis da)
-brauchst du ein echtes RabbitMQ und Valkey. Die
-`docker-compose.yml` des Repos startet beide; Tests können sich
-auf sie als Fixture verlassen:
+Der Rundlauf (einplanen, Worker führt aus, Ergebnis liegt vor) braucht
+ein echtes RabbitMQ und Valkey, etwa die Container aus dem
+[Schnellstart](../getting-started.md#broker-starten). Nutze für Tests
+einen eigenen vhost oder eine eigene Valkey-Datenbank, nie die
+Produktion.
 
 ```python title="tests/conftest.py"
-import pytest
 import pytest_asyncio
 
+import myapp.tasks  # noqa: F401 (registriert die Tasks, bevor SwarmQ gebaut wird)
 from swarmq import SwarmQ
-from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.backend.valkey import ValkeyBackend
+from swarmq.broker.rabbitmq import RabbitMQBroker
 
 
 @pytest_asyncio.fixture
@@ -205,18 +235,26 @@ async def app():
 
 ```python title="tests/test_roundtrip.py"
 import asyncio
+
 import pytest
 
-from myapp.tasks import SendEmail  # noqa — registriert den Task
+from swarmq import Signal
 
 
 @pytest.mark.asyncio
 async def test_roundtrip(app):
+    online = asyncio.Event()
+
+    @app.on_signal(Signal.WORKER_ONLINE)
+    async def on_online(**kwargs):
+        online.set()
+
     worker_task = asyncio.create_task(app.start_worker())
     try:
-        result = await app.run("send_email",
-                               to="a@example.com", subject="Hi",
-                               timeout=30)
+        await asyncio.wait_for(online.wait(), timeout=30)
+        result = await app.run(
+            "send_email", to="a@example.com", subject="Hi", timeout=30
+        )
         assert result == "sent to a@example.com"
     finally:
         worker_task.cancel()
@@ -224,59 +262,78 @@ async def test_roundtrip(app):
             await worker_task
 ```
 
-!!! tip
-    Nutze `--burst` in CI, um zu drainen und zu exiten, statt einen
-    langlebigen Consumer laufen zu lassen:
+Warte auf `WORKER_ONLINE`, bevor du einplanst: Der Worker deklariert
+seine Queues beim Start, und ein Publish in eine Queue, die es noch
+nicht gibt, wirft `UnroutableMessage`.
+
+!!! tip "Burst-Modus in der CI"
+    `--burst` leert die Queues und beendet sich, statt als
+    langlebiger Consumer weiterzulaufen:
 
     ```bash
     swarmq worker --module myapp.tasks --burst --burst-idle-timeout 10
     ```
 
-    Plane erst Tasks, dann starte den Worker. Er exited mit 0,
-    sobald die Queue leer und idle ist.
+    Der Worker endet mit `0`, sobald seine Queues
+    `--burst-idle-timeout` Sekunden (Standard 5) still waren. Auf einem
+    frischen Broker gibt es die Queues erst, wenn ein Worker sie
+    deklariert hat: Starte den Worker zuerst und plane innerhalb des
+    Leerlauffensters ein, sonst wirft der Publish `UnroutableMessage`.
 
-## Deferred- und Cron-Scheduling testen
+## Verzögertes und Cron-Scheduling testen
 
-`app.schedule(delay=N)` blockiert nicht — Tests müssen Zeit
-vorrücken oder warten. Einfachste Form: mit `delay=0` planen,
-asserten, dass das Ergebnis zurückkam, dann einen zweiten Test mit
-`delay=1` hinzufügen, um den Scheduler-Pfad abzudecken.
+`app.schedule(delay=N)` kehrt sofort zurück; der Task läuft erst, wenn
+der Scheduler-Leader ihn auslöst. `delay=0` veröffentlicht sofort wie
+ein gewöhnliches `schedule()`. Um den verzögerten Pfad in einem
+Integrationstest abzudecken, plane mit kurzem `delay` (etwa `1`) ein
+und warte mit einem Timeout von einigen Sekunden auf das Ergebnis; der
+eingebettete Worker übernimmt die Scheduler-Rolle, wenn kein anderer
+Worker auf demselben Valkey sie hält.
 
-Für Cron-Tests injiziere die aktuelle Zeit via Fixture, die
-`datetime.now` patcht:
+Einen Cron-Ausdruck testest du, ohne auf die Uhr zu warten: Berechne
+seine Termine mit
+[`next_fire_times`](../reference/api.md#next_fire_times). Die Funktion
+nutzt die Regel des Schedulers, Zeitzonen und Zeitumstellungen
+eingeschlossen:
 
 ```python
-@pytest.fixture
-def freeze_time(monkeypatch):
-    import datetime
-    fixed = datetime.datetime(2026, 4, 21, 3, 0, tzinfo=datetime.UTC)
+from datetime import UTC, datetime
 
-    class _Frozen(datetime.datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return fixed if tz is None else fixed.astimezone(tz)
+from swarmq.scheduler import next_fire_times
 
-    monkeypatch.setattr(datetime, "datetime", _Frozen)
+from myapp.tasks import NightlyReport
+
+
+def test_nightly_report_fires_at_three_berlin_time():
+    info = NightlyReport.task_info
+    start = datetime(2026, 10, 24, 12, 0, tzinfo=UTC)
+
+    fires = next_fire_times(info.cron, start, timezone=info.timezone, count=2)
+
+    assert [f.hour for f in fires] == [3, 3]
 ```
 
-Nutze `monkeypatch` sparsam — das meiste Scheduler-Verhalten wird
-bereits von SwarmQs eigener Testsuite abgedeckt.
+`start` muss eine Zeitzone tragen; ein naives `datetime` wirft
+`ValueError`. Die Termine kommen in der Zone des Crons zurück. Ob der
+Ausdruck überhaupt angenommen wird, prüft schon der Import des
+Task-Moduls (`TaskInfo` wirft `ValueError`); `swarmq worker --module
+myapp.tasks --check` meldet es vor einem Deploy.
 
-## Fast vs Full Suites
+## Schnelle und vollständige Suiten
 
-- **Unit-Tests** (ohne Infra): Sub-Sekunde pro Test, läuft bei
-  jeder Änderung.
-- **Integration-Tests** (echtes RabbitMQ + Valkey): Sekunden bis
-  zehn Sekunden. Läuft bei Push zu main und vor Release.
+- **Unit-Tests** (ohne Infrastruktur): Millisekunden je Test, bei
+  jeder Änderung ausführen.
+- **Integrationstests** (echtes RabbitMQ und Valkey): Sekunden je
+  Test. In der CI vor dem Merge und vor einem Release ausführen.
 
-Halte in CI Unit-only als Default (`pytest tests/unit`) und gate
-die Integration-Tier hinter einem separaten Job mit Docker.
+Halte in der CI die Unit-Stufe als Standard (`pytest tests/unit`) und
+führe die Integrationsstufe in einem eigenen Job mit den Diensten aus.
 
 ## Siehe auch
 
-- [Schnellstart](../getting-started.md) — starte die
-  Infrastruktur, die die Integration-Tests nutzen
-- [Tasks definieren](defining-tasks.md) — die Form von
-  `Task.run()` unter Test
-- [`swarmq inspect`](../reference/cli.md#swarmq-inspect) —
-  Registrierung ohne Worker-Start sanity-checken
+- [Schnellstart](../getting-started.md): die Infrastruktur starten,
+  die die Integrationstests nutzen
+- [Tasks definieren](defining-tasks.md): die Form von `Task.run()` im
+  Test
+- [`swarmq inspect`](../reference/cli.md#swarmq-inspect): die
+  Registrierung prüfen, ohne einen Worker zu starten
