@@ -7,7 +7,7 @@
 
 **Status (2026-10-26).** Georg hat entschieden: alle FEHLER beheben (Branch `fix/doku-pruefung`), die LÜCKEN V3b (E-087) und V4a/V4b (E-086) wie empfohlen.
 
-**Status (2026-10-26, Umsetzung).** Alle sieben Befunde behoben auf Branch `fix/doku-pruefung` (auf `docs/doku-ueberarbeitung`, MR !123), Nachweise ohne `xfail` grün: DP-01 `591ece7` (Lua) und `beead6f` (Jitter), DP-02 `0682a48`, DP-03 mit E-086/E-087 `5bec2e2`, DP-04 bis DP-06 `b017bac` und `b6ee56f` (Hilfe-Snapshots), DP-07 `5d6aa95`; Aufräumen V5d/V7 `3faf884`. Geplant als 0.15.0 (E-086 und E-087 sind breaking). Die Commits gelten für den Stand vor dem Merge.
+**Status (2026-10-26, Umsetzung).** Alle sieben Befunde behoben auf Branch `fix/doku-pruefung` (auf `docs/doku-ueberarbeitung`, MR !123), Nachweise ohne `xfail` grün: DP-01 `591ece7` (Lua) und `beead6f` (Jitter), DP-02 `0682a48`, DP-03 mit E-086/E-087 `5bec2e2`, DP-04 bis DP-06 `b017bac` und `b6ee56f` (Hilfe-Snapshots), DP-07 `5d6aa95`; Aufräumen V5d/V7 `3faf884`. Geplant als 0.15.0 (E-086, E-087 und DP-03 sind breaking: bisher angenommene Werte werden abgelehnt). Die Commits gelten für den Stand vor dem Merge.
 
 Zum Jitter von DP-01: Die Probe verglich mit dem echten Skript (`100/m`, Rückstand 2000, 10 min) fünf Varianten. Ohne Jitter 100 je Minute bei 272 000 Prüfungen (vorher 17 400 bei Ø 48); Jitter bis zur Wartezeit änderte daran nichts; bis zu einem Fenster 27 500 Prüfungen, aber bis zu einem Fenster zusätzlicher Wartezeit auch bei `/h` und `/d`; gewählt ist (Fenster / Limit) · 2^n, höchstens ein Fenster: 100 je Minute bei 36 000 Prüfungen, `10/s` und `1000/h` auf Limitniveau.
 

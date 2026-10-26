@@ -6,8 +6,8 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ## [Unreleased]
 
-Geplant als 0.15.0: Zwei Änderungen an der Konfiguration sind breaking.
-Befunde und Entscheidungen in `docs/befunde/doku-pruefung-2026-10.md`.
+Geplant als 0.15.0: Drei Änderungen lehnen bisher angenommene Werte ab
+(breaking). Befunde und Entscheidungen in `docs/befunde/doku-pruefung-2026-10.md`.
 
 ### Geändert (breaking)
 
@@ -21,6 +21,9 @@ Befunde und Entscheidungen in `docs/befunde/doku-pruefung-2026-10.md`.
   `SWARMQ_PRIORITIES=on` keine Prioritäts-Queues anlegte (E-086).
 - **`TaskInfo(max_retries=...)` lehnt negative Werte ab** (`ValueError`);
   bisher wirkte `-1` wie `0` (E-087).
+- **`TaskInfo(result_ttl=...)` lehnt negative Werte ab.** `-1` scheiterte
+  erst beim Speichern des Ergebnisses, und der Task lief erneut bis zum
+  Zustelllimit; `-0.5` wurde still zu `0` („nicht speichern“) (DP-03).
 
 ### Behoben
 
@@ -34,9 +37,6 @@ Befunde und Entscheidungen in `docs/befunde/doku-pruefung-2026-10.md`.
 - **`schedule_many()` publiziert in `pre_enqueue` geänderte `kwargs`.** Der
   Batch wurde vor dem Hook kodiert; eine Änderung in place (etwa ein
   Tenant-Feld) ging anders als bei `schedule()` verloren (DP-02, E-059).
-- **`TaskInfo(result_ttl=...)` lehnt negative Werte ab.** `-1` scheiterte
-  erst beim Speichern des Ergebnisses, und der Task lief erneut bis zum
-  Zustelllimit; `-0.5` wurde still zu `0` („nicht speichern“) (DP-03).
 - **Der Loglevel gilt überall ohne Rücksicht auf die Schreibung.**
   `SwarmQConfig(log_level="debug")`, `SWARMQ_LOG_LEVEL=debug` in einer
   eingebetteten App und `swarmq worker --log-level debug` wirken jetzt wie

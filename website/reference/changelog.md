@@ -6,8 +6,9 @@ All notable changes to SwarmQ. This project follows
 
 ## [Unreleased]
 
-Planned as 0.15.0: two configuration changes are breaking. Findings and
-decisions in `docs/befunde/doku-pruefung-2026-10.md`.
+Planned as 0.15.0: three changes reject values that were accepted so far
+(breaking). Findings and decisions in
+`docs/befunde/doku-pruefung-2026-10.md`.
 
 ### Changed (breaking)
 
@@ -21,6 +22,9 @@ decisions in `docs/befunde/doku-pruefung-2026-10.md`.
   `SWARMQ_PRIORITIES=on` created no priority queues (E-086).
 - **`TaskInfo(max_retries=...)` rejects negative values** with
   `ValueError`; until now `-1` acted like `0` (E-087).
+- **`TaskInfo(result_ttl=...)` rejects negative values.** `-1` failed only
+  when the result was stored and the task ran again up to the delivery
+  limit; `-0.5` became `0` ("do not store") without a word (DP-03).
 
 ### Fixed
 
@@ -35,9 +39,6 @@ decisions in `docs/befunde/doku-pruefung-2026-10.md`.
   batch was encoded before the hook ran, so an in-place change of a
   middleware (for example a tenant field) was lost, unlike in `schedule()`
   (DP-02, E-059).
-- **`TaskInfo(result_ttl=...)` rejects negative values.** `-1` failed only
-  when the result was stored and the task ran again up to the delivery
-  limit; `-0.5` became `0` ("do not store") without a word (DP-03).
 - **The log level is case-insensitive everywhere.** `SwarmQConfig(
   log_level="debug")`, `SWARMQ_LOG_LEVEL=debug` in an embedded app and
   `swarmq worker --log-level debug` now work like `DEBUG`; only
