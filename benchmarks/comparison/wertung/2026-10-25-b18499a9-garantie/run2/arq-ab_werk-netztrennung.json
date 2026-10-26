@@ -1,0 +1,27 @@
+{
+  "run": 2,
+  "system": "arq",
+  "profil": "ab_werk",
+  "stoerung": "netztrennung",
+  "status": "ok",
+  "worker_neustart": true,
+  "meta": {
+    "system": "arq",
+    "profil": "ab_werk",
+    "stoerung": "netztrennung",
+    "versionen": {
+      "arq": "0.28.0",
+      "redis": "5.3.1"
+    },
+    "python": "3.14.4"
+  },
+  "bilanz": {
+    "bestaetigt": 61,
+    "unbestimmt": 0,
+    "abgelehnt": 29,
+    "ausgefuehrt": 61,
+    "verluste": 0,
+    "duplikate": 3,
+    "duplikate_e077": 0
+  }
+}

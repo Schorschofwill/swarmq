@@ -1,0 +1,34 @@
+{
+  "system_name": "swarmq",
+  "scenario_name": "io_bound",
+  "params": {
+    "n": 1000,
+    "sleep_ms": 10,
+    "concurrency": 200
+  },
+  "throughput": 364.68,
+  "total_duration": 2.7421,
+  "memory_peak_mb": 0.0,
+  "latency_p50_ms": 730.46,
+  "latency_p95_ms": 1347.804,
+  "latency_p99_ms": 1406.697,
+  "latency_count": 1000,
+  "profil": "ab_werk",
+  "parallelitaet": "gleich",
+  "versionen": {
+    "swarmq": "0.14.4",
+    "aio-pika": "10.0.1",
+    "aiormq": "7.0.0",
+    "valkey": "6.1.1"
+  },
+  "images": {
+    "rabbitmq": "rabbitmq:4.3.6-management",
+    "valkey": "valkey/valkey:8.1.10-alpine"
+  },
+  "host": {
+    "name": "celsius-server",
+    "plattform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.41",
+    "cpus": 20,
+    "python": "3.14.4"
+  }
+}

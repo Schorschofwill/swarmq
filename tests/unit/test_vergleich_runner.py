@@ -35,6 +35,8 @@ Test-Liste:
 - [x] Dramatiq holt im Profil ``stark`` eine Nachricht je Thread, bei jeder Parallelität
 - [x] io_bound reiht nebenläufig ein, damit das Einreihen nicht den Durchsatz des Workers begrenzt
 - [x] io_bound fragt Ergebnisse so breit ab, dass die Abfrage nicht den Durchsatz des Workers begrenzt
+- [x] noop fragt im 1-ms-Raster ab, damit das Raster nicht die Latenz bestimmt
+- [x] latency sammelt im 1-ms-Raster ein
 """
 
 from __future__ import annotations
@@ -51,6 +53,7 @@ import tomllib
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import ModuleType
+from typing import override
 
 import pytest
 
@@ -449,6 +452,49 @@ async def test_io_bound_fragt_so_breit_ab_wie_semaphore_scale(vergleich: Callabl
     ergebnis = await vergleich("scenarios.io_bound").run_io_bound(Zaehler, n=20, sleep_ms=0)
 
     assert ergebnis.params["concurrency"] == max(vergleich("scenarios.semaphore_scale").STUFEN)
+
+
+class Abfrager(Zaehler):
+    """Schein-System, das die Abfrageintervalle von ``get_result`` mitschreibt."""
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self.intervalle: list[float] = []
+
+    @override
+    async def get_result(self, task_id: str, timeout: float = 30.0, poll_interval: float = 0.01) -> bool:
+        self.intervalle.append(poll_interval)
+        return True
+
+
+@pytest.mark.timeout(5)
+async def test_noop_fragt_im_millisekundenraster_ab(vergleich: Callable[[str], ModuleType]) -> None:
+    """Im 10-ms-Raster misst noop vor allem, ob der Task vor der ersten Abfrage fertig ist.
+
+    Lokal am 2026-10-26 (Dramatiq 2.2.1, je 300 Tasks): 1 ms Unterschied im Ablauf wurde zu 11 ms gegen
+    1 ms Latenz, je nachdem, ob die erste Abfrage traf; das erklärte Dramatiq ``stark`` mit dreifachem Durchsatz.
+    """
+    systeme: list[Abfrager] = []
+
+    def neu(**kwargs: object) -> Abfrager:
+        systeme.append(Abfrager(**kwargs))
+        return systeme[-1]
+
+    ergebnis = await vergleich("scenarios.noop").run_noop(neu, n=5)
+
+    assert systeme[0].intervalle[-5:] == [0.001] * 5
+    assert ergebnis.params["abfrage_ms"] == 1
+
+
+@pytest.mark.timeout(5)
+async def test_latency_sammelt_im_millisekundenraster_ein(vergleich: Callable[[str], ModuleType]) -> None:
+    """Der Sammler fragt offene Ergebnisse je Runde einmal ab; die Runden liegen ``poll_interval`` auseinander.
+
+    ``duration_s=0`` reiht nichts ein: Der Test prüft nur, womit das Ergebnis gemessen wurde.
+    """
+    ergebnis = await vergleich("scenarios.latency").run_latency(Abfrager, duration_s=0)
+
+    assert ergebnis.params["abfrage_ms"] == 1
 
 
 PARALLELITAETS_SCHALTER = frozenset({"--concurrency", "-c", "--processes", "-p", "--threads", "-t", "--workers", "-w"})

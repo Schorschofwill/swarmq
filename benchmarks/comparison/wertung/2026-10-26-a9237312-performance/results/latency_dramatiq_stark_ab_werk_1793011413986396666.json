@@ -1,0 +1,34 @@
+{
+  "system_name": "dramatiq",
+  "scenario_name": "latency",
+  "params": {
+    "rate": 100,
+    "duration_s": 30,
+    "sleep_ms": 10,
+    "abfrage_ms": 1.0
+  },
+  "throughput": 99.98,
+  "total_duration": 30.0056,
+  "memory_peak_mb": 0.0,
+  "latency_p50_ms": 14.792,
+  "latency_p95_ms": 16.466,
+  "latency_p99_ms": 18.488,
+  "latency_count": 3000,
+  "profil": "stark",
+  "parallelitaet": "ab_werk",
+  "versionen": {
+    "dramatiq": "2.2.1",
+    "pika": "1.4.4",
+    "redis": "8.1.0"
+  },
+  "images": {
+    "rabbitmq": "rabbitmq:4.3.6-management",
+    "valkey": "valkey/valkey:8.1.10-alpine"
+  },
+  "host": {
+    "name": "celsius-server",
+    "plattform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.41",
+    "cpus": 20,
+    "python": "3.14.4"
+  }
+}

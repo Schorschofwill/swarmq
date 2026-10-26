@@ -6,6 +6,7 @@ import asyncio
 import time
 
 from scenarios.base import (
+    ABFRAGE_RASTER,
     BenchmarkResult,
     make_result,
     run_warm_up,
@@ -17,7 +18,7 @@ async def run_latency(
     rate: int = 100,
     duration_s: int = 30,
     sleep_ms: int = 10,
-    poll_interval: float = 0.01,
+    poll_interval: float = ABFRAGE_RASTER,
 ) -> BenchmarkResult:
     """Sustain a constant enqueue rate, measure per-task E2E latency.
 
@@ -85,7 +86,12 @@ async def run_latency(
         return make_result(
             system_name=system.name,
             scenario_name="latency",
-            params={"rate": rate, "duration_s": duration_s, "sleep_ms": sleep_ms},
+            params={
+                "rate": rate,
+                "duration_s": duration_s,
+                "sleep_ms": sleep_ms,
+                "abfrage_ms": poll_interval * 1000,
+            },
             latencies=latencies,
             total_duration=t_scenario_end - t_scenario_start,
         )

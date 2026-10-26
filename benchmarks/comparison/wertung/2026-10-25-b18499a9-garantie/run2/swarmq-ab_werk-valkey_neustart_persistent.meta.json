@@ -1,0 +1,12 @@
+{
+  "system": "swarmq",
+  "profil": "ab_werk",
+  "stoerung": "valkey_neustart_persistent",
+  "versionen": {
+    "swarmq": "0.14.4",
+    "aio-pika": "10.0.1",
+    "aiormq": "7.0.0",
+    "valkey": "6.1.1"
+  },
+  "python": "3.14.4"
+}

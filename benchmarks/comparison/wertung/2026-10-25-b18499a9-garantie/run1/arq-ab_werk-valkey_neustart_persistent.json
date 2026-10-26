@@ -1,0 +1,27 @@
+{
+  "run": 1,
+  "system": "arq",
+  "profil": "ab_werk",
+  "stoerung": "valkey_neustart_persistent",
+  "status": "ok",
+  "worker_neustart": false,
+  "meta": {
+    "system": "arq",
+    "profil": "ab_werk",
+    "stoerung": "valkey_neustart_persistent",
+    "versionen": {
+      "arq": "0.28.0",
+      "redis": "5.3.1"
+    },
+    "python": "3.14.4"
+  },
+  "bilanz": {
+    "bestaetigt": 81,
+    "unbestimmt": 0,
+    "abgelehnt": 3,
+    "ausgefuehrt": 81,
+    "verluste": 0,
+    "duplikate": 0,
+    "duplikate_e077": 0
+  }
+}

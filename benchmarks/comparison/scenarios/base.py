@@ -145,6 +145,9 @@ async def run_timed_batch(
     return latencies
 
 
+#: Abfrageintervall, wo eine einzelne Latenz zählt (noop, latency): Im 10-ms-Raster misst die Latenz vor
+#: allem, ob der Task vor der ersten Abfrage fertig ist (METHODIK.md).
+ABFRAGE_RASTER = 0.001
 #: Gleichzeitige Ergebnisabfragen, wo sie den Worker nicht begrenzen sollen: Jede wartet ``poll_interval``.
 ABFRAGE = 200
 #: Gleichzeitige Publishes beim Einreihen; nacheinander begrenzt der Publish den Durchsatz.

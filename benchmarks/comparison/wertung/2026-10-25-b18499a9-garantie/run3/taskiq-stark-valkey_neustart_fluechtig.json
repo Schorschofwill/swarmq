@@ -1,0 +1,31 @@
+{
+  "run": 3,
+  "system": "taskiq",
+  "profil": "stark",
+  "stoerung": "valkey_neustart_fluechtig",
+  "status": "ok",
+  "worker_neustart": false,
+  "meta": {
+    "system": "taskiq",
+    "profil": "stark",
+    "stoerung": "valkey_neustart_fluechtig",
+    "versionen": {
+      "taskiq": "0.13.0",
+      "taskiq-aio-pika": "0.6.1",
+      "taskiq-redis": "1.2.4",
+      "aio-pika": "10.0.1",
+      "aiormq": "7.0.0",
+      "redis": "8.1.0"
+    },
+    "python": "3.14.4"
+  },
+  "bilanz": {
+    "bestaetigt": 84,
+    "unbestimmt": 0,
+    "abgelehnt": 0,
+    "ausgefuehrt": 84,
+    "verluste": 0,
+    "duplikate": 0,
+    "duplikate_e077": 0
+  }
+}

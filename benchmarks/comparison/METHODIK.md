@@ -31,6 +31,46 @@ halben Gesamtdauer, und die Parallelität des Workers änderte nichts. Solche
 Läufe sind für `io_bound` und `semaphore_scale` nicht verwertbar, ebenso Dramatiq
 im Profil `stark`: Es holte bis dahin eine Nachricht je Prozess statt je Thread.
 
+`noop` und `latency` fragen Ergebnisse alle 1 ms ab, `io_bound` und
+`semaphore_scale` alle 10 ms (dort fragen bis zu 200 gleichzeitig; enger
+würde der Erzeuger selbst zur Last). Bis `94343b9f` fragten auch `noop` und
+`latency` alle 10 ms. Eine einzelne Latenz maß dann vor allem, ob der Task
+vor der ersten Abfrage fertig war: lokal am 2026-10-26 mit Dramatiq 2.2.1
+lag dieselbe Ausführung bei rund 1 ms oder bei 11 ms, und Publisher-Confirms
+des Erzeugers, die die Zustellung um rund 1 ms beschleunigen, verdreifachten
+den gemessenen Durchsatz. Läufe bis `94343b9f` sind für `noop` und `latency`
+nicht verwertbar. swarmq ist davon nicht betroffen: `get_result` wartet per
+Pub/Sub und ignoriert das Abfrageintervall (`swarmq/client/results.py`).
+Die Ergebnisdateien nennen das Intervall (`params.abfrage_ms`).
+
+## Was die Szenarien messen
+
+Verwertbar sind auf celsius `io_bound` ab `94343b9f` und `noop` und `latency`
+ab `a9237312`. Gegen den Laptop ist celsius für jedes System 2,3- bis 3,3-mal
+langsamer (`noop`, 2026-10-26); verglichen wird deshalb nur auf derselben
+Maschine. Die Aufschlüsselungen unten sind Laptop-Messungen vom 2026-10-26
+mit swarmq an `a9237312`.
+
+- **`noop` misst vor allem den Queue-Typ.** Ein Task nach dem anderen wartet
+  jedes Mal auf die Publisher-Bestätigung. Bei einer Quorum-Queue kommt sie
+  erst nach dem Schreiben auf die Platte: swarmq braucht für `schedule()`
+  2,1 ms mit Quorum-Queue und 0,45 ms mit klassischer Queue, für den ganzen
+  Durchlauf 3,1 ms und 1,2 ms. Celery (`stark`) und taskiq nutzen ebenfalls
+  Quorum-Queues und liegen gleichauf mit swarmq; Dramatiq nutzt klassische
+  Queues.
+- **Warten auf das Ergebnis.** In `noop` wartet swarmq per Pub/Sub, die
+  anderen Systeme fragen alle 1 ms ab und verlieren dabei bis zu 1 ms je
+  Task. In `latency` sammelt der Erzeuger für jedes System gleich
+  per einzelner Abfrage ein (`timeout=0`); dort gibt es diesen Unterschied
+  nicht.
+- **`io_bound` begrenzt bei swarmq der Worker.** Ein Task belegt einen der
+  zehn Plätze 15,1 ms, davon 10,5 ms in `run()` und 2,9 ms in sechs
+  Valkey- und RabbitMQ-Aufrufen nacheinander. Der Erzeuger begrenzt nicht:
+  Mit einer geteilten Pub/Sub-Verbindung statt einer Verbindung je
+  `get_result` ändert sich der Durchsatz nicht (409 bis 620 gegen 492 bis
+  601 Tasks/s). Ob bei Celery, Dramatiq und taskiq Worker oder Erzeuger
+  begrenzt, ist nicht untersucht.
+
 ## Veröffentlichung
 
 Veröffentlicht werden nur Wertungsläufe auf der Referenzmaschine celsius,
@@ -55,7 +95,7 @@ Rechner über den Docker-Kontext des Hosts:
 ```bash
 scripts/vergleich-entfernt.sh starten celsius performance --runs 3   # oder: garantie --runs 3, ab --a … --b …
 scripts/vergleich-entfernt.sh status celsius
-scripts/vergleich-entfernt.sh abholen celsius benchmarks/comparison/wertung/<datum>
+scripts/vergleich-entfernt.sh abholen celsius benchmarks/comparison/wertung/<datum>-<commit>-<teil>
 ```
 
 `starten` baut aus einem sauberen Klon des aktuellen Commits das Image
@@ -66,6 +106,9 @@ Hosts, startet seine Dienste selbst und räumt sie am Ende ab
 (`im-container.sh`). `abholen` kopiert Ergebnisse und Log und entfernt
 Container und Image. Deshalb bindet kein Compose-Stack des Vergleichs eine
 Datei des Hosts ein; die Proxys von Toxiproxy stehen in `stoerungen/compose.yml`.
+Ins Repo kommen nur die gültigen Ergebnisdateien eines Laufs, beim
+Garantie-Teil dazu Hauptbücher und Logs gepackt, ohne die Logs des
+Performance-Teils (`wertung/README.md`).
 
 Voraussetzungen: Docker mit Compose, `uv`, Python 3.14 (die Umgebungen legt
 `einrichten.sh` mit `uv venv --python 3.14` an). Das Rezept startet den

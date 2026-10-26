@@ -1,0 +1,14 @@
+{
+  "system": "taskiq",
+  "profil": "stark",
+  "stoerung": "valkey_neustart_fluechtig",
+  "versionen": {
+    "taskiq": "0.13.0",
+    "taskiq-aio-pika": "0.6.1",
+    "taskiq-redis": "1.2.4",
+    "aio-pika": "10.0.1",
+    "aiormq": "7.0.0",
+    "redis": "8.1.0"
+  },
+  "python": "3.14.4"
+}
