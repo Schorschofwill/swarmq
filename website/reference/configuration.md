@@ -36,8 +36,9 @@ the URLs to `RabbitMQBroker(...)` and `ValkeyBackend(...)` instead.
 - Switches (`SWARMQ_BURST_MODE`, `SWARMQ_PRIORITIES`,
   `SWARMQ_EXECUTION_GUARD`, `SWARMQ_DEAD_LETTER_TERMINAL_FAILURES`,
   `SWARMQ_LOG_QUEUE`, `SWARMQ_CONFIGURE_LOGGING`, `SWARMQ_LOG_JSON`):
-  `true`, `1` and `yes` in any case mean on, **every other value means
-  off** (`on` too).
+  `true`, `1`, `yes` and `on` mean on, `false`, `0`, `no` and `off`
+  mean off, in any case. Any other value is a configuration error (exit
+  `78`; before 0.15 it meant off without a word, `on` too).
 - Whole numbers (`SWARMQ_CONCURRENCY`, `SWARMQ_RESULT_TTL`,
   `SWARMQ_SHUTDOWN_TIMEOUT`, `SWARMQ_DELIVERY_LIMIT`,
   `SWARMQ_RECYCLE_*`, `SWARMQ_EXECUTION_GUARD_MAX_ORPHANS`,
@@ -139,9 +140,9 @@ before env var) and hands the result to its worker subprocesses and
 compute children, which do not read the environment again. The same
 CLI > env > default order applies to every other worker option with a
 flag (see [CLI reference](cli.md)). Invalid values end `swarmq worker`
-with exit `78`. `swarmq worker` accepts the levels in any case; an
-embedded `SwarmQ(...)` reads `SWARMQ_LOG_LEVEL` and
-`SWARMQ_LOG_LIFECYCLE_LEVEL` as given and accepts only upper case. `swarmq check` predicts this start: every `SWARMQ_*`
+with exit `78`. The levels are accepted in any case, in `swarmq
+worker`, in `--log-level` and in an embedded `SwarmQ(...)` (before 0.15
+the last two accepted only upper case). `swarmq check` predicts this start: every `SWARMQ_*`
 value the worker would reject ends `check` with exit `78` before any
 connection, and `swarmq worker --check` reports it with `ok: false`
 (since 0.12.3).
@@ -507,7 +508,7 @@ definition time and cannot be mutated afterwards.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `max_retries` | `int` | `0` | Number of retry attempts before DLQ. `0` means no retries. |
+| `max_retries` | `int` | `0` | Number of retry attempts before DLQ. `0` means no retries; a negative value raises `ValueError`. |
 | `retry_backoff` | `str` | `"exponential"` | One of `"exponential"`, `"linear"`, `"fixed"`; anything else raises `ValueError`. |
 | `retry_base_delay` | `float` | `1.0` | Base delay (seconds) for the backoff formula. Must be `≥ 0`. |
 | `retry_exceptions` | `list[type[BaseException]] \| None` | `None` | Whitelist — only these exceptions trigger a retry (stored as a tuple). `None` retries any exception. |
@@ -549,7 +550,7 @@ an older worker reports it (`scheduler_cron_report_invalid`).
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `unique_for` | `int \| None` | `None` | Seconds; enables dedup on `(task_name, args, kwargs)` within the TTL. `0`, negative values, `inf` and `nan` are rejected, and so is a value above `315360000` (ten years, since 0.13.0). A `float` such as `timedelta(...).total_seconds()` is accepted and rounded up to the next second. |
+| `unique_for` | `int \| None` | `None` | Seconds; enables dedup on `(task_name, args, kwargs)` within the TTL. `0`, negative values, `inf`, `nan` and negative values are rejected, and so is a value above `315360000` (ten years, since 0.13.0). A `float` such as `timedelta(...).total_seconds()` is accepted and rounded up to the next second. |
 | `unique_until` | `"start" \| "completion"` | `"completion"` | When to release the dedup flag. `"start"` releases at worker pickup; `"completion"` at terminal state. |
 
 ### Expiry
@@ -562,7 +563,7 @@ an older worker reports it (`scheduler_cron_report_invalid`).
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `result_ttl` | `int \| None` | `None` | Per-task override for `SwarmQConfig.result_ttl`; `0` stores no result. A `FIRE_AND_FORGET` task without its own value stores no result either. A `float` is accepted and rounded up to the next second; `inf` and `nan` are rejected, and so is a value above `315360000` (ten years, since 0.13.0; for "keep forever" set a long but finite TTL). |
+| `result_ttl` | `int \| None` | `None` | Per-task override for `SwarmQConfig.result_ttl`; `0` stores no result. A `FIRE_AND_FORGET` task without its own value stores no result either. A `float` is accepted and rounded up to the next second; `inf`, `nan` and negative values are rejected, and so is a value above `315360000` (ten years, since 0.13.0; for "keep forever" set a long but finite TTL). |
 
 ## Validation behaviour
 

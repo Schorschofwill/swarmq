@@ -39,8 +39,10 @@ App übergibt die URLs stattdessen an `RabbitMQBroker(...)` und
 - Schalter (`SWARMQ_BURST_MODE`, `SWARMQ_PRIORITIES`,
   `SWARMQ_EXECUTION_GUARD`, `SWARMQ_DEAD_LETTER_TERMINAL_FAILURES`,
   `SWARMQ_LOG_QUEUE`, `SWARMQ_CONFIGURE_LOGGING`, `SWARMQ_LOG_JSON`):
-  `true`, `1` und `yes` in beliebiger Schreibweise heißen an, **jeder
-  andere Wert heißt aus** (auch `on`).
+  `true`, `1`, `yes` und `on` heißen an, `false`, `0`, `no` und `off`
+  heißen aus, in beliebiger Schreibweise. Jeder andere Wert ist ein
+  Konfigurationsfehler (Exit `78`; vor 0.15 hieß er still aus, auch
+  `on`).
 - Ganze Zahlen (`SWARMQ_CONCURRENCY`, `SWARMQ_RESULT_TTL`,
   `SWARMQ_SHUTDOWN_TIMEOUT`, `SWARMQ_DELIVERY_LIMIT`,
   `SWARMQ_RECYCLE_*`, `SWARMQ_EXECUTION_GUARD_MAX_ORPHANS`,
@@ -144,10 +146,10 @@ vor Env-Var) und gibt das Ergebnis an seine Worker-Subprozesse und
 Rechenkinder weiter, die das Environment nicht noch einmal lesen.
 Dieselbe Reihenfolge CLI > Env > Default gilt für jede andere
 Worker-Option mit Flag (siehe [CLI-Referenz](cli.md)). Ungültige Werte
-beenden `swarmq worker` mit Exit `78`. `swarmq worker` nimmt die Level in
-beliebiger Schreibweise an; ein eingebettetes `SwarmQ(...)` liest
-`SWARMQ_LOG_LEVEL` und `SWARMQ_LOG_LIFECYCLE_LEVEL` unverändert und
-nimmt nur Großbuchstaben an. `swarmq check` sagt diesen Start
+beenden `swarmq worker` mit Exit `78`. Die Level gelten in beliebiger
+Schreibweise, in `swarmq worker`, in `--log-level` und in einem
+eingebetteten `SwarmQ(...)` (vor 0.15 nahmen die beiden letzten nur
+Großbuchstaben an). `swarmq check` sagt diesen Start
 voraus: Jeder `SWARMQ_*`-Wert, den der Worker ablehnen würde, beendet
 `check` vor jeder Verbindung mit Exit `78`, und `swarmq worker --check`
 meldet ihn mit `ok: false` (seit 0.12.3).
@@ -521,7 +523,7 @@ mutiert werden.
 
 | Feld | Typ | Default | Beschreibung |
 |---|---|---|---|
-| `max_retries` | `int` | `0` | Anzahl Retry-Versuche vor DLQ. `0` heißt keine Retries. |
+| `max_retries` | `int` | `0` | Anzahl Retry-Versuche vor DLQ. `0` heißt keine Retries; ein negativer Wert wirft `ValueError`. |
 | `retry_backoff` | `str` | `"exponential"` | Einer aus `"exponential"`, `"linear"`, `"fixed"`; alles andere wirft `ValueError`. |
 | `retry_base_delay` | `float` | `1.0` | Basis-Delay (Sekunden) für die Backoff-Formel. Muss `≥ 0` sein. |
 | `retry_exceptions` | `list[type[BaseException]] \| None` | `None` | Whitelist — nur diese Exceptions lösen einen Retry aus (als Tupel gespeichert). `None` wiederholt bei jeder Exception. |
@@ -564,7 +566,7 @@ sie meldet (`scheduler_cron_report_invalid`).
 
 | Feld | Typ | Default | Beschreibung |
 |---|---|---|---|
-| `unique_for` | `int \| None` | `None` | Sekunden; aktiviert Dedup auf `(task_name, args, kwargs)` innerhalb der TTL. `0`, negative Werte, `inf` und `nan` abgelehnt, ebenso ein Wert über `315360000` (zehn Jahre, seit 0.13.0). Ein `float` wie `timedelta(...).total_seconds()` wird angenommen und auf die nächste Sekunde aufgerundet. |
+| `unique_for` | `int \| None` | `None` | Sekunden; aktiviert Dedup auf `(task_name, args, kwargs)` innerhalb der TTL. `0`, negative Werte, `inf`, `nan` und negative Werte abgelehnt, ebenso ein Wert über `315360000` (zehn Jahre, seit 0.13.0). Ein `float` wie `timedelta(...).total_seconds()` wird angenommen und auf die nächste Sekunde aufgerundet. |
 | `unique_until` | `"start" \| "completion"` | `"completion"` | Wann der Dedup-Flag freigegeben wird. `"start"` bei Worker-Pickup; `"completion"` bei Terminalzustand. |
 
 ### Expiry
@@ -577,7 +579,7 @@ sie meldet (`scheduler_cron_report_invalid`).
 
 | Feld | Typ | Default | Beschreibung |
 |---|---|---|---|
-| `result_ttl` | `int \| None` | `None` | Per-Task-Override von `SwarmQConfig.result_ttl`; `0` speichert kein Ergebnis. Ein `FIRE_AND_FORGET`-Task ohne eigenen Wert speichert ebenfalls keins. Ein `float` wird angenommen und auf die nächste Sekunde aufgerundet; `inf` und `nan` abgelehnt, ebenso ein Wert über `315360000` (zehn Jahre, seit 0.13.0; für „für immer“ eine lange, aber endliche TTL setzen). |
+| `result_ttl` | `int \| None` | `None` | Per-Task-Override von `SwarmQConfig.result_ttl`; `0` speichert kein Ergebnis. Ein `FIRE_AND_FORGET`-Task ohne eigenen Wert speichert ebenfalls keins. Ein `float` wird angenommen und auf die nächste Sekunde aufgerundet; `inf`, `nan` und negative Werte abgelehnt, ebenso ein Wert über `315360000` (zehn Jahre, seit 0.13.0; für „für immer“ eine lange, aber endliche TTL setzen). |
 
 ## Validierungs-Verhalten
 
