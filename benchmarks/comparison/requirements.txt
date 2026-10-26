@@ -1,14 +1,7 @@
-# SwarmQ (editable install from repo root)
--e ../..
-
-# Benchmark target libraries
-taskiq[redis]>=0.11
-taskiq-aio-pika>=0.4
-
-# Shared dependencies
-aio-pika>=9.0
-valkey[libvalkey]>=6.0
-uvloop>=0.21
-
-# Metrics
-psutil>=5.9
+# Gemeinsam für alle Vergleichsumgebungen (Plan 2026-10-24-1118).
+# Jedes System hat eine eigene Umgebung aus requirements-<system>.txt, weil
+# sich die Abhängigkeiten ausschließen (arq 0.28.0 verlangt redis<6,
+# taskiq-redis 1.2.4 redis>=8). Alle Versionen exakt gepinnt (KTD13, R22);
+# eine neue Hauptversion eines Systems ist der Anlass für einen neuen Lauf.
+uvloop==0.23.0
+psutil==7.2.2

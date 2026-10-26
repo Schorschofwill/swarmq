@@ -38,6 +38,12 @@ types:
     {{uv_run}} basedpyright
     {{uv_run}} python -m mypy.stubtest msgpack croniter --mypy-config-file pyproject.toml --ignore-missing-stub
 
+# Bekannte Schwachstellen in den Abhängigkeiten aus uv.lock (OSV), wie der
+# CI-Job abhaengigkeiten-pruefen (Plan 2026-10-24-1118, KTD2). Ausnahmen
+# kommen als ``--ignore <ID>`` dazu, je mit Kommentar aus Grund und Signal-ID.
+audit:
+    uv audit --frozen
+
 # Unit-Suite (ohne Dienste): parallel auf SWARMQ_TEST_WORKERS Prozessen, danach
 # die ``timing``-Tests (enges Zeitbudget gegen die echte Uhr) allein
 unit *args:
@@ -51,6 +57,27 @@ property *args:
 # test_external_publish_fuzz.py, die chaos_stack braucht (Plan 2026-10-17-0941, R21)
 fuzz *args:
     scripts/run-tests.sh --no-services --suite tests/fuzz --ignore tests/fuzz/test_external_publish_fuzz.py -m fuzz "$@"
+
+# Kostensuite ohne Dienste: zählbare Kosten je Task exakt gegen
+# tests/kosten/basislinie.toml (Plan 2026-10-24-1118). Ohne Coverage, die
+# CI setzt dafür SWARMQ_TEST_COVERAGE leer.
+kosten *args:
+    scripts/run-tests.sh --no-services --suite tests/kosten -m kosten "$@"
+
+# Basislinie der Kostensuite neu messen und schreiben; der Grund verweist auf
+# eine Entscheidung (E-nnn), einen Befund oder docs/plans/<datei>.md (KTD7).
+# Misst beide Teile, die Valkey-Kosten unter der Testsperre: Die Datei
+# enthält danach genau die gemessenen Szenarien. Ohne Test-Valkey würden die
+# sechs Valkey-Kostentests übersprungen; SWARMQ_TEST_MIN_TESTS macht den Lauf
+# dann rot, und das Skript bricht ab, wenn Szenarien fehlen.
+kosten-basislinie grund:
+    messung="$(mktemp)"; trap 'rm -f "$messung"' EXIT; SWARMQ_KOSTEN_MESSUNG="$messung" scripts/run-tests.sh --no-services --suite tests/kosten -m kosten && SWARMQ_KOSTEN_MESSUNG="$messung" SWARMQ_TEST_MIN_TESTS=6 scripts/run-tests.sh --suite tests/kosten/valkey -m kosten_valkey && {{uv_run}} python scripts/kosten_basislinie.py "$1" "$messung"
+
+# Valkey-Kosten: Befehle und Roundtrips je Task exakt gegen
+# tests/kosten/basislinie.toml (Plan 2026-10-24-1118, KTD6). Seriell, ein
+# Task nacheinander; unter der Testsperre gegen das Test-Valkey (6399).
+kosten-valkey *args:
+    scripts/run-tests.sh --suite tests/kosten/valkey -m kosten_valkey "$@"
 
 # Integration gegen RabbitMQ und Valkey: parallel auf SWARMQ_TEST_WORKERS Prozessen,
 # je in eigener vhost und Valkey-Datenbank (tests/support/services.py), danach
@@ -75,7 +102,7 @@ stress *args:
 all:
     scripts/with-test-lock.sh {{just_executable()}} --justfile {{justfile()}} _all
 
-_all: unit property fuzz integration e2e
+_all: unit property fuzz kosten integration kosten-valkey e2e
 
 # Unit, Integration und e2e unter Coverage, zusammengefuehrt (unter einer Sperre)
 coverage:
@@ -102,6 +129,21 @@ coverage-gate:
 # fail_under aus drei main-Laeufen anheben (ohne Werte per GitLab-API; scripts/coverage_ratchet.py)
 ratchet *values:
     {{uv_run}} python scripts/coverage_ratchet.py "$@"
+
+# A/B-Messung zweier Refs mit Urteil nach R5 (scripts/ab_messung.py --help); Wertungslaeufe nur auf celsius
+ab *args:
+    {{uv_run}} --group messung python scripts/ab_messung.py "$@"
+
+# Garantie-Vergleich unter Stoerungen (Plan 2026-10-24-1118; benchmarks/comparison/METHODIK.md):
+# eigener Compose-Stack swarmq-vergleich-stoerung mit Toxiproxy, alle Systeme,
+# Profile und Stoerungen, am Ende ``down -v``. Vorher einmal
+# benchmarks/comparison/einrichten.sh; Argumente siehe ``--help``.
+vergleich-garantie *args:
+    cd benchmarks/comparison && uv run python -m stoerungen.garantie "$@"
+
+# Stand der Saettigung je Saeule aus Methodenkatalog und Saettigungsbuch (docs/befunde/, scripts/saettigung.py)
+saettigung:
+    {{uv_run}} python scripts/saettigung.py
 
 # --- Mutation im Container (Plan 2026-10-17-0941, U2; docker/mutation/README.md) ---
 # Docker-Kontext je Aufruf (nie `docker context use`); Standard ist der Lastserver.

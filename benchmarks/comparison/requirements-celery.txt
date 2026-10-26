@@ -1,0 +1,21 @@
+# Vergleichsumgebung für celery: das System und alle transitiven Abhängigkeiten,
+# aufgelöst für Python 3.14 (uv pip freeze, 2026-10-24).
+-r requirements.txt
+amqp==5.4.1
+billiard==4.3.1
+celery==5.6.3
+click==8.5.0
+click-didyoumean==0.3.1
+click-plugins==1.1.1.2
+click-repl==0.4.1
+kombu==5.6.2
+packaging==26.3
+prompt-toolkit==3.0.53
+python-dateutil==3.0.0
+redis==6.4.0
+six==1.17.0
+typing-extensions==4.16.0
+tzdata==2026.5
+tzlocal==5.4.5
+vine==5.1.0
+wcwidth==0.9.3

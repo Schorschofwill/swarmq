@@ -6,7 +6,7 @@
 #
 # Basis wie der CI-Job `.uv-git` in .gitlab-ci.yml (nicht slim: git für die
 # Unit-Tests, die Repos in tmp_path anlegen).
-FROM ghcr.io/astral-sh/uv:python3.14-bookworm
+FROM ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
 
 ENV UV_FROZEN=1 \
     UV_LINK_MODE=copy \

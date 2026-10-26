@@ -13,8 +13,10 @@
 #       (zombie leader); fixed by a cancel-safe try/finally + Scheduler.abort().
 #       Verified: the full suite ran clean 3x under 6-way CPU saturation
 #       (heavier than the CI runner). A red e2e job is now a real regression.
-#     * chaos + fuzz: nicht in der Pipeline -- oertlich vor Releases,
-#       siehe den Block weiter unten und docs/testing/test-strategy.md.
+#     * fuzz: im Unit-Job, blockierend, deterministisch (Profil ci) und mit
+#       Wächter gegen leere Läufe (Plan 2026-10-24-1118).
+#     * chaos: nicht in der Pipeline -- örtlich vor Releases, siehe den
+#       Block weiter unten und docs/testing/test-strategy.md.
 #   secret_detection runs in the test stage, next to the tests (it needs
 #     nothing from them), so it does not extend the critical path.
 #
@@ -64,14 +66,20 @@ variables:
   SWARMQ_TEST_SEED: "$CI_PIPELINE_ID"
 
 # Shared uv setup: pinned-Python slim image, no setup steps (see header).
+# Exakt gepinnt: uv 0.11.6 (uv audit, Job abhaengigkeiten-pruefen) und Python
+# 3.14.4 wie .python-version, denn die Modulzahlen der Kostensuite hängen an der
+# Python-Version (Plan 2026-10-24-1118, KTD2, KTD5). Der gleitende Tag
+# python3.14-bookworm-slim steht seit Februar 2026 auf uv 0.9.30 und Python
+# 3.14.2; Astral pflegt nur noch Trixie. Python-Update = neuer Tag hier, in
+# .python-version und docker/mutation/Dockerfile, plus neu erhobene Basislinie.
 .uv:
-  image: ghcr.io/astral-sh/uv:python3.14-bookworm-slim
+  image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie-slim
   before_script: []
 
 # Same, with git (non-slim image): the ratchet test and coverage-combine.
 .uv-git:
   extends: .uv
-  image: ghcr.io/astral-sh/uv:python3.14-bookworm
+  image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
 
 # Real RabbitMQ + Valkey services + a readiness gate. Reused by the
 # integration and e2e jobs. RabbitMQ is pinned exactly (Plan 2026-10-08-1541,
@@ -154,6 +162,26 @@ lock-check:
   script:
     - uv lock --check
 
+# Bekannte Schwachstellen in den Abhängigkeiten aus uv.lock, per uv audit
+# gegen OSV (Plan 2026-10-24-1118, KTD2). Blockierend nur, wenn der Branch
+# uv.lock oder pyproject.toml gegenüber main ändert: Es gibt nur
+# Branch-Pipelines, und ohne compare_to vergliche `changes` mit dem vorigen
+# Push. Sonst nur eine Warnung, damit eine neue CVE main nie ohne eigenes
+# Zutun rot macht; sie ist das Signal für die nächste Runde (R15). needs:
+# lock-check, damit nie ein veraltetes Lock geprüft wird. Ausnahmen stehen im
+# Rezept audit.
+abhaengigkeiten-pruefen:
+  extends: .uv
+  stage: test
+  needs: [lock-check]
+  rules:
+    - changes:
+        paths: [uv.lock, pyproject.toml]
+        compare_to: refs/heads/main
+    - allow_failure: true
+  script:
+    - $UV_RUN just audit
+
 # Rohdaten der Messung und JUnit-Berichte eines Test-Jobs, auch bei Rot.
 .coverage-data:
   artifacts:
@@ -168,8 +196,13 @@ lock-check:
 # job log), and a failure is a bug to fix, not to retry (Plan 2026-10-13-0902,
 # U4). Reproduce locally with --randomly-seed=<seed from the log>.
 # Härtung R2 B1: the pure parser-fuzz suite joins the blocking gate — it is
-# deterministic (seeded corpus), service-free and sub-second; previously NO
-# CI job ever executed tests/fuzz, so the suite was rotting unnoticed.
+# service-free; previously NO CI job ever executed tests/fuzz, so the suite
+# was rotting unnoticed.
+# Plan 2026-10-24-1118: SWARMQ_FUZZ_PROFILE=ci lädt das Hypothesis-Profil
+# mit derandomize (gleiche Beispiele in jedem Lauf, R10). SWARMQ_TEST_MIN_TESTS
+# macht den Lauf rot, wenn weniger Fuzz-Ziele ausgeführt als verlangt wurden,
+# etwa weil alle übersprungen sind (AE7, scripts/run-tests.sh). Die Zahl ist
+# die aktuelle Zahl der Ziele ohne Dienste.
 unit-tests:
   extends: .uv-git
   stage: test
@@ -178,7 +211,10 @@ unit-tests:
   script:
     - $UV_RUN just unit -q --junitxml=junit-unit.xml
     - $UV_RUN just property -q --junitxml=junit-property.xml
-    - $UV_RUN just fuzz -q --junitxml=junit-fuzz.xml
+    - SWARMQ_FUZZ_PROFILE=ci SWARMQ_TEST_MIN_TESTS=31 $UV_RUN just fuzz -q --junitxml=junit-fuzz.xml
+    # Ohne Coverage: Sie lädt eigene Module in jedes Kind, die Modulzahlen
+    # liefen sonst zwischen CI und lokal auseinander (Plan 2026-10-24-1118, KTD4).
+    - SWARMQ_TEST_COVERAGE= $UV_RUN just kosten -q --junitxml=junit-kosten.xml
   artifacts: !reference [.coverage-data, artifacts]
 
 # Tier 2a — integration against real RabbitMQ + Valkey (deterministic).
@@ -208,6 +244,9 @@ integration-tests:
     SWARMQ_TEST_COVERAGE: "1"
   script:
     - $UV_RUN just integration -q --junitxml=junit-integration.xml
+    # Valkey-Befehle und Roundtrips je Task exakt gegen tests/kosten/basislinie.toml
+    # (Plan 2026-10-24-1118, KTD6), ohne Coverage wie just kosten.
+    - SWARMQ_TEST_COVERAGE= $UV_RUN just kosten-valkey -q --junitxml=junit-kosten-valkey.xml
   artifacts: !reference [.coverage-data, artifacts]
 
 # Tier 2b — full e2e. BLOCKING, no reruns. The two confirmed flakiness causes
@@ -297,7 +336,7 @@ soak-tests:
 # dritte: die Suite laeuft oertlich vor Releases, und niemand behauptet in
 # der Pipeline etwas anderes.
 #
-# Wie und wann: docs/testing/test-strategy.md, Abschnitt "Chaos und Fuzz".
+# Wie und wann: docs/testing/test-strategy.md, Abschnitt "Chaos und Chaos-gestützter Fuzz".
 
 secret_detection:
   stage: test

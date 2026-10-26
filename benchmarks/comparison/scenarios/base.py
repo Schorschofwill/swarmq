@@ -30,6 +30,8 @@ class BenchmarkResult:
     latencies: list[float] = field(default_factory=list)  # seconds
     total_duration: float = 0.0  # seconds
     memory_peak_mb: float = 0.0
+    #: Versionen, Images, Host und Profil des Laufs (``runner.metadaten``).
+    meta: dict[str, Any] = field(default_factory=dict)
 
     @property
     def p50(self) -> float:
@@ -64,6 +66,7 @@ class BenchmarkResult:
             "latency_p95_ms": round(self.p95 * 1000, 3),
             "latency_p99_ms": round(self.p99 * 1000, 3),
             "latency_count": len(self.latencies),
+            **self.meta,
         }
 
 
@@ -142,6 +145,12 @@ async def run_timed_batch(
     return latencies
 
 
+#: Gleichzeitige Ergebnisabfragen, wo sie den Worker nicht begrenzen sollen: Jede wartet ``poll_interval``.
+ABFRAGE = 200
+#: Gleichzeitige Publishes beim Einreihen; nacheinander begrenzt der Publish den Durchsatz.
+ERZEUGER = 10
+
+
 async def run_timed_batch_concurrent(
     system: TaskQueueSystem,
     task_name: str,
@@ -149,28 +158,23 @@ async def run_timed_batch_concurrent(
     concurrency: int,
     poll_interval: float = 0.01,
 ) -> list[float]:
-    """Enqueue all tasks, then gather results concurrently.
+    """Enqueue with ``ERZEUGER`` concurrent publishes and collect each result as soon as it is enqueued.
 
-    Returns list of latencies in seconds (enqueue-to-result per task).
+    At most ``concurrency`` result fetches run at once. Returns list of latencies
+    in seconds (enqueue-to-result per task).
     """
-    # Enqueue all tasks, recording start times
-    enqueue_data: list[tuple[str, float]] = []
-    for payload in payloads:
-        t_start = time.perf_counter()
-        task_id = await system.enqueue(task_name, payload)
-        enqueue_data.append((task_id, t_start))
+    einreihen = asyncio.Semaphore(ERZEUGER)
+    abfragen = asyncio.Semaphore(concurrency)
 
-    # Gather results with bounded concurrency
-    sem = asyncio.Semaphore(concurrency)
-    latencies: list[float] = [0.0] * len(enqueue_data)
-
-    async def _collect(idx: int, task_id: str, t_start: float) -> None:
-        async with sem:
+    async def _task(payload: dict) -> float:
+        async with einreihen:
+            t_start = time.perf_counter()
+            task_id = await system.enqueue(task_name, payload)
+        async with abfragen:
             await system.get_result(task_id, timeout=60.0, poll_interval=poll_interval)
-            latencies[idx] = time.perf_counter() - t_start
+        return time.perf_counter() - t_start
 
-    await asyncio.gather(*(_collect(i, tid, ts) for i, (tid, ts) in enumerate(enqueue_data)))
-    return latencies
+    return list(await asyncio.gather(*(_task(payload) for payload in payloads)))
 
 
 def make_result(
@@ -221,13 +225,40 @@ def aggregate_runs(results: list[BenchmarkResult]) -> AggregatedResult:
 
 
 def save_result(result: BenchmarkResult, results_dir: Path) -> Path:
-    """Save a BenchmarkResult as JSON to the results directory."""
+    """Save a BenchmarkResult as JSON; ohne Metadaten wird nichts geschrieben."""
+    daten = result.to_dict()
+    pruefe_ergebnis(daten)
     results_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = int(time.time())
-    filename = f"{result.scenario_name}_{result.system_name}_{timestamp}.json"
+    # Nanosekunden: Zwei Läufe derselben Kombination in einer Sekunde überschreiben sich nicht.
+    filename = (
+        f"{result.scenario_name}_{result.system_name}_{daten['profil']}_{daten['parallelitaet']}_{time.time_ns()}.json"
+    )
     path = results_dir / filename
-    path.write_text(json.dumps(result.to_dict(), indent=2))
+    path.write_text(json.dumps(daten, indent=2))
     return path
+
+
+#: Pflichtfelder jeder Ergebnisdatei (Plan 2026-10-24-1118): ohne sie ist
+#: ein Lauf weder nachstellbar noch einem Profil und einer Parallelität zuzuordnen (R22).
+METADATEN = ("versionen", "images", "host", "profil", "parallelitaet")
+
+
+class UngueltigesErgebnis(ValueError):
+    """Eine Ergebnisdatei ohne die Metadaten, die der Vergleich verlangt."""
+
+
+def pruefe_ergebnis(ergebnis: dict[str, Any]) -> None:
+    """Lehnt ein Ergebnis ab, dem eines der Felder aus ``METADATEN`` fehlt oder leer ist."""
+    fehlend = [feld for feld in METADATEN if not ergebnis.get(feld)]
+    if fehlend:
+        raise UngueltigesErgebnis(f"Ergebnis ohne {', '.join(fehlend)}")
+
+
+def lade_ergebnis(path: Path) -> dict[str, Any]:
+    """Liest eine Ergebnisdatei und prüft ihre Metadaten."""
+    ergebnis = json.loads(path.read_text())
+    pruefe_ergebnis(ergebnis)
+    return ergebnis
 
 
 def load_results(results_dir: Path) -> list[dict[str, Any]]:

@@ -1,0 +1,171 @@
+# Basislinie der Kostensuite (Plan 2026-10-24-1118, U3, KTD7).
+# Nicht von Hand ändern: uv run just kosten-basislinie "<Grund mit Verweis>"
+# schreibt die Werte neu und hängt einen Historieneintrag an.
+
+python = "3.14.4"
+
+[werte.einfacher_task]
+"backend.execution_guard.claim" = 1
+"backend.execution_guard.mark_done" = 1
+"backend.is_cancelled" = 1
+"backend.notify_result" = 1
+"backend.store_result" = 1
+"broker.ack" = 1
+"broker.publish" = 1
+
+[werte.import_swarmq]
+module = 151
+
+[werte.import_swarmq_cli]
+module = 421
+
+[werte.publish]
+"amqp.frames" = 3
+"broker.publish" = 1
+
+[werte.retry]
+"backend.execution_guard.claim" = 2
+"backend.execution_guard.mark_done" = 1
+"backend.execution_guard.mark_superseded" = 1
+"backend.is_cancelled" = 3
+"backend.notify_result" = 1
+"backend.store_result" = 1
+"broker.ack" = 1
+"broker.publish" = 1
+"broker.retry_later" = 1
+
+[werte.valkey_einfacher_task]
+"valkey.EVALSHA" = 2
+"valkey.EXISTS" = 1
+"valkey.PUBLISH" = 1
+"valkey.SET" = 1
+"valkey.befehle" = 5
+"valkey.roundtrips" = 5
+
+[werte.valkey_get_result]
+"valkey.GET" = 1
+"valkey.SUBSCRIBE" = 1
+"valkey.UNSUBSCRIBE" = 1
+"valkey.befehle" = 3
+"valkey.roundtrips" = 3
+
+[werte.valkey_lock_rate_limit]
+"valkey.EVALSHA" = 5
+"valkey.EXISTS" = 1
+"valkey.PUBLISH" = 1
+"valkey.SET" = 1
+"valkey.TIME" = 2
+"valkey.befehle" = 10
+"valkey.roundtrips" = 10
+
+[werte.valkey_retry]
+"valkey.EVALSHA" = 4
+"valkey.EXISTS" = 3
+"valkey.PUBLISH" = 1
+"valkey.SET" = 1
+"valkey.befehle" = 9
+"valkey.roundtrips" = 9
+
+[werte.valkey_workflow_kette]
+"valkey.EVALSHA" = 6
+"valkey.EXISTS" = 6
+"valkey.GET" = 2
+"valkey.PUBLISH" = 3
+"valkey.SET" = 3
+"valkey.befehle" = 20
+"valkey.roundtrips" = 20
+
+[werte.worker_start]
+module = 670
+
+[werte.workflow_kette]
+"backend.compare_and_store_workflow_state" = 2
+"backend.execution_guard.claim" = 2
+"backend.execution_guard.mark_done" = 2
+"backend.get_workflow_state" = 2
+"backend.is_cancelled" = 2
+"backend.is_workflow_cancelled" = 4
+"backend.notify_result" = 2
+"backend.notify_workflow" = 1
+"backend.store_result" = 2
+"backend.store_workflow_state" = 1
+"broker.ack" = 2
+"broker.publish" = 2
+
+[[historie]]
+datum = "2026-10-24"
+grund = "Erste Basislinie der Kostensuite (docs/plans/2026-10-24-1118-chore-qualitaetsablauf-plan.md, U3)"
+python = "3.14.4"
+aenderungen = [
+    { szenario = "einfacher_task", metrik = "backend.execution_guard.claim", neu = 1 },
+    { szenario = "einfacher_task", metrik = "backend.execution_guard.mark_done", neu = 1 },
+    { szenario = "einfacher_task", metrik = "backend.is_cancelled", neu = 1 },
+    { szenario = "einfacher_task", metrik = "backend.notify_result", neu = 1 },
+    { szenario = "einfacher_task", metrik = "backend.store_result", neu = 1 },
+    { szenario = "einfacher_task", metrik = "broker.ack", neu = 1 },
+    { szenario = "einfacher_task", metrik = "broker.publish", neu = 1 },
+    { szenario = "import_swarmq", metrik = "module", neu = 151 },
+    { szenario = "import_swarmq_cli", metrik = "module", neu = 421 },
+    { szenario = "publish", metrik = "amqp.frames", neu = 3 },
+    { szenario = "publish", metrik = "broker.publish", neu = 1 },
+    { szenario = "retry", metrik = "backend.execution_guard.claim", neu = 2 },
+    { szenario = "retry", metrik = "backend.execution_guard.mark_done", neu = 1 },
+    { szenario = "retry", metrik = "backend.execution_guard.mark_superseded", neu = 1 },
+    { szenario = "retry", metrik = "backend.is_cancelled", neu = 3 },
+    { szenario = "retry", metrik = "backend.notify_result", neu = 1 },
+    { szenario = "retry", metrik = "backend.store_result", neu = 1 },
+    { szenario = "retry", metrik = "broker.ack", neu = 1 },
+    { szenario = "retry", metrik = "broker.publish", neu = 1 },
+    { szenario = "retry", metrik = "broker.retry_later", neu = 1 },
+    { szenario = "worker_start", metrik = "module", neu = 670 },
+    { szenario = "workflow_kette", metrik = "backend.compare_and_store_workflow_state", neu = 2 },
+    { szenario = "workflow_kette", metrik = "backend.execution_guard.claim", neu = 2 },
+    { szenario = "workflow_kette", metrik = "backend.execution_guard.mark_done", neu = 2 },
+    { szenario = "workflow_kette", metrik = "backend.get_workflow_state", neu = 2 },
+    { szenario = "workflow_kette", metrik = "backend.is_cancelled", neu = 2 },
+    { szenario = "workflow_kette", metrik = "backend.is_workflow_cancelled", neu = 4 },
+    { szenario = "workflow_kette", metrik = "backend.notify_result", neu = 2 },
+    { szenario = "workflow_kette", metrik = "backend.notify_workflow", neu = 1 },
+    { szenario = "workflow_kette", metrik = "backend.store_result", neu = 2 },
+    { szenario = "workflow_kette", metrik = "backend.store_workflow_state", neu = 1 },
+    { szenario = "workflow_kette", metrik = "broker.ack", neu = 2 },
+    { szenario = "workflow_kette", metrik = "broker.publish", neu = 2 },
+]
+
+[[historie]]
+datum = "2026-10-24"
+grund = "Valkey-Befehle und Roundtrips je Task (docs/plans/2026-10-24-1118-chore-qualitaetsablauf-plan.md, U4); get_result: Abonnement und ein GET vor dem Polling (E-030); Lock mit Rate-Limit: Rate-Limit vor Lock (E-070)"
+python = "3.14.4"
+aenderungen = [
+    { szenario = "valkey_einfacher_task", metrik = "valkey.EVALSHA", neu = 2 },
+    { szenario = "valkey_einfacher_task", metrik = "valkey.EXISTS", neu = 1 },
+    { szenario = "valkey_einfacher_task", metrik = "valkey.PUBLISH", neu = 1 },
+    { szenario = "valkey_einfacher_task", metrik = "valkey.SET", neu = 1 },
+    { szenario = "valkey_einfacher_task", metrik = "valkey.befehle", neu = 5 },
+    { szenario = "valkey_einfacher_task", metrik = "valkey.roundtrips", neu = 5 },
+    { szenario = "valkey_get_result", metrik = "valkey.GET", neu = 1 },
+    { szenario = "valkey_get_result", metrik = "valkey.SUBSCRIBE", neu = 1 },
+    { szenario = "valkey_get_result", metrik = "valkey.UNSUBSCRIBE", neu = 1 },
+    { szenario = "valkey_get_result", metrik = "valkey.befehle", neu = 3 },
+    { szenario = "valkey_get_result", metrik = "valkey.roundtrips", neu = 3 },
+    { szenario = "valkey_lock_rate_limit", metrik = "valkey.EVALSHA", neu = 5 },
+    { szenario = "valkey_lock_rate_limit", metrik = "valkey.EXISTS", neu = 1 },
+    { szenario = "valkey_lock_rate_limit", metrik = "valkey.PUBLISH", neu = 1 },
+    { szenario = "valkey_lock_rate_limit", metrik = "valkey.SET", neu = 1 },
+    { szenario = "valkey_lock_rate_limit", metrik = "valkey.TIME", neu = 2 },
+    { szenario = "valkey_lock_rate_limit", metrik = "valkey.befehle", neu = 10 },
+    { szenario = "valkey_lock_rate_limit", metrik = "valkey.roundtrips", neu = 10 },
+    { szenario = "valkey_retry", metrik = "valkey.EVALSHA", neu = 4 },
+    { szenario = "valkey_retry", metrik = "valkey.EXISTS", neu = 3 },
+    { szenario = "valkey_retry", metrik = "valkey.PUBLISH", neu = 1 },
+    { szenario = "valkey_retry", metrik = "valkey.SET", neu = 1 },
+    { szenario = "valkey_retry", metrik = "valkey.befehle", neu = 9 },
+    { szenario = "valkey_retry", metrik = "valkey.roundtrips", neu = 9 },
+    { szenario = "valkey_workflow_kette", metrik = "valkey.EVALSHA", neu = 6 },
+    { szenario = "valkey_workflow_kette", metrik = "valkey.EXISTS", neu = 6 },
+    { szenario = "valkey_workflow_kette", metrik = "valkey.GET", neu = 2 },
+    { szenario = "valkey_workflow_kette", metrik = "valkey.PUBLISH", neu = 3 },
+    { szenario = "valkey_workflow_kette", metrik = "valkey.SET", neu = 3 },
+    { szenario = "valkey_workflow_kette", metrik = "valkey.befehle", neu = 20 },
+    { szenario = "valkey_workflow_kette", metrik = "valkey.roundtrips", neu = 20 },
+]

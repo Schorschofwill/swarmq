@@ -2,7 +2,7 @@
 title: Upgrade-Checkliste – private APIs von valkey-py, aiormq, aio-pika, pytest und asyncio, an denen swarmq hängt
 date: 2026-10-19
 category: docs/solutions/tooling-decisions
-module: backend/valkey/connection.py / broker/rabbitmq/blocked.py / broker/rabbitmq/delivery.py / broker/rabbitmq/header_guard.py / broker/rabbitmq/robust_channels.py / broker/rabbitmq/consumer_watch.py / broker/rabbitmq/connection.py / client/schedule.py / logging_stdlib.py / logging_file.py / logging_queue.py / worker/compute/child.py / worker/compute/forkserver.py / tests/unit/test_slow_test_report.py
+module: backend/valkey/connection.py / tests/kosten/valkey/conftest.py / broker/rabbitmq/blocked.py / broker/rabbitmq/delivery.py / broker/rabbitmq/header_guard.py / broker/rabbitmq/robust_channels.py / broker/rabbitmq/consumer_watch.py / broker/rabbitmq/connection.py / client/schedule.py / logging_stdlib.py / logging_file.py / logging_queue.py / worker/compute/child.py / worker/compute/forkserver.py / tests/unit/test_slow_test_report.py
 problem_type: tooling_decision
 component: dependencies
 severity: medium
@@ -65,6 +65,37 @@ Instanz, `_mark_handshake_resets` ersetzt `connection.on_connect` (F4-14, E-075)
 Die Namen sind öffentlich, das Zusammenspiel ist es nicht: Prüfen, ob
 `get_connection` weiter `make_connection` aufruft und `on_connect` nach dem TCP-Aufbau
 läuft. Tests wie oben.
+
+### `AbstractConnection.send_packed_command` als Zählpunkt (undokumentiert, Testwerkzeug, Plan 2026-10-24-1118, U4)
+
+- **Wo:** Fixture `leitung` in `tests/kosten/valkey/conftest.py`. Sie ersetzt per
+  `monkeypatch` `valkey.asyncio.connection.AbstractConnection.send_packed_command` der
+  Klasse durch eine Hülle, die jeden Aufruf als einen Roundtrip zählt und die
+  RESP-Arrays darin als Befehle. Daraus entstehen die Valkey-Werte in
+  `tests/kosten/basislinie.toml` (`valkey.roundtrips`, `valkey.befehle`, `valkey.<BEFEHL>`).
+- **Annahmen über valkey-py:**
+  - Jeder Schreibvorgang einer Verbindung läuft über `send_packed_command`: Einzelbefehle
+    über `send_command`, Pipelines und MULTI-Blöcke als ein Aufruf mit allen Befehlen
+    (`Pipeline._execute_transaction` und `_execute_pipeline`, in 6.1.1 `client.py`
+    Z. 1409 und 1479), Pub/Sub über `send_command` der Pub/Sub-Verbindung, Handshake
+    (`on_connect`) und Health-Check-`PING` über `send_command` derselben Verbindung.
+  - Keine Unterklasse (`Connection`, `UnixDomainSocketConnection`, SSL) überschreibt
+    `send_packed_command`; sonst greift die Hülle an der Klasse nicht.
+  - Das Argument ist `bytes`, `str` oder eine Folge von `bytes`, deren Verkettung
+    vollständige RESP-Arrays aus Bulk-Strings ergibt (`pack_command`, `pack_commands`).
+  - `ScriptPipeline` (`src/swarmq/backend/valkey/script_pipeline.py`) schreibt über
+    dieselbe Methode; ein Stapel zählt als ein Roundtrip.
+- **Prüfen:** `valkey/asyncio/connection.py`, `AbstractConnection.send_packed_command`
+  und `send_command` (in 6.1.1 ab Z. 500), und die Aufrufer in `valkey/asyncio/client.py`
+  (`grep -n send_packed_command`).
+- **Tests:** `uv run just kosten-valkey`. Der Test
+  `test_a_multi_block_counts_as_one_roundtrip_with_every_command` prüft die Hülle selbst
+  (ein MULTI-Block, ein Roundtrip, vier Befehle); die Szenarien vergleichen exakt mit der
+  Basislinie.
+- **Rückfall:** keiner im Produktcode, die Hülle ist reines Testwerkzeug. Ändert valkey-py
+  den Schreibweg, wird `kosten-valkey` rot (Hüllentest oder Abweichung von der Basislinie)
+  oder zählt zu wenig. Dann die Hülle an den neuen Schreibweg hängen und erst danach die
+  Basislinie mit `uv run just kosten-basislinie "<Grund>"` nachführen, nicht umgekehrt.
 
 ## aiormq
 
