@@ -1,0 +1,28 @@
+{
+  "run": 1,
+  "system": "dramatiq",
+  "profil": "ab_werk",
+  "stoerung": "broker_neustart",
+  "status": "ok",
+  "worker_neustart": false,
+  "meta": {
+    "system": "dramatiq",
+    "profil": "ab_werk",
+    "stoerung": "broker_neustart",
+    "versionen": {
+      "dramatiq": "2.2.1",
+      "pika": "1.4.4",
+      "redis": "8.1.0"
+    },
+    "python": "3.14.4"
+  },
+  "bilanz": {
+    "bestaetigt": 62,
+    "unbestimmt": 0,
+    "abgelehnt": 28,
+    "ausgefuehrt": 62,
+    "verluste": 0,
+    "duplikate": 32,
+    "duplikate_e077": 0
+  }
+}
