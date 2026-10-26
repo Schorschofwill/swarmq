@@ -14,6 +14,7 @@ from swarmq.keyspace import validate_namespace
 from swarmq.logging_settings import (
     VALID_LOG_FORMATS,
     LoggingSettings,
+    parse_env_bool,
     parse_logger_levels,
     split_csv,
 )
@@ -148,7 +149,7 @@ def parse_env_value(kind: str, raw: str, env_name: str) -> object:
         # ``none`` schaltet eine Frist ab (Plan 2026-10-08-1541, KTD6).
         return None if raw.strip().lower() == "none" else _parse_float(raw, env_name)
     if kind == "bool":
-        return raw.lower() in ("true", "1", "yes")
+        return parse_env_bool(raw, env_name)
     if kind == "csv":
         return [q.strip() for q in raw.split(",") if q.strip()]
     if kind == "port":

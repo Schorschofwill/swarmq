@@ -311,6 +311,11 @@ class ConfigValidation:
         """Logging-Felder pruefen (R13/R14); CRITICAL gilt ueberall (KTD8)."""
         for field_name in ("log_level", "log_lifecycle_level"):
             value = getattr(self, field_name)
+            if isinstance(value, str):
+                # E-086: wie ``SWARMQ_LOG_LEVEL`` im Worker ohne Rücksicht auf
+                # Groß- und Kleinschreibung.
+                value = value.strip().upper()
+                setattr(self, field_name, value)
             if value not in VALID_LOG_LEVELS:
                 msg = f"{field_name} must be one of {sorted(VALID_LOG_LEVELS)}, got {value!r}"
                 raise ConfigurationError(msg)

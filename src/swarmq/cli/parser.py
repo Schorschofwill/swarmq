@@ -145,6 +145,7 @@ def _add_worker_parser(subparsers: Any) -> None:
     )
     worker.add_argument(
         "--log-level",
+        type=str.upper,  # E-086: debug wie DEBUG
         choices=_VALID_LOG_LEVELS,
         default=None,
         help=(

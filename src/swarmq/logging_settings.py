@@ -108,7 +108,7 @@ def resolve_logging_settings(
         "SWARMQ_CONFIGURE_LOGGING",
         "configure_logging",
         default=True,
-        env_value=_parse_bool(raw_configure) if raw_configure else None,
+        env_value=parse_env_bool(raw_configure, "SWARMQ_CONFIGURE_LOGGING") if raw_configure else None,
     )
     _check_combinations(log_config, log_format, configure)
     return LoggingSettings(
@@ -304,7 +304,7 @@ def _env_format(env: Mapping[str, str]) -> str | None:
     if raw := env.get("SWARMQ_LOG_FORMAT"):
         return raw.strip().lower()
     if raw := env.get("SWARMQ_LOG_JSON"):
-        return "json" if _parse_bool(raw) else "human"
+        return "json" if parse_env_bool(raw, "SWARMQ_LOG_JSON") else "human"
     return None
 
 
@@ -314,6 +314,22 @@ def _config_format(config: Mapping[str, object] | None) -> str | None:
     return "json" if config["log_json"] else "human"
 
 
-def _parse_bool(raw: str) -> bool:
-    # Dieselbe Lesart wie die ``bool``-Overrides in ``SwarmQConfig``.
-    return raw.strip().lower() in ("true", "1", "yes")
+_TRUE_WORDS = ("true", "1", "yes", "on")
+_FALSE_WORDS = ("false", "0", "no", "off")
+
+
+def parse_env_bool(raw: str, env_name: str) -> bool:
+    """Einen Schalter aus der Umgebung lesen (E-086).
+
+    Dieselbe Lesart für alle ``bool``-Overrides in ``SwarmQConfig`` und die
+    Logging-Variablen: ``true``/``1``/``yes``/``on`` und
+    ``false``/``0``/``no``/``off`` in beliebiger Schreibung. Ein anderer Wert
+    ist ein ``ConfigurationError``, statt still „aus“ zu bedeuten.
+    """
+    word = raw.strip().lower()
+    if word in _TRUE_WORDS:
+        return True
+    if word in _FALSE_WORDS:
+        return False
+    msg = f"{env_name} must be one of {list(_TRUE_WORDS + _FALSE_WORDS)}, got {raw!r}"
+    raise ConfigurationError(msg)

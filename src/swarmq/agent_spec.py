@@ -499,7 +499,8 @@ def _arg_type(action: argparse.Action) -> str:
         return "bool"
     if isinstance(action, argparse._VersionAction):
         return "version"
-    if action.type is None:
+    if action.type is None or action.type is str.upper:
+        # ``str.upper`` normalisiert nur die Schreibung (``--log-level``, E-086).
         return "str"
     # Custom validators surface their intent (e.g. _positive_int → positive_int).
     return getattr(action.type, "__name__", str(action.type)).lstrip("_")
