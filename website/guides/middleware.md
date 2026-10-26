@@ -265,8 +265,9 @@ delivers the original message body again and `pre_execute` runs again,
 so the hook must make the same change on every attempt.
 
 In `pre_enqueue` the same rule applies to `message["kwargs"]` of a
-`schedule()` call: an in-place change is published with the task (with
-`delay`/`eta` it is stored and published at fire time). A change to
+`schedule()` or `schedule_many()` call: an in-place change is published
+with the task (with `delay`/`eta` it is stored and published at fire
+time; `schedule_many()` before 0.15 published the unchanged `kwargs`). A change to
 `message["args"]` does not reach the message.
 
 ## What middleware should **not** do

@@ -274,8 +274,10 @@ läuft noch einmal; der Hook muss die Änderung also bei jedem Versuch
 machen.
 
 In `pre_enqueue` gilt dasselbe für `message["kwargs"]` eines
-`schedule()`-Aufrufs: Eine Änderung in place wird mit dem Task
-publiziert (bei `delay`/`eta` gespeichert und beim Fire publiziert).
+`schedule()`- oder `schedule_many()`-Aufrufs: Eine Änderung in place wird
+mit dem Task publiziert (bei `delay`/`eta` gespeichert und beim Fire
+publiziert; `schedule_many()` publizierte vor 0.15 die unveränderten
+`kwargs`).
 Eine Änderung an `message["args"]` erreicht die Nachricht nicht.
 
 ## Was Middleware **nicht** tun soll
