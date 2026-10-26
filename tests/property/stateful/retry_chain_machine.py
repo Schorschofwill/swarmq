@@ -667,9 +667,9 @@ class RetryChainMachine(AsyncStateMachine[ChainEnv]):
         if estimated >= RATE_MAX:
             # Bis die Schätzung wieder unter dem Limit liegt (DP-01).
             if current < RATE_MAX:
-                wait = math.floor((1.0 - (RATE_MAX - current) / previous) * RATE_WINDOW_MS) + 1 - elapsed
+                wait = RATE_WINDOW_MS * (previous - (RATE_MAX - current)) // previous + 1 - elapsed
             else:
-                wait = RATE_WINDOW_MS - elapsed + math.floor((1.0 - RATE_MAX / current) * RATE_WINDOW_MS) + 1
+                wait = RATE_WINDOW_MS - elapsed + RATE_WINDOW_MS * (current - RATE_MAX) // current + 1
             return False, window_ts, max(1, math.ceil(wait))
         return True, window_ts, 0
 

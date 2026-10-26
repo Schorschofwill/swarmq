@@ -408,9 +408,9 @@ class InMemoryRateLimitStore:
             if max_requests <= 0:
                 wait = window_ms - elapsed
             elif current < max_requests:
-                wait = math.floor((1 - (max_requests - current) / previous) * window_ms) + 1 - elapsed
+                wait = window_ms * (previous - (max_requests - current)) // previous + 1 - elapsed
             else:
-                wait = window_ms - elapsed + math.floor((1 - max_requests / current) * window_ms) + 1
+                wait = window_ms - elapsed + window_ms * (current - max_requests) // current + 1
             return RateLimitDecision(False, 0, max(1, math.ceil(wait)))
         self._counts.set(f"{name}:{window_ts}", current + 1, 2 * window_ms)
         remaining = max(0, max_requests - int(estimated) - 1)

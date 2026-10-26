@@ -20,6 +20,7 @@ Testliste:
 # [x] Vorfenster voll, aktuelles zu 25 %, 25 % ins Fenster: Platz nach ~1 ms statt 45 s
 # [x] aktuelles Fenster voll: Platz 1 ms nach Fensterbeginn statt erst eines Fensters später
 # [x] Vorfenster und aktuelles teilweise voll: genau ab retry_after wieder Platz
+# [x] ganzzahlige Grenze (100/45, 0/125): keine Abweisung durch Gleitkomma-Rundung
 """
 
 from __future__ import annotations
@@ -106,3 +107,17 @@ async def test_partly_filled_windows_free_headroom_exactly_at_retry_after(valkey
     await limiter.preset(_WINDOW_START, 40)
 
     await limiter.assert_headroom_exactly_after(_WINDOW_START + 6_000)
+
+
+@pytest.mark.parametrize(("previous", "current"), [(100, 45), (0, 125)])
+async def test_an_integer_boundary_is_not_lost_to_float_rounding(valkey_client, previous: int, current: int) -> None:
+    """Review DP-01: ``1 - 55/100`` ist in double ``0.44999…``; mit
+    ``floor(r · W) + 1`` zeigte retry_after auf den Zeitpunkt, an dem die
+    Schätzung genau das Limit erreicht (abgewiesen). Ebenso ``1 - 100/125``
+    im Zweig „erst im nächsten Fenster“."""
+    limiter = _Limiter(valkey_client)
+    if previous:
+        await limiter.preset(_WINDOW_START - _WINDOW_MS, previous)
+    await limiter.preset(_WINDOW_START, current)
+
+    await limiter.assert_headroom_exactly_after(_WINDOW_START)

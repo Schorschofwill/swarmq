@@ -53,19 +53,24 @@ if estimated_count >= max_requests then
     -- of the fixed window instead returns every rejected caller at the
     -- boundary, where the previous window still counts in full, and
     -- halves the throughput under a backlog.
+    -- The boundaries are computed in integers: with floats, 1 - 55/100
+    -- is 0.44999..., and an exact boundary would land on the moment the
+    -- estimate equals the limit (still rejected).
     local elapsed_ms = now_ms - window_start_ms
     local wait_ms
     if max_requests <= 0 then
         -- Never any headroom: check again at the next window.
         wait_ms = window_size_ms - elapsed_ms
     elseif current_count < max_requests then
-        -- Within this window: previous * (1 - r) + current < max.
-        local r_needed = 1.0 - (max_requests - current_count) / previous_count
-        wait_ms = math.floor(r_needed * window_size_ms) + 1 - elapsed_ms
+        -- Within this window: previous * (W - t) / W + current < max,
+        -- i.e. t > W * (previous - (max - current)) / previous.
+        local numerator = window_size_ms * (previous_count - (max_requests - current_count))
+        wait_ms = (numerator - numerator % previous_count) / previous_count + 1 - elapsed_ms
     else
-        -- Only in the next window: current * (1 - r) < max.
-        local r_next = 1.0 - max_requests / current_count
-        wait_ms = (window_size_ms - elapsed_ms) + math.floor(r_next * window_size_ms) + 1
+        -- Only in the next window: current * (W - t) / W < max,
+        -- i.e. t > W * (current - max) / current.
+        local numerator = window_size_ms * (current_count - max_requests)
+        wait_ms = (window_size_ms - elapsed_ms) + (numerator - numerator % current_count) / current_count + 1
     end
     local retry_after = math.max(1, math.ceil(wait_ms))
     local remaining = math.max(0, math.floor(max_requests - estimated_count))

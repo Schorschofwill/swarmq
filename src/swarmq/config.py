@@ -466,7 +466,7 @@ class SwarmQConfig(ConfigValidation):
     #: Die Felder, die ``_apply_logging_settings`` aus ``logging_settings``
     #: setzt. ``log_queue`` gehoert nicht dazu: ``LoggingSettings`` kennt den
     #: eingebetteten Opt-in nicht, ``SWARMQ_LOG_QUEUE`` bleibt also die einzige
-    #: Quelle -- und als ``bool`` kann der Wert nicht ungueltig sein.
+    #: Quelle; einen ungültigen Wert lehnt ``parse_env_bool`` ab (E-086).
     _SETTINGS_FIELDS: ClassVar[frozenset[str]] = frozenset(
         {
             "log_level",

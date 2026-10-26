@@ -36,7 +36,8 @@ class Signal(enum.Enum):
       * TASK_CANCELLED:   task_id, task_name
       * TASK_RATE_LIMITED: task_id, task_name, retry_after_ms,
                           remaining, rate_limit_count
-        - retry_after_ms: ms the message will wait in the delay queue
+        - retry_after_ms: ms until the limit has room again; the copy
+          waits this long plus a jitter (DP-01)
         - remaining: estimated requests still allowed in the window
         - rate_limit_count: number of times this exact message has been
           requeued by the rate limiter (operator-visible bounce counter)
