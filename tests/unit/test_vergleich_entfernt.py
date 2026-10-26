@@ -15,6 +15,7 @@ Test-Liste:
 - [x] im Container startet ``performance`` den Dienste-Stack, führt den Runner aus, räumt den Stack auch nach einem Fehler ab und legt Ergebnisse und Ausgang ab
 - [x] im Container schreibt ``garantie`` seine Ergebnisse direkt nach /ergebnisse; den Stack verwaltet der Garantie-Lauf selbst
 - [x] im Container misst ``ab`` mit dem Dienste-Stack aus dem Repo heraus und schreibt das Ergebnis nach /ergebnisse
+- [x] das Lauf-Image enthält das Git-Repo; ``ab`` legt daraus die Worktrees der beiden Refs an
 """
 
 from __future__ import annotations
@@ -246,3 +247,15 @@ def test_ab_im_container_misst_mit_dem_stack_aus_dem_repo(tmp_path: Path) -> Non
         messung,
         "compose -p swarmq-vergleich -f docker-compose.yml down -v",
     ]
+
+
+def _ausgeschlossen(dockerignore: Path) -> set[str]:
+    return {z.strip() for z in dockerignore.read_text().splitlines() if z.strip() and not z.startswith("#")}
+
+
+def test_das_lauf_image_enthaelt_das_git_repo_fuer_die_worktrees_von_ab() -> None:
+    """BuildKit nimmt ``<Dockerfile>.dockerignore`` vor der ``.dockerignore`` im Kontext."""
+    eigene = VERGLEICH_DIR / "Dockerfile.dockerignore"
+    dockerignore = eigene if eigene.exists() else VERGLEICH_DIR.parents[1] / ".dockerignore"
+
+    assert ".git" not in _ausgeschlossen(dockerignore)

@@ -1,0 +1,7 @@
+# Build-Kontext des Vergleichs-Abbilds (scripts/vergleich-entfernt.sh). BuildKit
+# nimmt diese Datei statt der .dockerignore im Repo, die .git ausschließt: Der
+# Lauf ``ab`` legt die Worktrees seiner beiden Refs aus dem Git-Repo im Abbild
+# an. Der Kontext ist ein frischer Klon, Umgebungen baut das Abbild selbst.
+**/.venv
+**/.venvs
+**/__pycache__
