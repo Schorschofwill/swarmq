@@ -156,17 +156,19 @@ async with SwarmQ(broker, backend) as app:
     result = await handle.get(timeout=60)
 ```
 
-`apply()` speichert die Topologie in Valkey, publiziert die ersten
-Schritte (den ersten Chain-Schritt, alle Group-Glieder oder den
-Chord-Header) und gibt sofort ein `WorkflowHandle` zurück. Den Rest
-treiben die Worker: Gelingt ein Schritt, reiht der Worker, der ihn
-ausgeführt hat, die nächsten Schritte ein, und das zuletzt fertige
-Glied einer Group oder eines Chord-Headers löst das Fan-in genau einmal
-aus. Der Client-Prozess darf sich beenden; der Workflow läuft weiter.
+`apply()` führt `pre_enqueue` für die ersten Schritte aus, speichert die
+Topologie in Valkey, publiziert die ersten Schritte (den ersten
+Chain-Schritt, alle Group-Glieder oder den Chord-Header) und gibt sofort
+ein `WorkflowHandle` zurück. Den Rest treiben die Worker: Gelingt ein
+Schritt, reiht der Worker, der ihn ausgeführt hat, die nächsten
+Schritte ein, und das zuletzt fertige Glied einer Group oder eines
+Chord-Headers löst das Fan-in genau einmal aus. Der Client-Prozess darf
+sich beenden; der Workflow läuft weiter.
 
 Jeder Schritt ist eine gewöhnliche Task-Ausführung: Retries, Timeouts,
 Rate-Limits und Locks aus seiner `TaskInfo` gelten. Schritt-Nachrichten
-werden immer als `AT_LEAST_ONCE` publiziert.
+werden immer als `AT_LEAST_ONCE` publiziert; Schritte müssen deshalb
+idempotent sein.
 
 Der Workflow-Zustand lebt so lange wie `result_ttl` der
 `SwarmQ`-Instanz, die `apply()` aufgerufen hat (Default 86400 s). Setze
@@ -189,6 +191,10 @@ handle = await app.workflow(workflow_id)  # WorkflowNotFound, falls nicht vorhan
 print(await handle.status())
 ```
 
+Ein reiner `swarmq.client.Client` (ohne `SwarmQ`) hängt sich mit
+`client.workflow(workflow_id, cancel_ttl_ms=...)` wieder an; ohne
+`cancel_ttl_ms` lebt sein Cancel-Flag 24 h.
+
 ### Schritt-Pfade
 
 `children()` schlüsselt Schritte nach ihrer Position in der Topologie:
@@ -210,6 +216,9 @@ Middleware-Kontexten und im Signal `WORKFLOW_STEP_ENQUEUED`.
 - Ein Schritt, der bereits läuft, läuft zu Ende; der Worker reiht danach
   keine weiteren Schritte ein.
 
+Um nur einen Schritt zu stoppen, brich seine Task-ID (aus `children()`)
+mit `app.cancel(task_id)` ab; der Workflow scheitert dann (siehe unten).
+
 ## Grenzen
 
 Geprüft, wenn du den Workflow baust, bevor irgendetwas eingereiht wird;
@@ -229,31 +238,55 @@ Workflows auf.
 
 ## Fehlerfälle
 
+`get()` wirft für jeden gescheiterten Workflow `TaskError`. Die Meldung
+ist der Fehlertext des Schritts (oder der unten genannten Ursache), und
+`TaskError.error_class` nennt die Klasse der Exception des Schritts, zum
+Beispiel `builtins.ValueError`, oder die swarmq-Klasse eines terminalen
+Pfads (`swarmq.exceptions.LockWaitExceeded`, `TaskNotFoundError`,
+`RedeliveryLimitError`). Sie ist `None` nach Ablauf durch `max_age`, bei
+einem Fehler im Lock-Template, einem hängenden Worker oder einem Hard
+Timeout und bei Workflows, die ein älterer Worker als gescheitert
+markiert hat.
+
+### Gescheiterte Schritte, Abbruch und Timeouts
+
 | Was passiert | Ergebnis |
 |---|---|
 | Ein Schritt scheitert und hat Retries übrig | Er wird wie jeder Task wiederholt; der Workflow läuft weiter. |
-| Ein Schritt scheitert terminal (Retries erschöpft, `NoRetry`, Delivery-Limit, `max_age` überschritten, Fehler im Lock-Template, Ende einer Lock-Wartezeit, Task im Worker nicht registriert) | Der Worker markiert den Workflow als `failed`, wenn er den Schritt dead-lettert; `get()` wirft `TaskError` mit der Fehlermeldung des Schritts. `TaskError.error_class` nennt die Klasse der Exception des Schritts (z. B. `builtins.ValueError`) oder die swarmq-Klasse des terminalen Pfads (`swarmq.exceptions.LockWaitExceeded`, `TaskNotFoundError`, `RedeliveryLimitError`); nach Ablauf durch `max_age`, bei einem Fehler im Lock-Template, bei einem hängenden Worker und bei Workflows, die ein älterer Worker als gescheitert markiert hat, ist es `None`. Es laufen keine weiteren Schritte, und ein Chord-Body läuft nie, wenn ein Header-Glied gescheitert ist. Ein spätes Duplikat eines Schritts, der schon erfolgreich lief, markiert den Workflow nicht als `failed` (`workflow_fail_skipped_step_done`). |
-| Ein Schritt, dessen Erfolg schon gespeichert ist, wird spät dead-gelettert (etwa am Zustelllimit, nachdem sein Voranbringen scheiterte) | Seit 0.13.0 holt der Worker das Voranbringen mit dem gespeicherten Ergebnis nach, statt den Workflow als gescheitert zu markieren (`workflow_advance_caught_up`); die Nachricht wird ohne DLQ-Kopie und ohne `TASK_DLQ` bestätigt. Scheitert dieses letzte Voranbringen an einer Fehlerantwort von Valkey (`BackendResponseError`, etwa `WRONGTYPE` auf dem Chord- oder Ergebnis-Key), ist der Workflow seit 0.13.1 `failed`, und `get()` wirft `TaskError` mit dem Fehlertext; die Nachricht wird ohne DLQ-Kopie bestätigt, der gespeicherte Erfolg bleibt. Scheitert es an einem Ausfall (Verbindung, Zeitablauf) oder scheitert die Markierung selbst, geht die Nachricht ohne Fehlerergebnis in die DLQ, und der Workflow bleibt bis zu seiner TTL `running`. |
-| Das Voranbringen eines `FIRE_AND_FORGET`-Schritts (mit `sig()` und ausdrücklichem `result_ttl` gebaut) bekommt eine Fehlerantwort von Valkey | Seit 0.13.1 ist der Workflow sofort `failed`, denn der Schritt wird nie neu zugestellt; `get()` wirft `TaskError` mit dem Fehlertext. Nach einem Ausfall bleibt der Workflow bis zu seiner TTL `running`. |
-| Der Workflow-Zustand lief ab, während ein Schritt noch lief | Das Ergebnis des Schritts kann den Workflow nicht mehr voranbringen; der Worker loggt `workflow_state_missing` (WARNING, Feld `workflow_id`). Für lange Workflows `result_ttl` erhöhen. Ist der Zustand schon weg, wenn der Worker den Workflow nach einer Fehlerantwort am Zustelllimit als `failed` markiert (seit 0.13.1), wird die Nachricht ohne DLQ-Kopie bestätigt, und `workflow_state_missing` ist die einzige Spur; der Erfolg des Schritts bleibt gespeichert. |
+| Ein Schritt scheitert terminal (Retries erschöpft, `NoRetry`, Delivery-Limit, `max_age` überschritten, Fehler im Lock-Template, Ende einer Lock-Wartezeit, Task im Worker nicht registriert) | Der Worker markiert den Workflow als `failed`, wenn er den Schritt dead-lettert. Es laufen keine weiteren Schritte, und ein Chord-Body läuft nie, wenn ein Header-Glied gescheitert ist. Ein spätes Duplikat eines Schritts, der schon erfolgreich lief, lässt den Workflow nicht scheitern (`workflow_fail_skipped_step_done`). |
+| Der Task eines Schritts ist nicht registriert | Im Client wirft `apply()` `TaskNotFoundError`. Im Worker, der den Schritt einreiht, wird der Workflow `failed`. |
+| Die Queue des nächsten Schritts existiert nicht (noch kein Worker hat sie deklariert) | Der Worker lässt den Workflow sofort scheitern (gespeicherter Fehlertyp `UnroutableMessage`, Log `workflow_advance_unroutable`), statt den Schritt bis zum Delivery-Limit neu zuzustellen. Worker vor Producern starten ([fehlende Queues](scheduling-and-retries.md#fehlende-queues)). |
 | Eine Middleware wirft in `pre_enqueue` für einen der ersten Schritte (im Client) | `apply()` wirft diese Exception; nichts wird gespeichert oder publiziert. |
-| Eine Middleware wirft in `pre_enqueue` für einen späteren Schritt (im Worker) | Kein Schritt dieser Front wird publiziert; der Workflow ist `failed`, und `get()` wirft `TaskError` mit der Nachricht der Exception. Siehe [Middleware bei Workflow-Schritten](middleware.md#workflow-schritte). |
-| Der Task eines Schritts ist nicht registriert | Im Client wirft `apply()` `TaskNotFoundError`. Im Worker, der den Schritt einreiht, wird der Workflow `failed`, und `get()` wirft `TaskError`. |
-| Die Queue des nächsten Schritts existiert nicht (noch kein Worker hat sie deklariert) | Der Worker markiert den Workflow sofort als `failed` (gespeicherter Fehlertyp `UnroutableMessage`, Log `workflow_advance_unroutable`), statt den Schritt bis zum Delivery-Limit neu zuzustellen; `get()` wirft `TaskError`. Worker vor Producern starten ([fehlende Queues](scheduling-and-retries.md#fehlende-queues)). |
-| Ein mit `sig()` gebauter Schritt ist `FIRE_AND_FORGET` ohne ausdrückliches `result_ttl` (oder mit `result_ttl=0`), oder er speichert aus anderem Grund kein Ergebnis (`result_ttl=0`) | Zur Laufzeit erkannt: Der Workflow ist `failed` (gespeicherter Fehlertyp `WorkflowValidationError`); `get()` wirft `TaskError`. |
+| Eine Middleware wirft in `pre_enqueue` für einen späteren Schritt (im Worker) | Kein Schritt dieser Front wird publiziert; der Workflow ist `failed` mit der Nachricht der Exception. Siehe [Middleware bei Workflow-Schritten](middleware.md#workflow-schritte). |
+| Ein mit `sig()` gebauter Schritt ist `FIRE_AND_FORGET` ohne ausdrückliches `result_ttl`, oder ein beliebiger Schritt speichert kein Ergebnis (`result_ttl=0`) | Zur Laufzeit erkannt: Der Workflow ist `failed` (gespeicherter Fehlertyp `WorkflowValidationError`). |
 | Der Workflow wird abgebrochen | `get()` wirft `TaskCancelledError`. |
-| Ein einzelner Schritt wird mit `cancel(task_id)` abgebrochen, vor oder während seines Laufs | Der Workflow ist `failed`; `get()` wirft `TaskError` mit der Meldung `task was cancelled`. Es laufen keine weiteren Schritte. Ein Schritt, der schon erfolgreich lief, markiert den Workflow nicht als `failed`. Sind Schritt und Workflow beide abgebrochen, gilt der Abbruch des Schritts (`failed`). |
+| Ein einzelner Schritt wird mit `cancel(task_id)` abgebrochen, vor oder während seines Laufs | Der Workflow ist `failed` mit der Meldung `task was cancelled`; es laufen keine weiteren Schritte. Ein Schritt, der schon erfolgreich lief, lässt den Workflow nicht scheitern. Sind Schritt und Workflow beide abgebrochen, gilt der Abbruch des Schritts (`failed`). |
 | `get()` läuft in den Timeout, während der Workflow noch läuft | `ResultNotReadyError`; der Workflow läuft weiter, rufe `get()` erneut auf. |
 | Der Workflow ist fertig, aber sein Endergebnis ist abgelaufen | `WorkflowResultExpired`; erhöhe `result_ttl`. |
-| Ein für das Fan-in nötiges Glied-Ergebnis ist abgelaufen oder fehlt (verloren) | Der Workflow wird `failed` (gespeicherter Fehlertyp `WorkflowResultExpired`; bis 0.12 bei fehlendem Glied `WorkflowValidationError` „resolved N of M“), statt eine unvollständige Liste weiterzugeben; `get()` wirft `TaskError`. Ein Glied, dessen Schrittmarker verspätet gespeichert wird, lässt den Workflow nicht mehr scheitern, weil das Fan-in die Ergebnis-IDs der Glieder aus Workflow-ID und Schrittpfad ableitet (seit 0.13.0). |
+| Ein für das Fan-in nötiges Glied-Ergebnis ist abgelaufen oder fehlt | Der Workflow wird `failed` (gespeicherter Fehlertyp `WorkflowResultExpired`; bis 0.12 `WorkflowValidationError` „resolved N of M“), statt eine unvollständige Liste weiterzugeben. Seit 0.13.0 leitet das Fan-in die Ergebnis-IDs der Glieder aus Workflow-ID und Schrittpfad ab; ein Glied, dessen Schrittmarker verspätet gespeichert wurde, lässt den Workflow daher nicht mehr scheitern. |
 | Der Workflow-Zustand existiert nicht mehr (nie gestartet oder abgelaufen) | `app.workflow(id)` sowie `status()`/`children()`/`get()` auf einem vorhandenen Handle werfen `WorkflowNotFound`. |
+
+### Verlorenes Voranbringen und Valkey-Fehler
+
+Ein Schritt, dessen Erfolg gespeichert ist, muss den Workflow noch
+*voranbringen* (die nächsten Schritte einreihen oder sein Fan-in
+verbuchen). Die folgenden Fälle sind selten und folgen meist auf einen
+Valkey-Ausfall oder einen von Hand geänderten swarmq-Key:
+
+| Was passiert | Ergebnis |
+|---|---|
+| Das Voranbringen scheitert an einem Valkey-Ausfall (Verbindung, Zeitablauf) | Der Schritt wird neu zugestellt, und das idempotente Voranbringen läuft erneut (`workflow_advance_backend_error`). |
+| Ein Schritt, dessen Erfolg gespeichert ist, wird spät dead-gelettert, etwa am Zustelllimit, nachdem sein Voranbringen immer wieder scheiterte | Seit 0.13.0 holt der Worker das Voranbringen mit dem gespeicherten Ergebnis nach, statt den Workflow scheitern zu lassen (`workflow_advance_caught_up`); die Nachricht wird ohne DLQ-Kopie und ohne `TASK_DLQ` bestätigt. |
+| Dieses letzte Voranbringen bekommt eine Fehlerantwort von Valkey (`BackendResponseError`, etwa `WRONGTYPE` auf dem Chord- oder Ergebnis-Key) | Seit 0.13.1 ist der Workflow `failed` mit dem Fehlertext; die Nachricht wird ohne DLQ-Kopie bestätigt, der gespeicherte Erfolg bleibt. Scheitert die Fehlermarkierung selbst oder trifft das letzte Voranbringen auf einen Ausfall, geht die Nachricht ohne Fehlerergebnis in die DLQ, und der Workflow bleibt bis zu seiner TTL `running`. |
+| Das Voranbringen eines `FIRE_AND_FORGET`-Schritts (mit `sig()` und ausdrücklichem `result_ttl` gebaut) bekommt eine Fehlerantwort von Valkey | Seit 0.13.1 ist der Workflow sofort `failed`, denn der Schritt wird nie neu zugestellt. Nach einem Ausfall bleibt er bis zu seiner TTL `running`. |
+| Der Workflow-Zustand lief ab, während ein Schritt noch lief | Das Ergebnis des Schritts kann den Workflow nicht mehr voranbringen; der Worker loggt `workflow_state_missing` (WARNING, Feld `workflow_id`). Für lange Workflows `result_ttl` erhöhen. Ist der Zustand schon weg, wenn der Worker den Workflow nach einer Fehlerantwort am Zustelllimit scheitern lässt, wird die Nachricht ohne DLQ-Kopie bestätigt, und `workflow_state_missing` ist die einzige Spur; der Erfolg des Schritts bleibt gespeichert. |
 
 `WorkflowValidationError`, `WorkflowNotFound`, `WorkflowResultExpired`,
 `TaskError`, `TaskCancelledError` und `ResultNotReadyError` sind aus
 `swarmq` importierbar. `WorkflowStateConflict` (`swarmq.exceptions`)
 ist intern im Worker: Nebenläufige Zweige haben ihre Zustandsänderungen
 wiederholt gegenseitig überschrieben, und die Schritt-Nachricht wird neu
-zugestellt — im Client-Code behandelst du sie nicht.
+zugestellt. Client-Code behandelt sie nie.
 
 ## Workflows beobachten
 

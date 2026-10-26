@@ -11,32 +11,40 @@ execution) and on `app.schedule()` (per-call overrides).
 
 ## Immediate vs deferred execution
 
-Default `schedule()` is immediate — the message lands in the queue
-and the first ready worker picks it up.
+By default `schedule()` publishes at once: the message lands in the
+queue and the first free worker picks it up.
 
 ```python
 task_id = await app.schedule("send_email", to="a@example.com")
 ```
 
-Two kwargs defer the publish: `delay=` and `eta=`.
+Two keyword arguments defer the task: `delay=` and `eta=`.
 
 ```python
 # Run in 30 seconds.
 await app.schedule("send_email", to="a@example.com", delay=30)
 
-# Run at a specific moment (must be in the future; 1s clock skew ok).
+# Run at a given moment.
 from datetime import datetime, timedelta, UTC
 eta = datetime.now(UTC) + timedelta(minutes=15)
 await app.schedule("send_email", to="a@example.com", eta=eta)
 ```
 
-Deferred tasks do not sit in the RabbitMQ queue — they sit in the
-Valkey scheduler store. One worker (the elected leader) polls the
-store and publishes to RabbitMQ at fire time. See
+Deferred tasks do not wait in the RabbitMQ queue but in the Valkey
+scheduler store. One worker, the elected leader, polls the store and
+publishes the task at its fire time. See
 [Architecture → Message lifecycle](../explanation/architecture.md#message-lifecycle).
 
-`delay=0` is a plain immediate publish; only a positive `delay` or
-any `eta` takes the scheduler path.
+Both values are checked before anything is stored or claimed
+(`ValueError`):
+
+- `delay=0` is a plain immediate publish; only a positive `delay` or
+  an `eta` takes the scheduler path. `delay` must be a finite number
+  `>= 0` and at most `315360000` seconds (ten years).
+- `eta` may lie at most one second in the past (clock skew) and at most
+  ten years ahead. A naive `eta` is read as the local time of the
+  calling process; pass an aware `datetime`.
+- `delay` and `eta` together are an error.
 
 A deferred task runs under the ID that `schedule()` returned, so
 `get_result()`, `cancel()` and the dedup flag of `unique_for` work as
@@ -46,26 +54,31 @@ field and fires under a new ID: while such a leader holds the role,
 `get_result()` on the returned ID times out and `cancel()` has no
 effect. Each cron fire gets a new ID.
 
-Dedup of a deferred task is settled when you call `schedule()`. With
-`unique_for=` the producer claims the flag right away. With
-`unique_for=None` dedup is off for this call: the one-shot entry
-records the opt-out, and the leader fires without a dedup claim. If you
-leave out `unique_for`, a producer whose registry knows the task
-applies `TaskInfo.unique_for` right away: it claims the flag when you
-call `schedule()`, for `unique_for` plus the delay, and a call with the
-same arguments in that time is a duplicate. Only a producer without a
-registry leaves it to the leader,
-which resolves `unique_for` from its own `TaskInfo` at fire time and
-skips the task if another run with the same arguments holds the flag.
-The producer computes its dedup hash from the arguments before the
-[enqueue middleware](middleware.md#deferred-tasks-delayeta) runs; the
-leader hashes the stored arguments, so in the producer-without-registry
-case `kwargs` that a middleware adds on every call (a `correlation_id`,
-say) end up in the hash and such deferred calls are no longer
-deduplicated. The opt-out needs a producer and a leader after 0.12.1.
-A producer up to 0.12.1 does not record it, and a leader up to 0.12.1
-falls back to its own `TaskInfo`; producers often live in other
-services, so update them too.
+The [enqueue middleware](middleware.md#deferred-tasks-delayeta) runs
+for deferred calls as well (`pre_enqueue` before the entry is stored,
+`post_enqueue` and `TASK_ENQUEUED` once it is stored).
+
+Dedup of a deferred task is settled when you call `schedule()`:
+
+- `unique_for=<seconds>`: the producer claims the flag at once, for
+  `unique_for` plus the delay. A call with the same arguments in that
+  time is a duplicate.
+- `unique_for=None`: dedup is off for this call. The one-shot entry
+  records the opt-out, and the leader fires without a dedup claim.
+- `unique_for` left out: a producer whose registry knows the task
+  applies `TaskInfo.unique_for` at once, as above. Only a producer
+  without a registry leaves it to the leader, which resolves
+  `unique_for` from its own `TaskInfo` at fire time and skips the task
+  while another run with the same arguments holds the flag. The
+  producer hashes the arguments before the enqueue middleware runs, the
+  leader hashes the stored arguments; so in this case `kwargs` that a
+  middleware adds on every call (a `correlation_id`, say) end up in
+  the hash, and such deferred calls are no longer deduplicated.
+
+The opt-out needs a producer and a leader after 0.12.1. A producer up
+to 0.12.1 does not record it, and a leader up to 0.12.1 falls back to
+its own `TaskInfo`; producers often live in other services, so update
+them too.
 
 ## Cron scheduling
 
@@ -83,23 +96,29 @@ class DailyReport(Task):
         ...
 ```
 
-Standard 5-field cron after crontab(5) only: numbers, `*`, `-`, `,`
-and `/`, month and weekday names in any case, weekday `7` for Sunday,
-and the aliases `@hourly` to `@annually` (`@midnight` too). Everything
-else is rejected at class definition (since 0.13.0, a positive list):
+Only standard five-field cron after crontab(5) is accepted: numbers,
+`*`, `-`, `,` and `/`, month and weekday names in any case, weekday `7`
+for Sunday, and the aliases `@hourly` to `@annually` (`@midnight`
+too). Everything else is rejected (since 0.13.0, a positive list):
 `L`, `W`, `#`, `R`, `H`, `?`, `@reboot`, and six or seven fields. A
 Quartz or Spring style `0 0 9 * * *` ("09:00 daily", seconds first) is
 rejected because croniter would read it differently (every second from
-00:00:00 on the 9th of each month). See the
-[full list](../reference/configuration.md#scheduling-cron). The worker's embedded scheduler picks
-up the declaration automatically — no separate cron daemon.
+00:00:00 on the 9th of each month). An expression without any next
+fire time (`0 0 30 2 *`) is rejected too. See the
+[full list](../reference/configuration.md#scheduling-cron).
+
+The check runs when the task module is imported: a rejected
+expression raises `ValueError`, and `swarmq worker` ends with exit `1`.
+Run `swarmq worker --module … --check` before a deploy. The worker's
+embedded scheduler picks up the declaration automatically; there is no
+separate cron daemon.
 
 !!! info "Missed fires are skipped, not replayed"
     After scheduler downtime each cron fires exactly **once** as
     catch-up; occurrences missed during the outage never run. The
-    scheduler emits a `SCHEDULER_FIRE_SKIPPED` signal (with
-    `schedule_name` and `skipped_count`) so important crons can be
-    alerted on.
+    leader logs `scheduler_fires_skipped` (WARNING) and emits the
+    `SCHEDULER_FIRE_SKIPPED` signal (with `schedule_name` and
+    `skipped_count`), so you can alert on important crons.
 
 ### Time zones
 
@@ -212,7 +231,8 @@ among the live reports, the definition that appeared most recently. A
 report is live while it was refreshed within the last three intervals.
 The leader checks the definition (zone, expression) before it writes
 it; an invalid report leaves the stored definition untouched and logs
-`scheduler_cron_report_invalid` on every tick.
+`scheduler_cron_report_invalid` (ERROR) once per report and leadership
+term.
 
 What this means in practice:
 
@@ -463,8 +483,8 @@ What it changes:
   other than `on` or `off` is an error there and at worker start
   (exit `78`).
 
-Workers before this release ignore `SWARMQ_SCHEDULER` and keep running
-for leader. `swarmq check` does not check whether any leader is alive.
+Workers before 0.12.0 ignore `SWARMQ_SCHEDULER` and keep running for
+leader. `swarmq check` does not check whether any leader is alive.
 
 ### Missing queues
 
@@ -484,10 +504,15 @@ The scheduler leader handles a missing queue like this:
 
 A worker whose own `{queue}.DQ` or `{queue}.XQ` was deleted while it
 ran declares the queue family once on a separate channel and publishes
-the retry or DLQ copy again; a deleted
+the retry or DLQ copy again. A deleted
 [delay tier](../explanation/delivery-semantics.md#delay-tiers)
-`{queue}.DQ.<tier>` is declared again the same way. A workflow step whose next step goes to a
-missing queue fails the workflow at once.
+`{queue}.DQ.<tier>` is declared again on the next deferral to it; if
+that fails, the deferral goes to `{queue}.DQ` at once, the worker logs
+`delay_tier_redeclare_failed` (WARNING) and tries the tier again after
+30 s (since 0.14.3). A workflow step whose next step goes to a missing
+queue fails the workflow at once. What happens when the consumed queue
+`{queue}` itself is deleted is described under
+[deleting a consumed queue](../explanation/delivery-semantics.md#deleting-a-consumed-queue).
 
 ### Migrating hand-converted UTC crons
 
@@ -603,6 +628,18 @@ class ChargeCard(Task):
         return await stripe.charge(card_id, amount)
 ```
 
+A retry is a copy of the message with a raised retry count. It waits
+in a [delay tier](../explanation/delivery-semantics.md#delay-tiers) of
+the queue and then goes back to `{queue}`. When the retries are used
+up, the task ends terminally: the worker stores the error result and
+moves the message to the [dead-letter queue](dead-letter-queues.md).
+With dead-lettering of task failures
+[switched off](dead-letter-queues.md#switching-off-dead-lettering-of-task-failures)
+(`TaskInfo(dead_letter=False)` or
+`SWARMQ_DEAD_LETTER_TERMINAL_FAILURES=false`) it stores the error
+result and acknowledges the message without a DLQ copy. "Terminal" in
+this guide means either of the two.
+
 ### Backoff formulas
 
 | Strategy | Delay at attempt *n* (starting from `n=1`) |
@@ -624,6 +661,12 @@ the base delay is larger; since 0.12.3, before it waited the full base
 delay). Set `SWARMQ_RETRY_MAX_DELAY=...` or pass
 `retry_max_delay=...` as a `SwarmQ` kwarg.
 
+The delay tiers make the actual wait coarser: a shorter delay can wait
+behind a longer one in the same tier, at most about four times as long
+as computed (and at least up to one second). Delays over one hour share
+`{queue}.DQ` and can wait behind each other
+([delay tiers](../explanation/delivery-semantics.md#delay-tiers)).
+
 ### Selective retries
 
 By default, any exception from `run()` burns a retry attempt. To
@@ -638,10 +681,11 @@ task_info = TaskInfo(
 )
 ```
 
-Any other exception — `ValueError`, `KeyError`, the card-declined
-error — bypasses the retry budget and goes straight to the DLQ.
-`Retry` (below) is not filtered: it retries whether or not
-`retry_exceptions` lists it.
+Any other exception (`ValueError`, `KeyError`, the card-declined
+error) bypasses the retry budget and ends the task terminally at once.
+Subclasses count: `retry_exceptions=[ConnectionError]` also retries
+`ConnectionResetError`. `Retry` (below) is not filtered: it retries
+whether or not `retry_exceptions` lists it.
 
 ### Task-body control with `Retry` and `NoRetry`
 
@@ -664,7 +708,9 @@ class SendEmail(Task):
 ```
 
 - `Retry(delay=...)` — retry with a specific delay, ignoring the
-  configured backoff. `Retry()` (no delay) uses the backoff formula.
+  configured backoff and `retry_max_delay`. Use it when you know the
+  right wait (an HTTP `Retry-After: 60`, say). `Retry()` (no delay)
+  uses the backoff formula.
   `Retry` applies independently of `retry_exceptions` but counts
   against `max_retries`: once the budget is used up, and always with
   `max_retries=0`, it ends terminally (DLQ, or the error result when
@@ -675,24 +721,27 @@ class SendEmail(Task):
   raise `ValueError` when `Retry` is created; that `ValueError`
   is an ordinary task error, subject to `retry_exceptions` and the
   backoff.
-- `NoRetry(reason)` — bypass the retry budget, route to DLQ
-  immediately.
+- `NoRetry(reason)` — skip the retry budget and end the task
+  terminally at once.
 
 ## Per-call overrides
 
-Everything on `TaskInfo` is a default. `schedule()` takes overrides
-for the scheduling-related kwargs:
+`schedule()` takes these keyword arguments for a single call; they are
+never passed on to `run()`:
+
+| Argument | Effect |
+|---|---|
+| `queue=` | target queue instead of `TaskInfo.queues[0]` (a `priority` suffix is still added) |
+| `delay=`, `eta=` | defer the task (see [above](#immediate-vs-deferred-execution)) |
+| `unique_for=`, `unique_until=` | dedup for this call; `unique_for=None` switches it off ([locking and dedup](locking-and-dedup.md)) |
 
 ```python
-# Override the queue at schedule time.
 await app.schedule("send_email", to="...", queue="priority")
-
-# Override the dedup settings.
 await app.schedule("send_email", to="...", unique_for=300)
 ```
 
-Retry policy cannot be overridden per-call — it is a property of the
-task, not the invocation.
+Retry policy, timeouts and `max_age` cannot be overridden per call:
+they belong to the task, not the invocation.
 
 ## Timeouts
 
@@ -719,13 +768,23 @@ task_info = TaskInfo(
   `TimeoutError` raised by the task itself keeps its class and is
   matched by `retry_exceptions=[TimeoutError]`. See
   [`SoftTimeoutError`](../reference/errors.md#softtimeouterror).
-- **Hard timeout.** The worker cancels the coroutine outright. It
-  only matters when the task ignores or delays the soft-timeout
-  cancellation.
+- **Hard timeout.** When `hard_timeout` expires, the worker cancels
+  `run()` as well, again as `asyncio.CancelledError` inside the task,
+  and records the failure `hard timeout after <n>s` (without
+  `error_class`). It counts as an ordinary failure: with retries left
+  and no `retry_exceptions` filter the task is retried. Without
+  `soft_timeout` it is the only limit; with both set it catches a task
+  that delays its soft-timeout cleanup. In the IO pool a task that
+  swallows the cancellation keeps running; in
+  [CPU mode](cpu-mode.md#behaviour-changes-for-task-authors) the
+  compute child is stopped, and `hard_timeout` covers the lifecycle
+  methods as well.
 
-`hard_timeout` must be strictly greater than `soft_timeout` when
-both are set. `hard_timeout` is also required when a task declares
-`lock=...`.
+Both values must be greater than 0 (`None` means no limit), and
+`hard_timeout` must be strictly greater than `soft_timeout` when both
+are set and at most `315360000` seconds (ten years). `hard_timeout` is
+also required when a task declares `lock=...`. Invalid values raise
+`ValueError` when the task module is imported.
 
 ## Task expiry
 
@@ -739,10 +798,15 @@ task_info = TaskInfo(
 )
 ```
 
-On pickup, if `now - enqueued_at >= max_age`, the worker logs
-`task_expired` (WARNING, with `age_s` and `max_age_s`), fires the
-`TASK_EXPIRED` signal, routes the message to the DLQ and does not call
-`run()`.
+On pickup, if `now - enqueued_at >= max_age` (whole seconds, from the
+`x-swarmq-enqueued-at` header the producer stamps), the worker does not
+call `run()`. It logs `task_expired` (WARNING, with `age_s` and
+`max_age_s`), fires the `TASK_EXPIRED` signal, stores an error result
+(`get_result()` raises `TaskError`), marks a workflow step's workflow
+`failed`, moves the message to the DLQ and releases its `unique_for`
+flag. An expired message always goes to the DLQ, also with
+dead-lettering of task failures switched off. `max_age` must be greater
+than 0 and at most `315360000` seconds.
 
 `max_age` also bounds how long a duplicate can turn up, so it sets how
 long the duplicate protection holds: the done marker of the
@@ -763,8 +827,12 @@ To cancel a task already in-flight (or still in the queue):
 cancelled = await app.cancel(task_id)
 ```
 
-The call is fire-and-forget — it sets a flag in Valkey and returns.
-The worker's cancel monitor checks the flag every
+The call is fire-and-forget: it sets a flag in Valkey and returns
+`True`, or `False` if the flag already existed. A task that has not
+started yet is not run: the worker checks the flag before the start,
+acknowledges the message and logs `task_cancelled_pre_start`; a
+cancelled workflow step fails its workflow. For a running task the
+worker's cancel monitor checks the flag every
 `SWARMQ_CANCEL_POLL_INTERVAL` seconds (default 1) and cancels the
 running `run()` coroutine: inside the task the cancel arrives as
 `asyncio.CancelledError`, not as `TaskCancelledError`. `finally`
@@ -780,7 +848,26 @@ stale-flag caveat.
 
 ## Verify
 
-Schedule something with retries and watch the logs:
+Define a task that fails twice and then succeeds, start a worker for
+it (`swarmq worker --module myapp.tasks`), schedule it and watch the
+worker log:
+
+```python title="myapp/tasks.py"
+from swarmq import Task, TaskInfo
+
+attempts = 0
+
+
+class Flaky(Task):
+    task_info = TaskInfo(name="flaky", queues=["default"], max_retries=3)
+
+    async def run(self) -> str:
+        global attempts
+        attempts += 1
+        if attempts < 3:
+            raise ConnectionError(f"attempt {attempts} failed")
+        return "ok"
+```
 
 ```python
 import asyncio
@@ -801,11 +888,12 @@ asyncio.run(main())
 ```
 
 The client logs nothing for the enqueue; `scheduled <task_id>` is
-your own `print`. After the two-second delay the worker log shows,
-for every failed attempt, a `task_failed` line (with `error_type` and
-`error`) followed by `task_retrying` (with `retry_count`,
-`max_retries` and `delay_ms`), with the configured delays between
-the attempts, and `task_succeeded` once an attempt succeeds. Add
+your own `print`. After the two-second delay the worker log shows two
+`task_failed` lines (with `error_type` and `error`), each followed by
+`task_retrying` (with `retry_count`, `max_retries` and `delay_ms`),
+with the backoff delays between the attempts, and then
+`task_succeeded`. The counter lives in the worker process, so run the
+worker with the default single process. Add
 `--log-lifecycle-level INFO` to the worker to also see `task_received`
 and `task_started` for every attempt.
 

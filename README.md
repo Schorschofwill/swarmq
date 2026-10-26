@@ -1,459 +1,331 @@
-# SwarmQ
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo/swarmq-horizontal-dark.svg">
+    <img src="docs/assets/logo/swarmq-horizontal-light.svg" alt="SwarmQ" width="420">
+  </picture>
+</p>
 
-Async-first Python task queue on RabbitMQ + Valkey.
+<p align="center">
+  <strong>The async-first Python task queue that does not lose your work.</strong><br>
+  RabbitMQ quorum queues for delivery, Valkey for state – and everything a production worker needs in the core.
+</p>
 
-> **Status:** 0.12.x on PyPI. Core, workflow primitives, optional
-> dependency injection (Dishka), operator features (priorities, expiry,
-> burst, supervisor, autoscaling, control channel), CPU worker mode,
-> structured non-blocking logging, metrics, health, hot reload and the
-> machine-readable agent spec are all shipped. About 3 600 tests across
-> unit / integration / e2e / chaos / property / fuzz / stress / soak
-> suites, plus a separate load-test suite that gates every release with
-> conformance, smoke and one-hour reference runs. Not yet in production
-> use by anyone but the author.
+<p align="center">
+  <a href="https://pypi.org/project/swarmq/"><img alt="PyPI" src="https://img.shields.io/pypi/v/swarmq?color=1F2B47&label=PyPI"></a>
+  <a href="https://pypi.org/project/swarmq/"><img alt="Python 3.14+" src="https://img.shields.io/badge/python-3.14%2B-1F2B47"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-B4842F"></a>
+  <img alt="Typed" src="https://img.shields.io/badge/typing-mypy%20%7C%20pyright-B4842F">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-7%20000%2B-1F2B47">
+</p>
 
-## Quick Start
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#why-swarmq">Why SwarmQ</a> ·
+  <a href="#feature-tour">Features</a> ·
+  <a href="#how-it-compares">Comparison</a> ·
+  <a href="https://swarmq.readthedocs.io/">Documentation</a> ·
+  <a href="website/reference/changelog.md">Changelog</a>
+</p>
+
+---
+
+```python
+from swarmq import Task, TaskInfo
+
+class SendEmail(Task):
+    task_info = TaskInfo(name="send_email", queues=["default"],
+                         rate_limit="100/m", max_retries=5, soft_timeout=30)
+
+    async def run(self, to: str, subject: str) -> str:
+        await mailer.send(to, subject)
+        return f"sent to {to}"
+```
 
 ```bash
-# 1. Start RabbitMQ + Valkey (compose file lives in this repo)
-docker compose up -d
+swarmq worker --module myapp.tasks --processes 4 --autoscale 2,8
+```
 
-# 2. Define a task
-cat > myapp/tasks.py <<'EOF'
+One `async def`, one command. Retries with backoff, a distributed rate limit, timeouts,
+a supervisor that restarts crashed workers and autoscaling on queue depth come along –
+no plugins, no glue code.
+
+## Why SwarmQ
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+**⚡ Async to the core**<br>
+Workers are `asyncio` all the way down (aio-pika, valkey-py). Thousands of I/O-bound
+tasks share one event loop with bounded concurrency – no thread pools, no new loop per job.
+
+</td>
+<td width="50%" valign="top">
+
+**🛡️ At-least-once by default**<br>
+Quorum queues, ack *after* execution, a delivery limit against poison loops and a
+dead-letter queue with a recovery CLI. A crash, a broker restart or a Valkey outage
+delays work – it does not drop it.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+**🧮 CPU work without blocking the loop**<br>
+`--pool cpu` runs task bodies in compute children forked from a pre-warmed forkserver
+(a few milliseconds per start). Hard timeouts and cancel kill the child's process group, never
+the worker.
+
+</td>
+<td valign="top">
+
+**🎛️ Control built in, not bolted on**<br>
+Distributed sliding-window rate limits, per-key locks and semaphores, unique tasks,
+priorities, expiry, cancellation and progress – all atomic in Valkey via Lua.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+**🔗 Workflows that finish – or fail loudly**<br>
+`chain`, `group` and `chord` with operator syntax. Workers advance the workflow, the
+chord fan-in is atomic and idempotent, and a failed step wakes every waiter instead of
+hanging.
+
+</td>
+<td valign="top">
+
+**📈 Operable from day one**<br>
+Supervisor by default, autoscaling, a runtime control channel, Prometheus metrics,
+`/health` and `/ready`, structured non-blocking logging, cron with IANA time zones and
+leader failover.
+
+</td>
+</tr>
+</table>
+
+**Tested like infrastructure.** More than 7 000 tests across unit, integration, e2e,
+chaos (Toxiproxy), property, fuzz, stress and soak suites, a 100 % diff-coverage gate,
+mutation testing, and a separate load-test suite that accepts every release with
+conformance checks, smoke runs and one-hour reference runs (24 hours for larger changes).
+Deliberate behaviour is recorded in a decision register and pinned by tests.
+
+## Quick start
+
+```bash
+pip install swarmq            # Python 3.14+
+docker compose up -d          # RabbitMQ + Valkey from this repository
+```
+
+**1. Define a task** – `myapp/tasks.py`:
+
+```python
 from swarmq import Task, TaskInfo
 
 class SendEmail(Task):
     task_info = TaskInfo(name="send_email", queues=["default"])
 
     async def run(self, to: str, subject: str) -> str:
-        # ... your code here ...
         return f"sent to {to}"
-EOF
+```
 
-# 3. Tell SwarmQ where the broker and backend live
+**2. Start a worker:**
+
+```bash
 export SWARMQ_BROKER_URL="amqp://guest:guest@localhost:5672/"
 export SWARMQ_BACKEND_URL="valkey://localhost:6379/0"
-
-# 4. Run a worker
-swarmq worker --module myapp.tasks --queues default --concurrency 10
+swarmq worker --module myapp.tasks
 ```
 
-The worker handles SIGTERM / SIGINT for graceful shutdown. Multiple
-queues: `--queues default,emails,priority`. Structured logs:
-`--log-format json`.
-
-`swarmq worker` sets up logging for its own processes (stderr, `human`
-or `json`). An app that embeds `SwarmQ(...)` keeps full control: SwarmQ
-never configures logging there and only emits events through named
-`swarmq.*` loggers into stdlib `logging`, with the fields as record
-attributes. Configure a handler yourself; a plain
-`logging.basicConfig(level=logging.INFO)` shows only the event name, so
-use a formatter that renders the fields, for example SwarmQ's own:
-
-```python
-import logging
-from swarmq.logging import build_formatter
-
-handler = logging.StreamHandler()
-handler.setFormatter(build_formatter(json=False, colors=False))  # json=True for JSON lines
-logging.basicConfig(level=logging.INFO, handlers=[handler])
-```
-
-structlog apps add `structlog.stdlib.ExtraAdder()` to their
-`foreign_pre_chain`. Slow handlers can be moved off the event loop with
-`SwarmQ(..., log_queue=True)`. Details in the logging reference
-(`website/reference/logging.md`).
-
-## Hello World — Client side
+**3. Schedule from your app and wait for the result:**
 
 ```python
 import asyncio
 from swarmq import SwarmQ, RabbitMQBroker, ValkeyBackend
-import myapp.tasks  # noqa — auto-registers SendEmail
+import myapp.tasks  # registers SendEmail
 
-async def main():
+async def main() -> None:
     app = SwarmQ(
         RabbitMQBroker("amqp://guest:guest@localhost:5672/"),
         ValkeyBackend("valkey://localhost:6379/0"),
-        queues=["default"],
     )
     async with app:
-        task_id = await app.schedule(
-            "send_email", to="op@example.com", subject="hi",
-        )
-        result = await app.get_result(task_id, timeout=10)
-        print(result)  # sent to op@example.com
+        task_id = await app.schedule("send_email", to="op@example.com", subject="hi")
+        print(await app.get_result(task_id, timeout=10))  # sent to op@example.com
 
 asyncio.run(main())
 ```
 
-## Reusing an existing connection pool (producer)
+The worker drains gracefully on `SIGTERM`. Next steps: the
+[getting-started guide](website/getting-started.md) and the
+[first-worker tutorial](website/tutorials/first-email-worker.md).
 
-If your app already holds its own RabbitMQ connection and/or Valkey
-client, hand them to SwarmQ instead of a URL — SwarmQ reuses them rather
-than opening a second, parallel connection to the same server. You can
-pass either a high-level client/connection **or** a low-level pool, and
-mix sources per backend:
+## Feature tour
 
-```python
-import aio_pika
-import valkey.asyncio
-from swarmq import SwarmQ, RabbitMQBroker, ValkeyBackend
+<details open>
+<summary><strong>Reliable delivery</strong></summary>
 
-# objects your app already owns
-connection = await aio_pika.connect_robust("amqp://guest:guest@localhost:5672/")
-valkey_client = valkey.asyncio.Valkey.from_url("valkey://localhost:6379/0")
+- **At-least-once** on RabbitMQ quorum queues, ack after execution, `x-delivery-limit`
+  against redelivery loops; `DeliveryMode.FIRE_AND_FORGET` per task where speed beats
+  durability.
+- **Retries** with exponential, linear or fixed backoff and jitter; `Retry(delay=...)`
+  and `NoRetry` from inside the task.
+- **Dead-letter queue** on exhausted retries, expiry or rejection, with
+  `swarmq dlq list / inspect / retry / purge`.
+- **Backend outages** before execution defer the message with backoff instead of
+  burning its delivery budget; publish, channel and pub/sub paths reconnect on their own.
+- **Soft and hard timeouts** – `soft_timeout` fails the attempt (retry policy applies),
+  `hard_timeout` cancels it (in CPU mode: kills the compute child).
 
-app = SwarmQ(
-    RabbitMQBroker(connection=connection),   # or connection_pool=<aio_pika.pool.Pool>
-    ValkeyBackend(client=valkey_client),     # or pool=<valkey ConnectionPool>
-    # no broker_url / backend_url needed when a connection object is injected
-)
-async with app:
-    await app.schedule("send_email", to="op@example.com", subject="hi")
-# closing `app` does NOT close `connection` or `valkey_client` — your app keeps them
-```
+</details>
 
-Things to know:
+<details>
+<summary><strong>Task control</strong></summary>
 
-- **Ownership:** SwarmQ never closes a connection/client/pool you inject —
-  it belongs to your app. SwarmQ does close the publish channel it opens
-  on a borrowed RabbitMQ connection (that channel is SwarmQ's).
-- **Producer-only:** injection is for the task-*sending* path. Calling
-  `start_worker()` on an injected broker/backend raises
-  `ConfigurationError` — workers are spawned as subprocesses and
-  reconstruct their broker/backend from `SWARMQ_BROKER_URL` /
-  `SWARMQ_BACKEND_URL`, which a borrowed connection can't cross.
-- **Robustness is yours:** an injected Valkey client/pool does **not**
-  inherit SwarmQ's retry / health-check policy, and an injected aio-pika
-  connection should be a robust one (`connect_robust`) for SwarmQ's
-  channel-reconnect handling to behave as designed.
-- **Same namespace assumed:** the injected object must point at the same
-  server and logical namespace (RabbitMQ vhost, Valkey DB) the rest of
-  your config expects — SwarmQ does not validate this, and a mismatch
-  silently sends/reads tasks in the wrong namespace.
+- **Rate limits** – `TaskInfo(rate_limit="100/m")`, a two-period sliding window in Lua,
+  shared by every worker.
+- **Locks** – mutex or semaphore per key: `lock="user:{user_id}"`.
+- **Unique tasks** – deduplicated by canonical arguments until start or completion.
+- **Priorities**, **expiry** (`max_age`), **cancellation** before and during execution,
+  **progress** reporting with `app.watch_progress(...)`.
+- **Scheduler** – cron with an IANA time zone per task and a fixed rule for clock
+  changes, delayed tasks (`eta=`), leader election with failover; one Valkey can serve
+  several apps (`SWARMQ_NAMESPACE`).
+- **Batch API** – `schedule_many`, `get_results`, `run`.
 
-## What's in the box
+</details>
 
-### Core
-
-- **At-least-once delivery** with Quorum-Queue durability and
-  `x-delivery-limit=20` against pathological redelivery loops.
-- **Backend outages before execution** — when a check before the task
-  (schedule-fire dedup, cancel check, rate limit, lock) cannot reach
-  Valkey, the message is deferred through the delay queue with
-  exponential backoff (`SWARMQ_BACKEND_DEFER_BASE_DELAY` 1 s, doubling
-  up to `SWARMQ_BACKEND_DEFER_MAX_DELAY` 60 s, ±20 % jitter) instead of
-  spending its delivery budget; no retry is counted. Each of these
-  checks is bounded by `SWARMQ_BACKEND_OP_TIMEOUT`, and an error reply
-  (`BackendResponseError`) still reaches the DLQ through the delivery
-  limit.
-- **Retries** with exponential / linear / fixed backoff +
-  configurable `max_retries`, `NoRetry`, `Retry(delay=...)`.
-- **DLQ** routing for retry-exhaustion + `swarmq dlq list/inspect/
-  retry/purge` CLI for operator recovery.
-- **Middleware** stack with 6 hooks (pre/post enqueue, pre/post
-  execute, on_error, on_retry).
-- **Signals** — 23 lifecycle events with `@app.on_signal(...)`
-  decorator, from `TASK_ENQUEUED` over `TASK_DLQ` / `TASK_REJECTED` to
-  worker, scheduler and workflow-step events.
-- **Rate limiting** — Cloudflare 2-period sliding window via Lua
-  (`TaskInfo(rate_limit="100/m")`).
-- **Locking** — mutex + semaphore via Valkey atomic primitives, with
-  format-string keys (`lock="user:{user_id}"`).
-- **Unique tasks** — dedup by canonical-encoded args, with
-  `unique_until="start"` or `"completion"`.
-- **Timeouts and delivery modes** — `TaskInfo(soft_timeout=...)` fails
-  the attempt with `SoftTimeoutError` (the retry policy applies),
-  `hard_timeout` cancels the task (in CPU mode it kills the compute
-  child);
-  `delivery=DeliveryMode.AT_LEAST_ONCE` (default) or `FIRE_AND_FORGET`.
-- **Batch API** — `app.schedule_many(...)` publishes many tasks in one
-  call, `app.get_results(ids)` collects their results, `app.run(...)`
-  schedules one task and waits for its result.
-- **Cancellation** — pre-pickup + during-execution via
-  `app.cancel(task_id)`, dedicated `TASK_CANCELLED` signal.
-- **Scheduler** — cron with an IANA time zone per task and a fixed
-  rule for clock changes, delayed (`eta=...`), recurring with
-  leader-election failover; every worker reports its crons, so several
-  apps can share one Valkey (with separate RabbitMQ vhosts, give each app
-  its own `SWARMQ_NAMESPACE`).
-- **Progress tracking** — `Task.update_progress(current, total, msg)`
-  + `app.get_progress` / `app.watch_progress` AsyncIterator.
-- **Dependency injection** (`pip install swarmq[dishka]`) — register a
-  Dishka container with `setup_dishka(container)` and annotate task
-  parameters with `FromDishka[...]`; the worker opens a request scope
-  per task, and `SwarmQProvider` exposes the per-execution `TaskContext`
-  to your providers. Tasks
-  without `FromDishka` run unchanged; core SwarmQ does not need the
-  extra.
-- **CLI** — `swarmq worker`, `swarmq schedule`, `swarmq dlq *`,
-  `swarmq inspect`.
-
-### Workflow primitives
-
-- **`chain` / `group` / `chord`** with `Signature` building blocks
-  (`Task.s()`, `sig("name")`, immutable `Task.si()`) and operator
-  syntax (`A.s() | B.s()`, `group(...) | merge.s()`). Flat-DAG
-  composition with construction-time limits (`max_workflow_depth=10`,
-  `max_group_size=1000`).
-- **Fire-and-forget `apply()`** returns a reattachable handle:
-  `await app.apply(chain(...))` → `handle.get(timeout=...)`, `status()`,
-  `children()`, `cancel()`, stable `workflow_id` reattach via
-  `app.workflow(id)`.
-- **Worker-driven orchestration** — workers advance the workflow on each
-  task completion (chain result-injection, atomic+idempotent chord
-  fan-in via Lua). Fail-fast with liveness: a failed step marks the
-  workflow failed and wakes `get()` instead of hanging.
+<details>
+<summary><strong>Workflows</strong></summary>
 
 ```python
-result = await (await app.apply(
-    chord(group(Download.s(u) for u in urls), Merge.s())
-)).get(timeout=30)
+from swarmq import chain, chord, group
+
+handle = await app.apply(chord(group(Download.s(u) for u in urls), Merge.s()))
+result = await handle.get(timeout=30)
 ```
 
-### Operations
+- `chain`, `group`, `chord` with `Task.s()`, immutable `Task.si()`, `sig("name")` and
+  `|` syntax; construction-time limits on depth and group size.
+- `app.apply(...)` returns a handle: `get()`, `status()`, `children()`, `cancel()`, and
+  reattach anywhere with `app.workflow(workflow_id)`.
 
-- **Supervisor by default** — every `swarmq worker` runs under a
-  process manager, also with `--processes 1`: it restarts crashed
-  workers into the same slot (5/hr rolling-window budget), replaces
-  workers whose heartbeat stops, reloads on SIGHUP via `os.execvpe`
-  (replaying the `sys.orig_argv` and environment snapshots captured at
-  start, so `python -m swarmq.cli worker ...` reloads as well — the
-  container CMD or systemd ExecStart stays the trust boundary for argv),
-  and
-  takes its children down with it even on SIGKILL. Configuration errors
-  end the run with exit code `78` on every level; connection errors stay
-  at `1`. A `SIGTERM` always ends the supervisor, even during a reload;
-  a worker whose CPU pool rejected its forkserver exits with `71` and is
-  restarted with a fresh one.
-- **Multi-process workers** (`--processes N`) with a stable slot
-  identity: `worker_id` is `<host>:<slot>` in signals, metrics and logs,
-  and `--metrics-port` / `--health-port` are base ports — slot `s`
-  binds `base + s`, so scrape targets survive restarts.
-- **Autoscaling** (`--autoscale=MIN,MAX`) — queue-depth-driven
-  scale up/down with 30s cooldown, 60s idle window, and a 30s
-  minimum worker age that suppresses spawn→immediate-kill churn
-  when a crashed worker is restarted during an idle period.
-- **Control channel** (`--max-processes N`, `--group LABEL`) — a
-  setpoint `{"min": M, "max": K}` under `sq:control:setpoint:<group>`
-  changes a group's process count and autoscale bounds at runtime: read
-  before the first child spawns and every 5s after, applied within one
-  sampling interval, and reverted to the startup arguments when the key
-  is removed. The setpoint is per supervisor, bounded by the headroom
-  the operator declares at start, and out-of-range, inverted or
-  unreadable values are rejected with a reason instead of taking
-  effect. Each supervisor reports its effective bounds, their origin
-  and its slot counts under `sq:control:status:<group>:<supervisor>`
-  with an expiry, so a controlling service can tell "rejected" from
-  "not yet applied" from "backend unreachable". Off unless
-  `--max-processes` is given.
-- **CPU worker mode** (`--pool cpu`) — task bodies run in compute
-  children forked from a pre-warmed forkserver; the loop process never
-  computes, `hard_timeout` and cancel kill the child's process group,
-  DI children are recycled by RSS or task count. POSIX only.
-- **Priorities** (`--priorities`, `TaskInfo.priority`), **expiry**
-  (`TaskInfo.max_age` → `TASK_EXPIRED` + DLQ) and **burst mode**
-  (`--burst --burst-idle-timeout N` drains and exits 0).
-- **`--configure MODULE:CALLABLE`** — register middleware and signal
-  handlers on the CLI worker without writing your own entry point.
-- **Structured logging** — every process `swarmq worker` starts
-  (supervisor, workers, compute children) logs `human` or `json` to
-  stderr through a bounded, non-blocking queue: when it is full, records
-  below WARNING are dropped first (WARNING and above keep a 10 % reserve),
-  drops are counted and reported in `swarmq_log_records_dropped_total`.
-  Bring your own `dictConfig` file (`--log-config`, JSON or YAML), leave
-  logging to your app (`--no-configure-logging`), set per-logger levels
-  (`--logger-level aio_pika=WARNING`), size the queue
-  (`--log-queue-size`), bound every flush of the queue
-  (`--log-drain-timeout`, default 5 s) and raise the
-  `task_received`/`task_started` events (`--log-lifecycle-level`). Task lifecycle events go to the
-  `swarmq.task` logger; every event inside a task carries `task_id`,
-  `task_name`, `queue`, `worker_id`, `workflow_id`, `attempt` (and
-  `compute_child` in CPU mode); exceptions are reported as `error_type`
-  and `error`. Embedded apps opt into the background queue with
-  `SwarmQ(..., log_queue=True)` (`SWARMQ_LOG_QUEUE`). See
-  `website/reference/logging.md`.
-- **Prometheus metrics** (`pip install swarmq[metrics]`) — 11 metrics
-  exposed on `/metrics`, drop-in no-op when the dep is absent.
-- **Health endpoints** — `/health` (liveness) + `/ready` (broker +
-  backend reachable, forkserver in CPU mode, structured 503 body).
-- **Hot reload** (`--reload`, `pip install swarmq[reload]`) — file-
-  watch trigger that fires the existing SIGHUP drain-and-execvpe
-  pipeline. Developer-only (WARNING log on every start); see
-  `website/guides/hot-reload.md`.
+</details>
 
-### Reliability hardening (E2E + Chaos suites)
+<details>
+<summary><strong>Running workers</strong></summary>
 
-- **Channel-recreate** survives RabbitMQ broker restarts mid-publish.
-- **Pub/Sub resubscribe** survives Valkey restarts mid-stream.
-- **Toxiproxy chaos suite** verifies behavior under network latency,
-  bandwidth limits, slicer (packet loss), full disconnect, and
-  partial partitions.
-- **Property-based tests** on dedup-hash, serialization, backoff,
-  rate-limiter; **fuzz-tests** on message parsers and external
-  publishers.
+- **Supervisor by default** – restarts crashed workers into the same slot, replaces
+  workers with a stalled heartbeat, reloads on `SIGHUP`, takes its children down even on
+  `SIGKILL`. Exit code `78` for configuration errors.
+- **Multi-process** (`--processes N`) with stable slot identities (`<host>:<slot>`) in
+  logs, metrics and signals.
+- **Autoscaling** (`--autoscale MIN,MAX`) on queue depth, with cooldown and idle windows.
+- **Control channel** (`--max-processes`, `--group`) – change process counts and
+  autoscale bounds at runtime through Valkey, with a status report per supervisor.
+- **CPU mode** (`--pool cpu`) – forkserver-based compute children, recycled by RSS or
+  task count.
+- **Burst mode** (`--burst`) for batch jobs; **hot reload** (`--reload`) for development.
 
-## Configuration
+</details>
 
-Worker behaviour is configured via env vars and CLI flags.
+<details>
+<summary><strong>Extensibility and observability</strong></summary>
 
-| Variable / flag | Default | Purpose |
+- **Middleware** with six hooks and stack semantics; **30 lifecycle signals** with
+  `@app.on_signal(...)`; `--configure MODULE:CALLABLE` wires both into the CLI worker.
+- **Dependency injection** via Dishka (`pip install 'swarmq[dishka]'`): annotate
+  parameters with `FromDishka[...]`, one request scope per task.
+- **Structured logging** – human or JSON through a bounded, non-blocking queue; every
+  event inside a task carries `task_id`, `queue`, `worker_id`, `attempt` and more. Your
+  own `dictConfig` and structlog work too.
+- **Prometheus metrics** (`pip install 'swarmq[metrics]'`) and **HTTP health**
+  (`/health`, `/ready` with a structured 503 body).
+- **Bring your own connections** – hand an existing aio-pika connection or Valkey client
+  to `RabbitMQBroker` / `ValkeyBackend`; SwarmQ never closes what it did not open.
+- **Machine-readable spec** – JSON schemas for messages, errors, config and CLI plus an
+  `llms.txt`, generated from the code and checked by tests.
+
+</details>
+
+## How it compares
+
+A condensed view of a feature comparison of eleven Python task queues (core features of
+the current stable release, October 2026). ✅ in the core · ◐ partial or manual ·
+🔌 plugin only · ❌ not available
+
+| | **SwarmQ** | Celery | Dramatiq | TaskIQ | arq |
+|---|:-:|:-:|:-:|:-:|:-:|
+| Async tasks in the worker | ✅ | ❌ | ◐ | ✅ | ✅ |
+| At-least-once by default | ✅ | ❌ | ✅ | ◐ | ✅ |
+| Soft **and** hard timeout | ✅ | ✅ | ◐ | ◐ | ◐ |
+| Distributed rate limit | ✅ | ❌ | ◐ | ❌ | ❌ |
+| Locks / concurrency per key | ✅ | ◐ | ◐ | ❌ | ◐ |
+| DLQ with requeue tooling | ✅ | ❌ | ◐ | 🔌 | ❌ |
+| Cron without duplicates across instances | ✅ | 🔌 | ❌ | ❌ | ✅ |
+| Workflows (chain / group / chord) | ✅ | ✅ | ✅ | 🔌 | ❌ |
+| Pool for CPU-bound work | ✅ | ✅ | ◐ | ✅ | ❌ |
+| Autoscaling | ✅ | ◐ | ❌ | ❌ | ❌ |
+| HTTP health endpoint | ✅ | ❌ | ❌ | ❌ | ◐ |
+
+**Where SwarmQ is the wrong pick – today:** it is young (0.x, one maintainer, no
+production users besides the author), needs Python 3.14+ and *both* RabbitMQ and Valkey,
+runs `async def` tasks only, has no dashboard, no in-memory test broker and no Windows
+support. If you need the largest ecosystem, choose Celery; for simple synchronous jobs on
+Redis, RQ or Dramatiq.
+
+## Configuration at a glance
+
+Everything is set by CLI flag, `SWARMQ_*` environment variable or constructor argument;
+`swarmq worker` resolves each option once as **flag > env > default** for the
+supervisor, all workers and compute children alike.
+
+| Flag / variable | Default | Purpose |
 |---|---|---|
-| `SWARMQ_BROKER_URL` | required | AMQP URL for RabbitMQ |
-| `SWARMQ_BACKEND_URL` | required | Valkey/Redis URL for results |
-| `--queues a,b,c` | `default` | Queues to consume |
-| `--concurrency N` | `10` (io) / assigned CPUs ÷ `--processes` (cpu) | Max parallel tasks per worker; compute slots with `--pool cpu` |
-| `--log-level` | `INFO` | DEBUG / INFO / WARNING / ERROR / CRITICAL |
-| `--log-format` | `human` | `human` or `json` (`SWARMQ_LOG_FORMAT`) |
-| `--log-config PATH` | unset | Your own logging `dictConfig` file instead of the built-in setup |
-| `--no-configure-logging` | off | Leave logging entirely to your task module |
-| `--logger-level NAME=LEVEL` | none | Per-logger level, repeatable (e.g. `aio_pika=WARNING`) |
+| `SWARMQ_BROKER_URL` | required | AMQP URL of RabbitMQ |
+| `SWARMQ_BACKEND_URL` | required | Valkey URL for results and coordination |
+| `--queues a,b` | `default` | Queues to consume |
+| `--concurrency N` | `10` (io) / CPUs ÷ processes (cpu) | Parallel tasks per worker |
+| `--processes N` / `--autoscale MIN,MAX` | `1` / off | Process count, fixed or by queue depth |
+| `--pool io\|cpu` | `io` | Event loop only, or forkserver compute children |
+| `--log-format human\|json` | `human` | Log output on stderr |
+| `--metrics-port` / `--health-port` | off | Base ports; slot `s` binds `base + s` |
 
-Other flags: `--processes`, `--autoscale`, `--max-processes`,
-`--group`, `--pool`, `--metrics-port`, `--health-port`, `--burst`,
-`--burst-idle-timeout`, `--priorities`, `--reload`, `--watch-dir`,
-`--configure`, `--check`, `--log-queue-size`, `--log-lifecycle-level`,
-`--log-drain-timeout`.
+The complete list lives in the [configuration](website/reference/configuration.md) and
+[CLI](website/reference/cli.md) references.
 
-Most worker-behaviour flags have an env-var twin (`SWARMQ_QUEUES`,
-`SWARMQ_CONCURRENCY`, `SWARMQ_POOL`, `SWARMQ_LOG_FORMAT`, …); `--module`,
-`--configure`, `--processes`, `--autoscale`, `--max-processes`,
-`--group`, `--reload`, `--watch-dir` and `--check` are CLI-only.
-`swarmq worker` resolves every option once as CLI flag > env var >
-default, and the supervisor, all worker processes, compute children and
-`--check` see the same values. In an embedded `SwarmQ(...)`, a set
-`SWARMQ_*` variable overrides the matching constructor argument. The
-full list with defaults is in the configuration reference
-(`website/reference/configuration.md`) and the CLI reference
-(`website/reference/cli.md`).
+## Documentation
 
-## Status and roadmap
+| | |
+|---|---|
+| 🚀 [Getting started](website/getting-started.md) | Install, run a worker, get a result |
+| 🎓 [Tutorial](website/tutorials/first-email-worker.md) | Build a complete worker step by step |
+| 🧭 [How-to guides](website/guides/index.md) | Retries, rate limits, locking, workflows, CPU mode, deployment, testing |
+| 📚 [Reference](website/reference/index.md) | API, CLI, configuration, logging, errors, changelog |
+| 🧠 [Explanation](website/explanation/index.md) | Architecture, delivery semantics, design decisions |
+| 🤖 [Agent reference](website/reference/agent/index.md) | Machine-readable spec and `llms.txt` |
 
-Everything listed above is shipped and covered by tests; the
-changelog (`website/reference/changelog.md`) records each release. A
-machine-readable agent spec — generated JSON for errors, config, CLI
-and message schemas under `website/reference/agent/spec/` plus an
-`llms.txt` index (`website/llms.txt`) — is kept in sync with the code by
-tests (`python -m swarmq.agent_spec`).
-
-Still open:
-
-- **Bulk-throughput optimisation** — further throughput work on
-  `schedule_many` (the API exists; design note in
-  `docs/brainstorms/implementation-order-requirements.md`).
-- **24-hour acceptance run** of the load-test suite before the first
-  production deployment, and the resulting SLO thresholds for p95
-  latency and throughput.
-
-## Project layout
-
-```
-src/swarmq/
-  app.py                    SwarmQ application (embedded entry point)
-  config.py                 SwarmQConfig + SWARMQ_* env overrides
-  task.py                   Task base, TaskInfo, DeliveryMode
-  registry.py               Task registry
-  exceptions.py             Public exception hierarchy
-  middleware.py             Middleware base + chain
-  signals.py                Signal enum (23 events) + dispatcher
-  limits.py                 RateLimiter + parser
-  locking.py                Mutex / semaphore
-  cancellation.py           Cancel-flag protocol
-  progress.py               ProgressInfo
-  backoff.py                Retry backoff strategies
-  serialization.py          Message encoding
-  headers.py                AMQP header names
-  workflow.py               chain / group / chord, Signature, sig()
-  workflow_orchestration.py WorkflowHandle + worker-side advancer
-  workflow_enqueue.py       Step enqueue shared by client and worker
-  workflow_state.py         Persisted workflow state schema
-  workflow_topology.py      Step addressing + topology helpers
-  dishka.py                 Optional Dishka DI (setup_dishka, TaskContext, SwarmQProvider)
-  logging.py                Logging setup, get_logger
-  logging_queue.py          Non-blocking queue, listener, shutdown_logging
-  logging_drain.py          Bounded flush (log_drain_timeout)
-  logging_fork.py           Fork safety of the log listeners
-  logging_forksource.py     Forkserver as fork source (no listener thread)
-  logging_settings.py       LoggingSettings + CLI > env > default resolution
-  logging_format.py         build_formatter (human / JSON)
-  logging_file.py           --log-config dictConfig loading
-  metrics.py                Prometheus exporter
-  health.py                 /health + /ready
-  _http.py                  Minimal stdlib HTTP server for metrics + health
-  hot_reload.py             --reload file watcher
-  slots.py                  Pool mode + compute-slot defaults
-  supervision.py            Worker <-> supervisor heartbeat channel
-  agent_spec.py             Generator for the machine-readable agent spec
-  client/                   Schedule API, results, workflow apply
-  worker/                   Consumer loop, pipeline, gates, retry, recycling
-    compute/                CPU mode: forkserver, compute children, pool
-  scheduler/                Embedded cron + delayed scheduler, leader lock
-  process_manager/          Supervisor, slots, autoscaling, control-channel setpoints
-  cli/                      argparse entrypoint + subcommands (worker, schedule, dlq, inspect)
-  broker/rabbitmq/          RabbitMQ broker (connection, delivery, admin)
-  backend/valkey/           Valkey backend (results, locks, rate limits, schedules, chords, control)
-  contracts/                Broker / backend / coordination protocols
-  lua/                      Lua scripts loaded into Valkey
-tests/
-  unit/                     ~2 850 fast, no infra
-  integration/              ~360, broker + backend, real Docker
-  e2e/                      ~285, full client + worker round-trip
-  contracts/                shared contract test classes (bound in unit + integration)
-  chaos/                    toxiproxy + container restarts (opt-in)
-  property/                 hypothesis property-based (opt-in)
-  fuzz/                     byte + JSON fuzz (opt-in)
-  stress/                   high-parallelism (opt-in)
-  soak/                     1h leak detection (opt-in)
-docs/
-  brainstorms/              requirements (per feature)
-  plans/                    implementation plans (per feature)
-  solutions/                postmortem-style learnings
-  testing/                  test strategy + feature-parity matrix
-```
+The documentation is available in English and German and builds with
+`uv run --extra docs mkdocs serve`.
 
 ## Development
 
+SwarmQ is developed strictly test-first; the rules are in [`AGENTS.md`](AGENTS.md), the
+test strategy in [`docs/testing/test-strategy.md`](docs/testing/test-strategy.md).
+
 ```bash
-# Fast dev loop — unit only
-uv run --extra test pytest tests/unit -q
-
-# Integration + e2e: defaults target the swarmq test containers on
-# localhost 5699 (AMQP) / 15699 (management) / 6399 (Valkey). The suites
-# flush Valkey, so a local host on the default ports 5672/6379 is refused
-# unless SWARMQ_TEST_ALLOW_DEFAULT_PORTS=1 is set
-# (see docs/testing/test-strategy.md, "Ports und Schutz vor fremden Stacks").
-uv run --extra test pytest tests/integration tests/e2e -q
-
-# E2E against the dev stack (docker-compose.swarmq-dev.yml)
-SWARMQ_TEST_RABBITMQ_PORT=5673 SWARMQ_TEST_VALKEY_PORT=6380 \
-  uv run --extra test pytest tests/e2e -q
-
-# Chaos suite (starts its own toxiproxy stack per test class)
-uv run --extra test pytest tests/chaos -q -m chaos
-
-# E2E feature-combinations suite (31 combos × 3 failure tiers)
-# Tier-1 only — no Toxiproxy needed, runs as part of the regular e2e
-# suite above. Tier-2/3 (chaos-marked) needs the Toxiproxy stack:
-# This compose stack publishes RabbitMQ/Valkey on 5672/6379; point the
-# tests there explicitly (only if nothing else runs on those ports):
-docker compose -f docker-compose.yml -f docker-compose.chaos.yml up -d
-SWARMQ_TEST_RABBITMQ_PORT=5672 SWARMQ_TEST_RABBITMQ_MGMT_PORT=15672 \
-SWARMQ_TEST_VALKEY_PORT=6379 SWARMQ_TEST_ALLOW_DEFAULT_PORTS=1 \
-  uv run --extra test pytest tests/e2e/combinations -v -m chaos
-
-# Property + fuzz
-uv run --extra test pytest tests/property tests/fuzz -q -m "property or fuzz"
+uv run just            # list recipes
+uv run just unit       # fast unit tests, no services
+uv run just all        # unit, property, fuzz, integration, e2e (test ports 5699/6399)
+uv run just lint       # format + ruff
+uv run just types      # mypy, basedpyright, stubtest
 ```
 
-CI is `.gitlab-ci.yml`: every push runs lint, types, the lock check, unit
-(including property and parser-fuzz), integration and e2e — all blocking.
-Stress and soak are manual jobs. The chaos suite and the chaos-backed fuzz
-run are executed locally before a release; see
-`docs/testing/test-strategy.md` for why and how.
-
-For coding conventions and TDD discipline see `AGENTS.md`.
+Integration and e2e recipes start against dedicated test ports and take a shared lock,
+so they never touch a RabbitMQ or Valkey on the default ports.
 
 ## License
 
-[MIT](LICENSE).
+[MIT](LICENSE) · Logo and brand assets: [`docs/assets/logo`](docs/assets/logo/README.md)

@@ -1,26 +1,22 @@
 # Tutorials
 
-Mehrstufige, hands-on Walk-Throughs. Jedes Tutorial bringt einen
-Neuling von Null zu einem funktionierenden Ergebnis — lies von
-vorne nach hinten, tippe mit, erwarte, dass jedes Snippet
-unverändert läuft.
+Praktische Durchgänge, die dich von null zu einem funktionierenden
+Ergebnis führen. Lies sie von vorn nach hinten und tippe mit; jedes
+Snippet läuft so, wie es dasteht.
 
-Nutze die Tutorials, wenn du **durch Tun lernen** willst. Für eine
-gezielte Antwort auf eine spezifische Frage siehe die
-[How-to-Guides](../guides/index.md). Für den kurzen Roundtrip siehe
-[Schnellstart](../getting-started.md).
+Tutorials sind zum **Lernen durch Tun** da. Den Fünf-Minuten-Roundtrip
+zeigt der [Schnellstart](../getting-started.md); Antworten auf eine
+konkrete Frage geben die [How-to-Guides](../guides/index.md).
 
 ## Verfügbar
 
-- [**Erster E-Mail-Worker**](first-email-worker.md) — ein voller
-  45–60-Minuten-Walkthrough, der einen SendEmail-Task baut,
-  Retries und Rate-Limits hinzufügt, Lifecycle-Events über einen
-  Signal-Handler beobachtet, eine Dead-Letter-Route triggert und
-  sie mit der CLI wiederherstellt.
+- [**Ersten E-Mail-Worker bauen**](first-email-worker.md) — etwa
+  45 Minuten. Du baust einen `SendEmail`-Task, ergänzt Retries und ein
+  Rate-Limit, beobachtest Lifecycle-Events über Signal-Handler,
+  schickst eine Nachricht in die Dead-Letter-Queue und spielst sie mit
+  der CLI erneut ein.
 
-## Wo als Nächstes
+## Danach
 
-Nach einem Tutorial konsolidiere, indem du ein oder zwei
-[How-to-Guides](../guides/index.md) zu den angetasteten Features
-liest — die Guides enthalten die Parameter-Matrizen, die das
-Tutorial übergangen hat.
+Lies die [How-to-Guides](../guides/index.md) zu den Features, die du
+benutzt hast: Sie listen die Optionen, die das Tutorial auslässt.

@@ -30,6 +30,15 @@ mit Inkscape exportiert.
 <link rel="apple-touch-icon" href="favicon/swarmq-apple-touch-icon.png">
 ```
 
+## Wo das Logo eingebunden ist
+
+- `README.md`: `swarmq-horizontal-light/-dark.svg` per `<picture>` (hell/dunkel).
+- Doku-Website: Kopien unter `website/assets/brand/` (MkDocs braucht sie im
+  `docs_dir`). Kopfzeile über `overrides/partials/logo.html` (Icon je Farbschema),
+  Startseite mit `swarmq-stacked-*.svg`, Favicons über `mkdocs.yml` und
+  `overrides/main.html`. Farben der Website in `website/stylesheets/swarmq.css`.
+- Nach einer Änderung am Logo die Kopien in `website/assets/brand/` erneuern.
+
 ## Neu erzeugen
 
 ```bash

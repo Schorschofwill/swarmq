@@ -154,17 +154,17 @@ async with SwarmQ(broker, backend) as app:
     result = await handle.get(timeout=60)
 ```
 
-`apply()` persists the topology in Valkey, publishes the first steps
-(the first chain step, all group members, or the chord header) and
-returns a `WorkflowHandle` immediately. The workers drive the rest:
-when a step succeeds, the worker that ran it enqueues the next steps,
-and the last member of a group or chord header to finish triggers the
-fan-in exactly once. The client process can exit; the workflow keeps
-running.
+`apply()` runs `pre_enqueue` for the first steps, persists the topology
+in Valkey, publishes the first steps (the first chain step, all group
+members, or the chord header) and returns a `WorkflowHandle`
+immediately. The workers drive the rest: when a step succeeds, the
+worker that ran it enqueues the next steps, and the last member of a
+group or chord header to finish triggers the fan-in exactly once. The
+client process can exit; the workflow keeps running.
 
 Every step is an ordinary task execution: retries, timeouts, rate
 limits and locks of its `TaskInfo` apply. Step messages are always
-published as `AT_LEAST_ONCE`.
+published as `AT_LEAST_ONCE`, so steps must be idempotent.
 
 The workflow state lives for `result_ttl` of the `SwarmQ` instance
 that called `apply()` (default 86400 s). Set `result_ttl` high enough
@@ -187,6 +187,10 @@ handle = await app.workflow(workflow_id)  # WorkflowNotFound if absent
 print(await handle.status())
 ```
 
+A bare `swarmq.client.Client` (without `SwarmQ`) reattaches with
+`client.workflow(workflow_id, cancel_ttl_ms=...)`; without
+`cancel_ttl_ms` its cancel flag lives 24 h.
+
 ### Step paths
 
 `children()` keys steps by their position in the topology: chain step
@@ -207,6 +211,9 @@ of middleware contexts and of the `WORKFLOW_STEP_ENQUEUED` signal.
 - A step that is already running runs to completion; the worker then
   enqueues no further steps.
 
+To stop a single step instead, cancel its task id (from `children()`)
+with `app.cancel(task_id)`; the workflow then fails (see below).
+
 ## Limits
 
 Validated when you build the workflow, before anything is enqueued;
@@ -226,31 +233,53 @@ workflows.
 
 ## Failure modes
 
+`get()` raises `TaskError` for every failed workflow. Its message is the
+error text of the step (or of the cause below), and
+`TaskError.error_class` names the class of the step's exception, for
+example `builtins.ValueError`, or the swarmq class of a terminal path
+(`swarmq.exceptions.LockWaitExceeded`, `TaskNotFoundError`,
+`RedeliveryLimitError`). It is `None` after `max_age` expiry, a lock
+template error, a hung worker or a hard timeout, and for workflows an
+older worker failed.
+
+### Step failures, cancellation and timeouts
+
 | What happens | Result |
 |---|---|
 | A step fails and has retries left | It is retried like any task; the workflow keeps running. |
-| A step fails terminally (retries exhausted, `NoRetry`, delivery limit, `max_age` exceeded, lock template error, end of a lock wait, task not registered in the worker) | The worker marks the workflow `failed` when it dead-letters the step; `get()` raises `TaskError` with the step's error message. `TaskError.error_class` names the class of the step's exception (e.g. `builtins.ValueError`), or the swarmq class of the terminal path (`swarmq.exceptions.LockWaitExceeded`, `TaskNotFoundError`, `RedeliveryLimitError`); it is `None` after `max_age` expiry, a lock template error or a hung worker, and for workflows failed by an older worker. No further steps run, and a chord body never runs if a header member failed. A late duplicate of a step that already succeeded does not mark the workflow failed (`workflow_fail_skipped_step_done`). |
-| A step whose success is already stored is dead-lettered late (for example at the delivery limit, after its advance failed) | Since 0.13.0 the worker completes the workflow advance with the stored result instead of marking the workflow failed (`workflow_advance_caught_up`); the message is acked without a DLQ copy and without `TASK_DLQ`. If that last advance fails with an error reply from Valkey (`BackendResponseError`, for example `WRONGTYPE` on the chord or result key), the workflow is `failed` since 0.13.1 and `get()` raises `TaskError` with the error text; the message is acked without a DLQ copy and the stored success stays. If it fails with an outage (connection, timeout) or the failure mark itself fails, the message goes to the DLQ without an error result and the workflow stays `running` until its TTL. |
-| The advance of a `FIRE_AND_FORGET` step (built with `sig()` and an explicit `result_ttl`) gets an error reply from Valkey | Since 0.13.1 the workflow is `failed` at once, because the step is never redelivered; `get()` raises `TaskError` with the error text. After an outage the workflow stays `running` until its TTL. |
-| The workflow state expired while a step was still running | The step's result cannot advance the workflow; the worker logs `workflow_state_missing` (WARNING, field `workflow_id`). Raise `result_ttl` for long workflows. If the state is already gone when the worker marks the workflow `failed` at the delivery limit after an error reply (since 0.13.1), the message is acked without a DLQ copy and `workflow_state_missing` is the only trace; the step's success stays stored. |
+| A step fails terminally (retries exhausted, `NoRetry`, delivery limit, `max_age` exceeded, lock template error, end of a lock wait, task not registered in the worker) | The worker marks the workflow `failed` when it dead-letters the step. No further steps run, and a chord body never runs if a header member failed. A late duplicate of a step that already succeeded does not fail the workflow (`workflow_fail_skipped_step_done`). |
+| A step's task is not registered | In the client, `apply()` raises `TaskNotFoundError`. In the worker that enqueues the step, the workflow is `failed`. |
+| The queue of the next step does not exist (no worker has declared it yet) | The worker fails the workflow at once (recorded error type `UnroutableMessage`, log `workflow_advance_unroutable`) instead of redelivering the step up to the delivery limit. Start workers before producers ([missing queues](scheduling-and-retries.md#missing-queues)). |
 | A middleware `pre_enqueue` raises for one of the first steps (in the client) | `apply()` raises that exception; nothing is persisted or published. |
-| A middleware `pre_enqueue` raises for a later step (in the worker) | No step of that front is published; the workflow is `failed` and `get()` raises `TaskError` with the exception's message. See [middleware for workflow steps](middleware.md#workflow-steps). |
-| A step's task is not registered | In the client, `apply()` raises `TaskNotFoundError`. In the worker that enqueues the step, the workflow is `failed` and `get()` raises `TaskError`. |
-| The queue of the next step does not exist (no worker has declared it yet) | The worker marks the workflow `failed` at once (recorded error type `UnroutableMessage`, log `workflow_advance_unroutable`) instead of redelivering the step up to the delivery limit; `get()` raises `TaskError`. Start workers before producers ([missing queues](scheduling-and-retries.md#missing-queues)). |
-| A step built with `sig()` turns out to be `FIRE_AND_FORGET` without an explicit `result_ttl` (or with `result_ttl=0`), or stores no result for another reason (`result_ttl=0`) | Caught at run time: the workflow is `failed` (recorded error type `WorkflowValidationError`); `get()` raises `TaskError`. |
+| A middleware `pre_enqueue` raises for a later step (in the worker) | No step of that front is published; the workflow is `failed` with the exception's message. See [middleware for workflow steps](middleware.md#workflow-steps). |
+| A step built with `sig()` turns out to be `FIRE_AND_FORGET` without an explicit `result_ttl`, or any step stores no result (`result_ttl=0`) | Caught at run time: the workflow is `failed` (recorded error type `WorkflowValidationError`). |
 | The workflow is cancelled | `get()` raises `TaskCancelledError`. |
-| A single step is cancelled with `cancel(task_id)`, before or while it runs | The workflow is `failed`; `get()` raises `TaskError` with the message `task was cancelled`. No further steps run. A step that already succeeded does not mark the workflow failed. If both the step and its workflow are cancelled, the step's cancel wins (`failed`). |
+| A single step is cancelled with `cancel(task_id)`, before or while it runs | The workflow is `failed` with the message `task was cancelled`; no further steps run. A step that already succeeded does not fail the workflow. If both the step and its workflow are cancelled, the step's cancel wins (`failed`). |
 | `get()` times out while the workflow is still running | `ResultNotReadyError`; the workflow keeps running, call `get()` again. |
 | The workflow completed but its final result expired | `WorkflowResultExpired`; raise `result_ttl`. |
-| A member result needed for fan-in expired, or a member result is missing (lost) | The workflow is `failed` (recorded error type `WorkflowResultExpired`; until 0.12, `WorkflowValidationError` "resolved N of M" for a missing member) instead of passing an incomplete list on; `get()` raises `TaskError`. A member whose step marker is persisted late no longer fails the workflow, because fan-in derives member result ids from the workflow id and step path (since 0.13.0). |
+| A member result needed for fan-in expired or is missing | The workflow is `failed` (recorded error type `WorkflowResultExpired`; until 0.12 `WorkflowValidationError` "resolved N of M") instead of passing an incomplete list on. Since 0.13.0 fan-in derives member result ids from the workflow id and step path, so a member whose step marker was persisted late no longer fails the workflow. |
 | The workflow state no longer exists (never started, or expired) | `app.workflow(id)`, and `status()`/`children()`/`get()` on an existing handle, raise `WorkflowNotFound`. |
+
+### Lost advances and Valkey errors
+
+A step whose success is stored still has to *advance* the workflow
+(enqueue the next steps or record its fan-in). These cases are rare and
+mostly follow a Valkey outage or a swarmq key changed by hand:
+
+| What happens | Result |
+|---|---|
+| The advance fails with a Valkey outage (connection, timeout) | The step is redelivered and the idempotent advance runs again (`workflow_advance_backend_error`). |
+| A step whose success is stored is dead-lettered late, for example at the delivery limit after its advance kept failing | Since 0.13.0 the worker completes the advance with the stored result instead of failing the workflow (`workflow_advance_caught_up`); the message is acked without a DLQ copy and without `TASK_DLQ`. |
+| That last advance gets an error reply from Valkey (`BackendResponseError`, for example `WRONGTYPE` on the chord or result key) | Since 0.13.1 the workflow is `failed` with the error text; the message is acked without a DLQ copy and the stored success stays. If the failure mark itself fails, or the last advance hits an outage, the message goes to the DLQ without an error result and the workflow stays `running` until its TTL. |
+| The advance of a `FIRE_AND_FORGET` step (built with `sig()` and an explicit `result_ttl`) gets an error reply from Valkey | Since 0.13.1 the workflow is `failed` at once, because the step is never redelivered. After an outage it stays `running` until its TTL. |
+| The workflow state expired while a step was still running | The step's result cannot advance the workflow; the worker logs `workflow_state_missing` (WARNING, field `workflow_id`). Raise `result_ttl` for long workflows. If the state is already gone when the worker fails the workflow after an error reply at the delivery limit, the message is acked without a DLQ copy and `workflow_state_missing` is the only trace; the step's success stays stored. |
 
 `WorkflowValidationError`, `WorkflowNotFound`, `WorkflowResultExpired`,
 `TaskError`, `TaskCancelledError` and `ResultNotReadyError` are
 importable from `swarmq`. `WorkflowStateConflict`
-(`swarmq.exceptions`) is internal to the worker: it means concurrent
-branches kept overwriting each other's state update, and the step
-message is redelivered — you do not handle it in client code.
+(`swarmq.exceptions`) is internal to the worker: concurrent branches
+kept overwriting each other's state update, and the step message is
+redelivered. Client code never handles it.
 
 ## Observing workflows
 

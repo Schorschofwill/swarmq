@@ -69,11 +69,25 @@ async with SwarmQ(broker, backend) as app:
 |---|---|---|
 | `broker` | `RabbitMQBroker` | Wird bei `__aenter__` verbunden. |
 | `backend` | `ValkeyBackend` | Wird bei `__aenter__` verbunden. |
-| `**config_kwargs` | — | An `SwarmQConfig` weitergereicht. Siehe [Konfiguration](configuration.md). |
+| `**config_kwargs` | — | An `SwarmQConfig` weitergereicht. Siehe [Konfiguration](configuration.md#swarmqconfig-kwargs). |
 
-**Hinweise.** Eine einzelne `SwarmQ`-Instanz ist safe, sie über
-Coroutines auf derselben Event-Loop zu teilen. Teile sie *nicht*
-über Prozesse hinweg — jeder Prozess baut seine eigene.
+**Raises.** `ConfigurationError` bei einem ungültigen
+Konfigurationswert (auch aus einer `SWARMQ_*`-Variable) oder einem
+Namensraum, der zwischen Backend und Konfiguration abweicht;
+`TypeError` bei einem unbekannten Schlüsselwort und bei
+`broker_url`/`backend_url`, die `SwarmQ` aus `broker` und `backend`
+übernimmt.
+
+**Attribute.** `broker`, `backend`, `config` (die aufgelöste
+`SwarmQConfig`), `registry` (die beim Bau registrierten Tasks), `client`
+(der zugrunde liegende `swarmq.client.Client`) und `middleware_chain`
+(eine frische Kette der bis dahin registrierten Middleware).
+
+**Hinweise.** Eine `SwarmQ`-Instanz darf von Coroutines auf derselben
+Event-Loop gemeinsam genutzt werden. Teile sie *nicht* über Prozesse
+hinweg — jeder Prozess baut seine eigene. Jede `Task`-Unterklasse, die
+vor `SwarmQ(...)` definiert ist, landet in seiner Registry; importiere
+deine Task-Module also zuerst.
 
 ### `__aenter__` / `__aexit__`
 
@@ -111,7 +125,12 @@ async def schedule(
 ) -> str
 ```
 
-Enqueuet einen Task und gibt seine `task_id` zurück.
+Enqueuet einen Task und gibt seine `task_id` zurück. `SwarmQ.schedule`
+ist als `(task_name, *args, **kwargs)` deklariert und reicht alles an
+`Client.schedule` weiter, das die oben gezeigten Schlüsselwort-Parameter
+hat. `delay`, `eta`, `unique_for` und `unique_until` sind deshalb nie
+Task-Argumente: Ein Task, dessen `run()` einen dieser Namen annimmt,
+wirft bei der Klassendefinition `ValueError`.
 
 **Parameter**
 
@@ -253,7 +272,11 @@ async def run(
 ```
 
 Enqueuet einen Task und wartet auf das Ergebnis. Komfort-Wrapper
-um `schedule()` + `get_result()`.
+um `schedule()` + `get_result()`. Jedes Schlüsselwort außer `timeout`
+und `polling` geht an `schedule()`, also wirken `queue`, `delay`, `eta`,
+`unique_for` und `unique_until` wie dort. `timeout` und `polling`
+verhalten sich wie bei `get_result()`; `timeout` zählt ab dem Ende von
+`schedule()` und muss mit `delay` also auch die Verzögerung abdecken.
 
 **Raises.** Alles, was `schedule()` raist, plus
 `ResultNotReadyError` bei Timeout, `TaskError` bei Task-Fehlschlag,
@@ -280,8 +303,10 @@ async def get_result(
 Blockiert, bis das Task-Ergebnis verfügbar ist oder `timeout`
 abläuft.
 
-Intern wird `[<namensraum>:]sq:notify:{task_id}` auf Valkey abonniert für ein
-Push-basiertes Warten, mit 5ms-Polling als Fallback. Bei
+Intern wird `[<namensraum>:]sq:notify:{task_id}` auf Valkey abonniert
+für ein Push-basiertes Warten von etwa einer Sekunde, danach folgt
+5ms-Polling als Fallback. `polling` wirkt nicht; der Parameter bleibt
+aus Kompatibilitätsgründen (E-030). Bei
 `timeout=0` ein einzelnes `GET` ohne Pub/Sub. Ein negatives `timeout`
 oder `nan` gilt als schon abgelaufen: ein `GET`, dann
 `ResultNotReadyError`, wenn noch kein Ergebnis da ist (seit 0.12.3;
@@ -503,6 +528,23 @@ Election- und Poll-Tasks gestoppt, bevor die Exception propagiert. Mit
 gestarteten Forkserver verworfen hat; siehe
 [Fehlerkatalog](errors.md#auerhalb-der-hierarchie-forksourcerejected).
 
+## `class Client`
+
+`swarmq.client.Client` ist die Producer-Seite hinter `SwarmQ`,
+erreichbar als `app.client`. Seine Methoden entsprechen denen von
+`SwarmQ` oben, bis auf drei, die eine Lebensdauer annehmen, die `SwarmQ`
+aus `result_ttl` ableitet:
+
+```python
+async def cancel(self, task_id: str, ttl_ms: int = 86_400_000) -> bool
+async def apply(self, workflow, *, state_ttl_ms: int = 86_400_000) -> WorkflowHandle
+async def workflow(self, workflow_id: str, *, cancel_ttl_ms: int | None = None) -> WorkflowHandle
+```
+
+`SwarmQ` übergibt `max(24 h, result_ttl)` als `ttl_ms` und
+`cancel_ttl_ms` sowie `result_ttl` als `state_ttl_ms`. Nimm den Client
+aus `app.client`; dort sind Registry, Middleware und Signale verdrahtet.
+
 ## `class TaskInfo`
 
 Frozen deklarative Config für einen Task. Feld-Validierung läuft
@@ -513,7 +555,6 @@ beim Import, nicht beim ersten Schedule.
 TaskInfo(
     name: str,
     queues: list[str],
-    *,
     soft_timeout: int | None = None,
     hard_timeout: int | None = None,
     delivery: DeliveryMode = DeliveryMode.AT_LEAST_ONCE,
@@ -526,6 +567,7 @@ TaskInfo(
     lock: str | None = None,
     max_concurrency: int = 1,
     cron: str | None = None,
+    catchup: bool = False,
     unique_for: float | None = None,
     unique_until: Literal["start", "completion"] = "completion",
     max_age: int | None = None,
@@ -545,7 +587,8 @@ Jahre, die Grenze von `SwarmQConfig`); ein größerer Wert wirft
 größer als 0 sein: `nan`, `-inf`, `0`, negative Werte und `False`
 werfen `ValueError`, eine Nicht-Zahl wie eine `timedelta` wirft
 `TypeError`, jeweils mit dem Feldnamen (seit 0.13.1). `soft_timeout=inf`
-bleibt erlaubt. Feld-Semantik und
+bleibt erlaubt. `catchup=True` ist reserviert und wirft `ValueError`.
+Feld-Semantik und
 Validierungsregeln leben in
 [Konfigurations-Referenz — TaskInfo-Felder](configuration.md#taskinfo-felder).
 
@@ -607,10 +650,13 @@ class Task:
 
 ### Methoden, die du aus `run()` aufrufst
 
-- `update_progress(current, total, message="")` — Progress
-  aufzeichnen. Gedrosselt auf einen Write pro 500 ms pro
-  Task-Instanz; das finale Update (`current == total`) flusht
-  immer. Safe No-Op außerhalb eines Worker-Contexts (Unit-Tests).
+- `update_progress(current, total, message="")` — Fortschritt
+  aufzeichnen. Gedrosselt auf einen Schreibvorgang je 500 ms und
+  Task-Instanz; das finale Update (`current >= total`) wird immer
+  geschrieben, einmal je Instanz. Ohne Wirkung außerhalb eines Workers
+  (Unit-Tests), bei `total <= 0` und bei `current < 0`. Best effort: Ein
+  Valkey-Fehler wird geloggt und lässt den Task nicht scheitern. Der
+  Fortschritt lebt so lange wie das Ergebnis des Tasks (`result_ttl`).
 
 ### Workflow-Signaturen
 
@@ -771,7 +817,35 @@ Handler müssen `**kwargs` akzeptieren. Nutze `kwargs.get("batch_index")` für d
 `TASK_DUPLICATE_DETECTED` vorhandene Feld, da Nicht-Batch-Quellen
 es nicht enthalten. `worker_id` ist `<basis>:<slot>` unter dem
 Supervisor und `<basis>:p<pid>` eingebettet; siehe
-[Worker-Identität](configuration.de.md#worker-identitat).
+[Worker-Identität](configuration.md#worker-identitat).
+
+Die Enum-Werte sind die kleingeschriebenen Namen
+(`Signal.TASK_FAILED.value == "task_failed"`); sie erscheinen als
+`signal` in den Log-Events `signal_handler_error` und
+`signal_handler_timeout`.
+
+## `class SignalDispatcher`
+
+Die Registry hinter `app.on_signal()`; jede `SwarmQ` besitzt eine.
+
+```python
+SignalDispatcher()
+
+def connect(self, signal: Signal, handler: AsyncHandler) -> None
+def on_signal(self, signal: Signal) -> Callable[[AsyncHandler], AsyncHandler]
+async def dispatch(self, signal: Signal, *, handler_timeout: float | None = None,
+                   **kwargs: Any) -> None
+```
+
+- `connect()` hängt einen async Handler an; `on_signal()` ist die
+  Decorator-Form. Wer denselben Handler zweimal registriert, bekommt ihn
+  zweimal aufgerufen.
+- `dispatch()` wartet die Handler nacheinander in
+  Registrierungsreihenfolge ab und übergibt jedem `kwargs`. Wirft ein
+  Handler eine `Exception`, wird das als `signal_handler_error` geloggt
+  und der nächste läuft; `asyncio.CancelledError` geht durch.
+  `handler_timeout` begrenzt jeden Handler einzeln
+  (`signal_handler_timeout`) und wird nicht an die Handler übergeben.
 
 ## Workflow-Primitive
 
@@ -782,7 +856,16 @@ sig(task_name: str, *args, immutable: bool = False, **kwargs) -> Signature
 chain(*steps) -> Chain              # auch: a | b | c
 group(*members) -> Group            # oder group(iterable)
 chord(header: Group, body) -> Chord # auch: group(...) | body
+
+Signature(task_name: str, args: tuple = (), kwargs: dict | None = None,
+          *, immutable: bool = False)
 ```
+
+Eine `Signature` hat die Attribute `task_name`, `args` (Tupel), `kwargs`
+(Dict) und `immutable`. `to_dict()` / `Signature.from_dict()` wandeln
+sie in die gespeicherte Topologie-Form und zurück. `Task.s()`/`Task.si()`
+lehnen einen `FIRE_AND_FORGET`-Task schon beim Bauen ab; `sig()` und
+der Konstruktor überlassen diese Prüfung der Laufzeit.
 
 | Primitiv | Ergebnis |
 |---|---|
@@ -1247,7 +1330,7 @@ from swarmq import (
 )
 
 HealthChecker(broker, backend, *, timeout_s: float = 2.0, checks=None)
-HealthServer(checker, *, host="127.0.0.1", port=8080, liveness_started=None)
+HealthServer(checker, *, host="127.0.0.1", port=8080, liveness_started: float | None = None)
 serve_health(checker, *, host="127.0.0.1", port=8080)       # async Context-Manager
 
 Metrics(registry=None, namespace="swarmq")
@@ -1267,12 +1350,20 @@ install_signal_collectors(dispatcher: SignalDispatcher, metrics: Metrics) -> Non
   und im CPU-Modus `"compute"`. Bis 0.10.x war `compute_check=` die
   einzige Zusatzprüfung; stattdessen `checks={"compute": ...}`
   übergeben.
-- `HealthServer` bedient `/health` (immer `200` mit `uptime_s`) und
-  `/ready` (`200` oder `503` mit dem `check_all()`-Snapshot).
+- `HealthServer` bedient `/health` (immer `200` mit `status` und
+  `uptime_s`, gezählt ab `liveness_started` als `time.monotonic()`-Wert,
+  Vorgabe: der Bau) und `/ready` (`200` oder `503` mit dem
+  `check_all()`-Snapshot); jeder andere Pfad ist `404`. `await start()`
+  bindet, `await stop()` schließt.
 - `Metrics` hält den [Metrik-Katalog](configuration.md#metrik-katalog)
-  in einer eigenen `CollectorRegistry`; ohne `prometheus_client`
-  (`pip install 'swarmq[metrics]'`) ist jede Metrik ein No-op.
-- `MetricsServer` bedient `/metrics` aus einer `Metrics`-Instanz.
+  in einer eigenen `CollectorRegistry` (oder `registry`, mit dem
+  Namenspräfix `namespace`); ohne `prometheus_client`
+  (`pip install 'swarmq[metrics]'`) ist jede Metrik ein No-op, `enabled`
+  ist `False` und `render()` liefert einen leeren Body.
+- `MetricsServer` bedient `/metrics` (`render()` der `Metrics`-Instanz;
+  andere Pfade `404`), mit `start()`/`stop()` wie `HealthServer`.
+- `serve_health()` und `serve_metrics()` sind async Context-Manager, die
+  den Server beim Betreten starten und beim Verlassen stoppen.
 - `install_signal_collectors()` registriert die Signal-Handler, die
   Task-Zähler, Gauges und das Dauer-Histogramm aktualisieren.
 
@@ -1290,13 +1381,53 @@ sie aus `swarmq.exceptions`. `BrokerPublishBlocked` und
 Code, der auch auf 0.12.0–0.12.2 laufen muss, importiert sie aus
 `swarmq.exceptions`.
 Detaillierte Semantik und `Wann geraist` / `Ursache` / `Recovery` pro
-Klasse leben im [Fehlerkatalog](errors.md). `ForkSourceRejected`, das
-ein eingebetteter CPU-Worker wirft, ist ein `RuntimeError` in
-`swarmq.supervision`.
+Klasse leben im [Fehlerkatalog](errors.md). Zwei Klassen stehen
+außerhalb der Hierarchie: `ForkSourceRejected`, das ein eingebetteter
+CPU-Worker wirft, ist ein `RuntimeError` in `swarmq.supervision`, und
+`swarmq.exceptions.PublishCancelledUnsent` ist ein
+`asyncio.CancelledError` (siehe die Vertragshinweise zu 0.14.0 oben).
+
+Hierarchie der Klassen in `swarmq.__all__`:
+
+```text
+SwarmQError
+├── ConfigurationError
+│   ├── QueueArgumentsMismatch
+│   └── LoggingConfigError
+├── BrokerConnectionError
+│   ├── PublishIndeterminate
+│   ├── MessageHeadersTooLarge
+│   ├── UnroutableMessage
+│   ├── BrokerPublishBlocked
+│   └── PublishRejected
+├── BackendConnectionError
+│   └── BackendResponseError
+├── TaskError
+│   └── TaskCancelledError
+├── TaskNotFoundError, RedeliveryLimitError, LockWaitExceeded
+├── ResultNotReadyError, ResultExpiredError, ResultSerializationError
+├── WorkflowValidationError, WorkflowNotFound, WorkflowResultExpired
+└── Retry, NoRetry, SoftTimeoutError
+```
+
+`TaskCancelledError` ist ein `TaskError`: Fange es zuerst, wenn du
+beide behandelst. Konstruktoren mit eigenen Parametern (alle übrigen
+nehmen die üblichen `Exception`-Argumente):
+
+| Klasse | Konstruktor | Attribute |
+|---|---|---|
+| `Retry` | `Retry(delay: float \| None = None)` | `delay` |
+| `NoRetry` | `NoRetry(reason: str = "")` | `reason` |
+| `TaskError` | `TaskError(*args, error_class: str \| None = None)` | `error_class` |
+| `TaskCancelledError` | `TaskCancelledError(task_id: str \| None = None)` | `task_id`, `error_class` (`None`) |
+| `QueueArgumentsMismatch` | `QueueArgumentsMismatch(queue, argument, declared, existing, hint="")` | `queue`, `argument`, `declared`, `existing` |
+| `LoggingConfigError` | `LoggingConfigError(path: str, cause: BaseException)` | `path`, `__cause__` |
 
 `Retry(delay=...)` klemmt eine negative Wartezeit auf `0` (sofort
-wiederholen, zählt gegen `max_retries`) und wirft für `inf` und `nan`
-beim Erzeugen einen `ValueError` (seit 0.12.3).
+wiederholen, zählt gegen `max_retries`). Beim Erzeugen wirft es
+`ValueError` für `inf` und `nan` (seit 0.12.3) und für eine Wartezeit
+über `315360000` Sekunden (seit 0.13.1). `delay=None` nutzt das Backoff
+des Tasks.
 
 ## Siehe auch
 

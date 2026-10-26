@@ -1,39 +1,54 @@
 # Middleware
 
-Wrappe jedes Task-Lifecycle-Event — Enqueue, Execute, Error,
-Retry — mit deiner eigenen Logik. Middleware ist der richtige Ort
-für Logging, Tracing, Metriken, Correlation-IDs und jede andere
-Sorge, die uniform über Tasks hinweg wirken soll.
+Umschließe jedes Ereignis im Lebenszyklus eines Tasks (Enqueue,
+Ausführung, Fehler, Retry) mit eigener Logik. Middleware ist der
+richtige Ort für Logging, Tracing, Metriken, Correlation-IDs und alles
+andere, das einheitlich für alle Tasks gelten soll.
 
 ## Wann Middleware
 
 Greife zu Middleware, wenn:
 
-- Das Verhalten für **jeden** Task laufen muss und du es nicht in
-  jedem `run()` wiederholen willst.
-- Das Verhalten **querschnittlich** ist: Logging, Tracing, Timing,
-  Auditing, Auth-Context, Per-Request-Correlation-IDs.
-- Du sowohl Before- als auch After-Hook mit Shared State brauchst
-  (z. B. Startzeit → elapsed Time).
+- das Verhalten für **jeden** Task laufen muss und du es nicht in
+  jedem `run()` wiederholen willst,
+- das Verhalten **querschnittlich** ist: Logging, Tracing, Timing,
+  Auditing, Weitergabe von Auth-Kontext, Correlation-IDs je Anfrage,
+- du einen Hook davor und einen danach mit gemeinsamem Zustand
+  brauchst (etwa Startzeit → verstrichene Zeit).
 
-Greife zu einem [Signal-Handler](signals.md), wenn du nur ein
-spezifisches Event interessiert (z. B. `TASK_FAILED`) und nicht
-jeden Task wrappen musst.
+Greife zu einem [Signal-Handler](signals.md), wenn dich nur ein
+bestimmtes Ereignis interessiert (etwa `TASK_FAILED`) und du nicht
+jeden Task umschließen musst.
 
 ## Die sechs Hooks
 
-| Hook | Wo er läuft | Wird aufgerufen | Exception-Verhalten |
+| Hook | Läuft in | Aufgerufen | Wenn er wirft |
 |---|---|---|---|
-| `pre_enqueue` | Client | Vor `broker.publish` oder bevor ein `delay`/`eta`-Task gespeichert wird | Propagiert — bricht das Enqueue ab |
-| `post_enqueue` | Client | Nach Broker-Confirm oder nachdem ein `delay`/`eta`-Task gespeichert ist | Geschluckt — auf ERROR geloggt |
-| `pre_execute` | Worker | Nach Zustellung, vor `Task.run()` | Geschluckt — auf ERROR geloggt |
-| `post_execute` | Worker | Nach `run()`-Erfolg | Geschluckt — auf ERROR geloggt |
-| `on_error` | Worker | Wenn `run()` raist | Geschluckt — auf ERROR geloggt |
-| `on_retry` | Worker | Wenn Retry geplant wird | Geschluckt — auf ERROR geloggt |
+| `pre_enqueue` | Einreihender Prozess | Vor dem Publish oder bevor ein `delay`/`eta`-Task gespeichert wird | Propagiert und bricht das Enqueue ab |
+| `post_enqueue` | Einreihender Prozess | Nachdem der Broker den Publish bestätigt hat oder ein `delay`/`eta`-Task gespeichert ist | Geloggt, die Kette läuft weiter |
+| `pre_execute` | Worker | Nach den Prüfungen des Workers (Rate-Limit, Lock, …), vor `pre_execution()` und `run()` | Geloggt, die Kette läuft weiter |
+| `post_execute` | Worker | Nachdem `run()` und `post_execution()` erfolgreich waren | Geloggt, die Kette läuft weiter |
+| `on_error` | Worker | Nach jedem gescheiterten Versuch: `run()`, `pre_execution()` oder `post_execution()` hat geworfen, oder Soft- bzw. Hard-Timeout | Geloggt, die Kette läuft weiter |
+| `on_retry` | Worker | Wenn ein Retry beschlossen ist, bevor die Retry-Kopie publiziert wird | Geloggt, die Kette läuft weiter |
 
-Nur `pre_enqueue` kann die Operation vetoen. Jeder andere Hook ist
-beobachtend: Er kann aufzeichnen, loggen oder State erweitern,
-aber Raisen dort ändert den Task-Pfad nicht.
+Nur `pre_enqueue` kann ein Veto einlegen. Alle anderen Hooks
+beobachten nur: Eine Ausnahme dort wird als `middleware_hook_failed`
+geloggt (ERROR, Logger `swarmq.middleware`, mit `hook`, `middleware`
+und Traceback), die übrigen Middlewares laufen trotzdem, und der Weg
+des Tasks ändert sich nicht.
+
+Worker-Hooks laufen nur für eine Zustellung, die bis zur Ausführung
+kommt. Eine Nachricht, die zurückgestellt wird (Rate-Limit,
+Lock-Konflikt, unbekannter Task), über `max_age` abläuft, vor dem
+Start abgebrochen oder abgewiesen wird, sieht keinen Worker-Hook.
+`on_retry` erhält `retry_count` (die Nummer des kommenden Retrys, auch
+als `message["retry_count"]` gesetzt) und `delay` in Sekunden.
+
+Bei einem sofortigen `schedule()` mit `unique_for` wird das Dedup-Flag
+vor `pre_enqueue` gesetzt: Ein Duplikat liefert die vorhandene Task-ID,
+ohne dass ein Enqueue-Hook läuft. `schedule_many()` ruft `pre_enqueue`
+für jedes Element vor dem ersten Publish auf; ein Veto bricht den
+ganzen Batch ab.
 
 ### Verzögerte Tasks (`delay`/`eta`)
 
@@ -49,23 +64,28 @@ Anders als bei einem sofortigen `schedule()` hat ein verzögerter
 Aufruf, der sich als Duplikat herausstellt (`unique_for`), `pre_enqueue`
 schon durchlaufen: Die Middleware sieht `pre_enqueue` ohne folgendes
 `post_enqueue`. Räume Zustand je Aufruf deshalb nicht allein in
-`post_enqueue` auf.
+`post_enqueue` auf. Der Dedup-Hash entsteht aus den Argumenten vor der
+Middleware; ein `kwargs`-Wert, den die Middleware bei jedem Aufruf
+ergänzt, hebelt die Dedup also nicht aus.
 
 ### Workflow-Schritte
 
 `pre_enqueue` und `post_enqueue` laufen auch für jeden
-Workflow-Schritt — aus `app.apply()` für die Anfangsfront und aus dem
+Workflow-Schritt: aus `app.apply()` für die Anfangsfront und aus dem
 Advancer im Worker für jeden Folgeschritt. Der Kontext eines solchen
 Schritts hat `delivery_mode="at_least_once"` unabhängig von der
 Deklaration des Tasks und zwei zusätzliche Schlüssel, `workflow_id` und
 `step_path`, die gewöhnliche `schedule()`-Aufrufe nicht tragen.
 `pre_enqueue` läuft für alle Schritte einer Front, bevor der erste
-publiziert wird; wirft es, wird kein Schritt dieser Front publiziert,
-der Workflow mit dem Klassennamen der Ausnahme als gescheitert markiert
-und die auslösende Nachricht bestätigt.
+publiziert wird. Wirft es in `apply()`, erreicht die Ausnahme den
+Aufrufer, und nichts wird gespeichert oder publiziert. Wirft es im
+Worker, wird kein Schritt dieser Front publiziert, der Workflow wird
+mit Typ und Text der Ausnahme als `failed` markiert (`get()` wirft
+`TaskError`), und die auslösende Nachricht wird bestätigt
+([Fehlerfälle](workflows.md#fehlerfalle)).
 
-Eine `pre_enqueue`, die Client-Kontext voraussetzt (eine Request-ID,
-ein Auth-Token), muss dessen Fehlen deshalb tolerieren — oder
+Ein `pre_enqueue`, das Client-Kontext voraussetzt (eine Request-ID,
+ein Auth-Token), muss dessen Fehlen deshalb tolerieren oder
 `message.get("workflow_id")` prüfen und die Durchsetzung für
 Workflow-Schritte überspringen.
 
@@ -81,11 +101,11 @@ log = get_logger("myapp.timing")
 
 
 class TimingMiddleware(Middleware):
-    """Loggt Wall-Clock-Dauer für jede Task-Ausführung."""
+    """Loggt die Laufzeit jeder Task-Ausführung."""
 
     def __init__(self) -> None:
-        # Per-Task-Startzeiten, gekeyt auf task_id. Middleware-Instanzen
-        # sind über Tasks geteilt, daher task_id für Isolation nutzen.
+        # Startzeiten je task_id. Eine Middleware-Instanz gilt für alle
+        # Tasks, daher über task_id trennen.
         self._starts: dict[str, float] = {}
 
     def forget(self, task_id: str) -> None:
@@ -122,7 +142,7 @@ class TimingMiddleware(Middleware):
             )
 ```
 
-Das Beispiel zeigt nur ein Hook-Paar mit geteiltem State: SwarmQ
+Das Beispiel zeigt nur ein Hook-Paar mit gemeinsamem Zustand: SwarmQ
 loggt selbst bereits `task_succeeded` und `task_failed` mit
 `duration_ms` auf dem Logger `swarmq.task` (siehe
 [Lebenszyklus-Events der Tasks](../reference/logging.md#lebenszyklus-events-der-tasks)).
@@ -138,17 +158,16 @@ eingebettet in eine App, die structlog nicht konfiguriert hat, umgehen
 seine Events `logging` und landen mit den structlog-Defaults auf stdout
 (siehe [Worker-Prozesse](../reference/logging.md#worker-prozesse)).
 
-`MessageContext` ist ein `TypedDict`; zur Laufzeit ein einfaches
+`MessageContext` ist ein `TypedDict`, zur Laufzeit ein einfaches
 `dict`. Greife auf Felder mit `message["task_id"]`,
-`message["task_name"]` usw. zu. Siehe die
-[API-Referenz](../reference/api.md#typeddict-messagecontext) für die
-volle Feldliste.
+`message["task_name"]` usw. zu. Die vollständige Feldliste steht in der
+[API-Referenz](../reference/api.md#typeddict-messagecontext).
 
 ## Middleware registrieren
 
-Rufe `app.add_middleware(instance)` auf. Reihenfolge zählt — die
-Kette läuft vorwärts auf `pre_*`-Hooks und rückwärts auf
-`post_*`, `on_error`, `on_retry` (klassische „around"-Semantik).
+Rufe `app.add_middleware(instance)` auf. Die Reihenfolge zählt: Die
+Kette läuft vorwärts bei `pre_*`-Hooks und rückwärts bei `post_*`,
+`on_error` und `on_retry` (klassische „around“-Semantik).
 
 ```python
 app = SwarmQ(broker, backend)
@@ -157,10 +176,9 @@ app.add_middleware(TimingMiddleware())
 app.add_middleware(AuthContextMiddleware())  # innerste
 ```
 
-Registrierung ist jederzeit safe — vor oder nach `start_worker()`
-und vor oder nach `schedule()`. Die Kette wird pro Operation
-aufgelöst, neu hinzugefügte Middleware ist ab dem nächsten Aufruf
-sichtbar.
+Registrieren ist jederzeit möglich, vor oder nach `start_worker()` und
+vor oder nach `schedule()`. Die Kette wird je Vorgang aufgelöst; neu
+hinzugefügte Middleware gilt ab dem nächsten Aufruf.
 
 **Welche App.** Hooks laufen an der App, die die Arbeit macht:
 `pre_enqueue` und `post_enqueue` an der App, die `schedule()` aufruft,
@@ -169,7 +187,7 @@ Workers. Workflow-Folgeschritte stellt der Advancer im Worker ein;
 deren `pre_enqueue` und `post_enqueue` laufen deshalb ebenfalls an der
 App des Workers. `swarmq worker` baut seine eigene App; Middleware an
 einer modulweiten `app` in `myapp/tasks.py` läuft im Worker also nie.
-Füge sie in einem `--configure`-Hook hinzu – auch Enqueue-Middleware,
+Füge sie in einem `--configure`-Hook hinzu, auch Enqueue-Middleware,
 die jeden Workflow-Schritt sehen muss:
 
 ```python title="myapp/hooks.py"
@@ -202,33 +220,38 @@ flowchart LR
     B2 --> A2[A.post_execute]
 ```
 
-Bei Fehler läuft die Vorwärtskette trotzdem (`pre_execute` jeweils),
-`run` raist, dann läuft `on_error` in Rückwärtsreihenfolge für
-jede Middleware.
+Bei einem Fehler läuft die Vorwärtskette trotzdem (`pre_execute`
+jeweils), der Versuch scheitert, dann läuft `on_error` rückwärts für
+jede Middleware, gefolgt von `on_retry` (ebenfalls rückwärts), wenn ein
+Retry beschlossen ist.
 
-Ein Cancel (`app.cancel()`) ist kein Fehler: Nach `pre_execute` läuft
-weder `on_error` noch `post_execute`; nur das Signal `TASK_CANCELLED`
-feuert.
+Ein Cancel (`app.cancel()`) ist kein Fehler. Ein Task, der während der
+Ausführung abgebrochen wird, bekommt `pre_execute`, aber weder
+`on_error` noch `post_execute`; ein Task, der vor dem Start abgebrochen
+wird, bekommt gar keinen Worker-Hook. In beiden Fällen feuert nur das
+Signal `TASK_CANCELLED`.
 
 ## State zwischen Hooks teilen
 
-Drei Idiome, in Präferenzreihenfolge:
+Drei Muster, in dieser Reihenfolge zu bevorzugen:
 
-1. **Keyed Dict auf der Middleware-Instanz**, wie im Timing-Beispiel
-   oben. Cleanup bei `post_execute` und `on_error`, für abgebrochene
-   Tasks zusätzlich beim Signal `TASK_CANCELLED` (siehe den Hook unter
+1. **Dict auf der Middleware-Instanz, nach `task_id` getrennt**, wie im
+   Timing-Beispiel oben. Aufräumen in `post_execute` und `on_error`,
+   für abgebrochene Tasks zusätzlich beim Signal `TASK_CANCELLED`
+   (siehe den Hook unter
    [Middleware registrieren](#middleware-registrieren)); sonst bleibt
-   je abgebrochenem Task ein Eintrag liegen. Funktioniert, weil
-   Middleware singleton pro `SwarmQ`-App ist.
-2. **Context Vars.** Nutze `contextvars.ContextVar` für Werte, die
-   über `await`-Grenzen in den Task-Body selbst propagieren sollen
-   — OpenTelemetry-Trace-IDs, Request-IDs.
-3. **Eine Subklasse von `Middleware`**, die ihren eigenen State
-   besitzt und ihn nicht nach außen exponiert.
+   je abgebrochenem Task ein Eintrag liegen. Das funktioniert, weil
+   jede Middleware-Instanz von allen Tasks ihrer `SwarmQ`-App geteilt
+   wird.
+2. **Context Vars.** Nutze `contextvars.ContextVar` für Werte, die über
+   `await`-Grenzen bis in den Task-Body wirken sollen, etwa
+   OpenTelemetry-Trace-IDs oder Request-IDs.
+3. **Eine Unterklasse von `Middleware`**, die ihren Zustand selbst hält
+   und nicht nach außen gibt.
 
-Vermeide, mutablen State auf dem `MessageContext`-Dict abzulegen —
-es ist als spezifische Form typisiert, und Ad-hoc-Keys driften
-still vom Vertrag ab.
+Lege keinen veränderlichen Zustand im `MessageContext`-Dict ab: Es hat
+eine feste, typisierte Form, und zusätzliche Schlüssel entfernen sich
+still vom Vertrag.
 
 ## Task-Argumente in `pre_execute` ändern
 
@@ -250,27 +273,30 @@ stellt den ursprünglichen Nachrichtentext erneut zu, und `pre_execute`
 läuft noch einmal; der Hook muss die Änderung also bei jedem Versuch
 machen.
 
+In `pre_enqueue` gilt dasselbe für `message["kwargs"]` eines
+`schedule()`-Aufrufs: Eine Änderung in place wird mit dem Task
+publiziert (bei `delay`/`eta` gespeichert und beim Fire publiziert).
+Eine Änderung an `message["args"]` erreicht die Nachricht nicht.
+
 ## Was Middleware **nicht** tun soll
 
 - **`message["args"]` oder `message["kwargs"]` in `pre_execute` neu
   zuweisen.** Der Worker behält seine eigene Referenz; ein neues Objekt
-  sieht `run()` nicht. Stattdessen das bestehende Dict bzw. die Liste
-  ändern (siehe oben).
-- **Neue Nachrichten via `broker.publish` emittieren.** Nutze
-  stattdessen `app.schedule()`, damit Middleware-Stack und Signals
-  korrekt feuern.
-- **Schlafen oder langsames I/O in `pre_execute`.** Jeder
-  `pre_execute`-Hook läuft auf dem Hot Path vor dem Start von
-  `run()`. Halt ihn Mikrosekunden-schnell.
-- **Task-Exceptions fangen und schlucken.** Lass sie propagieren.
-  Der Worker entscheidet Retry-vs-DLQ nach Exception-Klasse und
-  Retry-Budget — die Exception zu unterdrücken zerbricht diesen
-  Vertrag.
+  sieht `run()` nicht. Ändere stattdessen das bestehende Dict bzw. die
+  Liste (siehe oben).
+- **Neue Nachrichten über `broker.publish` senden.** Nutze
+  `app.schedule()`, damit Middleware und Signals korrekt feuern.
+- **In `pre_execute` schlafen oder auf langsames I/O warten.** Jeder
+  `pre_execute`-Hook liegt auf dem heißen Pfad vor dem Start von
+  `run()` und belegt einen Concurrency-Slot. Halte ihn schnell.
+- **Von `on_error` erwarten, den Ausgang zu ändern.** Die Ausnahme ist
+  bereits festgehalten; der Worker entscheidet Retry oder DLQ nach
+  Exception-Klasse und Retry-Budget, unabhängig vom Hook.
 
 ## Verifizieren
 
 Füge deine Middleware in einem `--configure`-Hook hinzu, starte den
-Worker mit `--log-level DEBUG` und `--log-format human`, und plane
+Worker mit `--log-level DEBUG` und `--log-format human` und plane
 einen Task:
 
 ```bash
@@ -278,16 +304,15 @@ swarmq worker --module myapp.tasks --configure myapp.hooks:setup \
   --log-level DEBUG --log-format human
 ```
 
-Du solltest bei jedem Task Log-Einträge des Hooks sehen. Wenn nichts
-erscheint, prüfe, ob der Worker mit `--configure` startet und der Hook
+Bei jedem Task sollten Log-Einträge des Hooks erscheinen. Erscheint
+nichts, prüfe, ob der Worker mit `--configure` startet und der Hook
 die Middleware hinzufügt. Middleware an einer modulweiten `app` in
 `myapp/tasks.py` hängt nicht an der App des Workers.
 
 ## Siehe auch
 
-- [`Middleware`-API](../reference/api.md#class-middleware) — volle
-  Hook-Liste und Signaturen
-- [Signals](signals.md) — für Per-Event-Handler, die nicht jeden
-  Task wrappen müssen
-- [Tasks definieren](defining-tasks.md) — wo `TaskInfo`-Optionen
-  sitzen
+- [`Middleware`-API](../reference/api.md#class-middleware): alle Hooks
+  und Signaturen
+- [Signals](signals.md): Handler je Ereignis, die nicht jeden Task
+  umschließen müssen
+- [Tasks definieren](defining-tasks.md): wo `TaskInfo`-Optionen stehen

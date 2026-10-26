@@ -1,9 +1,9 @@
 # Fehlerkatalog
 
-Jede Exception, die SwarmQ raist, erbt von `SwarmQError`. Die
-Tabelle unten ist der Sammelfang; die Abschnitte danach sind die
-Per-Klasse-Einträge mit **Wann geraist**, **Ursache** und
-**Recovery**.
+Jede Exception, die SwarmQ auslöst, erbt von `SwarmQError`, mit zwei
+dokumentierten Ausnahmen [außerhalb der Hierarchie](#auerhalb-der-hierarchie-forksourcerejected).
+Die Tabelle unten gibt den Überblick; die Abschnitte danach beschreiben
+jede Klasse mit **Wann ausgelöst**, **Ursache** und **Behebung**.
 
 ```python
 from swarmq import SwarmQError
@@ -29,19 +29,19 @@ except SwarmQError as exc:
 | `MessageHeadersTooLarge` | `BrokerConnectionError` | Die Nachrichten-Header passen auch mit gekürzten Texten nicht in die Hälfte von `frame_max`; nichts wurde gesendet |
 | `UnroutableMessage` | `BrokerConnectionError` | Der Broker hat einen Publish zurückgegeben: Es gibt keine Queue mit diesem Namen; nichts wurde zugestellt |
 | `BrokerPublishBlocked` | `BrokerConnectionError` | Der Broker hat die Publish-Verbindung über die ganze Publish-Frist blockiert (Ressourcenalarm); nichts wurde gesendet |
-| `PublishRejected` | `BrokerConnectionError` | Der Broker hat den Publish an diese Queue in jedem Versuch abgelehnt (negatives Publisher-Confirm); die Verbindung ist gesund |
+| `PublishRejected` | `BrokerConnectionError` | Der Broker hat den Publish an diese Queue abgelehnt (negatives Publisher-Confirm im letzten von 5 Versuchen); die Verbindung ist gesund |
 | `BackendConnectionError` | `SwarmQError` | Valkey nicht erreichbar |
 | `BackendResponseError` | `BackendConnectionError` | Valkey hat eine Operation mit einem Fehler beantwortet (`WRONGTYPE`, Skriptfehler) |
-| `TaskNotFoundError` | `SwarmQError` | `schedule()` mit unbekanntem Task-Namen |
+| `TaskNotFoundError` | `SwarmQError` | `schedule()`, `schedule_many()` oder `run()` mit einem Task-Namen, den die App nicht registriert; außerdem Fehlertyp einer DLQ-Kopie für einen Task, den kein Worker kennt |
 | `LockWaitExceeded` | `SwarmQError` | Wird nie geworfen: Fehlertyp einer DLQ-Kopie, deren Wartezeit auf einen Task-Lock endete (hängender Halter oder `SWARMQ_LOCK_WAIT_MAX_S`) |
 | `RedeliveryLimitError` | `SwarmQError` | Wird nie geworfen: Fehlertyp einer DLQ-Kopie, deren Zustellungen bis zum Zustelllimit zurückgegeben wurden |
-| `TaskError` | `SwarmQError` | Der Task-Body raiste; bis `get_result()` propagiert |
+| `TaskError` | `SwarmQError` | Der Task endete mit einem Fehlerergebnis; ausgelöst von `get_result()`, `run()` und `handle.get()` eines gescheiterten Workflows |
 | `TaskCancelledError` | `TaskError` | `get_result()` oder `app.run()` für einen per `app.cancel(task_id)` abgebrochenen Task; der Task selbst sieht `asyncio.CancelledError` |
-| `ResultNotReadyError` | `SwarmQError` | `get_result()` lief in Timeout, bevor ein Ergebnis ankam |
+| `ResultNotReadyError` | `SwarmQError` | `get_result()`, `get_results()`, `run()` oder `handle.get()` lief in den Timeout, bevor ein Ergebnis ankam |
 | `ResultExpiredError` | `SwarmQError` | Derzeit nie geworfen (reserviert); ein abgelaufenes Ergebnis wirft `ResultNotReadyError` |
-| `ResultSerializationError` | `SwarmQError` | Ergebnis ist nicht msgpack-serialisierbar |
-| `Retry` | `SwarmQError` | Control Flow — aus Task-Code geraist, um Retry anzufordern |
-| `NoRetry` | `SwarmQError` | Control Flow — aus Task-Code geraist, um Retries zu umgehen |
+| `ResultSerializationError` | `SwarmQError` | Argumente nicht als JSON kodierbar, oder ein gespeichertes Ergebnis nicht dekodierbar |
+| `Retry` | `SwarmQError` | Kontrollfluss — vom Task-Code ausgelöst, um einen Retry anzufordern |
+| `NoRetry` | `SwarmQError` | Kontrollfluss — vom Task-Code ausgelöst, um Retries zu umgehen |
 | `SoftTimeoutError` | `SwarmQError` | Task überschritt `soft_timeout`; `run()` wurde abgebrochen (im Task kommt `CancelledError` an) |
 | `WorkflowValidationError` | `SwarmQError` | Workflow-Topologie ungültig oder Fan-in-Ergebnisse unvollständig |
 | `WorkflowNotFound` | `SwarmQError` | `app.workflow(id)` oder ein Handle-Aufruf fand keinen Workflow-Zustand |
@@ -54,17 +54,16 @@ liegen außerdem in `swarmq.exceptions`.
 
 ## `SwarmQError`
 
-**Wann geraist.** Nie direkt. Die Basisklasse für jede Exception,
-die die Library wirft. Sie abzufangen ist der sichere Weg, jedes
-SwarmQ-Versagen zu schlucken, ohne auch unbeteiligte Exceptions
-einzufangen.
+**Wann ausgelöst.** Nie direkt. Die Basisklasse jeder Exception, die die
+Bibliothek wirft. Wer sie fängt, fängt jeden Fehler aus SwarmQ, ohne
+unbeteiligte Exceptions mitzufangen.
 
-**Recovery.** Per Subklasse entscheiden; siehe unten.
+**Behebung.** Je Unterklasse entscheiden; siehe unten.
 
 ## `ConfigurationError`
 
-**Wann geraist.** Beim Worker-Start oder bei einem CLI-Aufruf, wenn
-die Library oder der CLI-Parser einen fehlerhaften Input erkennt.
+**Wann ausgelöst.** Beim Worker-Start oder bei einem CLI-Aufruf, wenn
+die Bibliothek oder der CLI-Parser eine fehlerhafte Eingabe erkennt.
 
 **Ursache.** Typische Quellen:
 
@@ -77,9 +76,14 @@ die Library oder der CLI-Parser einen fehlerhaften Input erkennt.
 - `scheduler_lock_ttl < 2 × scheduler_heartbeat_interval`.
 - `--args` / `--kwargs` für `swarmq schedule add` kein gültiges JSON.
 
-**Recovery.** Config fixen und neustarten. Die Fehlermeldung nennt
-das betroffene Feld. `swarmq worker` loggt eine strukturierte Zeile
-`worker_config_error` und endet mit Exit `78`:
+**Behebung.** Konfiguration korrigieren und neu starten. Die
+Fehlermeldung nennt das betroffene Feld. `swarmq worker` unternimmt
+genau einen Versuch, loggt eine strukturierte Zeile
+`worker_config_error` und endet mit Exit `78` (`EX_CONFIG`); der
+Supervisor startet ihn nicht neu. Ein `ImportError` oder `SyntaxError`
+beim Import des Task-Moduls endet genauso; andere Importfehler und
+Verbindungsfehler zu Broker oder Backend enden mit Exit `1`
+(E-057):
 
 ```text
 [error    ] worker_config_error            [swarmq.cli] error='ConfigurationError: SWARMQ_BROKER_URL and SWARMQ_BACKEND_URL must both be set' error_type=ConfigurationError hint='fix the configuration and start again; no restart attempted' source=supervisor
@@ -94,10 +98,10 @@ swarmq schedule list: SWARMQ_BACKEND_URL is not set; export it or pass it via en
 
 ## `LoggingConfigError`
 
-**Wann geraist.** Beim Start von `swarmq worker` (und bei der Prüfung
+**Wann ausgelöst.** Beim Start von `swarmq worker` (und bei der Prüfung
 von `--log-config` vor einem Reload), von
 `swarmq.logging.load_log_config` und `configure_logging`, wenn sich die
-Logging-Konfigurationsdatei nicht verwenden lässt. Subklasse von
+Logging-Konfigurationsdatei nicht verwenden lässt. Unterklasse von
 `ConfigurationError`, importierbar aus `swarmq`, `swarmq.exceptions`
 und `swarmq.logging`.
 
@@ -113,7 +117,7 @@ und `swarmq.logging`.
 Die Exception trägt die Datei in `path`; der ursprüngliche Fehler steht
 in `__cause__` und in der Meldung.
 
-**Recovery.** Datei korrigieren und neu starten. `swarmq worker` endet
+**Behebung.** Datei korrigieren und neu starten. `swarmq worker` endet
 mit `78` und loggt genau eine Zeile `worker_config_error` mit `path`,
 `error_type` und `error`. Bei einem Reload loggt der laufende Supervisor
 stattdessen `log_config_reload_failed` und lässt seine Worker
@@ -121,7 +125,7 @@ weiterlaufen.
 
 ## `QueueArgumentsMismatch`
 
-**Wann geworfen.** Wenn der Worker beim Start seine Queues deklariert
+**Wann ausgelöst.** Wenn der Worker beim Start seine Queues deklariert
 und eine vorhandene Queue ein Argument hat, das von der Konfiguration
 abweicht und das swarmq nicht übernimmt. Unterklasse von
 `ConfigurationError`, importierbar aus `swarmq` und `swarmq.exceptions`.
@@ -145,9 +149,9 @@ Einstellung wiederherstellen oder die
 
 ## `BrokerConnectionError`
 
-**Wann geraist.** Beim Worker-Start, wenn RabbitMQ innerhalb des
-Connect-Timeouts nicht erreichbar ist, oder bei einem Reconnect-
-Versuch, der das Retry-Budget erschöpft. Außerdem, wenn ein Publish
+**Wann ausgelöst.** Beim Worker-Start, wenn RabbitMQ innerhalb des
+Connect-Timeouts nicht erreichbar ist, oder bei einem
+Reconnect-Versuch, der das Retry-Budget erschöpft. Außerdem, wenn ein Publish
 `SWARMQ_PUBLISH_TIMEOUT_S` überschreitet (Default 120 s) — siehe den
 Zustellvorbehalt unten.
 Seit 0.10.0 auch, wenn der Worker eine Zustellung bestätigt, neu
@@ -181,13 +185,13 @@ Queues anmeldet; der ursprüngliche Fehler steht in `__cause__`.
     eine Unterklasse, bestehende `except BrokerConnectionError`-Stellen
     funktionieren unverändert.
 
-**Ursache.** Netzwerk-Partition, falsche URL, RabbitMQ läuft nicht,
-TLS-Mismatch, VHost/User nicht autorisiert.
+**Ursache.** Netzpartition, falsche URL, RabbitMQ läuft nicht,
+TLS passt nicht, VHost oder User nicht berechtigt.
 
-**Recovery.** Verifiziere die URL mit `rabbitmqctl status` auf dem
-Broker-Host oder `nc -vz <host> 5672`. Im Code propagiert die
-Exception aus `async with SwarmQ(...)` — fang sie an deiner
-Startup-Grenze ab.
+**Behebung.** Die URL mit `rabbitmqctl status` auf dem Broker-Host
+oder `nc -vz <host> 5672` prüfen. Im Code kommt die Exception aus
+`async with SwarmQ(...)` heraus — an der Startgrenze der Anwendung
+abfangen.
 
 ```python
 from swarmq import BrokerConnectionError
@@ -196,13 +200,13 @@ try:
     async with SwarmQ(broker, backend) as app:
         await app.start_worker()
 except BrokerConnectionError as exc:
-    # Loggen, alarmieren, mit Nicht-Null exiten.
+    # Loggen, alarmieren, mit Exit-Code ungleich 0 beenden.
     ...
 ```
 
 ## `BackendConnectionError`
 
-**Wann geraist.** Beim Worker-Start, wenn Valkey nicht erreichbar
+**Wann ausgelöst.** Beim Worker-Start, wenn Valkey nicht erreichbar
 ist, oder zur Laufzeit, wenn eine Backend-Operation
 `backend_op_timeout` überschreitet. `ValkeyBackend.connect()`
 (Worker-Start, CLI-Befehle, Producer) wirft sie für jeden
@@ -225,17 +229,17 @@ Befehlswiederholung neu auf, rund 3,1 s ab dem ersten Fehlschlag, bevor
 der Befehl gesendet wird. Ein hängender Handshake endet nach dem
 Socket-Timeout (10 s) ohne Wiederholung.
 
-**Ursache.** Valkey down, URL falsch, `AUTH`-Passwort-Mismatch,
-TLS-Mismatch.
+**Ursache.** Valkey läuft nicht, URL falsch, `AUTH`-Passwort falsch,
+TLS passt nicht.
 
-**Recovery.** `valkey-cli -u $SWARMQ_BACKEND_URL ping` sollte
-`PONG` drucken. Laufzeit-Connection-Losses werden vom valkey-py-
-Reconnect-Loop automatisch erholt — diese Exception feuert nur,
-wenn das Retry-Fenster erschöpft ist.
+**Behebung.** `valkey-cli -u $SWARMQ_BACKEND_URL ping` sollte `PONG`
+ausgeben. Verbindungsverluste zur Laufzeit fängt die
+Reconnect-Schleife von valkey-py automatisch ab — diese Exception
+kommt erst, wenn das Wiederholungsfenster erschöpft ist.
 
 ## `BackendResponseError`
 
-**Wann geraist.** Eine Backend-Operation hat Valkey erreicht, Valkey
+**Wann ausgelöst.** Eine Backend-Operation hat Valkey erreicht, Valkey
 hat aber mit einem Fehler geantwortet: ein Key vom falschen Typ
 (`WRONGTYPE`), ein Fehler im Lua-Skript. Eine Unterklasse von
 `BackendConnectionError`, jedes `except BackendConnectionError` fängt
@@ -245,7 +249,7 @@ sie also weiter.
 SwarmQ-Namen geschrieben hat (etwa ein Lock-Key `sq:lock:...` als
 Hash), oder ein inkompatibler Server.
 
-**Recovery.** Warten hilft nicht, deshalb stellt der Worker eine
+**Behebung.** Warten hilft nicht, deshalb stellt der Worker eine
 Nachricht dafür vor der Ausführung nicht zurück (anders als bei einem
 nicht erreichbaren Backend): Sie geht an derselben Stelle in die Queue
 zurück und landet, wenn der Fehler bleibt, über das Zustelllimit in
@@ -269,34 +273,54 @@ seit 0.13.1).
 
 ## `TaskNotFoundError`
 
-**Wann geraist.** `app.schedule("name", ...)` mit einem Namen, den
-keine registrierte `Task`-Subklasse in ihrem `TaskInfo` deklariert
-hat.
+**Wann ausgelöst.** Von `app.schedule()`, `app.schedule_many()` und
+`app.run()`, wenn keine in den Producer-Prozess importierte
+`Task`-Unterklasse diesen Namen in ihrem `TaskInfo` deklariert. Es wird
+nichts gesendet. Ein bloßer `Client` ohne Registry wirft nicht; er
+sendet die Nachricht und loggt einmal je Task-Name die WARNING
+`client_task_defaults_unresolved`, weil er die Vorgaben des Tasks
+(Dedup, Priorität) nicht anwenden kann. Auch `swarmq schedule add`
+prüft den Namen nicht.
 
-**Ursache.** Typo, Task-Modul nicht importiert, Task nicht von
-`swarmq.Task` abgeleitet, oder Modul importiert, aber die Klasse
-darin nicht evaluiert (z. B. hinter einer Bedingung).
+Im Worker erscheint der Name als Fehlertyp einer DLQ-Kopie: Ein Worker,
+der den Task nicht registriert, stellt die Nachricht bis zu
+`SWARMQ_UNKNOWN_TASK_GRACE_S` (Vorgabe 900 s, `0` schaltet die
+Gnadenfrist ab) mit Backoff zurück, damit ein Rolling Deploy keine neuen
+Tasks verliert. Erst danach schickt er sie mit
+`error_type=TaskNotFoundError` in die DLQ und loggt `task_not_found`.
 
-**Recovery.**
+**Ursache.** Tippfehler, Task-Modul nicht importiert, Task nicht von
+`swarmq.Task` abgeleitet, oder Modul importiert, aber die Klasse darin
+nicht ausgewertet (z. B. hinter einer Bedingung). Im Worker außerdem
+ein Producer, der vor den Workern ausgerollt wurde, die den Task
+kennen.
+
+**Behebung.**
 
 ```bash
 swarmq inspect --module myapp.tasks
 ```
 
 listet jeden registrierten Task. Fehlt dein Task, wird sein Modul
-beim Worker-Load nicht importiert, oder die Klasse ist durch einen
-`if TYPE_CHECKING:`-Block abgeschirmt.
+nicht importiert, oder die Klasse steht in einem
+`if TYPE_CHECKING:`-Block. Worker vor Producern ausrollen; eine so in
+die DLQ gelangte Nachricht lässt sich mit `swarmq dlq retry` erneut
+einreihen, sobald ein Worker den Task kennt.
 
 ## `TaskError`
 
-**Wann geraist.** `await app.get_result(task_id)`, wenn der
-Task-Body eine uncaught Exception raiste und sein Retry-Budget
-erschöpft (oder nie genutzt) hat.
+**Wann ausgelöst.** Von `get_result()`, `get_results()` und
+`app.run()`, wenn das gespeicherte Ergebnis ein Fehlerergebnis ist:
+Der Task-Körper hat eine Exception geworfen und sein Retry-Budget ist
+verbraucht (oder er wurde nie wiederholt), oder der Worker hat den
+Task selbst beendet (harter Timeout, Ablauf, verlorenes Rechenkind, ein
+Ergebnis, das er nicht serialisieren konnte). `get()` eines
+Workflow-Handles wirft sie, wenn der Workflow gescheitert ist.
 
-**Ursache.** Jede Exception, die deine `run()`-Methode hat
-entweichen lassen. Die Original-Exception-Klasse geht über den
-Draht verloren; die Fehlermeldung trägt den String, den der
-Worker gespeichert hat (`""` bei einer Exception ohne Text).
+**Ursache.** Jede Exception, die deine `run()`-Methode entweichen
+ließ. Das ursprüngliche Exception-Objekt überquert die Leitung nicht;
+die Fehlermeldung enthält den Text, den der Worker gespeichert hat
+(`""` bei einer Exception ohne Text).
 `error_class` nennt die Klasse (beratend): `modul.qualname`, z. B.
 `builtins.ValueError`; im CPU-Modus die Klasse, die das Rechenkind
 meldet. Bei Ergebnissen älterer Worker und bei Fehlern, die der
@@ -313,29 +337,31 @@ except TaskError as exc:
         ...  # ungültige Eingabe, nicht unverändert erneut einreihen
 ```
 
-**Recovery.** Lies die Worker-Logs — sie tragen den vollständigen
-Traceback. Dann fixe den Task-Body oder erweitere deine
-`retry_exceptions`, damit die transiente Klasse retry't statt
-DLQ't wird.
+**Behebung.** Die Worker-Logs lesen — sie enthalten den vollständigen
+Traceback. Dann den Task-Körper korrigieren oder `retry_exceptions`
+erweitern, damit die vorübergehende Fehlerklasse wiederholt wird,
+statt in der DLQ zu landen.
 
 ## `TaskCancelledError`
 
-**Wann geraist.** Beim Client: `get_result()` und `app.run()` werfen
+**Wann ausgelöst.** Beim Client: `get_result()` und `app.run()` werfen
 sie, wenn das gespeicherte Ergebnis das Cancel-Flag trägt, ein
-Workflow-Handle bei einem abgebrochenen Workflow. Nie im Task-Body:
+Workflow-Handle bei einem abgebrochenen Workflow. Unterklasse von
+`TaskError`; das Attribut `task_id` nennt den Task (bei einem Workflow:
+die Workflow-ID). Nie im Task-Körper:
 Der Worker bricht die laufende `run()`-Coroutine ab, der Task sieht
 `asyncio.CancelledError`. Räume in `finally` auf, oder fange
 `asyncio.CancelledError`, räume auf und wirf sie erneut. Im CPU-Modus
 wird stattdessen das Rechenkind beendet
 ([Verhaltensänderungen](../guides/cpu-mode.md#verhaltensanderungen-fur-task-autoren)).
 
-**Ursache.** Jemand — der Client, ein Operator, ein anderer
-Service — rief `app.cancel(task_id)` auf, während der Task
-geplant oder laufend war.
+**Ursache.** Jemand — der Client, ein Betreiber, ein anderer
+Dienst — rief `app.cancel(task_id)` auf, während der Task wartete oder
+lief.
 
-**Recovery.** War der Cancel gewollt, fang ihn ab und mach weiter.
-War er versehentlich, prüfe die TTL deines Cancel-Flags — siehe
-[`app.cancel()`](api.md#cancel) für den Stale-Flag-Caveat.
+**Behebung.** War der Cancel gewollt, abfangen und weitermachen. War
+er unbeabsichtigt, die Lebensdauer des Cancel-Flags prüfen — siehe
+[`app.cancel()`](api.md#cancel) zum Vorbehalt veralteter Flags.
 
 ```python
 from swarmq import TaskCancelledError
@@ -349,15 +375,18 @@ except TaskCancelledError:
 
 ## `ResultNotReadyError`
 
-**Wann geraist.** `get_result(task_id, timeout=T)` nach T Sekunden
-ohne Ergebnis in Valkey.
+**Wann ausgelöst.** `get_result(task_id, timeout=T)` und
+`app.run(..., timeout=T)` nach T Sekunden ohne Ergebnis in Valkey
+(`timeout=0` liest genau einmal). `get_results()` wirft sie mit den
+noch fehlenden IDs, `get(timeout=T)` eines Workflow-Handles, wenn der
+Workflow nicht rechtzeitig fertig ist.
 
 **Ursache.** Der Task läuft noch, der Worker starb, der Task landete
-in der DLQ ohne Ergebnis zu speichern, das Ergebnis ist nach seiner
-`result_ttl` abgelaufen, oder die `task_id` ist falsch.
+in der DLQ, ohne ein Ergebnis zu speichern, das Ergebnis ist nach
+seiner `result_ttl` abgelaufen, oder die `task_id` ist falsch.
 
-**Recovery.** Timeout erhöhen, Worker-Logs prüfen oder — falls der
-Task in Retry-Loops hängt — die DLQ inspizieren.
+**Behebung.** Timeout erhöhen, Worker-Logs prüfen oder — falls der
+Task in Retry-Schleifen hängt — die DLQ ansehen.
 
 ```python
 from swarmq import ResultNotReadyError
@@ -365,33 +394,45 @@ from swarmq import ResultNotReadyError
 try:
     result = await app.get_result(task_id, timeout=5)
 except ResultNotReadyError:
-    # Noch pending; später erneut prüfen.
+    # Noch offen; später erneut prüfen.
     ...
 ```
 
 ## `ResultExpiredError`
 
-**Wann geraist.** Derzeit nie. Nach Ablauf der Ergebnis-TTL wirft
+**Wann ausgelöst.** Derzeit nie. Nach Ablauf der Ergebnis-TTL wirft
 `get_result()` `ResultNotReadyError`, genau wie bei einem Ergebnis, das
 noch nicht da ist. Die Klasse bleibt als stabiler Haken für ein
 späteres Release, das beide Fälle trennt; sie heute zu fangen bewirkt
 nichts.
 
-**Recovery.** Damit Ergebnisse länger lesbar bleiben, `result_ttl`
+**Behebung.** Damit Ergebnisse länger lesbar bleiben, `result_ttl`
 (`SWARMQ_RESULT_TTL`) erhöhen oder das Ergebnis früher abholen.
 
 ## `ResultSerializationError`
 
-**Wann geraist.** In der Store-Result-Phase des Workers — der
-Rückgabewert von `run()` ist nicht msgpack-kompatibel.
+**Wann ausgelöst.** Beim Producer von `schedule()`, wenn sich die
+Argumente nicht als JSON kodieren lassen; es wird nichts gesendet. Beim
+Client von `get_result()`, wenn sich ein gespeichertes Ergebnis nicht
+dekodieren lässt, etwa ein Ergebnis einer neueren SwarmQ-Version mit
+einem Typ, den diese Version nicht kennt.
 
-**Ursache.** Du gibst eine Klasse zurück, die msgpack nicht zu
-kodieren weiß. Häufige Kandidaten: offene File-Handles, SQLAlchemy-
-ORM-Objekte, `asyncio.Task`-Instanzen, Custom Classes ohne
-Konvertierungs-Hook.
+Ein Rückgabewert von `run()`, den msgpack nicht kodieren kann, löst
+sie beim Aufrufer **nicht** aus: Der Worker loggt
+`result_serialization_failed`, speichert stattdessen ein
+Fehlerergebnis und bestätigt die Nachricht (kein Retry).
+`get_result()` wirft dann `TaskError` mit
+`error_class == "swarmq.exceptions.ResultSerializationError"`.
 
-**Recovery.** Vor dem Return in `dict`, `list`, `str`, `int`,
-`float`, `bool`, `bytes` oder Kombinationen davon umwandeln.
+**Ursache.** Ein Argument oder Rückgabewert eines Typs, den die
+Kodierer nicht kennen. Häufige Kandidaten: offene File-Handles,
+SQLAlchemy-ORM-Objekte, `asyncio.Task`-Instanzen, eigene Klassen ohne
+Konvertierung.
+
+**Behebung.** In einfache `dict`, `list`, `str`, `int`, `float`,
+`bool`, `None` oder Kombinationen davon umwandeln. Ergebnisse
+unterstützen zusätzlich `bytes`, `datetime`, `date`, `time`, `Decimal`,
+`UUID`, `set` und `frozenset`.
 
 ```python
 class FetchUser(Task):
@@ -405,14 +446,14 @@ class FetchUser(Task):
 
 ## `Retry`
 
-**Wann geraist.** Aus deinem eigenen Task-Code, um einen Retry mit
-spezifischer Verzögerung zu erzwingen.
+**Wann ausgelöst.** Von deinem eigenen Task-Code, um einen Retry mit
+einer bestimmten Wartezeit zu erzwingen.
 
-**Ursache.** Kein Fehler — es ist ein Control-Flow-Signal. Das
-Raisen sagt dem Worker „dieser Versuch scheiterte, retry in `delay`
-Sekunden".
+**Ursache.** Kein Fehler, sondern ein Kontrollfluss-Signal. Es sagt dem
+Worker: „Dieser Versuch ist gescheitert, wiederhole in `delay`
+Sekunden.“
 
-**Recovery.** Keine Recovery nötig; so nutzt du ihn:
+**Behebung.** Nichts zu beheben; so wird er benutzt:
 
 ```python
 from swarmq import Retry
@@ -425,14 +466,17 @@ class SendEmail(Task):
     async def run(self, to: str, subject: str) -> None:
         response = await smtp.send(to, subject)
         if response.status == 429:
-            raise Retry(delay=60.0)  # In einer Minute retry
+            raise Retry(delay=60.0)  # in einer Minute erneut versuchen
 ```
 
-Ist `delay` `None`, wendet der Worker die konfigurierte Backoff-
-Strategie an (`retry_backoff`, `retry_base_delay`). Ein negatives
-`delay` gilt als 0 (sofortiger Retry) und zählt trotzdem gegen
-`max_retries`; `inf` und `nan` werfen beim Erzeugen von `Retry` einen
-`ValueError`.
+Ist `delay` `None`, wendet der Worker die konfigurierte
+Backoff-Strategie an (`retry_backoff`, `retry_base_delay`). Ein
+negatives `delay` gilt als 0 (sofortiger Retry) und zählt trotzdem
+gegen `max_retries`. `inf`, `nan` und Werte über 315 360 000 s (zehn
+Jahre) werfen beim Erzeugen von `Retry` einen `ValueError`; aus einem
+Task geworfen, ist dieser `ValueError` ein gewöhnlicher Task-Fehler und
+folgt `retry_exceptions` und dem Backoff
+(E-060).
 
 `Retry` wiederholt auch, wenn der Task `retry_exceptions` setzt, ohne
 ihn zu nennen. Er zählt gegen `max_retries`: Ist das Budget verbraucht,
@@ -441,13 +485,15 @@ Fehlerergebnis, wenn das Dead-Lettering abgeschaltet ist).
 
 ## `NoRetry`
 
-**Wann geraist.** Aus deinem eigenen Task-Code, um das Retry-Budget
+**Wann ausgelöst.** Von deinem eigenen Task-Code, um das Retry-Budget
 zu überspringen und direkt in die DLQ zu gehen.
 
-**Ursache.** Kein Fehler. Raise sie, wenn das Scheitern permanent
-ist und Retries Budget verschwenden würden.
+**Ursache.** Kein Fehler. Auslösen, wenn das Scheitern dauerhaft ist
+und Retries nur Budget verschwenden würden.
 
-**Recovery.** Wie bei `Retry` ist das die beabsichtigte Nutzung:
+**Behebung.** Wie bei `Retry` ist das die beabsichtigte Nutzung. Der
+an `NoRetry` übergebene Text steht im Attribut `reason` und wird zur
+Fehlermeldung:
 
 ```python
 from swarmq import NoRetry
@@ -459,18 +505,17 @@ class ChargeCard(Task):
         try:
             return await stripe.charge(card_id, amount)
         except stripe.CardDeclinedError as exc:
-            # Kein Retry wird eine abgelehnte Karte rehabilitieren.
+            # Kein Retry macht eine abgelehnte Karte wieder gültig.
             raise NoRetry(str(exc))
 ```
 
-Der Task landet sofort in `{queue}.XQ`. Erhole ihn mit
-`swarmq dlq retry <task_id>`, nachdem du den Input korrigiert
-hast, oder `swarmq dlq purge --queue payments`, um den Backlog zu
-leeren.
+Der Task landet sofort in `{queue}.XQ`. Nach dem Korrigieren der
+Eingabe holt ihn `swarmq dlq retry --queue payments <task_id>` zurück;
+`swarmq dlq purge --queue payments` leert den Rückstand.
 
 ## `SoftTimeoutError`
 
-**Wann geraist.** Der Task-Body läuft noch, wenn `soft_timeout`
+**Wann ausgelöst.** Der Task-Körper läuft noch, wenn `soft_timeout`
 abläuft. Der Worker führt `run()` unter `asyncio.wait_for` aus: Ist
 die Zeit um, bricht er `run()` ab. Im Task kommt deshalb ein
 `asyncio.CancelledError` an, kein `SoftTimeoutError`. Der Worker
@@ -488,7 +533,7 @@ Klasse und Meldung bleiben erhalten, und
 **Ursache.** Der Task braucht länger als `TaskInfo(soft_timeout=N)`
 erlaubte.
 
-**Recovery.** Den Task schneller machen oder `soft_timeout` erhöhen.
+**Behebung.** Den Task schneller machen oder `soft_timeout` erhöhen.
 Um Teilergebnisse zu sichern, in `finally` aufräumen oder den Abbruch
 abfangen und erneut werfen:
 
@@ -518,7 +563,7 @@ hinauszögert.
 
 ## `PublishIndeterminate`
 
-**Wann geraist.** Von `schedule()`, `schedule_many()`, `run()` und
+**Wann ausgelöst.** Von `schedule()`, `schedule_many()`, `run()` und
 `apply()`, wenn ein Publish beim Warten auf das Publisher-Confirm des
 Brokers `SWARMQ_PUBLISH_TIMEOUT_S` überschreitet oder Verbindung oder
 Kanal in dieser Phase abbrechen (etwa ein Broker-Neustart oder eine
@@ -529,14 +574,14 @@ Confirm wartet, endet beim Schließen des Kanals als
 `PublishIndeterminate`, auch wenn seine eigene Frist noch läuft; der
 nächste Publish öffnet einen neuen Kanal. Im Ressourcenalarm des
 Brokers wartet dieses Schließen auf die Freigabe (siehe
-[`BrokerPublishBlocked`](#brokerpublishblocked)). Subklasse von
+[`BrokerPublishBlocked`](#brokerpublishblocked)). Unterklasse von
 `BrokerConnectionError`.
 
 **Ursache.** Broker oder Netz sind nach dem Senden der Nachricht
 hängen geblieben oder abgebrochen; der Broker hat sie vielleicht,
 vielleicht nicht.
 
-**Recovery.** Die Zustellung als unbekannt behandeln. Nur wiederholen,
+**Behebung.** Die Zustellung als unbekannt behandeln. Nur wiederholen,
 wenn der Task idempotent ist oder mit `unique_for` eingereiht wurde
 (SwarmQ behält in diesem Fall den Dedup-Claim, eine Wiederholung im
 Fenster wird also abgewiesen statt doppelt zu laufen). Siehe die Warnung
@@ -562,7 +607,7 @@ except BrokerConnectionError:
 
 ## `SettleFailedAfterPublish`
 
-**Wann geworfen.** Nur im Worker, von `retry_later` und `dead_letter`:
+**Wann ausgelöst.** Nur im Worker, von `retry_later` und `dead_letter`:
 Der Broker hat die Retry-, Dead-Letter- oder Rückstellungs-Kopie
 bestätigt, aber das Bestätigen des Originals scheiterte (meist, weil
 der Channel weg ist).
@@ -573,7 +618,7 @@ also weiter. Sie erreicht nie `schedule()` oder `get_result()`.
 Kopie und dem Ack verloren, etwa nach einem Consumer-Timeout auf
 RabbitMQ bis 4.2.
 
-**Recovery.** Im Anwendungscode nichts nötig. Der Broker stellt das
+**Behebung.** Im Anwendungscode nichts nötig. Der Broker stellt das
 Original erneut zu, während die Kopie schon unterwegs ist. Bei einer
 Retry- oder Dead-Letter-Kopie setzt der
 [Ausführungsschutz](../explanation/delivery-semantics.md#ausfuhrungsschutz)
@@ -589,7 +634,7 @@ laufen. Für Tests aus `swarmq.exceptions` importieren.
 
 ## `MessageHeadersTooLarge`
 
-**Wann geworfen.** Von einem Publish (`schedule()`, im Worker auch von
+**Wann ausgelöst.** Von einem Publish (`schedule()`, im Worker auch von
 Retry- und Dead-Letter-Kopien), wenn die kodierten Nachrichten-Header
 mehr als die Hälfte des ausgehandelten `frame_max` brauchen, auch
 nachdem lange Texte auf 8 KiB gekürzt wurden. Unterklasse von
@@ -599,14 +644,14 @@ nachdem lange Texte auf 8 KiB gekürzt wurden. Unterklasse von
 Middleware, die Hunderte Header ergänzt. Die eigenen Diagnose-Header von
 SwarmQ sind begrenzt und lösen den Fehler nicht aus.
 
-**Recovery.** Nicht mit denselben Headern wiederholen; sie scheitern
+**Behebung.** Nicht mit denselben Headern wiederholen; sie scheitern
 wieder. Die Header verkleinern. Anders als bei `PublishIndeterminate`
 wird eine `unique_for`-Sperre freigegeben, weil nichts beim Broker
 ankam.
 
 ## `UnroutableMessage`
 
-**Wann geworfen.** Von einem Publish (`send()`, `schedule()`,
+**Wann ausgelöst.** Von einem Publish (`send()`, `schedule()`,
 Workflow-Schritte, im Worker auch Retry- und Dead-Letter-Kopien), wenn
 der Broker die Nachricht zurückgibt, weil es keine Queue mit diesem
 Namen gibt. Unterklasse von `BrokerConnectionError`. Sofort geworfen,
@@ -619,7 +664,7 @@ Producer vor dem ersten Worker einer neuen Queue, `queue=` ist
 vertippt, oder ein Task mit `TaskInfo(priority="high"|"low")` hat
 Worker ohne `--priorities` (kein `{queue}.high`/`.low`).
 
-**Recovery.** Zuerst den Worker der Queue starten, dann erneut
+**Behebung.** Zuerst den Worker der Queue starten, dann erneut
 veröffentlichen. Eine `unique_for`-Sperre wird freigegeben, weil nichts
 beim Broker ankam. Der Worker deklariert seine eigene
 `{queue}.DQ`/`.XQ` einmal selbst neu; der Scheduler-Leader schreibt
@@ -629,7 +674,7 @@ alle 60 s erneut, bis `SWARMQ_SCHEDULER_UNROUTABLE_ONESHOT_MAX_S`
 
 ## `BrokerPublishBlocked`
 
-**Wann geworfen.** Von einem Publish (`send()`, `schedule()`,
+**Wann ausgelöst.** Von einem Publish (`send()`, `schedule()`,
 Workflow-Schritte, Cron-Fires, im Worker auch Retry-, Rückstellungs- und
 Dead-Letter-Kopien), wenn RabbitMQ die Publish-Verbindung blockiert hat
 (`connection.blocked`, Speicher- oder Plattenalarm) und sie nicht
@@ -701,7 +746,7 @@ Ausführungsschutz lässt kein Original neben oder nach seiner Kopie
 laufen (im gemessenen Lauf wurden alle Originale als `done`
 übersprungen, kein Task lief doppelt).
 
-**Recovery.** Ein späterer Versuch ist sicher, nichts kam beim Broker
+**Behebung.** Ein späterer Versuch ist sicher, nichts kam beim Broker
 an; eine `unique_for`-Sperre wird freigegeben. Speicher oder Platte am
 Broker freimachen. Ein Scheduler-Leader zählt den Fehler nicht für den
 Rücktritt: Ein Alarm blockiert jeden Kandidaten. Legt aiormq den
@@ -710,10 +755,10 @@ Blocked-Zustand nicht mehr offen, loggt swarmq einmal
 
 ## `PublishRejected`
 
-**Wann geworfen.** Von einem Publish (`send()`, `schedule()`,
-Workflow-Schritte, Cron-Fires, Kopien im Worker), wenn RabbitMQ jeden der
-5 Versuche mit einem negativen Publisher-Confirm (`basic.nack`)
-beantwortet. Unterklasse von `BrokerConnectionError`; der Text ist
+**Wann ausgelöst.** Von einem Publish (`send()`, `schedule()`,
+Workflow-Schritte, Cron-Fires, Kopien im Worker), wenn alle 5 Versuche
+gescheitert sind und RabbitMQ den letzten mit einem negativen
+Publisher-Confirm (`basic.nack`) beantwortet hat. Unterklasse von `BrokerConnectionError`; der Text ist
 derselbe wie vor 0.12 (`publish to '<queue>' failed after 5 attempts:
 …`).
 
@@ -722,7 +767,7 @@ volle Queue mit `x-overflow=reject-publish` (seit 0.12 Default neuer
 Quorum-Queues, zusammen mit einer `max-length`-Policy) oder eine
 Quorum-Queue ohne Quorum ihrer Mitglieder.
 
-**Abhilfe.** Ein späterer Versuch ist sicher, der Broker hat die
+**Behebung.** Ein späterer Versuch ist sicher, der Broker hat die
 Nachricht nicht gespeichert; ein `unique_for`-Claim wird freigegeben. Die
 Queue reparieren (Längenlimit anheben oder entfernen, Quorum
 wiederherstellen). Ein Scheduler-Leader zählt den Fehler nicht für den
@@ -731,7 +776,7 @@ ohne zu helfen.
 
 ## `LockWaitExceeded`
 
-**Wann geworfen.** Nie; der Name steht nur als `error_type` in
+**Wann ausgelöst.** Nie; der Name steht nur als `error_type` in
 `task_sent_to_dlq` und am Anfang von `x-swarmq-traceback` der
 DLQ-Nachricht. Eine Nachricht, deren Task-Lock belegt ist, wartet über
 die Delay-Queue. Der Worker schickt sie mit diesem Fehlertyp in die
@@ -747,7 +792,7 @@ gescheitert. Bis 0.11 ging die Nachricht beim 10. Konflikt als
 Lock der Worker am Leben hält, zu langes `hard_timeout`), oder ein
 Lock, der länger belegt ist, als die Grenze erlaubt.
 
-**Recovery.** Den Halter ansehen: Die Logzeile `lock_wait_exceeded`
+**Behebung.** Den Halter ansehen: Die Logzeile `lock_wait_exceeded`
 nennt den Lock (`lock_name`), ebenso `x-swarmq-lock-name` an der
 DLQ-Nachricht. Einen festgefahrenen Lock entfernt
 `valkey-cli DEL [<namensraum>:]sq:lock:<name>`. Danach die Nachricht mit
@@ -756,7 +801,7 @@ lange Wartezeiten erwartet sind.
 
 ## `RedeliveryLimitError`
 
-**Wann geworfen.** Nie; der Name steht nur als `error_type` in
+**Wann ausgelöst.** Nie; der Name steht nur als `error_type` in
 `task_sent_to_dlq` und am Anfang von `x-swarmq-traceback` der
 DLQ-Nachricht. Der Worker gibt eine Zustellung an die Queue zurück
 (`nack(requeue=True)`), wenn er gerade nicht über sie entscheiden kann,
@@ -772,13 +817,13 @@ Channel), bleibt der Typ `WorkerHungError`.
 antwortet weiter mit einem Fehler, die Dead-Letter-Queue nimmt keinen
 Publish an, oder es wird kein Rechen-Slot frei.
 
-**Recovery.** Die Ursache beheben, die das Worker-Log vor dem
+**Behebung.** Die Ursache beheben, die das Worker-Log vor dem
 Dead-Letter-Eintrag nennt, dann die Nachricht mit `swarmq dlq retry`
 erneut einreihen.
 
 ## `WorkflowValidationError`
 
-**Wann geraist.** Beim Bauen eines Workflows mit `chain`, `group` oder
+**Wann ausgelöst.** Beim Bauen eines Workflows mit `chain`, `group` oder
 `chord`, bevor irgendetwas eingereiht wird (ein per Name mit `sig()`
 gebauter Schritt wird erst zur Laufzeit auf `FIRE_AND_FORGET` geprüft).
 Außerdem zur Laufzeit im Worker, wenn eine Group oder ein Chord ihre
@@ -790,26 +835,26 @@ Group mit mehr als `max_group_size` (1000) Mitgliedern, eine leere
 Chain oder Group, ein Chord-Header, der kein `group(...)` ist, oder ein
 `FIRE_AND_FORGET`-Task als Schritt.
 
-**Recovery.** Topologie abflachen, große Groups aufteilen oder den Task
+**Behebung.** Topologie abflachen, große Groups aufteilen oder den Task
 auf `DeliveryMode.AT_LEAST_ONCE` umstellen. Siehe
 [Workflow-Primitive](api.md#workflow-primitive).
 
 ## `WorkflowNotFound`
 
-**Wann geraist.** `app.workflow(workflow_id)` und die
+**Wann ausgelöst.** `app.workflow(workflow_id)` und die
 `WorkflowHandle`-Methoden `status()`, `children()` und `get()`, wenn es
 zur ID keinen Workflow-Zustand gibt.
 
 **Ursache.** Die ID ist falsch, der Workflow wurde nie gestartet, oder
 sein Zustand ist abgelaufen (er lebt `result_ttl` Sekunden).
 
-**Recovery.** ID prüfen. Für lange Workflows `result_ttl`
+**Behebung.** ID prüfen. Für lange Workflows `result_ttl`
 (`SWARMQ_RESULT_TTL`) erhöhen, damit der Zustand den Lauf und die Zeit
 bis zum Abholen des Ergebnisses überlebt.
 
 ## `WorkflowResultExpired`
 
-**Wann geraist.** Von `handle.get()`, wenn der Workflow fertig ist,
+**Wann ausgelöst.** Von `handle.get()`, wenn der Workflow fertig ist,
 sein Endergebnis aber schon abgelaufen ist; im Worker, wenn ein
 Schritt-Ergebnis, das der nächste Schritt oder das Fan-in braucht,
 abgelaufen ist — der Workflow scheitert dann.
@@ -817,12 +862,12 @@ abgelaufen ist — der Workflow scheitert dann.
 **Ursache.** Eine Ergebnis-TTL, die kürzer ist als die Laufzeit des
 Workflows plus die Zeit bis zum Abholen.
 
-**Recovery.** `result_ttl` erhöhen (global oder je Task über
+**Behebung.** `result_ttl` erhöhen (global oder je Task über
 `TaskInfo.result_ttl`) und Workflow-Ergebnisse zeitnah abholen.
 
 ## `WorkflowStateConflict`
 
-**Wann geraist.** Nur im Worker, beim Voranbringen eines Workflows: Das
+**Wann ausgelöst.** Nur im Worker, beim Voranbringen eines Workflows: Das
 Compare-and-Set auf den Workflow-Zustand hat alle 25 Runden gegen
 gleichzeitige Schreiber verloren. Erreicht nie `schedule()` oder
 `handle.get()`.
@@ -830,7 +875,7 @@ gleichzeitige Schreiber verloren. Erreicht nie `schedule()` oder
 **Ursache.** Mehr Zweige eines Workflows, die im selben Moment fertig
 werden, als die Konfliktgrenze erlaubt.
 
-**Recovery.** Im Anwendungscode keine nötig. Der Worker loggt
+**Behebung.** Im Anwendungscode keine nötig. Der Worker loggt
 `workflow_advance_backend_error` und stellt die Schritt-Nachricht neu zu
 (`at_least_once`); die Neuzustellung bringt den Workflow voran,
 deterministische Schritt-IDs halten das idempotent. Für Tests aus
@@ -841,7 +886,7 @@ deterministische Schritt-IDs halten das idempotent. Für Tests aus
 `swarmq.supervision.ForkSourceRejected` ist ein `RuntimeError`, kein
 `SwarmQError`; `except SwarmQError` fängt ihn also nicht.
 
-**Wann geraist.** Von `Worker.start()` (und damit `app.start_worker()`)
+**Wann ausgelöst.** Von `Worker.start()` (und damit `app.start_worker()`)
 eines eingebetteten CPU-Pools, nachdem der Worker geordnet
 heruntergefahren ist, weil sein Pool den Forkserver verworfen hat: Der
 Forkserver wurde still neu gestartet und lief danach mit mehr als einem
@@ -853,7 +898,7 @@ App oder die Opt-in-Log-Queue. Der Worker loggt
 `forkserver_restarted_multithreaded` mit den Thread-Namen und einem
 Hinweis, danach `compute_fork_source_rejected`.
 
-**Recovery.** Den Worker-Prozess neu starten; ein neuer Prozess bringt
+**Behebung.** Den Worker-Prozess neu starten; ein neuer Prozess bringt
 einen frischen Forkserver. Unter `swarmq worker` geschieht das von
 selbst: Der Worker-Subprozess endet mit Code `71`, und der Supervisor
 startet ihn im Restart-Budget neu (`worker_fork_source_rejected`).
@@ -867,7 +912,7 @@ nicht aus `swarmq` exportiert. Er ist ein Abbruch wie jeder andere:
 `except asyncio.CancelledError` fängt ihn, `task.cancelled()` ist
 `True`, und `asyncio.timeout` macht `TimeoutError` daraus.
 
-**Wann geraist.** Vom Publish des RabbitMQ-Brokers, wenn die aufrufende
+**Wann ausgelöst.** Vom Publish des RabbitMQ-Brokers, wenn die aufrufende
 Task abgebrochen wird, bevor ein Versuch die Nachricht gesendet haben
 kann: beim Warten auf eine blockierte Publish-Verbindung
 (Ressourcenalarm), beim Öffnen des Publish-Kanals, beim Warten auf die
@@ -877,7 +922,7 @@ hat. Ein Abbruch nach dem Senden bleibt ein einfacher `CancelledError`.
 **Ursache.** Ein Timeout um `schedule()` oder `schedule_many()` oder
 ein `task.cancel()` der aufrufenden Task.
 
-**Recovery.** Nichts zu tun. Der Client gibt den `unique_for`-Claim
+**Behebung.** Nichts zu tun. Der Client gibt den `unique_for`-Claim
 eines solchen Aufrufs frei, ein Wiederholversuch wird also nicht als
 Duplikat abgewiesen; nach einem einfachen `CancelledError` im Publish
 bleibt der Claim bis zu seinem Ablauf
@@ -885,9 +930,9 @@ bleibt der Claim bis zu seinem Ablauf
 
 ## Siehe auch
 
-- [API-Referenz](api.md) — die Methoden, die diese Exceptions raisen
+- [API-Referenz](api.md) — die Methoden, die diese Exceptions auslösen
 - [Logging](logging.md) — Logging-Einstellungen und `--log-config`
 - [Scheduling und Retries](../guides/scheduling-and-retries.md) —
   wie Retry-Policy mit `Retry` und `NoRetry` interagiert
 - [Dead-Letter-Queues](../guides/dead-letter-queues.md) —
-  Operator-Werkzeuge zur Wiederherstellung DLQ'ter Tasks
+  Betreiberwerkzeuge, um Tasks aus der DLQ zurückzuholen

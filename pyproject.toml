@@ -12,7 +12,7 @@ only-include = ["src"]
 [project]
 name = "swarmq"
 version = "0.14.4"
-description = "Async task manager for Python 3.14+ using RabbitMQ and Valkey"
+description = "Async-first task queue for Python 3.14+ on RabbitMQ and Valkey"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -124,6 +124,12 @@ default-groups = ["lint", "typing", "tasks"]
 
 [project.scripts]
 swarmq = "swarmq.cli:console_main"
+
+[project.urls]
+Homepage = "https://github.com/Schorschofwill/swarmq"
+Documentation = "https://swarmq.readthedocs.io/"
+Repository = "https://github.com/Schorschofwill/swarmq"
+Changelog = "https://swarmq.readthedocs.io/en/latest/reference/changelog/"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/swarmq"]

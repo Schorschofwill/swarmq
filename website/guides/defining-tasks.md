@@ -1,16 +1,16 @@
 # Defining tasks
 
-You want to define a task that runs on a worker. A task in SwarmQ is a
-Python class that subclasses `Task` and declares its identity with a
-`TaskInfo` field.
+You want to define a task that runs on a worker. A SwarmQ task is a
+Python class that subclasses `Task` and declares its identity in a
+`TaskInfo`.
 
-This guide covers the shape of a task definition, where the pieces
-live, and the anti-patterns that bite in production.
+This guide covers the shape of a task definition, routing, arguments
+and results, and the anti-patterns that bite in production.
 
 ## Prerequisites
 
-- A Python package with at least one module (the one you will pass
-  to `--module`).
+- A Python package with at least one module (the one you pass to
+  `--module`).
 - `pip install swarmq`.
 
 ## The minimum
@@ -30,33 +30,53 @@ class SendEmail(Task):
         return f"sent to {to}"
 ```
 
-Three rules are enforced the moment the module is imported:
+Three rules apply when the module is imported:
 
-1. **Subclass `Task`.** This registers the class with the global
-   registry. No decorator, no manual `register()` call.
-2. **Declare `task_info`.** Without it, `Task.__init_subclass__`
-   skips registration — your class becomes invisible to workers.
-3. **Define `async def run(self, ...)`.** The signature names the
-   keyword arguments your clients will pass to `schedule()`.
+1. **Subclass `Task`.** That registers the class; there is no
+   decorator and no `register()` call.
+2. **Declare `task_info`.** A class without it is not registered and
+   stays invisible to workers. Use such a class as a shared base for
+   helpers.
+3. **Define `async def run(self, ...)`.** Its parameters are the
+   arguments clients pass to `schedule()`, positionally or by keyword.
+
+## Validation at import
+
+`TaskInfo` checks every field when the class is defined. A bad value
+raises `ValueError` on import of the task module, not at the first
+`schedule()`: an empty `queues` list, a `lock` without `hard_timeout`,
+`soft_timeout` or `hard_timeout` not greater than 0, a cron outside the
+crontab(5) syntax or without a next fire time, a deadline above ten
+years (`315360000` s) and more. `swarmq worker` then ends with exit `1`
+and is restarted until the restart limit. Catch it before a deploy;
+`--check` imports the module and reports the error as `"ok": false`:
+
+```bash
+swarmq worker --module myapp.tasks --check
+```
+
+Every field with its type and default:
+[`TaskInfo` fields](../reference/configuration.md#taskinfo-fields);
+the full list of import errors:
+[validation behaviour](../reference/configuration.md#validation-behaviour).
 
 ## Name vs class name
 
-`TaskInfo.name` is the over-the-wire identifier. It is what clients
-pass to `schedule("name", ...)` and what appears in broker queues,
-worker logs, and `swarmq inspect` output. The Python class name is
-irrelevant to the system — you can rename `SendEmail` to
-`EmailSender` without breaking anything.
+`TaskInfo.name` (1 to 255 characters) is the identifier on the wire.
+Clients pass it to `schedule("name", ...)`, and it appears in
+messages, worker logs and `swarmq inspect`. The Python class name does
+not matter: renaming `SendEmail` to `EmailSender` breaks nothing.
 
-**Renaming the `name` is a breaking change** for any queued
-messages. A worker running new code will not find a task named
-`send_email_v1` when the clients are still sending `send_email`.
-Use [deprecation via a second class](#deprecating-a-task) instead.
+**Renaming `name` is a breaking change** for messages already queued:
+after `send_email` becomes `send_email_v2`, no worker registers
+`send_email` for the messages clients still send. Keep the old name
+alive as described in [deprecating a task](#deprecating-a-task).
 
 ## Queue routing
 
-`queues` is a non-empty list. The first element is the default
-target for `schedule("name")`; others are what the task *can* be
-routed to when the client overrides with `queue=`.
+`queues` is a non-empty list. Its first element is where
+`schedule("name")` publishes; a client can send a single call
+elsewhere with `queue=`:
 
 ```python
 task_info = TaskInfo(
@@ -66,47 +86,57 @@ task_info = TaskInfo(
 ```
 
 ```python
-# Publishes to "reports" — the first element.
+# Publishes to "reports", the first element.
 await app.schedule("render_report", report_id=42)
 
-# Publishes to "default" — explicit override.
+# Publishes to "default", an explicit override.
 await app.schedule("render_report", report_id=42, queue="default")
 ```
 
-Worker-side, `swarmq worker --queues reports,default` consumes from
-both. See [Scheduling and retries](scheduling-and-retries.md) for
-how `delay=` / `eta=` interact with routing.
+`queue=` is not checked against the list: any queue a worker has
+declared works, a queue that does not exist raises
+`UnroutableMessage`. List every queue the task may run on anyway;
+`swarmq inspect` shows them. A task with `priority="high"` or `"low"`
+publishes to `{queue}.high` or `{queue}.low`, also after an override.
+
+On the worker side, `swarmq worker --queues reports,default` consumes
+both (default: `default`). How `delay=` and `eta=` route is covered in
+[scheduling and retries](scheduling-and-retries.md).
 
 ### Moving a task to another queue
 
 When a task moves to another queue, or a worker's `--queues` changes,
-messages already in the old queue (and retry copies still waiting in
-its delay queues) stay there: no worker consumes them any more. Since
-0.12 every worker reports the queues it consumes to Valkey
-(`[<namespace>:]sq:{sched}:report:queues`, timestamps from Valkey's clock). The
-scheduler leader checks the reported queues on every adoption tick
-(`SWARMQ_SCHEDULER_SEEN_INTERVAL_S`, default 60 s; not on the tick right
-after a takeover) with a passive
-declare, without the management API. A queue counts as orphaned when it
-holds messages, has no consumer, and no live worker has reported it for
-three ticks. The leader then logs `scheduler_queue_orphaned` (WARNING,
-once per transition), emits `SCHEDULER_QUEUE_ORPHANED` and sets the gauge
-`swarmq_scheduler_queues_orphaned`; alert on it. `swarmq check` with
-`SWARMQ_BROKER_URL` lists orphaned queues and reported queues without
-their `.XQ` ([CLI](../reference/cli.md#swarmq-check)).
+the messages in the old queue (and retry copies still waiting in its
+delay queues) stay there with no consumer. SwarmQ reports this:
+
+- Every worker reports the queues it consumes to Valkey
+  (`[<namespace>:]sq:{sched}:report:queues`, with Valkey's clock).
+- The scheduler leader checks, on every adoption tick
+  (`SWARMQ_SCHEDULER_SEEN_INTERVAL_S`, default 60 s; not on the tick
+  right after a takeover), the queues no live worker has reported for
+  three ticks, with a passive declare (no management API). A queue
+  with messages and no consumer counts as orphaned.
+- The leader then logs `scheduler_queue_orphaned` (WARNING, once per
+  transition), emits `SCHEDULER_QUEUE_ORPHANED` and sets the gauge
+  `swarmq_scheduler_queues_orphaned`; alert on it.
+  `scheduler_queue_orphan_resolved` (INFO) follows when the queue is
+  consumed or empty again.
+- `swarmq check` with `SWARMQ_BROKER_URL` lists orphaned queues and
+  reported queues without their `.XQ`
+  ([CLI](../reference/cli.md#swarmq-check)).
 
 To clear it, run a worker for the old queue until it is drained, move
-the messages, or delete the queue. Limits: only queues a worker of 0.12
-or later has reported are checked; a queue with a consumer (for example
-a worker before 0.12) never counts as orphaned. Entries of queues that
-are gone or empty and have not been reported for 7 days are removed;
-the whole key expires 7 days after the last report of any worker.
+the messages, or delete the queue. Limits: only queues a worker from
+0.12 on has reported are checked, and a queue with any consumer never
+counts as orphaned. Entries of queues that are gone or empty and have
+not been reported for 7 days are removed; the whole key expires 7 days
+after the last report of any worker.
 
 ## Arguments and return values
 
 ### What clients can pass
 
-Arguments to `run()` travel as **JSON**, encoded with `msgspec`. Plain
+Arguments of `run()` travel as **JSON**, encoded with `msgspec`.
 `str`, `int`, `float`, `bool`, `None`, `list` and `dict` arrive
 unchanged. Other types are converted on the way, and the task receives
 the converted value, not the original type:
@@ -133,18 +163,19 @@ rejected at schedule time, before anything is published:
   misleading; it is the class the JSON encoder raises).
 - With `delay=` or `eta=`, the arguments go into the scheduler store
   first; there the same object raises a plain `TypeError`.
-- With `unique_for=`, the dedup hash additionally rejects `bytes` and
-  objects of your own classes with `TypeError`.
+- With `unique_for`, the dedup hash also rejects `bytes`, objects of
+  your own classes (dataclass, `Struct`, `Enum`), `dict` keys that are
+  not `str` and `nan`/`inf` with `TypeError`.
 
 ### What `run()` returns
 
-The return value goes through **msgpack** and is stored at
-`sq:result:{task_id}` in Valkey. msgpack is more permissive than
-JSON: `datetime`, `date`, `time`, `Decimal`, `UUID`, `set` and
-`frozenset` come back with the same type; a `tuple` comes back as a
-`list`. Arbitrary Python objects are not supported. If your return
-value is not serialisable, the worker raises
-`ResultSerializationError` and the task is treated as failed.
+The return value is encoded with **msgpack** and stored under
+`[<namespace>:]sq:result:{task_id}` in Valkey. msgpack is more
+permissive than JSON: `datetime`, `date`, `time`, `Decimal`, `UUID`,
+`set` and `frozenset` come back with the same type; a `tuple` comes
+back as a `list`. Arbitrary Python objects are not supported: a return
+value that cannot be encoded raises `ResultSerializationError`, and the
+attempt counts as failed.
 
 When in doubt, return a `dict` of primitives:
 
@@ -154,32 +185,35 @@ return {"status": "sent", "message_id": message_id, "duration_ms": elapsed}
 
 ## Reserved parameter names
 
-Four parameter names on `run()` are reserved by `app.schedule()`:
-`delay`, `eta`, `unique_for`, `unique_until`. A task that declares
-one of them raises `ValueError` at class registration, with a
-migration hint:
+`delay`, `eta`, `unique_for` and `unique_until` are keyword arguments
+of `app.schedule()`. A task whose `run()` declares one of them raises
+`ValueError` with a rename hint when the class is defined:
 
 ```python
-# ❌ This raises at import time:
+# ❌ Raises at import time:
 class Scheduled(Task):
     task_info = TaskInfo(name="scheduled", queues=["default"])
-    async def run(self, delay: float) -> None:  # "delay" reserved
+
+    async def run(self, delay: float) -> None:  # "delay" is reserved
         ...
 
 # ✅ Rename:
-async def run(self, retry_delay: float) -> None:
-    ...
+class Scheduled(Task):
+    task_info = TaskInfo(name="scheduled", queues=["default"])
+
+    async def run(self, retry_delay: float) -> None:
+        ...
 ```
 
-A few more keyword names belong to the calls that start a task, but
+Three more keyword names belong to the calls that start a task, but
 swarmq does not reject them on `run()`:
 
-- `queue` — `app.schedule()` and `app.run()` read it as the target
+- `queue`: `app.schedule()` and `app.run()` read it as the target
   queue and do not pass it on. `schedule("export", queue="eu")` routes
   the task to the queue `eu`: the publish fails with
   `UnroutableMessage` if no such queue exists, or the task runs
   without the argument (`TypeError` for a required parameter).
-- `timeout`, `polling` — `app.run()` reads them to wait for the result
+- `timeout`, `polling`: `app.run()` reads them to wait for the result
   and does not pass them on.
 
 Rename such a parameter, or pass the value positionally
@@ -188,12 +222,14 @@ Rename such a parameter, or pass the value positionally
 ## Lifecycle hooks
 
 Override `pre_execution` and `post_execution` to run code on the
-worker around the task body. `post_execution` runs only after
+worker around `run()`. `post_execution` runs only after
 `pre_execution` and `run()` succeeded. It does not run when either
 raises, on a soft or hard timeout, or on a cancel; an exception in it
 turns the attempt into a failure. Use it for follow-up work on
-success. Cleanup that must run on every outcome belongs in
-`try/finally` inside `run()`:
+success.
+
+Cleanup that must run on every outcome belongs in `try/finally` inside
+`run()`:
 
 ```python
 class WithSession(Task):
@@ -208,16 +244,16 @@ class WithSession(Task):
 ```
 
 With [dependency injection](../reference/api.md#dependency-injection-dishka),
-put it in the provider's `yield` finalizer instead; it also receives
-the exception, for commit or rollback. For cross-cutting concerns that
-should apply to **every** task, use [middleware](middleware.md)
-instead; its `on_error` runs on every failure, but not on a cancel
-(handle the `TASK_CANCELLED` signal for that).
+put it into the provider's `yield` finalizer instead; it also receives
+the exception, for commit or rollback. For concerns that apply to
+**every** task, use [middleware](middleware.md); its `on_error` runs on
+every failure, but not on a cancel (handle the `TASK_CANCELLED` signal
+for that).
 
 ## Progress reporting
 
-Call `self.update_progress(current, total, message="")` from inside
-`run()` to stream progress to clients:
+Call `self.update_progress(current, total, message="")` inside `run()`
+to stream progress to clients:
 
 ```python
 class RenderReport(Task):
@@ -235,14 +271,17 @@ class RenderReport(Task):
         return f"reports/{report_id}.pdf"
 ```
 
-Progress writes are throttled to one per 500 ms per task instance;
-the final update (`current == total`) always flushes. See
+Progress is best effort: writes are throttled to one per 500 ms per
+task instance, the final update (`current == total`) always goes
+through, and a Valkey error is logged (`update_progress_hset_failed`)
+instead of failing the task. The entry lives as long as the result
+(`result_ttl`). See
 [`app.watch_progress()`](../reference/api.md#get_progress-watch_progress)
-for the consumer side.
+for the client side.
 
 ## Deprecating a task
 
-To rename or retire a task, keep the old task registered as a thin
+To rename or retire a task, keep the old name registered as a thin
 redirect for at least one release cycle:
 
 ```python
@@ -254,7 +293,7 @@ class SendEmail(Task):
 
 
 class SendEmailLegacy(Task):
-    """Deprecated — use send_email_v2. Kept alive for in-flight messages."""
+    """Deprecated, use send_email_v2. Kept for in-flight messages."""
 
     task_info = TaskInfo(name="send_email", queues=["default"])
 
@@ -263,9 +302,14 @@ class SendEmailLegacy(Task):
         return await SendEmail().run(*args, **kwargs)
 ```
 
-Once the main queue is drained and the DLQ has no `send_email`
-entries (`swarmq dlq list | grep send_email` is empty), delete the
-legacy class.
+Deploy the workers with the new name before the producers that send
+it. Delete the legacy class once the queue is drained and the DLQ holds
+no `send_email` entries (`swarmq dlq list --queue default | grep
+send_email` is empty; raise `--limit` for a large DLQ). A message that
+arrives later for a name no worker registers is deferred for
+`SWARMQ_UNKNOWN_TASK_GRACE_S` (default 15 minutes) and then
+dead-lettered
+([unregistered tasks](dead-letter-queues.md#unregistered-tasks-and-rolling-deploys)).
 
 ## Anti-patterns
 
@@ -281,20 +325,20 @@ class Bad(Task):
         return self.cache[key]
 ```
 
-Use module-level caches with explicit TTLs instead, or store state
-in Valkey via your own connection.
+The worker creates a new instance per run, but class attributes are
+shared. Use a module-level cache with an explicit size or TTL, or keep
+state in Valkey through your own connection.
 
-### Threading or multiprocessing inside `run()`
+### Threads or processes inside `run()`
 
-Do not spawn threads or processes from a task. SwarmQ already runs N
-tasks concurrently (`--concurrency`), and launches N worker
-processes (`--processes`). Spawning from inside multiplies that
-factor and exhausts connection pools.
+Do not start threads or processes from a task. SwarmQ already runs
+`--concurrency` tasks per worker process and can run several worker
+processes (`--processes`); spawning from inside multiplies that and
+exhausts connection pools.
 
-If a task is CPU-bound, run the CPU work in a
-`concurrent.futures.ProcessPoolExecutor` created at module load and
-reused across runs — or promote the task to its own queue with
-lower `--concurrency`.
+For CPU-bound work, run the task on a worker with
+[`--pool cpu`](cpu-mode.md), which runs task bodies in compute
+children outside the event loop, or give the task its own queue with a lower `--concurrency`.
 
 ### Leaking `asyncio.Task` handles
 
@@ -303,10 +347,9 @@ lower `--concurrency`.
 asyncio.create_task(some_coro())
 ```
 
-The parent `run()` returns before the child completes; the child
-may be cancelled when the worker shuts down, or it may raise
-unhandled and crash the worker's event loop. `await` the coroutine
-directly, or `schedule()` it as a proper SwarmQ task.
+`run()` returns before the child completes; the worker does not wait
+for it, a shutdown can cut it off, and its exception is lost. `await`
+the coroutine directly, or `schedule()` it as a SwarmQ task of its own.
 
 ### Globals that depend on process identity
 
@@ -316,7 +359,7 @@ process_id = f"worker-{os.getpid()}"
 ```
 
 With `--processes > 1` and `--reload`, worker PIDs change on every
-re-exec. Capture the value lazily inside `run()` if you need it.
+restart. Read the value inside `run()` if you need it.
 
 ## Verify
 
@@ -324,16 +367,16 @@ re-exec. Capture the value lazily inside `run()` if you need it.
 swarmq inspect --module myapp.tasks
 ```
 
-Every task you defined should appear in the table with its `queues`,
-`delivery`, `rate_limit`, `lock`, `unique_for` / `unique_until`, and
-`cron` columns populated as declared. A missing task means its
-module was not imported — fix the `--module` path.
+Every task should appear with its `QUEUES`, `DELIVERY`, `RETRIES`,
+`RATE_LIMIT`, `LOCK`, `UNIQUE_FOR`/`UNIQUE_UNTIL` and `CRON` as
+declared (`--format json` shows every field). A missing task means its
+module was not imported; fix the `--module` path.
 
 ## See also
 
-- [`TaskInfo` fields](../reference/configuration.md#taskinfo-fields)
-  — every option with type and default
-- [Scheduling and retries](scheduling-and-retries.md) — how retry
-  policy is configured
-- [Testing tasks](testing-tasks.md) — unit-test a `Task` without a
+- [`TaskInfo` fields](../reference/configuration.md#taskinfo-fields):
+  every option with type and default
+- [Scheduling and retries](scheduling-and-retries.md): retry policy,
+  delays and crons
+- [Testing tasks](testing-tasks.md): unit-test a `Task` without a
   broker

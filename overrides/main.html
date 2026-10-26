@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+
+{% block extrahead %}
+  {#- Das SVG-Favicon setzt mkdocs.yml; hier die Fassungen für ältere Browser und Homescreens. -#}
+  <link rel="icon" href="{{ 'assets/brand/swarmq-favicon.ico' | url }}" sizes="48x48">
+  <link rel="apple-touch-icon" href="{{ 'assets/brand/swarmq-apple-touch-icon.png' | url }}">
+  <meta name="theme-color" content="#1F2B47">
+{% endblock %}

@@ -1,14 +1,12 @@
 # Delivery semantics
 
 SwarmQ is **at-least-once** by default. Every task you schedule runs
-at least one time; under adverse conditions it may run more than once.
-There is no exactly-once mode in the library — that contract is not
-offered, because no queue-plus-worker system can honour it without
-application-level help.
+at least once; under adverse conditions it may run more than once.
+There is no exactly-once mode: no queue-plus-worker system can honour
+that contract without help from the application.
 
 This page describes what that means for the code you write, where
-duplicates come from, and how SwarmQ bounds the damage when they
-happen.
+duplicates come from, and how SwarmQ keeps them rare.
 
 ## The contract
 
@@ -23,9 +21,11 @@ task_id, SwarmQ promises:
    `SWARMQ_QUEUE_DEAD_LETTER_STRATEGY=legacy`) a retry or deferral can
    be lost on a leader change
    ([dead-lettering guarantee](#dead-lettering-guarantee)).
-3. The task's result — success, exception, or cancellation — will be
+3. The task's result (success, exception or cancellation) will be
    written to Valkey at `[<namespace>:]sq:result:{task_id}` with the
-   configured TTL.
+   configured `result_ttl`. A task with `result_ttl=0` stores no
+   success result; a dead-lettered task always leaves an error result
+   (E-031).
 
 It does **not** promise:
 
@@ -67,7 +67,7 @@ hand it to another worker unless the current consumer disappears.
 ## When acks happen
 
 SwarmQ acks after the task's terminal state is durably stored, not
-before:
+before (E-072):
 
 ```mermaid
 flowchart TD
@@ -75,12 +75,20 @@ flowchart TD
     Run["await Task.run(*args, **kwargs)"]
     Store["store result in Valkey<br/>(sq:result:{task_id})"]
     Ack["basic.ack"]
-    DLQ["worker publishes to {queue}.XQ<br/>(confirmed), then basic.ack"]
+    Retry["worker publishes a retry copy<br/>to a delay queue (confirmed)"]
+    DLQ["worker publishes to {queue}.XQ<br/>(confirmed), stores an error result"]
+    Back["hand back to the broker<br/>(task runs again)"]
 
     Deliver --> Run
-    Run -->|success or handled error| Store
+    Run -->|success, cancel, error without DLQ| Store
+    Run -->|error, retries left| Retry
+    Run -->|retries exhausted / NoRetry / expired| DLQ
     Store --> Ack
-    Run -->|retry_exhausted / NoRetry / expired| DLQ
+    Retry --> Ack
+    DLQ --> Ack
+    Store -.->|store keeps failing| Back
+    Retry -.->|publish fails| Back
+    DLQ -.->|publish fails| Back
 ```
 
 The ack-after-store sequence is the reason for the delivery
@@ -102,11 +110,15 @@ it to the DLQ:
 | Abort source | Where it goes |
 |---|---|
 | Worker process killed (`SIGKILL`, OOM, node crash) | Redelivered by RabbitMQ as soon as the worker's channel or connection closes |
-| Worker restarted mid-task (graceful `SIGTERM`) | Drained in-flight tasks finish; pending messages redeliver to a new worker |
+| Worker restarted mid-task (graceful `SIGTERM`) | In-flight tasks finish during the drain; prefetched messages that have not started go back to the queue. A task still running at the end of the drain is cancelled and its message is redelivered ([shutdown budget](#shutdown-budget)) |
 | `Task.run()` raises a retryable exception, retries remaining | New message to the delay queue, original acked (`TASK_RETRYING`) |
 | `Task.run()` raises after `max_retries` reached | Worker publishes to `{queue}.XQ`, original acked (`TASK_DLQ`) |
 | `raise NoRetry("reason")` | Worker publishes to `{queue}.XQ` immediately, original acked (`TASK_DLQ`) |
 | RabbitMQ's `x-delivery-limit=20` reached | Broker-native DLQ route |
+| Rate limit reached, or the task's lock is held by another run | New message to the delay queue, original acked (`TASK_RATE_LIMITED`, `TASK_LOCKED`); not a retry |
+| Task name not registered on this worker, within `SWARMQ_UNKNOWN_TASK_GRACE_S` (900 s) | New message to the delay queue with backoff, original acked (`TASK_UNKNOWN_DEFERRED`); afterwards DLQ (E-008) |
+| Task cancelled before it started | Cancel result stored, original acked (`TASK_CANCELLED`); no retry (E-068) |
+| Message cannot be decoded or exceeds `SWARMQ_MAX_MESSAGE_BODY_BYTES` | Worker publishes to `{queue}.XQ`, original acked (`TASK_REJECTED`) |
 | Backend unreachable for a check before execution (schedule-fire dedup, cancel check, rate limit, lock) | New message to the delay queue with growing backoff, original acked (`task_deferred_backend_unavailable`); not a retry |
 | Task age exceeds `max_age` at pickup | `TASK_EXPIRED` signal + DLQ |
 | Lock render-fail, or the wait for a lock ended (stalled holder, `SWARMQ_LOCK_WAIT_MAX_S`) | DLQ route with `x-swarmq-lock-render-error` (render failure) or `x-swarmq-lock-name` (`LockWaitExceeded`) header |
@@ -284,16 +296,25 @@ execution.
 
 ### 3. Deliberate redelivery during graceful shutdown
 
-On `SIGTERM`, the worker stops fetching new messages, finishes its
-in-flight tasks, then closes the channel. Any messages the broker
-delivered but the worker had not started yet get requeued — they
-redeliver to a sibling worker. This is intentional: it is how you
-roll a deploy without losing work.
+On `SIGTERM`, the worker stops taking new work and lets its in-flight
+tasks finish within the drain of the [shutdown budget](#shutdown-budget).
+Messages the broker delivered but the worker had not started yet go
+back to the queue and are delivered to a sibling worker. This is
+intentional: it is how you roll a deploy without losing work.
+
+An `AT_LEAST_ONCE` task that is still running when the drain ends is
+cancelled. It takes the error path like a timeout (E-001), but at that
+point no retry or dead-letter copy can be published any more, so its
+message goes back to the queue without using up a retry, and the task
+runs again from the start.
 
 **What your task sees.** A fresh `run()` call on a different worker
-with the same message body.
+with the same message body; for a task cut off at the drain end, a
+second run of a task that had already started.
 
-**Mitigation.** Nothing required. This is the design.
+**Mitigation.** Nothing for messages that had not started. For long
+tasks, raise `SWARMQ_SHUTDOWN_TIMEOUT` together with the orchestrator's
+grace period, or keep task bodies idempotent.
 
 ### 4. Result store fails after the task ran
 
@@ -379,7 +400,9 @@ leader handover and connections are done within the budget. A second
 `terminationGracePeriodSeconds`, Docker/Compose `stop_grace_period`.
 The margin covers `preStop` hooks and signal delivery.
 `swarmq check` prints the value (`min_grace_period_s`). A task that
-runs longer than the drain is cancelled and redelivered (see above);
+runs longer than the drain is cancelled and its message is redelivered
+without using up a retry
+([scenario 3](#3-deliberate-redelivery-during-graceful-shutdown));
 raise `SWARMQ_SHUTDOWN_TIMEOUT` together with the grace period if
 long tasks should finish during a deploy.
 
@@ -650,7 +673,7 @@ time. Other workers cannot take the held messages, and the last of
 them waits up to K × `hard_timeout` for its ack, which counts against
 `consumer_timeout`. One limit for all consumers of a channel (global
 QoS) does not work with quorum queues: RabbitMQ 4.2 closes the
-connection, 4.3 ignores it. This is a known limit (BZ-20). Since 0.12
+connection, 4.3 ignores it. This is a known limit (E-019). Since 0.12
 the worker warns at start with `prefetch_exceeds_consumer_timeout`
 when K ≥ 2 and a task's `hard_timeout` × K exceeds
 `SWARMQ_CONSUMER_TIMEOUT_S`, and reports K × N as the gauge
@@ -688,15 +711,15 @@ that, write idempotent task bodies.
 Retries are a first-class path. The DLQ is the terminal path. A task
 reaches the DLQ by one of five routes:
 
-1. **Retry exhaustion.** The last retry raised. The worker publishes
+1. **Retry exhaustion.** The last retry raised too. The worker publishes
    the message to `{queue}.XQ` (with `x-swarmq-traceback`) and acks
    the original once the broker confirmed it.
 2. **`NoRetry`.** The task body raised `NoRetry("reason")`. This
    skips the retry decision entirely — straight to DLQ.
 3. **Delivery limit.** The message was delivered `limit - 1` times
    without an ack landing ([effective delivery limit](#effective-delivery-limit);
-   20 by default). This is the pathological-
-   loop guard; it protects the broker from a buggy worker. A backend
+   20 by default). This is the guard against endless loops; it
+   protects the broker from a buggy worker. A backend
    outage does not count against it: the checks before execution defer
    the message as a new message instead of requeuing it (see above).
    Since 0.13.0 the delivery-count check first reads the
@@ -727,8 +750,8 @@ then stored and the message acknowledged. Dead-lettered messages
 expire after `SWARMQ_DEAD_LETTER_TTL_S` (default 7 days); see
 [Dead letter queues](../guides/dead-letter-queues.md#retention-dead-lettered-messages-expire).
 
-DLQ'd messages are recoverable via `swarmq dlq list | inspect |
-retry`. The retry count header is reset on `dlq retry`, so the task
+Dead-lettered messages are recoverable with `swarmq dlq list |
+inspect | retry`. The retry count header is reset on `dlq retry`, so the task
 gets its full retry budget back, and a new replay id lets it pass the
 execution guard. The original traceback stays in the
 headers for post-mortem.
@@ -1038,11 +1061,11 @@ channel, and a reconnect fails the same way.
 
 ## See also
 
-- [Architecture](architecture.md) — the three-role topology that
-  makes these semantics possible
+- [Architecture](architecture.md) — the topology that makes these
+  semantics possible
 - [Scheduling and retries](../guides/scheduling-and-retries.md) —
   the retry backoff policies and how to disable them per task
 - [Locking and deduplication](../guides/locking-and-dedup.md) —
-  the two flavours of dedup (schedule-side and execution-side)
-- [Dead letter queues](../guides/dead-letter-queues.md) — operator
-  recovery workflow for DLQ'd tasks
+  the two kinds of dedup (when scheduling and when running)
+- [Dead letter queues](../guides/dead-letter-queues.md) — how
+  operators recover dead-lettered tasks
