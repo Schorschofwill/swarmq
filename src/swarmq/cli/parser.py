@@ -128,7 +128,8 @@ def _add_worker_parser(subparsers: Any) -> None:
             "Maximum tasks executed in parallel (default: 10). With "
             "--pool cpu this is the number of compute slots; the default "
             "is then the number of CPUs assigned to the worker (affinity "
-            "and cgroup quota), divided by --processes."
+            "and cgroup quota), divided by --max-processes if set, "
+            "otherwise by --processes."
         ),
     )
     worker.add_argument(

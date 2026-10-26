@@ -171,7 +171,7 @@ def test_contract_bindings_are_pure() -> None:
 _KEYSPACE_MODULE = "swarmq.keyspace"
 _KEYSPACE_HELP_TEXTS: dict[str, list[str]] = {
     "swarmq.cli.parser": ["sq:control:setpoint:<group>"],
-    "swarmq.cli.parser_ops": ["sq:sched:defs"],
+    "swarmq.cli.parser_ops": ["sq:{sched}:defs"],
 }
 
 

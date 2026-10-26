@@ -21,7 +21,7 @@ logger = get_logger(__name__)
 class ScheduleDefinition(msgspec.Struct, kw_only=True, frozen=True):
     """Persisted schedule metadata.
 
-    Stored JSON-encoded in ``sq:sched:defs`` under the schedule_name.
+    Stored JSON-encoded in ``sq:{sched}:defs`` under the schedule_name.
     Three source types produce a definition:
 
     * ``source="static"`` — declared via ``TaskInfo(cron=...)`` in code.
@@ -61,7 +61,7 @@ class ScheduleDefinition(msgspec.Struct, kw_only=True, frozen=True):
     # R3.5 Unit 7: persisted dedup hash for source="cli_unique" entries.
     # Optional with default None so msgpack/json roundtrip stays
     # backwards-compatible with pre-R3.5 ScheduleDefinition entries in
-    # sq:sched:defs (new field at the end of the struct).
+    # sq:{sched}:defs (new field at the end of the struct).
     dedup_hash: str | None = None
     # R3.5: persist unique_until alongside
     # dedup_hash. Previously the scheduler re-resolved unique_until from

@@ -39,7 +39,7 @@ def _add_schedule_parser(subparsers: Any) -> None:
     # list
     sched_list = schedule_sub.add_parser(
         "list",
-        help="List all schedules in [<namespace>:]sq:sched:defs.",
+        help="List all schedules in [<namespace>:]sq:{sched}:defs.",
     )
     sched_list.add_argument(
         "--format",
