@@ -145,6 +145,12 @@ async def run_timed_batch(
     return latencies
 
 
+#: Gleichzeitige Ergebnisabfragen, wo sie den Worker nicht begrenzen sollen: Jede wartet ``poll_interval``.
+ABFRAGE = 200
+#: Gleichzeitige Publishes beim Einreihen; nacheinander begrenzt der Publish den Durchsatz.
+ERZEUGER = 10
+
+
 async def run_timed_batch_concurrent(
     system: TaskQueueSystem,
     task_name: str,
@@ -152,28 +158,23 @@ async def run_timed_batch_concurrent(
     concurrency: int,
     poll_interval: float = 0.01,
 ) -> list[float]:
-    """Enqueue all tasks, then gather results concurrently.
+    """Enqueue with ``ERZEUGER`` concurrent publishes and collect each result as soon as it is enqueued.
 
-    Returns list of latencies in seconds (enqueue-to-result per task).
+    At most ``concurrency`` result fetches run at once. Returns list of latencies
+    in seconds (enqueue-to-result per task).
     """
-    # Enqueue all tasks, recording start times
-    enqueue_data: list[tuple[str, float]] = []
-    for payload in payloads:
-        t_start = time.perf_counter()
-        task_id = await system.enqueue(task_name, payload)
-        enqueue_data.append((task_id, t_start))
+    einreihen = asyncio.Semaphore(ERZEUGER)
+    abfragen = asyncio.Semaphore(concurrency)
 
-    # Gather results with bounded concurrency
-    sem = asyncio.Semaphore(concurrency)
-    latencies: list[float] = [0.0] * len(enqueue_data)
-
-    async def _collect(idx: int, task_id: str, t_start: float) -> None:
-        async with sem:
+    async def _task(payload: dict) -> float:
+        async with einreihen:
+            t_start = time.perf_counter()
+            task_id = await system.enqueue(task_name, payload)
+        async with abfragen:
             await system.get_result(task_id, timeout=60.0, poll_interval=poll_interval)
-            latencies[idx] = time.perf_counter() - t_start
+        return time.perf_counter() - t_start
 
-    await asyncio.gather(*(_collect(i, tid, ts) for i, (tid, ts) in enumerate(enqueue_data)))
-    return latencies
+    return list(await asyncio.gather(*(_task(payload) for payload in payloads)))
 
 
 def make_result(

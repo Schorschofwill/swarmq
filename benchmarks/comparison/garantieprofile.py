@@ -101,13 +101,15 @@ PROFILE: dict[str, dict[str, Profil]] = {
     ),
     # Dramatiq 2.2.1: ``RabbitmqBroker(confirm_delivery=...)``
     # (dramatiq/brokers/rabbitmq.py) und die Umgebungsvariable
-    # ``dramatiq_queue_prefetch`` des Workers (dramatiq/worker.py), ab Werk
-    # zwei je Thread. Quorum-Queues kennt Dramatiq nicht: Es deklariert
-    # klassische, dauerhafte Queues und sendet persistent.
+    # ``dramatiq_queue_prefetch`` des Workers (dramatiq/worker.py). Er gilt
+    # je Prozess, ab Werk zwei je Thread; ``prefetch_je_thread`` rechnet der
+    # Adapter in den Wert für die Threads des Prozesses um. Quorum-Queues
+    # kennt Dramatiq nicht: Es deklariert klassische, dauerhafte Queues und
+    # sendet persistent.
     "dramatiq": _profile(
         "dramatiq",
-        {"confirm_delivery": True, "dramatiq_queue_prefetch": 1},
-        "Publisher-Confirms und Prefetch 1; klassische Queues, weil Dramatiq keine Quorum-Queues deklariert.",
+        {"confirm_delivery": True, "prefetch_je_thread": 1},
+        "Publisher-Confirms und Prefetch 1 je Thread; klassische Queues, weil Dramatiq keine Quorum-Queues deklariert.",
         "https://dramatiq.io/reference.html (RabbitmqBroker); dramatiq 2.2.1: dramatiq/brokers/rabbitmq.py "
         "(confirm_delivery, _build_queue_arguments), dramatiq/worker.py (dramatiq_queue_prefetch)",
     ),

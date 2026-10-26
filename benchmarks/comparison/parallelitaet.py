@@ -20,7 +20,7 @@ AB_WERK = "ab_werk"
 NAMEN = ("gleich", AB_WERK)
 
 
-def _anzahl(parallelitaet: str) -> int | None:
+def anzahl(parallelitaet: str) -> int | None:
     """Gleichzeitige Tasks für ``parallelitaet``; ``None`` heißt ab Werk."""
     if parallelitaet == AB_WERK:
         return None
@@ -29,16 +29,16 @@ def _anzahl(parallelitaet: str) -> int | None:
 
 def argumente(system: str, parallelitaet: str) -> list[str]:
     """Zusätzliche CLI-Argumente des Workers von ``system``."""
-    anzahl = _anzahl(parallelitaet)
-    if anzahl is None:
+    gleichzeitig = anzahl(parallelitaet)
+    if gleichzeitig is None:
         return []
     return {
-        "swarmq": ["--processes", "1", "--concurrency", str(anzahl)],
-        "celery": ["--concurrency", str(anzahl)],
-        "dramatiq": ["--processes", "1", "--threads", str(anzahl)],
+        "swarmq": ["--processes", "1", "--concurrency", str(gleichzeitig)],
+        "celery": ["--concurrency", str(gleichzeitig)],
+        "dramatiq": ["--processes", "1", "--threads", str(gleichzeitig)],
         # arq hat keinen CLI-Schalter dafür, siehe ``umgebung``.
         "arq": [],
-        "taskiq": ["--workers", "1", "--max-async-tasks", str(anzahl)],
+        "taskiq": ["--workers", "1", "--max-async-tasks", str(gleichzeitig)],
     }[system]
 
 
@@ -47,7 +47,7 @@ def umgebung(system: str, parallelitaet: str) -> dict[str, str]:
 
     ``workers/arq_worker.py`` setzt ``max_jobs`` aus ``VERGLEICH_MAX_JOBS``.
     """
-    anzahl = _anzahl(parallelitaet)
-    if anzahl is None or system != "arq":
+    gleichzeitig = anzahl(parallelitaet)
+    if gleichzeitig is None or system != "arq":
         return {}
-    return {"VERGLEICH_MAX_JOBS": str(anzahl)}
+    return {"VERGLEICH_MAX_JOBS": str(gleichzeitig)}
