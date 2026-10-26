@@ -6,7 +6,9 @@ with stable keys for programmatic classification. The same data, as
 generated from the code, is in [`spec/errors.json`](spec/errors.json);
 a test keeps the columns `parent` to `dlq_on_uncaught` of this table
 equal to it. `exit_code_on_cli` and `transport_field` are worded more
-precisely here than in the JSON.
+precisely here than in the JSON. Where the exit code depends on the
+command (`ConfigurationError`), the JSON keeps the worker's code in
+`exit_code_on_cli` and adds `exit_code_by_command`.
 
 ## Schema
 

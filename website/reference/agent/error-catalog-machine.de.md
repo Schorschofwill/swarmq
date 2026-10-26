@@ -7,7 +7,9 @@ zur programmatischen Klassifizierung. Dieselben Daten, aus dem Code
 erzeugt, stehen in [`spec/errors.json`](spec/errors.json); ein Test
 hält die Spalten `parent` bis `dlq_on_uncaught` dieser Tabelle gleich.
 `exit_code_on_cli` und `transport_field` sind hier genauer formuliert
-als im JSON.
+als im JSON. Wo der Exit-Code vom Befehl abhängt (`ConfigurationError`),
+behält das JSON in `exit_code_on_cli` den Code des Workers und ergänzt
+`exit_code_by_command`.
 
 ## Schema
 
