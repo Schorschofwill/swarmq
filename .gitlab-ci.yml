@@ -294,13 +294,12 @@ coverage-combine:
         path: coverage.xml
 
 # Tier 2c — stress against real services. Härtung R2 B1: previously never
-# executed by any CI job. Scheduled (nightly) + manual; honest gate on the
-# scheduled run (no allow_failure) so a stress regression actually notifies.
+# executed by any CI job. Manual only: the project has no pipeline schedules
+# (docs/testing/test-strategy.md, „Es gibt keine Zeitpläne“).
 stress-tests:
   extends: .with-services
   stage: test
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
     - when: manual
       allow_failure: true
   script:

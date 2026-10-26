@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """U4.4 — Flaky-Quarantäne-Helper.
 
-Liest pytest-JSON-Reports aus den letzten N Nightly-Läufen, identifiziert
+Liest pytest-JSON-Reports aus den letzten N Läufen, identifiziert
 Tests die ≥3× konsekutiv gescheitert sind, und printet einen
 Issue-Body-Vorschlag für den Operator.
 

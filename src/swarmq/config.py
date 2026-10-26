@@ -353,7 +353,8 @@ class SwarmQConfig(ConfigValidation):
     burst_mode: bool = False
     burst_idle_timeout: float = 5.0
     # R4.3 Task Priorities. When True, every queue in ``queues`` gets
-    # auto-expanded to its high/.normal/.low triplet on declare + consume,
+    # auto-expanded to its .high/base/.low triplet (normal is the base
+    # queue itself) on declare + consume,
     # with weighted prefetch ratios (3:2:1) so high-priority work gets
     # proportionally more in-flight slots under saturation. Opt-in so
     # existing single-queue deployments stay on their one-queue topology.

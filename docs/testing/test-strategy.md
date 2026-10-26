@@ -112,8 +112,7 @@ Lauf.
 den Abschnitt darunter — sowie Mutation-Testing. Mutmut läuft von Hand in
 einem Container über einen Docker-Kontext (`uv run just mutation-starten a|b`,
 `mutation-holen`, `mutation-abbauen`; `docker/mutation/README.md`).
-`scripts/run_mutation.sh` ist ein Überbleibsel mit mutmut-2-Optionen und
-läuft mit mutmut 3 nicht.
+Das alte `scripts/run_mutation.sh` mit mutmut-2-Optionen ist entfernt.
 
 **Es gibt keine Zeitpläne.** Weder nightly noch weekly: `pipeline_schedules`
 ist leer. Frühere Fassungen dieses Dokuments nannten
