@@ -4,6 +4,15 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 [Keep a Changelog](https://keepachangelog.com/) und
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Geändert
+
+- **Eigene README für PyPI.** PyPI kann Bilder und Links aus dem privaten
+  Repository nicht laden. Die Paketbeschreibung entsteht deshalb aus der
+  README, aber ohne Logo, Navigationszeile und die Abschnitte Documentation
+  und Development; relative Links werden zu Text.
+
 ## [0.15.0rc1] — 2026-10-26
 
 Release-Candidate für 0.15.0 (Installation mit `pip install --pre`).

@@ -4,6 +4,7 @@
     <img src="docs/assets/logo/swarmq-horizontal-light.svg" alt="SwarmQ" width="420">
   </picture>
 </p>
+<!-- pypi-start -->
 
 <p align="center">
   <strong>The async-first Python task queue that does not lose your work.</strong><br>
@@ -18,6 +19,7 @@
   <img alt="Tests" src="https://img.shields.io/badge/tests-7%20000%2B-1F2B47">
 </p>
 
+<!-- pypi-skip -->
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
   <a href="#why-swarmq">Why SwarmQ</a> ·
@@ -26,6 +28,7 @@
   <a href="https://swarmq.readthedocs.io/">Documentation</a> ·
   <a href="website/reference/changelog.md">Changelog</a>
 </p>
+<!-- pypi-resume -->
 
 ---
 
@@ -296,6 +299,7 @@ supervisor, all workers and compute children alike.
 The complete list lives in the [configuration](website/reference/configuration.md) and
 [CLI](website/reference/cli.md) references.
 
+<!-- pypi-end -->
 ## Documentation
 
 | | |
