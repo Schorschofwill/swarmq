@@ -4,10 +4,16 @@ All notable changes to SwarmQ. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.15.0rc1] — 2026-10-26
 
-Planned as 0.15.0: three changes reject values that were accepted so far
-(breaking). Findings and decisions in
+Release candidate for 0.15.0 (install with `pip install --pre`).
+
+Three changes reject values that were accepted so far (breaking): unknown
+switch values in the environment, a negative `max_retries` and a negative
+`result_ttl`. Valid configurations behave as before. No new headers, keys
+or format changes: 0.15.0 runs next to 0.14.4 on the same queues and keys.
+The rate-limit script keeps its keys and only returns a shorter
+`retry_after`. Findings and decisions in
 `docs/befunde/doku-pruefung-2026-10.md`.
 
 ### Changed (breaking)

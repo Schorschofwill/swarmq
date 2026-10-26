@@ -4,10 +4,17 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 [Keep a Changelog](https://keepachangelog.com/) und
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.15.0rc1] — 2026-10-26
 
-Geplant als 0.15.0: Drei Änderungen lehnen bisher angenommene Werte ab
-(breaking). Befunde und Entscheidungen in `docs/befunde/doku-pruefung-2026-10.md`.
+Release-Candidate für 0.15.0 (Installation mit `pip install --pre`).
+
+Drei Änderungen lehnen bisher angenommene Werte ab (breaking): unbekannte
+Schalterwerte in der Umgebung, ein negatives `max_retries` und ein
+negatives `result_ttl`. Gültige Konfigurationen verhalten sich wie bisher.
+Keine neuen Header, Schlüssel oder Formatänderungen: 0.15.0 läuft neben
+0.14.4 auf denselben Queues und Schlüsseln. Das Rate-Limit-Skript behält
+seine Schlüssel und liefert nur ein kürzeres `retry_after`. Befunde und
+Entscheidungen in `docs/befunde/doku-pruefung-2026-10.md`.
 
 ### Geändert (breaking)
 

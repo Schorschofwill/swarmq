@@ -11,7 +11,7 @@ only-include = ["src"]
 
 [project]
 name = "swarmq"
-version = "0.14.4"
+version = "0.15.0rc1"
 description = "Async-first task queue for Python 3.14+ on RabbitMQ and Valkey"
 readme = "README.md"
 license = "MIT"
