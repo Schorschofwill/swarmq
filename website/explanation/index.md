@@ -13,6 +13,8 @@ case fits SwarmQ.
   tiers and the idempotency your task code has to provide.
 - [Design decisions](design-decisions.md): the trade-offs behind the
   design, the alternatives considered and what was left out on purpose.
+- [Comparison](comparison.md): SwarmQ against Celery, Dramatiq, arq and
+  taskiq under faults and under load, with the limits of the measurement.
 
 The [reference](../reference/index.md) answers *what*; these pages
 answer *why*.

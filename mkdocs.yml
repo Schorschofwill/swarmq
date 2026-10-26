@@ -171,6 +171,7 @@ plugins:
             Architecture: Architektur
             Delivery semantics: Zustellungssemantik
             Design decisions: Designentscheidungen
+            Comparison: Vergleich
 
 nav:
   - Overview: index.md
@@ -210,3 +211,4 @@ nav:
       - Architecture: explanation/architecture.md
       - Delivery semantics: explanation/delivery-semantics.md
       - Design decisions: explanation/design-decisions.md
+      - Comparison: explanation/comparison.md
