@@ -722,7 +722,12 @@ class RetryChainMachine(AsyncStateMachine[ChainEnv]):
                     "retry_later",
                     "rate_limit",
                     copy_retry_count=rc,
-                    delay_ms=(retry_after, retry_after),
+                    # Jitter bis (Fenster / Limit) · 2^Zähler, höchstens ein
+                    # Fenster (DP-01).
+                    delay_ms=(
+                        retry_after,
+                        retry_after + int(min(RATE_WINDOW_MS, RATE_WINDOW_MS / RATE_MAX * 2 ** min(rl_count, 16))),
+                    ),
                     guard_after=claimed,  # Lease vor dem Publish freigegeben
                     rate_limit_count=rl_count,
                 )

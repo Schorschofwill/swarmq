@@ -28,6 +28,7 @@ Test-Liste 0.9.0 (viertes Review):
 from __future__ import annotations
 
 import asyncio
+import random
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -50,6 +51,14 @@ from tests.unit.worker._helpers import (
 )
 
 pytestmark = pytest.mark.timeout(5)
+
+
+@pytest.fixture(autouse=True)
+def _no_rate_limit_jitter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Jitter unten: die Kopie wartet genau ``retry_after_ms``. Die Streuung
+    prüfen ``test_befund_dp_01_rate_limit_gate_jitter.py`` und
+    ``tests/unit/test_befund_dp_01_rate_limit_jitter.py`` (DP-01)."""
+    monkeypatch.setattr(random, "uniform", lambda lo, hi: lo)
 
 
 class RateLimitedTask(Task):

@@ -239,7 +239,8 @@ def rate_limit_window_defers_the_third_and_releases_later(machine: RetryChainMac
     expect = machine.deliver(only(machine), Act("ok"))
     assert expect.reason == "rate_limit"
     assert expect.delay_ms is not None
-    machine.advance(expect.delay_ms[0] // 1000 + 1)
+    # Obergrenze: retry_after_ms plus Jitter (DP-01).
+    machine.advance(expect.delay_ms[1] // 1000 + 1)
     copy = only(machine)
     assert copy.headers["x-swarmq-rate-limit-count"] == 1
     assert machine.deliver(copy, Act("ok")).reason == "success"

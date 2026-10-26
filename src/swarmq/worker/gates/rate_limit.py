@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from swarmq.backoff import rate_limit_requeue_delay_ms
 from swarmq.exceptions import is_backend_outage
 from swarmq.limits import parse_rate_limit
 from swarmq.logging import _error_fields, get_logger
@@ -113,8 +114,16 @@ class RateLimitGate:
         )
 
         try:
+            # Jitter, damit gleichzeitig Abgewiesene nicht gleichzeitig
+            # zurückkommen (DP-01).
+            delay_ms = rate_limit_requeue_delay_ms(
+                retry_after_ms,
+                window_ms=config.window_size_ms,
+                max_requests=config.max_requests,
+                bounces=rl_count,
+            )
             await publish_deferral_copy(
-                deps, delivery, ctx, delay_ms=retry_after_ms, headers=original_headers, deferral="rate_limit"
+                deps, delivery, ctx, delay_ms=delay_ms, headers=original_headers, deferral="rate_limit"
             )
         except Exception as exc:  # noqa: BLE001 - Broker gestoert, Original bleibt in Flight
             # Broker failure between publish and ack would create a

@@ -59,17 +59,23 @@ Ausführungsschutz und der `max_age`-Prüfung und vor dem Task-Lock:
   [mit einem Lock](#kombination-mit-retries-und-locks)).
 - **Über dem Limit:** Der Worker veröffentlicht eine Kopie der Nachricht
   in die Delay-Queue, bestätigt das Original und feuert
-  `TASK_RATE_LIMITED`. Die Kopie wartet `retry_after_ms`, den Rest des
-  aktuellen festen Fensters, und durchläuft dann alle Prüfungen erneut.
+  `TASK_RATE_LIMITED`. Die Kopie wartet `retry_after_ms`, bis die
+  gewichtete Zählung wieder unter dem Limit liegt, plus einen zufälligen
+  Jitter, und durchläuft dann alle Prüfungen erneut.
   In einer [Delay-Stufe](../explanation/delivery-semantics.md#delay-stufen)
   kann die Wartezeit etwas länger ausfallen. Lässt sich die Kopie nicht
   veröffentlichen, loggt der Worker `rate_limit_requeue_failed` (ERROR)
   und gibt das Original an den Broker zurück.
 
-Weil eine wartende Nachricht am Ende eines Fensters zurückkommt, während
-das vorige Fenster noch fast voll zählt, prallt ein großer Rückstand
-mehrmals ab. Bei anhaltendem Rückstand kann der Durchsatz deutlich unter
-dem Limit bleiben. Das Limit ist eine Obergrenze, kein Fahrplan.
+Der Jitter verteilt Kopien, die im selben Moment abgewiesen wurden, damit
+sie nicht alle für denselben freien Platz zurückkommen. Er ist
+gleichverteilt bis zu zwei Platzabständen (Fenster geteilt durch das
+Limit, bei `100/m` also 1,2 s) und verdoppelt sich mit jeder weiteren
+Abweisung derselben Nachricht, höchstens bis zu einem Fenster. Bei
+anhaltendem Rückstand bleibt der Durchsatz nahe am Limit; es gibt keine
+harte Kante bei der Minutenmarke. Vor 0.15 wartete eine Kopie bis zum
+Ende des festen Fensters, und ein Rückstand lief mit etwa der Hälfte des
+Limits.
 
 Der Zähler hängt am Task-Namen. Zwei Apps, die denselben Task-Namen auf
 einem Valkey registrieren, teilen sich das Limit, solange nicht jede
@@ -153,7 +159,8 @@ swarmq worker --module myapp.tasks --configure myapp.hooks:setup
 
 Felder der Nutzlast:
 
-- `retry_after_ms`: wie lange die Kopie in der Delay-Queue wartet.
+- `retry_after_ms`: Zeit, bis das Limit wieder Platz hat; die Kopie
+  wartet so lange plus den Jitter.
 - `remaining`: geschätztes Restbudget im aktuellen Fenster.
 - `rate_limit_count`: wie oft das Rate-Limit diese Nachricht schon
   zurückgestellt hat (Header `x-swarmq-rate-limit-count`), ein

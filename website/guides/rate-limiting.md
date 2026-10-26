@@ -58,18 +58,22 @@ guard and the `max_age` check and before the task lock:
   [with a lock](#combining-with-retries-and-locks)).
 - **Over the limit:** the worker publishes a copy of the message to the
   delay queue, acknowledges the original and fires `TASK_RATE_LIMITED`.
-  The copy waits `retry_after_ms`, the rest of the current fixed
-  window, then passes all checks again. In a
+  The copy waits `retry_after_ms`, the time until the weighted count
+  drops below the limit again, plus a random jitter, then passes all
+  checks again. In a
   [delay tier](../explanation/delivery-semantics.md#delay-tiers) the
   wait can be somewhat longer. If the copy cannot be published, the
   worker logs `rate_limit_requeue_failed` (ERROR) and hands the
   original back to the broker.
 
-Because a waiting message comes back at the end of a window, while the
-previous window still counts almost fully, a large backlog bounces
-several times. Under a sustained backlog the throughput can stay
-noticeably below the limit. The limit is an upper bound, not a
-schedule.
+The jitter spreads copies that were rejected at the same moment, so
+they do not all come back for the same free slot. It is drawn evenly
+up to two slot intervals (window divided by the limit, 1.2 s for
+`100/m`) and doubles with every further rejection of the same message,
+up to one window. Under a sustained backlog the throughput stays close
+to the limit; there is no hard edge at the minute mark. Before 0.15 a
+copy waited for the end of the fixed window and a backlog ran at about
+half the limit.
 
 The counter is keyed by the task name. Two apps that register the same
 task name on one Valkey share the limit unless each sets its own
@@ -149,7 +153,8 @@ swarmq worker --module myapp.tasks --configure myapp.hooks:setup
 
 Payload fields:
 
-- `retry_after_ms`: how long the copy waits in the delay queue.
+- `retry_after_ms`: time until the limit has room again; the copy
+  waits this long plus the jitter.
 - `remaining`: estimated remaining budget in the current window.
 - `rate_limit_count`: how often the rate limit has deferred this
   message (header `x-swarmq-rate-limit-count`), a bounce counter for
