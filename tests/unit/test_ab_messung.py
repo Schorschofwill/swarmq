@@ -27,6 +27,7 @@ Test-Liste:
 - [x] der Messbefehl sieht das äußere venv nicht (``just ab`` läuft unter ``uv run``):
       kein ``VIRTUAL_ENV``, dessen ``bin`` nicht im ``PATH``
 - [x] py-spy aus dem äußeren venv wird gefunden, sein Kind sieht das venv nicht
+- [x] vor dem Profillauf läuft der Befehl je Seite einmal ohne Wertung (das Profil misst den Befehl, nicht das Einrichten)
 """
 
 from __future__ import annotations
@@ -74,6 +75,9 @@ _BASIS = [
 ]  # fmt: skip
 
 
+_VORLAUF = 1.0
+
+
 def _git(repo: Path, *args: str) -> str:
     return subprocess.run(
         ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
@@ -91,7 +95,8 @@ def _repo(tmp_path: Path, werte_a: list[float], werte_b: list[float]) -> Path:
     (repo / "mess.sh").write_text(_MESS_SH, encoding="utf-8")
     for seite, werte in (("a", werte_a), ("b", werte_b)):
         (repo / "seite").write_text(f"{seite}\n", encoding="utf-8")
-        (repo / "werte").write_text("".join(f"{wert}\n" for wert in werte), encoding="utf-8")
+        # Die erste Zeile verbraucht der Vorlauf vor dem Profil.
+        (repo / "werte").write_text("".join(f"{wert}\n" for wert in [_VORLAUF, *werte]), encoding="utf-8")
         _git(repo, "add", ".")
         _git(repo, "commit", "-qm", seite)
         _git(repo, "tag", seite)
@@ -161,11 +166,29 @@ def test_runs_alternate_a_b_each_in_the_worktree_of_its_side(tmp_path: Path, env
 
     assert result.returncode == 0, result.stderr
     laeufe = _log(env)
-    assert [seite for seite, _ in laeufe] == ["a", "b"] * 10
+    assert [seite for seite, _ in laeufe] == ["a", "b"] * 11
     verzeichnisse = {seite: {verzeichnis for s, verzeichnis in laeufe if s == seite} for seite in "ab"}
     assert all(len(menge) == 1 for menge in verzeichnisse.values())
     assert verzeichnisse["a"] != verzeichnisse["b"]
     assert str(repo) not in verzeichnisse["a"] | verzeichnisse["b"]
+
+
+def test_each_side_runs_once_unscored_before_its_profile(tmp_path: Path, env: dict[str, str]) -> None:
+    """Der erste Lauf legt oft erst die Umgebung an (``uv venv``); py-spy hinge sich sonst daran."""
+    repo = _repo(tmp_path, _BASIS, [wert * 1.08 for wert in _BASIS])
+    env["PY_SPY_LOG"] = env["AB_LOG"]
+
+    result = _messen(repo, env)
+
+    assert result.returncode == 0, result.stderr
+    zeilen = Path(env["AB_LOG"]).read_text(encoding="utf-8").splitlines()
+    assert [zeile.split(" ", 1)[0] if " " in zeile else "profil" for zeile in zeilen[:4]] == [
+        "a",
+        "b",
+        "profil",
+        "profil",
+    ]
+    assert _ergebnis(repo)["werte_a"] == _BASIS[:10]
 
 
 def _ergebnis(repo: Path) -> dict[str, object]:
@@ -208,7 +231,7 @@ def test_ten_pairs_without_a_difference_extend_once_to_thirty_then_no_gain(tmp_p
     assert ergebnis["paare"] == 30
     assert ergebnis["werte_a"] == _BASIS
     assert ergebnis["urteil"] == "kein Gewinn"
-    assert [seite for seite, _ in _log(env)] == ["a", "b"] * 30
+    assert [seite for seite, _ in _log(env)] == ["a", "b"] * 31
 
 
 def test_an_eight_percent_gain_without_profiles_is_not_proven(tmp_path: Path, env: dict[str, str]) -> None:
@@ -290,7 +313,7 @@ def test_the_command_does_not_see_the_outer_venv(tmp_path: Path, env: dict[str, 
 
     assert result.returncode == 0, result.stderr
     zeilen = Path(env["UMGEBUNG_LOG"]).read_text(encoding="utf-8").splitlines()
-    assert len(zeilen) == 20
+    assert len(zeilen) == 22  # zwei Vorläufe, zehn Paare
     assert all(zeile.split(" ")[0] == "leer" for zeile in zeilen)
     assert all(not zeile.split(" ")[1].startswith(str(venv)) for zeile in zeilen)
 

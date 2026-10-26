@@ -1,0 +1,33 @@
+{
+  "system_name": "celery",
+  "scenario_name": "noop",
+  "params": {
+    "n": 1000,
+    "abfrage_ms": 1.0
+  },
+  "throughput": 139.36,
+  "total_duration": 7.1759,
+  "memory_peak_mb": 0.0,
+  "latency_p50_ms": 7.15,
+  "latency_p95_ms": 7.47,
+  "latency_p99_ms": 13.233,
+  "latency_count": 1000,
+  "profil": "ab_werk",
+  "parallelitaet": "ab_werk",
+  "versionen": {
+    "celery": "5.6.3",
+    "kombu": "5.6.2",
+    "amqp": "5.4.1",
+    "redis": "6.4.0"
+  },
+  "images": {
+    "rabbitmq": "rabbitmq:4.3.6-management",
+    "valkey": "valkey/valkey:8.1.10-alpine"
+  },
+  "host": {
+    "name": "celsius-server",
+    "plattform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.41",
+    "cpus": 20,
+    "python": "3.14.4"
+  }
+}

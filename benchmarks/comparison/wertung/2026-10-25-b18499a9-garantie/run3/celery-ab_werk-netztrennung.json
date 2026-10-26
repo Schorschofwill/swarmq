@@ -1,0 +1,29 @@
+{
+  "run": 3,
+  "system": "celery",
+  "profil": "ab_werk",
+  "stoerung": "netztrennung",
+  "status": "ok",
+  "worker_neustart": false,
+  "meta": {
+    "system": "celery",
+    "profil": "ab_werk",
+    "stoerung": "netztrennung",
+    "versionen": {
+      "celery": "5.6.3",
+      "kombu": "5.6.2",
+      "amqp": "5.4.1",
+      "redis": "6.4.0"
+    },
+    "python": "3.14.4"
+  },
+  "bilanz": {
+    "bestaetigt": 61,
+    "unbestimmt": 1,
+    "abgelehnt": 1,
+    "ausgefuehrt": 62,
+    "verluste": 0,
+    "duplikate": 0,
+    "duplikate_e077": 0
+  }
+}

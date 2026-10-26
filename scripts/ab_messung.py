@@ -9,9 +9,11 @@ Ablauf:
 
 - Beide Refs kommen in getrennte git-Worktrees unter einem temporären
   Verzeichnis; sie werden am Ende immer entfernt, auch nach einem Fehler.
-- Je Seite ein Profillauf mit ``py-spy record --subprocesses``; die Profile
-  liegen neben der Ergebnisdatei (``<name>-profil-a.svg``). Der Lauf wärmt
-  beide Seiten zugleich vor und zählt nicht als Messung. Scheitert py-spy
+- Je Seite ein Vorlauf ohne Wertung, danach ein Profillauf mit
+  ``py-spy record --subprocesses``; die Profile liegen neben der
+  Ergebnisdatei (``<name>-profil-a.svg``). Der Vorlauf legt die Umgebung an,
+  damit das Profil den Befehl zeigt und nicht ihr Einrichten; auch der
+  Profillauf zählt nicht als Messung. Scheitert py-spy
   (etwa weil der Befehl zu kurz läuft), lautet ein Gewinn „nicht belegt“.
 - Der Messbefehl läuft per ``bash -c`` im Worktree, abwechselnd A, B, A, B,
   mindestens 10 Paare. Die letzte nicht leere Zeile seiner Standardausgabe
@@ -139,7 +141,10 @@ def _messen(args: argparse.Namespace, tmp: Path) -> dict[str, object]:
         for seite, ref in seiten.items():
             _git("worktree", "add", "--detach", str(worktrees[seite]), ref)
         commits = {seite: _git("-C", str(worktrees[seite]), "rev-parse", "HEAD") for seite in seiten}
-        # Beide Seiten immer: Der Profillauf wärmt zugleich jede Seite gleich vor (etwa ``uv run``).
+        # Vorlauf ohne Wertung: Der erste Lauf legt oft erst die Umgebung an (``uv venv``), und
+        # py-spy hinge sich an deren ersten Python-Prozess statt an den Befehl.
+        for seite in seiten:
+            _lauf(args.befehl, worktrees[seite], args.kennzahl)
         profiliert = all([_profil(args.befehl, worktrees[seite], profile[seite]) for seite in seiten])  # noqa: C419 - beide Seiten, kein Kurzschluss
         paare = args.paare
         _messreihe(args.befehl, args.kennzahl, worktrees, werte, paare)

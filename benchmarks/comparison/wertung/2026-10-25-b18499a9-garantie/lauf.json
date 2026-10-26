@@ -1,0 +1,4335 @@
+{
+  "images": {
+    "rabbitmq": "rabbitmq:4.3.6-management",
+    "valkey": "valkey/valkey:8.1.10-alpine",
+    "valkey-fluechtig": "valkey/valkey:8.1.10-alpine",
+    "toxiproxy": "ghcr.io/shopify/toxiproxy:2.9.0"
+  },
+  "host": {
+    "name": "celsius-server",
+    "plattform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.41",
+    "cpus": 20
+  },
+  "kombinationen": [
+    {
+      "run": 1,
+      "system": "swarmq",
+      "profil": "ab_werk",
+      "stoerung": "sigkill",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "swarmq",
+        "profil": "ab_werk",
+        "stoerung": "sigkill",
+        "versionen": {
+          "swarmq": "0.14.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "valkey": "6.1.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "celery",
+      "profil": "ab_werk",
+      "stoerung": "sigkill",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "celery",
+        "profil": "ab_werk",
+        "stoerung": "sigkill",
+        "versionen": {
+          "celery": "5.6.3",
+          "kombu": "5.6.2",
+          "amqp": "5.4.1",
+          "redis": "6.4.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 41,
+        "verluste": 20,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "dramatiq",
+      "profil": "ab_werk",
+      "stoerung": "sigkill",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "dramatiq",
+        "profil": "ab_werk",
+        "stoerung": "sigkill",
+        "versionen": {
+          "dramatiq": "2.2.1",
+          "pika": "1.4.4",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "arq",
+      "profil": "ab_werk",
+      "stoerung": "sigkill",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "arq",
+        "profil": "ab_werk",
+        "stoerung": "sigkill",
+        "versionen": {
+          "arq": "0.28.0",
+          "redis": "5.3.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "taskiq",
+      "profil": "ab_werk",
+      "stoerung": "sigkill",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "taskiq",
+        "profil": "ab_werk",
+        "stoerung": "sigkill",
+        "versionen": {
+          "taskiq": "0.13.0",
+          "taskiq-aio-pika": "0.6.1",
+          "taskiq-redis": "1.2.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "swarmq",
+      "profil": "stark",
+      "stoerung": "sigkill",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "swarmq",
+        "profil": "stark",
+        "stoerung": "sigkill",
+        "versionen": {
+          "swarmq": "0.14.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "valkey": "6.1.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "celery",
+      "profil": "stark",
+      "stoerung": "sigkill",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "celery",
+        "profil": "stark",
+        "stoerung": "sigkill",
+        "versionen": {
+          "celery": "5.6.3",
+          "kombu": "5.6.2",
+          "amqp": "5.4.1",
+          "redis": "6.4.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "dramatiq",
+      "profil": "stark",
+      "stoerung": "sigkill",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "dramatiq",
+        "profil": "stark",
+        "stoerung": "sigkill",
+        "versionen": {
+          "dramatiq": "2.2.1",
+          "pika": "1.4.4",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "arq",
+      "profil": "stark",
+      "stoerung": "sigkill",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "arq",
+        "profil": "stark",
+        "stoerung": "sigkill",
+        "versionen": {
+          "arq": "0.28.0",
+          "redis": "5.3.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "taskiq",
+      "profil": "stark",
+      "stoerung": "sigkill",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "taskiq",
+        "profil": "stark",
+        "stoerung": "sigkill",
+        "versionen": {
+          "taskiq": "0.13.0",
+          "taskiq-aio-pika": "0.6.1",
+          "taskiq-redis": "1.2.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "swarmq",
+      "profil": "ab_werk",
+      "stoerung": "broker_neustart",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "swarmq",
+        "profil": "ab_werk",
+        "stoerung": "broker_neustart",
+        "versionen": {
+          "swarmq": "0.14.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "valkey": "6.1.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 63,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 63,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "celery",
+      "profil": "ab_werk",
+      "stoerung": "broker_neustart",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "celery",
+        "profil": "ab_werk",
+        "stoerung": "broker_neustart",
+        "versionen": {
+          "celery": "5.6.3",
+          "kombu": "5.6.2",
+          "amqp": "5.4.1",
+          "redis": "6.4.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 79,
+        "unbestimmt": 0,
+        "abgelehnt": 7,
+        "ausgefuehrt": 79,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "dramatiq",
+      "profil": "ab_werk",
+      "stoerung": "broker_neustart",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "dramatiq",
+        "profil": "ab_werk",
+        "stoerung": "broker_neustart",
+        "versionen": {
+          "dramatiq": "2.2.1",
+          "pika": "1.4.4",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 62,
+        "unbestimmt": 0,
+        "abgelehnt": 28,
+        "ausgefuehrt": 62,
+        "verluste": 0,
+        "duplikate": 32,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "arq",
+      "profil": "ab_werk",
+      "stoerung": "broker_neustart",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "arq",
+        "profil": "ab_werk",
+        "stoerung": "broker_neustart",
+        "versionen": {
+          "arq": "0.28.0",
+          "redis": "5.3.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 82,
+        "unbestimmt": 0,
+        "abgelehnt": 3,
+        "ausgefuehrt": 82,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "taskiq",
+      "profil": "ab_werk",
+      "stoerung": "broker_neustart",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "taskiq",
+        "profil": "ab_werk",
+        "stoerung": "broker_neustart",
+        "versionen": {
+          "taskiq": "0.13.0",
+          "taskiq-aio-pika": "0.6.1",
+          "taskiq-redis": "1.2.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 32,
+        "unbestimmt": 0,
+        "abgelehnt": 58,
+        "ausgefuehrt": 32,
+        "verluste": 0,
+        "duplikate": 20,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "swarmq",
+      "profil": "stark",
+      "stoerung": "broker_neustart",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "swarmq",
+        "profil": "stark",
+        "stoerung": "broker_neustart",
+        "versionen": {
+          "swarmq": "0.14.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "valkey": "6.1.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 63,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 63,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "celery",
+      "profil": "stark",
+      "stoerung": "broker_neustart",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "celery",
+        "profil": "stark",
+        "stoerung": "broker_neustart",
+        "versionen": {
+          "celery": "5.6.3",
+          "kombu": "5.6.2",
+          "amqp": "5.4.1",
+          "redis": "6.4.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 72,
+        "unbestimmt": 0,
+        "abgelehnt": 8,
+        "ausgefuehrt": 72,
+        "verluste": 0,
+        "duplikate": 20,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "dramatiq",
+      "profil": "stark",
+      "stoerung": "broker_neustart",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "dramatiq",
+        "profil": "stark",
+        "stoerung": "broker_neustart",
+        "versionen": {
+          "dramatiq": "2.2.1",
+          "pika": "1.4.4",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 62,
+        "unbestimmt": 0,
+        "abgelehnt": 28,
+        "ausgefuehrt": 62,
+        "verluste": 0,
+        "duplikate": 20,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "arq",
+      "profil": "stark",
+      "stoerung": "broker_neustart",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "arq",
+        "profil": "stark",
+        "stoerung": "broker_neustart",
+        "versionen": {
+          "arq": "0.28.0",
+          "redis": "5.3.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 81,
+        "unbestimmt": 0,
+        "abgelehnt": 3,
+        "ausgefuehrt": 81,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "taskiq",
+      "profil": "stark",
+      "stoerung": "broker_neustart",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "taskiq",
+        "profil": "stark",
+        "stoerung": "broker_neustart",
+        "versionen": {
+          "taskiq": "0.13.0",
+          "taskiq-aio-pika": "0.6.1",
+          "taskiq-redis": "1.2.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 32,
+        "unbestimmt": 0,
+        "abgelehnt": 58,
+        "ausgefuehrt": 32,
+        "verluste": 0,
+        "duplikate": 20,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "swarmq",
+      "profil": "ab_werk",
+      "stoerung": "netztrennung",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "swarmq",
+        "profil": "ab_werk",
+        "stoerung": "netztrennung",
+        "versionen": {
+          "swarmq": "0.14.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "valkey": "6.1.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 1,
+        "abgelehnt": 0,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "celery",
+      "profil": "ab_werk",
+      "stoerung": "netztrennung",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "celery",
+        "profil": "ab_werk",
+        "stoerung": "netztrennung",
+        "versionen": {
+          "celery": "5.6.3",
+          "kombu": "5.6.2",
+          "amqp": "5.4.1",
+          "redis": "6.4.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 1,
+        "abgelehnt": 1,
+        "ausgefuehrt": 62,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "dramatiq",
+      "profil": "ab_werk",
+      "stoerung": "netztrennung",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "dramatiq",
+        "profil": "ab_werk",
+        "stoerung": "netztrennung",
+        "versionen": {
+          "dramatiq": "2.2.1",
+          "pika": "1.4.4",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 29,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 31,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "arq",
+      "profil": "ab_werk",
+      "stoerung": "netztrennung",
+      "status": "ok",
+      "worker_neustart": true,
+      "meta": {
+        "system": "arq",
+        "profil": "ab_werk",
+        "stoerung": "netztrennung",
+        "versionen": {
+          "arq": "0.28.0",
+          "redis": "5.3.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 29,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 4,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "taskiq",
+      "profil": "ab_werk",
+      "stoerung": "netztrennung",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "taskiq",
+        "profil": "ab_werk",
+        "stoerung": "netztrennung",
+        "versionen": {
+          "taskiq": "0.13.0",
+          "taskiq-aio-pika": "0.6.1",
+          "taskiq-redis": "1.2.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 31,
+        "unbestimmt": 0,
+        "abgelehnt": 59,
+        "ausgefuehrt": 31,
+        "verluste": 0,
+        "duplikate": 20,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "swarmq",
+      "profil": "stark",
+      "stoerung": "netztrennung",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "swarmq",
+        "profil": "stark",
+        "stoerung": "netztrennung",
+        "versionen": {
+          "swarmq": "0.14.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "valkey": "6.1.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 1,
+        "abgelehnt": 0,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "celery",
+      "profil": "stark",
+      "stoerung": "netztrennung",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "celery",
+        "profil": "stark",
+        "stoerung": "netztrennung",
+        "versionen": {
+          "celery": "5.6.3",
+          "kombu": "5.6.2",
+          "amqp": "5.4.1",
+          "redis": "6.4.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 1,
+        "abgelehnt": 1,
+        "ausgefuehrt": 62,
+        "verluste": 0,
+        "duplikate": 20,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "dramatiq",
+      "profil": "stark",
+      "stoerung": "netztrennung",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "dramatiq",
+        "profil": "stark",
+        "stoerung": "netztrennung",
+        "versionen": {
+          "dramatiq": "2.2.1",
+          "pika": "1.4.4",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 29,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 11,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "arq",
+      "profil": "stark",
+      "stoerung": "netztrennung",
+      "status": "ok",
+      "worker_neustart": true,
+      "meta": {
+        "system": "arq",
+        "profil": "stark",
+        "stoerung": "netztrennung",
+        "versionen": {
+          "arq": "0.28.0",
+          "redis": "5.3.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 29,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "taskiq",
+      "profil": "stark",
+      "stoerung": "netztrennung",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "taskiq",
+        "profil": "stark",
+        "stoerung": "netztrennung",
+        "versionen": {
+          "taskiq": "0.13.0",
+          "taskiq-aio-pika": "0.6.1",
+          "taskiq-redis": "1.2.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 31,
+        "unbestimmt": 0,
+        "abgelehnt": 59,
+        "ausgefuehrt": 31,
+        "verluste": 0,
+        "duplikate": 20,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "swarmq",
+      "profil": "ab_werk",
+      "stoerung": "valkey_neustart_persistent",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "swarmq",
+        "profil": "ab_werk",
+        "stoerung": "valkey_neustart_persistent",
+        "versionen": {
+          "swarmq": "0.14.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "valkey": "6.1.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 85,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 85,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "celery",
+      "profil": "ab_werk",
+      "stoerung": "valkey_neustart_persistent",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "celery",
+        "profil": "ab_werk",
+        "stoerung": "valkey_neustart_persistent",
+        "versionen": {
+          "celery": "5.6.3",
+          "kombu": "5.6.2",
+          "amqp": "5.4.1",
+          "redis": "6.4.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 77,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 77,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "dramatiq",
+      "profil": "ab_werk",
+      "stoerung": "valkey_neustart_persistent",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "dramatiq",
+        "profil": "ab_werk",
+        "stoerung": "valkey_neustart_persistent",
+        "versionen": {
+          "dramatiq": "2.2.1",
+          "pika": "1.4.4",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 84,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 84,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "arq",
+      "profil": "ab_werk",
+      "stoerung": "valkey_neustart_persistent",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "arq",
+        "profil": "ab_werk",
+        "stoerung": "valkey_neustart_persistent",
+        "versionen": {
+          "arq": "0.28.0",
+          "redis": "5.3.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 81,
+        "unbestimmt": 0,
+        "abgelehnt": 3,
+        "ausgefuehrt": 81,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "taskiq",
+      "profil": "ab_werk",
+      "stoerung": "valkey_neustart_persistent",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "taskiq",
+        "profil": "ab_werk",
+        "stoerung": "valkey_neustart_persistent",
+        "versionen": {
+          "taskiq": "0.13.0",
+          "taskiq-aio-pika": "0.6.1",
+          "taskiq-redis": "1.2.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 83,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 83,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "swarmq",
+      "profil": "stark",
+      "stoerung": "valkey_neustart_persistent",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "swarmq",
+        "profil": "stark",
+        "stoerung": "valkey_neustart_persistent",
+        "versionen": {
+          "swarmq": "0.14.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "valkey": "6.1.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 84,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 84,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "celery",
+      "profil": "stark",
+      "stoerung": "valkey_neustart_persistent",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "celery",
+        "profil": "stark",
+        "stoerung": "valkey_neustart_persistent",
+        "versionen": {
+          "celery": "5.6.3",
+          "kombu": "5.6.2",
+          "amqp": "5.4.1",
+          "redis": "6.4.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 75,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 75,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "dramatiq",
+      "profil": "stark",
+      "stoerung": "valkey_neustart_persistent",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "dramatiq",
+        "profil": "stark",
+        "stoerung": "valkey_neustart_persistent",
+        "versionen": {
+          "dramatiq": "2.2.1",
+          "pika": "1.4.4",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 84,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 84,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "arq",
+      "profil": "stark",
+      "stoerung": "valkey_neustart_persistent",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "arq",
+        "profil": "stark",
+        "stoerung": "valkey_neustart_persistent",
+        "versionen": {
+          "arq": "0.28.0",
+          "redis": "5.3.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 81,
+        "unbestimmt": 0,
+        "abgelehnt": 3,
+        "ausgefuehrt": 81,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "taskiq",
+      "profil": "stark",
+      "stoerung": "valkey_neustart_persistent",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "taskiq",
+        "profil": "stark",
+        "stoerung": "valkey_neustart_persistent",
+        "versionen": {
+          "taskiq": "0.13.0",
+          "taskiq-aio-pika": "0.6.1",
+          "taskiq-redis": "1.2.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 85,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 85,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "swarmq",
+      "profil": "ab_werk",
+      "stoerung": "valkey_neustart_fluechtig",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "swarmq",
+        "profil": "ab_werk",
+        "stoerung": "valkey_neustart_fluechtig",
+        "versionen": {
+          "swarmq": "0.14.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "valkey": "6.1.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 84,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 84,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "celery",
+      "profil": "ab_werk",
+      "stoerung": "valkey_neustart_fluechtig",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "celery",
+        "profil": "ab_werk",
+        "stoerung": "valkey_neustart_fluechtig",
+        "versionen": {
+          "celery": "5.6.3",
+          "kombu": "5.6.2",
+          "amqp": "5.4.1",
+          "redis": "6.4.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 76,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 76,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "dramatiq",
+      "profil": "ab_werk",
+      "stoerung": "valkey_neustart_fluechtig",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "dramatiq",
+        "profil": "ab_werk",
+        "stoerung": "valkey_neustart_fluechtig",
+        "versionen": {
+          "dramatiq": "2.2.1",
+          "pika": "1.4.4",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 84,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 84,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "arq",
+      "profil": "ab_werk",
+      "stoerung": "valkey_neustart_fluechtig",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "arq",
+        "profil": "ab_werk",
+        "stoerung": "valkey_neustart_fluechtig",
+        "versionen": {
+          "arq": "0.28.0",
+          "redis": "5.3.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 82,
+        "unbestimmt": 0,
+        "abgelehnt": 3,
+        "ausgefuehrt": 60,
+        "verluste": 22,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "taskiq",
+      "profil": "ab_werk",
+      "stoerung": "valkey_neustart_fluechtig",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "taskiq",
+        "profil": "ab_werk",
+        "stoerung": "valkey_neustart_fluechtig",
+        "versionen": {
+          "taskiq": "0.13.0",
+          "taskiq-aio-pika": "0.6.1",
+          "taskiq-redis": "1.2.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 83,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 83,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "swarmq",
+      "profil": "stark",
+      "stoerung": "valkey_neustart_fluechtig",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "swarmq",
+        "profil": "stark",
+        "stoerung": "valkey_neustart_fluechtig",
+        "versionen": {
+          "swarmq": "0.14.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "valkey": "6.1.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 85,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 85,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "celery",
+      "profil": "stark",
+      "stoerung": "valkey_neustart_fluechtig",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "celery",
+        "profil": "stark",
+        "stoerung": "valkey_neustart_fluechtig",
+        "versionen": {
+          "celery": "5.6.3",
+          "kombu": "5.6.2",
+          "amqp": "5.4.1",
+          "redis": "6.4.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 75,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 75,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "dramatiq",
+      "profil": "stark",
+      "stoerung": "valkey_neustart_fluechtig",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "dramatiq",
+        "profil": "stark",
+        "stoerung": "valkey_neustart_fluechtig",
+        "versionen": {
+          "dramatiq": "2.2.1",
+          "pika": "1.4.4",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 84,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 84,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "arq",
+      "profil": "stark",
+      "stoerung": "valkey_neustart_fluechtig",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "arq",
+        "profil": "stark",
+        "stoerung": "valkey_neustart_fluechtig",
+        "versionen": {
+          "arq": "0.28.0",
+          "redis": "5.3.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 83,
+        "unbestimmt": 0,
+        "abgelehnt": 2,
+        "ausgefuehrt": 60,
+        "verluste": 23,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 1,
+      "system": "taskiq",
+      "profil": "stark",
+      "stoerung": "valkey_neustart_fluechtig",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "taskiq",
+        "profil": "stark",
+        "stoerung": "valkey_neustart_fluechtig",
+        "versionen": {
+          "taskiq": "0.13.0",
+          "taskiq-aio-pika": "0.6.1",
+          "taskiq-redis": "1.2.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 84,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 84,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "swarmq",
+      "profil": "ab_werk",
+      "stoerung": "sigkill",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "swarmq",
+        "profil": "ab_werk",
+        "stoerung": "sigkill",
+        "versionen": {
+          "swarmq": "0.14.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "valkey": "6.1.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "celery",
+      "profil": "ab_werk",
+      "stoerung": "sigkill",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "celery",
+        "profil": "ab_werk",
+        "stoerung": "sigkill",
+        "versionen": {
+          "celery": "5.6.3",
+          "kombu": "5.6.2",
+          "amqp": "5.4.1",
+          "redis": "6.4.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 41,
+        "verluste": 20,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "dramatiq",
+      "profil": "ab_werk",
+      "stoerung": "sigkill",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "dramatiq",
+        "profil": "ab_werk",
+        "stoerung": "sigkill",
+        "versionen": {
+          "dramatiq": "2.2.1",
+          "pika": "1.4.4",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "arq",
+      "profil": "ab_werk",
+      "stoerung": "sigkill",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "arq",
+        "profil": "ab_werk",
+        "stoerung": "sigkill",
+        "versionen": {
+          "arq": "0.28.0",
+          "redis": "5.3.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "taskiq",
+      "profil": "ab_werk",
+      "stoerung": "sigkill",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "taskiq",
+        "profil": "ab_werk",
+        "stoerung": "sigkill",
+        "versionen": {
+          "taskiq": "0.13.0",
+          "taskiq-aio-pika": "0.6.1",
+          "taskiq-redis": "1.2.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "swarmq",
+      "profil": "stark",
+      "stoerung": "sigkill",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "swarmq",
+        "profil": "stark",
+        "stoerung": "sigkill",
+        "versionen": {
+          "swarmq": "0.14.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "valkey": "6.1.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "celery",
+      "profil": "stark",
+      "stoerung": "sigkill",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "celery",
+        "profil": "stark",
+        "stoerung": "sigkill",
+        "versionen": {
+          "celery": "5.6.3",
+          "kombu": "5.6.2",
+          "amqp": "5.4.1",
+          "redis": "6.4.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "dramatiq",
+      "profil": "stark",
+      "stoerung": "sigkill",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "dramatiq",
+        "profil": "stark",
+        "stoerung": "sigkill",
+        "versionen": {
+          "dramatiq": "2.2.1",
+          "pika": "1.4.4",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "arq",
+      "profil": "stark",
+      "stoerung": "sigkill",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "arq",
+        "profil": "stark",
+        "stoerung": "sigkill",
+        "versionen": {
+          "arq": "0.28.0",
+          "redis": "5.3.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "taskiq",
+      "profil": "stark",
+      "stoerung": "sigkill",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "taskiq",
+        "profil": "stark",
+        "stoerung": "sigkill",
+        "versionen": {
+          "taskiq": "0.13.0",
+          "taskiq-aio-pika": "0.6.1",
+          "taskiq-redis": "1.2.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "swarmq",
+      "profil": "ab_werk",
+      "stoerung": "broker_neustart",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "swarmq",
+        "profil": "ab_werk",
+        "stoerung": "broker_neustart",
+        "versionen": {
+          "swarmq": "0.14.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "valkey": "6.1.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 63,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 63,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "celery",
+      "profil": "ab_werk",
+      "stoerung": "broker_neustart",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "celery",
+        "profil": "ab_werk",
+        "stoerung": "broker_neustart",
+        "versionen": {
+          "celery": "5.6.3",
+          "kombu": "5.6.2",
+          "amqp": "5.4.1",
+          "redis": "6.4.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 67,
+        "unbestimmt": 0,
+        "abgelehnt": 9,
+        "ausgefuehrt": 67,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "dramatiq",
+      "profil": "ab_werk",
+      "stoerung": "broker_neustart",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "dramatiq",
+        "profil": "ab_werk",
+        "stoerung": "broker_neustart",
+        "versionen": {
+          "dramatiq": "2.2.1",
+          "pika": "1.4.4",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 62,
+        "unbestimmt": 0,
+        "abgelehnt": 28,
+        "ausgefuehrt": 62,
+        "verluste": 0,
+        "duplikate": 32,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "arq",
+      "profil": "ab_werk",
+      "stoerung": "broker_neustart",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "arq",
+        "profil": "ab_werk",
+        "stoerung": "broker_neustart",
+        "versionen": {
+          "arq": "0.28.0",
+          "redis": "5.3.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 81,
+        "unbestimmt": 0,
+        "abgelehnt": 3,
+        "ausgefuehrt": 81,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "taskiq",
+      "profil": "ab_werk",
+      "stoerung": "broker_neustart",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "taskiq",
+        "profil": "ab_werk",
+        "stoerung": "broker_neustart",
+        "versionen": {
+          "taskiq": "0.13.0",
+          "taskiq-aio-pika": "0.6.1",
+          "taskiq-redis": "1.2.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 32,
+        "unbestimmt": 0,
+        "abgelehnt": 58,
+        "ausgefuehrt": 32,
+        "verluste": 0,
+        "duplikate": 20,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "swarmq",
+      "profil": "stark",
+      "stoerung": "broker_neustart",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "swarmq",
+        "profil": "stark",
+        "stoerung": "broker_neustart",
+        "versionen": {
+          "swarmq": "0.14.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "valkey": "6.1.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 90,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 90,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "celery",
+      "profil": "stark",
+      "stoerung": "broker_neustart",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "celery",
+        "profil": "stark",
+        "stoerung": "broker_neustart",
+        "versionen": {
+          "celery": "5.6.3",
+          "kombu": "5.6.2",
+          "amqp": "5.4.1",
+          "redis": "6.4.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 67,
+        "unbestimmt": 0,
+        "abgelehnt": 9,
+        "ausgefuehrt": 67,
+        "verluste": 0,
+        "duplikate": 20,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "dramatiq",
+      "profil": "stark",
+      "stoerung": "broker_neustart",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "dramatiq",
+        "profil": "stark",
+        "stoerung": "broker_neustart",
+        "versionen": {
+          "dramatiq": "2.2.1",
+          "pika": "1.4.4",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 29,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 20,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "arq",
+      "profil": "stark",
+      "stoerung": "broker_neustart",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "arq",
+        "profil": "stark",
+        "stoerung": "broker_neustart",
+        "versionen": {
+          "arq": "0.28.0",
+          "redis": "5.3.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 82,
+        "unbestimmt": 0,
+        "abgelehnt": 3,
+        "ausgefuehrt": 82,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "taskiq",
+      "profil": "stark",
+      "stoerung": "broker_neustart",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "taskiq",
+        "profil": "stark",
+        "stoerung": "broker_neustart",
+        "versionen": {
+          "taskiq": "0.13.0",
+          "taskiq-aio-pika": "0.6.1",
+          "taskiq-redis": "1.2.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 62,
+        "unbestimmt": 0,
+        "abgelehnt": 28,
+        "ausgefuehrt": 62,
+        "verluste": 0,
+        "duplikate": 20,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "swarmq",
+      "profil": "ab_werk",
+      "stoerung": "netztrennung",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "swarmq",
+        "profil": "ab_werk",
+        "stoerung": "netztrennung",
+        "versionen": {
+          "swarmq": "0.14.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "valkey": "6.1.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 1,
+        "abgelehnt": 0,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "celery",
+      "profil": "ab_werk",
+      "stoerung": "netztrennung",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "celery",
+        "profil": "ab_werk",
+        "stoerung": "netztrennung",
+        "versionen": {
+          "celery": "5.6.3",
+          "kombu": "5.6.2",
+          "amqp": "5.4.1",
+          "redis": "6.4.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 1,
+        "abgelehnt": 1,
+        "ausgefuehrt": 62,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "dramatiq",
+      "profil": "ab_werk",
+      "stoerung": "netztrennung",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "dramatiq",
+        "profil": "ab_werk",
+        "stoerung": "netztrennung",
+        "versionen": {
+          "dramatiq": "2.2.1",
+          "pika": "1.4.4",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 29,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 31,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "arq",
+      "profil": "ab_werk",
+      "stoerung": "netztrennung",
+      "status": "ok",
+      "worker_neustart": true,
+      "meta": {
+        "system": "arq",
+        "profil": "ab_werk",
+        "stoerung": "netztrennung",
+        "versionen": {
+          "arq": "0.28.0",
+          "redis": "5.3.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 29,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 3,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "taskiq",
+      "profil": "ab_werk",
+      "stoerung": "netztrennung",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "taskiq",
+        "profil": "ab_werk",
+        "stoerung": "netztrennung",
+        "versionen": {
+          "taskiq": "0.13.0",
+          "taskiq-aio-pika": "0.6.1",
+          "taskiq-redis": "1.2.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 31,
+        "unbestimmt": 0,
+        "abgelehnt": 59,
+        "ausgefuehrt": 31,
+        "verluste": 0,
+        "duplikate": 20,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "swarmq",
+      "profil": "stark",
+      "stoerung": "netztrennung",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "swarmq",
+        "profil": "stark",
+        "stoerung": "netztrennung",
+        "versionen": {
+          "swarmq": "0.14.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "valkey": "6.1.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 1,
+        "abgelehnt": 0,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "celery",
+      "profil": "stark",
+      "stoerung": "netztrennung",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "celery",
+        "profil": "stark",
+        "stoerung": "netztrennung",
+        "versionen": {
+          "celery": "5.6.3",
+          "kombu": "5.6.2",
+          "amqp": "5.4.1",
+          "redis": "6.4.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 1,
+        "abgelehnt": 1,
+        "ausgefuehrt": 62,
+        "verluste": 0,
+        "duplikate": 20,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "dramatiq",
+      "profil": "stark",
+      "stoerung": "netztrennung",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "dramatiq",
+        "profil": "stark",
+        "stoerung": "netztrennung",
+        "versionen": {
+          "dramatiq": "2.2.1",
+          "pika": "1.4.4",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 29,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 18,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "arq",
+      "profil": "stark",
+      "stoerung": "netztrennung",
+      "status": "ok",
+      "worker_neustart": true,
+      "meta": {
+        "system": "arq",
+        "profil": "stark",
+        "stoerung": "netztrennung",
+        "versionen": {
+          "arq": "0.28.0",
+          "redis": "5.3.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 29,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "taskiq",
+      "profil": "stark",
+      "stoerung": "netztrennung",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "taskiq",
+        "profil": "stark",
+        "stoerung": "netztrennung",
+        "versionen": {
+          "taskiq": "0.13.0",
+          "taskiq-aio-pika": "0.6.1",
+          "taskiq-redis": "1.2.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 31,
+        "unbestimmt": 0,
+        "abgelehnt": 59,
+        "ausgefuehrt": 31,
+        "verluste": 0,
+        "duplikate": 20,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "swarmq",
+      "profil": "ab_werk",
+      "stoerung": "valkey_neustart_persistent",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "swarmq",
+        "profil": "ab_werk",
+        "stoerung": "valkey_neustart_persistent",
+        "versionen": {
+          "swarmq": "0.14.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "valkey": "6.1.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 84,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 84,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "celery",
+      "profil": "ab_werk",
+      "stoerung": "valkey_neustart_persistent",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "celery",
+        "profil": "ab_werk",
+        "stoerung": "valkey_neustart_persistent",
+        "versionen": {
+          "celery": "5.6.3",
+          "kombu": "5.6.2",
+          "amqp": "5.4.1",
+          "redis": "6.4.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 76,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 76,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "dramatiq",
+      "profil": "ab_werk",
+      "stoerung": "valkey_neustart_persistent",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "dramatiq",
+        "profil": "ab_werk",
+        "stoerung": "valkey_neustart_persistent",
+        "versionen": {
+          "dramatiq": "2.2.1",
+          "pika": "1.4.4",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 84,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 84,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "arq",
+      "profil": "ab_werk",
+      "stoerung": "valkey_neustart_persistent",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "arq",
+        "profil": "ab_werk",
+        "stoerung": "valkey_neustart_persistent",
+        "versionen": {
+          "arq": "0.28.0",
+          "redis": "5.3.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 80,
+        "unbestimmt": 0,
+        "abgelehnt": 4,
+        "ausgefuehrt": 80,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "taskiq",
+      "profil": "ab_werk",
+      "stoerung": "valkey_neustart_persistent",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "taskiq",
+        "profil": "ab_werk",
+        "stoerung": "valkey_neustart_persistent",
+        "versionen": {
+          "taskiq": "0.13.0",
+          "taskiq-aio-pika": "0.6.1",
+          "taskiq-redis": "1.2.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 84,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 84,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "swarmq",
+      "profil": "stark",
+      "stoerung": "valkey_neustart_persistent",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "swarmq",
+        "profil": "stark",
+        "stoerung": "valkey_neustart_persistent",
+        "versionen": {
+          "swarmq": "0.14.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "valkey": "6.1.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 84,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 84,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "celery",
+      "profil": "stark",
+      "stoerung": "valkey_neustart_persistent",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "celery",
+        "profil": "stark",
+        "stoerung": "valkey_neustart_persistent",
+        "versionen": {
+          "celery": "5.6.3",
+          "kombu": "5.6.2",
+          "amqp": "5.4.1",
+          "redis": "6.4.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 75,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 75,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "dramatiq",
+      "profil": "stark",
+      "stoerung": "valkey_neustart_persistent",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "dramatiq",
+        "profil": "stark",
+        "stoerung": "valkey_neustart_persistent",
+        "versionen": {
+          "dramatiq": "2.2.1",
+          "pika": "1.4.4",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 84,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 84,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "arq",
+      "profil": "stark",
+      "stoerung": "valkey_neustart_persistent",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "arq",
+        "profil": "stark",
+        "stoerung": "valkey_neustart_persistent",
+        "versionen": {
+          "arq": "0.28.0",
+          "redis": "5.3.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 81,
+        "unbestimmt": 0,
+        "abgelehnt": 3,
+        "ausgefuehrt": 81,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "taskiq",
+      "profil": "stark",
+      "stoerung": "valkey_neustart_persistent",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "taskiq",
+        "profil": "stark",
+        "stoerung": "valkey_neustart_persistent",
+        "versionen": {
+          "taskiq": "0.13.0",
+          "taskiq-aio-pika": "0.6.1",
+          "taskiq-redis": "1.2.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 84,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 84,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "swarmq",
+      "profil": "ab_werk",
+      "stoerung": "valkey_neustart_fluechtig",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "swarmq",
+        "profil": "ab_werk",
+        "stoerung": "valkey_neustart_fluechtig",
+        "versionen": {
+          "swarmq": "0.14.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "valkey": "6.1.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 84,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 84,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "celery",
+      "profil": "ab_werk",
+      "stoerung": "valkey_neustart_fluechtig",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "celery",
+        "profil": "ab_werk",
+        "stoerung": "valkey_neustart_fluechtig",
+        "versionen": {
+          "celery": "5.6.3",
+          "kombu": "5.6.2",
+          "amqp": "5.4.1",
+          "redis": "6.4.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 77,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 77,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "dramatiq",
+      "profil": "ab_werk",
+      "stoerung": "valkey_neustart_fluechtig",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "dramatiq",
+        "profil": "ab_werk",
+        "stoerung": "valkey_neustart_fluechtig",
+        "versionen": {
+          "dramatiq": "2.2.1",
+          "pika": "1.4.4",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 84,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 84,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "arq",
+      "profil": "ab_werk",
+      "stoerung": "valkey_neustart_fluechtig",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "arq",
+        "profil": "ab_werk",
+        "stoerung": "valkey_neustart_fluechtig",
+        "versionen": {
+          "arq": "0.28.0",
+          "redis": "5.3.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 82,
+        "unbestimmt": 0,
+        "abgelehnt": 2,
+        "ausgefuehrt": 60,
+        "verluste": 22,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "taskiq",
+      "profil": "ab_werk",
+      "stoerung": "valkey_neustart_fluechtig",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "taskiq",
+        "profil": "ab_werk",
+        "stoerung": "valkey_neustart_fluechtig",
+        "versionen": {
+          "taskiq": "0.13.0",
+          "taskiq-aio-pika": "0.6.1",
+          "taskiq-redis": "1.2.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 84,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 84,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "swarmq",
+      "profil": "stark",
+      "stoerung": "valkey_neustart_fluechtig",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "swarmq",
+        "profil": "stark",
+        "stoerung": "valkey_neustart_fluechtig",
+        "versionen": {
+          "swarmq": "0.14.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "valkey": "6.1.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 84,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 84,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "celery",
+      "profil": "stark",
+      "stoerung": "valkey_neustart_fluechtig",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "celery",
+        "profil": "stark",
+        "stoerung": "valkey_neustart_fluechtig",
+        "versionen": {
+          "celery": "5.6.3",
+          "kombu": "5.6.2",
+          "amqp": "5.4.1",
+          "redis": "6.4.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 75,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 75,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "dramatiq",
+      "profil": "stark",
+      "stoerung": "valkey_neustart_fluechtig",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "dramatiq",
+        "profil": "stark",
+        "stoerung": "valkey_neustart_fluechtig",
+        "versionen": {
+          "dramatiq": "2.2.1",
+          "pika": "1.4.4",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 84,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 84,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "arq",
+      "profil": "stark",
+      "stoerung": "valkey_neustart_fluechtig",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "arq",
+        "profil": "stark",
+        "stoerung": "valkey_neustart_fluechtig",
+        "versionen": {
+          "arq": "0.28.0",
+          "redis": "5.3.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 82,
+        "unbestimmt": 0,
+        "abgelehnt": 3,
+        "ausgefuehrt": 60,
+        "verluste": 22,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 2,
+      "system": "taskiq",
+      "profil": "stark",
+      "stoerung": "valkey_neustart_fluechtig",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "taskiq",
+        "profil": "stark",
+        "stoerung": "valkey_neustart_fluechtig",
+        "versionen": {
+          "taskiq": "0.13.0",
+          "taskiq-aio-pika": "0.6.1",
+          "taskiq-redis": "1.2.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 84,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 84,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "swarmq",
+      "profil": "ab_werk",
+      "stoerung": "sigkill",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "swarmq",
+        "profil": "ab_werk",
+        "stoerung": "sigkill",
+        "versionen": {
+          "swarmq": "0.14.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "valkey": "6.1.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "celery",
+      "profil": "ab_werk",
+      "stoerung": "sigkill",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "celery",
+        "profil": "ab_werk",
+        "stoerung": "sigkill",
+        "versionen": {
+          "celery": "5.6.3",
+          "kombu": "5.6.2",
+          "amqp": "5.4.1",
+          "redis": "6.4.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 41,
+        "verluste": 20,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "dramatiq",
+      "profil": "ab_werk",
+      "stoerung": "sigkill",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "dramatiq",
+        "profil": "ab_werk",
+        "stoerung": "sigkill",
+        "versionen": {
+          "dramatiq": "2.2.1",
+          "pika": "1.4.4",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "arq",
+      "profil": "ab_werk",
+      "stoerung": "sigkill",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "arq",
+        "profil": "ab_werk",
+        "stoerung": "sigkill",
+        "versionen": {
+          "arq": "0.28.0",
+          "redis": "5.3.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "taskiq",
+      "profil": "ab_werk",
+      "stoerung": "sigkill",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "taskiq",
+        "profil": "ab_werk",
+        "stoerung": "sigkill",
+        "versionen": {
+          "taskiq": "0.13.0",
+          "taskiq-aio-pika": "0.6.1",
+          "taskiq-redis": "1.2.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "swarmq",
+      "profil": "stark",
+      "stoerung": "sigkill",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "swarmq",
+        "profil": "stark",
+        "stoerung": "sigkill",
+        "versionen": {
+          "swarmq": "0.14.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "valkey": "6.1.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "celery",
+      "profil": "stark",
+      "stoerung": "sigkill",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "celery",
+        "profil": "stark",
+        "stoerung": "sigkill",
+        "versionen": {
+          "celery": "5.6.3",
+          "kombu": "5.6.2",
+          "amqp": "5.4.1",
+          "redis": "6.4.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "dramatiq",
+      "profil": "stark",
+      "stoerung": "sigkill",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "dramatiq",
+        "profil": "stark",
+        "stoerung": "sigkill",
+        "versionen": {
+          "dramatiq": "2.2.1",
+          "pika": "1.4.4",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "arq",
+      "profil": "stark",
+      "stoerung": "sigkill",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "arq",
+        "profil": "stark",
+        "stoerung": "sigkill",
+        "versionen": {
+          "arq": "0.28.0",
+          "redis": "5.3.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "taskiq",
+      "profil": "stark",
+      "stoerung": "sigkill",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "taskiq",
+        "profil": "stark",
+        "stoerung": "sigkill",
+        "versionen": {
+          "taskiq": "0.13.0",
+          "taskiq-aio-pika": "0.6.1",
+          "taskiq-redis": "1.2.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "swarmq",
+      "profil": "ab_werk",
+      "stoerung": "broker_neustart",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "swarmq",
+        "profil": "ab_werk",
+        "stoerung": "broker_neustart",
+        "versionen": {
+          "swarmq": "0.14.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "valkey": "6.1.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 89,
+        "unbestimmt": 1,
+        "abgelehnt": 0,
+        "ausgefuehrt": 90,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "celery",
+      "profil": "ab_werk",
+      "stoerung": "broker_neustart",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "celery",
+        "profil": "ab_werk",
+        "stoerung": "broker_neustart",
+        "versionen": {
+          "celery": "5.6.3",
+          "kombu": "5.6.2",
+          "amqp": "5.4.1",
+          "redis": "6.4.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 80,
+        "unbestimmt": 0,
+        "abgelehnt": 10,
+        "ausgefuehrt": 80,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "dramatiq",
+      "profil": "ab_werk",
+      "stoerung": "broker_neustart",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "dramatiq",
+        "profil": "ab_werk",
+        "stoerung": "broker_neustart",
+        "versionen": {
+          "dramatiq": "2.2.1",
+          "pika": "1.4.4",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 62,
+        "unbestimmt": 0,
+        "abgelehnt": 28,
+        "ausgefuehrt": 62,
+        "verluste": 0,
+        "duplikate": 32,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "arq",
+      "profil": "ab_werk",
+      "stoerung": "broker_neustart",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "arq",
+        "profil": "ab_werk",
+        "stoerung": "broker_neustart",
+        "versionen": {
+          "arq": "0.28.0",
+          "redis": "5.3.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 81,
+        "unbestimmt": 0,
+        "abgelehnt": 3,
+        "ausgefuehrt": 81,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "taskiq",
+      "profil": "ab_werk",
+      "stoerung": "broker_neustart",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "taskiq",
+        "profil": "ab_werk",
+        "stoerung": "broker_neustart",
+        "versionen": {
+          "taskiq": "0.13.0",
+          "taskiq-aio-pika": "0.6.1",
+          "taskiq-redis": "1.2.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 62,
+        "unbestimmt": 0,
+        "abgelehnt": 28,
+        "ausgefuehrt": 62,
+        "verluste": 0,
+        "duplikate": 20,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "swarmq",
+      "profil": "stark",
+      "stoerung": "broker_neustart",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "swarmq",
+        "profil": "stark",
+        "stoerung": "broker_neustart",
+        "versionen": {
+          "swarmq": "0.14.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "valkey": "6.1.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 90,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 90,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "celery",
+      "profil": "stark",
+      "stoerung": "broker_neustart",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "celery",
+        "profil": "stark",
+        "stoerung": "broker_neustart",
+        "versionen": {
+          "celery": "5.6.3",
+          "kombu": "5.6.2",
+          "amqp": "5.4.1",
+          "redis": "6.4.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 79,
+        "unbestimmt": 0,
+        "abgelehnt": 11,
+        "ausgefuehrt": 79,
+        "verluste": 0,
+        "duplikate": 20,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "dramatiq",
+      "profil": "stark",
+      "stoerung": "broker_neustart",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "dramatiq",
+        "profil": "stark",
+        "stoerung": "broker_neustart",
+        "versionen": {
+          "dramatiq": "2.2.1",
+          "pika": "1.4.4",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 62,
+        "unbestimmt": 0,
+        "abgelehnt": 28,
+        "ausgefuehrt": 62,
+        "verluste": 0,
+        "duplikate": 20,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "arq",
+      "profil": "stark",
+      "stoerung": "broker_neustart",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "arq",
+        "profil": "stark",
+        "stoerung": "broker_neustart",
+        "versionen": {
+          "arq": "0.28.0",
+          "redis": "5.3.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 82,
+        "unbestimmt": 0,
+        "abgelehnt": 3,
+        "ausgefuehrt": 82,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "taskiq",
+      "profil": "stark",
+      "stoerung": "broker_neustart",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "taskiq",
+        "profil": "stark",
+        "stoerung": "broker_neustart",
+        "versionen": {
+          "taskiq": "0.13.0",
+          "taskiq-aio-pika": "0.6.1",
+          "taskiq-redis": "1.2.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 62,
+        "unbestimmt": 0,
+        "abgelehnt": 28,
+        "ausgefuehrt": 62,
+        "verluste": 0,
+        "duplikate": 20,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "swarmq",
+      "profil": "ab_werk",
+      "stoerung": "netztrennung",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "swarmq",
+        "profil": "ab_werk",
+        "stoerung": "netztrennung",
+        "versionen": {
+          "swarmq": "0.14.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "valkey": "6.1.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 1,
+        "abgelehnt": 0,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "celery",
+      "profil": "ab_werk",
+      "stoerung": "netztrennung",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "celery",
+        "profil": "ab_werk",
+        "stoerung": "netztrennung",
+        "versionen": {
+          "celery": "5.6.3",
+          "kombu": "5.6.2",
+          "amqp": "5.4.1",
+          "redis": "6.4.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 1,
+        "abgelehnt": 1,
+        "ausgefuehrt": 62,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "dramatiq",
+      "profil": "ab_werk",
+      "stoerung": "netztrennung",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "dramatiq",
+        "profil": "ab_werk",
+        "stoerung": "netztrennung",
+        "versionen": {
+          "dramatiq": "2.2.1",
+          "pika": "1.4.4",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 29,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 31,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "arq",
+      "profil": "ab_werk",
+      "stoerung": "netztrennung",
+      "status": "ok",
+      "worker_neustart": true,
+      "meta": {
+        "system": "arq",
+        "profil": "ab_werk",
+        "stoerung": "netztrennung",
+        "versionen": {
+          "arq": "0.28.0",
+          "redis": "5.3.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 29,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "taskiq",
+      "profil": "ab_werk",
+      "stoerung": "netztrennung",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "taskiq",
+        "profil": "ab_werk",
+        "stoerung": "netztrennung",
+        "versionen": {
+          "taskiq": "0.13.0",
+          "taskiq-aio-pika": "0.6.1",
+          "taskiq-redis": "1.2.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 31,
+        "unbestimmt": 0,
+        "abgelehnt": 59,
+        "ausgefuehrt": 31,
+        "verluste": 0,
+        "duplikate": 20,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "swarmq",
+      "profil": "stark",
+      "stoerung": "netztrennung",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "swarmq",
+        "profil": "stark",
+        "stoerung": "netztrennung",
+        "versionen": {
+          "swarmq": "0.14.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "valkey": "6.1.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 1,
+        "abgelehnt": 0,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "celery",
+      "profil": "stark",
+      "stoerung": "netztrennung",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "celery",
+        "profil": "stark",
+        "stoerung": "netztrennung",
+        "versionen": {
+          "celery": "5.6.3",
+          "kombu": "5.6.2",
+          "amqp": "5.4.1",
+          "redis": "6.4.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 1,
+        "abgelehnt": 1,
+        "ausgefuehrt": 62,
+        "verluste": 0,
+        "duplikate": 20,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "dramatiq",
+      "profil": "stark",
+      "stoerung": "netztrennung",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "dramatiq",
+        "profil": "stark",
+        "stoerung": "netztrennung",
+        "versionen": {
+          "dramatiq": "2.2.1",
+          "pika": "1.4.4",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 29,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 18,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "arq",
+      "profil": "stark",
+      "stoerung": "netztrennung",
+      "status": "ok",
+      "worker_neustart": true,
+      "meta": {
+        "system": "arq",
+        "profil": "stark",
+        "stoerung": "netztrennung",
+        "versionen": {
+          "arq": "0.28.0",
+          "redis": "5.3.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 61,
+        "unbestimmt": 0,
+        "abgelehnt": 29,
+        "ausgefuehrt": 61,
+        "verluste": 0,
+        "duplikate": 3,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "taskiq",
+      "profil": "stark",
+      "stoerung": "netztrennung",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "taskiq",
+        "profil": "stark",
+        "stoerung": "netztrennung",
+        "versionen": {
+          "taskiq": "0.13.0",
+          "taskiq-aio-pika": "0.6.1",
+          "taskiq-redis": "1.2.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 31,
+        "unbestimmt": 0,
+        "abgelehnt": 59,
+        "ausgefuehrt": 31,
+        "verluste": 0,
+        "duplikate": 20,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "swarmq",
+      "profil": "ab_werk",
+      "stoerung": "valkey_neustart_persistent",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "swarmq",
+        "profil": "ab_werk",
+        "stoerung": "valkey_neustart_persistent",
+        "versionen": {
+          "swarmq": "0.14.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "valkey": "6.1.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 84,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 84,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "celery",
+      "profil": "ab_werk",
+      "stoerung": "valkey_neustart_persistent",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "celery",
+        "profil": "ab_werk",
+        "stoerung": "valkey_neustart_persistent",
+        "versionen": {
+          "celery": "5.6.3",
+          "kombu": "5.6.2",
+          "amqp": "5.4.1",
+          "redis": "6.4.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 77,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 77,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "dramatiq",
+      "profil": "ab_werk",
+      "stoerung": "valkey_neustart_persistent",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "dramatiq",
+        "profil": "ab_werk",
+        "stoerung": "valkey_neustart_persistent",
+        "versionen": {
+          "dramatiq": "2.2.1",
+          "pika": "1.4.4",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 85,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 85,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "arq",
+      "profil": "ab_werk",
+      "stoerung": "valkey_neustart_persistent",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "arq",
+        "profil": "ab_werk",
+        "stoerung": "valkey_neustart_persistent",
+        "versionen": {
+          "arq": "0.28.0",
+          "redis": "5.3.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 80,
+        "unbestimmt": 0,
+        "abgelehnt": 4,
+        "ausgefuehrt": 80,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "taskiq",
+      "profil": "ab_werk",
+      "stoerung": "valkey_neustart_persistent",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "taskiq",
+        "profil": "ab_werk",
+        "stoerung": "valkey_neustart_persistent",
+        "versionen": {
+          "taskiq": "0.13.0",
+          "taskiq-aio-pika": "0.6.1",
+          "taskiq-redis": "1.2.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 84,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 84,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "swarmq",
+      "profil": "stark",
+      "stoerung": "valkey_neustart_persistent",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "swarmq",
+        "profil": "stark",
+        "stoerung": "valkey_neustart_persistent",
+        "versionen": {
+          "swarmq": "0.14.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "valkey": "6.1.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 83,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 83,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "celery",
+      "profil": "stark",
+      "stoerung": "valkey_neustart_persistent",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "celery",
+        "profil": "stark",
+        "stoerung": "valkey_neustart_persistent",
+        "versionen": {
+          "celery": "5.6.3",
+          "kombu": "5.6.2",
+          "amqp": "5.4.1",
+          "redis": "6.4.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 76,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 76,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "dramatiq",
+      "profil": "stark",
+      "stoerung": "valkey_neustart_persistent",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "dramatiq",
+        "profil": "stark",
+        "stoerung": "valkey_neustart_persistent",
+        "versionen": {
+          "dramatiq": "2.2.1",
+          "pika": "1.4.4",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 84,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 84,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "arq",
+      "profil": "stark",
+      "stoerung": "valkey_neustart_persistent",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "arq",
+        "profil": "stark",
+        "stoerung": "valkey_neustart_persistent",
+        "versionen": {
+          "arq": "0.28.0",
+          "redis": "5.3.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 80,
+        "unbestimmt": 0,
+        "abgelehnt": 4,
+        "ausgefuehrt": 80,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "taskiq",
+      "profil": "stark",
+      "stoerung": "valkey_neustart_persistent",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "taskiq",
+        "profil": "stark",
+        "stoerung": "valkey_neustart_persistent",
+        "versionen": {
+          "taskiq": "0.13.0",
+          "taskiq-aio-pika": "0.6.1",
+          "taskiq-redis": "1.2.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 84,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 84,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "swarmq",
+      "profil": "ab_werk",
+      "stoerung": "valkey_neustart_fluechtig",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "swarmq",
+        "profil": "ab_werk",
+        "stoerung": "valkey_neustart_fluechtig",
+        "versionen": {
+          "swarmq": "0.14.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "valkey": "6.1.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 84,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 84,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "celery",
+      "profil": "ab_werk",
+      "stoerung": "valkey_neustart_fluechtig",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "celery",
+        "profil": "ab_werk",
+        "stoerung": "valkey_neustart_fluechtig",
+        "versionen": {
+          "celery": "5.6.3",
+          "kombu": "5.6.2",
+          "amqp": "5.4.1",
+          "redis": "6.4.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 76,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 76,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "dramatiq",
+      "profil": "ab_werk",
+      "stoerung": "valkey_neustart_fluechtig",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "dramatiq",
+        "profil": "ab_werk",
+        "stoerung": "valkey_neustart_fluechtig",
+        "versionen": {
+          "dramatiq": "2.2.1",
+          "pika": "1.4.4",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 84,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 84,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "arq",
+      "profil": "ab_werk",
+      "stoerung": "valkey_neustart_fluechtig",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "arq",
+        "profil": "ab_werk",
+        "stoerung": "valkey_neustart_fluechtig",
+        "versionen": {
+          "arq": "0.28.0",
+          "redis": "5.3.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 81,
+        "unbestimmt": 0,
+        "abgelehnt": 3,
+        "ausgefuehrt": 60,
+        "verluste": 21,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "taskiq",
+      "profil": "ab_werk",
+      "stoerung": "valkey_neustart_fluechtig",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "taskiq",
+        "profil": "ab_werk",
+        "stoerung": "valkey_neustart_fluechtig",
+        "versionen": {
+          "taskiq": "0.13.0",
+          "taskiq-aio-pika": "0.6.1",
+          "taskiq-redis": "1.2.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 84,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 84,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "swarmq",
+      "profil": "stark",
+      "stoerung": "valkey_neustart_fluechtig",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "swarmq",
+        "profil": "stark",
+        "stoerung": "valkey_neustart_fluechtig",
+        "versionen": {
+          "swarmq": "0.14.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "valkey": "6.1.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 83,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 83,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "celery",
+      "profil": "stark",
+      "stoerung": "valkey_neustart_fluechtig",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "celery",
+        "profil": "stark",
+        "stoerung": "valkey_neustart_fluechtig",
+        "versionen": {
+          "celery": "5.6.3",
+          "kombu": "5.6.2",
+          "amqp": "5.4.1",
+          "redis": "6.4.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 75,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 75,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "dramatiq",
+      "profil": "stark",
+      "stoerung": "valkey_neustart_fluechtig",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "dramatiq",
+        "profil": "stark",
+        "stoerung": "valkey_neustart_fluechtig",
+        "versionen": {
+          "dramatiq": "2.2.1",
+          "pika": "1.4.4",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 85,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 85,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "arq",
+      "profil": "stark",
+      "stoerung": "valkey_neustart_fluechtig",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "arq",
+        "profil": "stark",
+        "stoerung": "valkey_neustart_fluechtig",
+        "versionen": {
+          "arq": "0.28.0",
+          "redis": "5.3.1"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 82,
+        "unbestimmt": 0,
+        "abgelehnt": 2,
+        "ausgefuehrt": 60,
+        "verluste": 22,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    },
+    {
+      "run": 3,
+      "system": "taskiq",
+      "profil": "stark",
+      "stoerung": "valkey_neustart_fluechtig",
+      "status": "ok",
+      "worker_neustart": false,
+      "meta": {
+        "system": "taskiq",
+        "profil": "stark",
+        "stoerung": "valkey_neustart_fluechtig",
+        "versionen": {
+          "taskiq": "0.13.0",
+          "taskiq-aio-pika": "0.6.1",
+          "taskiq-redis": "1.2.4",
+          "aio-pika": "10.0.1",
+          "aiormq": "7.0.0",
+          "redis": "8.1.0"
+        },
+        "python": "3.14.4"
+      },
+      "bilanz": {
+        "bestaetigt": 84,
+        "unbestimmt": 0,
+        "abgelehnt": 0,
+        "ausgefuehrt": 84,
+        "verluste": 0,
+        "duplikate": 0,
+        "duplikate_e077": 0
+      }
+    }
+  ]
+}
