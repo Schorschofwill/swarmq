@@ -31,6 +31,18 @@ halben Gesamtdauer, und die Parallelität des Workers änderte nichts. Solche
 Läufe sind für `io_bound` und `semaphore_scale` nicht verwertbar, ebenso Dramatiq
 im Profil `stark`: Es holte bis dahin eine Nachricht je Prozess statt je Thread.
 
+`noop` und `latency` fragen Ergebnisse alle 1 ms ab, `io_bound` und
+`semaphore_scale` alle 10 ms (dort fragen bis zu 200 gleichzeitig; enger
+würde der Erzeuger selbst zur Last). Bis `94343b9f` fragten auch `noop` und
+`latency` alle 10 ms. Eine einzelne Latenz maß dann vor allem, ob der Task
+vor der ersten Abfrage fertig war: lokal am 2026-10-26 mit Dramatiq 2.2.1
+lag dieselbe Ausführung bei rund 1 ms oder bei 11 ms, und Publisher-Confirms
+des Erzeugers, die die Zustellung um rund 1 ms beschleunigen, verdreifachten
+den gemessenen Durchsatz. Läufe bis `94343b9f` sind für `noop` und `latency`
+nicht verwertbar. swarmq ist davon nicht betroffen: `get_result` wartet per
+Pub/Sub und ignoriert das Abfrageintervall (`swarmq/client/results.py`).
+Die Ergebnisdateien nennen das Intervall (`params.abfrage_ms`).
+
 ## Veröffentlichung
 
 Veröffentlicht werden nur Wertungsläufe auf der Referenzmaschine celsius,
