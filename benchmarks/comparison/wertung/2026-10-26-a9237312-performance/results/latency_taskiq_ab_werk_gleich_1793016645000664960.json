@@ -1,0 +1,37 @@
+{
+  "system_name": "taskiq",
+  "scenario_name": "latency",
+  "params": {
+    "rate": 100,
+    "duration_s": 30,
+    "sleep_ms": 10,
+    "abfrage_ms": 1.0
+  },
+  "throughput": 99.96,
+  "total_duration": 30.0109,
+  "memory_peak_mb": 0.0,
+  "latency_p50_ms": 19.594,
+  "latency_p95_ms": 22.806,
+  "latency_p99_ms": 24.55,
+  "latency_count": 3000,
+  "profil": "ab_werk",
+  "parallelitaet": "gleich",
+  "versionen": {
+    "taskiq": "0.13.0",
+    "taskiq-aio-pika": "0.6.1",
+    "taskiq-redis": "1.2.4",
+    "aio-pika": "10.0.1",
+    "aiormq": "7.0.0",
+    "redis": "8.1.0"
+  },
+  "images": {
+    "rabbitmq": "rabbitmq:4.3.6-management",
+    "valkey": "valkey/valkey:8.1.10-alpine"
+  },
+  "host": {
+    "name": "celsius-server",
+    "plattform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.41",
+    "cpus": 20,
+    "python": "3.14.4"
+  }
+}

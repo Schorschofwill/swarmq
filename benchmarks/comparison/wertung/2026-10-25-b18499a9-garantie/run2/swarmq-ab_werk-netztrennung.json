@@ -1,0 +1,29 @@
+{
+  "run": 2,
+  "system": "swarmq",
+  "profil": "ab_werk",
+  "stoerung": "netztrennung",
+  "status": "ok",
+  "worker_neustart": false,
+  "meta": {
+    "system": "swarmq",
+    "profil": "ab_werk",
+    "stoerung": "netztrennung",
+    "versionen": {
+      "swarmq": "0.14.4",
+      "aio-pika": "10.0.1",
+      "aiormq": "7.0.0",
+      "valkey": "6.1.1"
+    },
+    "python": "3.14.4"
+  },
+  "bilanz": {
+    "bestaetigt": 61,
+    "unbestimmt": 1,
+    "abgelehnt": 0,
+    "ausgefuehrt": 61,
+    "verluste": 0,
+    "duplikate": 0,
+    "duplikate_e077": 0
+  }
+}

@@ -95,7 +95,7 @@ Rechner über den Docker-Kontext des Hosts:
 ```bash
 scripts/vergleich-entfernt.sh starten celsius performance --runs 3   # oder: garantie --runs 3, ab --a … --b …
 scripts/vergleich-entfernt.sh status celsius
-scripts/vergleich-entfernt.sh abholen celsius benchmarks/comparison/wertung/<datum>
+scripts/vergleich-entfernt.sh abholen celsius benchmarks/comparison/wertung/<datum>-<commit>-<teil>
 ```
 
 `starten` baut aus einem sauberen Klon des aktuellen Commits das Image
@@ -106,6 +106,9 @@ Hosts, startet seine Dienste selbst und räumt sie am Ende ab
 (`im-container.sh`). `abholen` kopiert Ergebnisse und Log und entfernt
 Container und Image. Deshalb bindet kein Compose-Stack des Vergleichs eine
 Datei des Hosts ein; die Proxys von Toxiproxy stehen in `stoerungen/compose.yml`.
+Ins Repo kommen nur die gültigen Ergebnisdateien eines Laufs, beim
+Garantie-Teil dazu Hauptbücher und Logs gepackt, ohne die Logs des
+Performance-Teils (`wertung/README.md`).
 
 Voraussetzungen: Docker mit Compose, `uv`, Python 3.14 (die Umgebungen legt
 `einrichten.sh` mit `uv venv --python 3.14` an). Das Rezept startet den

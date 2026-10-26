@@ -1,0 +1,28 @@
+{
+  "run": 3,
+  "system": "dramatiq",
+  "profil": "stark",
+  "stoerung": "netztrennung",
+  "status": "ok",
+  "worker_neustart": false,
+  "meta": {
+    "system": "dramatiq",
+    "profil": "stark",
+    "stoerung": "netztrennung",
+    "versionen": {
+      "dramatiq": "2.2.1",
+      "pika": "1.4.4",
+      "redis": "8.1.0"
+    },
+    "python": "3.14.4"
+  },
+  "bilanz": {
+    "bestaetigt": 61,
+    "unbestimmt": 0,
+    "abgelehnt": 29,
+    "ausgefuehrt": 61,
+    "verluste": 0,
+    "duplikate": 18,
+    "duplikate_e077": 0
+  }
+}
