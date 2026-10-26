@@ -13,6 +13,8 @@ oder bevor du entscheidest, ob ein neuer Anwendungsfall zu SwarmQ passt.
   Delay-Stufen und die Idempotenz, die dein Task-Code liefern muss.
 - [Designentscheidungen](design-decisions.md): die Abwägungen hinter dem
   Design, die geprüften Alternativen und was bewusst weggelassen wurde.
+- [Vergleich](comparison.md): SwarmQ gegen Celery, Dramatiq, arq und
+  taskiq unter Störungen und unter Last, mit den Grenzen der Messung.
 
 Die [Referenz](../reference/index.md) beantwortet das *Was*; diese
 Seiten beantworten das *Warum*.
