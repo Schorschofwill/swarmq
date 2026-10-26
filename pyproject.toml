@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-fancy-pypi-readme>=25.1"]
 build-backend = "hatchling.build"
 
 # Whitelist statt Blacklist: nur src/ ins sdist (pyproject.toml, README,
@@ -7,14 +7,17 @@ build-backend = "hatchling.build"
 # CI-/Agenten-Infrastruktur und lokale Caches dauerhaft aus dem Paket —
 # sdist ~150 KB statt 1,6 MB.
 [tool.hatch.build.targets.sdist]
-only-include = ["src"]
+# README.md ausdrücklich: Mit dynamischem readme nimmt Hatchling sie nicht
+# mehr selbst auf, der Wheel-Bau aus dem sdist braucht sie aber.
+only-include = ["src", "README.md"]
 
 [project]
 name = "swarmq"
 version = "0.15.0rc1"
 description = "Async-first task queue for Python 3.14+ on RabbitMQ and Valkey"
-readme = "README.md"
 license = "MIT"
+# readme: PyPI-Fassung aus README.md, siehe [tool.hatch.metadata.hooks.fancy-pypi-readme].
+dynamic = ["readme"]
 license-files = ["LICENSE"]
 requires-python = ">=3.14"
 # Härtung R2 P2: lower bounds protect downstream consumers installing
@@ -84,6 +87,9 @@ test = [
     "dishka>=1.10.1",
     # Entscheidungsregister: Frontmatter der Pack-Regeln (tests/unit/test_entscheidungsregister.py).
     "pyyaml",
+    # PyPI-Fassung der README (tests/unit/test_pypi_readme.py rendert sie mit
+    # dem Build-Hook aus [tool.hatch.metadata.hooks.fancy-pypi-readme]).
+    "hatch-fancy-pypi-readme>=25.1",
 ]
 docs = [
     "mkdocs-material>=9.5",
@@ -136,6 +142,37 @@ Homepage = "https://github.com/Schorschofwill/swarmq"
 Documentation = "https://swarmq.readthedocs.io/"
 Repository = "https://github.com/Schorschofwill/swarmq"
 Changelog = "https://swarmq.readthedocs.io/en/latest/reference/changelog/"
+
+# PyPI-Fassung der README: Das Repo ist privat, PyPI lädt relative Bilder und
+# Links nicht. Ohne Logo, Navigation (Sprungmarken, Docs-URL) und die
+# Abschnitte Documentation/Development; relative Links werden zu Text.
+# Geprüft in tests/unit/test_pypi_readme.py.
+[tool.hatch.metadata.hooks.fancy-pypi-readme]
+content-type = "text/markdown"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.fragments]]
+text = "# SwarmQ\n"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.fragments]]
+path = "README.md"
+start-after = "<!-- pypi-start -->\n"
+end-before = "<!-- pypi-skip -->"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.fragments]]
+path = "README.md"
+start-after = "<!-- pypi-resume -->\n"
+end-before = "<!-- pypi-end -->"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.fragments]]
+text = "## License\n\nMIT\n"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = '\[([^\]]+)\]\((?!https://)[^)]*\)'
+replacement = '\1'
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = '<a href="(?!https://)[^"]*">(.*?)</a>'
+replacement = '\1'
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/swarmq"]
