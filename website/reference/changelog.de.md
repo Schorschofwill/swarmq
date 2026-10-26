@@ -4,7 +4,16 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 [Keep a Changelog](https://keepachangelog.com/) und
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.15.0] — 2026-10-26
+
+0.15.0 ist 0.15.0rc1 plus eine eigene README für PyPI; der Code ist
+unverändert. Die Breaking Changes (unbekannte Schalterwerte, negatives
+`max_retries` und `result_ttl` werden abgelehnt) und die Korrekturen, vor
+allem das Rate-Limit, das bei Rückstand seinen Durchsatz erreicht, stehen
+unter [0.15.0rc1](#0150rc1-2026-10-26) und gelten unverändert. Abgenommen
+von der Loadsuite an 0.15.0rc1 (Konformität, vier Smokes einschließlich des
+Kanal-Smokes mit Autoskalierung, `stufe1-1h`, kein Verlust). Installation
+mit `pip install 'swarmq==0.15.*'`; `--pre` ist nicht mehr nötig.
 
 ### Geändert
 
