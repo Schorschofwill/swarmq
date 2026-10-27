@@ -18,6 +18,17 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   endet jetzt immer mit `CancelledError`, der Kanalfehler als Ursache
   (F4-28).
 
+### Performance
+
+- **Schnellere Textzeilen ohne Farben.** Der Text-Renderer ohne Farben
+  (Standard, wenn stderr kein Terminal ist) baut seine Spalten direkt statt
+  über die Spaltenformatierer von structlog; die Ausgabe bleibt Byte für
+  Byte gleich, was ein Property-Test gegen structlogs `ConsoleRenderer`
+  absichert. Das Formatieren einer Zeile braucht rund 45 % weniger Zeit
+  (12,9 → 7,1 µs je Zeile), und auf der Referenzmaschine stieg der
+  Durchsatz bei `io_bound` um 3,6 % (je 30 Läufe, p < 0,001). Farbige
+  Ausgabe und JSON sind unverändert.
+
 ## [0.15.1] — 2026-10-27
 
 0.15.1 bündelt die Log-Ausgabe der eingebauten Einrichtung. Sonst ist
