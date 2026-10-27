@@ -401,6 +401,7 @@ async def test_a_call_handlers_hook_sees_each_swarmq_record_once_after_the_takeo
     assert seen.count("evt_hooked") == 1
 
 
+@pytest.mark.entscheidung("E-088")
 @pytest.mark.timeout(5)
 async def test_the_opt_in_queue_after_the_takeover_has_no_batch_delay(
     tmp_path: pathlib.Path,

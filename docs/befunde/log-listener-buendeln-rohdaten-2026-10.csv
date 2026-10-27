@@ -1,0 +1,283 @@
+reihe,beschreibung,runde,variante,bedeutung,tasks_pro_s,p50_ms
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),1,Basis,"main (Pause 0, mit Zeile)",597,653
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),1,LOG,alle swarmq-Logger WARNING,722,562
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),1,TASK,swarmq.task=WARNING (ohne Zeile),683,587
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),1,NULL,Probe: Listener gibt nichts aus,733,564
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),1,FMT,"Probe: formatieren, nicht schreiben",602,660
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),1,SYNC,Probe: synchron im Haupt-Thread,716,588
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),1,DROP,Probe: verwerfen vor der Queue,719,514
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),2,Basis,"main (Pause 0, mit Zeile)",704,595
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),2,LOG,alle swarmq-Logger WARNING,638,589
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),2,TASK,swarmq.task=WARNING (ohne Zeile),366,754
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),2,NULL,Probe: Listener gibt nichts aus,648,586
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),2,FMT,"Probe: formatieren, nicht schreiben",579,622
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),2,SYNC,Probe: synchron im Haupt-Thread,606,677
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),2,DROP,Probe: verwerfen vor der Queue,671,547
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),3,Basis,"main (Pause 0, mit Zeile)",631,607
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),3,LOG,alle swarmq-Logger WARNING,715,477
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),3,TASK,swarmq.task=WARNING (ohne Zeile),685,524
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),3,NULL,Probe: Listener gibt nichts aus,613,665
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),3,FMT,"Probe: formatieren, nicht schreiben",597,666
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),3,SYNC,Probe: synchron im Haupt-Thread,619,665
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),3,DROP,Probe: verwerfen vor der Queue,647,576
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),4,Basis,"main (Pause 0, mit Zeile)",583,589
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),4,LOG,alle swarmq-Logger WARNING,720,530
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),4,TASK,swarmq.task=WARNING (ohne Zeile),721,548
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),4,NULL,Probe: Listener gibt nichts aus,669,594
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),4,FMT,"Probe: formatieren, nicht schreiben",613,659
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),4,SYNC,Probe: synchron im Haupt-Thread,640,629
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),4,DROP,Probe: verwerfen vor der Queue,719,559
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),5,Basis,"main (Pause 0, mit Zeile)",629,638
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),5,LOG,alle swarmq-Logger WARNING,738,552
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),5,TASK,swarmq.task=WARNING (ohne Zeile),691,546
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),5,NULL,Probe: Listener gibt nichts aus,628,609
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),5,FMT,"Probe: formatieren, nicht schreiben",584,657
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),5,SYNC,Probe: synchron im Haupt-Thread,642,543
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),5,DROP,Probe: verwerfen vor der Queue,619,605
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),6,Basis,"main (Pause 0, mit Zeile)",550,692
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),6,LOG,alle swarmq-Logger WARNING,387,1008
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),6,TASK,swarmq.task=WARNING (ohne Zeile),671,601
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),6,NULL,Probe: Listener gibt nichts aus,621,612
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),6,FMT,"Probe: formatieren, nicht schreiben",608,666
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),6,SYNC,Probe: synchron im Haupt-Thread,604,722
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),6,DROP,Probe: verwerfen vor der Queue,658,558
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),7,Basis,"main (Pause 0, mit Zeile)",584,630
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),7,LOG,alle swarmq-Logger WARNING,685,570
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),7,TASK,swarmq.task=WARNING (ohne Zeile),718,573
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),7,NULL,Probe: Listener gibt nichts aus,665,589
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),7,FMT,"Probe: formatieren, nicht schreiben",619,654
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),7,SYNC,Probe: synchron im Haupt-Thread,697,619
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),7,DROP,Probe: verwerfen vor der Queue,699,611
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),8,Basis,"main (Pause 0, mit Zeile)",639,583
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),8,LOG,alle swarmq-Logger WARNING,710,591
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),8,TASK,swarmq.task=WARNING (ohne Zeile),728,522
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),8,NULL,Probe: Listener gibt nichts aus,651,626
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),8,FMT,"Probe: formatieren, nicht schreiben",603,690
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),8,SYNC,Probe: synchron im Haupt-Thread,660,601
+reihe7,Proben 26.10.: Logkette gekappt (Messhülle),8,DROP,Probe: verwerfen vor der Queue,651,598
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,1,Basis,"main (Pause 0, mit Zeile)",601,690
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,1,TASK,swarmq.task=WARNING (ohne Zeile),712,532
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,1,B20,Probe: Schlaf 20 ms,696,565
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,1,B100,Probe: Schlaf 100 ms,686,586
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,2,Basis,"main (Pause 0, mit Zeile)",653,576
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,2,TASK,swarmq.task=WARNING (ohne Zeile),711,563
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,2,B20,Probe: Schlaf 20 ms,690,570
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,2,B100,Probe: Schlaf 100 ms,689,611
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,3,Basis,"main (Pause 0, mit Zeile)",630,640
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,3,TASK,swarmq.task=WARNING (ohne Zeile),681,607
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,3,B20,Probe: Schlaf 20 ms,636,598
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,3,B100,Probe: Schlaf 100 ms,620,607
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,4,Basis,"main (Pause 0, mit Zeile)",611,587
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,4,TASK,swarmq.task=WARNING (ohne Zeile),679,576
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,4,B20,Probe: Schlaf 20 ms,531,697
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,4,B100,Probe: Schlaf 100 ms,646,570
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,5,Basis,"main (Pause 0, mit Zeile)",572,623
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,5,TASK,swarmq.task=WARNING (ohne Zeile),669,553
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,5,B20,Probe: Schlaf 20 ms,644,555
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,5,B100,Probe: Schlaf 100 ms,690,601
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,6,Basis,"main (Pause 0, mit Zeile)",587,723
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,6,TASK,swarmq.task=WARNING (ohne Zeile),702,547
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,6,B20,Probe: Schlaf 20 ms,635,598
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,6,B100,Probe: Schlaf 100 ms,664,628
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,7,Basis,"main (Pause 0, mit Zeile)",617,662
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,7,TASK,swarmq.task=WARNING (ohne Zeile),728,530
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,7,B20,Probe: Schlaf 20 ms,663,595
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,7,B100,Probe: Schlaf 100 ms,660,662
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,8,Basis,"main (Pause 0, mit Zeile)",637,645
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,8,TASK,swarmq.task=WARNING (ohne Zeile),744,565
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,8,B20,Probe: Schlaf 20 ms,659,647
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,8,B100,Probe: Schlaf 100 ms,620,665
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,9,Basis,"main (Pause 0, mit Zeile)",578,662
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,9,TASK,swarmq.task=WARNING (ohne Zeile),670,523
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,9,B20,Probe: Schlaf 20 ms,639,618
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,9,B100,Probe: Schlaf 100 ms,651,585
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,10,Basis,"main (Pause 0, mit Zeile)",640,576
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,10,TASK,swarmq.task=WARNING (ohne Zeile),666,537
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,10,B20,Probe: Schlaf 20 ms,645,589
+reihe8,Probe Bündeln mit Schlaf 20/100 ms,10,B100,Probe: Schlaf 100 ms,617,484
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",1,Basis,"main (Pause 0, mit Zeile)",508,675
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",1,TASK,swarmq.task=WARNING (ohne Zeile),722,544
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",1,B100,Probe: Schlaf 100 ms,690,596
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",1,B100+JSON,"Probe: Schlaf 100 ms, JSON",680,570
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",1,DROP,Probe: verwerfen vor der Queue,683,635
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",2,Basis,"main (Pause 0, mit Zeile)",685,631
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",2,TASK,swarmq.task=WARNING (ohne Zeile),717,574
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",2,B100,Probe: Schlaf 100 ms,702,577
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",2,B100+JSON,"Probe: Schlaf 100 ms, JSON",700,583
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",2,DROP,Probe: verwerfen vor der Queue,705,561
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",3,Basis,"main (Pause 0, mit Zeile)",673,540
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",3,TASK,swarmq.task=WARNING (ohne Zeile),675,603
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",3,B100,Probe: Schlaf 100 ms,643,547
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",3,B100+JSON,"Probe: Schlaf 100 ms, JSON",629,565
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",3,DROP,Probe: verwerfen vor der Queue,633,543
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",4,Basis,"main (Pause 0, mit Zeile)",550,680
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",4,TASK,swarmq.task=WARNING (ohne Zeile),665,610
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",4,B100,Probe: Schlaf 100 ms,676,577
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",4,B100+JSON,"Probe: Schlaf 100 ms, JSON",629,518
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",4,DROP,Probe: verwerfen vor der Queue,647,615
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",5,Basis,"main (Pause 0, mit Zeile)",595,647
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",5,TASK,swarmq.task=WARNING (ohne Zeile),685,538
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",5,B100,Probe: Schlaf 100 ms,543,1013
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",5,B100+JSON,"Probe: Schlaf 100 ms, JSON",313,557
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",5,DROP,Probe: verwerfen vor der Queue,729,565
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",6,Basis,"main (Pause 0, mit Zeile)",614,650
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",6,TASK,swarmq.task=WARNING (ohne Zeile),396,641
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",6,B100,Probe: Schlaf 100 ms,691,568
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",6,B100+JSON,"Probe: Schlaf 100 ms, JSON",693,572
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",6,DROP,Probe: verwerfen vor der Queue,697,567
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",7,Basis,"main (Pause 0, mit Zeile)",612,651
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",7,TASK,swarmq.task=WARNING (ohne Zeile),733,576
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",7,B100,Probe: Schlaf 100 ms,675,614
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",7,B100+JSON,"Probe: Schlaf 100 ms, JSON",674,593
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",7,DROP,Probe: verwerfen vor der Queue,632,583
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",8,Basis,"main (Pause 0, mit Zeile)",586,643
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",8,TASK,swarmq.task=WARNING (ohne Zeile),677,560
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",8,B100,Probe: Schlaf 100 ms,611,582
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",8,B100+JSON,"Probe: Schlaf 100 ms, JSON",657,568
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",8,DROP,Probe: verwerfen vor der Queue,647,578
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",9,Basis,"main (Pause 0, mit Zeile)",601,622
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",9,TASK,swarmq.task=WARNING (ohne Zeile),647,559
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",9,B100,Probe: Schlaf 100 ms,678,592
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",9,B100+JSON,"Probe: Schlaf 100 ms, JSON",620,616
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",9,DROP,Probe: verwerfen vor der Queue,688,581
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",10,Basis,"main (Pause 0, mit Zeile)",591,591
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",10,TASK,swarmq.task=WARNING (ohne Zeile),707,603
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",10,B100,Probe: Schlaf 100 ms,676,597
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",10,B100+JSON,"Probe: Schlaf 100 ms, JSON",653,590
+reihe9,"Probe Bündeln 100 ms, mit JSON, Verwerfen",10,DROP,Probe: verwerfen vor der Queue,624,565
+reihe10,"Probe Bündeln 100 ms, lange Reihe",1,Basis,"main (Pause 0, mit Zeile)",664,599
+reihe10,"Probe Bündeln 100 ms, lange Reihe",1,TASK,swarmq.task=WARNING (ohne Zeile),721,535
+reihe10,"Probe Bündeln 100 ms, lange Reihe",1,B100,Probe: Schlaf 100 ms,529,678
+reihe10,"Probe Bündeln 100 ms, lange Reihe",2,Basis,"main (Pause 0, mit Zeile)",636,613
+reihe10,"Probe Bündeln 100 ms, lange Reihe",2,TASK,swarmq.task=WARNING (ohne Zeile),725,577
+reihe10,"Probe Bündeln 100 ms, lange Reihe",2,B100,Probe: Schlaf 100 ms,667,638
+reihe10,"Probe Bündeln 100 ms, lange Reihe",3,Basis,"main (Pause 0, mit Zeile)",640,658
+reihe10,"Probe Bündeln 100 ms, lange Reihe",3,TASK,swarmq.task=WARNING (ohne Zeile),694,534
+reihe10,"Probe Bündeln 100 ms, lange Reihe",3,B100,Probe: Schlaf 100 ms,611,532
+reihe10,"Probe Bündeln 100 ms, lange Reihe",4,Basis,"main (Pause 0, mit Zeile)",615,654
+reihe10,"Probe Bündeln 100 ms, lange Reihe",4,TASK,swarmq.task=WARNING (ohne Zeile),698,494
+reihe10,"Probe Bündeln 100 ms, lange Reihe",4,B100,Probe: Schlaf 100 ms,627,628
+reihe10,"Probe Bündeln 100 ms, lange Reihe",5,Basis,"main (Pause 0, mit Zeile)",591,657
+reihe10,"Probe Bündeln 100 ms, lange Reihe",5,TASK,swarmq.task=WARNING (ohne Zeile),686,567
+reihe10,"Probe Bündeln 100 ms, lange Reihe",5,B100,Probe: Schlaf 100 ms,632,504
+reihe10,"Probe Bündeln 100 ms, lange Reihe",6,Basis,"main (Pause 0, mit Zeile)",656,616
+reihe10,"Probe Bündeln 100 ms, lange Reihe",6,TASK,swarmq.task=WARNING (ohne Zeile),705,563
+reihe10,"Probe Bündeln 100 ms, lange Reihe",6,B100,Probe: Schlaf 100 ms,637,611
+reihe10,"Probe Bündeln 100 ms, lange Reihe",7,Basis,"main (Pause 0, mit Zeile)",606,698
+reihe10,"Probe Bündeln 100 ms, lange Reihe",7,TASK,swarmq.task=WARNING (ohne Zeile),719,546
+reihe10,"Probe Bündeln 100 ms, lange Reihe",7,B100,Probe: Schlaf 100 ms,644,652
+reihe10,"Probe Bündeln 100 ms, lange Reihe",8,Basis,"main (Pause 0, mit Zeile)",620,634
+reihe10,"Probe Bündeln 100 ms, lange Reihe",8,TASK,swarmq.task=WARNING (ohne Zeile),713,540
+reihe10,"Probe Bündeln 100 ms, lange Reihe",8,B100,Probe: Schlaf 100 ms,661,579
+reihe10,"Probe Bündeln 100 ms, lange Reihe",9,Basis,"main (Pause 0, mit Zeile)",481,632
+reihe10,"Probe Bündeln 100 ms, lange Reihe",9,TASK,swarmq.task=WARNING (ohne Zeile),729,515
+reihe10,"Probe Bündeln 100 ms, lange Reihe",9,B100,Probe: Schlaf 100 ms,677,637
+reihe10,"Probe Bündeln 100 ms, lange Reihe",10,Basis,"main (Pause 0, mit Zeile)",637,585
+reihe10,"Probe Bündeln 100 ms, lange Reihe",10,TASK,swarmq.task=WARNING (ohne Zeile),548,668
+reihe10,"Probe Bündeln 100 ms, lange Reihe",10,B100,Probe: Schlaf 100 ms,461,360
+reihe10,"Probe Bündeln 100 ms, lange Reihe",11,Basis,"main (Pause 0, mit Zeile)",623,577
+reihe10,"Probe Bündeln 100 ms, lange Reihe",11,TASK,swarmq.task=WARNING (ohne Zeile),651,572
+reihe10,"Probe Bündeln 100 ms, lange Reihe",11,B100,Probe: Schlaf 100 ms,635,523
+reihe10,"Probe Bündeln 100 ms, lange Reihe",12,Basis,"main (Pause 0, mit Zeile)",604,670
+reihe10,"Probe Bündeln 100 ms, lange Reihe",12,TASK,swarmq.task=WARNING (ohne Zeile),673,588
+reihe10,"Probe Bündeln 100 ms, lange Reihe",12,B100,Probe: Schlaf 100 ms,624,592
+reihe10,"Probe Bündeln 100 ms, lange Reihe",13,Basis,"main (Pause 0, mit Zeile)",639,578
+reihe10,"Probe Bündeln 100 ms, lange Reihe",13,TASK,swarmq.task=WARNING (ohne Zeile),752,531
+reihe10,"Probe Bündeln 100 ms, lange Reihe",13,B100,Probe: Schlaf 100 ms,660,618
+reihe10,"Probe Bündeln 100 ms, lange Reihe",14,Basis,"main (Pause 0, mit Zeile)",605,634
+reihe10,"Probe Bündeln 100 ms, lange Reihe",14,TASK,swarmq.task=WARNING (ohne Zeile),706,547
+reihe10,"Probe Bündeln 100 ms, lange Reihe",14,B100,Probe: Schlaf 100 ms,646,652
+reihe10,"Probe Bündeln 100 ms, lange Reihe",15,Basis,"main (Pause 0, mit Zeile)",636,599
+reihe10,"Probe Bündeln 100 ms, lange Reihe",15,TASK,swarmq.task=WARNING (ohne Zeile),686,524
+reihe10,"Probe Bündeln 100 ms, lange Reihe",15,B100,Probe: Schlaf 100 ms,670,599
+reihe10,"Probe Bündeln 100 ms, lange Reihe",16,Basis,"main (Pause 0, mit Zeile)",643,622
+reihe10,"Probe Bündeln 100 ms, lange Reihe",16,TASK,swarmq.task=WARNING (ohne Zeile),685,539
+reihe10,"Probe Bündeln 100 ms, lange Reihe",16,B100,Probe: Schlaf 100 ms,698,597
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,3,TASK,swarmq.task=WARNING (ohne Zeile),737,555
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,4,Basis,"main (Pause 0, mit Zeile)",624,621
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,4,B50,Probe: Schlaf 50 ms,660,582
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,4,TASK,swarmq.task=WARNING (ohne Zeile),726,570
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,5,Basis,"main (Pause 0, mit Zeile)",663,618
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,5,B50,Probe: Schlaf 50 ms,722,534
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,5,TASK,swarmq.task=WARNING (ohne Zeile),709,565
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,6,Basis,"main (Pause 0, mit Zeile)",610,630
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,6,B50,Probe: Schlaf 50 ms,665,634
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,6,TASK,swarmq.task=WARNING (ohne Zeile),744,552
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,7,Basis,"main (Pause 0, mit Zeile)",631,651
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,7,B50,Probe: Schlaf 50 ms,651,592
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,7,TASK,swarmq.task=WARNING (ohne Zeile),659,607
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,8,Basis,"main (Pause 0, mit Zeile)",589,694
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,8,B50,Probe: Schlaf 50 ms,646,563
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,8,TASK,swarmq.task=WARNING (ohne Zeile),323,411
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,9,Basis,"main (Pause 0, mit Zeile)",567,723
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,9,B50,Probe: Schlaf 50 ms,639,631
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,9,TASK,swarmq.task=WARNING (ohne Zeile),667,567
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,10,Basis,"main (Pause 0, mit Zeile)",582,678
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,10,B50,Probe: Schlaf 50 ms,624,502
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,10,TASK,swarmq.task=WARNING (ohne Zeile),716,508
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,11,Basis,"main (Pause 0, mit Zeile)",582,686
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,11,B50,Probe: Schlaf 50 ms,645,607
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,11,TASK,swarmq.task=WARNING (ohne Zeile),724,586
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,12,Basis,"main (Pause 0, mit Zeile)",598,728
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,12,B50,Probe: Schlaf 50 ms,678,586
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,12,TASK,swarmq.task=WARNING (ohne Zeile),699,552
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,13,Basis,"main (Pause 0, mit Zeile)",593,700
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,13,B50,Probe: Schlaf 50 ms,716,573
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,13,TASK,swarmq.task=WARNING (ohne Zeile),700,557
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,14,Basis,"main (Pause 0, mit Zeile)",587,666
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,14,B50,Probe: Schlaf 50 ms,682,602
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,14,TASK,swarmq.task=WARNING (ohne Zeile),692,509
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,15,Basis,"main (Pause 0, mit Zeile)",582,626
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,15,B50,Probe: Schlaf 50 ms,652,601
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,15,TASK,swarmq.task=WARNING (ohne Zeile),668,492
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,16,Basis,"main (Pause 0, mit Zeile)",526,592
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,16,B50,Probe: Schlaf 50 ms,400,974
+reihe12,Vortest 27.10.: Probe Bündeln 50 ms,16,TASK,swarmq.task=WARNING (ohne Zeile),685,533
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,1,AUS,"b53b3ede, --log-batch-delay 0",603,657
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,1,Basis2,"b53b3ede, Default 50 ms",673,579
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,1,TASK,swarmq.task=WARNING (ohne Zeile),729,536
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,2,AUS,"b53b3ede, --log-batch-delay 0",609,703
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,2,Basis2,"b53b3ede, Default 50 ms",660,622
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,2,TASK,swarmq.task=WARNING (ohne Zeile),719,559
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,3,AUS,"b53b3ede, --log-batch-delay 0",671,583
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,3,Basis2,"b53b3ede, Default 50 ms",683,610
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,3,TASK,swarmq.task=WARNING (ohne Zeile),728,600
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,4,AUS,"b53b3ede, --log-batch-delay 0",631,658
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,4,Basis2,"b53b3ede, Default 50 ms",684,620
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,4,TASK,swarmq.task=WARNING (ohne Zeile),676,564
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,5,AUS,"b53b3ede, --log-batch-delay 0",592,661
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,5,Basis2,"b53b3ede, Default 50 ms",641,572
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,5,TASK,swarmq.task=WARNING (ohne Zeile),676,454
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,6,AUS,"b53b3ede, --log-batch-delay 0",597,674
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,6,Basis2,"b53b3ede, Default 50 ms",637,551
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,6,TASK,swarmq.task=WARNING (ohne Zeile),482,744
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,7,AUS,"b53b3ede, --log-batch-delay 0",547,526
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,7,Basis2,"b53b3ede, Default 50 ms",600,557
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,7,TASK,swarmq.task=WARNING (ohne Zeile),668,587
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,8,AUS,"b53b3ede, --log-batch-delay 0",596,541
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,8,Basis2,"b53b3ede, Default 50 ms",713,594
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,8,TASK,swarmq.task=WARNING (ohne Zeile),702,513
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,9,AUS,"b53b3ede, --log-batch-delay 0",705,577
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,9,Basis2,"b53b3ede, Default 50 ms",678,605
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,9,TASK,swarmq.task=WARNING (ohne Zeile),740,526
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,10,AUS,"b53b3ede, --log-batch-delay 0",678,668
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,10,Basis2,"b53b3ede, Default 50 ms",672,629
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,10,TASK,swarmq.task=WARNING (ohne Zeile),724,524
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,11,AUS,"b53b3ede, --log-batch-delay 0",630,656
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,11,Basis2,"b53b3ede, Default 50 ms",710,602
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,11,TASK,swarmq.task=WARNING (ohne Zeile),732,531
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,12,AUS,"b53b3ede, --log-batch-delay 0",640,636
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,12,Basis2,"b53b3ede, Default 50 ms",621,616
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,12,TASK,swarmq.task=WARNING (ohne Zeile),664,552
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,13,AUS,"b53b3ede, --log-batch-delay 0",586,629
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,13,Basis2,"b53b3ede, Default 50 ms",651,495
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,13,TASK,swarmq.task=WARNING (ohne Zeile),645,457
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,14,AUS,"b53b3ede, --log-batch-delay 0",420,1061
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,14,Basis2,"b53b3ede, Default 50 ms",628,567
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,14,TASK,swarmq.task=WARNING (ohne Zeile),689,525
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,15,AUS,"b53b3ede, --log-batch-delay 0",526,989
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,15,Basis2,"b53b3ede, Default 50 ms",357,573
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,15,TASK,swarmq.task=WARNING (ohne Zeile),627,631
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,16,AUS,"b53b3ede, --log-batch-delay 0",628,632
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,16,Basis2,"b53b3ede, Default 50 ms",606,627
+reihe13,Umsetzung b53b3ede: Pause 0 gegen 50 ms,16,TASK,swarmq.task=WARNING (ohne Zeile),728,604

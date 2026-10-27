@@ -4,6 +4,22 @@ All notable changes to SwarmQ. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Performance
+
+- **Batched log output.** The log listener of the built-in setup no
+  longer wakes up for every line: it collects lines below WARNING for up
+  to `log_batch_delay` seconds (default 0.05; `--log-batch-delay`,
+  `SWARMQ_LOG_BATCH_DELAY`, `SwarmQConfig(log_batch_delay=...)`) and
+  writes them together. WARNING and above, a queue at 10 % and every
+  flush end the pause at once. On the reference machine `io_bound`
+  throughput rose by 10.8 % (A/B, 10 pairs, p = 0.0002) with every line
+  still written. Lines below WARNING can appear up to the pause later, and
+  a hard kill can lose up to one pause of them; `--log-batch-delay 0`
+  restores the previous behaviour. `--log-config` and the opt-in log
+  queue do not batch. See [batched output](logging.md#batched-output).
+
 ## [0.15.0] — 2026-10-26
 
 0.15.0 is 0.15.0rc1 plus its own README for PyPI; the code is unchanged.

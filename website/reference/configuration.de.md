@@ -139,6 +139,7 @@ CPU-Pools. Details, Rezepte und den Event-Katalog findest du in der
 | `SWARMQ_LOG_QUEUE_SIZE` | `10000` | Kapazität der prozessinternen Log-Queue. |
 | `SWARMQ_LOG_LIFECYCLE_LEVEL` | `DEBUG` | Level von `task_received` und `task_started`. |
 | `SWARMQ_LOG_DRAIN_TIMEOUT` | `5` | Obergrenze in Sekunden für jedes Leeren der Log-Queues (beim Prozessende, vor einem Reload, vor jedem Ergebnis eines Rechenkinds, in `SwarmQ.__aexit__`); nicht rechtzeitig geschriebene Einträge gelten als verworfen. Größer als 0 und höchstens `threading.TIMEOUT_MAX`. Siehe [begrenztes Leeren](logging.md#begrenztes-leeren). |
+| `SWARMQ_LOG_BATCH_DELAY` | `0.05` | Sekunden, die der Log-Listener Zeilen unter WARNING sammelt, bevor er sie gemeinsam schreibt; WARNING und höher, eine Queue bei 10 % und jedes Leeren beenden die Pause sofort. 0 bis 1; 0 schreibt jede Zeile sofort. Gilt nicht für `--log-config` und die Opt-in-Log-Queue. Siehe [gebündelte Ausgabe](logging.md#gebundelte-ausgabe). |
 | `SWARMQ_LOG_QUEUE` | `false` | Eingebettete Apps: `swarmq.*`-Events über einen Hintergrund-Thread von SwarmQ an deine Root-Handler leiten ([Opt-in-Log-Queue](logging.md#opt-in-log-queue)). |
 
 Der Supervisor von `swarmq worker` löst diese Werte einmal auf (CLI-Flag

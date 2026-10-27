@@ -105,6 +105,7 @@ def _record(level: int = logging.INFO, msg: str = "msg") -> logging.LogRecord:
     return logging.LogRecord("test", level, __file__, 1, msg, None, None)
 
 
+@pytest.mark.entscheidung("E-088")
 def test_info_lines_wait_for_the_pause_without_waking_the_listener(pause: _Pause) -> None:
     target = _RecordingHandler()
     handler = _paused_handler(pause, target)
@@ -137,6 +138,7 @@ def test_without_a_pause_the_listener_never_waits(pause: _Pause) -> None:
     assert pause.timeouts == []
 
 
+@pytest.mark.entscheidung("E-088")
 def test_a_warning_ends_the_pause_and_the_lines_before_it_follow(pause: _Pause) -> None:
     target = _RecordingHandler()
     handler = _paused_handler(pause, target)
@@ -152,6 +154,7 @@ def test_a_warning_ends_the_pause_and_the_lines_before_it_follow(pause: _Pause) 
     shutdown_logging()
 
 
+@pytest.mark.entscheidung("E-088")
 def test_a_queue_filling_to_ten_percent_ends_the_pause(pause: _Pause) -> None:
     handler = _paused_handler(pause, _RecordingHandler(), maxsize=100)
 
@@ -165,6 +168,7 @@ def test_a_queue_filling_to_ten_percent_ends_the_pause(pause: _Pause) -> None:
     shutdown_logging()
 
 
+@pytest.mark.entscheidung("E-088")
 def test_shutdown_ends_the_pause_and_writes_every_line(pause: _Pause) -> None:
     target = _RecordingHandler()
     handler = _paused_handler(pause, target)
@@ -177,6 +181,7 @@ def test_shutdown_ends_the_pause_and_writes_every_line(pause: _Pause) -> None:
     assert target.messages == ["a", "b"]
 
 
+@pytest.mark.entscheidung("E-088")
 def test_stop_ends_the_pause_and_writes_every_line(pause: _Pause) -> None:
     target = _RecordingHandler()
     handler = _paused_handler(pause, target)

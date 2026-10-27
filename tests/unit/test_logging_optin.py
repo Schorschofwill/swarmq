@@ -461,6 +461,7 @@ def test_log_queue_size_bounds_the_opt_in_queue(broker: MagicMock, backend: Magi
         blocking.unblock.set()
 
 
+@pytest.mark.entscheidung("E-088")
 def test_the_opt_in_queue_has_no_batch_delay(broker: MagicMock, backend: MagicMock) -> None:
     """Plan 2026-10-27-0800, R8: Die Opt-in-Queue schreibt in die Handler der
     App und buendelt deshalb nicht, auch wenn die Konfiguration eine Pause

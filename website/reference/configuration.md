@@ -133,6 +133,7 @@ Details, recipes and the event catalog:
 | `SWARMQ_LOG_QUEUE_SIZE` | `10000` | Capacity of the in-process log queue. |
 | `SWARMQ_LOG_LIFECYCLE_LEVEL` | `DEBUG` | Level of `task_received` and `task_started`. |
 | `SWARMQ_LOG_DRAIN_TIMEOUT` | `5` | Upper bound in seconds for every flush of the log queues (at exit, before a reload, before each compute result, in `SwarmQ.__aexit__`); records not written in time count as dropped. Greater than 0 and at most `threading.TIMEOUT_MAX`. See [bounded flushing](logging.md#bounded-flushing). |
+| `SWARMQ_LOG_BATCH_DELAY` | `0.05` | Seconds the log listener collects lines below WARNING before writing them together; WARNING and above, a queue at 10 % and every flush end the pause at once. From 0 to 1; 0 writes every line at once. Not used by `--log-config` or the opt-in log queue. See [batched output](logging.md#batched-output). |
 | `SWARMQ_LOG_QUEUE` | `false` | Embedded apps: route `swarmq.*` events through a SwarmQ background thread to your root handlers ([opt-in log queue](logging.md#opt-in-log-queue)). |
 
 The supervisor of `swarmq worker` resolves these values once (CLI flag
