@@ -5,6 +5,7 @@ usage: swarmq worker [-h] --module DOTTED.PATH [--app-dir DIR]
                      [--log-format {human,json}] [--log-config PATH]
                      [--no-configure-logging] [--logger-level NAME=LEVEL]
                      [--log-queue-size N] [--log-drain-timeout SECONDS]
+                     [--log-batch-delay SECONDS]
                      [--log-lifecycle-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}]
                      [--burst] [--no-scheduler] [--metrics-port PORT]
                      [--health-port PORT] [--priorities] [--processes N]
@@ -75,6 +76,11 @@ options:
                         before a reload and before each compute result
                         (default: 5). Records not written in time are counted
                         as dropped. Overrides SWARMQ_LOG_DRAIN_TIMEOUT.
+  --log-batch-delay SECONDS
+                        How long the log thread collects lines below WARNING
+                        before writing them together (default: 0.05, at most
+                        1). WARNING and above are written at once; 0 writes
+                        every line at once. Overrides SWARMQ_LOG_BATCH_DELAY.
   --log-lifecycle-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}
                         Level of the task_received/task_started lifecycle
                         events (default: DEBUG). Overrides

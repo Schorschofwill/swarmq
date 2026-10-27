@@ -83,6 +83,8 @@ from __future__ import annotations
 # 32. ``__aexit__`` wirft nicht in den App-Code; die Records sind geschrieben.
 # 33. Haengt dabei ein App-Handler, kehrt ``__aexit__`` nach der Frist zurueck;
 #     der Rest ist als verworfen gezaehlt.
+# Plan 2026-10-27-0800, U3 (R8):
+# 34. Die Opt-in-Queue buendelt nicht, auch mit ``log_batch_delay=0.2``.
 import asyncio
 import contextvars
 import io
@@ -457,6 +459,20 @@ def test_log_queue_size_bounds_the_opt_in_queue(broker: MagicMock, backend: Magi
         assert dropped_log_records() - before == 3
     finally:
         blocking.unblock.set()
+
+
+@pytest.mark.entscheidung("E-088")
+def test_the_opt_in_queue_has_no_batch_delay(broker: MagicMock, backend: MagicMock) -> None:
+    """Plan 2026-10-27-0800, R8: Die Opt-in-Queue schreibt in die Handler der
+    App und buendelt deshalb nicht, auch wenn die Konfiguration eine Pause
+    setzt."""
+    from swarmq.logging_queue import _OptinQueueHandler
+
+    SwarmQ(broker, backend, log_queue=True, log_batch_delay=0.2)
+
+    (handler,) = [h for h in logging.getLogger("swarmq").handlers if isinstance(h, _OptinQueueHandler)]
+    assert handler.listener is not None
+    assert handler.listener.pause.delay == 0.0
 
 
 def test_a_call_handlers_hook_sees_each_opt_in_record_once(

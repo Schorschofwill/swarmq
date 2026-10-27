@@ -239,6 +239,8 @@ class SwarmQConfig(ConfigValidation):
     log_lifecycle_level: str = "DEBUG"
     # Frist fuer jedes Leeren der Log-Queues (Plan 2026-10-06-1811, KTD11).
     log_drain_timeout: float = 5.0
+    # Sammelpause des Log-Listeners (Plan 2026-10-27-0800, KTD3).
+    log_batch_delay: float = 0.05
     # Opt-in-Queue fuer eingebettete Apps (KTD10), standardmaessig aus.
     log_queue: bool = False
     # Die im Supervisor aufgeloesten Einstellungen (U7, KTD7). Gesetzt, sind
@@ -477,6 +479,7 @@ class SwarmQConfig(ConfigValidation):
             "log_queue_size",
             "log_lifecycle_level",
             "log_drain_timeout",
+            "log_batch_delay",
         }
     )
 
@@ -494,6 +497,7 @@ class SwarmQConfig(ConfigValidation):
         ("SWARMQ_LOG_QUEUE_SIZE", "log_queue_size", "int"),
         ("SWARMQ_LOG_LIFECYCLE_LEVEL", "log_lifecycle_level", "str"),
         ("SWARMQ_LOG_DRAIN_TIMEOUT", "log_drain_timeout", "float"),
+        ("SWARMQ_LOG_BATCH_DELAY", "log_batch_delay", "float"),
         ("SWARMQ_LOG_QUEUE", "log_queue", "bool"),
         ("SWARMQ_CONFIGURE_LOGGING", "configure_logging", "bool"),
         ("SWARMQ_LOGGER_LEVELS", "logger_levels", "logger_levels"),
@@ -715,6 +719,7 @@ class SwarmQConfig(ConfigValidation):
         self.log_queue_size = settings.queue_size
         self.log_lifecycle_level = settings.lifecycle_level
         self.log_drain_timeout = settings.drain_timeout
+        self.log_batch_delay = settings.batch_delay
 
     def __post_init__(self) -> None:
         self._apply_env_overrides()

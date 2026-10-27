@@ -83,7 +83,7 @@ swarmq worker --module DOTTED.PATH [--app-dir DIR]
               [--log-config PATH | --no-configure-logging]
               [--logger-level NAME=LEVEL]...
               [--log-queue-size N] [--log-lifecycle-level LEVEL]
-              [--log-drain-timeout SECONDS]
+              [--log-drain-timeout SECONDS] [--log-batch-delay SECONDS]
               [--burst] [--burst-idle-timeout SECONDS]
               [--no-scheduler]
               [--priorities]
@@ -112,6 +112,7 @@ swarmq worker --module DOTTED.PATH [--app-dir DIR]
 | `--log-queue-size N` | `10000` | Capacity of the in-process log queue; when it is full, records are dropped instead of blocking. Env var: `SWARMQ_LOG_QUEUE_SIZE`. |
 | `--log-lifecycle-level LEVEL` | `DEBUG` | Level of the `task_received` and `task_started` events. Env var: `SWARMQ_LOG_LIFECYCLE_LEVEL`. |
 | `--log-drain-timeout SECONDS` | `5` | Upper bound for every flush of the log queues: at exit, before a reload, before each compute result. Records not written in time count as dropped. Must be greater than 0 and at most `threading.TIMEOUT_MAX`, otherwise exit `78`. Env var: `SWARMQ_LOG_DRAIN_TIMEOUT`. See [Logging](logging.md#bounded-flushing). |
+| `--log-batch-delay SECONDS` | `0.05` | How long the log thread collects lines below WARNING before writing them together. WARNING and above are written at once; 0 writes every line at once. From 0 to 1, otherwise exit `78`. Env var: `SWARMQ_LOG_BATCH_DELAY`. See [Logging](logging.md#batched-output). |
 | `--burst` | off | Exit cleanly once all queues have been idle for `--burst-idle-timeout` seconds. Env var: `SWARMQ_BURST_MODE`. |
 | `--burst-idle-timeout SECONDS` | `5.0` | Seconds of queue silence required before `--burst` exits; the idle clock starts when the worker is ready and restarts with every delivery. Must be a finite number `> 0` (else exit `2`). Ignored without `--burst`. Env var: `SWARMQ_BURST_IDLE_TIMEOUT`. |
 | `--no-scheduler` | scheduler on | Keep this worker out of the scheduler leader election. It still reports its crons. Crons, `delay`/`eta` tasks and oneshots fire only while another worker on the same Valkey and namespace is leader. Env var: `SWARMQ_SCHEDULER=off` ([turning the scheduler off](../guides/scheduling-and-retries.md#turning-the-scheduler-off-on-single-workers)). |

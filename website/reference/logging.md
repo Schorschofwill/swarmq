@@ -228,6 +228,7 @@ subprocess and in every compute child. The built-in setup writes to
 | `--log-queue-size N` | `SWARMQ_LOG_QUEUE_SIZE` | `10000` | Capacity of the in-process log queue; a positive integer. |
 | `--log-lifecycle-level LEVEL` | `SWARMQ_LOG_LIFECYCLE_LEVEL` | `DEBUG` | Level of `task_received` and `task_started` ([lifecycle events](#task-lifecycle-events)). |
 | `--log-drain-timeout SECONDS` | `SWARMQ_LOG_DRAIN_TIMEOUT` | `5` | Upper bound for every flush of the log queues ([bounded flushing](#bounded-flushing)); a number greater than 0. |
+| `--log-batch-delay SECONDS` | `SWARMQ_LOG_BATCH_DELAY` | `0.05` | How long the listener collects lines below WARNING before writing them together ([batched output](#batched-output)); 0 to 1, 0 writes every line at once. |
 
 `CRITICAL` is accepted wherever a level is.
 
@@ -451,6 +452,32 @@ is full, SwarmQ drops records instead of blocking:
 - The worker exports the counter as the Prometheus metric
   `swarmq_log_records_dropped_total`. It covers the worker process only;
   drops in compute children are visible as their notice line.
+
+### Batched output
+
+The listener thread of the built-in setup does not wake up for every line.
+Once the queue is empty, it waits up to `log_batch_delay` seconds (default
+0.05; `--log-batch-delay`, `SWARMQ_LOG_BATCH_DELAY` or the `SwarmQConfig`
+field) and then writes all lines queued so far together. Each wake-up took
+the GIL from the event loop; with short tasks the success line
+`task_succeeded` alone cost about 13 % throughput, and batching wins back
+about 7 to 11 % without dropping that line.
+
+- A line at WARNING or above ends the pause at once; it and every line
+  before it are written without further delay.
+- The pause also ends when the queue reaches 10 % of its capacity, and on
+  every flush (process exit, reload, before each compute result). The
+  full `log_drain_timeout` remains for writing.
+- Lines below WARNING appear up to `log_batch_delay` later. Their timestamp
+  is still the time of the log call.
+- A hard end without a flush (SIGKILL, segfault, OOM kill, `os._exit`) can
+  lose up to one pause of lines below WARNING.
+- Your own dictConfig file (`--log-config`) and the
+  [opt-in log queue](#opt-in-log-queue) do not batch: they write into
+  handlers of your app, where batched SwarmQ lines would appear after app
+  lines logged later.
+
+`--log-batch-delay 0` restores writing every line at once.
 
 ### Bounded flushing
 

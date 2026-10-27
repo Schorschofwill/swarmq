@@ -321,6 +321,7 @@ async def test_fire_and_forget_error_logs_error_type_and_error(setup, swarmq_log
 #        von ``SwarmQConfig``.
 # 4. [x] Plan 2026-10-06-1811, U4 (KTD11): ``log_drain_timeout`` reist in
 #        beiden Faellen mit dem Job ins Kind.
+# 5. [x] Plan 2026-10-27-0800, U3 (R8): ``log_batch_delay`` ebenso.
 # 3. [ ] Eingebettet mit ``log_config`` laedt der Executor die Datei einmal und
 #        gibt sie als JSON mit; die Kinder lesen sie nie.
 
@@ -337,6 +338,7 @@ async def test_job_carries_the_supervisor_resolved_logging_settings():
         logger_levels=(("aio_pika", "WARNING"),),
         queue_size=500,
         drain_timeout=0.75,
+        batch_delay=0.2,
     )
     pool = FakePool()
     ex = ComputeExecutor(_deps(logging_settings=settings), pool, worker_id="w1")  # type: ignore[arg-type]
@@ -354,6 +356,7 @@ async def test_job_carries_the_supervisor_resolved_logging_settings():
         500,
     )
     assert job.log_drain_timeout == 0.75
+    assert job.log_batch_delay == 0.2
 
 
 @pytest.mark.timeout(5)
@@ -366,6 +369,7 @@ async def test_embedded_job_takes_the_logging_fields_of_swarmq_config():
         logger_levels=(("aio_pika", "ERROR"),),
         log_queue_size=200,
         log_drain_timeout=1.5,
+        log_batch_delay=0.3,
     )
     ex = ComputeExecutor(deps, pool, worker_id="w1")  # type: ignore[arg-type]
     await ex.execute(_ctx(), partial_message(retry_count=0), MiddlewareChain([]))
@@ -377,6 +381,7 @@ async def test_embedded_job_takes_the_logging_fields_of_swarmq_config():
         200,
     )
     assert job.log_drain_timeout == 1.5
+    assert job.log_batch_delay == 0.3
 
 
 @pytest.mark.timeout(5)

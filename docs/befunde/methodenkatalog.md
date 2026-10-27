@@ -79,6 +79,7 @@ Die Pakete und Module direkt unter `src/swarmq/`, ohne `__init__.py` und `py.typ
 - `limits`
 - `locking`
 - `logging`
+- `logging_batch`
 - `logging_drain`
 - `logging_file`
 - `logging_fork`

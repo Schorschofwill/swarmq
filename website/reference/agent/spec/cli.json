@@ -624,6 +624,17 @@
         {
           "default": null,
           "flags": [
+            "--log-batch-delay"
+          ],
+          "help": "How long the log thread collects lines below WARNING before writing them together (default: 0.05, at most 1). WARNING and above are written at once; 0 writes every line at once. Overrides SWARMQ_LOG_BATCH_DELAY.",
+          "name": "--log-batch-delay",
+          "positional": false,
+          "required": false,
+          "type": "str"
+        },
+        {
+          "default": null,
+          "flags": [
             "--log-config"
           ],
           "help": "Logging dictConfig file (JSON; YAML with PyYAML installed) applied in every swarmq process instead of the built-in setup. Not combinable with --log-format or --no-configure-logging. Overrides SWARMQ_LOG_CONFIG.",

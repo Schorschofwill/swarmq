@@ -70,6 +70,8 @@ class ComputeJob:
     log_queue_size: int = 10_000
     # Frist fuer das Leeren vor jedem Ergebnis (Plan 2026-10-06-1811, KTD3).
     log_drain_timeout: float = 5.0
+    # Sammelpause des Log-Listeners im Kind (Plan 2026-10-27-0800, R8).
+    log_batch_delay: float = 0.05
     worker_id: str = ""
     workflow_id: str | None = None  # U10 (KTD13): Logkontext im Kind
 

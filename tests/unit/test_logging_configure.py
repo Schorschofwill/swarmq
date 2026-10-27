@@ -75,6 +75,12 @@ from __future__ import annotations
 # Review A5:
 # 34. [x] Beim Stoppen meldet der Datei-Modus-Listener einen von der
 #     Ratenbegrenzung zurueckgehaltenen Fehlerstand (Zeit gemockt).
+# Plan 2026-10-27-0800, U3 (R7, R8; KTD5) -- Sammelpause:
+# 35. [x] Eingebaut: Die Pause kommt aus ``settings.batch_delay`` und bleibt
+#     nach ``shutdown_logging`` am frischen Listener erhalten.
+# 36. [x] Im Kind nach einem echten Fork hat der Listener dieselbe Pause.
+# 37. [x] Datei-Modus mit ``batch_delay=0.2``: Der Listener der dictConfig
+#     bleibt der stdlib-``QueueListener`` ohne Sammelpause (E-088).
 import io
 import json
 import logging
@@ -97,6 +103,7 @@ from swarmq.logging import (
     get_logger,
     load_log_config,
 )
+from swarmq.logging_queue import _StructlogQueueHandler
 from swarmq.logging_settings import LoggingSettings
 from tests.unit._fork_child import FORK_TEST_TIMEOUT_S, UNBOUNDED_DRAIN_S, run_in_forked_child
 
@@ -340,6 +347,37 @@ def test_builtin_queue_size_comes_from_settings(monkeypatch: pytest.MonkeyPatch)
     assert handler.queue.maxsize == 5  # type: ignore[attr-defined]
 
 
+def test_builtin_batch_delay_comes_from_settings_and_survives_shutdown(monkeypatch: pytest.MonkeyPatch) -> None:
+    from swarmq.logging import shutdown_logging
+
+    _stderr(monkeypatch)
+    configure_logging(LoggingSettings(batch_delay=0.2))
+    (handler,) = logging.getLogger().handlers
+    assert isinstance(handler, _StructlogQueueHandler)
+    assert handler.listener is not None
+    assert handler.listener.pause.delay == 0.2
+    # Erst ein laufender Listener wird beim Leeren gegen einen frischen
+    # getauscht.
+    get_logger("swarmq.tests.configure").info("evt_batch")
+
+    shutdown_logging()
+
+    assert handler.listener.pause.delay == 0.2
+
+
+def test_the_listener_in_a_forked_child_keeps_the_batch_delay(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stderr(monkeypatch)
+    configure_logging(LoggingSettings(batch_delay=0.2))
+    (handler,) = logging.getLogger().handlers
+    assert isinstance(handler, _StructlogQueueHandler)
+
+    def check() -> None:
+        assert handler.listener is not None
+        assert handler.listener.pause.delay == 0.2
+
+    assert run_in_forked_child(check) == 0
+
+
 @pytest.mark.parametrize(("tty", "ansi"), [(False, False), (True, True)])
 def test_text_mode_uses_ansi_only_on_a_tty(monkeypatch: pytest.MonkeyPatch, tty: bool, ansi: bool) -> None:
     stderr = _stderr(monkeypatch, tty=tty)
@@ -441,6 +479,30 @@ def test_file_mode_starts_queue_handler_listeners_and_shutdown_stops_them(
 
     assert [r.getMessage() for r in FILE_RECORDS] == ["evt_queued"]
     assert listener._thread is None
+
+
+@pytest.mark.entscheidung("E-088")
+def test_file_mode_listener_does_not_batch(tmp_path: pathlib.Path) -> None:
+    from swarmq.logging import shutdown_logging
+
+    path = _config_file(
+        tmp_path,
+        {
+            "version": 1,
+            "handlers": {
+                "rec": {"()": _RECORDING},
+                "q": {"class": "logging.handlers.QueueHandler", "handlers": ["rec"]},
+            },
+            "root": {"level": "INFO", "handlers": ["q"]},
+        },
+    )
+
+    configure_logging(LoggingSettings(log_config=path, batch_delay=0.2))
+    (handler,) = logging.getLogger().handlers
+    listener = handler.listener  # type: ignore[attr-defined]
+    shutdown_logging()
+
+    assert type(listener) is logging.handlers.QueueListener
 
 
 def test_logger_level_overrides_win_over_the_config_file(

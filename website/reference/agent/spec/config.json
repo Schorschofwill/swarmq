@@ -99,6 +99,12 @@
       "type": "float"
     },
     {
+      "default": 0.05,
+      "env_var": "SWARMQ_LOG_BATCH_DELAY",
+      "name": "log_batch_delay",
+      "type": "float"
+    },
+    {
       "default": false,
       "env_var": "SWARMQ_LOG_QUEUE",
       "name": "log_queue",

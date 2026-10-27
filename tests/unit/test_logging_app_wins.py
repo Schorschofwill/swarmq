@@ -30,6 +30,9 @@ from __future__ import annotations
 # 8. [x] Nach dem Ersatz sieht ein Hook auf ``Logger.callHandlers`` (Muster
 #        von Sentrys ``LoggingIntegration``) jeden swarmq-Record genau
 #        einmal.
+# 9. [x] Die Opt-in-Queue nach dem Ersatz buendelt nicht, auch wenn die
+#        Einstellung eine Sammelpause setzt: Sie schreibt in die Handler der
+#        App (Plan 2026-10-27-0800, R8).
 import argparse
 import io
 import itertools
@@ -396,3 +399,22 @@ async def test_a_call_handlers_hook_sees_each_swarmq_record_once_after_the_takeo
     shutdown_logging()
     assert len(_app_events("evt_hooked")) == 1
     assert seen.count("evt_hooked") == 1
+
+
+@pytest.mark.entscheidung("E-088")
+@pytest.mark.timeout(5)
+async def test_the_opt_in_queue_after_the_takeover_has_no_batch_delay(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from swarmq.logging_queue import _OptinQueueHandler
+
+    configure_logging(LoggingSettings(format="json", batch_delay=0.2))
+    module = _app_module(tmp_path, monkeypatch, _REPLACE_ROOT)
+    with pytest.raises(ConfigurationError, match="no tasks registered"):
+        await cli.run_worker_async(_args(module))
+
+    (handler,) = [h for h in logging.getLogger("swarmq").handlers if isinstance(h, _OptinQueueHandler)]
+    assert handler.listener is not None
+    assert handler.listener.pause.delay == 0.0
+    shutdown_logging()

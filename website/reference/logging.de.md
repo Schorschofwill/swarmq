@@ -235,6 +235,7 @@ Einrichtung schreibt über eine Queue und einen Hintergrund-Thread nach
 | `--log-queue-size N` | `SWARMQ_LOG_QUEUE_SIZE` | `10000` | Kapazität der prozessinternen Log-Queue; eine positive ganze Zahl. |
 | `--log-lifecycle-level LEVEL` | `SWARMQ_LOG_LIFECYCLE_LEVEL` | `DEBUG` | Level von `task_received` und `task_started` ([Lebenszyklus-Events](#lebenszyklus-events-der-tasks)). |
 | `--log-drain-timeout SECONDS` | `SWARMQ_LOG_DRAIN_TIMEOUT` | `5` | Obergrenze für jedes Leeren der Log-Queues ([begrenztes Leeren](#begrenztes-leeren)); eine Zahl größer als 0. |
+| `--log-batch-delay SECONDS` | `SWARMQ_LOG_BATCH_DELAY` | `0.05` | Wie lange der Listener Zeilen unter WARNING sammelt, bevor er sie gemeinsam schreibt ([gebündelte Ausgabe](#gebundelte-ausgabe)); 0 bis 1, 0 schreibt jede Zeile sofort. |
 
 `CRITICAL` ist überall erlaubt, wo ein Level erwartet wird.
 
@@ -462,6 +463,32 @@ verwirft SwarmQ Einträge, statt zu blockieren:
 - Der Worker exportiert den Zähler als Prometheus-Metrik
   `swarmq_log_records_dropped_total`. Sie umfasst nur den
   Worker-Prozess; Verluste in Rechenkindern zeigt deren Meldungszeile.
+
+### Gebündelte Ausgabe
+
+Der Listener-Thread der eingebauten Einrichtung wacht nicht für jede Zeile
+auf. Ist die Queue leer, wartet er bis zu `log_batch_delay` Sekunden
+(Default 0,05; `--log-batch-delay`, `SWARMQ_LOG_BATCH_DELAY` oder das Feld
+in `SwarmQConfig`) und schreibt dann alle bis dahin eingereihten Zeilen
+gemeinsam. Jedes Aufwachen nahm der Event-Loop den GIL; bei kurzen Tasks
+kostete allein die Erfolgszeile `task_succeeded` rund 13 % Durchsatz, und
+das Bündeln holt davon etwa 7 bis 11 % zurück, ohne die Zeile zu verlieren.
+
+- Eine Zeile ab WARNING beendet die Pause sofort; sie und alle Zeilen davor
+  werden ohne weitere Wartezeit geschrieben.
+- Die Pause endet auch, wenn die Queue 10 % ihrer Kapazität erreicht, und
+  bei jedem Leeren (Prozessende, Reload, vor jedem Ergebnis eines
+  Rechenkinds). Die volle Frist `log_drain_timeout` bleibt fürs Schreiben.
+- Zeilen unter WARNING erscheinen bis zu `log_batch_delay` später. Ihr
+  Zeitstempel bleibt der Zeitpunkt des Logaufrufs.
+- Ein hartes Ende ohne Leeren (SIGKILL, Segfault, OOM-Kill, `os._exit`)
+  kann bis zu einer Pause an Zeilen unter WARNING verlieren.
+- Eine eigene dictConfig-Datei (`--log-config`) und die
+  [Opt-in-Log-Queue](#opt-in-log-queue) bündeln nicht: Sie schreiben in
+  Handler der App, wo gebündelte SwarmQ-Zeilen nach später geloggten
+  App-Zeilen erschienen.
+
+`--log-batch-delay 0` schreibt wieder jede Zeile sofort.
 
 ### Begrenztes Leeren
 

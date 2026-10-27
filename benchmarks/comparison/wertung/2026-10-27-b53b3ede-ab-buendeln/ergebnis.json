@@ -1,0 +1,44 @@
+{
+  "ref_a": "fa646592",
+  "ref_b": "b53b3ede",
+  "commit_a": "fa6465925483d172def8adde15cc22a9ad76d03e",
+  "commit_b": "b53b3eded11311c990a7833ceeeaf4bbf5dd784f",
+  "befehl": "cd benchmarks/comparison && { [ -x .venvs/swarmq/bin/python ] || ./einrichten.sh swarmq >&2; } && .venvs/swarmq/bin/python runner.py --scenario io_bound --systems swarmq --profile stark --parallelitaet gleich --runs 1 >&2 && python3 -c \"import glob, json, os; f = max(glob.glob(\\\"results/io_bound_*.json\\\"), key=os.path.getmtime); print(json.dumps({\\\"durchsatz\\\": json.load(open(f))[\\\"throughput\\\"]}))\"",
+  "kennzahl": "durchsatz",
+  "besser": "groesser",
+  "paare": 10,
+  "erweitert": false,
+  "werte_a": [
+    365.89,
+    380.55,
+    381.3,
+    382.76,
+    364.98,
+    365.58,
+    380.02,
+    391.68,
+    389.22,
+    384.26
+  ],
+  "werte_b": [
+    423.29,
+    431.64,
+    409.44,
+    412.3,
+    420.07,
+    405.98,
+    425.73,
+    421.96,
+    413.01,
+    437.03
+  ],
+  "u": 0.0,
+  "p": 0.0001826717911095504,
+  "verschiebung": 41.204999999999984,
+  "relativ": 0.10817089978342188,
+  "profile": {
+    "a": "/ergebnisse/ab/ergebnis-profil-a.svg",
+    "b": "/ergebnisse/ab/ergebnis-profil-b.svg"
+  },
+  "urteil": "Gewinn"
+}

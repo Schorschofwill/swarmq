@@ -86,7 +86,7 @@ swarmq worker --module DOTTED.PATH [--app-dir DIR]
               [--log-config PATH | --no-configure-logging]
               [--logger-level NAME=LEVEL]...
               [--log-queue-size N] [--log-lifecycle-level LEVEL]
-              [--log-drain-timeout SECONDS]
+              [--log-drain-timeout SECONDS] [--log-batch-delay SECONDS]
               [--burst] [--burst-idle-timeout SECONDS]
               [--no-scheduler]
               [--priorities]
@@ -115,6 +115,7 @@ swarmq worker --module DOTTED.PATH [--app-dir DIR]
 | `--log-queue-size N` | `10000` | Kapazität der prozessinternen Log-Queue; ist sie voll, werden Einträge verworfen statt zu blockieren. Env-Var: `SWARMQ_LOG_QUEUE_SIZE`. |
 | `--log-lifecycle-level LEVEL` | `DEBUG` | Level der Events `task_received` und `task_started`. Env-Var: `SWARMQ_LOG_LIFECYCLE_LEVEL`. |
 | `--log-drain-timeout SECONDS` | `5` | Obergrenze für jedes Leeren der Log-Queues: beim Prozessende, vor einem Reload, vor jedem Ergebnis eines Rechenkinds. Nicht rechtzeitig geschriebene Einträge gelten als verworfen. Muss größer als 0 und höchstens `threading.TIMEOUT_MAX` sein, sonst Exit `78`. Env-Var: `SWARMQ_LOG_DRAIN_TIMEOUT`. Siehe [Logging](logging.md#begrenztes-leeren). |
+| `--log-batch-delay SECONDS` | `0.05` | Wie lange der Log-Thread Zeilen unter WARNING sammelt, bevor er sie gemeinsam schreibt. WARNING und höher kommen sofort; 0 schreibt jede Zeile sofort. 0 bis 1, sonst Exit `78`. Env-Var: `SWARMQ_LOG_BATCH_DELAY`. Siehe [Logging](logging.md#gebundelte-ausgabe). |
 | `--burst` | aus | Exited sauber, sobald alle Queues `--burst-idle-timeout` Sekunden Idle waren. Env-Var: `SWARMQ_BURST_MODE`. |
 | `--burst-idle-timeout SECONDS` | `5.0` | Sekunden Queue-Stille, bevor `--burst` endet; die Uhr beginnt, wenn der Worker bereit ist, und startet bei jeder Zustellung neu. Muss eine endliche Zahl `> 0` sein (sonst Exit `2`). Ohne `--burst` ignoriert. Env-Var: `SWARMQ_BURST_IDLE_TIMEOUT`. |
 | `--no-scheduler` | Scheduler an | Hält diesen Worker aus der Wahl des Scheduler-Leaders heraus. Er meldet seine Crons weiter. Crons, `delay`/`eta`-Tasks und Oneshots feuern nur, solange ein anderer Worker am selben Valkey und Namensraum Leader ist. Env-Var: `SWARMQ_SCHEDULER=off` ([Scheduler abschalten](../guides/scheduling-and-retries.de.md#scheduler-auf-einzelnen-workern-abschalten)). |
