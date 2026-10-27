@@ -17,6 +17,17 @@ All notable changes to SwarmQ. This project follows
   always ends with `CancelledError`, with the channel error as its cause
   (F4-28).
 
+### Performance
+
+- **Faster plain text log lines.** The text renderer without colours (the
+  default when stderr is not a terminal) builds its columns directly
+  instead of through structlog's column formatters; the output stays the
+  same byte for byte, which a property test against structlog's
+  `ConsoleRenderer` guards. Formatting a line takes about 45 % less time
+  (12.9 → 7.1 µs per line), and on the reference machine `io_bound`
+  throughput rose by 3.6 % (30 runs each, p < 0.001). Coloured output and
+  JSON are unchanged.
+
 ## [0.15.1] — 2026-10-27
 
 0.15.1 batches the log output of the built-in setup. Nothing else changed
