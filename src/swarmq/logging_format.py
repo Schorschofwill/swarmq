@@ -146,7 +146,8 @@ _PLAIN_COLUMNS = (
 """Spalten des ConsoleRenderer ohne Farben, ausgabegleich (Property-Test
 gegen structlog). Die Formatierer von structlog schreiben jede Spalte
 ueber ein ``StringIO`` samt leerer Stil-Codes; das kostete rund 45 % der
-Formatierzeit und auf celsius 3,6 % Durchsatz."""
+Formatierzeit und auf celsius mit dem Governor ``schedutil`` 3,6 % Durchsatz
+(mit ``performance`` nicht messbar)."""
 
 
 def build_formatter(json: bool, colors: bool) -> structlog.stdlib.ProcessorFormatter:

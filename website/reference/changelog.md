@@ -24,9 +24,12 @@ All notable changes to SwarmQ. This project follows
   instead of through structlog's column formatters; the output stays the
   same byte for byte, which a property test against structlog's
   `ConsoleRenderer` guards. Formatting a line takes about 45 % less time
-  (12.9 → 7.1 µs per line), and on the reference machine `io_bound`
-  throughput rose by 3.6 % (30 runs each, p < 0.001). Coloured output and
-  JSON are unchanged.
+  in isolation (12.9 → 7.1 µs per line) and about 24 % less in the log
+  listener of a running worker. Whether that shows in throughput depends
+  on the CPU clock: on the reference machine with the `schedutil`
+  governor, which clocks idle cores down, `io_bound` throughput rose by
+  3.6 % (30 runs each, p < 0.001); with the `performance` governor there
+  was no measurable change. Coloured output and JSON are unchanged.
 
 ## [0.15.1] — 2026-10-27
 
