@@ -13,7 +13,7 @@ only-include = ["src", "README.md"]
 
 [project]
 name = "swarmq"
-version = "0.15.0"
+version = "0.15.1"
 description = "Async-first task queue for Python 3.14+ on RabbitMQ and Valkey"
 license = "MIT"
 # readme: PyPI-Fassung aus README.md, siehe [tool.hatch.metadata.hooks.fancy-pypi-readme].
