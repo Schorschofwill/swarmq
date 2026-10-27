@@ -4,7 +4,11 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 [Keep a Changelog](https://keepachangelog.com/) und
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.15.1] — 2026-10-27
+
+0.15.1 bündelt die Log-Ausgabe der eingebauten Einrichtung. Sonst ist
+gegenüber 0.15.0 nichts geändert, und nichts bricht; `--log-batch-delay 0`
+behält das bisherige Verhalten.
 
 ### Performance
 
