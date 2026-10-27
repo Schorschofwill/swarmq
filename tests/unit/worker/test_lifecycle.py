@@ -27,6 +27,10 @@ Unit tests for graceful shutdown (Unit 2.5)."""
 # Test list (0.11.0, Ausfuehrungsschutz):
 # 8. Der Shutdown laesst die Nachholversuche gescheiterter Marker-Abschluesse
 #    (``ExecutionGuard.drain``) VOR ``backend.close`` laufen.
+#
+# Test list (F4-28, Charakterisierung beim Auslagern der Exit-Gruende):
+# 9. Fehlt die Bestaetigung des Recyclings, meldet ``start()`` nach dem
+#    Herunterfahren ``RecycleAckTimeout``.
 
 from __future__ import annotations
 
@@ -1147,6 +1151,25 @@ class TestStartupFailureLeavesNothingBehind:
         assert w._scheduler is None
         assert _pending_scheduler_tasks() == []
         broker.close.assert_not_awaited()
+
+
+async def test_start_reports_a_missing_recycle_ack_after_shutdown(broker, backend, registry, config):
+    from swarmq.supervision import RecycleAckTimeout
+
+    w = Worker(broker=broker, backend=backend, registry=registry, config=config)
+    online = asyncio.Event()
+
+    async def _online(**_kwargs: object) -> None:
+        online.set()
+
+    w._signal_dispatcher.connect(Signal.WORKER_ONLINE, _online)
+    start = asyncio.create_task(w.start())
+    await asyncio.wait_for(online.wait(), timeout=2)
+    w._recycle_ack_missing = True
+    w._request_shutdown()
+
+    with pytest.raises(RecycleAckTimeout):
+        await asyncio.wait_for(start, timeout=2)
 
 
 async def test_start_wires_the_execution_guard_store_of_the_backend(broker, backend, registry, config):
