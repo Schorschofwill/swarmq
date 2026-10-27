@@ -22,6 +22,7 @@ import threading
 import weakref
 from typing import Any, override
 
+from swarmq.logging_batch import BatchPause
 from swarmq.logging_drain import (
     Deadline,
     abandon,
@@ -107,8 +108,10 @@ class _SwarmqQueueListener(logging.handlers.QueueListener):
     _sentinel: None
     _monitor: Any
 
-    def __init__(self, queue_: _ListenerQueue, *handlers: logging.Handler) -> None:
+    def __init__(self, queue_: _ListenerQueue, *handlers: logging.Handler, batch_delay: float = 0.0) -> None:
         super().__init__(queue_, *handlers)
+        # Sammelpause nach leerer Queue (Plan 2026-10-27-0800, KTD1).
+        self.pause = BatchPause(batch_delay)
         self._reports = ListenerReports(self._dispatch)
         self.errors = self._reports.errors
         # Verworfene Records des zugehoerigen Queue-Handlers; gemeldet aus
@@ -182,8 +185,16 @@ class _SwarmqQueueListener(logging.handlers.QueueListener):
     @override
     def dequeue(self, block: bool) -> Any:
         """Eine per ``Queue.shutdown`` geschlossene, leere Queue beendet den
-        Thread wie ``queue.Empty`` statt mit einer Ausnahme."""
+        Thread wie ``queue.Empty`` statt mit einer Ausnahme.
+
+        Mit Sammelpause wartet der Thread nach leerer Queue erst die Pause
+        ab, bevor er blockierend holt (Plan 2026-10-27-0800, KTD2)."""
         try:
+            if block and self.pause.delay > 0:
+                try:
+                    return self.queue.get_nowait()
+                except queue.Empty:
+                    self.pause.wait()
             return self.queue.get(block)
         except queue.ShutDown:
             raise queue.Empty from None
@@ -192,9 +203,11 @@ class _SwarmqQueueListener(logging.handlers.QueueListener):
     def enqueue_sentinel(self) -> None:
         """Blockierend: Bei voller Queue wuerde ``put_nowait`` werfen; der
         laufende Listener schafft Platz. Eine geschlossene Queue braucht
-        keinen Sentinel, der Thread endet nach dem Leeren von selbst."""
+        keinen Sentinel, der Thread endet nach dem Leeren von selbst. Danach
+        endet eine laufende Sammelpause (Plan 2026-10-27-0800, R6)."""
         with contextlib.suppress(queue.ShutDown):
             self.queue.put(self._sentinel)
+        self.pause.wake()
 
 
 def dropped_log_records() -> int:
@@ -243,12 +256,14 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
         queue_: _LogQueue,
         *handlers: logging.Handler,
         json: bool = False,
+        batch_delay: float = 0.0,
     ) -> None:
         super().__init__(queue_)
         self.json = json
         self.dropped = 0
         self._reserve_at = self._reserve_threshold()
-        self.listener = _SwarmqQueueListener(queue_, *handlers) if handlers else None
+        self._wake_at = self._wake_threshold()
+        self.listener = _SwarmqQueueListener(queue_, *handlers, batch_delay=batch_delay) if handlers else None
         # Aufgegebener Listener-Thread (Plan 2026-10-06-1811, KTD3).
         self._abandoned: threading.Thread | None = None
         _HANDLERS.add(self)
@@ -291,23 +306,41 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
             self.queue.put_nowait(record)
         except queue.Full, queue.ShutDown:
             self._drop()
+            return
+        if listener is not None and listener.pause.delay > 0 and self._ends_pause(record):
+            listener.pause.wake()
+
+    def _ends_pause(self, record: logging.LogRecord) -> bool:
+        """WARNING und hoeher warten nie auf die Sammelpause; ab 10 %
+        Fuellstand endet sie, damit die Reserve ab 90 % so selten greift wie
+        ohne Pause (Plan 2026-10-27-0800, R4, R5)."""
+        if record.levelno >= logging.WARNING:
+            return True
+        wake_at = self._wake_at
+        return wake_at is not None and self._level() >= wake_at
 
     def _in_reserve(self) -> bool:
         """Ab 90 % Fuellstand bleibt der Rest WARNING und hoeher vorbehalten."""
         reserve_at = self._reserve_at
-        if reserve_at is None:
-            return False
+        return reserve_at is not None and self._level() >= reserve_at
+
+    def _level(self) -> int:
         q = self.queue
         # ``len`` der Deque ohne das Mutex von ``qsize``; Unterklassen koennen
         # ``_qsize`` ueberschreiben und behalten deshalb ``qsize``.
-        level = len(q.queue) if type(q) is queue.Queue else q.qsize()
-        return level >= reserve_at
+        return len(q.queue) if type(q) is queue.Queue else q.qsize()
 
     def _reserve_threshold(self) -> int | None:
         """Fuellstand, ab dem die Reserve gilt: ``ceil(maxsize * 0.9)``,
         ganzzahlig wie ``qsize * 10 >= maxsize * 9``; ``None`` ohne Grenze."""
         maxsize = self.queue.maxsize
         return -(-maxsize * 9 // 10) if maxsize > 0 else None
+
+    def _wake_threshold(self) -> int | None:
+        """Fuellstand, ab dem die Sammelpause endet: ``ceil(maxsize * 0.1)``;
+        ``None`` ohne Grenze."""
+        maxsize = self.queue.maxsize
+        return -(-maxsize // 10) if maxsize > 0 else None
 
     def _drop(self) -> None:
         # ``dropped += 1`` is deliberately lock-free: under
@@ -341,6 +374,7 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
         KTD3)."""
         self.queue = fresh = _LogQueue(self.queue.maxsize)  # pyright: ignore[reportIncompatibleVariableOverride]  # engerer Queue-Typ als in typeshed, nur intern gesetzt
         self._reserve_at = self._reserve_threshold()
+        self._wake_at = self._wake_threshold()
         if self.listener is not None:
             # Der alte Listener verweist auf einen Thread, den es im Kind
             # nicht gibt oder der die alte Queue leert.
@@ -705,6 +739,8 @@ def _close(
     if handler is not None and swap:
         handler._swap_queue()
     listener.queue.shutdown()
+    # Das Leeren wartet nie auf die Sammelpause (Plan 2026-10-27-0800, R6).
+    listener.pause.wake()
     return _Draining(listener, thread, handler)
 
 
