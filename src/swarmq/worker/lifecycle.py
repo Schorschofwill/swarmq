@@ -68,6 +68,24 @@ _SHUTDOWN_PUBLISH_RESERVE_S = CLEANUP_RESERVE_S
 _SHUTDOWN_STEP_MIN_S = 1.0
 
 
+def _cancelling_now() -> int:
+    """``cancelling()`` der laufenden Task (0 ausserhalb einer Task)."""
+    task = asyncio.current_task()
+    return task.cancelling() if task is not None else 0
+
+
+def _raise_if_cancel_was_swallowed(cancelling_at_entry: int, cause: Exception | None = None) -> None:
+    """F4-28: aiormq verwandelt einen Abbruch, der einen RPC-Task trifft,
+    waehrend der Kanal schliesst, in den Kanalfehler (``TaskWrapper.throw``);
+    swarmq oder aiormqs ``close()`` fangen den als normalen Ablauf, oder er
+    kommt als Fehler des Brokers an. Der Task traegt den Abbruch dann noch
+    (``cancelling()``), wuerde aber weiterlaufen oder mit dem Fehler enden.
+    Nur ein Anstieg gegenueber dem Eintritt zaehlt (KTD9, wie
+    ``delivery.settle``)."""
+    if _cancelling_now() > cancelling_at_entry:
+        raise asyncio.CancelledError from cause
+
+
 class WorkerState(enum.Enum):
     STARTING = "STARTING"
     RUNNING = "RUNNING"
@@ -410,6 +428,7 @@ class WorkerLifecycle:
 
     async def start(self) -> None:
         """Connect broker + backend, declare queues, start consuming, block until shutdown."""
+        cancelling_at_entry = _cancelling_now()
         await self._broker.connect()
         await self._backend.connect()
         # The try/finally makes the cancel and error paths safe from the
@@ -437,6 +456,7 @@ class WorkerLifecycle:
             self._warn_without_delivery_limit()
             await self._start_executor()
             await self._declare_and_consume_queues()
+            _raise_if_cancel_was_swallowed(cancelling_at_entry)
             self._start_consumer_watch()
             self._state = WorkerState.RUNNING
 
@@ -462,18 +482,26 @@ class WorkerLifecycle:
                 worker_id=self._config.worker_identity,
             )
             self._start_background_monitors()
+            _raise_if_cancel_was_swallowed(cancelling_at_entry)
             # Block until shutdown is requested.
             await self._shutdown_event.wait()
             await self._execute_shutdown()
-            if getattr(self, "_recycle_ack_missing", False):
-                # KTD11: ohne Bestaetigung Exit != 0, damit der Supervisor den
-                # bestehenden Restart-Pfad nimmt statt den Slot zu verlieren.
-                raise RecycleAckTimeout("supervisor did not acknowledge the recycle request")
-            if (rejected := getattr(self, "_fork_source_rejected", None)) is not None:
-                # Schluss-Review: verworfene Kindquelle (compute.wiring) -> Exit 71.
-                raise ForkSourceRejected(f"compute fork source rejected: {rejected}")
+            self._raise_for_exit_reason()
+        except Exception as exc:
+            _raise_if_cancel_was_swallowed(cancelling_at_entry, exc)
+            raise
         finally:
             await self._teardown_on_exit()
+
+    def _raise_for_exit_reason(self) -> None:
+        """Nach dem Herunterfahren: Exit-Gruende, die ``start()`` als Fehler meldet."""
+        if getattr(self, "_recycle_ack_missing", False):
+            # KTD11: ohne Bestaetigung Exit != 0, damit der Supervisor den
+            # bestehenden Restart-Pfad nimmt statt den Slot zu verlieren.
+            raise RecycleAckTimeout("supervisor did not acknowledge the recycle request")
+        if (rejected := getattr(self, "_fork_source_rejected", None)) is not None:
+            # Schluss-Review: verworfene Kindquelle (compute.wiring) -> Exit 71.
+            raise ForkSourceRejected(f"compute fork source rejected: {rejected}")
 
     async def _burst_monitor(self) -> None:
         """Poll the idle clock; trigger shutdown when burst-timeout elapses.
