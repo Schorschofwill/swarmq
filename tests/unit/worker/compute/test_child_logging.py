@@ -73,14 +73,14 @@ Schluss-Review:
 28. [x] Der Sentinel gibt an ``lastResort`` nur weiter, wenn kein anderer
         Handler den Record bekommt (wie die stdlib selbst): Ein App-Handler
         an einem Nicht-Root-Logger fuehrt zu keiner zweiten Ausgabe.
-Plan 2026-10-27-0800, U3 (R8):
-29. [x] Eingebaut buendelt der Listener im Kind mit der Pause aus dem Job.
 29. [x] ... die Opt-in-Queue am Logger ``swarmq`` zaehlt dabei nicht: Sie
         reicht den Record im Forkserver selbst an die Root-Handler weiter
         (Fund im Integrationstest).
 Restpunkte (Release 0.9.0):
 30. [x] Endet das Kind an einer Ausnahme, bekommt das harte Ende sie mit
         (``exc``): Traceback auf fd 2 wie in ``console_main``.
+Plan 2026-10-27-0800, U3 (R8):
+31. [x] Eingebaut buendelt der Listener im Kind mit der Pause aus dem Job.
 """
 
 from __future__ import annotations

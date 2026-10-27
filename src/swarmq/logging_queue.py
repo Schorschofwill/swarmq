@@ -261,8 +261,8 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
         super().__init__(queue_)
         self.json = json
         self.dropped = 0
-        self._reserve_at = self._reserve_threshold()
-        self._wake_at = self._wake_threshold()
+        self._reserve_at = self._fill_threshold(9)
+        self._wake_at = self._fill_threshold(1)
         self.listener = _SwarmqQueueListener(queue_, *handlers, batch_delay=batch_delay) if handlers else None
         # Aufgegebener Listener-Thread (Plan 2026-10-06-1811, KTD3).
         self._abandoned: threading.Thread | None = None
@@ -330,17 +330,12 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
         # ``_qsize`` ueberschreiben und behalten deshalb ``qsize``.
         return len(q.queue) if type(q) is queue.Queue else q.qsize()
 
-    def _reserve_threshold(self) -> int | None:
-        """Fuellstand, ab dem die Reserve gilt: ``ceil(maxsize * 0.9)``,
-        ganzzahlig wie ``qsize * 10 >= maxsize * 9``; ``None`` ohne Grenze."""
+    def _fill_threshold(self, tenths: int) -> int | None:
+        """Fuellstand ab ``tenths`` Zehnteln der Kapazitaet, aufgerundet und
+        ganzzahlig wie ``qsize * 10 >= maxsize * tenths``; ``None`` ohne
+        Grenze. Reserve ab 9 Zehnteln, Ende der Sammelpause ab einem."""
         maxsize = self.queue.maxsize
-        return -(-maxsize * 9 // 10) if maxsize > 0 else None
-
-    def _wake_threshold(self) -> int | None:
-        """Fuellstand, ab dem die Sammelpause endet: ``ceil(maxsize * 0.1)``;
-        ``None`` ohne Grenze."""
-        maxsize = self.queue.maxsize
-        return -(-maxsize // 10) if maxsize > 0 else None
+        return -(-maxsize * tenths // 10) if maxsize > 0 else None
 
     def _drop(self) -> None:
         # ``dropped += 1`` is deliberately lock-free: under
@@ -373,8 +368,8 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
         Kind nach dem Fork (KTD5) und beim Leeren (Plan 2026-10-06-1811,
         KTD3)."""
         self.queue = fresh = _LogQueue(self.queue.maxsize)  # pyright: ignore[reportIncompatibleVariableOverride]  # engerer Queue-Typ als in typeshed, nur intern gesetzt
-        self._reserve_at = self._reserve_threshold()
-        self._wake_at = self._wake_threshold()
+        self._reserve_at = self._fill_threshold(9)
+        self._wake_at = self._fill_threshold(1)
         if self.listener is not None:
             # Der alte Listener verweist auf einen Thread, den es im Kind
             # nicht gibt oder der die alte Queue leert.
