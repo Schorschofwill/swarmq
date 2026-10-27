@@ -15,9 +15,15 @@
 # er die Dienste selbst startet und für die Störungen neu startet.
 # ``abholen`` kopiert /ergebnisse und das Log in <ordner> und entfernt
 # Container und Image. VERGLEICH_REPO nennt ein anderes Repo als dieses.
+#
+# CI-Jobs auf dem Messhost verfälschen die Messung. Läuft dort der Container
+# ``gitlab-runner``, hält ``starten`` ihn vor dem Lauf an und vermerkt das am
+# Lauf-Container; ``abholen`` startet ihn dann wieder. Der Runner-Container
+# trägt ``--stop-signal SIGQUIT``, so laufen angefangene Jobs noch zu Ende.
 set -euo pipefail
 
 NAME=swarmq-vergleich
+RUNNER=gitlab-runner
 repo="${VERGLEICH_REPO:-$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)}"
 befehl="${1:?Befehl fehlt: starten, status oder abholen}"
 kontext="${2:?Docker-Kontext fehlt, etwa celsius}"
@@ -43,8 +49,14 @@ case "$befehl" in
         git clone -q --no-hardlinks "$repo" "$kopie/repo"
         git -C "$kopie/repo" checkout -q --detach "$commit"
         d build -q -t "$NAME:$commit" -f "$kopie/repo/benchmarks/comparison/Dockerfile" "$kopie/repo"
+        vermerk=()
+        if [ "$(d inspect -f '{{.State.Running}}' "$RUNNER" 2>/dev/null)" = true ]; then
+            echo "halte $RUNNER auf $kontext an; laufende Jobs enden vorher"
+            d stop "$RUNNER" >/dev/null
+            vermerk=(--label "swarmq.runner=$RUNNER")
+        fi
         d run -d --name "$NAME" --network host -v /var/run/docker.sock:/var/run/docker.sock \
-            "$NAME:$commit" "$lauf" "$@"
+            "${vermerk[@]}" "$NAME:$commit" "$lauf" "$@"
         echo "gestartet: $NAME:$commit auf $kontext"
         ;;
     status)
@@ -61,9 +73,14 @@ case "$befehl" in
         d cp "$NAME:/ergebnisse/." "$ziel/"
         d logs "$NAME" >"$ziel/lauf.log" 2>&1
         image="$(d inspect -f '{{.Config.Image}}' "$NAME")"
+        runner="$(d inspect -f '{{index .Config.Labels "swarmq.runner"}}' "$NAME")"
         d rm "$NAME"
         d rmi "$image"
         echo "abgeholt nach $ziel; $NAME und $image auf $kontext entfernt"
+        if [ -n "$runner" ]; then
+            d start "$runner" >/dev/null
+            echo "$runner auf $kontext wieder gestartet"
+        fi
         ;;
     *)
         echo "unbekannter Befehl: $befehl" >&2

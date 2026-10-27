@@ -89,7 +89,9 @@ uv run just vergleich-garantie --systems swarmq,celery --stoerungen sigkill   # 
 ```
 
 Auf dem Messhost (celsius) läuft der Vergleich nur in Containern; dort
-liegen weder Repo noch Umgebungen noch Ergebnisse. Gesteuert wird vom eigenen
+liegen weder Repo noch Umgebungen noch Ergebnisse. Auf celsius läuft auch der
+GitLab-Runner des Projekts; `starten` hält ihn vor dem Lauf an (angefangene
+Jobs enden noch), `abholen` startet ihn wieder. Gesteuert wird vom eigenen
 Rechner über den Docker-Kontext des Hosts:
 
 ```bash

@@ -10,6 +10,9 @@ Test-Liste:
 - [x] die Toxiproxy-Konfiguration in ``compose.yml`` passt zu ``stack.PROXYS`` und ``stack.PORTS``
 - [x] ``starten`` baut das Image im Kontext aus einem sauberen Klon des Commits und startet den Lauf im Hintergrund
 - [x] ``starten`` verweigert einen Arbeitsbaum mit Änderungen und einen zweiten Lauf auf demselben Host
+- [x] ``starten`` hält einen laufenden GitLab-Runner des Hosts vor dem Lauf an und vermerkt das am Lauf-Container
+- [x] ``starten`` lässt einen angehaltenen oder fehlenden Runner in Ruhe
+- [x] ``abholen`` startet den Runner wieder, den ``starten`` angehalten hat, und nur diesen
 - [x] ``status`` zeigt den Zustand des Laufs und das Ende seines Logs
 - [x] ``abholen`` holt Ergebnisse und Log und entfernt Container und Image; solange der Lauf läuft, verweigert es
 - [x] im Container startet ``performance`` den Dienste-Stack, führt den Runner aus, räumt den Stack auch nach einem Fehler ab und legt Ergebnisse und Ausgang ab
@@ -77,8 +80,10 @@ _SCHEIN_DOCKER = """#!/usr/bin/env bash
 echo "$*" >> "$DOCKER_PROTOKOLL"
 case " $* " in
   *" ps "*) printf '%s' "${SCHEIN_PS:-}" ;;
+  *" inspect -f {{.State.Running}} gitlab-runner "*) echo "${SCHEIN_RUNNER_LAEUFT:-false}" ;;
   *" inspect -f {{.State.Running}} "*) echo "${SCHEIN_LAEUFT:-false}" ;;
   *" inspect -f {{.Config.Image}} "*) echo swarmq-vergleich:abc1234 ;;
+  *"Config.Labels"*) echo "${SCHEIN_VERMERK:-}" ;;
 esac
 """
 
@@ -150,6 +155,41 @@ def test_starten_verweigert_einen_zweiten_lauf_auf_demselben_host(tmp_path: Path
     assert lauf.returncode == 2
     assert "abholen" in lauf.stderr
     assert not [a for a in aufrufe if " build " in f" {a} " or " run " in f" {a} "]
+
+
+def test_starten_haelt_den_laufenden_runner_vor_dem_lauf_an(tmp_path: Path) -> None:
+    """CI-Jobs auf dem Messhost verfälschen die Messung; ``abholen`` braucht den Vermerk."""
+    _repo(tmp_path / "repo")
+
+    lauf, aufrufe = _aufruf(
+        tmp_path, "starten", "celsius", "garantie", VERGLEICH_REPO=str(tmp_path / "repo"), SCHEIN_RUNNER_LAEUFT="true"
+    )
+
+    assert lauf.returncode == 0, lauf.stderr
+    anhalten = aufrufe.index("--context celsius stop gitlab-runner")
+    starten = next(i for i, a in enumerate(aufrufe) if " run " in f" {a} ")
+    assert anhalten < starten
+    assert "--label swarmq.runner=gitlab-runner" in aufrufe[starten]
+
+
+def test_starten_laesst_einen_angehaltenen_oder_fehlenden_runner_in_ruhe(tmp_path: Path) -> None:
+    """Ohne Vermerk startet ``abholen`` keinen Runner, den jemand absichtlich angehalten hat."""
+    _repo(tmp_path / "repo")
+
+    lauf, aufrufe = _aufruf(tmp_path, "starten", "celsius", "garantie", VERGLEICH_REPO=str(tmp_path / "repo"))
+
+    assert lauf.returncode == 0, lauf.stderr
+    assert not [a for a in aufrufe if " stop " in f" {a} "]
+    assert "swarmq.runner" not in next(a for a in aufrufe if " run " in f" {a} ")
+
+
+def test_abholen_startet_den_angehaltenen_runner_wieder(tmp_path: Path) -> None:
+    lauf, aufrufe = _aufruf(
+        tmp_path, "abholen", "celsius", str(tmp_path / "ergebnisse"), SCHEIN_VERMERK="gitlab-runner"
+    )
+
+    assert lauf.returncode == 0, lauf.stderr
+    assert aufrufe[-1] == "--context celsius start gitlab-runner"
 
 
 def test_abholen_holt_ergebnisse_und_log_und_raeumt_container_und_image_ab(tmp_path: Path) -> None:
