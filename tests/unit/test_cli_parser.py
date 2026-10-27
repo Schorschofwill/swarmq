@@ -59,6 +59,7 @@ class TestLoggingOptions:
     - [x] Alle Optionen werden gelesen, ``--logger-level`` wiederholbar
     - [x] CRITICAL fuer ``--log-level`` und ``--log-lifecycle-level``
     - [x] ``--log-drain-timeout`` (Plan 2026-10-06-1811, U4) in beiden Tests oben
+    - [x] ``--log-batch-delay`` (Plan 2026-10-27-0800, U1) in beiden Tests oben
     """
 
     @staticmethod
@@ -78,7 +79,8 @@ class TestLoggingOptions:
             args.log_queue_size,
             args.log_lifecycle_level,
             args.log_drain_timeout,
-        ) == (None,) * 8
+            args.log_batch_delay,
+        ) == (None,) * 9
 
     def test_all_options_are_read_and_logger_level_repeats(self):
         args = self._parse(
@@ -95,6 +97,8 @@ class TestLoggingOptions:
             "INFO",
             "--log-drain-timeout",
             "0.5",
+            "--log-batch-delay",
+            "0.2",
         )
         assert args.log_config == "logging.json"
         assert args.configure_logging is False
@@ -102,6 +106,7 @@ class TestLoggingOptions:
         assert args.log_queue_size == "500"
         assert args.log_lifecycle_level == "INFO"
         assert args.log_drain_timeout == "0.5"
+        assert args.log_batch_delay == "0.2"
 
     def test_repeated_logger_level_resolves_like_the_env_form(self):
         from swarmq.logging_settings import resolve_logging_settings

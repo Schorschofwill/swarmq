@@ -14,7 +14,13 @@ from typing import TYPE_CHECKING, ClassVar
 
 from swarmq.exceptions import ConfigurationError
 from swarmq.keyspace import validate_namespace
-from swarmq.logging_settings import VALID_LOG_LEVELS, valid_drain_timeout, validate_logger_levels
+from swarmq.logging_settings import (
+    MAX_BATCH_DELAY,
+    VALID_LOG_LEVELS,
+    valid_batch_delay,
+    valid_drain_timeout,
+    validate_logger_levels,
+)
 
 # Re-Export: die Grenze lebt im Blattmodul ``seconds`` (F4-19, kein Importzyklus).
 from swarmq.seconds import MAX_DEADLINE_MS as MAX_DEADLINE_MS
@@ -98,6 +104,7 @@ class ConfigValidation:
         configure_logging: bool
         logger_levels: tuple[tuple[str, str], ...]
         log_drain_timeout: float
+        log_batch_delay: float
         backend_connect_timeout_s: float
         retry_max_delay: float
         queue_type: str
@@ -325,6 +332,9 @@ class ConfigValidation:
             msg = (
                 f"log_drain_timeout must be > 0 and at most threading.TIMEOUT_MAX seconds, got {self.log_drain_timeout}"
             )
+            raise ConfigurationError(msg)
+        if not valid_batch_delay(self.log_batch_delay):
+            msg = f"log_batch_delay must be from 0 to {MAX_BATCH_DELAY:g} seconds, got {self.log_batch_delay}"
             raise ConfigurationError(msg)
         if self.log_config is not None and not self.configure_logging:
             msg = (

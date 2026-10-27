@@ -849,6 +849,10 @@ class TestLoggingFields:
           ``threading.TIMEOUT_MAX`` -- als Argument wie per Env: Fehler.
           Sonst wuerfe ``Thread.join`` im Compute-Kind ``OverflowError``
           (``nan``: jedes Leeren gaebe sofort auf)
+    - [x] (Plan 2026-10-27-0800, U1) ``log_batch_delay``: Default 0.05, Env
+          ``SWARMQ_LOG_BATCH_DELAY``, aus ``logging_settings`` uebernommen
+    - [x] ``log_batch_delay`` negativ, ``nan``, ``inf`` oder ueber 1 s --
+          als Argument wie per Env: Fehler (E-063)
     """
 
     @staticmethod
@@ -877,6 +881,14 @@ class TestLoggingFields:
         assert cfg.log_queue_size == 500
         assert cfg.log_lifecycle_level == "INFO"
         assert cfg.log_queue is True
+
+    def test_batch_delay_comes_from_default_env_or_logging_settings(self, monkeypatch):
+        from swarmq.logging_settings import LoggingSettings
+
+        assert self._cfg().log_batch_delay == 0.05
+        assert self._cfg(logging_settings=LoggingSettings(batch_delay=0.0)).log_batch_delay == 0.0
+        monkeypatch.setenv("SWARMQ_LOG_BATCH_DELAY", "0.2")
+        assert self._cfg().log_batch_delay == 0.2
 
     def test_env_can_switch_off_configuring(self, monkeypatch):
         monkeypatch.setenv("SWARMQ_CONFIGURE_LOGGING", "false")
@@ -921,6 +933,18 @@ class TestLoggingFields:
         else:
             kwargs["log_drain_timeout"] = float(raw)
         with pytest.raises(ConfigurationError, match="log_drain_timeout must be > 0"):
+            self._cfg(**kwargs)
+
+    @pytest.mark.parametrize("raw", ["-0.01", "nan", "inf", "1.0001"])
+    @pytest.mark.parametrize("via", ["argument", "env"])
+    @pytest.mark.entscheidung("E-063")
+    def test_negative_unbounded_or_too_long_batch_delay_is_a_configuration_error(self, monkeypatch, raw, via):
+        kwargs = {}
+        if via == "env":
+            monkeypatch.setenv("SWARMQ_LOG_BATCH_DELAY", raw)
+        else:
+            kwargs["log_batch_delay"] = float(raw)
+        with pytest.raises(ConfigurationError, match="log_batch_delay must be"):
             self._cfg(**kwargs)
 
     def test_logger_level_pairs_are_validated_and_normalised(self):

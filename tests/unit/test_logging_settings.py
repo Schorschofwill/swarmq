@@ -23,6 +23,11 @@ Plan 2026-10-06-1811, U4 (R14, KTD11) -- ``log_drain_timeout``:
 - [x] Wert <= 0, nicht numerisch oder nicht endlich: ConfigurationError mit Quelle
 - [x] Wert > ``threading.TIMEOUT_MAX`` (etwa ``1e10``): ConfigurationError --
       ``Thread.join`` wuerfe sonst ``OverflowError`` (Review A1)
+
+Plan 2026-10-27-0800, U1 (R9, KTD3) -- ``log_batch_delay``:
+- [x] Prioritaet CLI > Env > SwarmQConfig > Default 0.05; 0 erlaubt
+- [x] Grenze 1 Sekunde: 1 gueltig, darueber ConfigurationError mit Quelle
+- [x] Negativ, nicht numerisch oder nicht endlich: ConfigurationError (E-063)
 """
 
 from __future__ import annotations
@@ -157,6 +162,16 @@ class TestPriority:
         assert resolve_logging_settings(_cli(), env, config).drain_timeout == 2.5
         assert resolve_logging_settings(_cli(), {}, config).drain_timeout == 3.0
         assert resolve_logging_settings(_cli(), {}, None).drain_timeout == 5.0
+
+    def test_batch_delay_follows_cli_then_env_then_config_then_default(self) -> None:
+        env = {"SWARMQ_LOG_BATCH_DELAY": "0.1"}
+        config = {"log_batch_delay": 0.3}
+
+        assert resolve_logging_settings(_cli(log_batch_delay="0.2"), env, config).batch_delay == 0.2
+        assert resolve_logging_settings(_cli(), env, config).batch_delay == 0.1
+        assert resolve_logging_settings(_cli(), {}, config).batch_delay == 0.3
+        assert resolve_logging_settings(_cli(), {}, None).batch_delay == 0.05
+        assert resolve_logging_settings(_cli(log_batch_delay="0"), {}, None).batch_delay == 0.0
 
     def test_lifecycle_level_follows_cli_then_env_then_config(self) -> None:
         env = {"SWARMQ_LOG_LIFECYCLE_LEVEL": "WARNING"}
@@ -310,6 +325,18 @@ class TestValidation:
     ) -> None:
         with pytest.raises(ConfigurationError, match=rf"SWARMQ_LOG_DRAIN_TIMEOUT.*{raw!r}"):
             resolve_logging_settings(_cli(), {"SWARMQ_LOG_DRAIN_TIMEOUT": raw}, None)
+
+    @pytest.mark.parametrize("raw", ["-0.01", "abc", "nan", "inf", "1.0001"])
+    @pytest.mark.entscheidung("E-063")
+    def test_negative_non_numeric_infinite_or_too_long_batch_delay_is_a_configuration_error(
+        self,
+        raw: str,
+    ) -> None:
+        with pytest.raises(ConfigurationError, match=rf"SWARMQ_LOG_BATCH_DELAY.*{raw!r}"):
+            resolve_logging_settings(_cli(), {"SWARMQ_LOG_BATCH_DELAY": raw}, None)
+
+    def test_batch_delay_of_exactly_one_second_is_valid(self) -> None:
+        assert resolve_logging_settings(_cli(), {"SWARMQ_LOG_BATCH_DELAY": "1"}, None).batch_delay == 1.0
 
 
 class TestInvalidCombinations:

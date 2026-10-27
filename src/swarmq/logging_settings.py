@@ -41,6 +41,9 @@ class LoggingSettings:
     # Gesamtfrist in Sekunden fuer jedes Leeren der Log-Queues (Plan
     # 2026-10-06-1811, KTD3/KTD11); Rest gilt als verworfen.
     drain_timeout: float = 5.0
+    # Pause, in der der Listener Zeilen unter WARNING sammelt (Plan
+    # 2026-10-27-0800, KTD3); 0 gibt jede Zeile sofort aus.
+    batch_delay: float = 0.05
 
 
 def fallback_log_format(cli: object | None, env: Mapping[str, str]) -> str:
@@ -94,6 +97,13 @@ def resolve_logging_settings(
         "log_drain_timeout",
         5.0,
     )
+    batch_delay = sources.pick(
+        "log_batch_delay",
+        "--log-batch-delay",
+        "SWARMQ_LOG_BATCH_DELAY",
+        "log_batch_delay",
+        0.05,
+    )
     log_config = sources.pick(
         "log_config",
         "--log-config",
@@ -121,6 +131,7 @@ def resolve_logging_settings(
         queue_size=_positive_int(queue_size),
         lifecycle_level=_level(lifecycle_level),
         drain_timeout=_positive_seconds(drain_timeout),
+        batch_delay=_batch_seconds(batch_delay),
     )
 
 
@@ -214,6 +225,29 @@ def valid_drain_timeout(seconds: float) -> bool:
     "praktisch unbegrenzt" will, bekommt das bis dorthin.
     """
     return 0 < seconds <= threading.TIMEOUT_MAX
+
+
+MAX_BATCH_DELAY = 1.0
+"""Obergrenze der Sammelpause in Sekunden (Plan 2026-10-27-0800, KTD3): Eine
+Zeile soll fuer Menschen und Log-Sammler kaum verzoegert erscheinen."""
+
+
+def valid_batch_delay(seconds: float) -> bool:
+    """Eine gueltige Sammelpause: 0 bis :data:`MAX_BATCH_DELAY`, endlich
+    (E-063); ``nan`` faellt durch beide Vergleiche."""
+    return 0 <= seconds <= MAX_BATCH_DELAY
+
+
+def _batch_seconds(picked: _Picked) -> float:
+    """Sekunden nach :func:`valid_batch_delay`."""
+    try:
+        seconds = float(str(picked.value).strip())
+    except ValueError:
+        seconds = -1.0
+    if not valid_batch_delay(seconds):
+        msg = f"{picked.source} must be a number of seconds from 0 to {MAX_BATCH_DELAY:g}, got {picked.value!r}"
+        raise ConfigurationError(msg)
+    return seconds
 
 
 def _positive_seconds(picked: _Picked) -> float:

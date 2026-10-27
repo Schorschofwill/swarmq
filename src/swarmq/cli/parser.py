@@ -211,6 +211,17 @@ def _add_worker_parser(subparsers: Any) -> None:
         ),
     )
     worker.add_argument(
+        "--log-batch-delay",
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "How long the log thread collects lines below WARNING before "
+            "writing them together (default: 0.05, at most 1). WARNING and "
+            "above are written at once; 0 writes every line at once. "
+            "Overrides SWARMQ_LOG_BATCH_DELAY."
+        ),
+    )
+    worker.add_argument(
         "--log-lifecycle-level",
         choices=_VALID_LOG_LEVELS,
         default=None,

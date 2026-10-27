@@ -268,6 +268,7 @@ def _is_check_invocation(argv: Sequence[str] | None) -> bool:
     worker_sub.add_argument("--log-queue-size", default=None)
     worker_sub.add_argument("--log-lifecycle-level", default=None)
     worker_sub.add_argument("--log-drain-timeout", default=None)
+    worker_sub.add_argument("--log-batch-delay", default=None)
     worker_sub.add_argument("--check", action="store_true", default=False)
     # Siblings — recognised only so ``parse_known_args`` on their
     # argv prefix does not misclassify them as ``worker``.
