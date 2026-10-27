@@ -4,6 +4,19 @@ All notable changes to SwarmQ. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **Cancelling `start_worker()` during startup could be lost.** aiormq
+  turns a cancel that hits one of its RPCs while it closes the channel into
+  a channel error. During queue declaration swarmq took that error for
+  "queue missing", and aiormq's own `close()` swallowed it; the worker then
+  finished starting and waited for a shutdown that never came, or ended
+  with `BrokerConnectionError` instead of the cancel. A cancelled start now
+  always ends with `CancelledError`, with the channel error as its cause
+  (F4-28).
+
 ## [0.15.1] — 2026-10-27
 
 0.15.1 batches the log output of the built-in setup. Nothing else changed

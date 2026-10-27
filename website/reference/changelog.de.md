@@ -4,6 +4,20 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 [Keep a Changelog](https://keepachangelog.com/) und
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Behoben
+
+- **Ein Abbruch von `start_worker()` während des Starts konnte verloren
+  gehen.** aiormq verwandelt einen Abbruch, der einen seiner RPCs trifft,
+  während es den Kanal schließt, in einen Kanalfehler. Bei der
+  Queue-Deklaration hielt swarmq diesen Fehler für „Queue fehlt“, und
+  aiormqs eigenes `close()` verschluckte ihn; der Worker startete dann zu
+  Ende und wartete auf ein Herunterfahren, das nie kam, oder endete mit
+  `BrokerConnectionError` statt mit dem Abbruch. Ein abgebrochener Start
+  endet jetzt immer mit `CancelledError`, der Kanalfehler als Ursache
+  (F4-28).
+
 ## [0.15.1] — 2026-10-27
 
 0.15.1 bündelt die Log-Ausgabe der eingebauten Einrichtung. Sonst ist

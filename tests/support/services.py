@@ -290,6 +290,9 @@ def _queue_names(client: httpx.Client) -> set[str] | None:
     return {entry["name"] for entry in response.json()}
 
 
+_VHOST_DELETE_TIMEOUT_S = 3.0
+
+
 @contextlib.contextmanager
 def worker_vhost(node: RabbitMQNode) -> Iterator[None]:
     """Legt ``node.vhost`` mit Rechten für guest an und löscht sie danach."""
@@ -300,8 +303,13 @@ def worker_vhost(node: RabbitMQNode) -> Iterator[None]:
         try:
             yield
         finally:
+            # Eigene, kurze Frist: Unter Last braucht RabbitMQ fürs Löschen
+            # länger als die 10 s, die pytest-timeout dem letzten Test eines
+            # xdist-Prozesses samt Sitzungs-Teardown lässt (bis zu zwei vhosts
+            # nacheinander). Mit der Client-Frist von 10 s griff dort
+            # pytest-timeout vor dem ``suppress``.
             with contextlib.suppress(httpx.HTTPError):  # Aufräumen ist best effort
-                client.delete(f"/vhosts/{node.vhost_api}")
+                client.delete(f"/vhosts/{node.vhost_api}", timeout=_VHOST_DELETE_TIMEOUT_S)
 
 
 @pytest.fixture(autouse=True, scope="session")
