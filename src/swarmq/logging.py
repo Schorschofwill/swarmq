@@ -446,7 +446,7 @@ def _configure_builtin(settings: LoggingSettings) -> None:
     stream_handler.setFormatter(formatter)
 
     # Der Listener startet lazy beim ersten Eintrag (KTD5).
-    queue_handler = _StructlogQueueHandler(log_queue, stream_handler, json=log_json)
+    queue_handler = _StructlogQueueHandler(log_queue, stream_handler, json=log_json, batch_delay=settings.batch_delay)
 
     root_logger = logging.getLogger()
     root_logger.handlers.clear()

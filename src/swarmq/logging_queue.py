@@ -378,8 +378,9 @@ class _StructlogQueueHandler(logging.handlers.QueueHandler):
         if self.listener is not None:
             # Der alte Listener verweist auf einen Thread, den es im Kind
             # nicht gibt oder der die alte Queue leert.
-            # Dieselbe Klasse: der Opt-in-Listener gibt an Root weiter (KTD10).
-            self.listener = type(self.listener)(fresh, *self.listener.handlers)  # pyright: ignore[reportIncompatibleVariableOverride]  # engerer Listener-Typ als in typeshed, nur intern gesetzt
+            # Dieselbe Klasse: der Opt-in-Listener gibt an Root weiter (KTD10);
+            # die Sammelpause wandert mit (Plan 2026-10-27-0800, KTD5).
+            self.listener = type(self.listener)(fresh, *self.listener.handlers, batch_delay=self.listener.pause.delay)  # pyright: ignore[reportIncompatibleVariableOverride]  # engerer Listener-Typ als in typeshed, nur intern gesetzt
 
 
 _CONTEXT_ATTR = "_swarmq_context"

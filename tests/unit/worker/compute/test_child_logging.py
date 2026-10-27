@@ -73,6 +73,8 @@ Schluss-Review:
 28. [x] Der Sentinel gibt an ``lastResort`` nur weiter, wenn kein anderer
         Handler den Record bekommt (wie die stdlib selbst): Ein App-Handler
         an einem Nicht-Root-Logger fuehrt zu keiner zweiten Ausgabe.
+Plan 2026-10-27-0800, U3 (R8):
+29. [x] Eingebaut buendelt der Listener im Kind mit der Pause aus dem Job.
 29. [x] ... die Opt-in-Queue am Logger ``swarmq`` zaehlt dabei nicht: Sie
         reicht den Record im Forkserver selbst an die Root-Handler weiter
         (Fund im Integrationstest).
@@ -97,6 +99,7 @@ from typing import Any, override
 import pytest
 import structlog
 
+from swarmq.logging_queue import _StructlogQueueHandler
 from swarmq.task import Task, TaskInfo
 from swarmq.worker.compute import child
 from swarmq.worker.compute.envelope import ComputeJob
@@ -341,6 +344,32 @@ def test_builtin_child_takes_level_and_format_from_the_job(
     assert len(lines) == 1
     assert "kept_t1" in lines[0]
     assert not lines[0].startswith("{")  # human, nicht JSON
+
+
+@pytest.mark.timeout(5)
+def test_builtin_child_batches_with_the_delay_from_the_job(
+    events: list[Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _forkserver_root()
+    seen: list[float] = []
+
+    class Batching(Task):
+        task_info = TaskInfo(name="logging_task", queues=["q"])
+
+        @override
+        async def run(self, tag: str) -> str:
+            (handler,) = logging.getLogger().handlers
+            assert isinstance(handler, _StructlogQueueHandler)
+            assert handler.listener is not None
+            seen.append(handler.listener.pause.delay)
+            return "ok"
+
+    _capture_stderr(monkeypatch, events)
+
+    child.child_once(_job(log_batch_delay=0.2), _Channel(events), 0)
+
+    assert seen == [0.2]
 
 
 @pytest.mark.timeout(5)

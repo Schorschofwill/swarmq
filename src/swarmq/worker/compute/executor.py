@@ -53,6 +53,7 @@ def _child_logging_fields(config: Any) -> dict[str, Any]:
             logger_levels=config.logger_levels,
             queue_size=config.log_queue_size,
             drain_timeout=config.log_drain_timeout,
+            batch_delay=config.log_batch_delay,
         )
     return {
         "log_level": settings.level,
@@ -64,6 +65,7 @@ def _child_logging_fields(config: Any) -> dict[str, Any]:
         "logger_levels": settings.logger_levels,
         "log_queue_size": settings.queue_size,
         "log_drain_timeout": settings.drain_timeout,
+        "log_batch_delay": settings.batch_delay,
     }
 
 

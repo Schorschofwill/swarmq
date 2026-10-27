@@ -255,6 +255,7 @@ def _child_logging_settings(job: ComputeJob) -> Any:
         logger_levels=job.logger_levels,
         queue_size=job.log_queue_size,
         drain_timeout=job.log_drain_timeout,
+        batch_delay=job.log_batch_delay,
     )
 
 
