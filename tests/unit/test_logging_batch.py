@@ -17,6 +17,8 @@ from __future__ import annotations
 # 4. [x] Kapazitaet 100: Der zehnte Eintrag weckt, der neunte nicht (R5).
 # 5. [x] ``shutdown_logging`` in der Pause weckt; alle Zeilen kommen an (R6).
 # 6. [x] ``stop()`` in der Pause weckt und kehrt zurueck (R6).
+# 7. [x] Echtes ``Event``: Ein Wecken vor der Pause beendet sie sofort --
+#        zurueckgesetzt wird erst nach dem Warten (R4, R6).
 import logging
 import queue
 import threading
@@ -25,6 +27,7 @@ from typing import override
 import pytest
 
 from swarmq.logging import shutdown_logging
+from swarmq.logging_batch import BatchPause
 from swarmq.logging_queue import _StructlogQueueHandler
 
 pytestmark = pytest.mark.timeout(5)
@@ -192,3 +195,15 @@ def test_stop_ends_the_pause_and_writes_every_line(pause: _Pause) -> None:
 
     assert pause.sets == 1
     assert target.messages == ["a"]
+
+
+@pytest.mark.entscheidung("E-088")
+def test_a_wake_before_the_pause_ends_it_at_once() -> None:
+    # Ohne den Ersatz: Wuerde vor dem Warten zurueckgesetzt, liefe die Pause
+    # die vollen 5 Sekunden, und das Timeout-Gate des Moduls schluege an.
+    pause = BatchPause(5.0)
+
+    pause.wake()
+    pause.wait()
+    pause.wake()
+    pause.wait()

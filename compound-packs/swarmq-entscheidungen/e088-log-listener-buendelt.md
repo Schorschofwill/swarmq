@@ -19,6 +19,8 @@ tests:
   - tests/unit/test_logging_batch.py::test_a_queue_filling_to_ten_percent_ends_the_pause
   - tests/unit/test_logging_batch.py::test_shutdown_ends_the_pause_and_writes_every_line
   - tests/unit/test_logging_batch.py::test_stop_ends_the_pause_and_writes_every_line
+  - tests/unit/test_logging_batch.py::test_a_wake_before_the_pause_ends_it_at_once
+  - tests/unit/test_logging_configure.py::test_file_mode_listener_does_not_batch
   - tests/unit/test_logging_optin.py::test_the_opt_in_queue_has_no_batch_delay
   - tests/unit/test_logging_app_wins.py::test_the_opt_in_queue_after_the_takeover_has_no_batch_delay
 ---

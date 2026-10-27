@@ -79,6 +79,8 @@ from __future__ import annotations
 # 35. [x] Eingebaut: Die Pause kommt aus ``settings.batch_delay`` und bleibt
 #     nach ``shutdown_logging`` am frischen Listener erhalten.
 # 36. [x] Im Kind nach einem echten Fork hat der Listener dieselbe Pause.
+# 37. [x] Datei-Modus mit ``batch_delay=0.2``: Der Listener der dictConfig
+#     bleibt der stdlib-``QueueListener`` ohne Sammelpause (E-088).
 import io
 import json
 import logging
@@ -477,6 +479,30 @@ def test_file_mode_starts_queue_handler_listeners_and_shutdown_stops_them(
 
     assert [r.getMessage() for r in FILE_RECORDS] == ["evt_queued"]
     assert listener._thread is None
+
+
+@pytest.mark.entscheidung("E-088")
+def test_file_mode_listener_does_not_batch(tmp_path: pathlib.Path) -> None:
+    from swarmq.logging import shutdown_logging
+
+    path = _config_file(
+        tmp_path,
+        {
+            "version": 1,
+            "handlers": {
+                "rec": {"()": _RECORDING},
+                "q": {"class": "logging.handlers.QueueHandler", "handlers": ["rec"]},
+            },
+            "root": {"level": "INFO", "handlers": ["q"]},
+        },
+    )
+
+    configure_logging(LoggingSettings(log_config=path, batch_delay=0.2))
+    (handler,) = logging.getLogger().handlers
+    listener = handler.listener  # type: ignore[attr-defined]
+    shutdown_logging()
+
+    assert type(listener) is logging.handlers.QueueListener
 
 
 def test_logger_level_overrides_win_over_the_config_file(
