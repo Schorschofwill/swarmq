@@ -729,6 +729,9 @@ Zuordnung der Jobs:
      - Auf celsius, workstation und dem Lastserver die Loadsuite neu klonen, mit `git submodule update --init` über https.
      - Die GitLab-Beschreibung auf „Umgezogen nach github.com/Schorschofwill/<repo>“ setzen und das Projekt archivieren.
      - Den Branch-Schutz für `main` mit den Pflicht-Checks einschalten, ohne Admin-Ausnahme.
+       - Pflicht-Checks in swarmq (Jobnamen aus `ci.yml`): `lint-and-types`, `lock-check`, `abhaengigkeiten-pruefen`, `unit-tests`, `integration-tests`, `e2e-tests`, `coverage-combine`, `secret-scan`.
+       - Pflicht-Checks in swarmv: `lint-und-typen`, `sperrdatei`, `unit-tests`, `integration-tests`, `abbild`.
+       - Bei PRs aus demselben Repo überspringen die Jobs den `pull_request`-Lauf; die Checks des `push`-Laufs auf demselben Commit erfüllen die Regel. Ein Check-Name muss mindestens einmal gelaufen sein, bevor GitHub ihn zur Auswahl anbietet.
   4. Nach dem letzten Repo stoppt Georg den `gitlab-runner` auf celsius und entfernt ihn samt Registrierung. Danach hebt er die Pools auf die Endgröße aus KTD4. Claude entfernt den GitLab-Zweig aus `scripts/vergleich-entfernt.sh`.
 - **Test scenarios:**
   - `coverage_gate.py` ignoriert `CI_COMMIT_TAG`.
