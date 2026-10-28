@@ -11,6 +11,10 @@ Laeuft im CI-Job ``coverage-combine`` nach ``coverage xml``:
 - Auf jedem anderen Branch, beides gegen den Merge-Base mit ``origin/main``:
   ``fail_under`` darf nicht sinken (Ratchet), und neue oder geaenderte Zeilen
   muessen zu 100 % abgedeckt sein (diff-cover).
+
+Ref-Art und Branch kommen aus ``GITHUB_REF_TYPE``/``GITHUB_REF_NAME``. Bis
+zur Umstellung laeuft daneben noch die GitLab-CI, deshalb gelten
+``CI_COMMIT_TAG``/``CI_COMMIT_BRANCH`` ebenfalls (Plan 2026-10-28-1308, KTD8).
 """
 
 from __future__ import annotations
@@ -41,14 +45,18 @@ def _git(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 def main() -> int:
-    if os.environ.get("CI_COMMIT_TAG"):
+    if os.environ.get("CI_COMMIT_TAG") or os.environ.get("GITHUB_REF_TYPE") == "tag":
         print("coverage-gate: Tag-Pipeline, kein Vergleich")
         return 0
     _git("fetch", "--quiet", "origin", "+refs/heads/main:refs/remotes/origin/main")
     if _git("rev-parse", "--verify", "--quiet", "refs/remotes/origin/main").returncode != 0:
         print("coverage-gate: origin/main fehlt nach dem Fetch; ohne main kein Vergleich moeglich", file=sys.stderr)
         return 1
-    branch = os.environ.get("CI_COMMIT_BRANCH") or _git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    branch = (
+        os.environ.get("CI_COMMIT_BRANCH")
+        or (os.environ.get("GITHUB_REF_NAME") if os.environ.get("GITHUB_REF_TYPE") == "branch" else None)
+        or _git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    )
     if branch == "main":
         print("coverage-gate: main, kein Ratchet- und Diff-Vergleich")
         return 0
