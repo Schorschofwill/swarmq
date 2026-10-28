@@ -22,7 +22,8 @@ import ipaddress
 import os
 import re
 import socket
-from collections.abc import AsyncIterator, Iterator, Mapping
+import time
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -290,26 +291,46 @@ def _queue_names(client: httpx.Client) -> set[str] | None:
     return {entry["name"] for entry in response.json()}
 
 
-_VHOST_DELETE_TIMEOUT_S = 3.0
+# Gemeinsame Frist für das Löschen der Worker-vhosts aller Broker. Der
+# Sitzungsabbau zählt zur pytest-timeout-Frist des letzten Tests eines
+# xdist-Prozesses, und die ist bei ``timeout(5)`` nur 5 s. Unter Last braucht
+# RabbitMQ fürs Löschen einer vhost Sekunden; mit je 3 s für zwei Broker
+# nacheinander griff pytest-timeout vor dem ``suppress`` (CI-Pipeline 441).
+_VHOST_DELETE_BUDGET_S = 3.0
 
 
 @contextlib.contextmanager
-def worker_vhost(node: RabbitMQNode) -> Iterator[None]:
-    """Legt ``node.vhost`` mit Rechten für guest an und löscht sie danach."""
-    with httpx.Client(base_url=node.management_url, auth=("guest", "guest"), timeout=10.0) as client:
-        client.put(f"/vhosts/{node.vhost_api}").raise_for_status()
-        permissions = {"configure": ".*", "write": ".*", "read": ".*"}
-        client.put(f"/permissions/{node.vhost_api}/guest", json=permissions).raise_for_status()
+def worker_vhosts(
+    nodes: list[RabbitMQNode], *, budget: float = _VHOST_DELETE_BUDGET_S, clock: Callable[[], float] = time.monotonic
+) -> Iterator[None]:
+    """Legt ``node.vhost`` je Broker mit Rechten für guest an und löscht sie danach.
+
+    Gelöscht wird nacheinander innerhalb einer gemeinsamen Frist; ein Broker,
+    für den keine Zeit mehr bleibt, behält seine vhost (Aufräumen ist best effort,
+    die CI startet je Job frische Broker).
+    """
+    with contextlib.ExitStack() as stack:
+        clients: list[tuple[RabbitMQNode, httpx.Client]] = []
         try:
+            for node in nodes:
+                client = stack.enter_context(
+                    httpx.Client(base_url=node.management_url, auth=("guest", "guest"), timeout=10.0)
+                )
+                client.put(f"/vhosts/{node.vhost_api}").raise_for_status()
+                # Ab hier gibt es die vhost: Scheitert danach etwas, auch bei einem
+                # späteren Broker, wird sie trotzdem gelöscht.
+                clients.append((node, client))
+                permissions = {"configure": ".*", "write": ".*", "read": ".*"}
+                client.put(f"/permissions/{node.vhost_api}/guest", json=permissions).raise_for_status()
             yield
         finally:
-            # Eigene, kurze Frist: Unter Last braucht RabbitMQ fürs Löschen
-            # länger als die 10 s, die pytest-timeout dem letzten Test eines
-            # xdist-Prozesses samt Sitzungs-Teardown lässt (bis zu zwei vhosts
-            # nacheinander). Mit der Client-Frist von 10 s griff dort
-            # pytest-timeout vor dem ``suppress``.
-            with contextlib.suppress(httpx.HTTPError):  # Aufräumen ist best effort
-                client.delete(f"/vhosts/{node.vhost_api}", timeout=_VHOST_DELETE_TIMEOUT_S)
+            deadline = clock() + budget
+            for node, client in clients:
+                remaining = deadline - clock()
+                if remaining <= 0:
+                    break
+                with contextlib.suppress(httpx.HTTPError):  # Aufräumen ist best effort
+                    client.delete(f"/vhosts/{node.vhost_api}", timeout=remaining)
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -326,10 +347,7 @@ def delete_session_queues() -> Iterator[None]:
     """
     if RABBITMQ_VHOST != "/":
         # xdist-Prozess: eigene vhost je erreichbarem Dienst, am Ende samt Queues weg.
-        with contextlib.ExitStack() as stack:
-            for node in (RABBITMQ_MAIN, RABBITMQ_42):
-                if not node.missing():
-                    stack.enter_context(worker_vhost(node))
+        with worker_vhosts([node for node in (RABBITMQ_MAIN, RABBITMQ_42) if not node.missing()]):
             yield
         return
     with httpx.Client(base_url=RABBITMQ_MAIN.management_url, auth=("guest", "guest"), timeout=10.0) as client:

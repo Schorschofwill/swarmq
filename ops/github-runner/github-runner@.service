@@ -1,0 +1,28 @@
+# Ein Runner-Slot auf celsius (Plan 2026-10-28-1308, U6, KTD4).
+# Instanz <repo>-<nummer>, z. B. github-runner@swarmq-1.service → Repo swarmq, Slot 1.
+#
+# Läuft als root, weil nur der Supervisor das PAT lesen darf. Den Runner selbst
+# startet er als ghrunner, gegen dessen rootless Docker (siehe README.md).
+
+[Unit]
+Description=GitHub-Runner-Slot %i (celsius)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/github-runner/github-runner.env
+# Die Shell teilt die Instanz am letzten Bindestrich in Repo und Nummer.
+# systemd-Escapes: $$ ist ein $, %% ein %.
+ExecStart=/bin/sh -c 'exec /usr/bin/python3 /opt/github-runner/github_runner.py slot "$${0%%-*}" "$${0##*-}"' %i
+# Ein gestoppter Slot hat keinen Job. Ohne diese Zeile bliebe „laeuft“ stehen
+# und `pause` wartete auf einen Slot, den es nicht mehr gibt.
+ExecStopPost=/bin/sh -c 'echo pausiert > "$${GH_RUNNER_STATE_DIR:-/var/lib/github-runner}/slots/$$0.state"' %i
+Restart=always
+RestartSec=10
+# Stoppt die Unit, endet auch der Runner-Prozess (er liegt in derselben cgroup).
+KillMode=control-group
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

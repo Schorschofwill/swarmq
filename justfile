@@ -116,7 +116,7 @@ _coverage:
     {{uv_run}} coverage combine
     {{uv_run}} coverage report
 
-# Vorhandene Messdaten zusammenfuehren; coverage.xml fuer GitLab, Bericht im Terminal
+# Vorhandene Messdaten zusammenfuehren; coverage.xml fuer die CI, Bericht im Terminal
 coverage-report:
     {{uv_run}} coverage combine
     {{uv_run}} coverage xml
@@ -126,7 +126,7 @@ coverage-report:
 coverage-gate:
     {{uv_run}} --group coverage python scripts/coverage_gate.py
 
-# fail_under aus drei main-Laeufen anheben (ohne Werte per GitLab-API; scripts/coverage_ratchet.py)
+# fail_under aus drei main-Laeufen anheben (ohne Werte per GitHub-API; scripts/coverage_ratchet.py)
 ratchet *values:
     {{uv_run}} python scripts/coverage_ratchet.py "$@"
 

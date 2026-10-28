@@ -18,13 +18,23 @@ Test-Liste:
 - [x] weniger als drei Werte: Abbruch
 - [x] der Eintrag landet im Report-Abschnitt, ein folgender Abschnitt bleibt unberührt
 - [x] vor dem folgenden Abschnitt bleibt genau eine Leerzeile (keine zusätzliche)
+
+Ohne Werte, über die GitHub-API (Plan 2026-10-28-1308, U2, KTD8), mit
+gefälschtem ``gh`` im ``PATH``:
+- [x] die Quoten-Artefakte der letzten drei erfolgreichen ``main``-Läufe zählen, ältere nicht
+- [x] ein Lauf ohne Artefakt zählt nicht; bleiben weniger als drei, bricht das Skript ab
+- [x] ein Fork-PR-Lauf, dessen Branch main heißt, zählt nicht (Review #6)
 """
 
 from __future__ import annotations
 
+import io
+import json
+import os
 import subprocess
 import sys
 import tomllib
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -48,10 +58,60 @@ def _repo(tmp_path: Path, fail_under: int | None) -> Path:
     return tmp_path
 
 
-def _ratchet(repo: Path, *values: str) -> subprocess.CompletedProcess[str]:
+def _ratchet(repo: Path, *values: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, str(_SCRIPT), *values], cwd=repo, capture_output=True, text=True, check=False
+        [sys.executable, str(_SCRIPT), *values], cwd=repo, capture_output=True, text=True, check=False, env=env
     )
+
+
+# Gefälschtes ``gh``: beantwortet die drei ``gh api``-Pfade aus Dateien im
+# selben Verzeichnis (runs.json, artifacts-<run>.json, zip-<artefakt>).
+_FAKE_GH = """#!{python}
+import pathlib, sys
+here = pathlib.Path(__file__).parent
+path = sys.argv[2]
+if "/runs?" in path:
+    name = "runs.json"
+elif "/artifacts?" in path:
+    name = "artifacts-" + path.split("/runs/")[1].split("/")[0] + ".json"
+else:
+    name = "zip-" + path.split("/artifacts/")[1].split("/")[0]
+sys.stdout.buffer.write((here / name).read_bytes())
+"""
+
+
+def _github(tmp_path: Path, totals: list[str | None], forks: frozenset[int] = frozenset()) -> dict[str, str]:
+    """Fälscht ``gh`` mit erfolgreichen main-Läufen (neueste zuerst); ``None``: Lauf ohne Artefakt.
+
+    Die Indizes in ``forks`` sind Pull Requests aus einem Fork, dessen Branch ``main`` heißt.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    gh = bin_dir / "gh"
+    gh.write_text(_FAKE_GH.format(python=sys.executable), encoding="utf-8")
+    gh.chmod(0o755)
+    eigen = {"full_name": "Schorschofwill/swarmq"}
+    fremd = {"full_name": "fremd/swarmq"}
+    ids = [100 + i for i in range(len(totals))]
+    runs = [
+        {
+            "id": run_id,
+            "event": "pull_request" if i in forks else "push",
+            "repository": eigen,
+            "head_repository": fremd if i in forks else eigen,
+        }
+        for i, run_id in enumerate(ids)
+    ]
+    (bin_dir / "runs.json").write_text(json.dumps({"workflow_runs": runs}), encoding="utf-8")
+    for run_id, total in zip(ids, totals, strict=True):
+        artifacts = [] if total is None else [{"id": run_id + 1000}]
+        (bin_dir / f"artifacts-{run_id}.json").write_text(json.dumps({"artifacts": artifacts}), encoding="utf-8")
+        if total is not None:
+            buffer = io.BytesIO()
+            with zipfile.ZipFile(buffer, "w") as archive:
+                archive.writestr("coverage-total.txt", f"{total}\n")
+            (bin_dir / f"zip-{run_id + 1000}").write_bytes(buffer.getvalue())
+    return {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
 
 
 def _floor(repo: Path) -> object:
@@ -143,3 +203,38 @@ def test_an_untracked_file_does_not_block(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert _floor(repo) == 92
+
+
+def test_without_values_the_last_three_successful_main_runs_count(tmp_path: Path) -> None:
+    (tmp_path / "repo").mkdir()
+    repo = _repo(tmp_path / "repo", 90)
+    env = _github(tmp_path, ["96.40", "96.70", "96.50", "90.00"])
+
+    result = _ratchet(repo, env=env)
+
+    assert result.returncode == 0, result.stderr
+    assert _floor(repo) == 95
+
+
+def test_a_run_without_an_artifact_does_not_count(tmp_path: Path) -> None:
+    (tmp_path / "repo").mkdir()
+    repo = _repo(tmp_path / "repo", 90)
+    env = _github(tmp_path, ["96.40", None, "96.50"])
+
+    result = _ratchet(repo, env=env)
+
+    assert result.returncode != 0
+    assert "gefunden 2" in result.stderr
+    assert _floor(repo) == 90
+
+
+def test_ein_fork_pr_lauf_mit_branch_main_zaehlt_nicht(tmp_path: Path) -> None:
+    """Der Filter ``branch=main`` der API vergleicht nur den Branchnamen; ein Fork-Branch main passt auch."""
+    (tmp_path / "repo").mkdir()
+    repo = _repo(tmp_path / "repo", 90)
+    env = _github(tmp_path, ["90.00", "96.40", "96.70", "96.50"], forks=frozenset({0}))
+
+    result = _ratchet(repo, env=env)
+
+    assert result.returncode == 0, result.stderr
+    assert _floor(repo) == 95

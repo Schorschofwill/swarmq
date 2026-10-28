@@ -1,8 +1,11 @@
 site_name: SwarmQ
 site_description: Async-first Python task queue on RabbitMQ and Valkey – durable by default, fast where it counts.
-site_url: https://swarmq.readthedocs.io/
+# Read the Docs liefert jede Version unter /en/<version>/ aus; mit der nackten
+# Domain zeigten Sprachumschalter, Canonical-Links und Sitemap ins Leere.
+site_url: !ENV [READTHEDOCS_CANONICAL_URL, "https://swarmq.readthedocs.io/en/latest/"]
 repo_url: https://github.com/Schorschofwill/swarmq
 repo_name: Schorschofwill/swarmq
+edit_uri: edit/main/website/
 copyright: © 2026 SwarmQ
 
 docs_dir: website
@@ -68,9 +71,6 @@ extra:
       link: https://github.com/Schorschofwill/swarmq
     - icon: fontawesome/brands/python
       link: https://pypi.org/project/swarmq/
-  version:
-    provider: mike
-    default: latest
 
 markdown_extensions:
   # Python-Markdown core

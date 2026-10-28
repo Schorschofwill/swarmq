@@ -22,6 +22,7 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import TaskError
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
+from tests.support.wait import WORKER_START_TIMEOUT_S
 
 pytestmark = [pytest.mark.e2e, pytest.mark.timeout(30)]
 
@@ -37,7 +38,7 @@ async def _worker(rabbitmq_url: str, valkey_url: str, queue: str, **config: Any)
 
     task = asyncio.create_task(app.start_worker())
     try:
-        await asyncio.wait_for(online.wait(), timeout=8.0)
+        await asyncio.wait_for(online.wait(), timeout=WORKER_START_TIMEOUT_S)
         yield
     finally:
         task.cancel()

@@ -16,20 +16,35 @@
 # ``abholen`` kopiert /ergebnisse und das Log in <ordner> und entfernt
 # Container und Image. VERGLEICH_REPO nennt ein anderes Repo als dieses.
 #
-# CI-Jobs auf dem Messhost verfälschen die Messung. Läuft dort der Container
-# ``gitlab-runner``, hält ``starten`` ihn vor dem Lauf an und vermerkt das am
-# Lauf-Container; ``abholen`` startet ihn dann wieder. Der Runner-Container
-# trägt ``--stop-signal SIGQUIT``, so laufen angefangene Jobs noch zu Ende.
+# CI-Jobs auf dem Messhost verfälschen die Messung. ``starten`` setzt deshalb
+# den Pausenschalter der GitHub-Runner (ops/github-runner/, Plan
+# 2026-10-28-1308, KTD6) und wartet, bis kein Slot mehr einen Job hat;
+# angefangene Jobs laufen zu Ende. Erreicht wird der Schalter über einen
+# kurzlebigen Helfer-Container mit dem Zustandsverzeichnis als Bind-Mount,
+# also über denselben Docker-Kontext, ohne Token und ohne SSH. Fehlt das
+# Verzeichnis, scheitert der Mount, und es wird nicht ungeschützt gemessen.
+# Nur ein Schalter, den ``starten`` selbst gesetzt hat, wird am Lauf-Container
+# vermerkt; nur dann entfernt ``abholen`` ihn wieder.
+#
+# Übergangszeit: Läuft noch der Container ``gitlab-runner``, hält ``starten``
+# ihn ebenfalls an und vermerkt das; ``abholen`` startet ihn dann wieder. Der
+# Runner-Container trägt ``--stop-signal SIGQUIT``, so laufen angefangene
+# Jobs noch zu Ende.
 set -euo pipefail
 
 NAME=swarmq-vergleich
 RUNNER=gitlab-runner
+ZUSTAND=/var/lib/github-runner
+HELFER=busybox:1.37
 repo="${VERGLEICH_REPO:-$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)}"
 befehl="${1:?Befehl fehlt: starten, status oder abholen}"
 kontext="${2:?Docker-Kontext fehlt, etwa celsius}"
 shift 2
 
 d() { docker --context "$kontext" "$@"; }
+
+# Führt ein sh-Skript im Zustandsverzeichnis der GitHub-Runner auf dem Host aus.
+zustand() { d run --rm --mount "type=bind,src=$ZUSTAND,dst=/zustand" "$HELFER" sh -c "$1"; }
 
 case "$befehl" in
     starten)
@@ -50,13 +65,35 @@ case "$befehl" in
         git -C "$kopie/repo" checkout -q --detach "$commit"
         d build -q -t "$NAME:$commit" -f "$kopie/repo/benchmarks/comparison/Dockerfile" "$kopie/repo"
         vermerk=()
+        echo "pausiere die GitHub-Runner auf $kontext; laufende Jobs enden vorher"
+        # Erst unter der Sperre der Slots setzen, dann in einem zweiten Aufruf
+        # warten, bis jeder Slot pausiert: So ist vor dem Warten bekannt, ob
+        # dieser Lauf den Schalter gesetzt hat.
+        pause="$(zustand 'cd /zustand && flock lock sh -c "if [ -e pause ]; then echo schon; else touch pause; echo gesetzt; fi"')" || {
+            echo "Pausenschalter auf $kontext nicht erreichbar ($ZUSTAND); ohne Pause wird nicht gemessen" >&2
+            exit 2
+        }
+        if [ "$(echo "$pause" | head -1)" = gesetzt ]; then
+            vermerk+=(--label "swarmq.pause=github-runner")
+            # Scheitert etwas vor dem Lauf-Container (oder bricht jemand das Warten
+            # ab), entsteht kein Vermerk für ``abholen``; dann hier freigeben,
+            # sonst blieben alle Runner pausiert. Ein schon gesetzter Schalter bleibt.
+            trap 'zustand "cd /zustand && flock lock rm -f pause" >/dev/null || true; rm -rf "$kopie"' EXIT
+            trap 'exit 130' INT TERM
+        fi
+        zustand 'cd /zustand && while grep -qv "^pausiert\$" slots/*.state 2>/dev/null; do sleep 10; done' >/dev/null || {
+            echo "Warten auf die Pause der Runner auf $kontext gescheitert" >&2
+            exit 2
+        }
         if [ "$(d inspect -f '{{.State.Running}}' "$RUNNER" 2>/dev/null)" = true ]; then
             echo "halte $RUNNER auf $kontext an; laufende Jobs enden vorher"
             d stop "$RUNNER" >/dev/null
-            vermerk=(--label "swarmq.runner=$RUNNER")
+            vermerk+=(--label "swarmq.runner=$RUNNER")
         fi
         d run -d --name "$NAME" --network host -v /var/run/docker.sock:/var/run/docker.sock \
             "${vermerk[@]}" "$NAME:$commit" "$lauf" "$@"
+        # Ab jetzt trägt der Lauf-Container den Vermerk; ``abholen`` gibt frei.
+        trap 'rm -rf "$kopie"' EXIT
         echo "gestartet: $NAME:$commit auf $kontext"
         ;;
     status)
@@ -74,9 +111,14 @@ case "$befehl" in
         d logs "$NAME" >"$ziel/lauf.log" 2>&1
         image="$(d inspect -f '{{.Config.Image}}' "$NAME")"
         runner="$(d inspect -f '{{index .Config.Labels "swarmq.runner"}}' "$NAME")"
+        pausiert="$(d inspect -f '{{index .Config.Labels "swarmq.pause"}}' "$NAME")"
         d rm "$NAME"
         d rmi "$image"
         echo "abgeholt nach $ziel; $NAME und $image auf $kontext entfernt"
+        if [ -n "$pausiert" ]; then
+            zustand 'cd /zustand && flock lock rm -f pause'
+            echo "GitHub-Runner auf $kontext fortgesetzt"
+        fi
         if [ -n "$runner" ]; then
             d start "$runner" >/dev/null
             echo "$runner auf $kontext wieder gestartet"

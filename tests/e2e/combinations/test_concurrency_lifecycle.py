@@ -68,6 +68,7 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 from tests.support.known_leaks import aiormq_streamwriter_leak
+from tests.support.wait import WORKER_START_TIMEOUT_S
 from tests.support.worker_subprocess import (
     SHORT_EXECUTION_GUARD_ENV,
     SHORT_SCHEDULER_LOCK_ENV,
@@ -156,7 +157,7 @@ async def _running_worker(
 
     worker_task = asyncio.create_task(worker_app.start_worker())
     try:
-        await asyncio.wait_for(online.wait(), timeout=10.0)
+        await asyncio.wait_for(online.wait(), timeout=WORKER_START_TIMEOUT_S)
         yield worker_app
     finally:
         worker_task.cancel()
@@ -1014,7 +1015,7 @@ class TestBurstModeRetryPendingCombo:
 
             worker_task = asyncio.create_task(worker_app.start_worker())
             try:
-                await asyncio.wait_for(online.wait(), timeout=8.0)
+                await asyncio.wait_for(online.wait(), timeout=WORKER_START_TIMEOUT_S)
                 tid = await app.schedule(task_name, 99)
                 await asyncio.wait_for(done.wait(), timeout=10.0)
                 # Worker should exit on its own after idle timeout.
@@ -1067,10 +1068,11 @@ class TestBurstModeRetryPendingCombo:
             async def _online_cb(**_: Any) -> None:
                 online.set()
 
-            t0 = time.monotonic()
             worker_task = asyncio.create_task(worker_app.start_worker())
             try:
-                await asyncio.wait_for(online.wait(), timeout=8.0)
+                await asyncio.wait_for(online.wait(), timeout=WORKER_START_TIMEOUT_S)
+                # Die Uhr läuft ab ONLINE: Geprüft wird der Burst-Ausstieg, nicht der Start.
+                t0 = time.monotonic()
                 tid = await app.schedule(task_name, 77)
                 await asyncio.wait_for(done.wait(), timeout=8.0)
                 # Wait for burst idle exit (1.5s idle timeout + headroom).
@@ -1152,7 +1154,7 @@ class TestBurstModeRetryPendingCombo:
 
             worker_task = asyncio.create_task(worker_app.start_worker())
             try:
-                await asyncio.wait_for(online.wait(), timeout=8.0)
+                await asyncio.wait_for(online.wait(), timeout=WORKER_START_TIMEOUT_S)
                 tid = await app.schedule(task_name, 5)
                 await asyncio.wait_for(done.wait(), timeout=15.0)
                 result = await app.get_result(tid, timeout=5)
@@ -1881,7 +1883,7 @@ class TestAutoscaleShrinkRunningCombo:
 
         worker_task = asyncio.create_task(worker_app.start_worker())
         try:
-            await asyncio.wait_for(online.wait(), timeout=8.0)
+            await asyncio.wait_for(online.wait(), timeout=WORKER_START_TIMEOUT_S)
             # Cancel the worker task to simulate graceful shutdown.
             worker_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

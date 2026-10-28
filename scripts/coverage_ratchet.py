@@ -1,8 +1,9 @@
 """Coverage-Untergrenze anheben (Plan 2026-10-13-0902, U9, KTD7).
 
 Aufruf: ``uv run just ratchet [wert wert wert]``. Ohne Werte holt das Skript
-die Quoten der letzten drei erfolgreichen ``coverage-combine``-Jobs auf
-``main`` ueber die GitLab-API (``glab``). Neue Untergrenze: kleinster Wert
+die Quoten der letzten drei erfolgreichen CI-Laeufe auf ``main`` ueber die
+GitHub-API (``gh``): ``coverage-combine`` legt die Gesamtquote als Artefakt
+``coverage-total`` ab (Plan 2026-10-28-1308, KTD7/KTD8). Neue Untergrenze: kleinster Wert
 minus 0,5 Prozentpunkte (die in U6 gemessene Schwankung lag weit darunter),
 auf ganze Prozent abgerundet. Lokale Laeufe liegen systematisch tiefer (kein
 zweiter Broker, andere Suiten); deshalb zaehlen nur Werte aus der CI.
@@ -13,12 +14,14 @@ Dateien geaendert sind (unversionierte stoeren nicht). Es aendert nur ``pyprojec
 
 from __future__ import annotations
 
+import io
 import json
 import math
 import re
 import subprocess
 import sys
 import tomllib
+import zipfile
 from pathlib import Path
 
 _PYPROJECT = Path("pyproject.toml")
@@ -51,21 +54,31 @@ def with_floor(text: str, floor: int) -> str:
     return text[:start] + section + text[end:]
 
 
+# ``gh`` setzt Besitzer und Repo aus dem Git-Remote ein.
+_REPO = "repos/{owner}/{repo}"
+
+
+def _gh_api(path: str) -> bytes:
+    return subprocess.run(["gh", "api", path], capture_output=True, check=True).stdout
+
+
 def _main_values() -> list[float]:
-    jobs = json.loads(
-        subprocess.run(
-            ["glab", "api", "projects/:id/jobs?scope[]=success&per_page=100"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout
-    )
-    values = [
-        float(job["coverage"])
-        for job in jobs
-        if job["name"] == "coverage-combine" and job["ref"] == "main" and job.get("coverage") is not None
-    ]
-    return values[:3]
+    runs = json.loads(_gh_api(f"{_REPO}/actions/workflows/ci.yml/runs?branch=main&event=push&status=success"))
+    values: list[float] = []
+    for run in runs["workflow_runs"]:
+        # ``branch=main`` vergleicht nur den Branchnamen; ein Pull Request aus einem
+        # Fork, dessen Branch main heisst, passt auch. Nur Pushes auf das eigene main zaehlen.
+        if run.get("event") != "push" or run["head_repository"]["full_name"] != run["repository"]["full_name"]:
+            continue
+        artifacts = json.loads(_gh_api(f"{_REPO}/actions/runs/{run['id']}/artifacts?name=coverage-total"))
+        if not artifacts["artifacts"]:
+            continue
+        archive = _gh_api(f"{_REPO}/actions/artifacts/{artifacts['artifacts'][0]['id']}/zip")
+        with zipfile.ZipFile(io.BytesIO(archive)) as zipped:
+            values.append(float(zipped.read("coverage-total.txt").decode().strip()))
+        if len(values) == 3:
+            break
+    return values
 
 
 def main(argv: list[str]) -> int:

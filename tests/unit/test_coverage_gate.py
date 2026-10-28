@@ -17,6 +17,11 @@ Test-Liste:
 - [x] kein Merge-Base: 1
 - [x] gesenkte Untergrenze: 1, diff-cover läuft nicht
 - [x] sonst: Exit-Code von diff-cover, gegen den Merge-Base
+
+Unter GitHub Actions (Plan 2026-10-28-1308, U2, KTD8):
+- [x] ``GITHUB_REF_TYPE=tag``: 0, ohne git
+- [x] ``GITHUB_REF_TYPE=branch``, ``GITHUB_REF_NAME=main``: 0, ohne Vergleich
+- [x] anderer Branch: diff-cover gegen den Merge-Base
 """
 
 from __future__ import annotations
@@ -106,16 +111,22 @@ def run_gate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         diff_cover.append(argv)
         return subprocess.CompletedProcess(argv, 7, "", "")
 
-    def run(git: _Git, *, branch: str = "feature", tag: str = "", head_floor: float | None = 95) -> int:
+    def run(
+        git: _Git, *, branch: str = "feature", tag: str = "", head_floor: float | None = 95, ci: str = "gitlab"
+    ) -> int:
         (tmp_path / "pyproject.toml").write_text(_toml(head_floor), encoding="utf-8")
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(gate, "_git", git)
         monkeypatch.setattr(gate.subprocess, "run", fake_run)
-        monkeypatch.setenv("CI_COMMIT_BRANCH", branch)
-        if tag:
-            monkeypatch.setenv("CI_COMMIT_TAG", tag)
+        for name in ("CI_COMMIT_BRANCH", "CI_COMMIT_TAG", "GITHUB_REF_TYPE", "GITHUB_REF_NAME"):
+            monkeypatch.delenv(name, raising=False)
+        if ci == "github":
+            monkeypatch.setenv("GITHUB_REF_TYPE", "tag" if tag else "branch")
+            monkeypatch.setenv("GITHUB_REF_NAME", tag or branch)
         else:
-            monkeypatch.delenv("CI_COMMIT_TAG", raising=False)
+            monkeypatch.setenv("CI_COMMIT_BRANCH", branch)
+            if tag:
+                monkeypatch.setenv("CI_COMMIT_TAG", tag)
         return int(gate.main())
 
     run.diff_cover = diff_cover  # type: ignore[attr-defined]  # Protokoll fuer die Tests
@@ -156,3 +167,24 @@ def test_otherwise_diff_cover_decides_against_the_merge_base(run_gate) -> None:
     assert argv[:2] == ["diff-cover", "coverage.xml"]
     assert "--compare-branch=abc123" in argv
     assert "--fail-under=100" in argv
+
+
+def test_a_github_tag_run_passes_without_git(run_gate) -> None:
+    git = _Git()
+
+    assert run_gate(git, tag="v1.0.0", ci="github") == 0
+    assert git.calls == []
+
+
+def test_github_main_passes_without_comparison(run_gate) -> None:
+    git = _Git()
+
+    assert run_gate(git, branch="main", ci="github") == 0
+    assert not any(call[0] == "merge-base" for call in git.calls)
+    assert run_gate.diff_cover == []
+
+
+def test_a_github_branch_run_compares_against_the_merge_base(run_gate) -> None:
+    assert run_gate(_Git(merge_base="abc123"), branch="feature", ci="github") == 7
+    [argv] = run_gate.diff_cover
+    assert "--compare-branch=abc123" in argv

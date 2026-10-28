@@ -1,0 +1,344 @@
+# CI: das Regressions-Gate, Job für Job aus .gitlab-ci.yml übernommen
+# (Plan 2026-10-28-1308, U3, KTD7). Bis zur Umstellung laufen beide CIs; der
+# Vergleich der Testzahlen je Job entscheidet, ob diese hier dasselbe prüft.
+#
+#   * unit-tests / integration-tests / e2e-tests: deterministisch, BLOCKIEREND,
+#     keine Reruns. Die Reihenfolge wird je Lauf gemischt (pytest-randomly);
+#     ein roter Job ist ein Fehler, kein Zufall. Nachstellen mit
+#     SWARMQ_TEST_SEED=<run_id> uv run just <rezept>.
+#   * fuzz: im Unit-Job, blockierend, deterministisch (Profil ci) und mit
+#     Wächter gegen leere Läufe (Plan 2026-10-24-1118).
+#   * chaos: nicht in der CI -- örtlich vor Releases, siehe
+#     docs/testing/test-strategy.md, Abschnitt "Chaos und Chaos-gestützter Fuzz".
+#   * secret-scan: gitleaks mit .gitleaks.toml, neben den Tests.
+#
+# Alle Jobs laufen auf den eigenen Runnern auf celsius (Label celsius-swarmq,
+# ops/github-runner/) und immer in einem `container:`: Ohne ihn liefen die
+# Schritte direkt auf dem Host. Image ist das exakt gepinnte uv-Image mit git
+# (Python 3.14.4 wie .python-version; die Modulzahlen der Kostensuite hängen an
+# der Python-Version, Plan 2026-10-24-1118). Die slim-Variante hat kein git,
+# und ohne git legt actions/checkout kein .git an -- auf GitLab hatte jeder Job
+# eines. Kein Compiler, kein apt: jedes Paket bringt ein cp314- oder abi3-Rad.
+#
+# Der uv-Cache ist ein Volume im Docker der CI, getrennt nach Vertrauensstufe:
+# Ein freigegebener Fork-PR schreibt nur in swarmq-uv-cache-fork, nie in den
+# Cache, aus dem Pushes auf dieses Repo installieren (swarmq-uv-cache-eigen).
+# uv prüft Hashes beim Herunterladen, nicht beim Wiederverwenden aus dem Cache.
+# Releases bauen nie damit (release.yml).
+#
+# Genau ein Lauf je Commit: Pushes auf Branches und Tags, dazu Pull Requests
+# aus Forks. Ein PR aus diesem Repo läuft schon über seinen Push. Kein
+# `concurrency` mit Abbruch: GitLab hat nie einen Lauf abgebrochen, und der
+# Ratchet braucht jeden erfolgreichen main-Lauf. Fork-PRs starten erst nach
+# Freigabe (Repo-Einstellung, KTD5).
+
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  UV_CACHE_DIR: /uv-cache
+  # Volume und Job-venv liegen auf verschiedenen Dateisystemen.
+  UV_LINK_MODE: copy
+  UV_FROZEN: "1"
+  # Kanonischer Aufruf: Test-Abhängigkeiten plus `reload` (watchfiles) für die
+  # Hot-Reload-Tests; `uv run` zieht die Gruppen `lint` und `typing` mit.
+  UV_RUN: uv run --extra test --extra reload
+  SWARMQ_TEST_SEED: ${{ github.run_id }}
+
+# Feste Obergrenzen je Job: Ohne sie hält ein hängender Job den einzigen
+# Runner auf celsius bis zum GitHub-Standard von 360 Minuten fest. Die Werte
+# liegen beim Mehrfachen der üblichen Laufzeit (Tests 3–4 min).
+
+jobs:
+  # Format, ruff mit allen Regeln, mypy über src und tests, basedpyright,
+  # stubtest. Dieselben Befehle laufen lokal als prek-Hooks.
+  lint-and-types:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: [self-hosted, celsius-swarmq]
+    timeout-minutes: 10
+    container:
+      image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
+      volumes: ["swarmq-uv-cache-${{ github.event_name == 'push' && 'eigen' || 'fork' }}:/uv-cache"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: $UV_RUN just lint
+      - run: $UV_RUN just types
+
+  # Prüft, dass uv.lock zu pyproject.toml passt, auch bei Extras, die kein
+  # anderer Job installiert. UV_FROZEN muss hier 0 sein: Unter UV_FROZEN=1
+  # prüft `uv lock --check` nur die Gültigkeit, nicht die Aktualität. Siehe
+  # docs/solutions/tooling-decisions/uv-lock-drift-from-pyproject-optional-extras.md
+  lock-check:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: [self-hosted, celsius-swarmq]
+    timeout-minutes: 10
+    container:
+      image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
+      volumes: ["swarmq-uv-cache-${{ github.event_name == 'push' && 'eigen' || 'fork' }}:/uv-cache"]
+    env:
+      UV_FROZEN: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: uv lock --check
+
+  # Bekannte Schwachstellen in uv.lock (uv audit gegen OSV). Blockierend nur,
+  # wenn uv.lock oder pyproject.toml gegenüber main geändert sind; sonst nur
+  # eine Warnung, damit eine neue CVE main nie ohne eigenes Zutun rot macht.
+  # Ausnahmen stehen im Rezept audit.
+  abhaengigkeiten-pruefen:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    needs: [lock-check]
+    runs-on: [self-hosted, celsius-swarmq]
+    timeout-minutes: 10
+    container:
+      image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
+      volumes: ["swarmq-uv-cache-${{ github.event_name == 'push' && 'eigen' || 'fork' }}:/uv-cache"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: lock
+        name: uv.lock oder pyproject.toml gegenüber main geändert?
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git fetch --quiet origin +refs/heads/main:refs/remotes/origin/main
+          if git diff --quiet refs/remotes/origin/main HEAD -- uv.lock pyproject.toml; then
+            echo "geaendert=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "geaendert=true" >> "$GITHUB_OUTPUT"
+          fi
+      - run: $UV_RUN just audit
+        continue-on-error: ${{ steps.lock.outputs.geaendert != 'true' }}
+
+  # Unit + Property + Parser-Fuzz + Kostensuite, ohne Dienste.
+  # SWARMQ_FUZZ_PROFILE=ci lädt das Hypothesis-Profil mit derandomize;
+  # SWARMQ_TEST_MIN_TESTS macht den Lauf rot, wenn weniger Fuzz-Ziele liefen.
+  unit-tests:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: [self-hosted, celsius-swarmq]
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
+      volumes: ["swarmq-uv-cache-${{ github.event_name == 'push' && 'eigen' || 'fork' }}:/uv-cache"]
+    env:
+      SWARMQ_TEST_COVERAGE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: $UV_RUN just unit -q --junitxml=junit-unit.xml
+      - run: $UV_RUN just property -q --junitxml=junit-property.xml
+      - run: $UV_RUN just fuzz -q --junitxml=junit-fuzz.xml
+        env:
+          SWARMQ_FUZZ_PROFILE: ci
+          SWARMQ_TEST_MIN_TESTS: "31"
+      # Ohne Coverage: Sie lädt eigene Module in jedes Kind, die Modulzahlen
+      # liefen sonst zwischen CI und lokal auseinander (Plan 2026-10-24-1118, KTD4).
+      - run: $UV_RUN just kosten -q --junitxml=junit-kosten.xml
+        env:
+          SWARMQ_TEST_COVERAGE: ""
+      # Rohdaten und JUnit auch bei Rot. Die Messdaten heißen .coverage.*,
+      # sind also versteckt und ohne include-hidden-files nicht im Artefakt.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: coverage-unit
+          path: |
+            .coverage.*
+            junit-*.xml
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  # Integration gegen echte Dienste. Der zweite Broker 4.2.9 nur hier, für
+  # tests/integration/broker/test_consumer_timeout.py; sein Tick-Intervall
+  # steht nur an diesem Service, damit es nicht in den Hauptbroker gerät.
+  # RabbitMQ ist exakt gepinnt (Plan 2026-10-08-1541, KTD9). Die Services
+  # veröffentlichen keine Host-Ports; jeder Job hat sein eigenes Docker-Netz.
+  integration-tests:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: [self-hosted, celsius-swarmq]
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
+      volumes: ["swarmq-uv-cache-${{ github.event_name == 'push' && 'eigen' || 'fork' }}:/uv-cache"]
+    services:
+      rabbitmq:
+        image: rabbitmq:4.3.6-management
+      rabbitmq42:
+        image: rabbitmq:4.2.9-management
+        env:
+          RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "-rabbit channel_tick_interval 1000"
+      valkey:
+        image: valkey/valkey:8
+    env:
+      SWARMQ_TEST_RABBITMQ_HOST: rabbitmq
+      SWARMQ_TEST_RABBITMQ_PORT: "5672"
+      SWARMQ_TEST_RABBITMQ_MGMT_PORT: "15672"
+      SWARMQ_TEST_RABBITMQ42_HOST: rabbitmq42
+      SWARMQ_TEST_RABBITMQ42_PORT: "5672"
+      SWARMQ_TEST_RABBITMQ42_MGMT_PORT: "15672"
+      SWARMQ_TEST_VALKEY_HOST: valkey
+      SWARMQ_TEST_VALKEY_PORT: "6379"
+      SWARMQ_CI_WAIT_FOR: "rabbitmq:5672 rabbitmq:15672 rabbitmq42:5672 rabbitmq42:15672 valkey:6379"
+      SWARMQ_TEST_COVERAGE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Readiness-Gate: check_docker ÜBERSPRINGT Tests bei fehlendem Dienst.
+      # Ohne dieses Tor würde ein langsamer Broker-Start die Suite mit null
+      # gelaufenen Tests grün durchlassen. Wärmt nebenbei das venv an.
+      - name: Auf die Dienste warten
+        run: &readiness |
+          $UV_RUN python - <<'PY'
+          import os, socket, sys, time
+          targets = [(h, int(p)) for h, p in (t.rsplit(":", 1) for t in os.environ["SWARMQ_CI_WAIT_FOR"].split())]
+          deadline = time.time() + 120
+          for host, port in targets:
+              while True:
+                  try:
+                      with socket.create_connection((host, port), timeout=2):
+                          break
+                  except OSError:
+                      if time.time() > deadline:
+                          sys.exit(f"service {host}:{port} not ready in time")
+                      time.sleep(1)
+          print("all services ready")
+          PY
+      - run: $UV_RUN just integration -q --junitxml=junit-integration.xml
+      # Valkey-Befehle und Roundtrips je Task exakt gegen
+      # tests/kosten/basislinie.toml (Plan 2026-10-24-1118, KTD6), ohne Coverage.
+      - run: $UV_RUN just kosten-valkey -q --junitxml=junit-kosten-valkey.xml
+        env:
+          SWARMQ_TEST_COVERAGE: ""
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: coverage-integration
+          path: |
+            .coverage.*
+            junit-*.xml
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  # Volle e2e-Suite. BLOCKIEREND, keine Reruns: Die beiden bestätigten
+  # Flake-Ursachen (cron-sync clobber, verwaiste Scheduler-Tasks beim Abbruch)
+  # sind behoben; ein roter e2e-Job ist eine echte Regression.
+  e2e-tests:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: [self-hosted, celsius-swarmq]
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
+      volumes: ["swarmq-uv-cache-${{ github.event_name == 'push' && 'eigen' || 'fork' }}:/uv-cache"]
+    services:
+      rabbitmq:
+        image: rabbitmq:4.3.6-management
+      valkey:
+        image: valkey/valkey:8
+    env:
+      SWARMQ_TEST_RABBITMQ_HOST: rabbitmq
+      SWARMQ_TEST_RABBITMQ_PORT: "5672"
+      SWARMQ_TEST_RABBITMQ_MGMT_PORT: "15672"
+      SWARMQ_TEST_VALKEY_HOST: valkey
+      SWARMQ_TEST_VALKEY_PORT: "6379"
+      SWARMQ_CI_WAIT_FOR: "rabbitmq:5672 rabbitmq:15672 valkey:6379"
+      SWARMQ_TEST_COVERAGE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Auf die Dienste warten
+        run: *readiness
+      - run: $UV_RUN just e2e -q --junitxml=junit-e2e.xml
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: coverage-e2e
+          path: |
+            .coverage.*
+            junit-*.xml
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  # Coverage (Plan 2026-10-13-0902, U8): Nur wenn alle drei Test-Jobs grün
+  # sind (ein Teilbericht wäre irreführend). Führt zusammen, schreibt
+  # coverage.xml und prüft das Gate: `coverage report` scheitert unter
+  # fail_under; scripts/coverage_gate.py holt main und vergleicht gegen den
+  # Merge-Base (fail_under darf nicht sinken, neue Zeilen 100 %). Die
+  # Gesamtquote geht als Artefakt coverage-total an den Ratchet
+  # (scripts/coverage_ratchet.py).
+  coverage-combine:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    needs: [unit-tests, integration-tests, e2e-tests]
+    runs-on: [self-hosted, celsius-swarmq]
+    timeout-minutes: 15
+    container:
+      image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
+      volumes: ["swarmq-uv-cache-${{ github.event_name == 'push' && 'eigen' || 'fork' }}:/uv-cache"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: coverage-*
+          merge-multiple: true
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - run: $UV_RUN just coverage-report
+      - run: $UV_RUN coverage report --format=total > coverage-total.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-total
+          path: coverage-total.txt
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: error
+          retention-days: 30
+      - run: $UV_RUN just coverage-gate
+
+  # Secret-Scan über die ganze Historie mit .gitleaks.toml. Die CLI kommt als
+  # gepinntes Release mit Prüfsumme; das gitleaks-Image ist Alpine, und die
+  # Actions des Runners laufen dort nicht.
+  secret-scan:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: [self-hosted, celsius-swarmq]
+    timeout-minutes: 10
+    container:
+      image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
+    env:
+      GITLEAKS_VERSION: 8.30.1
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: gitleaks holen
+        run: |
+          curl -sSfL -o /tmp/gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tar.gz -C /usr/local/bin gitleaks
+      - run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          gitleaks git . --log-opts="--all" --redact --no-banner -c .gitleaks.toml
