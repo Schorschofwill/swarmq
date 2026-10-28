@@ -311,15 +311,17 @@ def worker_vhosts(
     """
     with contextlib.ExitStack() as stack:
         clients: list[tuple[RabbitMQNode, httpx.Client]] = []
-        for node in nodes:
-            client = stack.enter_context(
-                httpx.Client(base_url=node.management_url, auth=("guest", "guest"), timeout=10.0)
-            )
-            client.put(f"/vhosts/{node.vhost_api}").raise_for_status()
-            permissions = {"configure": ".*", "write": ".*", "read": ".*"}
-            client.put(f"/permissions/{node.vhost_api}/guest", json=permissions).raise_for_status()
-            clients.append((node, client))
         try:
+            for node in nodes:
+                client = stack.enter_context(
+                    httpx.Client(base_url=node.management_url, auth=("guest", "guest"), timeout=10.0)
+                )
+                client.put(f"/vhosts/{node.vhost_api}").raise_for_status()
+                # Ab hier gibt es die vhost: Scheitert danach etwas, auch bei einem
+                # späteren Broker, wird sie trotzdem gelöscht.
+                clients.append((node, client))
+                permissions = {"configure": ".*", "write": ".*", "read": ".*"}
+                client.put(f"/permissions/{node.vhost_api}/guest", json=permissions).raise_for_status()
             yield
         finally:
             deadline = clock() + budget

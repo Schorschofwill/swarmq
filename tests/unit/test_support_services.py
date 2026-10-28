@@ -26,6 +26,7 @@ Test-Liste:
 - [x] Löschen der Worker-vhosts teilt sich eine Frist über alle Broker: Der Sitzungsabbau
       zählt zur pytest-timeout-Frist des letzten Tests (5 s bei ``timeout(5)``); zwei Broker
       mit je 3 s sprengten sie unter Last (CI-Pipeline 441)
+- [x] scheitert das Anlegen bei einem späteren Broker, werden die schon angelegten vhosts gelöscht
 """
 
 from __future__ import annotations
@@ -245,3 +246,29 @@ class TestWorkerVhostCleanup:
             pass
 
         assert geloescht == [("haupt", 3.0), ("zweit", 0.5)]
+
+    def test_a_failed_setup_on_a_later_broker_still_deletes_the_vhosts_already_created(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Liegengebliebene vhosts mit Quorum-Queues trieben den lokalen Test-Broker in den OOM."""
+        geloescht: list[str] = []
+
+        def antworten(request: httpx.Request) -> httpx.Response:
+            if request.method == "DELETE":
+                geloescht.append(request.url.host)
+                return httpx.Response(204)
+            return httpx.Response(500 if request.url.host == "zweit" else 201)
+
+        echter_client = httpx.Client
+        monkeypatch.setattr(
+            httpx, "Client", lambda **kwargs: echter_client(transport=httpx.MockTransport(antworten), **kwargs)
+        )
+        brokers = [
+            services.RabbitMQNode("haupt", 5672, 15672, "swarmq-test-gw1"),
+            services.RabbitMQNode("zweit", 5672, 15672, "swarmq-test-gw1"),
+        ]
+
+        with pytest.raises(httpx.HTTPStatusError), services.worker_vhosts(brokers):
+            pass
+
+        assert geloescht == ["haupt"]
