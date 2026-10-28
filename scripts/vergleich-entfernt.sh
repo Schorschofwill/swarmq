@@ -25,15 +25,9 @@
 # Verzeichnis, scheitert der Mount, und es wird nicht ungeschützt gemessen.
 # Nur ein Schalter, den ``starten`` selbst gesetzt hat, wird am Lauf-Container
 # vermerkt; nur dann entfernt ``abholen`` ihn wieder.
-#
-# Übergangszeit: Läuft noch der Container ``gitlab-runner``, hält ``starten``
-# ihn ebenfalls an und vermerkt das; ``abholen`` startet ihn dann wieder. Der
-# Runner-Container trägt ``--stop-signal SIGQUIT``, so laufen angefangene
-# Jobs noch zu Ende.
 set -euo pipefail
 
 NAME=swarmq-vergleich
-RUNNER=gitlab-runner
 ZUSTAND=/var/lib/github-runner
 HELFER=busybox:1.37
 repo="${VERGLEICH_REPO:-$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)}"
@@ -85,11 +79,6 @@ case "$befehl" in
             echo "Warten auf die Pause der Runner auf $kontext gescheitert" >&2
             exit 2
         }
-        if [ "$(d inspect -f '{{.State.Running}}' "$RUNNER" 2>/dev/null)" = true ]; then
-            echo "halte $RUNNER auf $kontext an; laufende Jobs enden vorher"
-            d stop "$RUNNER" >/dev/null
-            vermerk+=(--label "swarmq.runner=$RUNNER")
-        fi
         d run -d --name "$NAME" --network host -v /var/run/docker.sock:/var/run/docker.sock \
             "${vermerk[@]}" "$NAME:$commit" "$lauf" "$@"
         # Ab jetzt trägt der Lauf-Container den Vermerk; ``abholen`` gibt frei.
@@ -110,7 +99,6 @@ case "$befehl" in
         d cp "$NAME:/ergebnisse/." "$ziel/"
         d logs "$NAME" >"$ziel/lauf.log" 2>&1
         image="$(d inspect -f '{{.Config.Image}}' "$NAME")"
-        runner="$(d inspect -f '{{index .Config.Labels "swarmq.runner"}}' "$NAME")"
         pausiert="$(d inspect -f '{{index .Config.Labels "swarmq.pause"}}' "$NAME")"
         d rm "$NAME"
         d rmi "$image"
@@ -118,10 +106,6 @@ case "$befehl" in
         if [ -n "$pausiert" ]; then
             zustand 'cd /zustand && flock lock rm -f pause'
             echo "GitHub-Runner auf $kontext fortgesetzt"
-        fi
-        if [ -n "$runner" ]; then
-            d start "$runner" >/dev/null
-            echo "$runner auf $kontext wieder gestartet"
         fi
         ;;
     *)

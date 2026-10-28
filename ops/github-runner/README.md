@@ -94,14 +94,15 @@ Damit kein Slot vor dem rootless Docker startet, ein Drop-in
 Die Labels sind `self-hosted` plus `celsius-swarmq` bzw. `celsius-swarmv`.
 Workflows wählen den Runner mit `runs-on: [self-hosted, celsius-swarmq]`.
 
-- **Übergangszeit:** höchstens zwei Slots je Pool (KTD10).
+- **Start:** zwei Slots je Pool.
 
   ```sh
   systemctl enable --now github-runner@swarmq-{1,2}.service
   systemctl enable --now github-runner@swarmv-{1,2}.service
   ```
 
-- **Endgröße** nach dem Abbau des GitLab-Runners: swarmq 8, swarmv 5.
+- **Endgröße:** swarmq 8, swarmv 5. Während des Umzugs teilten sich GitHub-
+  und GitLab-Runner den Host, deshalb lief bis dahin nur der Start (KTD10).
 
   ```sh
   systemctl enable --now github-runner@swarmq-{3..8}.service

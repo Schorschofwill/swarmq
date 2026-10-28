@@ -92,8 +92,8 @@ Auf dem Messhost (celsius) läuft der Vergleich nur in Containern; dort
 liegen weder Repo noch Umgebungen noch Ergebnisse. Auf celsius laufen auch die
 CI-Runner des Projekts. `starten` setzt vor dem Lauf den Pausenschalter der
 GitHub-Runner (`ops/github-runner/`) und wartet, bis kein Job mehr läuft;
-angefangene Jobs enden noch. In der Übergangszeit hält es zusätzlich den
-GitLab-Runner an. `abholen` setzt nur fort, was `starten` angehalten hat.
+angefangene Jobs enden noch. `abholen` gibt den Schalter nur frei, wenn
+`starten` ihn gesetzt hat.
 Gesteuert wird vom eigenen Rechner über den Docker-Kontext des Hosts:
 
 ```bash
