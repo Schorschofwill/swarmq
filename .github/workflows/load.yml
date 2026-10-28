@@ -30,7 +30,7 @@ jobs:
     timeout-minutes: 150
     container:
       image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
-      volumes: ["swarmq-uv-cache:/uv-cache"]
+      volumes: ["swarmq-uv-cache-eigen:/uv-cache"]
     services:
       rabbitmq:
         image: rabbitmq:4.3.6-management
