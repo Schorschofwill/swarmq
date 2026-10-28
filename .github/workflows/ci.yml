@@ -51,6 +51,11 @@ env:
   UV_RUN: uv run --extra test --extra reload
   SWARMQ_TEST_SEED: ${{ github.run_id }}
 
+# Jeder Job-Container startet mit --init: Der Runner setzt sonst
+# `tail -f /dev/null` als PID 1, und das räumt keine Zombies ab. Kinder, die
+# nach einem SIGKILL auf den Elternprozess sterben, blieben dann als Zombies
+# stehen, und die Kill-Tests hielten sie für lebendig (Probelauf U17).
+#
 # Feste Obergrenzen je Job: Ohne sie hält ein hängender Job den einzigen
 # Runner auf celsius bis zum GitHub-Standard von 360 Minuten fest. Die Werte
 # liegen beim Mehrfachen der üblichen Laufzeit (Tests 3–4 min).
@@ -64,6 +69,7 @@ jobs:
     timeout-minutes: 10
     container:
       image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
+      options: --init
       volumes: ["swarmq-uv-cache-${{ github.event_name == 'push' && 'eigen' || 'fork' }}:/uv-cache"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -82,6 +88,7 @@ jobs:
     timeout-minutes: 10
     container:
       image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
+      options: --init
       volumes: ["swarmq-uv-cache-${{ github.event_name == 'push' && 'eigen' || 'fork' }}:/uv-cache"]
     env:
       UV_FROZEN: "0"
@@ -102,6 +109,7 @@ jobs:
     timeout-minutes: 10
     container:
       image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
+      options: --init
       volumes: ["swarmq-uv-cache-${{ github.event_name == 'push' && 'eigen' || 'fork' }}:/uv-cache"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -130,6 +138,7 @@ jobs:
     timeout-minutes: 30
     container:
       image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
+      options: --init
       volumes: ["swarmq-uv-cache-${{ github.event_name == 'push' && 'eigen' || 'fork' }}:/uv-cache"]
     env:
       SWARMQ_TEST_COVERAGE: "1"
@@ -172,6 +181,7 @@ jobs:
     timeout-minutes: 30
     container:
       image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
+      options: --init
       volumes: ["swarmq-uv-cache-${{ github.event_name == 'push' && 'eigen' || 'fork' }}:/uv-cache"]
     services:
       rabbitmq:
@@ -243,6 +253,7 @@ jobs:
     timeout-minutes: 30
     container:
       image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
+      options: --init
       volumes: ["swarmq-uv-cache-${{ github.event_name == 'push' && 'eigen' || 'fork' }}:/uv-cache"]
     services:
       rabbitmq:
@@ -289,6 +300,7 @@ jobs:
     timeout-minutes: 15
     container:
       image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
+      options: --init
       volumes: ["swarmq-uv-cache-${{ github.event_name == 'push' && 'eigen' || 'fork' }}:/uv-cache"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -325,6 +337,7 @@ jobs:
     timeout-minutes: 10
     container:
       image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
+      options: --init
     env:
       GITLEAKS_VERSION: 8.30.1
       GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
