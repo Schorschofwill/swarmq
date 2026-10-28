@@ -1,5 +1,5 @@
 # Stress und Soak gegen echte Dienste, nur auf Knopfdruck (Plan 2026-10-28-1308,
-# U3, R5). Wie auf GitLab gibt es keine Zeitpläne (docs/testing/test-strategy.md,
+# U3, R5). Es gibt keine Zeitpläne (docs/testing/test-strategy.md,
 # "Es gibt keine Zeitpläne"). Soak läuft eine Stunde Last; vor Releases.
 
 name: load

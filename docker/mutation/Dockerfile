@@ -4,7 +4,7 @@
 # Build-Kontext ist das Repo-Root, `.dockerignore` hält venv, .git und
 # Caches draußen.
 #
-# Basis wie der CI-Job `.uv-git` in .gitlab-ci.yml (nicht slim: git für die
+# Basis wie die Job-Container in .github/workflows/ci.yml (nicht slim: git für die
 # Unit-Tests, die Repos in tmp_path anlegen).
 FROM ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
 

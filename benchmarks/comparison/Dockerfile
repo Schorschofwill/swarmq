@@ -5,7 +5,7 @@
 # mit der der Lauf seine Dienste über den Socket des Hosts startet. Auf dem
 # Host liegt nichts außer Image und Container.
 #
-# Python und uv wie der CI-Job unit-tests (.gitlab-ci.yml); Docker-CLI wie der
+# Python und uv wie der CI-Job unit-tests (.github/workflows/ci.yml); Docker-CLI wie der
 # Daemon auf celsius.
 FROM docker:29.9.2-cli AS docker
 
