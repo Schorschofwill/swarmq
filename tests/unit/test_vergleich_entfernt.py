@@ -17,6 +17,7 @@ Test-Liste:
 - [x] ``starten`` vermerkt nichts, wenn der Schalter schon gesetzt war (absichtlich pausiert)
 - [x] ``abholen`` entfernt den Schalter nur mit Vermerk
 - [x] fehlt das Zustandsverzeichnis auf dem Host, bricht ``starten`` vor dem Lauf ab
+- [x] scheitert ``starten`` nach selbst gesetztem Schalter, gibt es ihn wieder frei; einen schon gesetzten nicht (Review #7)
 - [x] ``status`` zeigt den Zustand des Laufs und das Ende seines Logs
 - [x] ``abholen`` holt Ergebnisse und Log und entfernt Container und Image; solange der Lauf läuft, verweigert es
 - [x] im Container startet ``performance`` den Dienste-Stack, führt den Runner aus, räumt den Stack auch nach einem Fehler ab und legt Ergebnisse und Ausgang ab
@@ -85,6 +86,7 @@ echo "$*" >> "$DOCKER_PROTOKOLL"
 case " $* " in
   *" ps "*) printf '%s' "${SCHEIN_PS:-}" ;;
   *" run --rm "*) [ -n "${SCHEIN_KEIN_ZUSTAND:-}" ] && exit 125; echo "${SCHEIN_PAUSE:-schon}" ;;
+  *" run -d "*) if [ -n "${SCHEIN_LAUF_SCHEITERT:-}" ]; then exit 1; fi ;;
   *" inspect -f {{.State.Running}} gitlab-runner "*) echo "${SCHEIN_RUNNER_LAEUFT:-false}" ;;
   *" inspect -f {{.State.Running}} "*) echo "${SCHEIN_LAEUFT:-false}" ;;
   *" inspect -f {{.Config.Image}} "*) echo swarmq-vergleich:abc1234 ;;
@@ -279,6 +281,27 @@ def test_starten_misst_nicht_ohne_erreichbaren_pausenschalter(tmp_path: Path) ->
     assert lauf.returncode == 2
     assert "Pausenschalter" in lauf.stderr
     assert not [a for a in aufrufe if " run -d " in f" {a} "]
+
+
+@pytest.mark.parametrize(("vorher", "freigegeben"), [("gesetzt", True), ("schon", False)])
+def test_scheitert_starten_nach_dem_pausieren_gibt_es_nur_den_eigenen_schalter_frei(
+    tmp_path: Path, vorher: str, freigegeben: bool
+) -> None:
+    """Sonst blieben alle Runner auf celsius pausiert: Ohne Lauf-Container gibt es keinen Vermerk für ``abholen``."""
+    _repo(tmp_path / "repo")
+
+    lauf, aufrufe = _aufruf(
+        tmp_path,
+        "starten",
+        "celsius",
+        "garantie",
+        VERGLEICH_REPO=str(tmp_path / "repo"),
+        SCHEIN_PAUSE=vorher,
+        SCHEIN_LAUF_SCHEITERT="1",
+    )
+
+    assert lauf.returncode != 0
+    assert any("rm -f pause" in a for a in aufrufe if " run --rm " in f" {a} ") is freigegeben
 
 
 EINSTIEG = VERGLEICH_DIR / "im-container.sh"

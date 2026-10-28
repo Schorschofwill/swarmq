@@ -66,15 +66,25 @@ case "$befehl" in
         d build -q -t "$NAME:$commit" -f "$kopie/repo/benchmarks/comparison/Dockerfile" "$kopie/repo"
         vermerk=()
         echo "pausiere die GitHub-Runner auf $kontext; laufende Jobs enden vorher"
-        # Unter der Sperre der Slots setzen, dann warten, bis jeder Slot pausiert.
-        pause="$(zustand 'cd /zustand && flock lock sh -c "if [ -e pause ]; then echo schon; else touch pause; echo gesetzt; fi" \
-            && while grep -qv "^pausiert\$" slots/*.state 2>/dev/null; do sleep 10; done; echo')" || {
+        # Erst unter der Sperre der Slots setzen, dann in einem zweiten Aufruf
+        # warten, bis jeder Slot pausiert: So ist vor dem Warten bekannt, ob
+        # dieser Lauf den Schalter gesetzt hat.
+        pause="$(zustand 'cd /zustand && flock lock sh -c "if [ -e pause ]; then echo schon; else touch pause; echo gesetzt; fi"')" || {
             echo "Pausenschalter auf $kontext nicht erreichbar ($ZUSTAND); ohne Pause wird nicht gemessen" >&2
             exit 2
         }
         if [ "$(echo "$pause" | head -1)" = gesetzt ]; then
             vermerk+=(--label "swarmq.pause=github-runner")
+            # Scheitert etwas vor dem Lauf-Container (oder bricht jemand das Warten
+            # ab), entsteht kein Vermerk für ``abholen``; dann hier freigeben,
+            # sonst blieben alle Runner pausiert. Ein schon gesetzter Schalter bleibt.
+            trap 'zustand "cd /zustand && flock lock rm -f pause" >/dev/null || true; rm -rf "$kopie"' EXIT
+            trap 'exit 130' INT TERM
         fi
+        zustand 'cd /zustand && while grep -qv "^pausiert\$" slots/*.state 2>/dev/null; do sleep 10; done' >/dev/null || {
+            echo "Warten auf die Pause der Runner auf $kontext gescheitert" >&2
+            exit 2
+        }
         if [ "$(d inspect -f '{{.State.Running}}' "$RUNNER" 2>/dev/null)" = true ]; then
             echo "halte $RUNNER auf $kontext an; laufende Jobs enden vorher"
             d stop "$RUNNER" >/dev/null
@@ -82,6 +92,8 @@ case "$befehl" in
         fi
         d run -d --name "$NAME" --network host -v /var/run/docker.sock:/var/run/docker.sock \
             "${vermerk[@]}" "$NAME:$commit" "$lauf" "$@"
+        # Ab jetzt trägt der Lauf-Container den Vermerk; ``abholen`` gibt frei.
+        trap 'rm -rf "$kopie"' EXIT
         echo "gestartet: $NAME:$commit auf $kontext"
         ;;
     status)
