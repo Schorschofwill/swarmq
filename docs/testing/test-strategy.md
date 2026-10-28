@@ -17,8 +17,8 @@ Integrationstests gegen In-Memory-Fakes bzw. echte Dienste aufrufen) und
 | `tests/fuzz/` außer `test_external_publish_fuzz.py` | `fuzz` | – | `just fuzz` | jeder Push (im `unit-tests`-Job) | Fuzz ohne Dienste: Parser, Cron, Konfiguration aus Env, Header, Zähler-Header, Lock-Vorlagen, Fehlerinfo |
 | `tests/fuzz/test_external_publish_fuzz.py` | `fuzz` | – | `just chaos` | örtlich vor Releases | AMQP-Header-Fuzz, braucht den Chaos-Stack |
 | `tests/chaos/` | `chaos` | – | `just chaos` | örtlich vor Releases | Toxiproxy + Container-Restart + Crash |
-| `tests/stress/` | `stress` | – | `just stress` | manuell in der Pipeline | hohe Parallelität (10 Worker × 1000 Tasks) |
-| `tests/soak/` | `soak` | – | keins | manuell in der Pipeline | Dauerlast mit Leak-Erkennung; Standard 60 s, `SWARMQ_SOAK_HOURS=1` für eine Stunde |
+| `tests/stress/` | `stress` | – | `just stress` | manuell (`load.yml`) | hohe Parallelität (10 Worker × 1000 Tasks) |
+| `tests/soak/` | `soak` | – | keins | manuell (`load.yml`) | Dauerlast mit Leak-Erkennung; Standard 60 s, `SWARMQ_SOAK_HOURS=1` für eine Stunde |
 | `tests/compat/` | `compat` | – | keins | örtlich, je MR des Plans 0.12.0 und vor Releases der 0.12- bis 0.14-Reihe | Mischbetrieb mit swarmq aus PyPI (Q2): Basis 0.11.1, Rollback-Grenze 0.11.0, für die 0.12-Reihe die Basen 0.12.0 und 0.12.3, für die 0.13-Reihe die Basis 0.13.1 (`test_mixed_operation_0_13.py`, seit 0.14); braucht Netz zu PyPI |
 | `tests/integration/spikes/` | `spike` (+ `integration`) | ✓ | `just integration` | jeder Push | Charakterisierung RabbitMQ 4.3.6 und 4.2.9 (Spikes S1–S9) |
 
@@ -48,7 +48,7 @@ gemeinsamen Sperre (`docs/solutions/tooling-decisions/feste-testports-und-testsp
 
 Jeder Lauf mischt die Reihenfolge (pytest-randomly), und fehlgeschlagene Tests
 werden nicht wiederholt. Ein Rezept setzt den Seed ausdrücklich und gibt ihn
-aus (`pytest-randomly: Seed …`); in der CI ist es die Pipeline-ID. Nachstellen:
+aus (`pytest-randomly: Seed …`); in der CI ist es die Run-ID (`github.run_id`). Nachstellen:
 
 ```bash
 SWARMQ_TEST_SEED=<seed> uv run just e2e
@@ -65,21 +65,33 @@ gibt es nur für Lecks in Bibliotheken, eng an den betroffenen Tests:
 
 ## CI-Stufen
 
-Die einzige CI dieses Projekts ist `.gitlab-ci.yml`. Was dort steht, läuft;
-alles andere läuft örtlich oder gar nicht — und das steht hier, damit es
-niemand für eine Zusicherung hält.
+Die einzige CI dieses Projekts sind die GitHub-Actions-Workflows unter
+`.github/workflows/`. Was dort steht, läuft; alles andere läuft örtlich oder
+gar nicht — und das steht hier, damit es niemand für eine Zusicherung hält.
 
-**Bei jedem Push**, alle blockierend:
+Die Jobs laufen auf eigenen, ephemeren Runnern auf celsius (Label
+`celsius-swarmq`), je Job ein frischer Runner; die Jobs selbst laufen in
+Containern auf dem rootless Docker des Nutzers `ghrunner`. Einrichtung und
+Betrieb stehen in `ops/github-runner/README.md`. Nur der Release-Workflow
+(`release.yml`) läuft auf einem Runner von GitHub. Jeder Job hat eine feste
+Obergrenze (`timeout-minutes`).
+
+**Bei jedem Push** und bei Pull Requests aus Forks (`ci.yml`), alle
+blockierend. PRs aus diesem Repo laufen über den Push ihres Branches, nicht
+ein zweites Mal. Code aus Forks läuft erst nach Freigabe (Repo-Einstellung
+„Require approval for all external contributors“); vor der Freigabe den
+ganzen Diff lesen, siehe `ops/github-runner/README.md`, Abschnitt Fork-PRs.
 
 | Job | Was |
 |---|---|
 | `lint-and-types` | `just lint` und `just types` (siehe „Lint, Format und Typen“) |
 | `lock-check` | `uv.lock` ist zum `pyproject.toml` synchron |
+| `abhaengigkeiten-pruefen` | `just audit` (uv audit gegen OSV); blockierend nur, wenn `uv.lock` oder `pyproject.toml` gegenüber `main` geändert sind |
 | `unit-tests` | `just unit`, `just property`, `just fuzz` (deterministisch, mit Wächter gegen leere Läufe, siehe unten), unter Coverage |
 | `integration-tests` | `just integration` gegen RabbitMQ und Valkey, unter Coverage |
 | `e2e-tests` | `just e2e`, unter Coverage |
-| `coverage-combine` | nur wenn die drei Test-Jobs grün sind: `just coverage-report` (zusammenführen, `coverage.xml` für die MR-Anzeige, `fail_under`) und `just coverage-gate` |
-| `secret_detection` | GitLab Secret Detection (Template) |
+| `coverage-combine` | nur wenn die drei Test-Jobs grün sind: `just coverage-report` (zusammenführen, `coverage.xml`, `fail_under`) und `just coverage-gate` |
+| `secret-scan` | gitleaks über die ganze Historie mit `.gitleaks.toml` |
 
 **Coverage-Gate.** Gemessen werden Zeilen und Zweige über Unit, Integration
 und e2e einschließlich aller Kindprozesse (spawn, forkserver, fork mit
@@ -93,9 +105,13 @@ Stand: `fail_under = 96` (gesetzt 2026-10-15, unverändert bis 0.14.4).
 Örtlich misst `uv run just coverage`; örtliche Werte liegen tiefer als die der
 CI (kein zweiter Broker) und zählen für den Ratchet nicht.
 
-**Manuell in der Pipeline**, nicht blockierend: `stress-tests`, `soak-tests`.
-Beide werden faktisch nie gestartet; wer Last messen will, fährt sie von
-Hand an oder örtlich.
+**Manuell**, nicht blockierend: `load.yml` mit der Auswahl `stress` oder
+`soak` (Actions → load → Run workflow). Beide werden faktisch nie gestartet;
+wer Last messen will, fährt sie von Hand an oder örtlich.
+
+**Messpause.** Messläufe auf celsius (`scripts/vergleich-entfernt.sh`)
+pausieren die Runner über den Pausenschalter des Supervisors: Laufende Jobs
+enden regulär, neue starten erst nach der Messung.
 
 **Fuzz in der Pipeline.** Der `unit-tests`-Job fährt `just fuzz` mit
 `SWARMQ_FUZZ_PROFILE=ci` und `SWARMQ_TEST_MIN_TESTS` (Plan 2026-10-24-1118,
@@ -114,11 +130,10 @@ einem Container über einen Docker-Kontext (`uv run just mutation-starten a|b`,
 `mutation-holen`, `mutation-abbauen`; `docker/mutation/README.md`).
 Das alte `scripts/run_mutation.sh` mit mutmut-2-Optionen ist entfernt.
 
-**Es gibt keine Zeitpläne.** Weder nightly noch weekly: `pipeline_schedules`
-ist leer. Frühere Fassungen dieses Dokuments nannten
-`.github/workflows/{ci,nightly,weekly}.yml` als Quelle dieser Stufen — die
-Dateien lagen im Repo, das Projekt liegt aber auf GitLab, und sie sind nie
-gelaufen. Sie sind entfernt.
+**Es gibt keine Zeitpläne.** Weder nightly noch weekly: Kein Workflow hat
+einen `schedule`-Auslöser. Bis Oktober 2026 lag das Projekt auf GitLab; die
+Pipeline-Historie aus dieser Zeit ist nicht mit umgezogen, alte Hashes löst
+`docs/historie/gitlab-commit-map.txt` auf.
 
 ## Chaos und Chaos-gestützter Fuzz — örtlich, vor jedem Release
 

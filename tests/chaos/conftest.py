@@ -37,11 +37,11 @@ def _service_host() -> str:
     """Host where the compose-published ports are reachable.
 
     Locally the stack publishes onto the loopback interface, so 127.0.0.1
-    is correct. Under GitLab docker-in-docker the compose containers run on
-    the dind daemon's container, not the job container — their published
-    ports are reachable via the ``DOCKER_HOST`` hostname (e.g. ``docker``),
-    NOT the job container's loopback. Derive it from ``DOCKER_HOST`` so the
-    same fixture works in both environments.
+    is correct. Against a remote Docker daemon (``DOCKER_HOST=tcp://…``, as
+    under docker-in-docker) the compose containers run on that daemon's host,
+    so their published ports are reachable via the ``DOCKER_HOST`` hostname,
+    NOT the local loopback. Derive it from ``DOCKER_HOST`` so the same
+    fixture works in both environments.
     """
     match = re.match(r"^[a-z0-9+.-]+://([^:/]+)", os.environ.get("DOCKER_HOST", ""))
     if match and match.group(1) not in ("127.0.0.1", "localhost"):

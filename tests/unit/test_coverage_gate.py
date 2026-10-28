@@ -18,10 +18,9 @@ Test-Liste:
 - [x] gesenkte Untergrenze: 1, diff-cover läuft nicht
 - [x] sonst: Exit-Code von diff-cover, gegen den Merge-Base
 
-Unter GitHub Actions (Plan 2026-10-28-1308, U2, KTD8):
-- [x] ``GITHUB_REF_TYPE=tag``: 0, ohne git
-- [x] ``GITHUB_REF_TYPE=branch``, ``GITHUB_REF_NAME=main``: 0, ohne Vergleich
-- [x] anderer Branch: diff-cover gegen den Merge-Base
+Ref-Art und Branch aus ``GITHUB_REF_TYPE``/``GITHUB_REF_NAME`` (Plan
+2026-10-28-1308, KTD8); seit dem Umzug (U15):
+- [x] ``CI_COMMIT_TAG``/``CI_COMMIT_BRANCH`` aus der GitLab-Zeit werden ignoriert
 """
 
 from __future__ import annotations
@@ -112,21 +111,23 @@ def run_gate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         return subprocess.CompletedProcess(argv, 7, "", "")
 
     def run(
-        git: _Git, *, branch: str = "feature", tag: str = "", head_floor: float | None = 95, ci: str = "gitlab"
+        git: _Git,
+        *,
+        branch: str = "feature",
+        tag: str = "",
+        head_floor: float | None = 95,
+        extra_env: dict[str, str] | None = None,
     ) -> int:
         (tmp_path / "pyproject.toml").write_text(_toml(head_floor), encoding="utf-8")
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(gate, "_git", git)
         monkeypatch.setattr(gate.subprocess, "run", fake_run)
-        for name in ("CI_COMMIT_BRANCH", "CI_COMMIT_TAG", "GITHUB_REF_TYPE", "GITHUB_REF_NAME"):
+        for name in ("CI_COMMIT_BRANCH", "CI_COMMIT_TAG"):
             monkeypatch.delenv(name, raising=False)
-        if ci == "github":
-            monkeypatch.setenv("GITHUB_REF_TYPE", "tag" if tag else "branch")
-            monkeypatch.setenv("GITHUB_REF_NAME", tag or branch)
-        else:
-            monkeypatch.setenv("CI_COMMIT_BRANCH", branch)
-            if tag:
-                monkeypatch.setenv("CI_COMMIT_TAG", tag)
+        monkeypatch.setenv("GITHUB_REF_TYPE", "tag" if tag else "branch")
+        monkeypatch.setenv("GITHUB_REF_NAME", tag or branch)
+        for name, value in (extra_env or {}).items():
+            monkeypatch.setenv(name, value)
         return int(gate.main())
 
     run.diff_cover = diff_cover  # type: ignore[attr-defined]  # Protokoll fuer die Tests
@@ -169,22 +170,12 @@ def test_otherwise_diff_cover_decides_against_the_merge_base(run_gate) -> None:
     assert "--fail-under=100" in argv
 
 
-def test_a_github_tag_run_passes_without_git(run_gate) -> None:
-    git = _Git()
+def test_gitlab_variables_are_ignored(run_gate) -> None:
+    """Nach dem Umzug gibt es keine GitLab-CI mehr (Plan 2026-10-28-1308, U15).
 
-    assert run_gate(git, tag="v1.0.0", ci="github") == 0
-    assert git.calls == []
+    Ein übrig gebliebenes ``CI_COMMIT_TAG`` oder ``CI_COMMIT_BRANCH`` in der
+    Umgebung darf den Vergleich eines Branch-Laufs nicht abschalten.
+    """
+    gitlab = {"CI_COMMIT_TAG": "v1.0.0", "CI_COMMIT_BRANCH": "main"}
 
-
-def test_github_main_passes_without_comparison(run_gate) -> None:
-    git = _Git()
-
-    assert run_gate(git, branch="main", ci="github") == 0
-    assert not any(call[0] == "merge-base" for call in git.calls)
-    assert run_gate.diff_cover == []
-
-
-def test_a_github_branch_run_compares_against_the_merge_base(run_gate) -> None:
-    assert run_gate(_Git(merge_base="abc123"), branch="feature", ci="github") == 7
-    [argv] = run_gate.diff_cover
-    assert "--compare-branch=abc123" in argv
+    assert run_gate(_Git(merge_base="abc123"), branch="feature", extra_env=gitlab) == 7

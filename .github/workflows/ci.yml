@@ -1,6 +1,6 @@
-# CI: das Regressions-Gate, Job für Job aus .gitlab-ci.yml übernommen
-# (Plan 2026-10-28-1308, U3, KTD7). Bis zur Umstellung laufen beide CIs; der
-# Vergleich der Testzahlen je Job entscheidet, ob diese hier dasselbe prüft.
+# CI: das Regressions-Gate (Plan 2026-10-28-1308, U3, KTD7). Die Jobs sind beim
+# Umzug von GitLab Job für Job übernommen; der Vergleichslauf (U14) hat gezeigt,
+# dass sie je Job dieselben Testzahlen liefern.
 #
 #   * unit-tests / integration-tests / e2e-tests: deterministisch, BLOCKIEREND,
 #     keine Reruns. Die Reihenfolge wird je Lauf gemischt (pytest-randomly);
@@ -17,8 +17,8 @@
 # Schritte direkt auf dem Host. Image ist das exakt gepinnte uv-Image mit git
 # (Python 3.14.4 wie .python-version; die Modulzahlen der Kostensuite hängen an
 # der Python-Version, Plan 2026-10-24-1118). Die slim-Variante hat kein git,
-# und ohne git legt actions/checkout kein .git an -- auf GitLab hatte jeder Job
-# eines. Kein Compiler, kein apt: jedes Paket bringt ein cp314- oder abi3-Rad.
+# und ohne git legt actions/checkout kein .git an; mehrere Tests und Gates
+# brauchen es. Kein Compiler, kein apt: jedes Paket bringt ein cp314- oder abi3-Rad.
 #
 # Der uv-Cache ist ein Volume im Docker der CI, getrennt nach Vertrauensstufe:
 # Ein freigegebener Fork-PR schreibt nur in swarmq-uv-cache-fork, nie in den
@@ -28,9 +28,8 @@
 #
 # Genau ein Lauf je Commit: Pushes auf Branches und Tags, dazu Pull Requests
 # aus Forks. Ein PR aus diesem Repo läuft schon über seinen Push. Kein
-# `concurrency` mit Abbruch: GitLab hat nie einen Lauf abgebrochen, und der
-# Ratchet braucht jeden erfolgreichen main-Lauf. Fork-PRs starten erst nach
-# Freigabe (Repo-Einstellung, KTD5).
+# `concurrency` mit Abbruch: Der Ratchet braucht jeden erfolgreichen
+# main-Lauf. Fork-PRs starten erst nach Freigabe (Repo-Einstellung, KTD5).
 
 name: ci
 
@@ -55,6 +54,12 @@ env:
 # `tail -f /dev/null` als PID 1, und das räumt keine Zombies ab. Kinder, die
 # nach einem SIGKILL auf den Elternprozess sterben, blieben dann als Zombies
 # stehen, und die Kill-Tests hielten sie für lebendig (Probelauf U17).
+#
+# RabbitMQ-Services schreiben ins RAM (--tmpfs /var/lib/rabbitmq): Quorum-
+# Queues schreiben synchron auf die Platte, und mit mehreren Jobs zugleich auf
+# celsius dauerte das Anlegen einer Queue-Familie über 10 s (erster PR auf
+# GitHub, test_cli_env_check). Kein CI-Test braucht Broker-Daten über einen
+# Neustart hinweg.
 #
 # Feste Obergrenzen je Job: Ohne sie hält ein hängender Job den einzigen
 # Runner auf celsius bis zum GitHub-Standard von 360 Minuten fest. Die Werte
@@ -186,8 +191,10 @@ jobs:
     services:
       rabbitmq:
         image: rabbitmq:4.3.6-management
+        options: --tmpfs /var/lib/rabbitmq
       rabbitmq42:
         image: rabbitmq:4.2.9-management
+        options: --tmpfs /var/lib/rabbitmq
         env:
           RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "-rabbit channel_tick_interval 1000"
       valkey:
@@ -258,6 +265,7 @@ jobs:
     services:
       rabbitmq:
         image: rabbitmq:4.3.6-management
+        options: --tmpfs /var/lib/rabbitmq
       valkey:
         image: valkey/valkey:8
     env:
