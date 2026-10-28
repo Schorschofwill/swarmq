@@ -1,0 +1,5 @@
+# Labels der eigenen Runner auf celsius (ops/github-runner/), damit actionlint
+# sie kennt.
+self-hosted-runner:
+  labels:
+    - celsius-swarmq

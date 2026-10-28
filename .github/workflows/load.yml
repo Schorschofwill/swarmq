@@ -1,0 +1,72 @@
+# Stress und Soak gegen echte Dienste, nur auf Knopfdruck (Plan 2026-10-28-1308,
+# U3, R5). Wie auf GitLab gibt es keine Zeitpläne (docs/testing/test-strategy.md,
+# "Es gibt keine Zeitpläne"). Soak läuft eine Stunde Last; vor Releases.
+
+name: load
+
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Welche Suite laufen soll
+        type: choice
+        options: [stress, soak]
+        default: stress
+
+permissions:
+  contents: read
+
+env:
+  UV_CACHE_DIR: /uv-cache
+  UV_LINK_MODE: copy
+  UV_FROZEN: "1"
+  UV_RUN: uv run --extra test --extra reload
+  SWARMQ_TEST_SEED: ${{ github.run_id }}
+
+jobs:
+  load:
+    runs-on: [self-hosted, celsius-swarmq]
+    # Soak braucht die volle Stunde plus Anlauf; GitHub erlaubt je Step 360 min.
+    timeout-minutes: 150
+    container:
+      image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
+      volumes: ["swarmq-uv-cache:/uv-cache"]
+    services:
+      rabbitmq:
+        image: rabbitmq:4.3.6-management
+      valkey:
+        image: valkey/valkey:8
+    env:
+      SWARMQ_TEST_RABBITMQ_HOST: rabbitmq
+      SWARMQ_TEST_RABBITMQ_PORT: "5672"
+      SWARMQ_TEST_RABBITMQ_MGMT_PORT: "15672"
+      SWARMQ_TEST_VALKEY_HOST: valkey
+      SWARMQ_TEST_VALKEY_PORT: "6379"
+      SWARMQ_CI_WAIT_FOR: "rabbitmq:5672 rabbitmq:15672 valkey:6379"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Readiness-Gate wie in ci.yml: Ohne es liefe die Suite bei langsamem
+      # Broker-Start übersprungen grün durch.
+      - name: Auf die Dienste warten
+        run: |
+          $UV_RUN python - <<'PY'
+          import os, socket, sys, time
+          targets = [(h, int(p)) for h, p in (t.rsplit(":", 1) for t in os.environ["SWARMQ_CI_WAIT_FOR"].split())]
+          deadline = time.time() + 120
+          for host, port in targets:
+              while True:
+                  try:
+                      with socket.create_connection((host, port), timeout=2):
+                          break
+                  except OSError:
+                      if time.time() > deadline:
+                          sys.exit(f"service {host}:{port} not ready in time")
+                      time.sleep(1)
+          print("all services ready")
+          PY
+      - if: inputs.suite == 'stress'
+        run: $UV_RUN just stress -q
+      - if: inputs.suite == 'soak'
+        run: $UV_RUN pytest tests/soak -m soak -q
