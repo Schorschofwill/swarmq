@@ -45,7 +45,8 @@ def _git(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 def main() -> int:
-    if os.environ.get("CI_COMMIT_TAG") or os.environ.get("GITHUB_REF_TYPE") == "tag":
+    ref_type = os.environ.get("GITHUB_REF_TYPE")
+    if os.environ.get("CI_COMMIT_TAG") or ref_type == "tag":
         print("coverage-gate: Tag-Pipeline, kein Vergleich")
         return 0
     _git("fetch", "--quiet", "origin", "+refs/heads/main:refs/remotes/origin/main")
@@ -54,7 +55,7 @@ def main() -> int:
         return 1
     branch = (
         os.environ.get("CI_COMMIT_BRANCH")
-        or (os.environ.get("GITHUB_REF_NAME") if os.environ.get("GITHUB_REF_TYPE") == "branch" else None)
+        or (os.environ.get("GITHUB_REF_NAME") if ref_type == "branch" else None)
         or _git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
     )
     if branch == "main":

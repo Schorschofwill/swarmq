@@ -203,18 +203,37 @@ class GitHubApi:
         return response.status == _DELETED
 
 
+# Zustandswörter in slots/<slot>.state. scripts/vergleich-entfernt.sh liest
+# dieselben Dateien und wartet auf PAUSIERT; die Wörter sind also Vertrag.
+HOLT = "holt"
+LAEUFT = "laeuft"
+PAUSIERT = "pausiert"
+FEHLER = "fehler"
+
+
 class Switch:
-    """Schalter, Sperre und Zustandsdateien unter dem Zustandsverzeichnis (Vertrag mit U7)."""
+    """Schalter ``pause``, Sperre ``lock`` und ``slots/<slot>.state`` unter dem Zustandsverzeichnis.
+
+    Dieselben Dateien setzt und liest ``scripts/vergleich-entfernt.sh`` über
+    einen Helfer-Container; Namen und Wörter sind deshalb Vertrag.
+    """
 
     def __init__(self, state_dir: Path) -> None:
         self.state_dir = state_dir
         self.slots_dir = state_dir / "slots"
+        self._pause_file = state_dir / "pause"
 
     def ensure(self) -> None:
         self.slots_dir.mkdir(parents=True, exist_ok=True)
 
     def paused(self) -> bool:
-        return (self.state_dir / "pause").exists()
+        return self._pause_file.exists()
+
+    def engage(self) -> None:
+        self._pause_file.touch()
+
+    def release(self) -> None:
+        self._pause_file.unlink()
 
     @contextlib.contextmanager
     def lock(self) -> Generator[None]:
@@ -343,17 +362,17 @@ class Slot:
     def run_once(self) -> None:
         self.switch.ensure()
         if self.switch.paused():
-            self.switch.write_state(self.name, "pausiert")
+            self.switch.write_state(self.name, PAUSIERT)
             self.clock.sleep(_PAUSE_POLL)
             return
-        self.switch.write_state(self.name, "holt")
+        self.switch.write_state(self.name, HOLT)
         try:
             jit = self.github.jit_config(
                 self.repo, self._runner_name(), ["self-hosted", f"celsius-{self.repo}"], "_work"
             )
         except ApiError as error:
             _say(f"{self.name}: JIT-Konfiguration fehlgeschlagen ({error}), nächster Versuch in {self._backoff:.0f} s")
-            self.switch.write_state(self.name, "fehler")
+            self.switch.write_state(self.name, FEHLER)
             self.clock.sleep(self._backoff)
             self._backoff = min(self._backoff * 2, _BACKOFF_MAX)
             return
@@ -369,10 +388,10 @@ class Slot:
                 except ApiError as error:
                     # Nie gestartet, also nie online: GitHub räumt die Registrierung selbst ab.
                     _say(f"{self.name}: verworfene Registrierung nicht gelöscht ({error})")
-                self.switch.write_state(self.name, "pausiert")
+                self.switch.write_state(self.name, PAUSIERT)
                 return
             runner = self.launcher.start(slot_dir, jit.encoded)
-            self.switch.write_state(self.name, "laeuft")
+            self.switch.write_state(self.name, LAEUFT)
         busy = False
         while runner.poll() is None:
             # Erst die Registrierung löschen, dann stoppen: Die API lehnt das
@@ -406,9 +425,9 @@ def pause(switch: Switch, clock: Clock, timeout: float | None = None) -> int:
             # Trotzdem warten: Wer pausiert hat, wartet vielleicht selbst noch auf einen Slot.
             _say("schon pausiert")
         else:
-            (switch.state_dir / "pause").touch()
+            switch.engage()
     deadline = None if timeout is None else clock.monotonic() + timeout
-    while busy := [slot for slot, word in switch.states().items() if word != "pausiert"]:
+    while busy := [slot for slot, word in switch.states().items() if word != PAUSIERT]:
         if deadline is not None and clock.monotonic() + _WAIT_POLL > deadline:
             _say(f"Timeout: noch nicht pausiert: {', '.join(busy)}")
             return 1
@@ -423,7 +442,7 @@ def resume(switch: Switch) -> int:
         if not switch.paused():
             _say("nicht pausiert, nichts zu tun")
             return 0
-        (switch.state_dir / "pause").unlink()
+        switch.release()
     _say("fortgesetzt")
     return 0
 

@@ -54,20 +54,22 @@ def with_floor(text: str, floor: int) -> str:
     return text[:start] + section + text[end:]
 
 
+# ``gh`` setzt Besitzer und Repo aus dem Git-Remote ein.
+_REPO = "repos/{owner}/{repo}"
+
+
 def _gh_api(path: str) -> bytes:
     return subprocess.run(["gh", "api", path], capture_output=True, check=True).stdout
 
 
 def _main_values() -> list[float]:
-    runs = json.loads(_gh_api("repos/{owner}/{repo}/actions/workflows/ci.yml/runs?branch=main&status=success"))
+    runs = json.loads(_gh_api(f"{_REPO}/actions/workflows/ci.yml/runs?branch=main&status=success"))
     values: list[float] = []
     for run in runs["workflow_runs"]:
-        artifacts = json.loads(
-            _gh_api(f"repos/{{owner}}/{{repo}}/actions/runs/{run['id']}/artifacts?name=coverage-total")
-        )
+        artifacts = json.loads(_gh_api(f"{_REPO}/actions/runs/{run['id']}/artifacts?name=coverage-total"))
         if not artifacts["artifacts"]:
             continue
-        archive = _gh_api(f"repos/{{owner}}/{{repo}}/actions/artifacts/{artifacts['artifacts'][0]['id']}/zip")
+        archive = _gh_api(f"{_REPO}/actions/artifacts/{artifacts['artifacts'][0]['id']}/zip")
         with zipfile.ZipFile(io.BytesIO(archive)) as zipped:
             values.append(float(zipped.read("coverage-total.txt").decode().strip()))
         if len(values) == 3:
