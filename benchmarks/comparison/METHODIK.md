@@ -89,10 +89,12 @@ uv run just vergleich-garantie --systems swarmq,celery --stoerungen sigkill   # 
 ```
 
 Auf dem Messhost (celsius) läuft der Vergleich nur in Containern; dort
-liegen weder Repo noch Umgebungen noch Ergebnisse. Auf celsius läuft auch der
-GitLab-Runner des Projekts; `starten` hält ihn vor dem Lauf an (angefangene
-Jobs enden noch), `abholen` startet ihn wieder. Gesteuert wird vom eigenen
-Rechner über den Docker-Kontext des Hosts:
+liegen weder Repo noch Umgebungen noch Ergebnisse. Auf celsius laufen auch die
+CI-Runner des Projekts. `starten` setzt vor dem Lauf den Pausenschalter der
+GitHub-Runner (`ops/github-runner/`) und wartet, bis kein Job mehr läuft;
+angefangene Jobs enden noch. In der Übergangszeit hält es zusätzlich den
+GitLab-Runner an. `abholen` setzt nur fort, was `starten` angehalten hat.
+Gesteuert wird vom eigenen Rechner über den Docker-Kontext des Hosts:
 
 ```bash
 scripts/vergleich-entfernt.sh starten celsius performance --runs 3   # oder: garantie --runs 3, ab --a … --b …

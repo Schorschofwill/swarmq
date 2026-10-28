@@ -13,6 +13,10 @@ Test-Liste:
 - [x] ``starten`` hält einen laufenden GitLab-Runner des Hosts vor dem Lauf an und vermerkt das am Lauf-Container
 - [x] ``starten`` lässt einen angehaltenen oder fehlenden Runner in Ruhe
 - [x] ``abholen`` startet den Runner wieder, den ``starten`` angehalten hat, und nur diesen
+- [x] ``starten`` setzt den Pausenschalter der GitHub-Runner über einen Helfer-Container und vermerkt das am Lauf-Container
+- [x] ``starten`` vermerkt nichts, wenn der Schalter schon gesetzt war (absichtlich pausiert)
+- [x] ``abholen`` entfernt den Schalter nur mit Vermerk
+- [x] fehlt das Zustandsverzeichnis auf dem Host, bricht ``starten`` vor dem Lauf ab
 - [x] ``status`` zeigt den Zustand des Laufs und das Ende seines Logs
 - [x] ``abholen`` holt Ergebnisse und Log und entfernt Container und Image; solange der Lauf läuft, verweigert es
 - [x] im Container startet ``performance`` den Dienste-Stack, führt den Runner aus, räumt den Stack auch nach einem Fehler ab und legt Ergebnisse und Ausgang ab
@@ -80,9 +84,11 @@ _SCHEIN_DOCKER = """#!/usr/bin/env bash
 echo "$*" >> "$DOCKER_PROTOKOLL"
 case " $* " in
   *" ps "*) printf '%s' "${SCHEIN_PS:-}" ;;
+  *" run --rm "*) [ -n "${SCHEIN_KEIN_ZUSTAND:-}" ] && exit 125; echo "${SCHEIN_PAUSE:-schon}" ;;
   *" inspect -f {{.State.Running}} gitlab-runner "*) echo "${SCHEIN_RUNNER_LAEUFT:-false}" ;;
   *" inspect -f {{.State.Running}} "*) echo "${SCHEIN_LAEUFT:-false}" ;;
   *" inspect -f {{.Config.Image}} "*) echo swarmq-vergleich:abc1234 ;;
+  *'"swarmq.pause"'*) echo "${SCHEIN_VERMERK_PAUSE:-}" ;;
   *"Config.Labels"*) echo "${SCHEIN_VERMERK:-}" ;;
 esac
 """
@@ -124,7 +130,7 @@ def test_starten_baut_aus_sauberem_klon_und_startet_im_hintergrund(tmp_path: Pat
 
     assert lauf.returncode == 0, lauf.stderr
     bauen = next(a for a in aufrufe if " build " in f" {a} ")
-    starten = next(a for a in aufrufe if " run " in f" {a} ")
+    starten = next(a for a in aufrufe if " run -d " in f" {a} ")
     assert bauen.startswith("--context celsius build")
     assert f"-t swarmq-vergleich:{commit}" in bauen
     assert starten.startswith("--context celsius run -d --name swarmq-vergleich --network host")
@@ -154,7 +160,7 @@ def test_starten_verweigert_einen_zweiten_lauf_auf_demselben_host(tmp_path: Path
 
     assert lauf.returncode == 2
     assert "abholen" in lauf.stderr
-    assert not [a for a in aufrufe if " build " in f" {a} " or " run " in f" {a} "]
+    assert not [a for a in aufrufe if " build " in f" {a} " or " run -d " in f" {a} "]
 
 
 def test_starten_haelt_den_laufenden_runner_vor_dem_lauf_an(tmp_path: Path) -> None:
@@ -167,7 +173,7 @@ def test_starten_haelt_den_laufenden_runner_vor_dem_lauf_an(tmp_path: Path) -> N
 
     assert lauf.returncode == 0, lauf.stderr
     anhalten = aufrufe.index("--context celsius stop gitlab-runner")
-    starten = next(i for i, a in enumerate(aufrufe) if " run " in f" {a} ")
+    starten = next(i for i, a in enumerate(aufrufe) if " run -d " in f" {a} ")
     assert anhalten < starten
     assert "--label swarmq.runner=gitlab-runner" in aufrufe[starten]
 
@@ -180,7 +186,7 @@ def test_starten_laesst_einen_angehaltenen_oder_fehlenden_runner_in_ruhe(tmp_pat
 
     assert lauf.returncode == 0, lauf.stderr
     assert not [a for a in aufrufe if " stop " in f" {a} "]
-    assert "swarmq.runner" not in next(a for a in aufrufe if " run " in f" {a} ")
+    assert "swarmq.runner" not in next(a for a in aufrufe if " run -d " in f" {a} ")
 
 
 def test_abholen_startet_den_angehaltenen_runner_wieder(tmp_path: Path) -> None:
@@ -218,6 +224,61 @@ def test_status_zeigt_zustand_und_ende_des_logs(tmp_path: Path) -> None:
     assert lauf.returncode == 0, lauf.stderr
     assert "Up 2 hours" in lauf.stdout
     assert aufrufe[-1] == "--context celsius logs --tail 20 swarmq-vergleich"
+
+
+def test_starten_pausiert_die_github_runner_vor_dem_lauf(tmp_path: Path) -> None:
+    """Der Schalter liegt auf dem Messhost (ops/github-runner/); erreichbar über den Docker-Kontext."""
+    _repo(tmp_path / "repo")
+
+    lauf, aufrufe = _aufruf(
+        tmp_path, "starten", "celsius", "garantie", VERGLEICH_REPO=str(tmp_path / "repo"), SCHEIN_PAUSE="gesetzt"
+    )
+
+    assert lauf.returncode == 0, lauf.stderr
+    helfer = next(i for i, a in enumerate(aufrufe) if " run --rm " in f" {a} ")
+    starten = next(i for i, a in enumerate(aufrufe) if " run -d " in f" {a} ")
+    assert helfer < starten
+    assert "--mount type=bind,src=/var/lib/github-runner,dst=/zustand" in aufrufe[helfer]
+    assert "--label swarmq.pause=github-runner" in aufrufe[starten]
+
+
+def test_starten_vermerkt_keinen_schon_gesetzten_schalter(tmp_path: Path) -> None:
+    """Wer absichtlich pausiert hat, behält die Pause auch nach ``abholen``."""
+    _repo(tmp_path / "repo")
+
+    lauf, aufrufe = _aufruf(
+        tmp_path, "starten", "celsius", "garantie", VERGLEICH_REPO=str(tmp_path / "repo"), SCHEIN_PAUSE="schon"
+    )
+
+    assert lauf.returncode == 0, lauf.stderr
+    assert "swarmq.pause" not in next(a for a in aufrufe if " run -d " in f" {a} ")
+
+
+def test_abholen_entfernt_den_schalter_nur_mit_vermerk(tmp_path: Path) -> None:
+    mit, aufrufe_mit = _aufruf(
+        tmp_path, "abholen", "celsius", str(tmp_path / "e1"), SCHEIN_VERMERK_PAUSE="github-runner"
+    )
+    (tmp_path / "docker.log").unlink()
+    ohne, aufrufe_ohne = _aufruf(tmp_path, "abholen", "celsius", str(tmp_path / "e2"))
+
+    assert mit.returncode == 0, mit.stderr
+    assert ohne.returncode == 0, ohne.stderr
+    [helfer] = [a for a in aufrufe_mit if " run --rm " in f" {a} "]
+    assert "rm -f pause" in helfer
+    assert not [a for a in aufrufe_ohne if " run --rm " in f" {a} "]
+
+
+def test_starten_misst_nicht_ohne_erreichbaren_pausenschalter(tmp_path: Path) -> None:
+    """Fehlt das Zustandsverzeichnis auf dem Host, scheitert der Bind-Mount; dann lieber kein Lauf."""
+    _repo(tmp_path / "repo")
+
+    lauf, aufrufe = _aufruf(
+        tmp_path, "starten", "celsius", "garantie", VERGLEICH_REPO=str(tmp_path / "repo"), SCHEIN_KEIN_ZUSTAND="1"
+    )
+
+    assert lauf.returncode == 2
+    assert "Pausenschalter" in lauf.stderr
+    assert not [a for a in aufrufe if " run -d " in f" {a} "]
 
 
 EINSTIEG = VERGLEICH_DIR / "im-container.sh"
