@@ -16,6 +16,13 @@ All notable changes to SwarmQ. This project follows
   with `BrokerConnectionError` instead of the cancel. A cancelled start now
   always ends with `CancelledError`, with the channel error as its cause
   (F4-28).
+- **Reading a rejected result leaked memory.** msgpack up to 1.2.2 keeps
+  the already decoded value of a map when it rejects the map's key (neither
+  str nor bytes), GHSA-j586-36cw-2gc2. swarmq raised
+  `ResultSerializationError` as documented, but every read kept the whole
+  rejected value in memory. No attacker is needed: a task that returns a
+  dict with int keys is stored, and each `get_result` on it leaked again.
+  swarmq now requires `msgpack>=1.2.3` (F4-29).
 
 ### Performance
 

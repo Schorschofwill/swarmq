@@ -17,6 +17,14 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
   `BrokerConnectionError` statt mit dem Abbruch. Ein abgebrochener Start
   endet jetzt immer mit `CancelledError`, der Kanalfehler als Ursache
   (F4-28).
+- **Das Lesen eines abgelehnten Ergebnisses verlor Speicher.** msgpack bis
+  1.2.2 behält den schon dekodierten Wert einer Map, wenn es deren
+  Schlüssel ablehnt (weder str noch bytes), GHSA-j586-36cw-2gc2. swarmq
+  meldete wie zugesagt `ResultSerializationError`, doch jedes Lesen hielt
+  den ganzen abgelehnten Wert im Speicher fest. Dafür braucht es keinen
+  Angreifer: Ein Task, der ein Dict mit int-Schlüsseln zurückgibt, wird
+  gespeichert, und jedes `get_result` darauf verlor erneut Speicher.
+  swarmq verlangt jetzt `msgpack>=1.2.3` (F4-29).
 
 ### Performance
 

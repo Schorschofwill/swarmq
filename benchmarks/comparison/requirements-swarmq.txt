@@ -7,7 +7,7 @@ aio-pika==10.0.1
 aiormq==7.0.0
 croniter==6.2.4
 idna==3.19
-msgpack==1.2.2
+msgpack==1.2.4
 msgspec==0.21.1
 multidict==6.9.1
 pamqp==4.0.1
