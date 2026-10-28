@@ -35,7 +35,7 @@
 # (4-mutation-B.md:130, 5-gegenpruefung-B.md:260), FS-26 = MB-7 (5-gegenpruefung-C.md:145).
 id = "L-001"
 datum = 2026-10-13
-commit = "ac989a3"
+commit = "b06c35d"
 methode = "M-F-03"
 modul = "worker"
 umfang = 1261
@@ -62,7 +62,7 @@ befunde = [
 # FS-31 (4-mutation-C.md:40); Register fehlersuche-runde-2-2026-10.md:31, :48.
 id = "L-002"
 datum = 2026-10-13
-commit = "ac989a3"
+commit = "b06c35d"
 methode = "M-F-03"
 modul = "scheduler"
 umfang = 255
@@ -74,7 +74,7 @@ befunde = [{ id = "FS-14", einstufung = "FEHLER" }, { id = "FS-31", einstufung =
 # FS-15 (fehlersuche-runde-2-2026-10.md:40).
 id = "L-003"
 datum = 2026-10-13
-commit = "ac989a3"
+commit = "b06c35d"
 methode = "M-F-03"
 modul = "backend"
 umfang = 150
@@ -86,7 +86,7 @@ befunde = [{ id = "FS-15", einstufung = "FEHLER" }]
 # (4-mutation-C.md:81); kein Fehlerverdacht im Broker (4-mutation-C.md, Teil 1).
 id = "L-004"
 datum = 2026-10-13
-commit = "ac989a3"
+commit = "b06c35d"
 methode = "M-F-03"
 modul = "broker"
 umfang = 84
@@ -98,7 +98,7 @@ befunde = []
 # fehlersuche-runde-2-2026-10.md:46).
 id = "L-005"
 datum = 2026-10-13
-commit = "ac989a3"
+commit = "b06c35d"
 methode = "M-F-03"
 modul = "keyspace"
 umfang = 2
@@ -115,7 +115,7 @@ befunde = [{ id = "FS-27", einstufung = "FEHLER" }]
 # F4-04 = R4M-E-02 (3c-sichtung-E.md:187; fehlersuche-runde-4-2026-10.md:82).
 id = "L-006"
 datum = 2026-10-17
-commit = "b424584"
+commit = "8c3a76d"
 methode = "M-F-03"
 modul = "broker"
 umfang = 1724
@@ -128,7 +128,7 @@ befunde = [{ id = "F4-04", einstufung = "FEHLER" }]
 # R4M-E-01b ENTSCHEIDUNG (fehlersuche-runde-4-2026-10.md:113).
 id = "L-007"
 datum = 2026-10-17
-commit = "b424584"
+commit = "8c3a76d"
 methode = "M-F-03"
 modul = "client"
 umfang = 315
@@ -140,7 +140,7 @@ befunde = [{ id = "F4-03", einstufung = "FEHLER" }, { id = "R4M-E-01b", einstufu
 # 3a-mutation-lauf-a.md:87-99. Sichtung ohne Fehler (3c-sichtung-F.md:212-222).
 id = "L-008"
 datum = 2026-10-17
-commit = "b424584"
+commit = "8c3a76d"
 methode = "M-F-03"
 modul = "process_manager"
 umfang = 2080
@@ -155,7 +155,7 @@ befunde = []
 # PF-7 = R4M-F-01/-02 (3c-sichtung-F.md:224-225).
 id = "L-009"
 datum = 2026-10-17
-commit = "b424584"
+commit = "8c3a76d"
 methode = "M-F-03"
 modul = "cli"
 umfang = 2139
@@ -174,7 +174,7 @@ befunde = [
 # PF-16 (6-gegenpruefung-M.md:287).
 id = "L-010"
 datum = 2026-10-17
-commit = "b424584"
+commit = "8c3a76d"
 methode = "M-F-04"
 modul = "backend"
 umfang = 1113
@@ -191,7 +191,7 @@ befunde = [
 # (fehlersuche-runde-4-recherche/5-fuzz.md:42, max_examples :29). Ohne Treffer (:9-12).
 id = "L-011"
 datum = 2026-10-17
-commit = "b424584"
+commit = "8c3a76d"
 methode = "M-F-05"
 modul = "header_text"
 umfang = 2000
@@ -206,7 +206,7 @@ befunde = []
 # R4F-10 (5-fuzz.md:92; fehlersuche-runde-4-2026-10.md:70, :136, :150).
 id = "L-012"
 datum = 2026-10-17
-commit = "b424584"
+commit = "8c3a76d"
 methode = "M-F-05"
 modul = "worker"
 umfang = 6500
@@ -223,7 +223,7 @@ befunde = [
 # (5-fuzz.md:37; Test tests/fuzz/test_counter_headers_fuzz.py:347). Ohne Treffer (5-fuzz.md:9-12).
 id = "L-013"
 datum = 2026-10-17
-commit = "b424584"
+commit = "8c3a76d"
 methode = "M-F-05"
 modul = "identity"
 umfang = 500
@@ -236,7 +236,7 @@ befunde = []
 # sitzen in config_validation.py (5-fuzz.md:122, :133), getroffen über SwarmQConfig().
 id = "L-014"
 datum = 2026-10-17
-commit = "b424584"
+commit = "8c3a76d"
 methode = "M-F-05"
 modul = "config"
 umfang = 2000
@@ -254,7 +254,7 @@ befunde = [
 # R4B-01 ENTSCHEIDUNG (4-betrieb.md:113; fehlersuche-runde-4-2026-10.md:114).
 id = "L-015"
 datum = 2026-10-17
-commit = "b424584"
+commit = "8c3a76d"
 methode = "M-Z-03"
 modul = "process_manager"
 umfang = 2
@@ -266,7 +266,7 @@ befunde = [{ id = "R4B-01", einstufung = "ENTSCHEIDUNG" }]
 # (4-betrieb.md:26, Tabelle :140-155, :165), ohne Verdacht.
 id = "L-016"
 datum = 2026-10-17
-commit = "b424584"
+commit = "8c3a76d"
 methode = "M-Z-03"
 modul = "cli"
 umfang = 1
@@ -279,7 +279,7 @@ befunde = []
 # int-Schlüssel (fehlersuche-runde-4-2026-10.md, F4-29).
 id = "L-017"
 datum = 2026-10-28
-commit = "1f6b69e0"
+commit = "57791215"
 methode = "M-A-01"
 modul = "serialization"
 umfang = 1
