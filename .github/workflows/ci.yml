@@ -55,6 +55,12 @@ env:
 # nach einem SIGKILL auf den Elternprozess sterben, blieben dann als Zombies
 # stehen, und die Kill-Tests hielten sie für lebendig (Probelauf U17).
 #
+# RabbitMQ-Services schreiben ins RAM (--tmpfs /var/lib/rabbitmq): Quorum-
+# Queues schreiben synchron auf die Platte, und mit mehreren Jobs zugleich auf
+# celsius dauerte das Anlegen einer Queue-Familie über 10 s (erster PR auf
+# GitHub, test_cli_env_check). Kein CI-Test braucht Broker-Daten über einen
+# Neustart hinweg.
+#
 # Feste Obergrenzen je Job: Ohne sie hält ein hängender Job den einzigen
 # Runner auf celsius bis zum GitHub-Standard von 360 Minuten fest. Die Werte
 # liegen beim Mehrfachen der üblichen Laufzeit (Tests 3–4 min).
@@ -185,8 +191,10 @@ jobs:
     services:
       rabbitmq:
         image: rabbitmq:4.3.6-management
+        options: --tmpfs /var/lib/rabbitmq
       rabbitmq42:
         image: rabbitmq:4.2.9-management
+        options: --tmpfs /var/lib/rabbitmq
         env:
           RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "-rabbit channel_tick_interval 1000"
       valkey:
@@ -257,6 +265,7 @@ jobs:
     services:
       rabbitmq:
         image: rabbitmq:4.3.6-management
+        options: --tmpfs /var/lib/rabbitmq
       valkey:
         image: valkey/valkey:8
     env:

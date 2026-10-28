@@ -35,6 +35,7 @@ jobs:
     services:
       rabbitmq:
         image: rabbitmq:4.3.6-management
+        options: --tmpfs /var/lib/rabbitmq
       valkey:
         image: valkey/valkey:8
     env:
