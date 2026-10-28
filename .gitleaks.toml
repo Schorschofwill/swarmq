@@ -1,0 +1,17 @@
+# Secret-Scan (gitleaks) für CI und Historienprüfung.
+#
+# Die Standardregeln gelten. Ausgenommen ist nur ein bekannter Fehlalarm:
+# ``self._owner_token`` im Scheduler ist ein zufälliges Lock-Token, kein
+# Zugangsdatum (Commit 46691e4). Der Eintrag geht nach Pfad und Muster, nicht
+# per Fingerprint -- Fingerprints enthalten den Commit-Hash und wären nach dem
+# Umschreiben der Historie ungültig (Plan 2026-10-28-1308, KTD4/U1).
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Lock-Token des Schedulers, kein Secret"
+condition = "AND"
+paths = ['''^src/swarmq/scheduler/loop\.py$''']
+regexTarget = "match"
+regexes = ['''self\._owner_token''']
