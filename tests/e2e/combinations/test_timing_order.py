@@ -137,7 +137,11 @@ async def _running_worker(
 
     worker_task = asyncio.create_task(worker_app.start_worker())
     try:
-        await asyncio.wait_for(online.wait(), timeout=8.0)
+        # Startsicherung, keine Aussage über das geprüfte Verhalten. Der Start
+        # legt die Quorum-Queues an (mit Prioritäten eine je Stufe); auf einem
+        # Host mit mehreren Brokern unter Plattenlast dauerte ``Queue.Declare``
+        # über 8 s (CI-Pipeline 441), lokal ist der Worker nach 0,5 s online.
+        await asyncio.wait_for(online.wait(), timeout=20.0)
         yield worker_app
     finally:
         worker_task.cancel()

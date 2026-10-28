@@ -23,12 +23,16 @@ Test-Liste:
       neuer Lauf darf nicht in die noch laufende Löschung des alten geraten)
 - [x] RabbitMQNode: AMQP-URL und API-Pfad mit vhost; ``/`` bleibt ``/`` bzw. ``%2F``
 - [x] URLs über einen anderen Host/Port (Toxiproxy) behalten vhost und DB des Prozesses
+- [x] Löschen der Worker-vhosts teilt sich eine Frist über alle Broker: Der Sitzungsabbau
+      zählt zur pytest-timeout-Frist des letzten Tests (5 s bei ``timeout(5)``); zwei Broker
+      mit je 3 s sprengten sie unter Last (CI-Pipeline 441)
 """
 
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, Mock
 
+import httpx
 import pytest
 
 from tests.support import services
@@ -213,3 +217,31 @@ class TestUrlsThroughProxy:
         monkeypatch.setattr(services, "VALKEY_DB", 3)
         assert services.rabbitmq_amqp_url("p", 9) == "amqp://guest:guest@p:9/swarmq-test-gw2"
         assert services.valkey_db_url("p", 8) == "valkey://p:8/3"
+
+
+class TestWorkerVhostCleanup:
+    def test_deleting_the_vhosts_of_all_brokers_shares_one_deadline(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        jetzt = [100.0]
+        geloescht: list[tuple[str, float]] = []
+
+        def antworten(request: httpx.Request) -> httpx.Response:
+            if request.method == "DELETE":
+                geloescht.append((request.url.host, request.extensions["timeout"]["read"]))
+                jetzt[0] += 2.5  # langsamer Broker: das Löschen braucht 2,5 s
+            return httpx.Response(204)
+
+        echter_client = httpx.Client
+        monkeypatch.setattr(
+            httpx,
+            "Client",
+            lambda **kwargs: echter_client(transport=httpx.MockTransport(antworten), **kwargs),
+        )
+        brokers = [
+            services.RabbitMQNode("haupt", 5672, 15672, "swarmq-test-gw1"),
+            services.RabbitMQNode("zweit", 5672, 15672, "swarmq-test-gw1"),
+        ]
+
+        with services.worker_vhosts(brokers, budget=3.0, clock=lambda: jetzt[0]):
+            pass
+
+        assert geloescht == [("haupt", 3.0), ("zweit", 0.5)]
