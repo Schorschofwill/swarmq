@@ -63,9 +63,13 @@ def _gh_api(path: str) -> bytes:
 
 
 def _main_values() -> list[float]:
-    runs = json.loads(_gh_api(f"{_REPO}/actions/workflows/ci.yml/runs?branch=main&status=success"))
+    runs = json.loads(_gh_api(f"{_REPO}/actions/workflows/ci.yml/runs?branch=main&event=push&status=success"))
     values: list[float] = []
     for run in runs["workflow_runs"]:
+        # ``branch=main`` vergleicht nur den Branchnamen; ein Pull Request aus einem
+        # Fork, dessen Branch main heisst, passt auch. Nur Pushes auf das eigene main zaehlen.
+        if run.get("event") != "push" or run["head_repository"]["full_name"] != run["repository"]["full_name"]:
+            continue
         artifacts = json.loads(_gh_api(f"{_REPO}/actions/runs/{run['id']}/artifacts?name=coverage-total"))
         if not artifacts["artifacts"]:
             continue
