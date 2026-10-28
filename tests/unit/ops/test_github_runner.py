@@ -48,6 +48,7 @@ Befehle:
 from __future__ import annotations
 
 import fcntl
+import http.client
 import importlib.util
 import io
 import json
@@ -490,7 +491,11 @@ def test_der_starter_startet_genau_einen_runner_als_ghrunner_auf_dem_rootless_do
     assert (kopie / "externals" / "node20").is_dir()
     assert gechownt == [slot_dir]
     [(args, kwargs)] = popen.aufrufe
-    assert args == [str(kopie / "run.sh"), "--jitconfig", "JIT-KONFIG"]
+    assert args == [str(kopie / "run.sh")]
+    # Die JIT-Konfiguration ist ein Zugangsnachweis: In der Kommandozeile könnte
+    # jeder Benutzer auf celsius sie über /proc/<pid>/cmdline lesen, die Umgebung
+    # sehen nur ghrunner und root. Der Runner löscht die Variable nach dem Lesen.
+    assert kwargs["env"]["ACTIONS_RUNNER_INPUT_JITCONFIG"] == "JIT-KONFIG"
     assert kwargs["user"] == "ghrunner"
     assert kwargs["group"] == "ghrunner"
     assert kwargs["cwd"] == kopie
@@ -664,7 +669,13 @@ def test_urllib_http_reicht_einen_4xx_status_als_antwort_durch() -> None:
 
 
 @pytest.mark.parametrize(
-    "fehler", [urllib.error.URLError(OSError("Network is unreachable")), TimeoutError("timed out")]
+    "fehler",
+    [
+        urllib.error.URLError(OSError("Network is unreachable")),
+        TimeoutError("timed out"),
+        # Abgerissene Antwort: http.client meldet sie nicht als OSError.
+        http.client.IncompleteRead(b"{", 10),
+    ],
 )
 def test_urllib_http_macht_aus_netzfehlern_einen_api_fehler(fehler: Exception) -> None:
     def opener(request: Any, timeout: float) -> Any:
@@ -948,11 +959,11 @@ def test_das_pat_erreicht_weder_ausgabe_noch_argumente_noch_umgebung_des_runners
     slot.run_once()
 
     [(args, kwargs)] = popen.aufrufe
-    assert args[-1] == "ENC"
+    assert kwargs["env"]["ACTIONS_RUNNER_INPUT_JITCONFIG"] == "ENC"
     sichtbar = " ".join([*args, *kwargs["env"].keys(), *kwargs["env"].values(), *capsys.readouterr()])
     assert TOKEN not in sichtbar
     assert str(pat_datei) not in sichtbar
-    assert set(kwargs["env"]) == {"DOCKER_HOST", "HOME", "USER", "PATH"}
+    assert set(kwargs["env"]) == {"DOCKER_HOST", "HOME", "USER", "PATH", "ACTIONS_RUNNER_INPUT_JITCONFIG"}
 
 
 def test_leere_werte_aus_der_umgebungsdatei_gelten_als_nicht_gesetzt() -> None:

@@ -10,6 +10,7 @@ import argparse
 import contextlib
 import fcntl
 import functools
+import http.client
 import json
 import os
 import shutil
@@ -139,8 +140,9 @@ class UrllibHttp:
             # 4xx/5xx sind Antworten: 422 heißt beim Löschen „beschäftigt“.
             with error:
                 return Response(status=error.code, headers=_lower(error.headers.items()), body=error.read())
-        except OSError as error:
-            # URLError und Timeouts: Netz weg, DNS, TLS. Die Schleife wartet und versucht es neu.
+        except (OSError, http.client.HTTPException) as error:
+            # URLError und Timeouts: Netz weg, DNS, TLS; HTTPException: abgerissene
+            # Antwort. Die Schleife wartet und versucht es neu.
             raise ApiError(f"{method} {url}: {error}") from error
 
 
@@ -315,15 +317,18 @@ class HostLauncher:
             check=True,
         )
         # Eigene, leere Umgebung: Nichts vom Supervisor (PAT-Pfad, Variablen
-        # von systemd) erreicht den Runner, nur die JIT-Konfiguration.
+        # von systemd) erreicht den Runner, nur die JIT-Konfiguration. Sie geht
+        # über die Umgebung statt über argv, weil /proc/<pid>/cmdline jeder
+        # Benutzer lesen kann; der Runner löscht die Variable nach dem Lesen.
         env = {
             "DOCKER_HOST": self.docker_host,
             "HOME": str(self.home),
             "USER": self.user,
             "PATH": "/usr/local/bin:/usr/bin:/bin",
+            "ACTIONS_RUNNER_INPUT_JITCONFIG": jitconfig,
         }
         process = self.popen(
-            [str(copy / "run.sh"), "--jitconfig", jitconfig],
+            [str(copy / "run.sh")],
             cwd=copy,
             env=env,
             user=self.user,

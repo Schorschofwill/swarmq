@@ -51,12 +51,17 @@ env:
   UV_RUN: uv run --extra test --extra reload
   SWARMQ_TEST_SEED: ${{ github.run_id }}
 
+# Feste Obergrenzen je Job: Ohne sie hält ein hängender Job den einzigen
+# Runner auf celsius bis zum GitHub-Standard von 360 Minuten fest. Die Werte
+# liegen beim Mehrfachen der üblichen Laufzeit (Tests 3–4 min).
+
 jobs:
   # Format, ruff mit allen Regeln, mypy über src und tests, basedpyright,
   # stubtest. Dieselben Befehle laufen lokal als prek-Hooks.
   lint-and-types:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: [self-hosted, celsius-swarmq]
+    timeout-minutes: 10
     container:
       image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
       volumes: ["swarmq-uv-cache-${{ github.event_name == 'push' && 'eigen' || 'fork' }}:/uv-cache"]
@@ -74,6 +79,7 @@ jobs:
   lock-check:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: [self-hosted, celsius-swarmq]
+    timeout-minutes: 10
     container:
       image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
       volumes: ["swarmq-uv-cache-${{ github.event_name == 'push' && 'eigen' || 'fork' }}:/uv-cache"]
@@ -93,6 +99,7 @@ jobs:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
     needs: [lock-check]
     runs-on: [self-hosted, celsius-swarmq]
+    timeout-minutes: 10
     container:
       image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
       volumes: ["swarmq-uv-cache-${{ github.event_name == 'push' && 'eigen' || 'fork' }}:/uv-cache"]
@@ -120,6 +127,7 @@ jobs:
   unit-tests:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: [self-hosted, celsius-swarmq]
+    timeout-minutes: 30
     container:
       image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
       volumes: ["swarmq-uv-cache-${{ github.event_name == 'push' && 'eigen' || 'fork' }}:/uv-cache"]
@@ -161,6 +169,7 @@ jobs:
   integration-tests:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: [self-hosted, celsius-swarmq]
+    timeout-minutes: 30
     container:
       image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
       volumes: ["swarmq-uv-cache-${{ github.event_name == 'push' && 'eigen' || 'fork' }}:/uv-cache"]
@@ -231,6 +240,7 @@ jobs:
   e2e-tests:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: [self-hosted, celsius-swarmq]
+    timeout-minutes: 30
     container:
       image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
       volumes: ["swarmq-uv-cache-${{ github.event_name == 'push' && 'eigen' || 'fork' }}:/uv-cache"]
@@ -276,6 +286,7 @@ jobs:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
     needs: [unit-tests, integration-tests, e2e-tests]
     runs-on: [self-hosted, celsius-swarmq]
+    timeout-minutes: 15
     container:
       image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
       volumes: ["swarmq-uv-cache-${{ github.event_name == 'push' && 'eigen' || 'fork' }}:/uv-cache"]
@@ -311,6 +322,7 @@ jobs:
   secret-scan:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: [self-hosted, celsius-swarmq]
+    timeout-minutes: 10
     container:
       image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
     env:

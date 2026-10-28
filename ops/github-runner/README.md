@@ -11,8 +11,11 @@ Ephemere Runner für die CI von swarmq und swarmv (Plan
   der gepinnten Runner-Distribution, mit `DOCKER_HOST` auf den rootless Docker
   von `ghrunner`. Job-Container und Services laufen dort, nie auf dem Docker
   des Hosts.
-- Der Runner bekommt nur die JIT-Konfiguration. Das PAT erscheint nicht in
-  seiner Umgebung, nicht in seinen Argumenten und nicht in den Logs.
+- Der Runner bekommt nur die JIT-Konfiguration, und zwar über die Umgebung
+  (`ACTIONS_RUNNER_INPUT_JITCONFIG`), nicht über argv: Die Kommandozeile kann
+  jeder Benutzer auf celsius lesen, die Umgebung nur `ghrunner` und root. Das
+  PAT erscheint nicht in seiner Umgebung, nicht in seinen Argumenten und nicht
+  in den Logs.
 
 Warum kein Runner-Container: Bei `container:`-Jobs bindet der Runner seine
 externals und das Arbeitsverzeichnis über den Docker-Daemon in den
@@ -166,3 +169,14 @@ Ein freigegebener bösartiger Job erreicht `ghrunner` und das Netz von celsius,
 aber nicht root, nicht das PAT und nicht die Messcontainer auf dem Docker des
 Hosts. Bei Verdacht: PAT widerrufen, Repo-Einstellungen und Umgebung `pypi`
 prüfen, den Docker von `ghrunner` neu aufsetzen.
+
+Was ephemer ist und was nicht: Je Job neu sind die Runner-Kopie, das
+Arbeitsverzeichnis und die Job-Container. Über Jobs hinweg bleiben das
+Home-Verzeichnis von `ghrunner`, der rootless Docker mit seinen Images und Volumes
+(darunter die Fork-Caches `swarmq-uv-cache-fork` und `swarmv-uv-cache-fork`)
+und ein Prozess, der sich aus der Prozessgruppe des Runners gelöst hat. Weil
+alle Jobs in `container:` laufen und der Job-Container den Docker-Socket nicht
+sieht, erreicht Fork-Code davon nur die Fork-Volumes des uv-Caches; deshalb
+ist der Cache nach Vertrauensstufe getrennt. Nach einem verdächtigen Fork-Job
+daher zusätzlich beide Fork-Volumes löschen (`docker volume rm` als
+`ghrunner`).
