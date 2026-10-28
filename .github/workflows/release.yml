@@ -1,0 +1,71 @@
+# Release nach PyPI über Trusted Publishing (Plan 2026-10-28-1308, U4, KTD9).
+#
+# Ein Tag v* baut das Paket und veröffentlicht es nach Georgs Freigabe in der
+# Umgebung `pypi` -- ohne gespeichertes Token. Beide Jobs laufen auf Runnern
+# von GitHub, nicht auf celsius: Weder der Inhalt eines Releases noch sein
+# OIDC-Token sollen auf einem Host entstehen, der Code aus freigegebenen
+# Fork-PRs ausführt. `uv build` braucht keine Dienste, und die Publish-Action
+# ist auf eigenen Runnern nur "best effort". Bewusst ohne `container:` (dort
+# läuft die Publish-Action nicht) und ohne den uv-Cache von celsius.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: "0.11.6"
+          enable-cache: false
+      # R9: Ein Tag, der nicht zur Version passt, wird nie veröffentlicht. Die
+      # Prüfung läuft vor dem Build, also auch vor der Freigabe-Anfrage.
+      - name: Tag gegen pyproject.toml prüfen
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          uv run --no-project python - <<'PY'
+          import os, sys, tomllib
+          version = tomllib.load(open("pyproject.toml", "rb"))["project"]["version"]
+          tag = os.environ["TAG"]
+          if tag != f"v{version}":
+              sys.exit(f"Tag {tag} passt nicht zu version = {version} in pyproject.toml")
+          print(f"Tag {tag} passt zu {version}")
+          PY
+      - run: uv build
+      # Wheel und sdist einzeln: in dist/ liegt eine .gitignore, die nicht ins
+      # Release gehört.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/swarmq/
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
