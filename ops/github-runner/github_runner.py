@@ -268,13 +268,6 @@ class Launcher(Protocol):
     def start(self, slot_dir: Path, jitconfig: str) -> RunnerHandle: ...
 
 
-def _chown_tree(root: Path, user: str) -> None:
-    shutil.chown(root, user=user, group=user)
-    for parent, dirs, files in os.walk(root):
-        for name in dirs + files:
-            shutil.chown(Path(parent) / name, user=user, group=user)
-
-
 class HostLauncher:
     """Startet den Runner als Host-Prozess unter ``ghrunner`` aus einer frischen Kopie.
 
@@ -290,6 +283,7 @@ class HostLauncher:
         home: Path,
         docker_host: str,
         popen: Callable[..., Any] = subprocess.Popen,
+        run: Callable[..., Any] = subprocess.run,
         chown: Callable[[Path], None] | None = None,
         killpg: Callable[[int, int], None] = os.killpg,
     ) -> None:
@@ -298,16 +292,28 @@ class HostLauncher:
         self.home = home
         self.docker_host = docker_host
         self.popen = popen
-        self.chown = chown if chown is not None else functools.partial(_chown_tree, user=user)
+        self.run = run
+        self.chown = chown if chown is not None else functools.partial(shutil.chown, user=user, group=user)
         self.killpg = killpg
 
     def start(self, slot_dir: Path, jitconfig: str) -> RunnerHandle:
         copy = slot_dir / "runner"
         # Reste eines abgebrochenen Laufs (Neustart der Unit mitten im Job).
         shutil.rmtree(slot_dir, ignore_errors=True)
-        shutil.copytree(self.dist_dir, copy, symlinks=True)
-        # Der Runner schreibt in seine Kopie (.runner, _diag, _work).
-        self.chown(copy)
+        # root fasst im Baum, der ghrunner gehört, nichts an: Ein ghrunner-Prozess,
+        # der einen Job überdauert hat, könnte dort Symlinks legen, denen ein
+        # rekursives chown als root folgen würde. root legt nur das Slot-Verzeichnis
+        # frisch in seinem eigenen Verzeichnis an und gibt es ghrunner; die Kopie,
+        # in die der Runner schreibt (.runner, _diag, _work), legt ghrunner selbst an.
+        slot_dir.mkdir(parents=True)
+        self.chown(slot_dir)
+        self.run(
+            ["cp", "-a", "--no-preserve=ownership", f"{self.dist_dir}/.", str(copy)],
+            user=self.user,
+            group=self.user,
+            extra_groups=[],
+            check=True,
+        )
         # Eigene, leere Umgebung: Nichts vom Supervisor (PAT-Pfad, Variablen
         # von systemd) erreicht den Runner, nur die JIT-Konfiguration.
         env = {
@@ -376,7 +382,6 @@ class Slot:
             self.clock.sleep(self._backoff)
             self._backoff = min(self._backoff * 2, _BACKOFF_MAX)
             return
-        self._backoff = _BACKOFF_START
         slot_dir = self.switch.slots_dir / self.name
         # Unter der Sperre: ``pause`` setzt den Schalter unter derselben Sperre,
         # zwischen Nachprüfen und Start kann er also nicht erscheinen.
@@ -393,7 +398,8 @@ class Slot:
             runner = self.launcher.start(slot_dir, jit.encoded)
             self.switch.write_state(self.name, LAEUFT)
         busy = False
-        while runner.poll() is None:
+        stopped = False
+        while (exit_code := runner.poll()) is None:
             # Erst die Registrierung löschen, dann stoppen: Die API lehnt das
             # Löschen eines beschäftigten Runners ab, so wird kein Job abgebrochen.
             if not busy and self.switch.paused():
@@ -404,11 +410,21 @@ class Slot:
                 else:
                     if deleted:
                         runner.stop()
+                        stopped = True
                         break
                     busy = True
             self.clock.sleep(_RUN_POLL)
         # Ephemer: kein Rest eines Jobs erreicht den nächsten.
         shutil.rmtree(slot_dir, ignore_errors=True)
+        if stopped or exit_code == 0:
+            self._backoff = _BACKOFF_START
+            return
+        # Ungestoppt mit Fehler beendet (kaputte Kopie, abgelehnte Konfiguration):
+        # ohne Pause holte der Slot sofort die nächste Registrierung.
+        _say(f"{self.name}: Runner endete mit {exit_code}, nächster Versuch in {self._backoff:.0f} s")
+        self.switch.write_state(self.name, FEHLER)
+        self.clock.sleep(self._backoff)
+        self._backoff = min(self._backoff * 2, _BACKOFF_MAX)
 
     def _runner_name(self) -> str:
         return f"celsius-{self.name}-{uuid.uuid4().hex[:8]}"

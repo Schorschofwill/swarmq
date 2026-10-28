@@ -21,11 +21,13 @@ Slot-Schleife (Zustandsdiagramm „Ein Runner-Slot auf celsius“):
 - [x] 422 (beschäftigt): Runner läuft bis zum Ende, kein zweiter Löschversuch
 - [x] API-Fehler beim Holen: wachsende, begrenzte Wartezeit, kein Absturz; Erfolg setzt zurück
 - [x] API-Fehler beim Löschen (wartend und beim Verwerfen): kein Absturz
+- [x] Runner endet ungestoppt mit Fehlercode: Zustand ``fehler``, dieselbe wachsende Wartezeit; ein sauberes Ende setzt zurück (Review #5)
 Starter (Host-Prozess statt Container):
 - [x] genau ein Prozess als ghrunner mit ``DOCKER_HOST`` des rootless Docker, aus einer Kopie der Distribution
 - [x] keine Zusatzgruppen des root-Supervisors
 - [x] Reste eines abgebrochenen Laufs blockieren die Kopie nicht
 - [x] die Kopie gehört ghrunner
+- [x] ghrunner legt die Kopie selbst an; root ändert nur den Besitz des frischen Slot-Verzeichnisses, nie etwas im Baum (Review #1, Symlinks)
 - [x] ``stop()`` beendet die Prozessgruppe, nach der Frist hart
 - [x] das PAT erscheint in keiner Ausgabe, keinem Prozessargument und keiner Umgebung des Runners
 GitHub-API und HTTP:
@@ -49,6 +51,7 @@ import fcntl
 import importlib.util
 import io
 import json
+import shutil
 import signal
 import subprocess
 import sys
@@ -129,13 +132,16 @@ class FalschesGitHub:
 
 
 class FalscherRunner:
-    def __init__(self, laeuft_polls: int) -> None:
+    def __init__(self, laeuft_polls: int, ausgang: int = 0) -> None:
         self.laeuft_polls = laeuft_polls
+        self.ausgang = ausgang
         self.gestoppt = False
 
     def poll(self) -> int | None:
-        if self.gestoppt or self.laeuft_polls <= 0:
+        if self.gestoppt:
             return 0
+        if self.laeuft_polls <= 0:
+            return self.ausgang
         self.laeuft_polls -= 1
         return None
 
@@ -147,11 +153,12 @@ class FalscherStarter:
     def __init__(self, laeuft_polls: int = 0) -> None:
         self.starts: list[tuple[Path, str]] = []
         self.laeuft_polls = laeuft_polls
+        self.ausgaenge: list[int] = []
         self.runner: FalscherRunner | None = None
 
     def start(self, slot_dir: Path, jitconfig: str) -> FalscherRunner:
         self.starts.append((slot_dir, jitconfig))
-        self.runner = FalscherRunner(self.laeuft_polls)
+        self.runner = FalscherRunner(self.laeuft_polls, self.ausgaenge.pop(0) if self.ausgaenge else 0)
         return self.runner
 
 
@@ -330,6 +337,25 @@ def test_api_fehler_beim_holen_fuehrt_zu_wachsender_begrenzter_wartezeit(state_d
     assert uhr.geschlafen[-1] == 5
 
 
+def test_ein_runner_der_ungestoppt_mit_fehler_endet_bremst_den_slot(state_dir: Path) -> None:
+    """Endet der Runner sofort (kaputte Kopie, abgelehnte Konfiguration), holte der Slot sonst ohne
+    Pause eine Registrierung nach der anderen und verbrauchte das API-Limit des PAT."""
+    github, starter, uhr = FalschesGitHub(), FalscherStarter(), FalscheUhr()
+    starter.ausgaenge = [1, 1, 1, 0, 1]
+    slot = _slot(state_dir, github, starter, uhr)
+
+    for _ in range(3):
+        slot.run_once()
+
+    assert uhr.geschlafen == [5, 10, 20]
+    assert (state_dir / "slots" / "swarmq-1.state").read_text().strip() == "fehler"
+
+    slot.run_once()
+    slot.run_once()
+
+    assert uhr.geschlafen == [5, 10, 20, 5]
+
+
 def test_waehrend_des_holens_meldet_der_slot_holt(state_dir: Path) -> None:
     github, starter, uhr = FalschesGitHub(), FalscherStarter(), FalscheUhr()
     zustand = state_dir / "slots" / "swarmq-1.state"
@@ -401,16 +427,54 @@ def distribution(tmp_path: Path) -> Path:
     return dist
 
 
-def _starter(distribution: Path, popen: FalschesPopen, gechownt: list[Path], signale: list[Any] | None = None) -> Any:
+class FalschesKopieren:
+    """Prozessgrenze für das Kopieren: kopiert wirklich, protokolliert den Aufruf."""
+
+    def __init__(self) -> None:
+        self.aufrufe: list[tuple[list[str], dict[str, Any]]] = []
+
+    def __call__(self, args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        self.aufrufe.append((args, kwargs))
+        quelle, ziel = args[-2], args[-1]
+        shutil.copytree(quelle.removesuffix("/."), ziel, symlinks=True)
+        return subprocess.CompletedProcess(args, 0)
+
+
+def _starter(
+    distribution: Path,
+    popen: FalschesPopen,
+    gechownt: list[Path],
+    signale: list[Any] | None = None,
+    kopieren: FalschesKopieren | None = None,
+) -> Any:
     return gr.HostLauncher(
         dist_dir=distribution,
         user="ghrunner",
         home=Path("/home/ghrunner"),
         docker_host="unix:///run/user/1500/docker.sock",
         popen=popen,
+        run=kopieren if kopieren is not None else FalschesKopieren(),
         chown=gechownt.append,
         killpg=lambda pid, sig: (signale if signale is not None else []).append((pid, sig)),
     )
+
+
+def test_ghrunner_legt_die_kopie_selbst_an_und_root_aendert_im_baum_keinen_besitz(
+    tmp_path: Path, distribution: Path
+) -> None:
+    """Root folgte beim rekursiven chown Symlinks, die ein überdauernder ghrunner-Prozess in die schon
+    ghrunner-eigene Kopie legen konnte (Rechteausweitung). Jetzt kopiert ghrunner, root fasst nur das
+    frische Slot-Verzeichnis an, das es selbst in seinem eigenen Verzeichnis angelegt hat."""
+    kopieren, gechownt = FalschesKopieren(), list[Path]()
+    slot_dir = tmp_path / "state" / "slots" / "swarmq-1"
+
+    _starter(distribution, FalschesPopen(), gechownt, kopieren=kopieren).start(slot_dir, "JIT")
+
+    assert gechownt == [slot_dir]
+    [(args, kwargs)] = kopieren.aufrufe
+    assert args == ["cp", "-a", "--no-preserve=ownership", f"{distribution}/.", str(slot_dir / "runner")]
+    assert (kwargs["user"], kwargs["group"], kwargs["extra_groups"]) == ("ghrunner", "ghrunner", [])
+    assert kwargs["check"] is True
 
 
 def test_der_starter_startet_genau_einen_runner_als_ghrunner_auf_dem_rootless_docker(
@@ -424,7 +488,7 @@ def test_der_starter_startet_genau_einen_runner_als_ghrunner_auf_dem_rootless_do
     kopie = slot_dir / "runner"
     assert (kopie / "run.sh").read_text() == "#!/bin/sh\n"
     assert (kopie / "externals" / "node20").is_dir()
-    assert gechownt == [kopie]
+    assert gechownt == [slot_dir]
     [(args, kwargs)] = popen.aufrufe
     assert args == [str(kopie / "run.sh"), "--jitconfig", "JIT-KONFIG"]
     assert kwargs["user"] == "ghrunner"
@@ -470,7 +534,7 @@ def test_reste_eines_abgebrochenen_laufs_werden_vor_der_kopie_entfernt(tmp_path:
     assert (slot_dir / "runner" / "run.sh").exists()
 
 
-def test_ohne_eigenes_chown_gehoert_die_ganze_kopie_ghrunner(
+def test_ohne_eigenes_chown_gibt_root_nur_das_slot_verzeichnis_an_ghrunner(
     tmp_path: Path, distribution: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     besitz: dict[Path, tuple[str, str]] = {}
@@ -481,13 +545,12 @@ def test_ohne_eigenes_chown_gehoert_die_ganze_kopie_ghrunner(
         home=Path("/home/ghrunner"),
         docker_host="unix:///run/user/1500/docker.sock",
         popen=FalschesPopen(),
+        run=FalschesKopieren(),
     )
 
     starter.start(tmp_path / "slot", "JIT")
 
-    kopie = tmp_path / "slot" / "runner"
-    assert set(besitz) == {kopie, *kopie.rglob("*")}
-    assert set(besitz.values()) == {("ghrunner", "ghrunner")}
+    assert besitz == {tmp_path / "slot": ("ghrunner", "ghrunner")}
 
 
 class FalschesHttp:
