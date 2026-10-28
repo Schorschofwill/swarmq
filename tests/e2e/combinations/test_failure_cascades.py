@@ -70,7 +70,7 @@ from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 from swarmq.worker.results import STORE_ATTEMPTS
 from tests.support.known_leaks import aiormq_streamwriter_leak
-from tests.support.wait import wait_until
+from tests.support.wait import WORKER_START_TIMEOUT_S, wait_until
 
 from ._invariants import (
     FAFStageObservation,
@@ -157,7 +157,7 @@ async def _running_worker(
 
     worker_task = asyncio.create_task(worker_app.start_worker())
     try:
-        await asyncio.wait_for(online.wait(), timeout=8.0)
+        await asyncio.wait_for(online.wait(), timeout=WORKER_START_TIMEOUT_S)
         yield worker_app
     finally:
         worker_task.cancel()
