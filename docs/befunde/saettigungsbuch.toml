@@ -273,6 +273,19 @@ umfang = 1
 einheit = "Abläufe"
 befunde = []
 
+[[lauf]]
+# Signal S-007 (uv audit, GHSA-j586-36cw-2gc2) zwischen den Runden nach KTD10
+# untersucht: erreichbar über Client.get_result mit einem Task-Ergebnis mit
+# int-Schlüssel (fehlersuche-runde-4-2026-10.md, F4-29).
+id = "L-017"
+datum = 2026-10-28
+commit = "1f6b69e0"
+methode = "M-A-01"
+modul = "serialization"
+umfang = 1
+einheit = "Signale"
+befunde = [{ id = "F4-29", einstufung = "FEHLER" }]
+
 # --- Signale ----------------------------------------------------------------
 # KTD3: die sechs begründeten `noqa: S` in src sind die ersten Signale der
 # Säule Angriffssicherheit (Stand 2026-10-24).
@@ -334,5 +347,26 @@ saeule = "Angriffssicherheit"
 modul = "process_manager"
 fundstelle = "src/swarmq/process_manager/reload.py:178"
 beschreibung = "os.execvpe beim Hot-Reload mit dem argv-Snapshot des Starts, ohne Shell"
+dringlichkeit = "normal"
+status = "offen"
+
+[[signal]]
+id = "S-007"
+quelle = "uv audit"
+saeule = "Angriffssicherheit"
+modul = "serialization"
+fundstelle = "uv.lock: msgpack 1.2.2"
+beschreibung = "GHSA-j586-36cw-2gc2: msgpack-C-Erweiterung behält den Map-Wert, wenn unpackb den Schlüssel ablehnt"
+dringlichkeit = "dringend"
+status = "untersucht"
+lauf = "L-017"
+
+[[signal]]
+id = "S-008"
+quelle = "Gegenprüfung F4-29"
+saeule = "Fehler"
+modul = "serialization"
+fundstelle = "src/swarmq/serialization.py:247"
+beschreibung = "Task-Ergebnis mit int-Schlüsseln wird mit encode_result gespeichert, decode_result lehnt es beim Lesen ab (strict_map_key)"
 dringlichkeit = "normal"
 status = "offen"

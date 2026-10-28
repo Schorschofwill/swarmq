@@ -21,8 +21,9 @@ dynamic = ["readme"]
 license-files = ["LICENSE"]
 requires-python = ">=3.14"
 # Härtung R2 P2: lower bounds protect downstream consumers installing
-# without our lockfile. msgpack>=1.0 pins the safe default-limit
-# semantics decode_result relies on; aio-pika>=9 the robust-connection
+# without our lockfile. msgpack>=1.2.3: safe default limits, and no leak
+# of the decoded value when a map key is rejected (GHSA-j586-36cw-2gc2,
+# F4-29); aio-pika>=9 the robust-connection
 # API; valkey>=6 the asyncio client surface; msgspec>=0.18 the
 # Struct/JSON APIs; structlog>=24 contextvars/testing surfaces (<27:
 # get_logger relies on stdlib.BoundLogger frame depth, KTD1/KTD2);
@@ -31,7 +32,7 @@ requires-python = ">=3.14"
 # mitbringen und Cron-Zeitzonen per zoneinfo aufgelöst werden.
 dependencies = [
     "msgspec>=0.18",
-    "msgpack>=1.0",
+    "msgpack>=1.2.3",
     "structlog>=24,<27",
     "aio-pika>=9",
     # Plain valkey (no [libvalkey] extra): libvalkey is a C accelerator
