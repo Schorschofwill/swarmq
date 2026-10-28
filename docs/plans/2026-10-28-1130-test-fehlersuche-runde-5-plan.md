@@ -234,7 +234,8 @@ U4, U5, U7 und U9 brauchen keinen Server und laufen parallel. U8 misst auf celsi
   2. Header-Grenze: `guard_headers` in `src/swarmq/broker/rabbitmq/header_guard.py` direkt; die Pipeline aus Schritt 1 nutzt den `InMemoryBroker`, der weder `frame_max` kennt noch `guard_headers` aufruft.
   3. Valkey-Daten: Ergebnisse mit verschachtelten Ext-Typen über `decode_result`, Sollwerte des Kontrollkanals (`src/swarmq/backend/valkey/control.py`), Workflow-Zustand (`src/swarmq/backend/valkey/results.py`).
   4. HTTP-Parser `parse_http_request` in `src/swarmq/_http.py` mit überlangen, abgeschnittenen und verschachtelten Anfragen.
-  5. Treffer mit geschrumpftem Beispiel als `R5A-nn` in den Bericht; die Suite bleibt grün, indem der Treffer über die Strategie mit Kommentar zur ID ausgeklammert wird.
+  5. Speicher-Orakel für Worker-Eingang und Valkey-Daten: Spitze und Zuwachs mit `tracemalloc` je Beispiel messen, ins Verhältnis zur Eingabegröße setzen, ab einem festen Faktor ist es ein Treffer. Der Bericht nennt je Ziel, ob das Orakel wirkte, und dass Lecks unter der Rauschgrenze nicht abgedeckt sind; ein Leck wie F4-29 wurde erst mit vier Werten zu 1 MiB messbar.
+  6. Treffer mit geschrumpftem Beispiel als `R5A-nn` in den Bericht; die Suite bleibt grün, indem der Treffer über die Strategie mit Kommentar zur ID ausgeklammert wird.
 - **Execution note:** Jede Datei zuerst mit einem Ziel und einer engen Strategie rot gegen einen bewusst falschen Allow-List-Eintrag, dann erweitern.
 - **Patterns to follow:** `tests/fuzz/test_counter_headers_fuzz.py`, `tests/fuzz/test_parser_fuzz.py`.
 - **Test scenarios:**
@@ -242,7 +243,7 @@ U4, U5, U7 und U9 brauchen keinen Server und laufen parallel. U8 misst auf celsi
   - Header-Grenze: beliebige Header-Mappings und `frame_max` zwischen 4096 und 131072 → die zurückgegebenen Header passen kodiert in `frame_max // 2`, oder es fliegt der dokumentierte Fehler aus `src/swarmq/exceptions.py`; nie eine andere Ausnahme.
   - Valkey-Daten: Ext-Typ set mit 50-fach verschachteltem Inhalt → `ResultSerializationError` oder Wert, nie `RecursionError` oder ungebremster Speicher.
   - Kontrollkanal: Sollwert-JSON mit negativen, riesigen und nicht numerischen Werten → Sollwert verworfen, Worker-Zahl unverändert.
-  - HTTP-Parser: Anfrage ohne Zeilenende, mit 1 MiB Header, mit `\0` im Pfad → Antwort 400 oder Verbindungsende innerhalb der Frist, kein Hänger.
+  - HTTP-Parser: Anfrage ohne Zeilenende, mit 1 MiB Header, mit `\0` im Pfad, Reader mit `feed_eof` → `parse_http_request` liefert `(method, path)`, `None`, `BadRequest` oder `RequestTimeout`, nie eine andere Ausnahme, und endet ohne Hänger; der Server antwortet damit 400, 404, 405 oder 408 oder schließt die Verbindung.
 - **Verification:** `SWARMQ_FUZZ_PROFILE=ci uv run just fuzz` fährt die vier neuen Dateien grün; der Bericht nennt Seed, Beispielzahl und Treffer je Ziel.
 
 ### U6. CVEs der Konkurrenz (M-A-03)
@@ -359,7 +360,7 @@ Coverage-Gate: Die Runde ändert keine Produktzeilen; `fail_under` bleibt unber�
 
 - Register `docs/befunde/fehlersuche-runde-5-2026-11.md` vollständig: jeder Verdacht eingestuft mit Quelle, jeder FEHLER mit Nachweis, jede LÜCKE als Produktfrage mit Empfehlung, jede VERBESSERUNG mit Messergebnis.
 - Entscheidungsvorlage zum Vertrauensmodell liegt bei Georg; ist sie beantwortet, steht die Regel im Entscheidungsregister.
-- Jeder Lauf im Sättigungsbuch, `just saettigung` zeigt Läufe in allen vier Säulen.
+- Jeder Lauf steht im Sättigungsbuch, das Buch enthält Läufe mit `umfang > 0` in allen vier Säulen (Wächter grün), und die Ausgabe von `just saettigung` steht im Abschlussbericht.
 - `uv run just all`, `lint`, `types` grün auf dem Runden-Branch.
 - Kein Produktionscode geändert, kein `entscheidung`-Test geändert; Prototypen-Branches gelöscht, celsius ohne Lauf-Container, Runner wieder gestartet.
 - Probe-Skripte bleiben im Scratchpad; abgebrochene Ansätze sind aus dem Diff entfernt und im Bericht genannt.
