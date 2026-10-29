@@ -18,6 +18,7 @@ Test-Liste:
 - [x] weniger als drei Werte: Abbruch
 - [x] der Eintrag landet im Report-Abschnitt, ein folgender Abschnitt bleibt unberührt
 - [x] vor dem folgenden Abschnitt bleibt genau eine Leerzeile (keine zusätzliche)
+- [x] das Coverage-Badge in README und Doku-Startseiten steigt mit; fehlt eine Datei, stört das nicht
 
 Ohne Werte, über die GitHub-API (Plan 2026-10-28-1308, U2, KTD8), mit
 gefälschtem ``gh`` im ``PATH``:
@@ -238,3 +239,23 @@ def test_ein_fork_pr_lauf_mit_branch_main_zaehlt_nicht(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert _floor(repo) == 95
+
+
+_BADGE = "https://img.shields.io/badge/coverage-%E2%89%A5{}%25-1F2B47"
+
+
+def test_the_coverage_badges_follow_the_new_floor(tmp_path: Path) -> None:
+    repo = _repo(tmp_path, 90)
+    (repo / "website").mkdir()
+    for datei in ("README.md", "website/index.md"):
+        (repo / datei).write_text(f'<img alt="Coverage" src="{_BADGE.format(90)}">\n', encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "badges"], cwd=repo, check=True
+    )
+
+    result = _ratchet(repo, "93.40", "93.10", "93.70")
+
+    assert result.returncode == 0, result.stderr
+    for datei in ("README.md", "website/index.md"):
+        assert (repo / datei).read_text(encoding="utf-8") == f'<img alt="Coverage" src="{_BADGE.format(92)}">\n'

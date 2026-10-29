@@ -17,6 +17,9 @@
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-B4842F"></a>
   <img alt="Typed" src="https://img.shields.io/badge/typing-mypy%20%7C%20pyright-B4842F">
   <img alt="Tests" src="https://img.shields.io/badge/tests-7%20000%2B-1F2B47">
+  <img alt="Coverage ≥97 %" src="https://img.shields.io/badge/coverage-%E2%89%A597%25-1F2B47">
+  <a href="https://github.com/Schorschofwill/swarmq/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/Schorschofwill/swarmq/ci.yml?branch=main&label=CI"></a>
+  <a href="https://swarmq.readthedocs.io/"><img alt="Docs" src="https://img.shields.io/readthedocs/swarmq?label=docs"></a>
 </p>
 
 <!-- pypi-skip -->

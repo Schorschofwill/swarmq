@@ -23,6 +23,14 @@ sind im Kern enthalten.
 <span>durchgehend async def</span><span>standardmäßig at-least-once</span><span>Python 3.14+</span><span>MIT</span>
 </div>
 
+<p class="swarmq-shields">
+  <a href="https://pypi.org/project/swarmq/"><img alt="PyPI" src="https://img.shields.io/pypi/v/swarmq?color=1F2B47&label=PyPI"></a>
+  <img alt="Tests" src="https://img.shields.io/badge/tests-7%20000%2B-1F2B47">
+  <img alt="Coverage ≥97 %" src="https://img.shields.io/badge/coverage-%E2%89%A597%25-1F2B47">
+  <a href="https://github.com/Schorschofwill/swarmq/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/Schorschofwill/swarmq/ci.yml?branch=main&label=CI"></a>
+  <a href="https://github.com/Schorschofwill/swarmq"><img alt="GitHub" src="https://img.shields.io/badge/GitHub-Schorschofwill%2Fswarmq-1F2B47?logo=github"></a>
+</p>
+
 </div>
 
 ---

@@ -481,6 +481,23 @@ body, .md-typeset {
   color: var(--md-accent-fg-color);
   background: var(--md-accent-fg-color--transparent);
 }
+.swarmq-shields {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 0.3rem;
+  margin: 0.8rem 0 0;
+}
+.swarmq-shields a {
+  display: flex;
+}
+.swarmq-hero .swarmq-shields img {
+  /* Die Logo-Regel .swarmq-hero img gibt jedem Bild 13rem Breite. */
+  width: auto;
+  max-width: none;
+  height: 20px;
+}
 .md-typeset .grid.cards .twemoji.lg {
   color: var(--md-accent-fg-color);
 }
