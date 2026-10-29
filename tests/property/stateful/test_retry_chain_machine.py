@@ -18,10 +18,10 @@ from typing import Any
 
 import pytest
 from hypothesis import settings
-from hypothesis.stateful import run_state_machine_as_test
 
 from tests.property.stateful import retry_chain_scenarios
 from tests.property.stateful.retry_chain_machine import ChainEnv, RetryChainMachine
+from tests.support.stateful import run_machine
 
 _TIMEOUT_S = 60 if os.environ.get("HYPOTHESIS_PROFILE", "quick") == "quick" else 1800
 pytestmark = pytest.mark.timeout(_TIMEOUT_S)
@@ -30,7 +30,7 @@ OpenEnv = Callable[[], Coroutine[Any, Any, ChainEnv]]
 
 
 def test_retry_chain_machine_holds_its_invariants(open_env: OpenEnv) -> None:
-    run_state_machine_as_test(lambda: RetryChainMachine(open_env), settings=settings(stateful_step_count=30))
+    run_machine(lambda: RetryChainMachine(open_env), settings=settings(stateful_step_count=30))
 
 
 @pytest.fixture

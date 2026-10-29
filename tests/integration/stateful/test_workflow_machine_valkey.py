@@ -21,10 +21,10 @@ from typing import Any
 
 import pytest
 from hypothesis import HealthCheck, settings
-from hypothesis.stateful import run_state_machine_as_test
 
 from tests.property.stateful import workflow_scenarios
 from tests.property.stateful.workflow_machine import WorkflowEnv, WorkflowMachine
+from tests.support.stateful import run_machine
 
 pytestmark = pytest.mark.timeout(60)
 
@@ -52,7 +52,7 @@ def machine(open_env: OpenEnv) -> Iterator[WorkflowMachine]:
 
 
 def test_workflow_machine_holds_its_invariants_against_valkey(open_env: OpenEnv) -> None:
-    run_state_machine_as_test(lambda: SerialWorkflowMachine(open_env), settings=VALKEY_SETTINGS)
+    run_machine(lambda: SerialWorkflowMachine(open_env), settings=VALKEY_SETTINGS)
 
 
 @pytest.mark.parametrize("scenario", workflow_scenarios.SCENARIOS.values(), ids=workflow_scenarios.SCENARIOS.keys())

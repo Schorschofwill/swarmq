@@ -17,7 +17,7 @@ python = "3.14.4"
 module = 151
 
 [werte.import_swarmq_cli]
-module = 422
+module = 431
 
 [werte.publish]
 "amqp.frames" = 3
@@ -76,7 +76,7 @@ module = 422
 "valkey.roundtrips" = 20
 
 [werte.worker_start]
-module = 671
+module = 673
 
 [werte.workflow_kette]
 "backend.compare_and_store_workflow_state" = 2
@@ -177,4 +177,13 @@ python = "3.14.4"
 aenderungen = [
     { szenario = "import_swarmq_cli", metrik = "module", alt = 421, neu = 422 },
     { szenario = "worker_start", metrik = "module", alt = 670, neu = 671 },
+]
+
+[[historie]]
+datum = "2026-10-29"
+grund = "python-dateutil 3.0 über croniter: +9 Module bei import swarmq.cli, +2 beim Worker-Start (docs/plans/2026-10-29-1700-chore-abhaengigkeiten-anheben-plan.md, KTD2)"
+python = "3.14.4"
+aenderungen = [
+    { szenario = "import_swarmq_cli", metrik = "module", alt = 422, neu = 431 },
+    { szenario = "worker_start", metrik = "module", alt = 671, neu = 673 },
 ]

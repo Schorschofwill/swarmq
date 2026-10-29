@@ -20,10 +20,10 @@ from typing import Any
 
 import pytest
 from hypothesis import HealthCheck, settings
-from hypothesis.stateful import run_state_machine_as_test
 
 from tests.property.stateful import leader_scenarios
 from tests.property.stateful.leader_machine import CLI_CRON, LeaderEnv, LeaderMachine
+from tests.support.stateful import run_machine
 
 pytestmark = pytest.mark.timeout(60)
 
@@ -45,7 +45,7 @@ def machine(open_env: OpenEnv) -> Iterator[LeaderMachine]:
 
 
 def test_leader_machine_holds_its_invariants_against_valkey(open_env: OpenEnv) -> None:
-    run_state_machine_as_test(lambda: LeaderMachine(open_env), settings=VALKEY_SETTINGS)
+    run_machine(lambda: LeaderMachine(open_env), settings=VALKEY_SETTINGS)
 
 
 @pytest.mark.parametrize("scenario", leader_scenarios.SCENARIOS.values(), ids=leader_scenarios.SCENARIOS.keys())
