@@ -337,7 +337,10 @@ class WorkflowAdvancer(WorkflowFailure):
         result: Any,
     ) -> None:
         if path == "":
-            # The whole workflow is a single signature.
+            # The whole workflow is a single signature. Sonst fehlt der
+            # Pfad-Header -- nie still abschliessen (S-009).
+            if not isinstance(topology, Signature):
+                raise WorkflowValidationError(f"step without path in a {type(topology).__name__} workflow")
             await self._mark_terminal(wf_id, state, STATUS_COMPLETED, task_id, None)
             return
 
@@ -379,7 +382,7 @@ class WorkflowAdvancer(WorkflowFailure):
                 result_value=None,
             )
         else:
-            await self._mark_terminal(wf_id, state, STATUS_COMPLETED, task_id, None)
+            raise WorkflowValidationError(f"step path {path!r} lies under a {type(parent).__name__}")
 
     async def _on_group_member(
         self,
@@ -491,7 +494,7 @@ class WorkflowAdvancer(WorkflowFailure):
                 result_value=value,
             )
         else:
-            await self._mark_terminal(wf_id, state, STATUS_COMPLETED, result_task_id, value)
+            raise WorkflowValidationError(f"node path {node_path!r} lies under a {type(parent).__name__}")
 
     # --- enqueue + state helpers -------------------------------------------
 

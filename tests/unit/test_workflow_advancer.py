@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from swarmq.contracts import PublishReceipt
-from swarmq.exceptions import SwarmQError, WorkflowStateConflict
+from swarmq.exceptions import SwarmQError, WorkflowStateConflict, WorkflowValidationError
 from swarmq.middleware import Middleware, MiddlewareChain
 from swarmq.serialization import decode_json, decode_result, encode_json, encode_result
 from swarmq.task import Task, TaskInfo
@@ -1294,3 +1294,42 @@ async def test_fail_stores_error_class_only_when_given():
 
     assert (await with_class.state())["error"] == {"type": "TaskError", "message": "", "class": "a.B"}
     assert (await without.state())["error"] == {"type": "TaskError", "message": "boom"}
+
+
+# --------------------------------------------------------------------------
+# Unpassender Schrittpfad (Signal S-009): nie still als erfolgreich abschließen
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "bad_path",
+    [
+        pytest.param("/0/0", id="elternknoten-ist-signatur"),
+        pytest.param("", id="pfad-header-fehlt"),
+    ],
+)
+async def test_step_path_that_does_not_fit_the_topology_raises(bad_path: str):
+    d = Driver(chain(Echo.s("a"), Echo.s()))
+    await d.seed()
+    d.published.clear()
+    tid = workflow_step_task_id(d.wf_id, bad_path)
+
+    with pytest.raises(WorkflowValidationError):
+        await d.advancer.advance(d.wf_id, bad_path, tid, ["x"])
+
+    assert (await d.state())["status"] != STATUS_COMPLETED
+
+
+async def test_container_completion_under_a_signature_raises():
+    # Über advance() nicht erreichbar (der Blattpfad scheitert vorher); der
+    # Zweig soll trotzdem nicht still abschließen.
+    d = Driver(chain(Echo.s("a"), Echo.s()))
+    await d.seed()
+    state = await d.state()
+
+    with pytest.raises(WorkflowValidationError):
+        await d.advancer._on_container_complete(
+            d.wf_id, state, d.workflow, "/0/g0", result_task_id=None, result_value=["x"]
+        )
+
+    assert (await d.state())["status"] != STATUS_COMPLETED
