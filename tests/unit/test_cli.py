@@ -546,6 +546,46 @@ class TestRunWorkerAsync:
             await cli.run_worker_async(self._hook_args("swarmq_test_hooks:setup"))
 
     @pytest.mark.asyncio
+    async def test_non_callable_hook_is_a_configuration_error(self, monkeypatch):
+        """Zeigt ``--configure`` auf etwas Nicht-Aufrufbares (Tippfehler auf
+        eine Konstante), endet der Start mit einer Meldung statt TypeError."""
+
+        class _Probe(Task):
+            from swarmq.task import TaskInfo
+
+            task_info = TaskInfo(name="cli_hook_probe_not_callable", queues=["default"])
+
+            @override
+            async def run(self) -> None:
+                pass
+
+        monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://localhost:5672/")
+        monkeypatch.setenv("SWARMQ_BACKEND_URL", "valkey://localhost:6379/0")
+        self._fake_app(monkeypatch, {})
+        self._hook_module(monkeypatch, SETUP="kein Callable")
+
+        with pytest.raises(ConfigurationError, match=r"swarmq_test_hooks\.SETUP is not callable"):
+            await cli.run_worker_async(self._hook_args("swarmq_test_hooks:SETUP"))
+
+    @pytest.mark.asyncio
+    async def test_missing_backend_url_names_the_variable(self, monkeypatch):
+        class _Probe(Task):
+            from swarmq.task import TaskInfo
+
+            task_info = TaskInfo(name="cli_backend_url_probe", queues=["default"])
+
+            @override
+            async def run(self) -> None:
+                pass
+
+        monkeypatch.setenv("SWARMQ_BROKER_URL", "amqp://localhost:5672/")
+        monkeypatch.delenv("SWARMQ_BACKEND_URL", raising=False)
+        self._fake_app(monkeypatch, {})
+
+        with pytest.raises(ConfigurationError, match="SWARMQ_BACKEND_URL is not set"):
+            await cli.run_worker_async(self._hook_args(None))
+
+    @pytest.mark.asyncio
     async def test_missing_hook_module_is_a_configuration_error(self, monkeypatch):
         class _Probe(Task):
             from swarmq.task import TaskInfo
@@ -1615,6 +1655,46 @@ class TestDlqHandlerOrchestration:
         await cli._run_dlq_inspect(ns)
         out = capsys.readouterr().out
         assert "not-json" in out
+
+    @pytest.mark.timeout(5)
+    async def test_inspect_table_shows_headers_and_decoded_body(self, mock_broker, capsys):
+        """Die Textansicht nennt jeden Header und gibt den dekodierten Body
+        eingerückt aus -- das, womit ein Betreiber den Grund findet."""
+        mock_broker.inspect_dead_letter.return_value = (
+            {
+                "task_id": "t-1",
+                "task_name": "add",
+                "queue": "q",
+                "headers": {"x-death-reason": "rejected", "x-retry-count": 3},
+                "body": {"task": {"id": "t-1"}},
+                "body_raw": '{"task":{"id":"t-1"}}',
+                "body_size": 20,
+            },
+            1,
+        )
+        ns = argparse.Namespace(task_id="t-1", queue="q", scan_limit=1000, format="table")
+
+        await cli._run_dlq_inspect(ns)
+
+        out = capsys.readouterr().out
+        assert out == (
+            "TASK_ID:   t-1\n"
+            "QUEUE:     q.XQ\n"
+            "BODY_SIZE: 20 bytes\n"
+            "HEADERS:\n"
+            "  x-death-reason: rejected\n"
+            "  x-retry-count: 3\n"
+            "BODY:\n" + json.dumps({"task": {"id": "t-1"}}, indent=2) + "\n"
+        )
+
+    @pytest.mark.timeout(5)
+    async def test_retry_single_table_confirms_the_move(self, mock_broker, capsys):
+        mock_broker.retry_dead_letter.return_value = (True, 3)
+        ns = argparse.Namespace(task_id="t-1", all=False, queue="q", limit=10_000, scan_limit=1000, format="table")
+
+        await cli._run_dlq_retry(ns)
+
+        assert capsys.readouterr().out == "republished task 't-1' from q.XQ to q\n"
 
     @pytest.mark.timeout(5)
     async def test_retry_single_success_json_shape(self, mock_broker, capsys):

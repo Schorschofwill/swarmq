@@ -1199,3 +1199,8 @@ def test_a_channel_eof_after_the_event_loop_ended_stays_silent(ctx, signals):
     proc.channel.eof()  # der Enkel endet
     reader.join(timeout=2)
     assert not reader.is_alive()
+
+
+def test_pool_without_slots_is_rejected(ctx):
+    with pytest.raises(ValueError, match="slots must be >= 1"):
+        SlotPool(ctx, 0, recycle_rss_mb=None, recycle_max_tasks=None)

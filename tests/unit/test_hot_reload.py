@@ -108,6 +108,14 @@ class TestResolveWatchDirs:
         with pytest.raises(ConfigurationError, match="cannot auto-detect|cannot resolve"):
             resolve_watch_dirs("definitely_not_a_real_module_xyz", ())
 
+    def test_submodule_of_missing_package_names_the_module(self):
+        """``find_spec`` wirft für ein Untermodul eines fehlenden Pakets; die
+        Meldung nennt das Modul und verweist auf ``--watch-dir``."""
+        with pytest.raises(
+            ConfigurationError, match=r"cannot resolve watch directory for module 'kein_paket_xyz\.tasks'.*--watch-dir"
+        ):
+            resolve_watch_dirs("kein_paket_xyz.tasks", ())
+
     def test_explicit_spec_skips_find_spec(self):
         """R5.3 ce-review #7: caller-supplied spec must bypass
         importlib.util.find_spec entirely so the module's __init__.py
@@ -289,6 +297,22 @@ class TestFileWatcherLifecycle:
         assert w.is_running() is False
         [entry] = [e for e in swarmq_logs if e["event"] == "watch_thread_crashed"]
         assert entry["log_level"] == "error"
+        w.stop()
+
+    def test_vanished_watch_dir_is_logged_and_never_armed(self, swarmq_logs, tmp_path):
+        """Verschwindet ein Watch-Verzeichnis zwischen Parse und Start (NFS
+        ausgehängt), meldet der Watcher den Pfad und beobachtet nichts."""
+        trigger = MagicMock()
+        fake = MagicMock()
+        gone = str(tmp_path / "weg")
+        w = FileWatcher(watch_dirs=(gone,), trigger=trigger, is_busy=lambda: False)
+        with patch("watchfiles.watch", fake):
+            w.start()
+            assert w.wait_until_stopped(timeout=2.0)
+        fake.assert_not_called()
+        trigger.assert_not_called()
+        [entry] = [e for e in swarmq_logs if e["event"] == "watch_dir_missing"]
+        assert (entry["log_level"], entry["missing"]) == ("error", [gone])
         w.stop()
 
     def test_double_start_rejected(self):

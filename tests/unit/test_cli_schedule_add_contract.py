@@ -50,7 +50,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from swarmq.cli import _build_parser, schedule_cmd
-from swarmq.exceptions import BackendConnectionError, BackendResponseError
+from swarmq.exceptions import BackendConnectionError, BackendResponseError, ConfigurationError
 from swarmq.locking import SCHEDULER_LOCK_NAME
 from swarmq.scheduler import ScheduleStore
 from swarmq.serialization import compute_dedup_hash
@@ -398,6 +398,26 @@ async def _add_table(name: str, *extra: str) -> str:
     with redirect_stdout(buf):
         await schedule_cmd._run_schedule_add(ns)
     return buf.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("option", "value", "meldung"),
+    [
+        ("--args", "[1,", "--args is not valid JSON"),
+        ("--args", '{"a": 1}', "--args must be a JSON array"),
+        ("--kwargs", "{a: 1}", "--kwargs is not valid JSON"),
+        ("--kwargs", "[1, 2]", "--kwargs must be a JSON object"),
+    ],
+)
+async def test_invalid_payload_json_is_a_configuration_error_and_stores_nothing(
+    memory: InMemoryBackend, option: str, value: str, meldung: str
+) -> None:
+    """Ein Tippfehler in ``--args``/``--kwargs`` endet mit einer Meldung, die
+    die Option nennt (Exit 1 statt Traceback), und legt keinen Zeitplan an."""
+    with pytest.raises(ConfigurationError, match=meldung):
+        await _add("nightly", option, value)
+
+    assert await ScheduleStore(memory).get_definition("nightly") is None
 
 
 @pytest.mark.usefixtures("frozen_wall_clock")
