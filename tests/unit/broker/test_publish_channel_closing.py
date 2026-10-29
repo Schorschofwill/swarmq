@@ -67,7 +67,7 @@ import pytest
 from aiormq.abc import ExceptionType
 from aiormq.exceptions import AMQPConnectionError, ChannelClosed
 
-from swarmq.broker.rabbitmq import RabbitMQBroker
+from swarmq.broker.rabbitmq import RabbitMQBroker, channel_close
 from swarmq.contracts import PublishReceipt
 from swarmq.exceptions import BrokerConnectionError, PublishCancelledUnsent, PublishIndeterminate
 from tests.support.aiormq_transport import FakePublishChannel, FakeTransport
@@ -266,7 +266,10 @@ async def _deadline_while_waiting() -> tuple[type[BaseException] | None, set[asy
         await publish
     except BaseException as exc:  # nur der Typ zaehlt
         outcome = type(exc)
-    running = asyncio.all_tasks() - {asyncio.current_task()}
+    # Das Schliessen des verworfenen Kanals laeuft bewusst weiter (F4-30,
+    # ``close_without_abort``); gemeint ist hier nur das Kind des Versuchs.
+    closing = set(broker._pending_channel_closes) | set(channel_close._detached)
+    running = asyncio.all_tasks() - {asyncio.current_task()} - closing
     transport.lose_connection(AMQPConnectionError(_LOST))
     await _callbacks_ran()
     transport.forget_futures()

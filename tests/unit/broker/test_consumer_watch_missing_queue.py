@@ -233,7 +233,16 @@ async def _hang(*_args: Any, **_kwargs: Any) -> None:
 def test_a_hanging_check_whose_close_hangs_too_ends_after_the_close_deadline() -> None:
     """Hängt das passive Declare (Alarm mit ``shared``, halboffenes TCP), hängt
     auch das Schließen des Wegwerf-Kanals. Der Takt endet trotzdem: Prüfung und
-    Schließen sind je auf ``_RPC_TIMEOUT_S`` begrenzt (virtuelle Uhr)."""
+    Schließen sind je auf ``_RPC_TIMEOUT_S`` begrenzt (virtuelle Uhr). Die
+    Frist trifft nur das Warten, nie das Close selbst (F4-30)."""
+    aborted: list[object] = []
+
+    async def hanging_close(*_args: Any, **_kwargs: Any) -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            aborted.append(object())
+            raise
 
     async def main() -> float:
         queue = FakeQueue("q1", FakeChannel(FakeUnderlay()))
@@ -241,7 +250,7 @@ def test_a_hanging_check_whose_close_hangs_too_ends_after_the_close_deadline() -
         await broker.consume("q1", AsyncMock(), concurrency=4)
         await broker.consumer_watch.tick()
         throwaway.declare_queue.side_effect = _hang
-        throwaway.close.side_effect = _hang
+        throwaway.close.side_effect = hanging_close
         queue.channel.underlay.consumers.clear()
         loop = asyncio.get_running_loop()
         start = loop.time()
@@ -251,6 +260,7 @@ def test_a_hanging_check_whose_close_hangs_too_ends_after_the_close_deadline() -
         return loop.time() - start
 
     assert run_virtual(main) <= 2 * _RPC_TIMEOUT_S
+    assert aborted == []
 
 
 def test_a_check_aborted_while_the_channel_opens_closes_the_channel_once_it_is_open() -> None:

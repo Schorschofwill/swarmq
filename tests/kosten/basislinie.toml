@@ -76,7 +76,7 @@ module = 430
 "valkey.roundtrips" = 20
 
 [werte.worker_start]
-module = 672
+module = 673
 
 [werte.workflow_kette]
 "backend.compare_and_store_workflow_state" = 2
@@ -203,3 +203,11 @@ datum = "2026-10-29"
 grund = "Python 3.14.10 wie das uv-Image 0.13.6 (docs/plans/2026-10-29-1700-chore-abhaengigkeiten-anheben-plan.md, KTD6)"
 python = "3.14.10"
 aenderungen = []
+
+[[historie]]
+datum = "2026-10-29"
+grund = "Neues Modul broker/rabbitmq/channel_close (F4-30): Kanal-Close ohne Abbruch, +1 Modul beim Worker-Start (docs/plans/2026-10-29-1945-chore-aiormq-7-2-anheben-plan.md, KTD1)"
+python = "3.14.10"
+aenderungen = [
+    { szenario = "worker_start", metrik = "module", alt = 672, neu = 673 },
+]

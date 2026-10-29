@@ -30,7 +30,7 @@ Test-Liste:
 Testlücken Runde 4 (Plan 2026-10-20-1500, U3, Lücke E-17):
 12. Ein werfendes ``close()`` des Wegwerf-Channels bricht die Deklaration nicht ab
     (Mutant ``arg_conflict.py`` ``suppress(Exception)`` -> ``suppress(None)``).
-13. Ein hängendes ``close()`` endet nach ``declare_probe_timeout_s`` (virtuelle Uhr;
+13. Ein hängendes ``close()`` endet nach ``declare_probe_timeout_s``, ohne abgebrochen zu werden (F4-30; virtuelle Uhr;
     Mutant ``asyncio.wait_for(channel.close(), timeout=timeout_s)`` -> ``timeout=None``).
 14. Jede aktive Deklaration ist ``durable`` (Mutant ``durable=True`` -> ``False``).
 15. Nur die erste Übernahme von Strategy/Overflow ist INFO, jede weitere DEBUG
@@ -384,9 +384,14 @@ async def test_a_hanging_close_of_a_probe_channel_is_bounded_by_the_probe_timeou
     probes = Probes({})
     broker = _broker(probes)
     never = asyncio.Event()
+    aborted: list[object] = []
 
     async def hang() -> None:
-        await never.wait()
+        try:
+            await never.wait()
+        except asyncio.CancelledError:
+            aborted.append(object())
+            raise
 
     async def open_with_hanging_close() -> AsyncMock:
         channel = await probes.open()
@@ -400,6 +405,9 @@ async def test_a_hanging_close_of_a_probe_channel_is_bounded_by_the_probe_timeou
 
     assert list(_published(broker)) == FAMILY_AND_TIERS
     assert asyncio.get_running_loop().time() - started == len(probes.channels) * broker.declare_probe_timeout_s
+    assert aborted == []
+    never.set()
+    await asyncio.sleep(0)
 
 
 async def test_every_active_declaration_is_durable() -> None:

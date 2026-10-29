@@ -22,6 +22,7 @@ from typing import Any
 import aio_pika
 from aio_pika.exceptions import ChannelNotFoundEntity, ChannelPreconditionFailed
 
+from swarmq.broker.rabbitmq.channel_close import close_without_abort
 from swarmq.broker.rabbitmq.robust_channels import open_throwaway_channel
 from swarmq.exceptions import BrokerConnectionError, QueueArgumentsMismatch
 from swarmq.logging import get_logger
@@ -130,7 +131,7 @@ async def declare_adopting_existing(
             # Auch nach einem 406 schliessen (Review MR 10, P0-1).
             if channel is not None:
                 with suppress(Exception):
-                    await asyncio.wait_for(channel.close(), timeout=timeout_s)
+                    await close_without_abort(channel, timeout_s=timeout_s)
             channel = None
 
 
@@ -167,11 +168,11 @@ async def declare_chain(
         # Der Broker hat den Channel geschlossen; trotzdem schliessen
         # (Review MR 10, P0-1).
         with suppress(Exception):
-            await asyncio.wait_for(channel.close(), timeout=timeout_s)
+            await close_without_abort(channel, timeout_s=timeout_s)
         return await declare_adopting_existing(connection, queue, target, timeout_s=timeout_s, log=log)
     except BaseException:
         with suppress(Exception):
-            await asyncio.wait_for(channel.close(), timeout=timeout_s)
+            await close_without_abort(channel, timeout_s=timeout_s)
         raise
     return await declare_adopting_existing(connection, queue, legacy, timeout_s=timeout_s, channel=channel, log=log)
 
@@ -196,7 +197,7 @@ async def _open_probe_channel(
     except TimeoutError as exc:
         if pending is not None and not asyncio.iscoroutine(pending):
             with suppress(Exception):
-                await asyncio.wait_for(pending.close(), timeout=timeout_s)
+                await close_without_abort(pending, timeout_s=timeout_s)
         raise BrokerConnectionError(
             f"declare_queue {queue!r}: opening a probe channel timed out after {timeout_s}s"
         ) from exc

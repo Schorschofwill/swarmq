@@ -6,6 +6,20 @@ All notable changes to SwarmQ. This project follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A channel close cut short by a deadline could close the whole
+  connection.** When swarmq discarded the publish channel after a missed
+  deadline, it closed the channel under a 5 s deadline. If the broker
+  answered after that deadline, aiormq sent a second `Channel.Close` on
+  the same channel number, and RabbitMQ closed the entire connection
+  (`CHANNEL_ERROR - expected 'channel.open'`); all unconfirmed publishes on
+  it ended indeterminate. The same could happen when a worker shutdown
+  deadline cut the channel close on an injected connection (then the
+  caller's connection), and on the throwaway channels of declarations and
+  the consumer watch. swarmq now only bounds the wait for a channel close
+  and never cancels the close itself (F4-30).
+
 ## [0.15.2] — 2026-10-29
 
 0.15.2 caps aiormq below 7.1 so that a fresh install gets the aiormq
