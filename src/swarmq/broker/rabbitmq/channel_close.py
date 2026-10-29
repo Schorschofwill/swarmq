@@ -25,15 +25,12 @@ class _Closable(Protocol):
     def close(self) -> Any: ...
 
 
-#: Close-Tasks, deren Aufrufer nicht mehr wartet; bis zu ihrem Ende hier gehalten.
 _detached: set[asyncio.Task[Any]] = set()
 
 
 def _settle(task: asyncio.Task[Any]) -> None:
     _detached.discard(task)
     if not task.cancelled():
-        # Best effort: Der Aufrufer hat seine Frist schon gemeldet; ein spätes
-        # Scheitern des Close ist kein eigener Fehler mehr.
         task.exception()
 
 

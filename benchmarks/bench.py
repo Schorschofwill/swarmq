@@ -45,7 +45,6 @@ from aio_pika import DeliveryMode, Message as AMQPMessage
 from valkey.asyncio import Valkey
 
 
-#: Close-Tasks, deren Aufrufer abgebrochen wurde; bis zu ihrem Ende gehalten.
 _CLOSING: set[asyncio.Task[object]] = set()
 
 

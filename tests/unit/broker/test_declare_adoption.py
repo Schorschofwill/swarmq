@@ -405,8 +405,6 @@ async def test_a_hanging_close_of_a_probe_channel_is_bounded_by_the_probe_timeou
 
     assert list(_published(broker)) == FAMILY_AND_TIERS
     assert asyncio.get_running_loop().time() - started == len(probes.channels) * broker.declare_probe_timeout_s
-    # F4-30: Die Frist trifft nur das Warten, nie das Close selbst; ein
-    # abgebrochenes Close schickte ein zweites Channel.Close(504).
     assert aborted == []
     never.set()
     await asyncio.sleep(0)
