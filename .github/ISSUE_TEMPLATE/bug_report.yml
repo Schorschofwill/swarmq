@@ -1,0 +1,57 @@
+name: Bug report
+description: Something in SwarmQ does not work as documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Security problems go through
+        [private reporting](https://github.com/Schorschofwill/swarmq/security/advisories/new),
+        not here.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: The smallest task definition and calls that show the problem.
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and traceback
+      description: Worker and client output around the failure. Remove secrets such as broker passwords.
+      render: text
+  - type: input
+    id: swarmq-version
+    attributes:
+      label: SwarmQ version
+      placeholder: "0.15.1"
+    validations:
+      required: true
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      placeholder: "3.14.4"
+    validations:
+      required: true
+  - type: input
+    id: broker-versions
+    attributes:
+      label: RabbitMQ and Valkey versions
+      placeholder: "RabbitMQ 4.3.6, Valkey 8.1"
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, deployment (Docker, Kubernetes, …), number of workers, worker mode (async or CPU), anything unusual.
