@@ -253,7 +253,7 @@ source = ["src/swarmq", "*/site-packages/swarmq"]
 precision = 2
 show_missing = true
 skip_covered = true
-fail_under = 96
+fail_under = 97
 
 [tool.mypy]
 # Projektweit strict seit Plan U12 (R7/AE4): keine Override-Blöcke mehr —
