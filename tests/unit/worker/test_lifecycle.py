@@ -284,6 +284,31 @@ class TestShutdownSequence:
         backend.close.assert_awaited_once()
         assert worker._state is WorkerState.STOPPED
 
+    @pytest.mark.parametrize(
+        ("failing", "event"),
+        [("_metrics_server", "metrics_server_stop_failed"), ("_health_server", "health_server_stop_failed")],
+    )
+    async def test_failing_http_server_stop_is_logged_and_shutdown_completes(
+        self, worker, broker, backend, failing, event, swarmq_logs
+    ):
+        """Scheitert der Stopp eines HTTP-Servers, wird das geloggt; der
+        andere Server, Broker und Backend werden trotzdem geschlossen."""
+        servers = {"_metrics_server": MagicMock(), "_health_server": MagicMock()}
+        for name, server in servers.items():
+            server.stop = AsyncMock(side_effect=OSError("socket weg") if name == failing else None)
+            setattr(worker, name, server)
+        worker._state = WorkerState.RUNNING
+        worker._request_shutdown()
+
+        await worker._execute_shutdown()
+
+        assert [e["log_level"] for e in swarmq_logs if e["event"] == event] == ["error"]
+        for server in servers.values():
+            server.stop.assert_awaited_once()
+        broker.close.assert_awaited_once()
+        backend.close.assert_awaited_once()
+        assert worker._state is WorkerState.STOPPED
+
     async def test_drain_timeout_cancels_remaining_tasks(self, broker, backend, registry):
         """Tasks still running after shutdown_timeout are cancelled."""
         cfg = SwarmQConfig(
@@ -922,58 +947,37 @@ class TestAutoWire:
         finally:
             await w._metrics_server.stop()
 
-    async def test_auto_wire_cleanup_on_partial_start_failure(self):
-        """ce-review COR-001 / REL-F-01: if the second HTTP server
-        fails to bind, the first must be stopped before re-raise —
-        otherwise its socket leaks for the process lifetime."""
-        from swarmq.metrics import Metrics, MetricsServer
-
-        # Pre-bind a port so health_server.start() will fail.
+    async def test_auto_wire_cleanup_on_partial_start_failure(self, broker, backend, registry):
+        """ce-review COR-001 / REL-F-01: scheitert der zweite HTTP-Server am
+        Bind, baut ``start()`` den ersten und den Scheduler vor dem Re-raise
+        ab — sonst haelt der Prozess den Metrik-Port und die Leader-Wahl."""
         sock = socket.socket()
         sock.bind(("127.0.0.1", 0))
         occupied_port = sock.getsockname()[1]
         sock.listen()
-
         port_m = _free_port()
-        w = _make_autowire_worker(
+        cfg = SwarmQConfig(
+            broker_url="amqp://localhost",
+            backend_url="valkey://localhost",
+            queues=["default"],
             metrics_port=port_m,
-            health_port=occupied_port,  # will conflict
+            health_port=occupied_port,
+            bind_retry_budget_s=0.0,
         )
-
-        # Manually run the auto-wire block (minus scheduler setup).
-        from swarmq.health import HealthChecker, HealthServer
-
-        w._metrics = Metrics()
-        w._metrics_server = MetricsServer(
-            w._metrics,
-            host="127.0.0.1",
-            port=port_m,
-        )
-        raised = False
+        w = Worker(broker=broker, backend=backend, registry=registry, config=cfg)
         try:
-            await w._metrics_server.start()
-            checker = HealthChecker(w._broker, w._backend)
-            w._health_server = HealthServer(
-                checker,
-                host="127.0.0.1",
-                port=occupied_port,
-            )
-            try:
-                await w._health_server.start()
-            except RuntimeError:
-                # Simulating the cleanup branch from worker.start().
-                await w._metrics_server.stop()
-                raised = True
-                raise
-        except RuntimeError:
-            pass
+            with pytest.raises(RuntimeError, match="bind failed"):
+                await w.start()
         finally:
             sock.close()
 
-        assert raised, "health_server.start() should have raised"
-        # Post-cleanup: metrics_server socket must be stoppable a
-        # second time without error (idempotent).
-        await w._metrics_server.stop()
+        assert _pending_scheduler_tasks() == []
+        # Der Metrik-Port ist wieder frei: Der erste Server wurde gestoppt.
+        probe = socket.socket()
+        try:
+            probe.bind(("127.0.0.1", port_m))
+        finally:
+            probe.close()
 
 
 class TestConfigAutoWireDefaults:

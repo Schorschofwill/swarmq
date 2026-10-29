@@ -196,6 +196,47 @@ def test_excessive_nesting_rejected_at_construction():
 
 
 # --------------------------------------------------------------------------
+# Ungültige Bausteine — die Meldung nennt, was falsch ist
+# --------------------------------------------------------------------------
+
+
+def test_empty_chain_rejected():
+    with pytest.raises(WorkflowValidationError, match="chain requires at least one step"):
+        chain()
+
+
+def test_empty_group_rejected():
+    with pytest.raises(WorkflowValidationError, match="group requires at least one member"):
+        group()
+
+
+def test_group_from_empty_generator_rejected():
+    empty: list[Signature] = []
+    with pytest.raises(WorkflowValidationError, match="group requires at least one member"):
+        group(s for s in empty)
+
+
+def test_chord_header_must_be_a_group():
+    with pytest.raises(WorkflowValidationError, match=r"chord header must be a group\(\.\.\.\)"):
+        chord(Fetch.s("u"), Store.s())
+
+
+def test_non_node_step_rejected_with_its_type():
+    # Ein Taskname statt einer Signatur ist der typische Fehler: Die Meldung
+    # nennt den gefundenen Typ, damit der Aufrufer ihn findet.
+    with pytest.raises(WorkflowValidationError, match="expected a Signature/chain/group/chord, got str"):
+        chain(Fetch.s("u"), "parse")
+
+
+def test_unknown_node_kind_in_stored_workflow_rejected():
+    # Ein gespeicherter Workflow mit unbekannter Knotenart (fremde oder neuere
+    # Version) scheitert mit Namen der Art, nicht mit KeyError.
+    data = {"kind": "chain", "steps": [{"kind": "loop", "task": "fetch"}]}
+    with pytest.raises(WorkflowValidationError, match="unknown workflow node kind 'loop'"):
+        Chain.from_dict(data)
+
+
+# --------------------------------------------------------------------------
 # Safety limits — R9, AE7
 # --------------------------------------------------------------------------
 

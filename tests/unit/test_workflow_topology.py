@@ -10,7 +10,13 @@ loescht sie — und bricht damit jeden bestehenden Importweg.
 
 from __future__ import annotations
 
+import re
+
+import pytest
+
 from swarmq import workflow_orchestration as wo
+from swarmq.exceptions import WorkflowValidationError
+from swarmq.workflow import chain, sig
 from swarmq.workflow_enqueue import WorkflowStep, WorkflowStepEnqueuer
 from swarmq.workflow_state import STATUS_RUNNING, build_initial_workflow_state
 from swarmq.workflow_topology import (
@@ -43,3 +49,22 @@ def test_workflow_orchestration_reexports_the_moved_names():
     assert wo.WorkflowStepEnqueuer is WorkflowStepEnqueuer
     assert wo.build_initial_workflow_state is build_initial_workflow_state
     assert wo.STATUS_RUNNING is STATUS_RUNNING
+
+
+@pytest.mark.parametrize(
+    ("path", "meldung"),
+    [
+        ("/g0", "path segment 'g0' expects a group"),
+        ("/h", "path segment 'h' expects a chord"),
+        ("/b", "path segment 'b' expects a chord"),
+        ("/0/0", "path segment '0' expects a chain"),
+        ("/x", "unknown path segment 'x'"),
+    ],
+)
+def test_node_at_path_rejects_a_path_that_does_not_fit_the_topology(path: str, meldung: str):
+    # Pfade kommen aus dem gespeicherten Workflow-Zustand; passt einer nicht
+    # zur Topologie, scheitert die Aufloesung mit Namen des Segments statt
+    # mit AttributeError oder IndexError.
+    wf = chain(sig("a"), sig("b"))
+    with pytest.raises(WorkflowValidationError, match=re.escape(meldung)):
+        node_at_path(wf, path)
