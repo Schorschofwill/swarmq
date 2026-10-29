@@ -370,3 +370,17 @@ fundstelle = "src/swarmq/serialization.py:247"
 beschreibung = "Task-Ergebnis mit int-Schlüsseln wird mit encode_result gespeichert, decode_result lehnt es beim Lesen ab (strict_map_key)"
 dringlichkeit = "normal"
 status = "offen"
+
+# Gegenprüfung 2026-10-29 (Coverage-Runde 2, PR #6): NICHT HALTBAR ohne
+# Bedrohungsmodell, Header setzt nur swarmq selbst. Offen bis zur Entscheidung
+# „wem vertraut swarmq“ (Runde-5-Plan, Entscheidungsvorlage); gilt dort
+# Broker-Schreibzugriff als nicht vertrauenswürdig, wird es ein Fall für M-A-01.
+[[signal]]
+id = "S-009"
+quelle = "Coverage-Analyse, Gegenprüfung 2026-10-29"
+saeule = "Angriffssicherheit"
+modul = "workflow_orchestration"
+fundstelle = "src/swarmq/workflow_orchestration.py:382"
+beschreibung = "Schrittnachricht mit gültiger Workflow-ID und unpassendem Pfad (Elternknoten ist eine Signatur, auch :494) oder ohne Pfad-Header (worker/results.py:102 macht daraus \"\") schließt den Workflow still als erfolgreich ab statt mit WorkflowValidationError"
+dringlichkeit = "normal"
+status = "offen"
