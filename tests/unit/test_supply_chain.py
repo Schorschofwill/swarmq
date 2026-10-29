@@ -12,12 +12,14 @@ Testliste:
 # [x] Die SBOM liegt nicht in dist/, das komplett nach PyPI geht
 # [x] Jedes Basis-Image in einem Dockerfile ist per Digest gepinnt, und Dependabot pflegt es
 # [x] pip installiert die Benchmark-Abhängigkeiten nur gegen Hashes
+# [x] Die Benchmark-Abhängigkeiten haben dieselben Versionen wie uv.lock
 # [x] CodeQL prüft Python bei jedem Push und PR auf einem Runner von GitHub
 """
 
 from __future__ import annotations
 
 import re
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -111,3 +113,17 @@ def test_codeql_scans_python_on_github_runners() -> None:
     assert job["runs-on"] == "ubuntu-latest"
     init = next(s for s in job["steps"] if s.get("uses", "").startswith("github/codeql-action/init@"))
     assert init["with"]["languages"] == "python"
+
+
+def test_benchmark_requirements_follow_the_lock_file() -> None:
+    """test_benchmark_smoke startet bench.py mit diesen Anforderungen; mit
+    anderen Versionen als swarmq misst der Lauf einen ungetesteten Stand
+    (aiormq 7.2.4 schloss beim Abbau die Verbindung, 2026-10-29)."""
+    lock = tomllib.loads((_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    gesperrt = {p["name"]: p["version"] for p in lock["package"] if "version" in p}
+    anforderungen = (_ROOT / "benchmarks/requirements.txt").read_text(encoding="utf-8")
+
+    gepinnt = dict(re.findall(r"^([A-Za-z0-9_.-]+)==(\S+)", anforderungen, re.MULTILINE))
+    abweichend = {n: (v, gesperrt[n]) for n, v in gepinnt.items() if n in gesperrt and gesperrt[n] != v}
+
+    assert abweichend == {}
