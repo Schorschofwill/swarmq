@@ -9,7 +9,8 @@ auf ganze Prozent abgerundet. Lokale Laeufe liegen systematisch tiefer (kein
 zweiter Broker, andere Suiten); deshalb zaehlen nur Werte aus der CI.
 
 Das Skript hebt nur an, senkt nie, und weigert sich, wenn versionierte
-Dateien geaendert sind (unversionierte stoeren nicht). Es aendert nur ``pyproject.toml``; committen ist Handarbeit.
+Dateien geaendert sind (unversionierte stoeren nicht). Es aendert ``pyproject.toml`` und
+das Coverage-Badge in README und Doku-Startseiten; committen ist Handarbeit.
 """
 
 from __future__ import annotations
@@ -27,6 +28,9 @@ from pathlib import Path
 _PYPROJECT = Path("pyproject.toml")
 _SPREAD = 0.5
 _SECTION = "[tool.coverage.report]"
+# Das Badge zeigt die Untergrenze („≥97 %“); tests/unit/test_badges.py prueft den Gleichlauf.
+_BADGE_FILES = (Path("README.md"), Path("website/index.md"), Path("website/index.de.md"))
+_BADGE = re.compile(r"(img\.shields\.io/badge/coverage-%E2%89%A5)\d+(%25-)")
 
 
 def derive_floor(values: list[float]) -> int:
@@ -100,6 +104,10 @@ def main(argv: list[str]) -> int:
         return 0
     _PYPROJECT.write_text(with_floor(text, new), encoding="utf-8")
     print(f"ratchet: fail_under = {new} in pyproject.toml eingetragen")
+    for badge_file in _BADGE_FILES:
+        if badge_file.exists():
+            badge_text = badge_file.read_text(encoding="utf-8")
+            badge_file.write_text(_BADGE.sub(rf"\g<1>{new}\g<2>", badge_text), encoding="utf-8")
     return 0
 
 
