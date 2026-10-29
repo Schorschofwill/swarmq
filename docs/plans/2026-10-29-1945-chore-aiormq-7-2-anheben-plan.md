@@ -85,7 +85,7 @@ Die Recherche hat drei Dinge gezeigt, die über ein reines Anheben hinausgehen:
 
 - Kein Wechsel der RabbitMQ- oder Valkey-Version. Die Spikes und Befunde hängen an RabbitMQ 4.3.6 und 4.2.9.
 - Keine neuen Funktionen und keine Änderung an der öffentlichen API.
-- Keine Meldung an aiormq oder aio-pika ohne Georgs Entscheidung (Open Questions).
+- Keine Meldung an aiormq oder aio-pika (KTD10).
 - Nicht gebaut: eine Unterstützung von aiormq 7.0 und 7.2 nebeneinander. Zwei Semantiken für `closing` und `basic_publish` hießen doppelte Pfade und doppelte Tests für eine Übergangszeit, die Nutzer nicht brauchen; das ändert sich nur, wenn ein Nutzer 7.0 nachweislich braucht.
 
 #### Deferred to Follow-Up Work
@@ -103,15 +103,16 @@ Die Recherche hat drei Dinge gezeigt, die über ein reines Anheben hinausgehen:
 - KTD2. **Der FS-08-Wächter fällt weg, `closing` wird höchstens einmal je Kanal gelesen.** aiormq 7.2 prüft nach dem Erwerb der Kanal-Sperre erneut, ob der Kanal zu ist, und `FutureStore` lehnt nach dem Schließen neue Futures sofort ab (#240). Damit ist die Ursache von FS-08 upstream behoben, und der Wächter in `src/swarmq/broker/rabbitmq/delivery.py` (`_closing_of`, `_CHILDREN_BY_CLOSING`) wäre unter 7.2 ein Leck je Publish. Er wird entfernt, sobald ein Test gegen das echte aiormq 7.2 zeigt, dass ein Publish in der Warteschlange der Sperre nach einem Abriss sofort endet (R5). `src/swarmq/broker/rabbitmq/blocked.py` bricht seinen `closing`-Beobachter nach jedem Warten ab.
 - KTD3. **B24 liest „eingereiht oder nicht“ aus dem neuen Local `sent`, „geschrieben oder nicht“ weiter aus `drain_future`.** aiormq 7.2 setzt `sent` in `basic_publish`, sobald der Frame in der `write_queue` liegt, also noch nicht auf dem Socket. `src/swarmq/broker/rabbitmq/publish_phase.py` ersetzt damit nur die Prüfung vor dem Einreihen (`_before_enqueue`, `enqueued_before_failure`). Ist `sent` wahr, entscheidet weiter `drain_future`: ohne Fehler beendet heißt geschrieben und damit unbestimmt, sonst nicht gesendet und damit Wiederholung (E-042). `drain_future = None` heißt nicht eingereiht. `sent` steht in `co_varnames`, ist aber noch nicht gebunden (Publish wartete auf die Sperre): nicht gesendet. Nur ein `basic_publish`-Rahmen ganz ohne `sent` gilt als unlesbar und damit unbestimmt. `collect_orphaned_confirm` fällt weg, weil aiormq abgelehnte Futures jetzt selbst abholt (#253). (pack: swarmq-entscheidungen, e042-publish-indeterminate-nur-nach-senden.md)
 - KTD4. **`InvalidFrameError` zählt als Kanal- bzw. Verbindungsfehler.** aiormq 7.2 meldet pamqp-Fehler als `aiormq.exceptions.InvalidFrameError`. Die Klasse kommt in `_CHANNEL_TRANSIENT_ERRORS` (`connection.py`) und in die Fehlerabbildung auf `BrokerConnectionError` (R6).
-- KTD5. **Test-Doubles folgen aiormq 7.2, Assertionen markierter Tests bleiben.** `tests/support/aiormq_transport.py` (`FakeTransport`) bekommt `_raise_on_channel_close`, `_closing`, `_close_exception`, Beobachter-Semantik für `closing` und die Sperre als Async-Contextmanager. Die F4-20-Fakes bekommen `on_consumer_cancel_callbacks`. Ein Test, der ein upstream behobenes Fehlverhalten nachbaut (`tests/unit/broker/test_befund_fs08_publish_lock_waiter.py`), wird nicht still angepasst; Georg entscheidet (Open Questions).
+- KTD5. **Test-Doubles folgen aiormq 7.2, Assertionen markierter Tests bleiben.** `tests/support/aiormq_transport.py` (`FakeTransport`) bekommt `_raise_on_channel_close`, `_closing`, `_close_exception`, Beobachter-Semantik für `closing` und die Sperre als Async-Contextmanager. Die F4-20-Fakes bekommen `on_consumer_cancel_callbacks`. Der Nachbau eines upstream behobenen Fehlverhaltens in `tests/unit/broker/test_befund_fs08_publish_lock_waiter.py` wird durch einen Integrationstest gegen echtes aiormq 7.2 ersetzt, der zeigt, dass ein wartender Publish nach einem Abriss sofort endet; FS-08 bleibt so belegt. (session-settled: user-directed — chosen over streichen oder behalten: der Befund bleibt gegen die echte Bibliothek belegt.)
 - KTD6. **Das Leck in aio-pika 10.2.1 wird vor dem Anheben gemessen und auf swarmq-Seite geschlossen.** `UnderlayChannel.create` hängt einen Callback an einen frischen Beobachter von `connection.closing`, speichert den Beobachter nicht, und `close` entfernt den Callback nicht mehr. Die Verbindung hält so jeden geschlossenen Kanal fest. swarmq öffnet laufend kurzlebige Kanäle: Argumentprüfung, Queue-Existenzprüfung des Consumer-Wächters, Tiefen- und Statusabfragen (`admin.py`, `connection.py`) und die Probe-Kanäle der Wiederherstellung. Gemessen wird am inneren Future `connection.transport.connection._closing`, nicht an `closing` (das liefert je Zugriff einen neuen Beobachter). Zwei Wege zum Schließen, U3 prüft beide:
   1. `open_throwaway_channel` (`robust_channels.py`) liefert eine swarmq-Unterklasse von `aio_pika.Channel`, die den Beobachter selbst hält und beim Schließen abbricht.
   2. Nach dem Schließen sucht swarmq unter den Callbacks von `_closing` den Beobachter, der den `close_callback` dieses Kanals trägt, und bricht ihn ab.
 
   Beide fail-open mit einer Warnung je Verbindung. Die Stop condition greift erst, wenn beide scheitern.
 - KTD7. **Der Consumer-Wächter wird gegen die neue Wiederherstellung von aio-pika abgeglichen, nicht ersetzt.** aio-pika 10.2 meldet einen vom Broker beendeten Consumer selbst mit demselben Tag neu an. Dabei deklariert es die Queue mit ihren Original-Parametern neu, also auch eine gelöschte (widerspricht E-083). Es ruft `consume` und `basic_cancel` mit `timeout=5` auf dem Consume-Kanal auf; läuft so ein RPC in die Frist, schließt aiormq den Kanal mit 504 und alle Consumer des Workers fallen weg (widerspricht E-053). Und `recovery.cancel()` kann ein laufendes `probe.close()` abbrechen, was den zweiten Close aus U1 auf swarmqs Verbindung erzeugt (R1). aiormq beantwortet einen Broker-Cancel nur mit `CancelOk`, wenn der Server `accept_consumer_cancel_ok` meldet, also ab RabbitMQ 4.3.7; auf den Testbrokern 4.3.6 und 4.2.9 ist das nicht prüfbar. Darum bleiben die „Zombie“-Prämisse der Settle-Regel und das eigene Abmelden des Wächters. Erst halten Charakterisierungstests auf 4.3.6 und 4.2.9 das Verhalten fest; danach entscheidet Georg, welche Seite die Wiederanmeldung übernimmt. (pack: swarmq-entscheidungen, e083-geloeschte-konsumierte-queue.md; pack: swarmq-entscheidungen, e053-consumer-rpcs-nicht-abbrechen.md)
-- KTD8. **Vorschlag für die Grenzen: `aiormq>=7.2.4,<7.3` und `aio-pika>=10.2.1,<10.3`; die Obergrenzen entscheidet Georg vor U4 (Open Questions).** Die Untergrenzen folgen aus R8. aio-pika 10.2.1 verlangt ohnehin `aiormq>=7.2.4`. Für Obergrenzen beim nächsten Minor spricht, dass swarmq an privaten Interna hängt und zwei Minors von aiormq sie geändert haben. Dependabot schlägt Anhebungen über die Grenze vor, die Tests entscheiden.
-- KTD9. **Nachweis: Integration, e2e und Chaos, dann ein Release Candidate mit Loadsuite auf celsius, dann final.** (session-settled: user-approved — chosen over final ohne Release Candidate: Laufzeitpfad betroffen.) Konflikt-Hinweis: Diese Änderung betrifft Speicherverhalten über Zeit. Nach Georgs Staffelung (6 h bei Langzeitverhalten) spricht das für 6 h statt 1 h; die Wahl steht unter Open Questions.
+- KTD8. **Grenzen: `aiormq>=7.2.4,<7.3` und `aio-pika>=10.2.1,<10.3`.** Die Untergrenzen folgen aus R8; aio-pika 10.2.1 verlangt ohnehin `aiormq>=7.2.4`. Die Obergrenzen liegen beim nächsten Minor, weil swarmq an privaten Interna hängt und zwei Minors von aiormq sie geändert haben. Dependabot schlägt Anhebungen über die Grenze vor, die Tests entscheiden. (session-settled: user-directed — chosen over `<8`/`<11`: Nutzer bekämen neue Minors ungetestet.)
+- KTD9. **Nachweis: Integration, e2e und Chaos, dann ein Release Candidate mit 6-Stunden-Loadsuite auf celsius, dann final.** (session-settled: user-approved — chosen over final ohne Release Candidate: Laufzeitpfad betroffen.) (session-settled: user-directed — chosen over 1 h: die Änderung betrifft Speicherverhalten über Zeit, Georgs Staffelung sieht dafür 6 h vor.)
+- KTD10. **Keine Meldungen an aiormq oder aio-pika; F4-28 wird im Register als upstream erledigt vermerkt.** Bestätigt der Charakterisierungstest, dass aiormq #239 den `TaskWrapper`-Teil von F4-28 behoben hat, entfällt die offene Upstream-Meldung. Der zweite Close nach abgebrochenem Close und das aio-pika-Leck werden auf swarmq-Seite gelöst, nicht gemeldet. (session-settled: user-directed — chosen over Meldungen für den 504 und das Leck.)
 
 ### High-Level Technical Design
 
@@ -404,7 +405,7 @@ flowchart LR
 
 **Files:**
 - `tests/support/known_leaks.py` (TS-01 bis TS-03 probeweise entfernen)
-- `src/swarmq/worker/lifecycle.py` (F4-28 gegen `TaskWrapper` mit #239 prüfen)
+- `src/swarmq/worker/lifecycle.py` (F4-28 gegen `TaskWrapper` mit #239 prüfen; Registereintrag nach KTD10)
 - `compound-packs/swarmq-entscheidungen/` (Nachträge zu E-001, E-025, E-053, E-078 und den Entscheidungen der entfernten Umgehungen)
 - `docs/befunde/fehlersuche-runde-2-2026-10.md`, `docs/befunde/fehlersuche-runde-4-2026-10.md` (FS-08, F4-28 und weitere: Stand unter 7.2)
 - `docs/solutions/tooling-decisions/upgrade-checkliste-private-bibliotheks-apis-2026-10-19.md` (Stand 7.2.4/10.2.1, neue Einträge: Frame-Locals in `basic_publish`, `_raise_on_channel_close`, `closing`-Beobachter, `TaskWrapper`, Consumer-Wiederherstellung)
@@ -440,7 +441,7 @@ flowchart LR
 1. `just all`, dann das Chaos-Gate nach `docs/testing/test-strategy.md`.
 2. Den U1-Nachweis 20-mal mit den neuen Versionen.
 3. Release Candidate taggen, nach Georgs Freigabe auf PyPI.
-4. Loadsuite auf celsius mit geleertem Ereignis-Store, Dauer nach Georgs Wahl (KTD9), dabei auf die Rückfall-Warnungen achten.
+4. Loadsuite 6 h auf celsius mit geleertem Ereignis-Store (KTD9), dabei auf die Rückfall-Warnungen achten.
 5. Finales Release ohne weiteren Lauf.
 
 **Test scenarios:**
@@ -469,13 +470,7 @@ flowchart LR
 
 ## Open Questions
 
-Alle für Georg; keine blockiert U1 und U2.
-
-- **FS-08-Nachbau** (`tests/unit/broker/test_befund_fs08_publish_lock_waiter.py`): Er bildet ein Fehlverhalten nach, das aiormq 7.2 behoben hat. Ersetzen durch einen Integrationstest gegen echtes aiormq 7.2 (Vorschlag) oder streichen? Blockiert U5.
-- **Meldungen an Upstream:** (a) das zweite `Channel.Close` nach einem abgebrochenen Close in aiormq, auch aus aio-pikas eigener Wiederherstellung heraus, (b) das Leck in `UnderlayChannel.close` von aio-pika 10.2.1, (c) die offene F4-28-Meldung, die #239 vermutlich erledigt. Melden oder nicht?
-- **Obergrenzen** (KTD8): `<7.3`/`<10.3` (Vorschlag, Interna-Kopplung) oder `<8`/`<11` (Nutzer bekommen Minors ohne swarmq-Release)? Blockiert U4.
-- **Loadsuite-Dauer** (KTD9): 1 h wie besprochen oder 6 h wegen Speicherverhalten?
-- **Wiederanmeldung von Consumern** (KTD7): erst nach den U3-Ergebnissen entscheidbar, mit Blick auf E-053 und E-083. Blockiert U7.
+- **Wiederanmeldung von Consumern** (KTD7, für Georg): erst nach den U3-Ergebnissen entscheidbar, mit Blick auf E-053 und E-083. Blockiert U7, nicht U1 bis U6.
 
 ## Risks & Dependencies
 
@@ -487,7 +482,7 @@ Alle für Georg; keine blockiert U1 und U2.
 | Consumer-Wiederherstellung widerspricht E-083 | Gelöschte Queues kommen wieder | Charakterisierung in U3, Entscheidung vor U7 |
 | Statistik bei 504 | „2 von 3“ trennt Versionen nicht | Deterministischer U1-Nachweis, 20 Läufe je Version (U2, U9) |
 | Close ohne Abbruch bei `heartbeat=0` | Auf dem injizierten Pfad begrenzt aiormq ein hängendes Close nicht; der Task bleibt in `_pending_channel_closes` | Hingenommen: ein einzelner wartender Task je verworfenem Kanal, nur bei abgeschaltetem Heartbeat und totem Broker; die Konfigurations-Doku nennt es |
-| 504 aus aio-pikas Wiederherstellung | `recovery.cancel()` bricht ein `probe.close()` ab, außerhalb von swarmqs Helfer aus KTD1 | U3 hält es fest; Abhilfe nach KTD7, sonst Meldung (a) |
+| 504 aus aio-pikas Wiederherstellung | `recovery.cancel()` bricht ein `probe.close()` ab, außerhalb von swarmqs Helfer aus KTD1 | U3 hält es fest; Abhilfe nach KTD7 (keine Meldung, KTD10) |
 
 ## Sources & Research
 
