@@ -23,6 +23,7 @@ die harmlose Zeile „Got frame for closed channel“ (Nachtrag E-025).
 
 Test-Liste:
 # [x] Verwurf, Frist reißt nach dem CloseOk des Brokers: die Publish-Verbindung bleibt offen
+# [x] eigener Pfad, Broker antwortet nie: das Close endet mit der Verbindung, kein Task bleibt
 """
 
 from __future__ import annotations
@@ -34,7 +35,7 @@ from typing import Any
 import aiormq
 import pytest
 
-from swarmq.broker.rabbitmq import RabbitMQBroker
+from swarmq.broker.rabbitmq import RabbitMQBroker, channel_close
 from swarmq.broker.rabbitmq import connection as connection_module
 from tests.support.known_leaks import aiormq_streamwriter_leak
 from tests.support.queues import delete_queue_family
@@ -95,3 +96,50 @@ async def test_a_discard_whose_close_misses_the_deadline_after_the_broker_answer
     finally:
         await broker.close()
         await delete_queue_family(rabbitmq_url, queue)
+
+
+@pytest.mark.befund("F4-30")
+async def test_a_discarded_close_the_broker_never_answers_ends_with_the_connection(
+    rabbitmq_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Eigener Pfad: Der Broker beantwortet das Close nie (hier: aiormq hält
+    das CloseOk für immer an). Das Close läuft nach der Frist weiter und endet
+    erst mit dem Schließen der Verbindung; danach bleibt kein Task übrig."""
+    queue = f"f4-30-{uuid.uuid4().hex[:10]}"
+    original = aiormq.Channel._on_close_ok_frame
+    target: list[object] = []
+    close_ok_arrived = asyncio.Event()
+    never = asyncio.Event()
+
+    async def withheld_close_ok(self: Any, frame: Any) -> None:
+        if target and self is target[0]:
+            close_ok_arrived.set()
+            await never.wait()
+        await original(self, frame)
+
+    monkeypatch.setattr(aiormq.Channel, "_on_close_ok_frame", withheld_close_ok)
+    broker = RabbitMQBroker(rabbitmq_url, queue_type="classic")
+    await broker.connect()
+    try:
+        await broker.declare_queue(queue)
+        await broker.publish(queue, b"m0")
+        channel = broker._publish_channel
+        assert channel is not None
+        target.append(await channel.get_underlay_channel())
+        monkeypatch.setattr(connection_module, "_CHANNEL_CLOSE_TIMEOUT_S", _CLOSE_DEADLINE_S)
+
+        await broker._discard_publish_channel(channel)
+        assert await wait_until(close_ok_arrived.is_set, timeout=10, interval=0.01), (
+            "precondition: the broker answered, aiormq withholds the CloseOk"
+        )
+        assert await wait_until(lambda: not broker._pending_channel_closes, timeout=10, interval=0.01), (
+            "precondition: the deadline ended the detached close"
+        )
+        assert channel_close._detached, "precondition: the close itself keeps running"
+    finally:
+        await broker.close()
+        await delete_queue_family(rabbitmq_url, queue)
+
+    assert await wait_until(lambda: not channel_close._detached, timeout=10, interval=0.01), (
+        "the close ends with the connection"
+    )
