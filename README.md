@@ -333,6 +333,10 @@ uv run just types      # mypy, basedpyright, stubtest
 Integration and e2e recipes start against dedicated test ports and take a shared lock,
 so they never touch a RabbitMQ or Valkey on the default ports.
 
+Contributions are welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md) and the
+[Code of Conduct](CODE_OF_CONDUCT.md). Please report security problems privately as
+described in [`SECURITY.md`](SECURITY.md).
+
 ## License
 
 [MIT](LICENSE) · Logo and brand assets: [`docs/assets/logo`](docs/assets/logo/README.md)
