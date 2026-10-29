@@ -6,7 +6,10 @@
 #
 # Basis wie die Job-Container in .github/workflows/ci.yml (nicht slim: git für die
 # Unit-Tests, die Repos in tmp_path anlegen).
-FROM ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
+#
+# Basis-Images per Digest gepinnt (Scorecard Pinned-Dependencies); Dependabot
+# hebt Tag und Digest gemeinsam an (.github/dependabot.yml).
+FROM ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie@sha256:f3b1d933a49112e15fb02a24f9bfc8fef9986351afc601fcaba4c01a9b6a0eac
 
 ENV UV_FROZEN=1 \
     UV_LINK_MODE=copy \

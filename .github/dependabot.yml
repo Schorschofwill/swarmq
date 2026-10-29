@@ -31,3 +31,20 @@ updates:
         patterns: ["*"]
     commit-message:
       prefix: "chore(deps)"
+
+  # Basis-Images der Dockerfiles, per Digest gepinnt (Scorecard
+  # Pinned-Dependencies). Monatlich genügt: beide Abbilder laufen nur für
+  # Messungen und Mutation-Testing, nicht in der CI.
+  - package-ecosystem: docker
+    directories:
+      - /benchmarks/comparison
+      - /docker/mutation
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    groups:
+      docker:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(docker)"
