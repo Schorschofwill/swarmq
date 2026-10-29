@@ -43,3 +43,21 @@ Accepted reports are published as a
 together with the fixed release, with a CVE where it applies, and noted in the
 [changelog](website/reference/changelog.md). You are credited in the advisory
 unless you prefer not to be.
+
+## Verifying a release
+
+Every release after 0.15.1 is built on GitHub-hosted runners and signed
+through Sigstore:
+
+- PyPI shows the publish attestations (PEP 740) on each file's page.
+- Each wheel and sdist has a GitHub build provenance and an SBOM
+  attestation. Download a file from PyPI or from the
+  [GitHub release](https://github.com/Schorschofwill/swarmq/releases) and run
+
+  ```bash
+  gh attestation verify swarmq-*.whl -R Schorschofwill/swarmq
+  ```
+
+- The GitHub release carries the SBOM (`swarmq-<version>.cdx.json`,
+  CycloneDX) with the runtime dependency versions the release was tested
+  against.

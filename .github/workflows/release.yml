@@ -18,8 +18,19 @@ permissions:
   contents: read
 
 jobs:
+  # Nachweise (Teil 3 der Professionalisierung, 2026-10-29): Der Build-Job
+  # signiert über Sigstore eine SLSA-Provenienz und eine SBOM für Wheel und
+  # sdist; prüfbar mit `gh attestation verify <datei> -R Schorschofwill/swarmq`.
+  # Die SBOM (CycloneDX aus uv.lock, nur Laufzeitabhängigkeiten) beschreibt den
+  # Satz, gegen den die CI getestet hat, und liegt außerhalb von dist/, weil
+  # die Publish-Action alles in dist/ nach PyPI hochlädt. PyPI selbst erhält
+  # von der Publish-Action eigene Nachweise nach PEP 740.
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -43,6 +54,24 @@ jobs:
           print(f"Tag {tag} passt zu {version}")
           PY
       - run: uv build
+      - name: SBOM erzeugen
+        run: |
+          mkdir -p sbom
+          uv export --format cyclonedx1.5 --preview-features sbom-export --frozen \
+            --no-dev --no-default-groups --output-file sbom/swarmq.cdx.json
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.whl
+            dist/*.tar.gz
+          create-storage-record: false
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.whl
+            dist/*.tar.gz
+          sbom-path: sbom/swarmq.cdx.json
+          create-storage-record: false
       # Wheel und sdist einzeln: in dist/ liegt eine .gitignore, die nicht ins
       # Release gehört.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -51,6 +80,12 @@ jobs:
           path: |
             dist/*.whl
             dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom
+          path: sbom/swarmq.cdx.json
           if-no-files-found: error
           retention-days: 7
 
@@ -71,7 +106,7 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
 
   # GitHub Release zum Tag, erst nach erfolgreichem PyPI-Upload: Notizen aus
-  # dem Changelog (scripts/release_notes.py), Wheel und sdist als Anhang.
+  # dem Changelog (scripts/release_notes.py), Wheel, sdist und SBOM als Anhang.
   # Release Candidates erscheinen als Vorabversion.
   github-release:
     needs: publish
@@ -86,13 +121,18 @@ jobs:
         with:
           name: dist
           path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: sbom
+          path: sbom
       - name: Release anlegen
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
           python3 scripts/release_notes.py "${TAG#v}" > notes.md
+          cp sbom/swarmq.cdx.json "swarmq-${TAG#v}.cdx.json"
           prerelease=()
           if [[ "$TAG" =~ [0-9](a|b|rc)[0-9]+$ ]]; then prerelease=(--prerelease); fi
-          gh release create "$TAG" dist/* --verify-tag --title "SwarmQ ${TAG#v}" \
+          gh release create "$TAG" dist/* "swarmq-${TAG#v}.cdx.json" --verify-tag --title "SwarmQ ${TAG#v}" \
             --notes-file notes.md "${prerelease[@]}"

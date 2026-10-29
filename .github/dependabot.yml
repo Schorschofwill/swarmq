@@ -1,0 +1,33 @@
+# Abhängigkeits-Updates (Teil 3 der Professionalisierung, 2026-10-29).
+#
+# Sicherheitsupdates öffnet Dependabot unabhängig von diesem Plan, sobald eine
+# Warnung vorliegt. Die regelmäßigen Updates sind gebündelt, damit nicht jede
+# Version einen eigenen PR (und einen CI-Lauf auf celsius) erzeugt. Die
+# Wartezeit (cooldown) lässt frisch veröffentlichte Versionen erst eine Woche
+# liegen: Kompromittierte Releases fallen meist in den ersten Tagen auf.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(ci)"
+
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    groups:
+      python:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(deps)"

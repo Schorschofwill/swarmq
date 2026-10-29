@@ -6,6 +6,15 @@ All notable changes to SwarmQ. This project follows
 
 ## [Unreleased]
 
+### Added
+
+- **Signed release artifacts.** Wheel and sdist now come with a GitHub
+  build provenance and an SBOM attestation (Sigstore), and the GitHub
+  release carries the SBOM as `swarmq-<version>.cdx.json` (CycloneDX).
+  Verify a downloaded file with
+  `gh attestation verify <file> -R Schorschofwill/swarmq`; see
+  [Security policy](https://github.com/Schorschofwill/swarmq/blob/main/SECURITY.md#verifying-a-release).
+
 ### Fixed
 
 - **Cancelling `start_worker()` during startup could be lost.** aiormq

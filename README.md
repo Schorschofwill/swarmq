@@ -20,6 +20,7 @@
   <img alt="Coverage ≥97 %" src="https://img.shields.io/badge/coverage-%E2%89%A597%25-1F2B47">
   <a href="https://github.com/Schorschofwill/swarmq/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/Schorschofwill/swarmq/ci.yml?branch=main&label=CI"></a>
   <a href="https://swarmq.readthedocs.io/"><img alt="Docs" src="https://img.shields.io/readthedocs/swarmq?label=docs"></a>
+  <a href="https://scorecard.dev/viewer/?uri=github.com/Schorschofwill/swarmq"><img alt="OpenSSF Scorecard" src="https://img.shields.io/ossf-scorecard/github.com/Schorschofwill/swarmq?label=OpenSSF%20Scorecard"></a>
 </p>
 
 <!-- pypi-skip -->

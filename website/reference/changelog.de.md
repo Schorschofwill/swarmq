@@ -6,6 +6,15 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ## [Unreleased]
 
+### Hinzugefügt
+
+- **Signierte Release-Dateien.** Wheel und sdist tragen jetzt einen
+  GitHub-Herkunftsnachweis (Build Provenance) und einen SBOM-Nachweis
+  (Sigstore), und das GitHub-Release enthält die SBOM als
+  `swarmq-<version>.cdx.json` (CycloneDX). Eine heruntergeladene Datei
+  prüft `gh attestation verify <datei> -R Schorschofwill/swarmq`; siehe
+  [Sicherheitsrichtlinie](https://github.com/Schorschofwill/swarmq/blob/main/SECURITY.md#verifying-a-release).
+
 ### Behoben
 
 - **Ein Abbruch von `start_worker()` während des Starts konnte verloren
