@@ -170,7 +170,7 @@ async def consumer_on() -> AsyncIterator[ConsumerFactory]:
                 deliveries.put_nowait(message)
 
             tag = await queue.consume(_on_message)
-            return Consumer(publisher, channel, queue, tag, deliveries)  # type: ignore[arg-type]
+            return Consumer(publisher, channel, queue, tag, deliveries)
 
         yield _make
 
