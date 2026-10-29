@@ -6,6 +6,13 @@ All notable changes to SwarmQ. This project follows
 
 ## [Unreleased]
 
+## [0.15.3rc1] — 2026-10-29
+
+Release candidate for 0.15.3 (install with `pip install --pre`).
+
+One fix: a channel close cut short by a deadline no longer closes the whole
+connection. Nothing else changed against 0.15.2, and nothing breaks.
+
 ### Fixed
 
 - **A channel close cut short by a deadline could close the whole

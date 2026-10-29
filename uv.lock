@@ -1904,7 +1904,7 @@ wheels = [
 
 [[package]]
 name = "swarmq"
-version = "0.15.2"
+version = "0.15.3rc1"
 source = { editable = "." }
 default-groups = ["lint", "tasks", "typing"]
 dependencies = [
