@@ -302,7 +302,6 @@ supervisor, all workers and compute children alike.
 The complete list lives in the [configuration](website/reference/configuration.md) and
 [CLI](website/reference/cli.md) references.
 
-<!-- pypi-end -->
 ## Documentation
 
 | | |
@@ -317,6 +316,7 @@ The complete list lives in the [configuration](website/reference/configuration.m
 The documentation is available in English and German and builds with
 `uv run --extra docs mkdocs serve`.
 
+<!-- pypi-end -->
 ## Development
 
 SwarmQ is developed strictly test-first; the rules are in [`AGENTS.md`](AGENTS.md), the

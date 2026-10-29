@@ -69,3 +69,30 @@ jobs:
           name: dist
           path: dist
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+
+  # GitHub Release zum Tag, erst nach erfolgreichem PyPI-Upload: Notizen aus
+  # dem Changelog (scripts/release_notes.py), Wheel und sdist als Anhang.
+  # Release Candidates erscheinen als Vorabversion.
+  github-release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - name: Release anlegen
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          python3 scripts/release_notes.py "${TAG#v}" > notes.md
+          prerelease=()
+          if [[ "$TAG" =~ [0-9](a|b|rc)[0-9]+$ ]]; then prerelease=(--prerelease); fi
+          gh release create "$TAG" dist/* --verify-tag --title "SwarmQ ${TAG#v}" \
+            --notes-file notes.md "${prerelease[@]}"
