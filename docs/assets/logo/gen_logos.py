@@ -31,9 +31,12 @@ GOLD_STOPS = (("0", "#B4842F"), ("0.5", "#E8C766"), ("1", "#BF8F36"))
 
 HALF_TURN = 180
 C = 100.0  # Mittelpunkt im 200er-Raster
-SW = 7.0  # Strichstärke aller Bögen und Linien
-NODE = 6.5  # Radius der Ring-Knoten
-DASH = "10 14"
+SW = 9.0  # Strichstärke aller Bögen und Linien
+NODE = 7.0  # Radius der Ring-Knoten
+NODE_SW = SW * 0.6  # Strichstärke der Ring-Knoten
+CLEAR = 4.0  # Mindestabstand zwischen Knoten und Bogenende
+DASH, DASH_GAP = 14.0, 20.0  # Strich und kleinste Lücke (ohne runde Kappen)
+MIN_DASHES = 2
 
 
 # --------------------------------------------------------------------------
@@ -54,21 +57,35 @@ def arc_d(r, a0, a1):
     return f"M{x0:.2f},{y0:.2f} A{r},{r} 0 {large},1 {x1:.2f},{y1:.2f}"
 
 
+def dash_pattern(r, a0, a1):
+    """Lücke so strecken, dass der Bogen mit einem ganzen Strich endet."""
+    length = r * math.radians((a1 - a0) % 360)
+    n = math.floor((length + DASH_GAP) / (DASH + DASH_GAP))
+    if n < MIN_DASHES:  # zu kurz für zwei volle Striche: zwei kürzere
+        return f"{(length - DASH_GAP) / MIN_DASHES:.2f} {DASH_GAP}"
+    return f"{DASH} {(length - n * DASH) / (n - 1):.2f}"
+
+
 def arc(r, a0, a1, col, dash=False, node0=False, node1=False):
-    """Bogen im Uhrzeigersinn von a0 nach a1 (Grad, 0 = rechts, 90 = unten)."""
-    gap = math.degrees((NODE + SW * 0.15) / r)
+    """Bogen im Uhrzeigersinn von a0 nach a1 (Grad, 0 = rechts, 90 = unten).
+
+    node0/node1 setzen einen Ring-Knoten genau auf a0 bzw. a1; der Bogen
+    endet entsprechend früher.
+    """
+    # Bogenende samt runder Kappe bleibt CLEAR vor dem Knotenrand.
+    gap = math.degrees((SW / 2 + NODE + NODE_SW / 2 + CLEAR) / r)
     parts = []
     s, e = a0 + (gap if node0 else 0), a1 - (gap if node1 else 0)
-    extra = f' stroke-dasharray="{DASH}"' if dash else ""
+    extra = f' stroke-dasharray="{dash_pattern(r, s, e)}"' if dash else ""
     parts.append(
         f'<path d="{arc_d(r, s, e)}" fill="none" stroke="{col}" stroke-width="{SW}" stroke-linecap="round"{extra}/>'
     )
-    for flag, a in ((node0, a0 - gap), (node1, a1 + gap)):
+    for flag, a in ((node0, a0), (node1, a1)):
         if flag:
             x, y = pt(r, a)
             parts.append(
                 f'<circle cx="{x:.2f}" cy="{y:.2f}" r="{NODE}" fill="none" '
-                f'stroke="{col}" stroke-width="{SW * 0.7:.2f}"/>'
+                f'stroke="{col}" stroke-width="{NODE_SW:.2f}"/>'
             )
     return "".join(parts)
 
@@ -99,61 +116,58 @@ def bundle(angle, spans, cols, spacing=13.0, origin=(C, C)):
 
 def mark_swarmq(ink, gold):
     rings = [
-        arc(86, 120, 160, ink, dash=True),
-        arc(86, 168, 262, ink, node1=True),
-        arc(86, 284, 330, gold),
-        arc(86, 70, 108, gold, dash=True),
-        arc(70, 150, 296, gold),
-        arc(70, 300, 345, gold, node1=True),
-        arc(70, 72, 140, ink),
-        arc(54, 110, 250, ink),
-        arc(54, 258, 285, ink, node1=True),
-        arc(54, 300, 355, gold, dash=True),
-        arc(38, 95, 200, gold),
-        arc(38, 215, 262, ink, node0=True),
-        arc(86, 2, 24, gold, dash=True),
-        arc(54, 2, 22, gold),
-        arc(38, 282, 18, ink, dash=True),
+        arc(84, 120, 160, ink, dash=True),
+        arc(84, 172, 270, ink, node1=True),
+        arc(84, 284, 330, gold),
+        arc(84, 72, 108, gold, dash=True),
+        arc(84, 0, 24, gold, dash=True),
+        arc(66, 150, 290, gold),
+        arc(66, 304, 352, gold, node1=True),
+        arc(66, 72, 136, ink),
+        arc(48, 110, 240, ink),
+        arc(48, 258, 296, ink, node1=True),
+        arc(48, 318, 8, gold, dash=True),
+        arc(30, 108, 212, gold),
+        arc(30, 238, 330, ink, node1=True),
     ]
-    tail = bundle(45, [(30, 104), (8, 112), (22, 98)], [gold, gold, ink])
+    tail = bundle(45, [(34, 108), (12, 114), (26, 98)], [gold, gold, ink], spacing=16)
     return "".join(rings) + tail
 
 
 def mark_swarmv(ink, gold):
     # V aus zwei Bündeln, die unten in der Mitte zusammenlaufen.
     rings = [
-        arc(86, 0, 60, gold, dash=True),
-        arc(86, 68, 112, ink, node0=True, node1=True),
-        arc(86, 120, 180, gold, dash=True),
-        arc(86, 188, 228, ink),
-        arc(86, 312, 352, ink),
-        arc(70, 20, 160, gold),
-        arc(70, 168, 212, gold, node1=True),
-        arc(70, 328, 12, gold, node0=True),
-        arc(54, 40, 140, ink),
-        arc(54, 150, 200, ink, dash=True),
-        arc(54, 340, 30, ink, dash=True),
+        arc(84, 326, 12, ink),
+        arc(84, 26, 56, gold, dash=True),
+        arc(84, 70, 110, ink, node0=True, node1=True),
+        arc(84, 124, 154, gold, dash=True),
+        arc(84, 168, 214, ink),
+        arc(66, 24, 156, gold),
+        arc(66, 172, 205, gold, node1=True),
+        arc(66, 335, 8, gold, node0=True),
+        arc(48, 54, 126, ink),
+        arc(48, 156, 192, ink, dash=True),
+        arc(48, 348, 24, ink, dash=True),
     ]
     o = (C, C + 40)
-    left = bundle(-115, [(10, 112), (24, 104)], [ink, gold], spacing=13, origin=o)
-    right = bundle(-65, [(24, 104), (10, 112)], [gold, ink], spacing=13, origin=o)
+    left = bundle(-115, [(14, 112), (34, 104)], [ink, gold], spacing=16, origin=o)
+    right = bundle(-65, [(34, 104), (14, 112)], [gold, ink], spacing=16, origin=o)
     return "".join(rings) + left + right
 
 
 def mark_loadsuite(ink, gold):
     # Tacho: Bögen unten offen, Zeiger steht im oberen Lastbereich.
     rings = [
-        arc(86, 135, 200, ink, dash=True, node0=True),
-        arc(86, 208, 292, ink),
-        arc(86, 338, 405, gold, node1=True),
-        arc(70, 140, 250, gold),
-        arc(70, 258, 282, gold, node1=True),
-        arc(70, 336, 400, ink, dash=True),
-        arc(54, 145, 230, ink),
-        arc(54, 238, 276, ink, node1=True),
-        arc(54, 342, 395, gold, dash=True),
+        arc(84, 135, 200, ink, dash=True, node0=True),
+        arc(84, 212, 290, ink),
+        arc(84, 340, 405, gold, node1=True),
+        arc(66, 140, 240, gold),
+        arc(66, 254, 282, gold, node1=True),
+        arc(66, 350, 45, ink, dash=True),
+        arc(48, 150, 252, ink, node1=True),
+        arc(48, 5, 40, gold, dash=True),
     ]
-    needle = bundle(-45, [(26, 84), (16, 100), (26, 72)], [gold, gold, ink], spacing=12)
+    needle = bundle(-45, [(30, 84), (26, 100), (30, 72)], [gold, gold, ink], spacing=16)
     hub = f'<circle cx="{C}" cy="{C}" r="{NODE + 5}" fill="none" stroke="{ink}" stroke-width="{SW}"/>'
     return "".join(rings) + needle + hub
 
