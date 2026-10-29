@@ -2,7 +2,7 @@
 # Nicht von Hand ändern: uv run just kosten-basislinie "<Grund mit Verweis>"
 # schreibt die Werte neu und hängt einen Historieneintrag an.
 
-python = "3.14.4"
+python = "3.14.10"
 
 [werte.einfacher_task]
 "backend.execution_guard.claim" = 1
@@ -14,10 +14,10 @@ python = "3.14.4"
 "broker.publish" = 1
 
 [werte.import_swarmq]
-module = 151
+module = 150
 
 [werte.import_swarmq_cli]
-module = 431
+module = 430
 
 [werte.publish]
 "amqp.frames" = 3
@@ -76,7 +76,7 @@ module = 431
 "valkey.roundtrips" = 20
 
 [werte.worker_start]
-module = 673
+module = 672
 
 [werte.workflow_kette]
 "backend.compare_and_store_workflow_state" = 2
@@ -187,3 +187,19 @@ aenderungen = [
     { szenario = "import_swarmq_cli", metrik = "module", alt = 422, neu = 431 },
     { szenario = "worker_start", metrik = "module", alt = 671, neu = 673 },
 ]
+
+[[historie]]
+datum = "2026-10-29"
+grund = "uv 0.13 legt kein _virtualenv.pth mehr an: je ein Modul weniger (docs/plans/2026-10-29-1700-chore-abhaengigkeiten-anheben-plan.md, KTD4)"
+python = "3.14.4"
+aenderungen = [
+    { szenario = "import_swarmq", metrik = "module", alt = 151, neu = 150 },
+    { szenario = "import_swarmq_cli", metrik = "module", alt = 431, neu = 430 },
+    { szenario = "worker_start", metrik = "module", alt = 673, neu = 672 },
+]
+
+[[historie]]
+datum = "2026-10-29"
+grund = "Python 3.14.10 wie das uv-Image 0.13.6 (docs/plans/2026-10-29-1700-chore-abhaengigkeiten-anheben-plan.md, KTD6)"
+python = "3.14.10"
+aenderungen = []

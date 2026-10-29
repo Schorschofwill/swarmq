@@ -15,7 +15,7 @@
 # Alle Jobs laufen auf den eigenen Runnern auf celsius (Label celsius-swarmq,
 # ops/github-runner/) und immer in einem `container:`: Ohne ihn liefen die
 # Schritte direkt auf dem Host. Image ist das exakt gepinnte uv-Image mit git
-# (Python 3.14.4 wie .python-version; die Modulzahlen der Kostensuite hängen an
+# (Python 3.14.10 wie .python-version; die Modulzahlen der Kostensuite hängen an
 # der Python-Version, Plan 2026-10-24-1118). Die slim-Variante hat kein git,
 # und ohne git legt actions/checkout kein .git an; mehrere Tests und Gates
 # brauchen es. Kein Compiler, kein apt: jedes Paket bringt ein cp314- oder abi3-Rad.
