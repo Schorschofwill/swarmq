@@ -37,7 +37,7 @@ jobs:
           persist-credentials: false
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
-          version: "0.11.6"
+          version: "0.13.6"
           enable-cache: false
       # R9: Ein Tag, der nicht zur Version passt, wird nie veröffentlicht. Die
       # Prüfung läuft vor dem Build, also auch vor der Freigabe-Anfrage.

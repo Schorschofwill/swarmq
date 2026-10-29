@@ -73,7 +73,7 @@ jobs:
     runs-on: [self-hosted, celsius-swarmq]
     timeout-minutes: 10
     container:
-      image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
+      image: ghcr.io/astral-sh/uv:0.13.6-python3.14-trixie
       options: --init
       volumes: ["swarmq-uv-cache-${{ github.event_name == 'push' && 'eigen' || 'fork' }}:/uv-cache"]
     steps:
@@ -92,7 +92,7 @@ jobs:
     runs-on: [self-hosted, celsius-swarmq]
     timeout-minutes: 10
     container:
-      image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
+      image: ghcr.io/astral-sh/uv:0.13.6-python3.14-trixie
       options: --init
       volumes: ["swarmq-uv-cache-${{ github.event_name == 'push' && 'eigen' || 'fork' }}:/uv-cache"]
     env:
@@ -113,7 +113,7 @@ jobs:
     runs-on: [self-hosted, celsius-swarmq]
     timeout-minutes: 10
     container:
-      image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
+      image: ghcr.io/astral-sh/uv:0.13.6-python3.14-trixie
       options: --init
       volumes: ["swarmq-uv-cache-${{ github.event_name == 'push' && 'eigen' || 'fork' }}:/uv-cache"]
     steps:
@@ -142,7 +142,7 @@ jobs:
     runs-on: [self-hosted, celsius-swarmq]
     timeout-minutes: 30
     container:
-      image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
+      image: ghcr.io/astral-sh/uv:0.13.6-python3.14-trixie
       options: --init
       volumes: ["swarmq-uv-cache-${{ github.event_name == 'push' && 'eigen' || 'fork' }}:/uv-cache"]
     env:
@@ -185,7 +185,7 @@ jobs:
     runs-on: [self-hosted, celsius-swarmq]
     timeout-minutes: 30
     container:
-      image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
+      image: ghcr.io/astral-sh/uv:0.13.6-python3.14-trixie
       options: --init
       volumes: ["swarmq-uv-cache-${{ github.event_name == 'push' && 'eigen' || 'fork' }}:/uv-cache"]
     services:
@@ -259,7 +259,7 @@ jobs:
     runs-on: [self-hosted, celsius-swarmq]
     timeout-minutes: 30
     container:
-      image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
+      image: ghcr.io/astral-sh/uv:0.13.6-python3.14-trixie
       options: --init
       volumes: ["swarmq-uv-cache-${{ github.event_name == 'push' && 'eigen' || 'fork' }}:/uv-cache"]
     services:
@@ -307,7 +307,7 @@ jobs:
     runs-on: [self-hosted, celsius-swarmq]
     timeout-minutes: 15
     container:
-      image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
+      image: ghcr.io/astral-sh/uv:0.13.6-python3.14-trixie
       options: --init
       volumes: ["swarmq-uv-cache-${{ github.event_name == 'push' && 'eigen' || 'fork' }}:/uv-cache"]
     steps:
@@ -344,7 +344,7 @@ jobs:
     runs-on: [self-hosted, celsius-swarmq]
     timeout-minutes: 10
     container:
-      image: ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie
+      image: ghcr.io/astral-sh/uv:0.13.6-python3.14-trixie
       options: --init
     env:
       GITLEAKS_VERSION: 8.30.1
