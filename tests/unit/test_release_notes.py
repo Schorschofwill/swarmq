@@ -8,6 +8,7 @@ Testliste:
 # [x] der Abschnitt einer Version, ohne ihre Überschrift, bis zur nächsten Version
 # [x] ein Release Candidate ist eine eigene Version, nicht der Abschnitt der finalen
 # [x] eine Version ohne Abschnitt: Abbruch mit Meldung
+# [x] relative Doku-Links und Sprungmarken zeigen auf Read the Docs (das Release liegt auf GitHub)
 # [x] jede Version aus pyproject.toml hat einen Abschnitt im echten Changelog
 """
 
@@ -44,6 +45,12 @@ _CHANGELOG = """# Changelog
 ## [1.0.0] — 2026-09-01
 
 - alt
+
+## [0.9.0] — 2026-08-01
+
+- [API](api.md), [CLI](cli.md#exit-codes), [Agent](agent/index.md),
+  [Leitfaden](../guides/cpu-mode.md#sizing), [früher](#100-2026-09-01),
+  [extern](https://example.org/x.md)
 """
 
 
@@ -88,3 +95,16 @@ def test_the_current_version_has_a_section_in_the_real_changelog() -> None:
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip()
+
+
+def test_relative_links_point_to_read_the_docs(tmp_path: Path) -> None:
+    result = _notes(tmp_path, "0.9.0")
+
+    docs = "https://swarmq.readthedocs.io/en/latest/"
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        f"- [API]({docs}reference/api/), [CLI]({docs}reference/cli/#exit-codes), "
+        f"[Agent]({docs}reference/agent/),\n"
+        f"  [Leitfaden]({docs}guides/cpu-mode/#sizing), [früher]({docs}reference/changelog/#100-2026-09-01),\n"
+        "  [extern](https://example.org/x.md)\n"
+    )
