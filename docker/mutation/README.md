@@ -9,7 +9,7 @@ U2, KTD4).
 
 | Datei | Zweck |
 |---|---|
-| `Dockerfile` | Basis `ghcr.io/astral-sh/uv:0.11.6-python3.14-trixie` (wie CI-Job `.uv-git`), `uv sync --frozen --extra test --extra reload`, Repo nach `/app` |
+| `Dockerfile` | Basis `ghcr.io/astral-sh/uv:0.13.6-python3.14-trixie` (wie CI-Job `.uv-git`), `uv sync --frozen --extra test --extra reload`, Repo nach `/app` |
 | `entrypoint.sh` | schreibt die Testauswahl in die `pyproject.toml` des Containers, setzt für Lauf b die Dienst-Variablen, ruft `mutmut run` |
 | `compose.yml` | Projekt `swarmq-mutation`: Dienst `mutmut` (3 CPUs, 8 GB), Profil `b` mit `rabbitmq` 4.3.6 und `valkey` 8, keine Host-Ports, alles mit Label `swarmq-mutation` |
 | `../../.dockerignore` | hält `.venv`, `.git`, Caches, `site`, `dist`, `mutants*`, `runs`, `prototypes` aus dem Build-Kontext (rund 15 MB) |

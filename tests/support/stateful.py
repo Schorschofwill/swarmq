@@ -11,7 +11,7 @@ einer werfenden Regel.
 
 Gebrauch::
 
-    run_state_machine_as_test(lambda: MyMachine(open_env), settings=...)
+    run_machine(lambda: MyMachine(open_env), settings=...)
 
 ``open_env`` kommt als Fixture aus ``tests/property/stateful/conftest.py``
 (``open_inmemory_env``) oder ``tests/integration/stateful/conftest.py``
@@ -22,9 +22,10 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Coroutine
-from typing import Any, Protocol, override
+from typing import Any, Protocol, cast, override
 
-from hypothesis.stateful import RuleBasedStateMachine
+import hypothesis
+from hypothesis.stateful import RuleBasedStateMachine, run_state_machine_as_test
 
 from tests.support.inmemory import FakeClock, InMemoryBackend
 
@@ -110,3 +111,14 @@ class AsyncStateMachine[E: StatefulEnv](RuleBasedStateMachine):
                 self.run(self.env.close())
             finally:
                 self.driver.close()
+
+
+def run_machine(factory: Callable[[], RuleBasedStateMachine], *, settings: hypothesis.settings) -> None:
+    """``run_state_machine_as_test`` für eine Factory statt einer Klasse.
+
+    hypothesis typisiert ``state_machine_factory`` seit 6.170 als
+    ``type[RuleBasedStateMachine]``, nimmt laut Doku und Code aber alles, was
+    eine Maschine liefert; die Maschinen hier brauchen ``open_env`` im
+    Konstruktor.
+    """
+    run_state_machine_as_test(cast("type[RuleBasedStateMachine]", factory), settings=settings)

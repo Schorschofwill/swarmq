@@ -19,10 +19,10 @@ from typing import Any
 import pytest
 import valkey.asyncio as valkey_asyncio
 from hypothesis import HealthCheck, settings
-from hypothesis.stateful import run_state_machine_as_test
 
 from tests.property.stateful import lock_scenarios
 from tests.property.stateful.lock_machine import LockEnv, LockMachine
+from tests.support.stateful import run_machine
 
 pytestmark = pytest.mark.timeout(60)
 
@@ -44,7 +44,7 @@ def machine(open_env: OpenEnv) -> Iterator[LockMachine]:
 
 
 def test_lock_machine_holds_its_invariants_against_valkey(open_env: OpenEnv) -> None:
-    run_state_machine_as_test(lambda: LockMachine(open_env), settings=VALKEY_SETTINGS)
+    run_machine(lambda: LockMachine(open_env), settings=VALKEY_SETTINGS)
 
 
 @pytest.mark.parametrize("scenario", lock_scenarios.SCENARIOS.values(), ids=lock_scenarios.SCENARIOS.keys())

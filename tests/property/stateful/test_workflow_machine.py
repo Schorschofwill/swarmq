@@ -17,10 +17,10 @@ from typing import Any
 
 import pytest
 from hypothesis import settings
-from hypothesis.stateful import run_state_machine_as_test
 
 from tests.property.stateful import workflow_scenarios
 from tests.property.stateful.workflow_machine import WorkflowEnv, WorkflowMachine
+from tests.support.stateful import run_machine
 
 # 60 s im Profil ``quick`` (KTD2); ``thorough`` (10 000 Beispiele) manuell.
 _TIMEOUT_S = 60 if os.environ.get("HYPOTHESIS_PROFILE", "quick") == "quick" else 1800
@@ -38,7 +38,7 @@ def machine(open_env: OpenEnv) -> Iterator[WorkflowMachine]:
 
 
 def test_workflow_machine_holds_its_invariants(open_env: OpenEnv) -> None:
-    run_state_machine_as_test(lambda: WorkflowMachine(open_env), settings=settings(stateful_step_count=30))
+    run_machine(lambda: WorkflowMachine(open_env), settings=settings(stateful_step_count=30))
 
 
 @pytest.mark.parametrize("scenario", workflow_scenarios.SCENARIOS.values(), ids=workflow_scenarios.SCENARIOS.keys())

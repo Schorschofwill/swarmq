@@ -22,11 +22,11 @@ import asyncio
 
 import pytest
 from hypothesis import Phase, settings
-from hypothesis.stateful import rule, run_state_machine_as_test
+from hypothesis.stateful import rule
 
 from swarmq.exceptions import BackendConnectionError
 from tests.support.inmemory import FakeClock
-from tests.support.stateful import AsyncDriver, AsyncStateMachine, open_inmemory_env
+from tests.support.stateful import AsyncDriver, AsyncStateMachine, open_inmemory_env, run_machine
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -98,7 +98,7 @@ def test_a_rule_that_raises_fails_the_machine_with_that_exception() -> None:
         return envs[-1]
 
     with pytest.raises(_Boom):
-        run_state_machine_as_test(lambda: Raising(open_env), settings=_ONE_STEP)
+        run_machine(lambda: Raising(open_env), settings=_ONE_STEP)
 
     assert envs, "keine Umgebung geöffnet"
     assert all(env.closed == 1 for env in envs)
@@ -114,7 +114,7 @@ def test_failing_to_open_the_env_leaves_no_loop_behind() -> None:
         raise _Boom
 
     with pytest.raises(_Boom):
-        run_state_machine_as_test(lambda: Plain(broken_env), settings=_ONE_STEP)
+        run_machine(lambda: Plain(broken_env), settings=_ONE_STEP)
 
 
 async def test_inmemory_env_advances_clock_and_stores_together() -> None:

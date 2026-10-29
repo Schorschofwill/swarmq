@@ -20,10 +20,10 @@ from typing import Any
 
 import pytest
 from hypothesis import settings
-from hypothesis.stateful import run_state_machine_as_test
 
 from tests.property.stateful import lock_scenarios
 from tests.property.stateful.lock_machine import LockEnv, LockMachine
+from tests.support.stateful import run_machine
 
 # 60 s im Profil ``quick`` (KTD2); ``thorough`` (10 000 Beispiele, manuell nach
 # docs/testing/test-strategy.md) braucht rund zwei Minuten.
@@ -41,7 +41,7 @@ def machine(open_env: OpenEnv) -> Iterator[LockMachine]:
 
 
 def test_lock_machine_holds_its_invariants(open_env: OpenEnv) -> None:
-    run_state_machine_as_test(lambda: LockMachine(open_env), settings=settings(stateful_step_count=30))
+    run_machine(lambda: LockMachine(open_env), settings=settings(stateful_step_count=30))
 
 
 def test_two_owners_with_expiry_in_between(machine: LockMachine) -> None:

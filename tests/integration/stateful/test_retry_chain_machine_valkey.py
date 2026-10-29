@@ -27,13 +27,13 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from hypothesis import HealthCheck, settings
-from hypothesis.stateful import run_state_machine_as_test
 
 from swarmq.backend.valkey.rate_limit import ValkeyRateLimitStore
 from swarmq.keyspace import KeySpace
 from tests.property.stateful import retry_chain_scenarios
 from tests.property.stateful.retry_chain_machine import ChainEnv, RetryChainMachine
 from tests.support.inmemory import FakeClock
+from tests.support.stateful import run_machine
 
 if TYPE_CHECKING:
     import valkey.asyncio as valkey_asyncio
@@ -85,7 +85,7 @@ def machine(open_env: OpenEnv) -> Iterator[RetryChainMachine]:
 
 
 def test_retry_chain_machine_holds_its_invariants_against_valkey(open_env: OpenEnv) -> None:
-    run_state_machine_as_test(lambda: chain_machine(open_env), settings=VALKEY_SETTINGS)
+    run_machine(lambda: chain_machine(open_env), settings=VALKEY_SETTINGS)
 
 
 @pytest.mark.parametrize(
