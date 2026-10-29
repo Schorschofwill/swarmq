@@ -13,7 +13,7 @@ only-include = ["src", "README.md"]
 
 [project]
 name = "swarmq"
-version = "0.15.2"
+version = "0.15.3rc1"
 description = "Async-first task queue for Python 3.14+ on RabbitMQ and Valkey"
 license = "MIT"
 authors = [{ name = "Georg Stricker" }]

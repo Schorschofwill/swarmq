@@ -6,6 +6,14 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ## [Unreleased]
 
+## [0.15.3rc1] — 2026-10-29
+
+Release Candidate für 0.15.3 (Installation mit `pip install --pre`).
+
+Eine Korrektur: Ein durch eine Frist abgebrochenes Schließen eines Kanals
+schließt nicht mehr die ganze Verbindung. Sonst ist gegenüber 0.15.2 nichts
+geändert, und nichts bricht.
+
 ### Behoben
 
 - **Ein durch eine Frist abgebrochenes Schließen eines Kanals konnte die
