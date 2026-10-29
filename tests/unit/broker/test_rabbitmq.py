@@ -162,6 +162,36 @@ class TestRabbitMQBrokerInjection:
         mock_channel.close.assert_awaited_once()
         mock_conn.close.assert_not_awaited()
 
+    @pytest.mark.timeout(5)
+    async def test_a_deadline_on_close_of_an_injected_connection_does_not_abort_the_channel_close(self):
+        """F4-30: Bricht der Worker-Shutdown ``broker.close()`` per Frist ab
+        (``_bounded_step``), darf das nicht das ``Channel.Close`` treffen: aiormq
+        schickte sonst ein zweites Close(504), und RabbitMQ schlösse die
+        Verbindung des Aufrufers."""
+        release = asyncio.Event()
+        aborted: list[object] = []
+
+        async def slow_close() -> None:
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                aborted.append(object())
+                raise
+
+        mock_conn = AsyncMock()
+        mock_channel = AsyncMock(is_closed=False)
+        mock_channel.close.side_effect = slow_close
+        broker = RabbitMQBroker(connection=mock_conn)
+        broker._publish_channel = mock_channel
+
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(broker.close(), timeout=0.05)
+        release.set()
+        await asyncio.sleep(0)
+
+        assert aborted == []
+        mock_conn.close.assert_not_awaited()
+
     async def test_url_path_still_closes_owned_connection(self):
         broker = RabbitMQBroker("amqp://guest:guest@localhost/")
         mock_conn = AsyncMock()

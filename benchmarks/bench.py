@@ -45,6 +45,16 @@ from aio_pika import DeliveryMode, Message as AMQPMessage
 from valkey.asyncio import Valkey
 
 
+#: Close-Tasks, deren Aufrufer abgebrochen wurde; bis zu ihrem Ende gehalten.
+_CLOSING: set[asyncio.Task[object]] = set()
+
+
+def _settle_close(task: asyncio.Task[object]) -> None:
+    _CLOSING.discard(task)
+    if not task.cancelled():
+        task.exception()
+
+
 @asynccontextmanager
 async def _bench_channel(
     connection: aio_pika.abc.AbstractRobustConnection,
@@ -55,12 +65,19 @@ async def _bench_channel(
     remember to put `await ch.close()` in a finally. On task
     cancellation the channel is still closed, which is what originally
     caused the aiormq `_reader`-task leak in full_pipeline.
+
+    The close itself is never cancelled: a cancelled Channel.Close makes
+    aiormq send a second Close(504) on the same channel number, and
+    RabbitMQ then closes the whole connection (swarmq F4-30, scenario 6).
     """
     ch = await connection.channel()
     try:
         yield ch
     finally:
-        await ch.close()
+        close = asyncio.ensure_future(ch.close())
+        _CLOSING.add(close)
+        close.add_done_callback(_settle_close)
+        await asyncio.shield(close)
 
 
 # ---------------------------------------------------------------------------

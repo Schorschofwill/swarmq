@@ -1,4 +1,4 @@
-"""Nachweis F4-30: Reißt die Frist das Schließen eines verworfenen Kanals ab, nachdem der Broker es schon beantwortet hat, beendet RabbitMQ die ganze Verbindung.
+"""Nachweis F4-30 (behoben, ``channel_close.close_without_abort``): Reißt die Frist das Schließen eines verworfenen Kanals ab, nachdem der Broker es schon beantwortet hat, beendet RabbitMQ die ganze Verbindung.
 
 Register: docs/befunde/fehlersuche-runde-4-2026-10.md (F4-30), Signal S-010
 im Sättigungsbuch; Plan docs/plans/2026-10-29-1945-chore-aiormq-7-2-anheben-plan.md
@@ -22,7 +22,7 @@ taugt dafür nicht: Dort liegen beide Closes im Puffer, und es entsteht nur
 die harmlose Zeile „Got frame for closed channel“ (Nachtrag E-025).
 
 Test-Liste:
-# [ ] Verwurf, Frist reißt nach dem CloseOk des Brokers: die Publish-Verbindung bleibt offen
+# [x] Verwurf, Frist reißt nach dem CloseOk des Brokers: die Publish-Verbindung bleibt offen
 """
 
 from __future__ import annotations
@@ -48,7 +48,6 @@ _CLOSE_DEADLINE_S = 0.5
 
 @aiormq_streamwriter_leak  # TS-02: schließt der Broker die Verbindung, lässt aiormq den Writer offen
 @pytest.mark.befund("F4-30")
-@pytest.mark.xfail(strict=True, reason="F4-30: abgebrochenes Kanal-Close beendet die Verbindung (504)")
 async def test_a_discard_whose_close_misses_the_deadline_after_the_broker_answered_keeps_the_connection(
     rabbitmq_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:

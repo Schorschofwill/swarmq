@@ -6,6 +6,21 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ## [Unreleased]
 
+### Behoben
+
+- **Ein durch eine Frist abgebrochenes Schließen eines Kanals konnte die
+  ganze Verbindung schließen.** Verwarf swarmq den Publish-Kanal nach einer
+  überschrittenen Frist, schloss es den Kanal unter einer Frist von 5 s.
+  Antwortete der Broker erst danach, schickte aiormq ein zweites
+  `Channel.Close` auf dieselbe Kanalnummer, und RabbitMQ schloss die ganze
+  Verbindung (`CHANNEL_ERROR - expected 'channel.open'`); alle
+  unbestätigten Publishes darauf endeten unbestimmt. Dasselbe konnte
+  passieren, wenn die Frist des Worker-Shutdowns das Schließen auf einer
+  injizierten Verbindung abbrach (dann traf es die Verbindung des
+  Aufrufers), und bei den Wegwerf-Kanälen der Deklaration und des
+  Consumer-Wächters. swarmq begrenzt jetzt nur das Warten auf das
+  Schließen eines Kanals und bricht das Schließen selbst nie ab (F4-30).
+
 ## [0.15.2] — 2026-10-29
 
 0.15.2 begrenzt aiormq unter 7.1, damit eine frische Installation die

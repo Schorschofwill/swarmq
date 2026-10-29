@@ -30,6 +30,7 @@ from swarmq.broker.rabbitmq.blocked import (
     unblocked_event,
     wait_until_unblocked,
 )
+from swarmq.broker.rabbitmq.channel_close import close_without_abort
 from swarmq.broker.rabbitmq.consumer_watch import _RPC_TIMEOUT_S, ConsumerWatch
 from swarmq.broker.rabbitmq.robust_channels import (
     open_throwaway_channel,
@@ -109,11 +110,11 @@ async def close_channel_quietly(channel: aio_pika.abc.AbstractChannel | None) ->
     bliebe offen, bis die Verbindung ``channel_max`` erreicht (Review MR 10,
     P0-1; wie ``arg_conflict``). Vor einem Wiederoeffnen nach einem Reconnect
     schuetzt ``close()`` allein nicht (F4-20): Wegwerf-Kanaele sind darum
-    nicht robust (``open_throwaway_channel``)."""
+    nicht robust (``open_throwaway_channel``). Nie abgebrochen (F4-30)."""
     if channel is None:
         return
     try:
-        await channel.close()
+        await close_without_abort(channel, timeout_s=None)
     except Exception:  # noqa: BLE001, S110 - Schliessen best effort
         pass
 
@@ -477,7 +478,8 @@ class RabbitMQConnection:
                 chan: aio_pika.abc.AbstractChannel | None = getattr(self, attr)
                 if chan is not None:
                     if not chan.is_closed:
-                        await chan.close()
+                        # Eine Frist des Aufrufers trifft nur das Warten (F4-30).
+                        await close_without_abort(chan, timeout_s=None)
                     # Die Verbindung bleibt beim Aufrufer: Ihr naechster
                     # Reconnect oeffnete den Kanal sonst wieder (F4-20).
                     release_channel(self._connection, chan)
@@ -635,9 +637,8 @@ class RabbitMQConnection:
         if blocked is not None:
             await wait_until_unblocked(blocked, timeout=self._effective_publish_timeout())
         try:
-            async with asyncio.timeout(_CHANNEL_CLOSE_TIMEOUT_S):
-                if not channel.is_closed:
-                    await channel.close()
+            if not channel.is_closed:  # die Frist trifft nur das Warten (F4-30)
+                await close_without_abort(channel, timeout_s=_CHANNEL_CLOSE_TIMEOUT_S)
         except Exception as exc:
             # Best effort — nie eskalieren, aber auch nicht verschweigen: Ein
             # systematischer Fehlschlag bedeutet, dass aiormq die offene

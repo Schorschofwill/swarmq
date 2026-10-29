@@ -38,6 +38,7 @@ from typing import Any, cast
 
 import aio_pika
 
+from swarmq.broker.rabbitmq.channel_close import close_without_abort
 from swarmq.logging import get_logger
 
 logger = get_logger(__name__)
@@ -89,7 +90,8 @@ async def queue_exists_on_throwaway(
 
 async def _close_when_open(opening: asyncio.Future[aio_pika.abc.AbstractChannel]) -> None:
     channel = await opening
-    await channel.close()
+    # Die Frist des Aufrufers trifft nur das Warten, nie das Close (F4-30).
+    await close_without_abort(channel, timeout_s=None)
 
 
 def release_channel(connection: object, channel: object) -> None:
