@@ -17,6 +17,7 @@ import pytest
 from swarmq._http import (
     AsyncHttpServer,
     BadRequest,
+    RequestTimeout,
     parse_http_request,
     write_http_response,
 )
@@ -93,6 +94,31 @@ class TestParseHttpRequest:
         with pytest.raises(BadRequest, match="too many"):
             await parse_http_request(reader)
 
+    async def test_overlong_request_line_raises_bad_request(self):
+        """Eine Zeile über dem Puffer-Limit des Readers wird 400, kein
+        ValueError aus readline (Härtung gegen übergroße Anfragen)."""
+        reader = asyncio.StreamReader(limit=64)
+        reader.feed_data(b"GET /" + b"a" * 200 + b" HTTP/1.1\r\n\r\n")
+        reader.feed_eof()
+        with pytest.raises(BadRequest, match="request line too long"):
+            await parse_http_request(reader)
+
+    async def test_overlong_header_line_raises_bad_request(self):
+        reader = asyncio.StreamReader(limit=64)
+        reader.feed_data(b"GET / HTTP/1.1\r\nX-Big: " + b"v" * 200 + b"\r\n\r\n")
+        reader.feed_eof()
+        with pytest.raises(BadRequest, match="header line too long"):
+            await parse_http_request(reader)
+
+    async def test_stalled_client_raises_request_timeout(self, monkeypatch: pytest.MonkeyPatch):
+        """Ein Client, der die Kopfzeilen nie beendet, hält den Server nicht
+        fest: Nach der Frist kommt RequestTimeout (Slow-Header-Schutz)."""
+        monkeypatch.setattr("swarmq._http._REQUEST_TIMEOUT_S", 0.01)
+        reader = asyncio.StreamReader()
+        reader.feed_data(b"GET / HTTP/1.1\r\nHost: x\r\n")
+        with pytest.raises(RequestTimeout, match="request deadline exceeded"):
+            await parse_http_request(reader)
+
 
 class TestWriteHttpResponse:
     async def test_framing_contains_status_and_content_length(self):
@@ -166,6 +192,41 @@ class TestAsyncHttpServer:
             await writer.drain()
             status_line = await reader.readline()
             assert status_line.startswith(b"HTTP/1.1 400 "), status_line
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await server.stop()
+
+    async def test_stalled_request_returns_408(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr("swarmq._http._REQUEST_TIMEOUT_S", 0.01)
+        handler = AsyncMock()
+        port = _free_port()
+        server = AsyncHttpServer(handler, host="127.0.0.1", port=port)
+        await server.start()
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write(b"GET / HTTP/1.1\r\n")
+            await writer.drain()
+            status_line = await reader.readline()
+            assert status_line.startswith(b"HTTP/1.1 408 "), status_line
+            handler.assert_not_awaited()
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await server.stop()
+
+    async def test_client_closing_without_request_gets_no_response(self, swarmq_logs):
+        handler = AsyncMock()
+        port = _free_port()
+        server = AsyncHttpServer(handler, host="127.0.0.1", port=port)
+        await server.start()
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write_eof()
+            assert await reader.read() == b""
+            handler.assert_not_awaited()
+            # Ein stiller Verbindungsabbau ist kein Fehler (Lastbalancer-Proben).
+            assert [e for e in swarmq_logs if e["log_level"] == "error"] == []
             writer.close()
             await writer.wait_closed()
         finally:

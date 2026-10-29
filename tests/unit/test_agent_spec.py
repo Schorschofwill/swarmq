@@ -482,6 +482,8 @@ from swarmq.agent_spec import (  # noqa: E402
     DEFAULT_LLMS_TXT,
     DEFAULT_SPEC_DIR,
     _dump,
+    write_llms_txt,
+    write_spec,
 )
 
 
@@ -527,3 +529,17 @@ def test_machine_error_catalog_table_matches_the_generated_catalog(page: str) ->
         assert [w.strip() for w in when.split(",")] == entry["when"], name
         assert retriable.split()[0] == entry["retriable"], name
         assert dlq.split()[0] == entry["dlq_on_uncaught"], name
+
+
+def test_write_spec_and_llms_txt_produce_what_the_drift_guard_expects(tmp_path: Path) -> None:
+    """Die Schreibfunktionen legen fehlende Verzeichnisse an und schreiben
+    genau die Bytes, die der Drift-Waechter oben mit den eingecheckten
+    Dateien vergleicht."""
+    spec_dir = tmp_path / "neu" / "spec"
+    written = write_spec(spec_dir)
+    llms = write_llms_txt(tmp_path / "site" / "llms.txt")
+
+    assert sorted(p.relative_to(spec_dir).as_posix() for p in written) == sorted(_PARTS)
+    for rel, builder in _PARTS.items():
+        assert (spec_dir / rel).read_text(encoding="utf-8") == _dump(builder())
+    assert llms.read_text(encoding="utf-8") == build_llms_txt()
