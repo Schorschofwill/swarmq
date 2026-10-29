@@ -295,3 +295,22 @@ async def test_upcoming_is_sorted_by_fire_time_with_the_documented_keys(monkeypa
             "disabled": True,
         },
     ]
+
+
+@pytest.mark.usefixtures("frozen_wall_clock")
+async def test_table_lists_upcoming_sorted_with_disabled_marker(monkeypatch) -> None:
+    """Die Tabelle zeigt anstehende Termine je Zeile: Zeitpunkt, Name, Task,
+    Queue, abgeschaltete mit ``[disabled]``; sortiert wie im JSON."""
+    backend = _with_schedules(
+        _backend(leader=None, version=None, workers={}),
+        ("later", _NOW_MS + 2 * _HOUR_MS, _defn("later", task="report", queue="slow", disabled=True)),
+        ("sooner", _NOW_MS + _HOUR_MS, _defn("sooner")),
+    )
+
+    out = await _status(monkeypatch, backend, "table")
+
+    upcoming = out.split("UPCOMING:\n", 1)[1].split("WORKERS:\n", 1)[0]
+    assert upcoming == (
+        "  2027-01-15T09:00:00+00:00  sooner  task=t  queue=default\n"
+        "  2027-01-15T10:00:00+00:00  later  task=report  queue=slow [disabled]\n"
+    )

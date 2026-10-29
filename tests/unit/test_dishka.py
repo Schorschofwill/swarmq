@@ -136,6 +136,27 @@ async def test_lifecycle_injection_through_task_subclass():
     assert result == "5:abc"
 
 
+@pytest.mark.timeout(5)
+async def test_direct_call_of_injected_task_outside_a_worker_says_why():
+    """Ruft ein Test oder Skript ``run`` eines FromDishka-Tasks direkt auf,
+    fehlt der Request-Scope: Die Meldung sagt, dass nur der Worker injiziert,
+    statt eines nackten LookupError aus der ContextVar."""
+    pytest.importorskip("dishka")
+    from dishka import FromDishka
+
+    from swarmq.task import Task, TaskInfo
+
+    class DirectTask(Task):
+        task_info = TaskInfo(name="direct_inject_task", queues=["q"])
+
+        @override
+        async def run(self, svc: FromDishka[Svc]) -> str:
+            return svc.tid
+
+    with pytest.raises(RuntimeError, match="No active SwarmQ request scope"):
+        await DirectTask().run()  # type: ignore[call-arg]  # svc kaeme sonst per Injektion
+
+
 def test_no_fromdishka_means_no_wrapping():
     """R6/AE2: a task without FromDishka params is left untouched."""
     pytest.importorskip("dishka")

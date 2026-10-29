@@ -417,3 +417,25 @@ def test_caller_cancelled_during_teardown_lets_the_teardown_finish_in_the_backgr
     assert pending == set()
     assert unsubscribed.is_set()
     assert pubsub.closed
+
+
+class _BrokenPubSub(_SilentPubSub):
+    """Pub/Sub, dessen Lesen scheitert (Verbindung im Kanal gerissen)."""
+
+    @override
+    async def get_message(self, ignore_subscribe_messages: bool = True, timeout: float = 0.0) -> None:
+        raise ConnectionError("pubsub connection lost")
+
+
+def test_broken_pubsub_falls_back_to_polling_and_still_finds_the_result() -> None:
+    """Ein Pub/Sub-Fehler beendet das Warten nicht: Das Ergebnis, das erst
+    nach einigen Abfragen vorliegt, wird per Polling gefunden."""
+    backend, get = _backend(_BrokenPubSub())
+    answers = iter([None, None, None])
+    get.side_effect = lambda *_a, **_kw: next(answers, b"late")
+
+    async def _main() -> bytes | None:
+        return await asyncio.wait_for(backend.wait_for_result("fs15-broken", timeout=30.0), timeout=60.0)
+
+    assert _run_virtual(_main) == b"late"
+    assert get.await_count >= 4
