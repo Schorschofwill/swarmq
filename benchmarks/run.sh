@@ -37,7 +37,8 @@ if [ ! -d ".venv" ]; then
 fi
 
 source .venv/bin/activate
-pip install -q -r requirements.txt
+# Nur gegen die Hashes aus requirements.txt (erzeugt aus requirements.in, Befehl im Kopf der Datei)
+pip install -q --require-hashes -r requirements.txt
 
 # --- Benchmark ausfuehren ---
 echo ""
