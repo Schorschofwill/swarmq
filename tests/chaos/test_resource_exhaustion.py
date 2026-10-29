@@ -359,8 +359,8 @@ class TestResourceExhaustion:
                         f"2048th channel.open() hung (no typed error within 10s): {exc!r}",
                     )
         finally:
-            for ch in channels:
+            for offen in channels:
                 with contextlib.suppress(Exception):
-                    await ch.close()
+                    await offen.close()
             with contextlib.suppress(Exception):
                 await connection.close()

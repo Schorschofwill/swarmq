@@ -6,6 +6,23 @@ All notable changes to SwarmQ. This project follows
 
 ## [Unreleased]
 
+## [0.15.2] — 2026-10-29
+
+0.15.2 caps aiormq below 7.1 so that a fresh install gets the aiormq
+version swarmq is tested against, fixes two bugs (one of them a memory
+leak) and signs the release files. Nothing breaks.
+
+### Changed
+
+- **aiormq is capped below 7.1, aio-pika below 10.1.** aiormq 7.1 and 7.2
+  (released since 2026-09-26) rework how a channel publishes and closes;
+  swarmq's handling of channel loss and cancellation is not yet verified
+  against them, and with aiormq 7.2.4 RabbitMQ can close the whole
+  connection when closing a channel is cancelled. aio-pika 10.0 allows any
+  aiormq below 8, so swarmq now names aiormq itself
+  (`aiormq>=7,<7.1`, `aio-pika>=9,<10.1`). If your environment already
+  pulled aiormq 7.1 or later, upgrading swarmq moves it back to 7.0.
+
 ### Added
 
 - **Signed release artifacts.** Wheel and sdist now come with a GitHub

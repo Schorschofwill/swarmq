@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.14"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -8,15 +8,15 @@ resolution-markers = [
 
 [[package]]
 name = "aio-pika"
-version = "10.0.1"
+version = "10.0.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiormq" },
     { name = "yarl" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8f/7f/01f4ea7fe3490194420bb52e596b9619092ed13c5a230014b02075c3bd77/aio_pika-10.0.1.tar.gz", hash = "sha256:96ec3ef748ca7a25a9d2fa6e511c16c3ffcfa6b1f40ade79b8a5baabba682efd", size = 70882, upload-time = "2026-07-09T13:31:35.709Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f9/37/a8dee7269b8f85ce14a89d6af530a40d479daa51282ca0e5b37c2bf2a8d9/aio_pika-10.0.4.tar.gz", hash = "sha256:3f8bbb96b1955e5e5078fb437178fa9fed1fdaf6801f52c447bfe7ea1105ca40", size = 82457, upload-time = "2026-09-26T20:33:45.547Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/65/3f/329d0e52f994349ff7449c714c242ad65f14586b0e205ca632ac817fda72/aio_pika-10.0.1-py3-none-any.whl", hash = "sha256:12120a3cf8022d2a8bc5dc89e716512a38bf742c24c5562f54764af27eec7edd", size = 56332, upload-time = "2026-07-09T13:31:33.634Z" },
+    { url = "https://files.pythonhosted.org/packages/68/75/c44b884e35dab6c8e021f513d624fb9c39890288b8185ebadf1eb8c57033/aio_pika-10.0.4-py3-none-any.whl", hash = "sha256:6d83eef63db64511b20ace4ad208ab239922a1497a337edbca47f5d409f8233c", size = 57748, upload-time = "2026-09-26T20:33:44.21Z" },
 ]
 
 [[package]]
@@ -1904,10 +1904,12 @@ wheels = [
 
 [[package]]
 name = "swarmq"
-version = "0.15.1"
+version = "0.15.2"
 source = { editable = "." }
+default-groups = ["lint", "tasks", "typing"]
 dependencies = [
     { name = "aio-pika" },
+    { name = "aiormq" },
     { name = "croniter" },
     { name = "msgpack" },
     { name = "msgspec" },
@@ -1978,7 +1980,8 @@ typing = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aio-pika", specifier = ">=9" },
+    { name = "aio-pika", specifier = ">=9,<10.1" },
+    { name = "aiormq", specifier = ">=7,<7.1" },
     { name = "coverage", marker = "extra == 'test'", specifier = ">=7.16.2" },
     { name = "croniter", specifier = ">=6.2" },
     { name = "dishka", marker = "extra == 'dishka'", specifier = ">=1.10.1" },
