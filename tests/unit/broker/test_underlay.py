@@ -22,6 +22,11 @@ Test-Liste:
 # [x] ohne Transport: ``ChannelInvalidStateError`` wie bei aio-pika
 # [x] aio-pikas ``Channel._open`` geändert: fail-open über aio-pikas eigenes Öffnen, eine WARNING je Verbindung
 # [x] Wegwerf-Kanal auf einer einfachen ``aio_pika.Connection`` (injiziert): flach
+
+Consumer-Wiederherstellung von aio-pika abgeschaltet (E-089, Plan 2026-10-29-1945, KTD7/U7):
+# [x] ``basic.cancel`` des Brokers auf einem swarmq-Kanal: keine Anforderung an aio-pikas Verbindungsfabrik
+# [x] Fabrik wacht trotzdem auf (``_restore_consumers``): kein Probe-Kanal, keine Anmeldung, nichts zu wiederholen
+# [x] aio-pikas Einstiege geändert (``_on_open`` oder Verbindungsfabrik): fail-open, eine WARNING je Verbindung
 """
 
 from __future__ import annotations
@@ -56,6 +61,7 @@ class _AiormqChannel(Base):
         self.number = number
         self.on_return_callbacks: set[object] = set()
         self.on_consumer_cancel_callbacks: set[object] = set()
+        self.consumers: dict[str, object] = {}
 
     @override
     async def _on_close(self, exc: ExceptionType | None = None) -> None:
@@ -82,6 +88,7 @@ class _AiormqConnection(Base):
         super().__init__(loop=asyncio.get_running_loop())
         self.channels: dict[int, _AiormqChannel] = {}
         self.qos_error: BaseException | None = None
+        self.opened = 0
 
     @override
     async def _on_close(self, exc: ExceptionType | None = None) -> None:
@@ -103,6 +110,7 @@ class _AiormqConnection(Base):
         number = max(self.channels, default=0) + 1
         channel = _AiormqChannel(self, number)
         self.channels[number] = channel
+        self.opened += 1
         return channel
 
     @property
@@ -336,3 +344,109 @@ async def test_a_throwaway_channel_on_a_plain_connection_leaves_no_callback() ->
     await _settle()
 
     assert _callbacks(aiormq_connection.inner_closing) == before
+
+
+# --- Consumer-Wiederherstellung von aio-pika (E-089) ---------------------------
+
+
+class _ConsumingQueue:
+    """Steht für eine ``RobustQueue`` in der Restore-Liste eines Kanals, deren
+    Consumer *tag* angemeldet ist; die Probe von aio-pika gelingt."""
+
+    def __init__(self, tag: str) -> None:
+        self._consumers: dict[str, dict[str, Any]] = {tag: {}}
+        self.probed = 0
+
+    async def _probe(self, channel: object) -> None:
+        del channel
+        self.probed += 1
+
+
+async def _consuming_channel(broker: RabbitMQBroker, tag: str) -> tuple[aio_pika.RobustChannel, _ConsumingQueue]:
+    connection = broker._connection
+    assert connection is not None
+    channel = await connection.channel()
+    assert isinstance(channel, aio_pika.RobustChannel)
+    queue = _ConsumingQueue(tag)
+    channel._queues["q"].add(queue)  # type: ignore[arg-type]  # Stand-in statt RobustQueue
+    return channel, queue
+
+
+@pytest.mark.entscheidung("E-089")
+async def test_a_broker_cancel_on_a_swarmq_channel_requests_no_recovery_from_aio_pika(
+    owned: list[_AiormqConnection], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+    await broker.connect()
+    channel, _ = await _consuming_channel(broker, "ctag")
+    requested: list[bool] = []
+    monkeypatch.setattr(channel._connection, "_request_recovery", lambda: requested.append(True))
+    underlay = await channel.get_underlay_channel()
+    callbacks = tuple(underlay.on_consumer_cancel_callbacks)
+    assert callbacks, "precondition: aio-pika listens for basic.cancel"
+
+    for callback in callbacks:
+        callback(aiormq.spec.Basic.Cancel(consumer_tag="ctag"))
+
+    assert requested == []
+
+
+@pytest.mark.entscheidung("E-089")
+async def test_a_woken_connection_factory_opens_no_probe_and_consumes_nothing_on_a_swarmq_channel(
+    owned: list[_AiormqConnection],
+) -> None:
+    broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+    await broker.connect()
+    (aiormq_connection,) = owned
+    channel, queue = await _consuming_channel(broker, "ctag")
+    opened = aiormq_connection.opened
+
+    retry = await channel._restore_consumers()
+
+    assert retry is False, "nothing for aio-pika to retry"
+    assert aiormq_connection.opened == opened, "no probe channel"
+    assert queue.probed == 0
+
+
+async def _changed_on_open(self: aio_pika.RobustChannel) -> None:
+    await aio_pika.Channel._on_open(self)
+
+
+async def _changed_connection_factory(self: aio_pika.RobustConnection) -> None:
+    del self
+
+
+@pytest.mark.entscheidung("E-089")
+@pytest.mark.parametrize(
+    ("owner", "name", "changed"),
+    [
+        (aio_pika.RobustChannel, "_on_open", _changed_on_open),
+        (aio_pika.RobustConnection, "_RobustConnection__connection_factory", _changed_connection_factory),
+    ],
+    ids=["channel-open", "connection-factory"],
+)
+async def test_changed_recovery_entries_in_aio_pika_fail_open_with_one_warning_per_connection(
+    owned: list[_AiormqConnection],
+    monkeypatch: pytest.MonkeyPatch,
+    swarmq_logs: list[dict[str, Any]],
+    owner: type,
+    name: str,
+    changed: Any,
+) -> None:
+    monkeypatch.setattr(owner, name, changed)
+    broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+    other = RabbitMQBroker("amqp://guest:guest@localhost/")
+    await broker.connect()
+    await other.connect()
+    assert broker._connection is not None
+    assert other._connection is not None
+
+    channels = [
+        await broker._connection.channel(),
+        await broker._connection.channel(),
+        await other._connection.channel(),
+    ]
+
+    assert not any(channel.is_closed for channel in channels)
+    warnings = [e["event"] for e in swarmq_logs if e["log_level"] == "warning"]
+    assert warnings == ["consumer_recovery_disable_unavailable"] * 2

@@ -1,10 +1,8 @@
-"""Charakterisierung: Consumer-Wiederherstellung von aio-pika 10.2 auf RabbitMQ 4.3.6 und 4.2.9 (Plan 2026-10-29-1945, U3, KTD7).
+"""Consumer-Wiederherstellung von aio-pika 10.2 auf RabbitMQ 4.3.6 und 4.2.9 (Plan 2026-10-29-1945, U3/U7, KTD7, E-089).
 
-Grün und ohne Produktionscode: Die Tests halten fest, was aio-pika 10.2.1 mit
-aiormq 7.2.4 auf den gepinnten Testbrokern tut, wenn der Broker einen
-Consumer beendet. Neu gegenüber aio-pika 10.0: ``RobustChannel`` hängt
-``_on_consumer_cancel`` an den aiormq-Kanal. Ein ``basic.cancel`` des Brokers
-weckt die Verbindungsfabrik (``_request_recovery``); sie läuft im Takt
+Neu gegenüber aio-pika 10.0: ``RobustChannel`` hängt ``_on_consumer_cancel``
+an den aiormq-Kanal. Ein ``basic.cancel`` des Brokers weckt die
+Verbindungsfabrik (``_request_recovery``); sie läuft im Takt
 ``reconnect_interval`` (Standard 5 s, hier per URL verkürzt) und ruft
 ``_restore_consumers``: Für jeden Tag aus ``RobustQueue._consumers``, der im
 aiormq-Kanal fehlt, öffnet sie einen Probe-Kanal (aiormq, ``timeout=5``),
@@ -13,9 +11,17 @@ schließt den Probe-Kanal und meldet mit demselben Tag neu an
 (``Queue.consume(timeout=5)``). Bricht ein Kanal-Close der Wiederherstellung
 ab, kommt das ``recovery.cancel()`` aus ``_restore_consumers``.
 
-Beobachtet (je mindestens drei Läufe):
+Die Tests unter „aio-pika ohne swarmq“ und „Fristen der Wiederherstellung“
+halten das Verhalten von aio-pika 10.2.1 mit aiormq 7.2.4 selbst fest (U3,
+Dokumentation des Upstream-Verhaltens, ohne swarmqs Kanalklasse). Nach diesen
+Messungen hat Georg am 2026-10-30 entschieden (E-089): Vom Broker beendete
+Consumer meldet nur swarmqs Consumer-Wächter neu an; ``ReleasingRobustChannel``
+schaltet aio-pikas Wiederherstellung für swarmqs Kanäle ab (U7). Die Tests
+unter „swarmq“ halten dieses Verhalten fest.
 
-* 4.3.6, Consumer-Timeout ohne swarmq: Der Broker beendet den Consumer mit
+Beobachtet an aio-pika ohne swarmq (U3, je mindestens drei Läufe):
+
+* 4.3.6, Consumer-Timeout: Der Broker beendet den Consumer mit
   ``basic.cancel``, behält dessen Tag aber auf dem Kanal (Zombie, siehe
   ``test_consumer_timeout.py``). aio-pikas Wiederanmeldung mit demselben Tag
   beantwortet RabbitMQ mit ``Connection.Close(530 NOT_ALLOWED - attempt to
@@ -23,25 +29,9 @@ Beobachtet (je mindestens drei Läufe):
   der Restore den Tag auf der neuen Verbindung an; danach genau ein Consumer.
   aiormq beantwortet das ``basic.cancel`` hier nicht mit ``CancelOk``, weil
   4.3.6 ``accept_consumer_cancel_ok`` nicht meldet (erst ab 4.3.7).
-* 4.3.6 mit swarmq-Wächter: Kommt der Wächter zuerst (eigener Cancel, neuer
-  Tag), findet aio-pika keinen fehlenden Tag; kein Probe-Kanal, genau ein
-  Consumer, die Verbindung bleibt. Kommt aio-pika zuerst, stirbt die
-  Consume-Verbindung wie oben mit 530; danach genau ein Consumer, kein
-  zweiter. Beide Reihenfolgen sind hier über ``reconnect_interval`` und den
-  Takt des Wächters erzwungen. Mit den Standardwerten (beide 5 s) entscheidet
-  die Phase der beiden Takte; aus dem Code gelesen gewinnt jede Seite etwa
-  jedes zweite Mal.
 * 4.2.9, Consumer-Timeout: Der Broker schließt den Kanal statt ``basic.cancel``
   zu schicken; der Restore legt den Tag auf einem neuen Kanal an. Kein
   Probe-Kanal, die Verbindung bleibt, genau ein Consumer.
-* Gelöschte konsumierte Queue (4.3.6 und 4.2.9, swarmq): Der Broker schickt
-  ``basic.cancel``; aio-pika öffnet je ``reconnect_interval`` einen
-  Probe-Kanal, der passive Probe (swarmq holt die Queue mit ``get_queue``)
-  scheitert an NOT_FOUND, die Queue wird nicht neu angelegt. Das geht weiter,
-  bis der Takt des Wächters den Tag abmeldet und ``release_queue`` greift;
-  danach kein Probe-Kanal mehr. Zahl der Probe-Kanäle also etwa
-  ``Wartezeit bis zum Takt / reconnect_interval``; mit den Standardwerten
-  (beide 5 s) aus dem Code geschätzt 0 bis 1, gemessen nur mit 0,2 s.
 * Wiederanmeldung, deren ``consume`` in die Frist (5 s) läuft (Antwort per
   Patch auf der Client-Seite zurückgehalten, ausgelöst über einen eigenen
   ``basic_cancel`` und ``_request_recovery``): aiormq schickt
@@ -55,18 +45,36 @@ Beobachtet (je mindestens drei Läufe):
   beendet die ganze Verbindung mit ``504 CHANNEL_ERROR - expected
   'channel.open'`` (wie F4-30, R1).
 
+Vor E-089 (U3) mit swarmq gemessen, heute durch die Tests unter „swarmq“
+ersetzt: Kam aio-pika vor dem Wächter, starb die Consume-Verbindung auf 4.3.6
+mit 530 (mit den Standardtakten etwa jedes zweite Mal); nach dem Löschen einer
+konsumierten Queue öffnete aio-pika je ``reconnect_interval`` einen
+Probe-Kanal, bis ``release_queue`` griff.
+
+swarmq (E-089, U7): Kein Probe-Kanal, keine Anmeldung mit dem alten Tag, die
+Verbindung bleibt; der Wächter meldet mit neuem Tag an (4.3.6) bzw. behält den
+Tag, den aio-pikas Kanal-Restore auf dem neuen Kanal anlegt (4.2.9). Die
+Settle-Regel (Plan 2026-10-08-1541, U7/KTD4) und das eigene Abmelden des
+Wächters bleiben.
+
 Test-Liste:
-# [x] 4.3.6 ohne swarmq: Timeout -> aio-pika meldet denselben Tag neu an ->
+# [x] aio-pika 4.3.6: Timeout -> aio-pika meldet denselben Tag neu an ->
 #     Connection.Close(530 reuse consumer tag) -> nach Reconnect ein Consumer
-# [x] 4.2.9 ohne swarmq: Timeout schließt den Kanal, kein Probe-Kanal, ein Consumer
-# [x] 4.3.6 mit Wächter zuerst: kein Probe-Kanal, ein Consumer, Verbindung bleibt
-# [x] 4.3.6 mit aio-pika zuerst: Consume-Verbindung stirbt mit 530, danach ein Consumer
-# [x] gelöschte Queue (4.3.6, 4.2.9): Probe-Kanäle je reconnect_interval bis
-#     release_queue, keine Neudeklaration, danach keine Probe mehr
-# [x] consume der Wiederanmeldung läuft in die Frist: Channel.Close(504) auf dem
-#     Consume-Kanal, Verbindung bleibt (4.3.6, 4.2.9)
-# [x] Probe-Close abgebrochen: Verbindung stirbt mit 504 expected 'channel.open'
-#     (4.3.6, 4.2.9)
+# [x] aio-pika 4.2.9: Timeout schließt den Kanal, kein Probe-Kanal, ein Consumer
+# [x] aio-pika: consume der Wiederanmeldung läuft in die Frist: Channel.Close(504)
+#     auf dem Consume-Kanal, Verbindung bleibt (4.3.6, 4.2.9)
+# [x] aio-pika: Probe-Close abgebrochen: Verbindung stirbt mit 504 expected
+#     'channel.open' (4.3.6, 4.2.9)
+# [x] swarmq 4.3.6, Wächter zuerst: aio-pika findet nichts, ein Consumer, Verbindung bleibt
+# [x] swarmq 4.3.6, kurzer reconnect_interval: aio-pika meldet nicht an, kein
+#     Probe-Kanal, kein 530; der Wächter meldet neu an, genau ein Consumer, keine
+#     doppelte Zustellung
+# [x] swarmq 4.3.6: Fabrik bei lebender Verbindung geweckt: nichts angemeldet, kein Probe-Kanal
+# [x] swarmq 4.3.6: spätes Ack nach Broker-Cancel wartet auf den eigenen Cancel, kein Zombie
+# [x] swarmq 4.2.9, kurzer reconnect_interval: Kanal-Restore mit demselben Tag,
+#     Wächter behält ihn, kein Probe-Kanal, Verbindung bleibt, keine doppelte Zustellung
+# [x] swarmq, gelöschte Queue (4.3.6, 4.2.9): kein Probe-Kanal, keine
+#     Neudeklaration; der Wächter grenzt sie ein (E-083)
 """
 
 from __future__ import annotations
@@ -328,7 +336,7 @@ async def test_42_timeout_closes_the_channel_without_a_probe(
     await again.ack()
 
 
-# --- swarmq mit Consumer-Wächter (4.3.6) ---------------------------------------
+# --- swarmq mit Consumer-Wächter (E-089) ----------------------------------------
 
 
 @dataclass
@@ -410,7 +418,7 @@ async def test_43_when_the_watch_comes_first_aio_pika_finds_no_missing_tag(
     await c.broker.ack(again)  # sonst liefe der Timeout erneut ab
 
     # aio-pikas Wiederherstellung von Hand, wie sie die Fabrik nach dem
-    # ``basic.cancel`` mit dem Standard-Takt später ausführte.
+    # ``basic.cancel`` mit dem Standard-Takt vor E-089 später ausführte.
     robust = c.broker._consume_channel
     assert isinstance(robust, aio_pika.RobustChannel)
     assert await robust._restore_consumers() is False, "nothing to retry"
@@ -424,67 +432,200 @@ async def test_43_when_the_watch_comes_first_aio_pika_finds_no_missing_tag(
     )
 
 
-@aiormq_streamwriter_leak  # TS-02: der Broker schließt die Verbindung
+@pytest.mark.entscheidung("E-089")
 @pytest.mark.timeout(40)
-async def test_43_when_aio_pika_comes_first_the_consume_connection_dies_and_one_consumer_remains(
+async def test_43_aio_pika_leaves_the_cancelled_consumer_to_the_watch_and_the_connection_stays(
     rabbitmq43: RabbitMQNode, watched_broker_on: WatchedBrokerFactory, probes: list[aiormq.abc.AbstractChannel]
 ) -> None:
+    """Vorher (U3): aio-pika kam bei kurzem ``reconnect_interval`` zuerst,
+    meldete denselben Tag neu an, und RabbitMQ beendete die Verbindung mit 530."""
     c = await watched_broker_on(rabbitmq43, query=FAST_RECOVERY, watch_interval_s=3600.0)
+    [(_, old_tag)] = c.broker.consumer_watch.tags()
+    await c.broker.publish(c.queue, b"A")
+    await c.next_delivery()
+    channel = await c.consume_underlay()
+    connection = channel.connection
+    channels_before = set(connection.channels)
+
+    assert await wait_until(lambda: old_tag not in channel.consumers, timeout=TIMEOUT_DEADLINE_S), (
+        "precondition: the broker cancels the consumer"
+    )
+    # Negativbefund: zehn Takte von reconnect_interval (0,2 s) ohne Wiederanmeldung durch aio-pika.
+    await asyncio.sleep(2.0)
+
+    assert not connection.is_closed, "no 530: aio-pika does not re-consume the zombie's tag"
+    assert old_tag not in channel.consumers
+    assert probes == []
+    assert set(connection.channels) == channels_before, "no probe channel"
+
+    with capture_swarmq_logs() as logs:
+        await c.broker.consumer_watch.tick()
+    assert [e["reason"] for e in logs if e["event"] == "consumer_reregistered"] == ["broker_cancel"]
+    [(_, new_tag)] = c.broker.consumer_watch.tags()
+    assert new_tag != old_tag
+    again = await c.next_delivery()
+    assert again.body == b"A"
+    assert isinstance(again.handle, AbstractIncomingMessage)
+    assert again.handle.consumer_tag == new_tag
+    await c.broker.ack(again)
+    await c.broker.publish(c.queue, b"B")
+    later = await c.next_delivery()
+    assert later.body == b"B"
+    await c.broker.ack(later)
+    await channel.basic_qos(prefetch_count=10)  # Round-Trip: Acks verarbeitet, keine weitere Zustellung unterwegs
+    assert c.deliveries.empty(), "no delivery twice"
+    assert not connection.is_closed
+    assert await _consumer_count(rabbitmq43, c.queue) == 1
+    assert await wait_until(
+        lambda: _management_consumer_tags(rabbitmq43, c.queue) == {new_tag}, timeout=TIMEOUT_DEADLINE_S
+    )
+
+
+@pytest.mark.entscheidung("E-089")
+@pytest.mark.timeout(40)
+async def test_43_a_woken_connection_factory_does_not_re_consume_the_cancelled_tag(
+    rabbitmq43: RabbitMQNode, watched_broker_on: WatchedBrokerFactory, probes: list[aiormq.abc.AbstractChannel]
+) -> None:
+    """Auch wenn aio-pikas Verbindungsfabrik bei lebender Verbindung aufwacht
+    (hier von Hand, sonst etwa nach einem gescheiterten Durchgang), meldet sie
+    für swarmqs Kanäle keinen Consumer an und öffnet keinen Probe-Kanal."""
+    c = await watched_broker_on(rabbitmq43, query=FAST_RECOVERY, watch_interval_s=3600.0)
+    [(_, old_tag)] = c.broker.consumer_watch.tags()
+    await c.broker.publish(c.queue, b"A")
+    await c.next_delivery()
+    channel = await c.consume_underlay()
+    connection = channel.connection
+    channels_before = set(connection.channels)
+    assert await wait_until(lambda: old_tag not in channel.consumers, timeout=TIMEOUT_DEADLINE_S), (
+        "precondition: the broker cancels the consumer"
+    )
+
+    robust = c.broker._consume_channel
+    assert isinstance(robust, aio_pika.RobustChannel)
+    robust._connection._request_recovery()  # type: ignore[attr-defined]  # Einstieg der Fabrik bei lebender Verbindung
+    # Negativbefund: zehn Takte von reconnect_interval (0,2 s).
+    await asyncio.sleep(2.0)
+
+    assert not connection.is_closed, "no 530"
+    assert old_tag not in channel.consumers
+    assert probes == []
+    assert set(connection.channels) == channels_before, "no probe channel"
+    await c.broker.consumer_watch.tick()
+    [(_, new_tag)] = c.broker.consumer_watch.tags()
+    assert new_tag != old_tag
+    assert await _consumer_count(rabbitmq43, c.queue) == 1
+
+
+@pytest.mark.timeout(40)
+async def test_43_a_late_ack_after_the_broker_cancel_waits_for_the_own_cancel_and_the_connection_stays(
+    rabbitmq43: RabbitMQNode, watched_broker_on: WatchedBrokerFactory, probes: list[aiormq.abc.AbstractChannel]
+) -> None:
+    """Settle-Regel (Plan 2026-10-08-1541, U7/KTD4) bei kurzem
+    ``reconnect_interval``: Das späte Ack stößt den Wächter an und geht erst
+    nach dessen eigenem Cancel raus; aio-pika kommt nicht dazwischen."""
+    c = await watched_broker_on(rabbitmq43, query=FAST_RECOVERY, watch_interval_s=3600.0)
+    [(_, old_tag)] = c.broker.consumer_watch.tags()
+    await c.broker.publish(c.queue, b"A")
+    first = await c.next_delivery()
+    channel = await c.consume_underlay()
+    assert await wait_until(lambda: old_tag not in channel.consumers, timeout=TIMEOUT_DEADLINE_S), (
+        "precondition: the broker cancels the consumer"
+    )
+
+    with capture_swarmq_logs() as logs:
+        await c.broker.ack(first)  # spätes Ack: erst nach dem eigenen Cancel
+
+    assert [e["event"] for e in logs if e["event"].startswith("delivery_settle")] == ["delivery_settle_deferred"]
+    assert old_tag in c.broker.consumer_watch.self_cancelled_tags
+    # Das Ack kehrt nach dem eigenen Cancel zurück; die Neuanmeldung im selben Takt folgt.
+    assert await wait_until(lambda: bool(c.broker.consumer_watch.tags()), timeout=EVENT_DEADLINE_S)
+    [(_, new_tag)] = c.broker.consumer_watch.tags()
+    await c.broker.publish(c.queue, b"B")
+    got = [await c.next_delivery() for _ in range(2)]
+    assert sorted(d.body for d in got) == [b"A", b"B"]
+    assert {d.handle.consumer_tag for d in got if isinstance(d.handle, AbstractIncomingMessage)} == {new_tag}
+    for delivery in got:
+        await c.broker.ack(delivery)
+    await channel.basic_qos(prefetch_count=10)  # Round-Trip: Acks verarbeitet
+    assert c.deliveries.empty(), "no delivery twice"
+    assert not channel.is_closed
+    assert not channel.connection.is_closed
+    assert probes == []
+    assert await wait_until(
+        lambda: _management_consumer_tags(rabbitmq43, c.queue) == {new_tag}, timeout=TIMEOUT_DEADLINE_S
+    ), "no zombie"
+
+
+@pytest.mark.timeout(40)
+async def test_42_the_channel_restore_keeps_the_tag_and_the_watch_keeps_it(
+    rabbitmq42: RabbitMQNode, watched_broker_on: WatchedBrokerFactory, probes: list[aiormq.abc.AbstractChannel]
+) -> None:
+    """4.2.9 schickt kein ``basic.cancel``, sondern schließt den Kanal; der
+    Restore (``_on_close``, wie in aio-pika 10.0) legt den Tag auf dem neuen
+    Kanal an. Der Wächter behält ihn, auch bei kurzem ``reconnect_interval``."""
+    c = await watched_broker_on(rabbitmq42, query=FAST_RECOVERY, watch_interval_s=3600.0)
     [(_, tag)] = c.broker.consumer_watch.tags()
     await c.broker.publish(c.queue, b"A")
     await c.next_delivery()
-    connection = (await c.consume_underlay()).connection
+    channel = await c.consume_underlay()
+    connection = channel.connection
 
-    await asyncio.wait({connection.closing}, timeout=TIMEOUT_DEADLINE_S)
+    await asyncio.wait({channel.closing}, timeout=TIMEOUT_DEADLINE_S)
+    again = await c.next_delivery()
 
-    assert connection.is_closed, "the consume connection dies"
-    reason = connection.closing.exception()
-    assert isinstance(reason, ConnectionNotAllowed)
-    assert f"attempt to reuse consumer tag '{tag}'" in str(reason)
-    assert len(probes) == 1
-
-    async def restored() -> bool:
-        underlay = await c.consume_underlay()
-        return underlay.connection is not connection and tag in underlay.consumers
-
-    assert await wait_until(restored, timeout=EVENT_DEADLINE_S), "the restore registers the same tag again"
-    await c.broker.consumer_watch.tick()
-    assert c.broker.consumer_watch.tags() == [(c.queue, tag)], "the watch keeps the restored tag"
-    assert await _consumer_count(rabbitmq43, c.queue) == 1
+    assert channel.is_closed, "precondition: the broker closes the channel"
+    assert isinstance(again.handle, AbstractIncomingMessage)
+    assert again.body == b"A"
+    assert again.handle.consumer_tag == tag
+    await c.broker.ack(again)
+    for _ in range(2):  # zwei Takte: auch ein ersetzter Kanal führte nicht zur Neuanmeldung
+        await c.broker.consumer_watch.tick()
+    assert c.broker.consumer_watch.tags() == [(c.queue, tag)]
+    await c.broker.publish(c.queue, b"B")
+    later = await c.next_delivery()
+    assert later.body == b"B"
+    await c.broker.ack(later)
+    restored = await c.consume_underlay()
+    await restored.basic_qos(prefetch_count=10)  # Round-Trip: Acks verarbeitet
+    assert c.deliveries.empty(), "no delivery twice"
+    assert not connection.is_closed
+    assert probes == []
+    assert await _consumer_count(rabbitmq42, c.queue) == 1
 
 
 # --- Gelöschte konsumierte Queue -----------------------------------------------
 
 
-@aiormq_streamwriter_leak  # TS-02: der Broker schließt die Probe-Kanäle
+@pytest.mark.entscheidung("E-089")
 @pytest.mark.timeout(40)
-async def test_a_deleted_queue_is_probed_each_reconnect_interval_until_release_queue(
+async def test_a_deleted_queue_gets_no_probe_and_the_watch_fences_it(
     any_rabbitmq: RabbitMQNode, watched_broker_on: WatchedBrokerFactory, probes: list[aiormq.abc.AbstractChannel]
 ) -> None:
+    """Vorher (U3): aio-pika öffnete nach dem ``basic.cancel`` des Brokers je
+    ``reconnect_interval`` einen Probe-Kanal, bis ``release_queue`` griff."""
     c = await watched_broker_on(
         any_rabbitmq, query=FAST_RECOVERY, watch_interval_s=3600.0, timeout_ms=None, queue_type="classic"
     )
     channel = await c.consume_underlay()
+    [(_, tag)] = c.broker.consumer_watch.tags()
+    channels_before = set(channel.connection.channels)
 
     await _delete_queue(any_rabbitmq, c.queue)
-
-    assert await wait_until(lambda: len(probes) >= 3, timeout=TIMEOUT_DEADLINE_S), (
-        "aio-pika probes the deleted queue again and again"
+    assert await wait_until(lambda: tag not in channel.consumers, timeout=EVENT_DEADLINE_S), (
+        "precondition: the broker cancels the consumer of the deleted queue"
     )
-    assert all(probe.is_closed for probe in probes[:-1]), "each probe channel ends (NOT_FOUND)"
-    assert not await _queue_exists(any_rabbitmq, c.queue), "the passive probe does not declare the queue again"
+    # Negativbefund: zehn Takte von reconnect_interval (0,2 s) ohne Probe-Kanal.
+    await asyncio.sleep(2.0)
+
+    assert probes == []
+    assert set(channel.connection.channels) == channels_before, "no probe channel"
+    assert not await _queue_exists(any_rabbitmq, c.queue), "nobody declares the queue again"
 
     with capture_swarmq_logs() as logs:
-        await c.broker.consumer_watch.tick()  # Wächter: Cancel, Existenzprüfung, release_queue
+        await c.broker.consumer_watch.tick()  # Wächter: Cancel, Existenzprüfung, release_queue (E-083)
     assert [e["queue"] for e in logs if e["event"] == "consumer_queue_missing"] == [c.queue]
-    released = len(probes)
-    # Negativbefund: fünf Takte von reconnect_interval (0,2 s) ohne neuen Probe-Kanal.
-    await asyncio.sleep(1.0)
-
-    assert len(probes) - released <= 1, "at most a probe already under way when the watch released the queue"
-    settled = len(probes)
-    await asyncio.sleep(1.0)
-    assert len(probes) == settled, "no probe after release_queue"
+    assert c.broker.consumer_missing_queues() == [c.queue]
+    assert probes == []
     assert not await _queue_exists(any_rabbitmq, c.queue)
     assert not channel.is_closed, "the shared consume channel stays open"
     assert not channel.connection.is_closed

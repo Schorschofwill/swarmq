@@ -29,6 +29,19 @@ je Verbindung meldet das eine WARNING. Dass ``closing`` je Zugriff einen
 eigenen Beobachter liefert, den abzubrechen niemand sonst stört, hält
 ``tests/unit/broker/test_aiormq_7_2_semantics.py`` fest; ohne aiormq-Verbindung
 (Test-Doubles) öffnet ebenso aio-pikas ``_open``, ohne WARNING.
+
+``ReleasingRobustChannel`` schaltet außerdem die Consumer-Wiederherstellung
+ab, die aio-pika 10.2 nach einem ``basic.cancel`` des Brokers startet (E-089,
+Plan 2026-10-29-1945, KTD7/U7): ``_on_consumer_cancel`` weckt die
+Verbindungsfabrik nicht, und ``_restore_consumers`` tut nichts, falls sie aus
+anderem Grund bei lebender Verbindung aufwacht. Kein Probe-Kanal, keine
+Anmeldung mit dem alten Tag; vom Broker beendete Consumer meldet nur der
+Consumer-Wächter neu an. Unberührt bleibt die Wiederherstellung eines vom
+Broker geschlossenen Kanals (``_on_close``) und nach einem Reconnect
+(``_on_connected``): Sie legt die Consumer aus ``RobustQueue._consumers`` mit
+ihren Tags auf dem neuen Kanal an wie in aio-pika 10.0. Laufen beide Einstiege
+in aio-pika nicht mehr über diese Namen, gilt fail-open: aio-pika stellt wieder
+her wie dort, einmal je Verbindung meldet das eine WARNING.
 """
 
 from __future__ import annotations
@@ -60,6 +73,11 @@ _UNDERLAY_FIELDS = frozenset({"channel", "close_callback"})
 
 #: Verbindungen, deren Rückfall auf aio-pikas ``_open`` schon gemeldet ist.
 _unfit_reported: weakref.WeakSet[Any] = weakref.WeakSet()
+
+#: Die Verbindungsfabrik von ``aio_pika.RobustConnection`` (privat, Name-Mangling).
+_CONNECTION_FACTORY_ATTR = "_RobustConnection__connection_factory"
+#: Verbindungen, deren geänderte Consumer-Wiederherstellung schon gemeldet ist.
+_recovery_unfit_reported: weakref.WeakSet[Any] = weakref.WeakSet()
 
 
 class _ReleasingUnderlay(UnderlayChannel):
@@ -176,3 +194,43 @@ class ReleasingRobustChannel(aio_pika.RobustChannel):
     @override
     async def _open(self) -> None:
         await _open(self, super()._open)
+
+    @override
+    async def _on_open(self) -> None:
+        if not _consumer_recovery_entries_fit():
+            _report_recovery_unfit(self._connection)
+        await super()._on_open()
+
+    @override
+    def _on_consumer_cancel(self, frame: aiormq.spec.Basic.Cancel) -> None:
+        """Ein ``basic.cancel`` des Brokers weckt aio-pikas Verbindungsfabrik nicht (E-089)."""
+        del frame
+
+    @override
+    async def _restore_consumers(self) -> bool:
+        """Wacht die Fabrik bei lebender Verbindung trotzdem auf: kein Probe-Kanal,
+        keine Anmeldung, nichts zu wiederholen (E-089)."""
+        return False
+
+
+def _consumer_recovery_entries_fit() -> bool:
+    """``True``, solange aio-pikas Consumer-Wiederherstellung über die Einstiege
+    aus 10.2.1 läuft, die ``ReleasingRobustChannel`` abschaltet."""
+    on_open = aio_pika.RobustChannel._on_open.__code__.co_names
+    factory = getattr(aio_pika.RobustConnection, _CONNECTION_FACTORY_ATTR, None)
+    factory_names: tuple[str, ...] = getattr(getattr(factory, "__code__", None), "co_names", ())
+    return "_on_consumer_cancel" in on_open and "_restore_consumers" in factory_names
+
+
+def _report_recovery_unfit(connection: object) -> None:
+    if connection in _recovery_unfit_reported:
+        return
+    _recovery_unfit_reported.add(connection)
+    logger.warning(
+        "consumer_recovery_disable_unavailable",
+        hint=(
+            "aio-pika's consumer recovery differs from the version swarmq was built against; aio-pika may "
+            "re-register a consumer cancelled by the broker next to swarmq's consumer watch, on RabbitMQ 4.3 "
+            "with the old tag, which closes the connection with 530 (fail-open)"
+        ),
+    )
