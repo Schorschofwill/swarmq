@@ -6,10 +6,16 @@ abgemeldet. Das ``WeakSet`` ist privates aio-pika-API: fehlt es, gilt fail-open
 mit einer WARNING je Verbindung (wie beim Blocked-Zustand, E-025).
 
 Test-Liste:
-# [x] einfache Verbindung: der Wegwerf-Kanal kommt aus ``connection.channel()``
+# [x] keine aio-pika-Verbindung (Test-Double): der Wegwerf-Kanal kommt aus ``connection.channel()``
+#     (einfache ``aio_pika.Connection``: ``tests/unit/broker/test_underlay.py``, KTD6)
 # [x] ``release_channel`` ohne ``RobustConnection``: nichts zu tun, keine WARNING
 # [x] ``WeakSet`` fehlt (aio-pika geändert): fail-open, eine WARNING je Verbindung, kein Fehler
 # [x] ``close()`` auf geliehener Verbindung: der Reconnect des Aufrufers öffnet den Publish-Kanal nicht wieder
+# [x] aio-pika 10.2 (Versionsschutz, U6): ein per ``close()`` geschlossener ``RobustChannel`` kommt auch
+#     ohne ``release_channel`` nach einem Reconnect nicht wieder; ein noch offener schon (verworfen,
+#     das Close wartet im Alarm), darum bleibt ``release_channel``
+# [x] aio-pika 10.2 (Versionsschutz, F4-22): ``_on_connected`` setzt ``connected``, bevor die
+#     Kanäle wiederhergestellt sind; das Restore-Fenster aus F4-22 gibt es weiter
 # [x] ``release_queue``: nur diese Queue verlässt die Restore-Liste des ``RobustChannel`` (PF-20, E-083)
 # [x] ``readmit_queue``: die Queue kommt zurück in die Restore-Liste
 # [x] ``_queues`` fehlt (aio-pika geändert): fail-open, eine WARNING je Kanal; ohne ``RobustChannel`` nichts zu tun
@@ -17,8 +23,10 @@ Test-Liste:
 
 from __future__ import annotations
 
+import asyncio
 import gc
 from collections.abc import Iterator
+from typing import Any, override
 from unittest.mock import Mock
 
 import aio_pika
@@ -31,7 +39,14 @@ from swarmq.broker.rabbitmq.robust_channels import (
     release_channel,
     release_queue,
 )
-from tests.unit.broker.test_befund_f4_20_restore_closed_channels import _connected_broker, _reconnect
+from tests.unit.broker.test_befund_f4_20_restore_closed_channels import (
+    _connected_broker,
+    _FakeAiormq,
+    _FakeAiormqChannel,
+    _FakeTransport,
+    _reconnect,
+    _settle,
+)
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -45,8 +60,8 @@ def no_collection() -> Iterator[None]:
         gc.enable()
 
 
-def test_a_plain_connection_opens_its_own_channel() -> None:
-    connection = Mock(spec=aio_pika.Connection)
+def test_a_connection_not_from_aio_pika_opens_its_own_channel() -> None:
+    connection = Mock()
     channel = Mock()
     connection.channel.return_value = channel
 
@@ -84,7 +99,57 @@ async def test_closing_a_broker_on_a_borrowed_connection_releases_its_publish_ch
     assert sorted(fresh.channels) == [], "the caller's reconnect does not reopen swarmq's publish channel"
 
 
+@pytest.mark.usefixtures("no_collection")
+async def test_aio_pika_does_not_reopen_a_robust_channel_closed_with_close() -> None:
+    _, connection, first = await _connected_broker()
+    closed = await connection.channel()
+    kept = await connection.channel()
+    await closed.close()
+
+    fresh = await _reconnect(connection, first)
+
+    assert closed.is_closed
+    assert not kept.is_closed, "precondition: the reconnect restores the channels still open"
+    assert len(fresh.channels) == 2, "the publish channel and the kept one, not the closed one"
+
+
+class _HeldAiormq(_FakeAiormq):
+    """Öffnet Kanäle erst nach ``release``: Der Restore hängt im ``Channel.Open``."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.release = asyncio.Event()
+
+    @override
+    async def channel(self, **kwargs: Any) -> _FakeAiormqChannel:
+        await self.release.wait()
+        return await super().channel(**kwargs)
+
+
+@pytest.mark.befund("F4-22")
+@pytest.mark.usefixtures("no_collection")
+async def test_aio_pika_sets_connected_before_it_restores_the_channels() -> None:
+    broker, connection, first = await _connected_broker()
+    channel = broker._publish_channel
+    assert channel is not None
+    connection.transport = None
+    connection.connected.clear()
+    await first.drop()
+    await _settle()
+    fresh = _HeldAiormq()
+    connection.transport = _FakeTransport(fresh)  # type: ignore[assignment]  # Fake statt UnderlayConnection
+
+    reconnect = asyncio.create_task(connection._on_connected())
+    await asyncio.wait_for(connection.connected.wait(), timeout=1)
+
+    assert channel.is_closed, "connected is set while the channel still waits for its restore"
+    fresh.release.set()
+    await reconnect
+    assert not channel.is_closed
+
+
 def _robust_channel() -> aio_pika.RobustChannel:
+
     return aio_pika.RobustChannel(aio_pika.RobustConnection(URL("amqp://guest:guest@localhost/")))
 
 

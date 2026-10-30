@@ -39,6 +39,7 @@ from typing import Any, cast
 import aio_pika
 
 from swarmq.broker.rabbitmq.channel_close import close_without_abort
+from swarmq.broker.rabbitmq.underlay import ReleasingChannel
 from swarmq.logging import get_logger
 
 logger = get_logger(__name__)
@@ -56,12 +57,13 @@ def open_throwaway_channel(connection: aio_pika.abc.AbstractConnection) -> aio_p
     """Ein nicht-robuster Kanal auf ``connection``, wie ``connection.channel()``
     noch nicht geoeffnet (erst ``await`` oeffnet ihn).
 
-    Auf einer ``RobustConnection`` ein ``aio_pika.Channel`` statt des
-    ``RobustChannel``: Er steht nicht im ``WeakSet`` der Verbindung, ein
-    Reconnect oeffnet ihn nicht wieder (F4-20). Jede andere Verbindung liefert
-    ohnehin einen nicht-robusten Kanal."""
-    if isinstance(connection, aio_pika.RobustConnection):
-        return aio_pika.Channel(connection)
+    Auf einer ``RobustConnection`` kein ``RobustChannel``: Er steht nicht im
+    ``WeakSet`` der Verbindung, ein Reconnect oeffnet ihn nicht wieder (F4-20).
+    Auf jeder aio-pika-Verbindung ein ``ReleasingChannel``: Geschlossen laesst
+    er keinen Beobachter an der Verbindung zurueck (KTD6, Plan 2026-10-29-1945).
+    Andere Verbindungen (Test-Doubles) liefern ihren eigenen Kanal."""
+    if isinstance(connection, aio_pika.Connection):
+        return ReleasingChannel(connection)
     return connection.channel()
 
 
