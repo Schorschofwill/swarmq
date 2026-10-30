@@ -33,7 +33,7 @@ from unittest.mock import AsyncMock
 import pytest
 from aio_pika.exceptions import ChannelNotFoundEntity, ChannelPreconditionFailed, PublishError
 from aiormq.abc import DeliveredMessage
-from aiormq.exceptions import ChannelInvalidStateError, ConnectionClosed
+from aiormq.exceptions import ChannelInvalidStateError, ConnectionClosed, InvalidFrameError
 from pamqp.commands import Basic
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
@@ -497,6 +497,9 @@ async def test_redeclare_after_unroutable_runs_the_chain_and_refills_the_cache()
         pytest.param("active", ConnectionClosed(320, "CONNECTION_FORCED"), id="active-connection-closed"),
         pytest.param("active", ChannelInvalidStateError("channel closed"), id="active-channel-invalid"),
         pytest.param("active", RuntimeError("connection closed"), id="active-runtime-error"),
+        # KTD4 (Plan 2026-10-29-1945): aiormq 7.2 meldet einen kaputten Frame
+        # des Readers so; die Verbindung ist tot wie bei ``ConnectionClosed``.
+        pytest.param("active", InvalidFrameError(b"\x00"), id="active-invalid-frame"),
     ],
 )
 async def test_connection_loss_inside_the_chain_becomes_broker_connection_error(step: str, error: Exception) -> None:

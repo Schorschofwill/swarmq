@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import os
 import uuid
 from collections.abc import AsyncIterator
 
@@ -32,42 +31,26 @@ from aiormq.exceptions import AMQPConnectionError
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import PublishIndeterminate
-from tests.e2e.combinations._toxiproxy import (
-    DEFAULT_ADMIN_HOST,
-    DEFAULT_ADMIN_PORT,
-    ProxyConfig,
-    ToxiproxyClient,
-    proxy_defaults,
-)
+from tests.e2e.combinations._toxiproxy import ToxiproxyClient
+from tests.integration.broker.conftest import PROXY as _PROXY
+from tests.integration.broker.conftest import PROXY_PORT as _PROXY_PORT
 from tests.support.known_leaks import aiormq_streamwriter_leak
 from tests.support.queues import delete_queue_family
-from tests.support.services import RABBITMQ_HOST, RABBITMQ_PORT, port_is_open, rabbitmq_amqp_url
+from tests.support.services import rabbitmq_amqp_url
 from tests.support.wait import wait_until
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(60)]
 
-_ADMIN_HOST = os.environ.get("SWARMQ_TEST_TOXIPROXY_HOST", DEFAULT_ADMIN_HOST)
-_ADMIN_PORT = int(os.environ.get("SWARMQ_TEST_TOXIPROXY_PORT", str(DEFAULT_ADMIN_PORT)))
-# Wie die Kombinationen: Compose-Stack -> 5673/rabbitmq:5672, sonst ein
-# Host-Toxiproxy einen Port unter dem Testport (Standard 5698 -> 5699).
-_DEFAULT_PROXY_PORT, _DEFAULT_UPSTREAM = proxy_defaults("rabbitmq", RABBITMQ_HOST, RABBITMQ_PORT, 5672, 5673)
-_PROXY_PORT = int(os.environ.get("SWARMQ_TEST_TOXIPROXY_RMQ_PORT", str(_DEFAULT_PROXY_PORT)))
-_UPSTREAM = os.environ.get("SWARMQ_TEST_TOXIPROXY_RMQ_UPSTREAM", _DEFAULT_UPSTREAM)
-_PROXY = "rabbitmq"
 _TOXIC = "b24-hold-confirms"
 
 
 @pytest.fixture
-async def toxiproxy() -> AsyncIterator[ToxiproxyClient]:
-    if not port_is_open(_ADMIN_HOST, _ADMIN_PORT):
-        pytest.skip(f"Toxiproxy not reachable at {_ADMIN_HOST}:{_ADMIN_PORT}")
-    async with ToxiproxyClient(host=_ADMIN_HOST, port=_ADMIN_PORT) as client:
-        await client.create_proxy(ProxyConfig(name=_PROXY, listen=f"0.0.0.0:{_PROXY_PORT}", upstream=_UPSTREAM))
-        try:
-            yield client
-        finally:
-            await client.remove_toxic(_PROXY, _TOXIC)
-            await client.set_proxy_enabled(_PROXY, True)
+async def hold_confirms(toxiproxy: ToxiproxyClient) -> AsyncIterator[ToxiproxyClient]:
+    """Proxy aus ``conftest.toxiproxy``; entfernt am Ende den Toxic dieses Tests."""
+    try:
+        yield toxiproxy
+    finally:
+        await toxiproxy.remove_toxic(_PROXY, _TOXIC)
 
 
 async def _depth(queue: str) -> int:
@@ -84,8 +67,9 @@ async def _depth(queue: str) -> int:
 # TS-02: der abgeschaltete Proxy trennt die Verbindung (tests/support/known_leaks.py).
 @aiormq_streamwriter_leak
 async def test_connection_lost_while_waiting_for_the_confirm_is_indeterminate(
-    toxiproxy: ToxiproxyClient,
+    hold_confirms: ToxiproxyClient,
 ) -> None:
+    toxiproxy = hold_confirms
     queue = f"b24_{uuid.uuid4().hex[:8]}"
     broker = RabbitMQBroker(rabbitmq_amqp_url("127.0.0.1", _PROXY_PORT))
     await broker.connect()

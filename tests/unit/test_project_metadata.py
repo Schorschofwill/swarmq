@@ -5,7 +5,7 @@ Testliste:
 # [x] Python 3.14, Typed, AsyncIO und ein Entwicklungsstand sind angegeben
 # [x] keine Lizenz-Klassifikatoren: die Lizenz steht als SPDX-Ausdruck in ``license`` (PEP 639)
 # [x] Schlagworte und Autor sind gesetzt
-# [x] aiormq ist unter 7.1 begrenzt, aio-pika unter 10.1, und uv.lock liegt innerhalb der Grenzen
+# [x] aiormq liegt in [7.2.4, 7.3), aio-pika in [10.2.1, 10.3), und uv.lock liegt innerhalb der Grenzen
 """
 
 from __future__ import annotations
@@ -49,16 +49,20 @@ def test_keywords_and_author_are_set() -> None:
     assert project["authors"] == [{"name": "Georg Stricker"}]
 
 
-def test_aiormq_is_capped_below_the_untested_7_1() -> None:
-    """aiormq 7.1/7.2 haben ``basic_publish`` umgebaut; swarmqs Umgehungen um
-    aiormq sind dagegen nicht geprüft (docs/plans/
-    2026-10-29-1700-chore-abhaengigkeiten-anheben-plan.md, KTD1). aio-pika
-    10.0 erlaubt ``aiormq<8``, darum braucht aiormq eine eigene Grenze."""
+def test_aiormq_and_aio_pika_are_bounded_to_the_tested_minor() -> None:
+    """Untergrenzen: erst aiormq 7.2.4 und aio-pika 10.2.1 bringen die
+    Korrekturen, auf die swarmq sich verlässt (Sperre mit erneuter
+    Schließprüfung, ``sent`` in ``basic_publish``). Obergrenzen beim nächsten
+    Minor, weil swarmq an privaten Interna hängt (docs/plans/
+    2026-10-29-1945-chore-aiormq-7-2-anheben-plan.md, KTD8). aio-pika
+    erlaubt ``aiormq<8``, darum braucht aiormq eine eigene Grenze."""
     anforderungen = {r.name: r for r in map(Requirement, _project()["dependencies"])}
     lock = tomllib.loads((_ROOT / "uv.lock").read_text(encoding="utf-8"))
     gesperrt = {p["name"]: p["version"] for p in lock["package"] if "version" in p}
 
-    assert not anforderungen["aiormq"].specifier.contains("7.1.0")
-    assert not anforderungen["aio-pika"].specifier.contains("10.1.0")
+    assert not anforderungen["aiormq"].specifier.contains("7.2.3")
+    assert not anforderungen["aiormq"].specifier.contains("7.3.0")
+    assert not anforderungen["aio-pika"].specifier.contains("10.2.0")
+    assert not anforderungen["aio-pika"].specifier.contains("10.3.0")
     assert anforderungen["aiormq"].specifier.contains(gesperrt["aiormq"])
     assert anforderungen["aio-pika"].specifier.contains(gesperrt["aio-pika"])

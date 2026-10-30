@@ -98,7 +98,7 @@ Cron bei Zeitumstellung (Berlin, New York, Lord Howe), sieben Workflow-Kombinati
 | FS-05, FS-20 | `tests/unit/worker/test_befund_fs05_task_timeout_error.py` | behoben (U18, 2632029; Review 06958c8) |
 | FS-06 | `tests/integration/backend/test_befund_fs06_retry_after_lost_reply.py` | behoben (Fire-Claim U6, c8f407a; Unique-Claim und Mutex U11, 86798d1; Review 72036b1) |
 | FS-07 | `tests/unit/scheduler/test_befund_fs07_unique_claim_after_timeout.py`, `tests/unit/worker/gates/test_befund_fs07_lock_claim_after_timeout.py` `tests/unit/client/test_befund_fs07_client_claim_after_timeout.py` | behoben (U12, 2dc73f8; Review 21a1d46) |
-| FS-08 | `tests/unit/broker/test_befund_fs08_publish_lock_waiter.py` | behoben (U8, 67cb34b; Review 44722f6) |
+| FS-08 | `tests/integration/broker/test_befund_fs08_lock_waiter_aiormq_7_2.py` (gegen echtes aiormq 7.2; ersetzt den Unit-Nachbau `tests/unit/broker/test_befund_fs08_publish_lock_waiter.py`, Plan 2026-10-29-1945, KTD5) | behoben (U8, 67cb34b; Review 44722f6); Ursache seit aiormq 7.2 (#240) upstream behoben |
 | FS-09 | `tests/unit/broker/test_befund_fs09_consumer_watch_rpc_abort.py` | behoben (U10, 7643879; Review 3348b96) |
 | FS-10 | `tests/integration/broker/test_befund_fs10_dlq_replay_counters.py` (maßgeblich), `tests/unit/worker/test_befund_fs10_dlq_copy_counters.py` | behoben für Worker-Kopien (U16, b69dd89; Review 7a50258); Grenze: Broker-DLX-Kopien behalten den Zähler (xfail) |
 | FS-12 | `tests/unit/worker/test_befund_fs12_cancel_before_start.py` | behoben (U15, 4956358; Review 546cd08) |

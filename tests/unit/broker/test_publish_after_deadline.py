@@ -13,6 +13,10 @@ Testliste:
 - [x] Grenzwert: Frist genau jetzt gilt als verstrichen
 - [x] kein Verwurf des Publish-Kanals, keine WARNING publish_deadline_exceeded
 - [x] Frist in der Zukunft: Publish geht normal raus
+- [x] Annahme unter aiormq 7.2 (Plan 2026-10-29-1945, U5): ``basic_publish``
+      reiht den Frame vor dem ersten Suspendieren ein, obwohl es vorher
+      ``asyncio.timeout`` und die Kanal-Sperre betritt; eine schon verstrichene
+      Frist greift erst danach. Darum bleibt die Pruefung vor dem Publish noetig.
 """
 
 from __future__ import annotations
@@ -26,6 +30,7 @@ import pytest
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.contracts import Delivery
 from swarmq.exceptions import BrokerConnectionError, PublishIndeterminate
+from tests.support.aiormq_transport import FakeTransport
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -124,3 +129,17 @@ async def test_dead_letter_after_the_deadline_sends_no_copy_and_keeps_the_origin
     assert not isinstance(info.value, PublishIndeterminate)
     assert _sent(broker) == []
     cast("AsyncMock", delivery.handle).ack.assert_not_called()
+
+
+async def test_aiormq_enqueues_the_frame_before_an_elapsed_deadline_fires() -> None:
+    """FS-02-Annahme gegen aiormqs ``basic_publish`` (7.2): Weder
+    ``asyncio.timeout`` noch die freie Kanal-Sperre suspendieren; der Frame
+    liegt in der ``write_queue``, bevor ``asyncio.timeout(0)`` abbricht. Ohne
+    die Pruefung vor dem Publish ginge er nach der Endfrist trotzdem raus."""
+    transport = FakeTransport()
+
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0):
+            await transport.basic_publish(b"{}", routing_key="tasks")
+
+    assert transport.write_queue.qsize() == 1

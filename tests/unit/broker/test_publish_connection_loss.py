@@ -27,10 +27,18 @@ Test-Liste:
       Original unbestaetigt
 - [x] pamqp-Framefehler, bevor der Frame geschrieben ist -> Wiederholung wie
       bei AMQPConnectionError (nichts gesendet), nicht roh
+- [x] ebenso ``InvalidFrameError``, mit dem aiormq 7.2 den pamqp-Fehler des
+      Readers meldet (KTD4, Plan 2026-10-29-1945)
+- [x] ``InvalidFrameError`` beim Warten auf das Confirm -> PublishIndeterminate
+- [x] Fehler unter der Kanal-Sperre vor dem Einreihen (Marshalling) -> nicht
+      gesendet: der Fehler geht roh durch, nicht als PublishIndeterminate (KTD3)
 - [x] Abriss vor dem Schreiben: das verwaiste Confirm-Future wird abgeholt,
       asyncio meldet kein "Future exception was never retrieved"
 - [x] Aufrufer bricht ab, bevor der Frame geschrieben ist (``wait_for``), der
       Abriss kommt danach: auch dieses Confirm wird abgeholt
+- [x] Versionsschutz: aiormqs ``FutureStore`` holt die Ausnahme eines
+      abgelehnten Futures selbst ab, auf das niemand wartet (aiormq #253;
+      deshalb holt swarmq das Confirm nicht mehr selbst ab, KTD3)
 """
 
 from __future__ import annotations
@@ -41,10 +49,11 @@ from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
+import aiormq.base
 import pamqp.exceptions
 import pytest
 from aiormq.abc import ChannelFrame
-from aiormq.exceptions import AMQPConnectionError, ChannelClosed
+from aiormq.exceptions import AMQPConnectionError, ChannelClosed, InvalidFrameError
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.contracts import Delivery
@@ -220,6 +229,61 @@ async def test_a_reader_failure_before_the_frame_was_written_retries_on_a_new_ch
     assert receipt.queue == "tasks"
 
 
+async def test_an_invalid_frame_before_the_frame_was_written_retries_on_a_new_channel() -> None:
+    """KTD4 (R6): aiormq 7.2 meldet einen kaputten Frame des Readers als
+    ``InvalidFrameError``; gesendet wurde nichts, also wie B24 wiederholen."""
+    first, second = FakeTransport(), FakeTransport()
+    broker = _broker(first, second)
+    publish = asyncio.create_task(broker.publish("tasks", b"{}"))
+
+    await first.next_frame()
+    first.lose_connection(InvalidFrameError(b"\x00"))
+    frame = await _frame_or_outcome(second, publish)
+    frame.drain()
+    second.confirm_all()
+
+    receipt = await publish
+    assert receipt.queue == "tasks"
+
+
+async def test_an_invalid_frame_while_waiting_for_the_confirm_is_indeterminate() -> None:
+    transport = FakeTransport()
+    broker = _broker(transport)
+    publish = asyncio.create_task(broker.publish("tasks", b"{}"))
+
+    frame = await transport.next_frame()
+    frame.drain()
+    lost = InvalidFrameError(b"\x00")
+    transport.lose_connection(lost)
+
+    with pytest.raises(PublishIndeterminate) as caught:
+        await publish
+    assert caught.value.__cause__ is lost
+    assert broker._publish_channel_factory.await_count == 1  # type: ignore[union-attr]
+
+
+async def test_a_failure_before_the_frames_are_enqueued_is_not_indeterminate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """KTD3: aiormq 7.2 bindet ``drain_future = None`` schon vor dem Einreihen;
+    erst ``sent`` sagt, ob die Frames in der ``write_queue`` liegen. Ein Fehler
+    davor hat nichts gesendet."""
+    transport = FakeTransport()
+    broker = _broker(transport)
+    failure = TypeError("marshalling failed")
+
+    def _marshall(*_args: object, **_kwargs: object) -> ChannelFrame:
+        raise failure
+
+    monkeypatch.setattr(ChannelFrame, "marshall", _marshall)
+
+    with pytest.raises(TypeError) as caught:
+        await broker.publish("tasks", b"{}")
+
+    assert caught.value is failure
+    assert transport.write_queue.empty()
+
+
 async def _callbacks_ran() -> None:
     """Wartet, bis die bis jetzt eingeplanten Loop-Callbacks gelaufen sind
     (etwa Done-Callbacks eines eben abgelehnten Futures); FIFO-Reihenfolge."""
@@ -251,7 +315,7 @@ async def test_the_orphaned_confirm_of_a_failed_drain_is_retrieved(unretrieved: 
     """aiormq legt das Confirm-Future vor dem Schreiben an. Scheitert schon
     das Schreiben, wartet niemand mehr darauf; seine Ausnahme aus dem
     Verbindungsabriss blieb unabgeholt (Loadsuite v0.12.0rc1)."""
-    first, second = FakeTransport(retrieve_rejected=False), FakeTransport()
+    first, second = FakeTransport(), FakeTransport()
     broker = _broker(first, second)
     publish = asyncio.create_task(broker.publish("tasks", b"{}"))
 
@@ -271,7 +335,7 @@ async def test_the_orphaned_confirm_of_a_failed_drain_is_retrieved(unretrieved: 
 async def test_the_orphaned_confirm_of_a_cancelled_publish_is_retrieved(unretrieved: list[str]) -> None:
     """Die Loadsuite brach einen Dispatch per ``wait_for`` ab, waehrend der
     Publish noch schrieb; der spaetere Abriss lehnte das Confirm ab."""
-    transport = FakeTransport(retrieve_rejected=False)
+    transport = FakeTransport()
     broker = _broker(transport)
     publish = asyncio.create_task(broker.publish("tasks", b"{}"))
 
@@ -282,6 +346,21 @@ async def test_the_orphaned_confirm_of_a_cancelled_publish_is_retrieved(unretrie
     transport.lose_connection(AMQPConnectionError(_LOST))
     await _callbacks_ran()
     transport.forget_futures()
+    gc.collect()
+
+    assert unretrieved == []
+
+
+async def test_aiormq_retrieves_a_rejected_future_nobody_waits_for(unretrieved: list[str]) -> None:
+    """Gegen das echte aiormq (#253): ``basic_publish`` legt Confirm- und
+    Drain-Future ueber ``FutureStore.create_future`` an. Scheitert der Drain,
+    wartet niemand mehr auf das Confirm; der Abriss lehnt es trotzdem ab, ohne
+    dass asyncio "never retrieved" meldet."""
+    store = aiormq.base.FutureStore(asyncio.get_running_loop())
+    _ = store.create_future()
+
+    await store.reject_all(AMQPConnectionError(_LOST))
+    await _callbacks_ran()
     gc.collect()
 
     assert unretrieved == []

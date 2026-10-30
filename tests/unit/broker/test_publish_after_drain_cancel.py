@@ -32,6 +32,7 @@ import pytest
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.contracts import Delivery
 from swarmq.exceptions import BrokerConnectionError, PublishIndeterminate
+from tests.support.rabbitmq_faults import HangingChannel
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -157,10 +158,10 @@ async def test_a_hanging_publish_after_a_drain_cancel_ends_indeterminate_at_the_
     # Der Zeitdeckel bricht per cancel() ab und hebt cancelling() auf 2; der
     # Publish-Pfad muss das als eigenen Abbruch durchreichen, damit
     # asyncio.timeout ihn in TimeoutError -> PublishIndeterminate umwandelt.
-    async def _hanging(*_args: Any, **_kwargs: Any) -> None:
-        await asyncio.Event().wait()
-
-    broker = _broker(AsyncMock(side_effect=_hanging))
+    # Der Frame ist geschrieben, nur das Confirm kommt nie (echter
+    # ``basic_publish`` wie in aiormq 7.2, KTD5 Plan 2026-10-29-1945).
+    hanging = HangingChannel()
+    broker = _broker(AsyncMock(side_effect=hanging.default_exchange.publish))
     broker.publish_timeout_s = 0.01
 
     async def _work() -> None:

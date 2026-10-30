@@ -2,10 +2,11 @@
 fix-r-flow.md 2.2 und Abschnitt 6 Nr. 1).
 
 Ein vom Drain abgebrochener Handler laeuft nach E-001 weiter, sein
-``cancelling()`` bleibt > 0. Sein Retry-Publish laeuft seit FS-08 als
-Kind-Task gegen ``closing`` des Kanals. Schliesst der Kanal waehrend des
-Wartens, bricht swarmq das Kind ab; dessen ``CancelledError`` ist ein
-Kanalverlust, kein eigener Abbruch. Haelt die Pipeline ihn fuer einen
+``cancelling()`` bleibt > 0. Schliesst der Kanal, waehrend sein Retry-Publish
+wartet, lehnt aiormq die offenen Futures ab, beim ``close()`` ohne Grund mit
+``CancelledError`` (bis aiormq 7.2 brach der FS-08-Waechter den Versuch ab,
+Plan 2026-10-29-1945, KTD2). Diese ``CancelledError`` ist ein Kanalverlust,
+kein eigener Abbruch. Haelt die Pipeline ihn fuer einen
 Abbruch, saehe ihr ``finally`` einen terminalen Ausgang: Completed-Marker
 und Unique-Freigabe auf einer unbestaetigten Nachricht, der Fire waere nach
 der Neuzustellung verloren.
@@ -15,7 +16,7 @@ Mit echtem ``RabbitMQBroker`` und echtem aio-pika/aiormq-Publish-Code
 Crash-Teardown), damit der Retry-Publish wirklich startet.
 
 Testliste:
-- [x] Drain-Abbruch, Retry-Publish verliert den Kanal (Kind abgebrochen):
+- [x] Drain-Abbruch, Retry-Publish verliert den Kanal (interne CancelledError):
       kein Completed-Marker, keine Unique-Freigabe, Abbruch nicht
       durchgereicht, Original nicht bestaetigt; der Handler endet ohne
       Ausnahme und gibt das Original zur Neuzustellung zurueck
@@ -100,7 +101,10 @@ async def test_lost_channel_in_the_retry_publish_after_a_drain_cancel_is_not_ter
     await LongRetryable.started.wait()
     handler.cancel()  # wie _drain_in_flight; E-001: Fehlerergebnis, Handler laeuft weiter
     await first.next_frame()  # Retry-Kopie eingereiht, nie geschrieben
-    first.close_channel(ConnectionError("connection lost"))
+    # Wie aiormqs ``reject_all`` beim Schliessen des Kanals (``close()`` ohne
+    # Grund): Kanal zu, offene Futures mit ``CancelledError`` abgelehnt -- ein
+    # aio-pika-/aiormq-interner Abbruch, nicht der eigene.
+    first.lose_connection(asyncio.CancelledError())
     await asyncio.wait({handler})
 
     assert not handler.cancelled(), "der Kanalverlust darf nicht als eigener Abbruch durchgehen"

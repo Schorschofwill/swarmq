@@ -47,6 +47,8 @@ _ERRORS = [
     pytest.param(aiormq.exceptions.AMQPConnectionError("connection lost"), id="amqp-connection-error"),
     pytest.param(aiormq.exceptions.ChannelInvalidStateError("channel closed"), id="channel-invalid-state"),
     pytest.param(RuntimeError("connection closed"), id="runtime-error"),
+    # KTD4 (Plan 2026-10-29-1945): seit aiormq 7.2 der kaputte Frame des Readers.
+    pytest.param(aiormq.exceptions.InvalidFrameError(b"\x00"), id="invalid-frame"),
 ]
 
 

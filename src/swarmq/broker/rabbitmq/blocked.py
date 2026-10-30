@@ -92,7 +92,12 @@ def blocked_close_waiters(connection: Any) -> BlockedClose | None:
 async def wait_until_unblocked(blocked: BlockedWait, timeout: float | None) -> None:
     """Wartet auf ``unblocked`` oder das Ende der Verbindung, hoechstens
     ``timeout`` (``None``: ohne eigene Frist); kein Ausgang ist ein Fehler.
-    Der Hilfs-Task endet mit, auch bei einem Abbruch."""
+    Der Hilfs-Task endet mit, auch bei einem Abbruch.
+
+    ``closing`` ist seit aiormq 7.2 ein eigener Beobachter je Lesen; er haengt
+    einen Callback an das innere ``_closing`` der Verbindung, bis er endet.
+    Darum wird er nach dem Warten abgebrochen (KTD2, Plan 2026-10-29-1945);
+    die Verbindung selbst beruehrt das nicht."""
     unblocked, closing = blocked
     waiter = asyncio.ensure_future(unblocked.wait())
     either: set[asyncio.Future[Any]] = {waiter} if closing is None else {waiter, closing}
@@ -100,3 +105,5 @@ async def wait_until_unblocked(blocked: BlockedWait, timeout: float | None) -> N
         await asyncio.wait(either, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
     finally:
         waiter.cancel()
+        if closing is not None:
+            closing.cancel()

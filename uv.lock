@@ -8,28 +8,28 @@ resolution-markers = [
 
 [[package]]
 name = "aio-pika"
-version = "10.0.4"
+version = "10.2.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiormq" },
     { name = "yarl" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f9/37/a8dee7269b8f85ce14a89d6af530a40d479daa51282ca0e5b37c2bf2a8d9/aio_pika-10.0.4.tar.gz", hash = "sha256:3f8bbb96b1955e5e5078fb437178fa9fed1fdaf6801f52c447bfe7ea1105ca40", size = 82457, upload-time = "2026-09-26T20:33:45.547Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5d/31/70f0d7a9fe1affc3241d86d24c24714a4a2ac648961efd3d835ef734a6a1/aio_pika-10.2.1.tar.gz", hash = "sha256:e4f77afd9179a3cca5a904c3b0a1190256a36d9f90650db908b1b2245eb27487", size = 101040, upload-time = "2026-10-25T11:47:24.577Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/68/75/c44b884e35dab6c8e021f513d624fb9c39890288b8185ebadf1eb8c57033/aio_pika-10.0.4-py3-none-any.whl", hash = "sha256:6d83eef63db64511b20ace4ad208ab239922a1497a337edbca47f5d409f8233c", size = 57748, upload-time = "2026-09-26T20:33:44.21Z" },
+    { url = "https://files.pythonhosted.org/packages/b4/ae/f69eb62f240f743d5d3aff659a6ed76077f73b722a0d8f9f9559ab825836/aio_pika-10.2.1-py3-none-any.whl", hash = "sha256:66c85d311e30f1dd3e28109d686c9bf1d9dd1a74582004c7cb7bed284d8fe3b1", size = 61568, upload-time = "2026-10-25T11:47:23.119Z" },
 ]
 
 [[package]]
 name = "aiormq"
-version = "7.0.0"
+version = "7.2.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pamqp" },
     { name = "yarl" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/00/16/7e1c2bb887db6cbad191db9a1562e1cf5c0c61ad93f194ddc7baf5661f02/aiormq-7.0.0.tar.gz", hash = "sha256:f524121f1afbb875f50235b2748f81331e3be47542ee600e83c321c4e97ea168", size = 49231, upload-time = "2026-07-09T11:40:51.775Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/71/11/8b93eac7630c5087c34df3d34ce0bdf50d6ea2fb83061f17e8c73877141d/aiormq-7.2.4.tar.gz", hash = "sha256:5fd20bb9583d73de85572198496b65cf028f27527c1733c9840d458e0b40e8fa", size = 81569, upload-time = "2026-10-24T12:36:22.703Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/53/88/8da3627882f6bd75f780f87e46d0b58da99332c1b71d038db7a127a80648/aiormq-7.0.0-py3-none-any.whl", hash = "sha256:df49bb2282e5374a28507c4c43948e8c8e5321590f2998781c2d90a34e100789", size = 32152, upload-time = "2026-07-09T11:40:50.508Z" },
+    { url = "https://files.pythonhosted.org/packages/29/a7/346b74a5f19d0acbd9d428f5f7b070537a8a079e45a74fba58c7831e058d/aiormq-7.2.4-py3-none-any.whl", hash = "sha256:2b9d6dade171318185ab8f507717b630f20b8b2303a075f9293d3f6b0d166f1d", size = 40694, upload-time = "2026-10-24T12:36:21.054Z" },
 ]
 
 [[package]]
@@ -1980,8 +1980,8 @@ typing = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aio-pika", specifier = ">=9,<10.1" },
-    { name = "aiormq", specifier = ">=7,<7.1" },
+    { name = "aio-pika", specifier = ">=10.2.1,<10.3" },
+    { name = "aiormq", specifier = ">=7.2.4,<7.3" },
     { name = "coverage", marker = "extra == 'test'", specifier = ">=7.16.2" },
     { name = "croniter", specifier = ">=6.2" },
     { name = "dishka", marker = "extra == 'dishka'", specifier = ">=1.10.1" },
