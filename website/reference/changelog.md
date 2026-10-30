@@ -4,7 +4,13 @@ All notable changes to SwarmQ. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.15.3] — 2026-10-30
+
+0.15.3 is 0.15.3rc1 unchanged. Read [0.15.3rc1](#0153rc1-2026-10-29) for
+the fix: a channel close cut short by a deadline no longer closes the whole
+connection (F4-30). Accepted by the load-test suite at 0.15.3rc1
+(conformance, four smokes, `stufe1-1h`, no loss). Nothing breaks. Install
+with `pip install 'swarmq==0.15.*'`; `--pre` is no longer needed.
 
 ## [0.15.3rc1] — 2026-10-29
 
