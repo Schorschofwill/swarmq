@@ -16,6 +16,9 @@ Test-Liste:
 - [x] WARNING zum Blockieren einmal je Episode
 - [x] eigener Abbruch im Blocked-Warten: ``PublishCancelledUnsent`` (ein
       ``CancelledError``), ``task.cancelled()``, nichts gesendet (U4, E-041)
+- [x] aiormq 7.2: der beim Warten gelesene ``closing``-Beobachter bleibt nicht
+      an ``_closing`` der Verbindung haengen, weder nach ``unblocked`` noch
+      nach der Frist (KTD2, Plan 2026-10-29-1945)
 """
 
 from __future__ import annotations
@@ -25,7 +28,9 @@ from types import SimpleNamespace
 from typing import cast, override
 from unittest.mock import AsyncMock, Mock
 
+import aiormq.base
 import pytest
+from aiormq.abc import ExceptionType
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import BrokerConnectionError, BrokerPublishBlocked, PublishCancelledUnsent
@@ -162,3 +167,52 @@ async def test_own_cancel_while_blocked_is_marked_as_unsent() -> None:
     assert isinstance(caught.value, PublishCancelledUnsent)
     assert publish.cancelled()
     assert _sent(broker) == []
+
+
+class _AiormqConnection(aiormq.base.Base):
+    """Blockierte aiormq-Verbindung mit dem echten ``closing`` aus aiormq 7.2:
+    je Zugriff ein neuer Beobachter mit einem Callback an ``_closing``."""
+
+    def __init__(self) -> None:
+        super().__init__(loop=asyncio.get_running_loop())
+        setattr(self, _ATTR, _ObservedEvent())
+
+    @override
+    async def _on_close(self, exc: ExceptionType | None = None) -> None:
+        return None
+
+    @override
+    def __str__(self) -> str:
+        return "connection"
+
+
+def _callbacks(future: asyncio.Future[object]) -> int:
+    return len(future._callbacks or ())  # privat: asyncio bietet keine öffentliche Zählung
+
+
+async def test_the_closing_observer_of_the_wait_is_released_once_unblocked() -> None:
+    underlying = _AiormqConnection()
+    before = _callbacks(underlying._closing)
+    broker = _broker(underlying)
+    event = getattr(underlying, _ATTR)
+
+    publish = asyncio.create_task(broker.publish("tasks", b"{}"))
+    await event.waiting.wait()
+    event.set()
+    await publish
+    await asyncio.sleep(0)  # Done-Callbacks laufen erst im nächsten Schritt der Loop
+
+    assert _sent(broker) == ["tasks"]
+    assert _callbacks(underlying._closing) == before
+
+
+async def test_the_closing_observer_of_the_wait_is_released_at_the_deadline() -> None:
+    underlying = _AiormqConnection()
+    before = _callbacks(underlying._closing)
+    broker = _broker(underlying, timeout=0.05)
+
+    with pytest.raises(BrokerPublishBlocked):
+        await broker.publish("tasks", b"{}")
+    await asyncio.sleep(0)
+
+    assert _callbacks(underlying._closing) == before

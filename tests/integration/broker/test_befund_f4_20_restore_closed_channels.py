@@ -37,7 +37,6 @@ from tests.integration.broker.test_pf19_close_after_unblocked import (
     _close_connection_at_broker,
     _open_aiormq_channels,
 )
-from tests.support.known_leaks import aiormq_streamwriter_leak
 from tests.support.queues import delete_queue_family
 from tests.support.wait import wait_until
 
@@ -73,7 +72,6 @@ async def _reconnected(broker: RabbitMQBroker, dropped: object, timeout: float) 
     return await wait_until(ready, timeout=timeout, interval=0.1)
 
 
-@aiormq_streamwriter_leak  # TS-02: der Broker schließt die Verbindung, aiormq lässt den Writer offen
 @pytest.mark.befund("F4-20")
 @pytest.mark.entscheidung("E-078")
 @pytest.mark.usefixtures("no_collection")
@@ -109,7 +107,6 @@ async def test_after_a_reconnect_only_the_live_channels_are_open_at_the_broker(r
         await delete_queue_family(rabbitmq_url, queue)
 
 
-@aiormq_streamwriter_leak  # TS-02: der Broker schließt die Verbindung, aiormq lässt den Writer offen
 @pytest.mark.befund("F4-20")
 @pytest.mark.usefixtures("no_collection")
 async def test_a_reconnect_after_the_depth_of_a_deleted_queue_succeeds(rabbitmq_url: str) -> None:

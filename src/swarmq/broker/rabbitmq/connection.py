@@ -21,6 +21,7 @@ from aio_pika.exceptions import (
     ChannelClosed,
     ChannelInvalidStateError,
     ConnectionClosed,
+    InvalidFrameError,
 )
 
 from swarmq.broker.rabbitmq.arg_conflict import AdoptionLog
@@ -37,42 +38,41 @@ from swarmq.broker.rabbitmq.robust_channels import (
     queue_exists_on_throwaway,
     release_channel,
 )
+from swarmq.broker.rabbitmq.underlay import ReleasingRobustChannel
 from swarmq.config import INJECTED_URL
 from swarmq.exceptions import BrokerConnectionError, ConfigurationError
 from swarmq.logging import _error_fields, get_logger, sanitize_url
 
 logger = get_logger(__name__)
 
-# How long to wait for the connection/channel to become ready again
-# during a reconnect before surfacing BrokerConnectionError. U1.1
-# (2026-04-17): the toxiproxy spike showed publish-during-reconnect
-# fails with CancelledError; the broker now waits instead.
+# How long to wait for the connection/channel to become ready again during a
+# reconnect before surfacing BrokerConnectionError. U1.1 (2026-04-17): the
+# toxiproxy spike showed publish-during-reconnect fails with CancelledError.
 _CHANNEL_READY_TIMEOUT_S = 10.0
 
 # ``ping`` prüft ``connection.ready()`` mit derselben Schranke wie der
 # bisherige HealthChecker (health.py, 2.0 s).
 _PING_TIMEOUT_S = 2.0
 
-# Transient failure modes that indicate the channel/connection is in a
-# reconnect-transition state. Safe to retry after a short backoff.
-# CancelledError is included because aio_pika's internal drain_future
-# surfaces as CancelledError when the transport is closed mid-publish
-# (2026-04-17 spike evidence). We guard against swallowing task-level
-# cancellation via asyncio.current_task().cancelling() below.
+# Transient failure modes of a channel/connection in a reconnect transition; safe to
+# retry after a short backoff. CancelledError: aio_pika's internal drain_future
+# surfaces as CancelledError when the transport closes mid-publish (2026-04-17
+# spike); task-level cancellation is told apart via asyncio.current_task().cancelling().
 # ``AMQPConnectionError`` (B24): aiormq meldet einen abgerissenen Socket mit
 # der Basisklasse von ``ConnectionClosed`` ("Server connection unexpectedly
 # closed"). Ob ein Publish damit wiederholt werden darf, entscheidet
 # ``_publish_attempts`` nach der Phase, nicht nach dem Typ.
-# ``PAMQPException``: Endet aiormqs Reader an einem kaputten oder
-# unlesbaren Frame, lehnt er die offenen Futures mit dem pamqp-Fehler ab; die
-# Verbindung ist dann tot wie bei ``AMQPConnectionError``. Das Schreiben
-# (Marshalling) wirft keine pamqp-Fehler, nur ``TypeError``/``ValueError``.
+# ``InvalidFrameError``/``PAMQPException`` (KTD4, Plan 2026-10-29-1945): Endet
+# aiormqs Reader an einem kaputten Frame, lehnt er die offenen Futures damit
+# ab (seit 7.2 ``InvalidFrameError``); die Verbindung ist tot wie bei
+# ``AMQPConnectionError``. Marshalling wirft nur ``TypeError``/``ValueError``.
 _CHANNEL_TRANSIENT_ERRORS: tuple[type[BaseException], ...] = (
     ChannelInvalidStateError,
     ChannelClosed,
     AMQPChannelError,
     ConnectionClosed,
     AMQPConnectionError,
+    InvalidFrameError,
     pamqp.exceptions.PAMQPException,
     asyncio.CancelledError,
 )
@@ -94,10 +94,9 @@ _DEFAULT_DEAD_LETTER_TTL_S = 604800.0
 # dann ERROR „Got frame for closed channel“). Kein Leck (PF-19, Nachtrag E-025).
 _CHANNEL_CLOSE_TIMEOUT_S = 5.0
 
-# Bound for acquiring a connection from an injected
-# pool. aio_pika's Pool.acquire() blocks indefinitely on Queue.get()
-# when the pool is exhausted (all items checked out, no overflow) —
-# without this bound, `async with SwarmQ(...)` hung silently.
+# Bound for acquiring a connection from an injected pool. aio_pika's Pool.acquire()
+# blocks indefinitely on Queue.get() when the pool is exhausted (all items checked
+# out, no overflow) — without this bound, `async with SwarmQ(...)` hung silently.
 _POOL_ACQUIRE_TIMEOUT_S = 10.0
 
 ChannelFactory = Callable[[], Awaitable[aio_pika.abc.AbstractChannel]]
@@ -106,11 +105,10 @@ ChannelFactory = Callable[[], Awaitable[aio_pika.abc.AbstractChannel]]
 async def close_channel_quietly(channel: aio_pika.abc.AbstractChannel | None) -> None:
     """``close()`` ohne ``is_closed``-Pruefung und ohne Ausnahme: nach einem
     vom Broker geschlossenen Channel (NOT_FOUND, 406) ist ``is_closed`` schon
-    True; ohne eigenes ``close`` oeffnete ein RobustChannel sich wieder und
-    bliebe offen, bis die Verbindung ``channel_max`` erreicht (Review MR 10,
-    P0-1; wie ``arg_conflict``). Vor einem Wiederoeffnen nach einem Reconnect
-    schuetzt ``close()`` allein nicht (F4-20): Wegwerf-Kanaele sind darum
-    nicht robust (``open_throwaway_channel``). Nie abgebrochen (F4-30)."""
+    True; ohne eigenes ``close`` oeffnete ein RobustChannel sich wieder (Review
+    MR 10, P0-1; wie ``arg_conflict``). Seit aio-pika 10.2 bleibt ein per
+    ``close()`` geschlossener Kanal auch ueber einen Reconnect zu; bis zum
+    Close nicht, darum ``release_channel`` (F4-20). Nie abgebrochen (F4-30)."""
     if channel is None:
         return
     try:
@@ -148,6 +146,8 @@ async def _connect_robust_closing_on_cancel(url: str) -> aio_pika.abc.AbstractRo
     created: list[aio_pika.abc.AbstractRobustConnection] = []
 
     class _Tracked(aio_pika.RobustConnection):
+        CHANNEL_CLASS = ReleasingRobustChannel  # type: ignore[mutable-override]  # KTD6; aio-pika liest es nur
+
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             super().__init__(*args, **kwargs)
             created.append(self)

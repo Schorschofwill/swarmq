@@ -39,8 +39,8 @@ requires-python = ">=3.14"
 # Härtung R2 P2: lower bounds protect downstream consumers installing
 # without our lockfile. msgpack>=1.2.3: safe default limits, and no leak
 # of the decoded value when a map key is rejected (GHSA-j586-36cw-2gc2,
-# F4-29); aio-pika>=9 the robust-connection
-# API; valkey>=6 the asyncio client surface; msgspec>=0.18 the
+# F4-29); aio-pika and aiormq: see the comment at their entries;
+# valkey>=6 the asyncio client surface; msgspec>=0.18 the
 # Struct/JSON APIs; structlog>=24 contextvars/testing surfaces (<27:
 # get_logger relies on stdlib.BoundLogger frame depth, KTD1/KTD2);
 # croniter>=6.2: fold-Verhalten in der Rückstellungsnacht nur dafür
@@ -50,12 +50,14 @@ dependencies = [
     "msgspec>=0.18",
     "msgpack>=1.2.3",
     "structlog>=24,<27",
-    # Obergrenzen bis zur Prüfung von aiormq 7.1/7.2 (umgebautes
-    # basic_publish, docs/plans/2026-10-29-1700-chore-abhaengigkeiten-
-    # anheben-plan.md, KTD1). aio-pika 10.0 erlaubt aiormq<8, darum steht
-    # aiormq hier selbst; aio-pika ab 10.1 verlangt aiormq>=7.1.3.
-    "aio-pika>=9,<10.1",
-    "aiormq>=7,<7.1",
+    # Untergrenzen: erst aiormq 7.2.4 und aio-pika 10.2.1 bringen die
+    # Korrekturen, auf die swarmq baut (aio-pika 10.2.1 verlangt selbst
+    # aiormq>=7.2.4). Obergrenzen beim nächsten Minor, weil swarmq an
+    # privaten Interna beider Bibliotheken hängt; aio-pika erlaubt aiormq<8,
+    # darum steht aiormq hier selbst (docs/plans/2026-10-29-1945-chore-
+    # aiormq-7-2-anheben-plan.md, KTD8).
+    "aio-pika>=10.2.1,<10.3",
+    "aiormq>=7.2.4,<7.3",
     # Plain valkey (no [libvalkey] extra): libvalkey is a C accelerator
     # that ships no cp314 wheels (sdist-only on PyPI), so a hard extra
     # forces a compiler into every consumer image on Python 3.14.

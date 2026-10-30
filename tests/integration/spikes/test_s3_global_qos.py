@@ -21,15 +21,12 @@ import pytest
 from aio_pika.abc import AbstractConnection, AbstractIncomingMessage
 
 from tests.integration.spikes._broker import QUORUM, declare, publish
-from tests.support.known_leaks import aiormq_streamwriter_leak
 from tests.support.services import RabbitMQNode
 from tests.support.wait import wait_until
 
 pytestmark = [pytest.mark.integration, pytest.mark.spike]
 
 
-# TS-02: der Server schliesst die Verbindung (tests/support/known_leaks.py).
-@aiormq_streamwriter_leak
 async def test_global_qos_on_quorum_consume(
     node: RabbitMQNode, version: str, amqp: AbstractConnection, queue_name: Callable[[str], str]
 ) -> None:

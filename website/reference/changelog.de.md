@@ -4,6 +4,71 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 [Keep a Changelog](https://keepachangelog.com/) und
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+swarmq braucht jetzt aiormq 7.2 und aio-pika 10.2 und umgeht die Stellen
+darin, die Speicher verlieren oder Verbindungen schließen würden. An der API
+von swarmq ändert sich nichts.
+
+### Geändert
+
+- **aiormq und aio-pika auf 7.2 und 10.2 angehoben.** swarmq verlangt jetzt
+  `aiormq>=7.2.4,<7.3` und `aio-pika>=10.2.1,<10.3` (0.15.2 begrenzte auf
+  `aiormq<7.1` und `aio-pika<10.1`). Ein Upgrade von swarmq zieht beide
+  nach; eine frische Installation bekommt die Korrekturen rund um Abbruch,
+  Kanal-Schließen und Verbindungsverlust, die aiormq seit 7.1 gebracht hat.
+  Die Obergrenzen liegen beim nächsten Minor, weil swarmq an Interna beider
+  Bibliotheken hängt. Dependabot schlägt für beide wieder Updates vor.
+- **Ein kaputter Frame vom Broker gilt als Verbindungsfehler.** aiormq 7.2
+  meldet ihn als `aiormq.exceptions.InvalidFrameError`. Ein Publish
+  behandelt ihn wie jeden anderen Verbindungsverlust (Wiederholung auf
+  einem neuen Kanal oder `BrokerConnectionError`, nie roh), eine
+  Queue-Deklaration oder ein `consume` wirft `BrokerConnectionError`.
+- **Neue aiormq-Logzeile bei Verbindungsverlust.** Mit aiormq 7.2 loggt
+  jede Verbindung, die der Broker oder ein Proxy schließt, aiormqs WARNING
+  `Cancelling cause reader exited abnormally` mit Traceback (vorher DEBUG).
+  Sie ist kein swarmq-Event; der [Event-Katalog](logging.md#event-katalog)
+  führt sie.
+
+### Behoben
+
+- **Kein Speicherleck je geschlossenem Kanal mit aio-pika 10.2.** aio-pika
+  10.2.1 lässt für jeden Kanal, den es schließt, zwei Beobachter an der
+  Verbindung zurück, und der erste hält den ganzen Kanal bis zum Ende der
+  Verbindung fest. swarmq öffnet und schließt seine Wegwerf-Kanäle
+  (Deklaration, Queue-Tiefe und -Status, DLQ, die Existenzprüfung des
+  Consumer-Wächters) sowie Publish- und Consume-Kanal auf seinen eigenen
+  Verbindungen ohne dieses Leck, auch nach einem Schließen durch den
+  Broker und beim Reconnect. Wegwerf-Kanäle auf einer injizierten
+  einfachen Verbindung nutzen dieselbe Kanalklasse. Den Publish-Kanal auf
+  einer injizierten Verbindung öffnet deren eigene Kanalklasse; er behält
+  das Verhalten von aio-pika. Passt eine spätere aio-pika-Version nicht
+  mehr, öffnet swarmq Kanäle wie aio-pika und loggt einmal je Verbindung
+  die WARNING `channel_observer_release_unavailable`.
+- **Einen vom Broker beendeten Consumer meldet nur der Consumer-Wächter
+  von swarmq neu an (E-089).** aio-pika 10.2 meldet einen solchen Consumer
+  selbst neu an. Auf RabbitMQ 4.3.6 nimmt es dafür den alten Tag, und der
+  Broker schließt die ganze Verbindung (`530 NOT_ALLOWED - attempt to
+  reuse consumer tag`); bei einer gelöschten Queue öffnet es alle paar
+  Sekunden einen Probe-Kanal, und seine Aufrufe auf dem gemeinsamen
+  Consume-Kanal laufen mit 5 s Frist. swarmq schaltet diese
+  Wiederherstellung auf seinen eigenen Kanälen ab: kein 530, keine
+  Probe-Kanäle, und eine gelöschte Queue wird weiter nicht neu angelegt
+  (E-083). Die Wiederherstellung der Consumer nach einem Kanal-Close oder
+  Reconnect bleibt unverändert. Passt eine spätere aio-pika-Version nicht
+  mehr, loggt swarmq einmal je Verbindung die WARNING
+  `consumer_recovery_disable_unavailable`.
+
+### Entfernt
+
+- **Der Wächter gegen einen Publish, der in aiormqs Kanal-Sperre wartet,
+  samt seiner WARNING `publish_channel_closing_unreadable`.** aiormq 7.2
+  beendet einen solchen Publish bei einem Verbindungsabriss selbst, und
+  swarmq wertet ihn weiter als nicht gesendet (Wiederholung, dann
+  `BrokerConnectionError`; nie `PublishIndeterminate`). Unter aiormq 7.2
+  hätte der Wächter je Publish einen Callback am Kanal zurückgelassen
+  (E-042).
+
 ## [0.15.3] — 2026-10-30
 
 0.15.3 ist 0.15.3rc1 unverändert. Die Korrektur steht unter

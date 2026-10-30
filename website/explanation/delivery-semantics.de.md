@@ -676,6 +676,13 @@ dem aktuellen Channel hat:
   `swarmq_consumer_reregistrations_total{queue}`. Der Worker konsumiert
   binnen zwei Takten wieder, ohne Neustart, und am Broker bleibt kein
   Zombie zurück.
+- Einen vom Broker beendeten Consumer meldet nur der Wächter neu an.
+  aio-pika 10.2 bringt dafür eine eigene Wiederherstellung mit; swarmq
+  schaltet sie auf seinen eigenen Channels ab (E-089), weil sie auf 4.3
+  den alten Tag wiederverwendet, was die ganze Verbindung schließt, und
+  ihre Aufrufe auf dem Consume-Channel mit 5 s Frist macht. Passt eine
+  spätere aio-pika-Version nicht mehr, loggt swarmq einmal je
+  Verbindung die WARNING `consumer_recovery_disable_unavailable`.
 
 Auf 4.3 wartet ein Ack oder Nack für eine Zustellung, deren Consumer
 der Broker beendet hat, bis der Wächter sein eigenes Cancel gesendet

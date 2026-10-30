@@ -69,7 +69,6 @@ from swarmq.middleware import MessageContext, Middleware
 from swarmq.signals import Signal
 from swarmq.task import Task, TaskInfo
 from swarmq.worker.results import STORE_ATTEMPTS
-from tests.support.known_leaks import aiormq_streamwriter_leak
 from tests.support.wait import WORKER_START_TIMEOUT_S, wait_until
 
 from ._invariants import (
@@ -1135,8 +1134,6 @@ class TestBrokerReconnectAtMostOnceCombo:
                 assert result == 1
 
     @pytest.mark.chaos
-    # TS-02: Toxiproxy trennt die RabbitMQ-Verbindung (tests/support/known_leaks.py).
-    @aiormq_streamwriter_leak
     async def test_at_most_once_drops_message_on_broker_drop(
         self,
         toxiproxy: Any,
@@ -1216,8 +1213,6 @@ class TestBrokerReconnectAtMostOnceCombo:
         assert run_count == 0, f"at-most-once violated or publish not dropped: task ran {run_count} times"
 
     @pytest.mark.chaos
-    # TS-02: Toxiproxy trennt die RabbitMQ-Verbindung (tests/support/known_leaks.py).
-    @aiormq_streamwriter_leak
     async def test_at_least_once_redelivers_after_drop(
         self,
         toxiproxy: Any,
@@ -1282,8 +1277,6 @@ class TestBrokerReconnectAtMostOnceCombo:
         assert_faf_stage_invariants(obs, scenario_kind="broker_drop", max_requeues=5)
 
     @pytest.mark.chaos
-    # TS-02: Toxiproxy trennt die RabbitMQ-Verbindung (tests/support/known_leaks.py).
-    @aiormq_streamwriter_leak
     async def test_faf4_invariants_for_broker_drop(
         self,
         toxiproxy: Any,

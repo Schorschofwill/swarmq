@@ -2,7 +2,9 @@
 2026-10-08-1541, U6, KTD3).
 
 Beendet der Broker einen Consumer (``basic.cancel`` ab RabbitMQ 4.3 nach
-``consumer-timeout``, Channel-Close bis 4.2), merkt aio-pika davon nichts:
+``consumer-timeout``, Channel-Close bis 4.2), merkt aio-pika davon nichts
+(seine eigene Wiederanmeldung aus 10.2 ist für swarmqs Kanäle abgeschaltet,
+E-089, ``underlay.ReleasingRobustChannel``):
 Der Tag bleibt in ``RobustQueue._consumers`` und der Worker bekäme ohne
 Neustart nie wieder eine Nachricht. Der Wächter vergleicht deshalb in jedem
 Takt die angemeldeten Tags mit ``consumers`` des aktuellen aiormq-Channels.

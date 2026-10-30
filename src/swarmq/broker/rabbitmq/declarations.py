@@ -121,10 +121,11 @@ class RabbitMQDeclarations(RabbitMQConnection):
                 f"Existing queue arguments, policies or vhost limits do not accept this declaration; "
                 f"see the broker message."
             ) from exc
-        except (aio_pika.exceptions.AMQPConnectionError, RuntimeError) as exc:
+        except (aio_pika.exceptions.AMQPConnectionError, aio_pika.exceptions.InvalidFrameError, RuntimeError) as exc:
             # Verbindungsabriss mitten in der Kette (aiormq ``ConnectionClosed``,
-            # ``ChannelInvalidStateError``, ``RuntimeError`` aus aio_pika): wie
-            # jeder Verbindungsverlust ein ``BrokerConnectionError`` (Review MR 8, H5a).
+            # ``ChannelInvalidStateError``, ``RuntimeError`` aus aio_pika, seit
+            # aiormq 7.2 ``InvalidFrameError`` vom Reader, KTD4): wie jeder
+            # Verbindungsverlust ein ``BrokerConnectionError`` (Review MR 8, H5a).
             raise BrokerConnectionError(
                 f"declare_queue {queue_name!r}: the connection was lost while declaring: {exc!r}"
             ) from exc

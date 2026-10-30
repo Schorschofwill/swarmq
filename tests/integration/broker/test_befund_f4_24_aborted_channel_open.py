@@ -39,7 +39,6 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.broker.rabbitmq import connection as connection_module
 from swarmq.exceptions import BrokerConnectionError
 from tests.integration.broker.test_pf19_close_after_unblocked import _connection_names, _management
-from tests.support.known_leaks import aiormq_streamwriter_leak
 from tests.support.queues import delete_queue_family
 from tests.support.wait import wait_until
 
@@ -157,7 +156,6 @@ async def _open_with_withheld_qos(
     assert waiting.is_set(), "precondition: the open was aborted while Basic.Qos was pending"
 
 
-@aiormq_streamwriter_leak  # TS-02: der Broker schließt die Verbindung, aiormq lässt den Writer offen
 @pytest.mark.befund("F4-24")
 @pytest.mark.entscheidung("E-078")
 @pytest.mark.usefixtures("no_collection")

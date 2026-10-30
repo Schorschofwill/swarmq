@@ -12,11 +12,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import Iterator
+from typing import cast, override
 
 import aio_pika
 from aio_pika.exceptions import ChannelInvalidStateError
+from aiormq.abc import ChannelFrame
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
+from tests.support.aiormq_transport import FakeTransport
 
 
 class _FailingExchange:
@@ -47,27 +50,46 @@ def publish_failure(broker: RabbitMQBroker) -> Iterator[None]:
         broker._publish_channel = previous
 
 
+class _WrittenAtOnce(asyncio.Queue[ChannelFrame]):
+    """``write_queue``, deren Writer jeden Frame sofort auf den Socket bringt."""
+
+    @override
+    def put_nowait(self, item: ChannelFrame) -> None:
+        item.drain()
+        super().put_nowait(item)
+
+
 class _HangingExchange:
     """Publish, das nie zurückkehrt — der stille Transportausfall aus dem
     Referenzlauf vom 2026-08-28. Der Kanal gilt weiter als offen, es fliegt
     keine Ausnahme, und ohne Deckel wartet der Aufrufer unbegrenzt auf ein
-    Publisher-Confirm (Plan 2026-08-28-001, R1/AE1)."""
+    Publisher-Confirm (Plan 2026-08-28-001, R1/AE1).
 
-    def __init__(self) -> None:
+    Wie aiormq 7.2 (Plan 2026-10-29-1945, KTD5): Der echte ``basic_publish``
+    läuft über ``FakeTransport``; der Frame ist eingereiht und geschrieben
+    (``sent``, ``drain_future`` erfüllt), nur das Confirm kommt nie."""
+
+    def __init__(self, channel: HangingChannel) -> None:
         self.publish_started = asyncio.Event()
+        self._exchange = aio_pika.Exchange(cast("aio_pika.abc.AbstractChannel", channel), "")
 
     async def publish(self, message: aio_pika.Message, routing_key: str) -> None:
         self.publish_started.set()
-        await asyncio.Event().wait()
+        await self._exchange.publish(message, routing_key=routing_key)
 
 
 class HangingChannel:
     is_closed = False
 
     def __init__(self, *, close_hangs: bool = False) -> None:
-        self.default_exchange = _HangingExchange()
+        self.transport = FakeTransport()
+        self.transport.write_queue = _WrittenAtOnce()
+        self.default_exchange = _HangingExchange(self)
         self.closed = False
         self._close_hangs = close_hangs
+
+    async def get_underlay_channel(self) -> FakeTransport:
+        return self.transport
 
     async def close(self) -> None:
         if self._close_hangs:

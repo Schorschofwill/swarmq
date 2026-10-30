@@ -7,6 +7,12 @@ Test-Brokers eindeutig zu ``SWARMQ_TEST_RABBITMQ_PORT`` gehört. Tests, die sie
 nutzen, tragen ``exclusive``: Der Alarm blockiert jeden Verleger des Brokers,
 auch die parallelen xdist-Prozesse (``tests/support/xdist_isolation.py``).
 Genutzt von BZ-16, U4 (Abbruch im Alarm) und U6 (PF-19 a).
+
+``toxiproxy`` legt den Proxy ``rabbitmq`` vor den Test-Broker (wie die
+Kombinationen: Compose-Stack 5673 -> rabbitmq:5672, sonst ein Host-Toxiproxy
+einen Port unter dem Testport, Standard 5698 -> 5699) und schaltet ihn am Ende
+wieder ein. Tests mit dieser Fixture teilen eine xdist-Gruppe
+(``tests/support/xdist_isolation.py``). Genutzt von B24 und FS-08.
 """
 
 from __future__ import annotations
@@ -16,11 +22,18 @@ import os
 import re
 import subprocess
 import time
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 
 import pytest
 
-from tests.support.services import RABBITMQ_PORT
+from tests.e2e.combinations._toxiproxy import (
+    DEFAULT_ADMIN_HOST,
+    DEFAULT_ADMIN_PORT,
+    ProxyConfig,
+    ToxiproxyClient,
+    proxy_defaults,
+)
+from tests.support.services import RABBITMQ_HOST, RABBITMQ_PORT, port_is_open
 from tests.support.wait import wait_until
 
 CONTAINER = os.environ.get("SWARMQ_TEST_RABBITMQ_CONTAINER", "swarmq-test-rabbit")
@@ -116,3 +129,26 @@ def memory_alarm() -> Iterator[MemoryAlarm]:
         yield alarm
     finally:
         alarm.release()
+
+
+_TOXIPROXY_HOST = os.environ.get("SWARMQ_TEST_TOXIPROXY_HOST", DEFAULT_ADMIN_HOST)
+_TOXIPROXY_PORT = int(os.environ.get("SWARMQ_TEST_TOXIPROXY_PORT", str(DEFAULT_ADMIN_PORT)))
+_DEFAULT_PROXY_PORT, _DEFAULT_UPSTREAM = proxy_defaults("rabbitmq", RABBITMQ_HOST, RABBITMQ_PORT, 5672, 5673)
+#: Port, auf dem der Proxy vor dem Test-Broker lauscht.
+PROXY_PORT = int(os.environ.get("SWARMQ_TEST_TOXIPROXY_RMQ_PORT", str(_DEFAULT_PROXY_PORT)))
+_UPSTREAM = os.environ.get("SWARMQ_TEST_TOXIPROXY_RMQ_UPSTREAM", _DEFAULT_UPSTREAM)
+#: Name des Proxys vor dem Test-Broker.
+PROXY = "rabbitmq"
+
+
+@pytest.fixture
+async def toxiproxy() -> AsyncIterator[ToxiproxyClient]:
+    """Proxy ``PROXY`` vor dem Test-Broker; am Ende wieder eingeschaltet."""
+    if not port_is_open(_TOXIPROXY_HOST, _TOXIPROXY_PORT):
+        pytest.skip(f"Toxiproxy not reachable at {_TOXIPROXY_HOST}:{_TOXIPROXY_PORT}")
+    async with ToxiproxyClient(host=_TOXIPROXY_HOST, port=_TOXIPROXY_PORT) as client:
+        await client.create_proxy(ProxyConfig(name=PROXY, listen=f"0.0.0.0:{PROXY_PORT}", upstream=_UPSTREAM))
+        try:
+            yield client
+        finally:
+            await client.set_proxy_enabled(PROXY, True)

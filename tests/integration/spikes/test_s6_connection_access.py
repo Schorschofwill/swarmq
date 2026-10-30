@@ -1,6 +1,7 @@
 """Spike S6 (MR 6, 16): PublishError/DeliveryError, Zugriff auf die aiormq-Verbindung, Blocked-Zustand.
 
-Belegt mit aio-pika 10.0.1 / aiormq 7.0.0:
+Belegt mit aio-pika 10.0.1 / aiormq 7.0.0, unverändert grün mit aio-pika 10.2.1 /
+aiormq 7.2.4 (Plan 2026-10-29-1945):
 - ``aiormq.exceptions.PublishError`` erbt von ``DeliveryError``; aio-pika
   re-exportiert beide unverändert (statisch, ohne Netz).
 - Der Blocked-Zustand ist **synchron** lesbar, aber nur über ein privates
@@ -34,7 +35,6 @@ import pytest
 from pamqp import commands as spec
 
 from tests.integration.spikes._broker import AUTH
-from tests.support.known_leaks import aiormq_streamwriter_leak
 from tests.support.services import RabbitMQNode
 from tests.support.wait import wait_until
 
@@ -62,8 +62,6 @@ async def test_blocked_state_is_readable_synchronously_without_network() -> None
     assert unblocked.is_set() is True
 
 
-# TS-02: der Server schliesst die Verbindung (tests/support/known_leaks.py).
-@aiormq_streamwriter_leak
 @pytest.mark.timeout(60)
 async def test_access_path_after_robust_reconnect(node: RabbitMQNode) -> None:
     name = f"swarmq-spike-s6-{uuid.uuid4().hex[:8]}"

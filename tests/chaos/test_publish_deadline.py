@@ -35,7 +35,6 @@ import pytest
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.exceptions import BrokerConnectionError, PublishIndeterminate
 from tests.chaos.conftest import ChaosStack, ToxiproxyClient
-from tests.support.known_leaks import aiormq_streamwriter_leak
 from tests.support.wait import wait_until
 
 _QUEUE = "chaos_publish_deadline"
@@ -171,7 +170,6 @@ def _aiormq_connection(broker: RabbitMQBroker) -> Any:
 
 
 class TestDeferredCloseUnderAlarm:
-    @aiormq_streamwriter_leak  # TS-02: der abgeschaltete Proxy schliesst die Verbindung
     @pytest.mark.entscheidung("E-025")
     async def test_a_proxy_cut_during_the_alarm_ends_the_deferred_close(
         self, chaos_stack: ChaosStack, toxiproxy: ToxiproxyClient, chaos_memory_alarm: _ChaosAlarm

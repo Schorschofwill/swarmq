@@ -7,6 +7,11 @@ geschlossene; ``RobustChannel.close()`` leert nur das Restored-Event, und
 Jeder Reconnect bringt alle geschlossenen, noch nicht eingesammelten Kanaele
 zurueck, samt ihrer robusten Queues. Eine passiv deklarierte, inzwischen
 geloeschte Queue laesst den Reconnect dann endlos an NOT_FOUND scheitern.
+Seit aio-pika 10.2 ueberspringt ``restore()`` einen Kanal, dessen ``close()``
+lief (``_close_called``). Nicht abgedeckt sind Kanaele, deren ``close()`` noch
+aussteht: der verworfene Publish-Kanal, dessen Close im Ressourcenalarm wartet
+(E-025), und ein Kanal, dessen Oeffnen abbrach (F4-24). Dafuer bleibt die
+Abmeldung unten (Stand aio-pika 10.2.1).
 
 Zwei Wege:
 
@@ -39,6 +44,7 @@ from typing import Any, cast
 import aio_pika
 
 from swarmq.broker.rabbitmq.channel_close import close_without_abort
+from swarmq.broker.rabbitmq.underlay import ReleasingChannel
 from swarmq.logging import get_logger
 
 logger = get_logger(__name__)
@@ -56,12 +62,13 @@ def open_throwaway_channel(connection: aio_pika.abc.AbstractConnection) -> aio_p
     """Ein nicht-robuster Kanal auf ``connection``, wie ``connection.channel()``
     noch nicht geoeffnet (erst ``await`` oeffnet ihn).
 
-    Auf einer ``RobustConnection`` ein ``aio_pika.Channel`` statt des
-    ``RobustChannel``: Er steht nicht im ``WeakSet`` der Verbindung, ein
-    Reconnect oeffnet ihn nicht wieder (F4-20). Jede andere Verbindung liefert
-    ohnehin einen nicht-robusten Kanal."""
-    if isinstance(connection, aio_pika.RobustConnection):
-        return aio_pika.Channel(connection)
+    Auf einer ``RobustConnection`` kein ``RobustChannel``: Er steht nicht im
+    ``WeakSet`` der Verbindung, ein Reconnect oeffnet ihn nicht wieder (F4-20).
+    Auf jeder aio-pika-Verbindung ein ``ReleasingChannel``: Geschlossen laesst
+    er keinen Beobachter an der Verbindung zurueck (KTD6, Plan 2026-10-29-1945).
+    Andere Verbindungen (Test-Doubles) liefern ihren eigenen Kanal."""
+    if isinstance(connection, aio_pika.Connection):
+        return ReleasingChannel(connection)
     return connection.channel()
 
 
@@ -72,8 +79,9 @@ async def queue_exists_on_throwaway(
     ``False`` (PF-20, E-083).
 
     Die Frist der Pruefung setzt der Aufrufer. Ein Abbruch trifft das Oeffnen
-    nicht: aiormq faengt dort ``CancelledError`` nicht und behielte den Kanal
-    halb offen. Das ``finally`` wartet das Oeffnen ab und schliesst den Kanal,
+    nicht: aiormq 7.0 fing dort ``CancelledError`` nicht und behielt den Kanal
+    halb offen (seit 7.2 raeumt ``Channel.open`` selbst auf; das Abwarten
+    schadet nicht). Das ``finally`` wartet das Oeffnen ab und schliesst den Kanal,
     beides zusammen hoechstens *close_timeout_s*: Haengt das Declare, haengt
     auch das Close."""
     opening: asyncio.Future[aio_pika.abc.AbstractChannel] = asyncio.ensure_future(open_throwaway_channel(connection))

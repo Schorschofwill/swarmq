@@ -14,14 +14,18 @@ Ausnahme (``FutureStore.reject_all``); am Typ ist die Phase nicht abzulesen.
 * ``drain_future`` erfuellt: Die Nachricht ist gesendet, nur das Confirm fehlt.
   Der Broker hat sie vielleicht; der Ausgang ist unbestimmt.
 
-aiormq bietet dafuer keine API. Gelesen wird darum ``drain_future`` aus dem
-``basic_publish``-Rahmen im Traceback der Ausnahme (wie ``blocked.py`` liest
-das nur, nichts wird veraendert). Ist der Rahmen da, das Future aber nicht
+aiormq bietet dafuer keine API. Gelesen werden darum die Locals des
+``basic_publish``-Rahmens im Traceback der Ausnahme (wie ``blocked.py`` liest
+das nur, nichts wird veraendert). Seit aiormq 7.2 (Plan 2026-10-29-1945,
+KTD3) setzt ``basic_publish`` das Local ``sent``, sobald die Frames in der
+``write_queue`` liegen; ``drain_future`` ist schon davor mit ``None``
+gebunden. Ist ``sent`` nicht wahr, endete der Publish vor dem Einreihen, etwa
+in der Warteschlange der Kanal-Sperre (FS-08, ``sent`` dann noch ungebunden):
+"nicht gesendet". Ist ``sent`` wahr, entscheidet ``drain_future`` wie oben;
+aiormq bricht ein dabei noch offenes ``drain_future`` ab, ein schon erfuelltes
+bleibt erfuellt. Fehlt ``sent`` im Rahmen ganz oder ist ``drain_future`` nicht
 lesbar (aiormq geaendert), gilt der Publish als gesendet: Unbestimmt ist nie
-falsch, ein erneutes Senden koennte doppelt ausfuehren. Ausnahme (FS-08): Kennt
-der Rahmen ``drain_future``, hat es aber noch nicht gebunden, endete der
-Publish vor dem Einreihen der Frames, etwa in der Warteschlange der
-Kanal-Sperre; das heisst "nicht gesendet".
+falsch, ein erneutes Senden koennte doppelt ausfuehren.
 
 ``enqueued_before_failure`` ist die strengere Frage fuer eine noch offene
 Verbindung (Publish-Frist, eigener Abbruch): Dort schreibt der Writer
@@ -33,11 +37,10 @@ from __future__ import annotations
 
 import asyncio
 from types import FrameType
-from typing import cast
 
 _PUBLISH_FUNCTION = "basic_publish"
 _DRAIN_LOCAL = "drain_future"
-_CONFIRM_LOCAL = "confirmation"
+_SENT_LOCAL = "sent"
 
 
 def _publish_frame(exc: BaseException) -> FrameType | None:
@@ -57,7 +60,7 @@ def sent_before_failure(exc: BaseException) -> bool:
     (auch ausserhalb von ``basic_publish``, etwa ``ChannelInvalidStateError``
     aus aio-pika)."""
     frame = _publish_frame(exc)
-    if frame is None or _before_enqueue(frame):
+    if frame is None or not _enqueued(frame):
         return False
     drain = frame.f_locals.get(_DRAIN_LOCAL)
     if not isinstance(drain, asyncio.Future):
@@ -71,37 +74,14 @@ def enqueued_before_failure(exc: BaseException) -> bool:
     Einreihen kam (Warteschlange der Kanal-Sperre, ausserhalb von
     ``basic_publish``)."""
     frame = _publish_frame(exc)
-    return frame is not None and not _before_enqueue(frame)
+    return frame is not None and _enqueued(frame)
 
 
-def _before_enqueue(frame: FrameType) -> bool:
-    """FS-08: Abbruch vor ``drain_future = self.create_future()``, etwa in der
-    Warteschlange der Kanal-Sperre. Erst danach legt aiormq die Frames in die
-    ``write_queue``."""
-    return _DRAIN_LOCAL in frame.f_code.co_varnames and _DRAIN_LOCAL not in frame.f_locals
-
-
-def collect_orphaned_confirm(exc: BaseException) -> None:
-    """Holt die Ausnahme des Confirm-Futures ab, auf das nach *exc* niemand
-    mehr wartet.
-
-    aiormq legt das Future vor dem Schreiben an. Endet ``basic_publish``
-    schon davor (gescheiterter Drain), lehnt der Verbindungsabriss es spaeter
-    oder gleichzeitig ab, und asyncio meldet beim Einsammeln "Future
-    exception was never retrieved". Die Ausnahme hat der Publish bereits
-    selbst gemeldet; abgeholt wird nur dieses eine Future."""
-    frame = _publish_frame(exc)
-    if frame is None:
-        return
-    confirmation = frame.f_locals.get(_CONFIRM_LOCAL)
-    if isinstance(confirmation, asyncio.Future):
-        future = cast("asyncio.Future[object]", confirmation)
-        if future.done():
-            _collect(future)
-        else:
-            future.add_done_callback(_collect)
-
-
-def _collect(future: asyncio.Future[object]) -> None:
-    if not future.cancelled():
-        future.exception()
+def _enqueued(frame: FrameType) -> bool:
+    """KTD3: ``sent`` wahr heisst "in der ``write_queue``". Ungebunden (Abbruch
+    in der Warteschlange der Kanal-Sperre, FS-08) oder falsch heisst "nicht
+    eingereiht"; ein Rahmen ganz ohne ``sent`` ist unlesbar und zaehlt als
+    eingereiht."""
+    if _SENT_LOCAL not in frame.f_code.co_varnames:
+        return True
+    return bool(frame.f_locals.get(_SENT_LOCAL, False))

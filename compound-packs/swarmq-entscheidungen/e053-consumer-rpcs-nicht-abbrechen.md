@@ -14,6 +14,8 @@ quelle:
   - Commit 7643879 (U10, FS-09) und Review 3348b96 (cancel_consume folgt dem SIGTERM-Anker, kein Consume nach stop(), Kanalbezug begrenzt)
   - src/swarmq/broker/rabbitmq/consumer_watch.py:40-59 (_RPC_TIMEOUT_S, _RPC_EMERGENCY_TIMEOUT_S, _STOP_TIMEOUT_S), :306-322 (späte consume-Antwort)
   - src/swarmq/worker/shutdown.py:125-153 (_cancel_consume)
+  - docs/plans/2026-10-29-1945-chore-aiormq-7-2-anheben-plan.md (KTD1, KTD7, U7, U8)
+  - compound-packs/swarmq-entscheidungen/e089-consumer-wiederanmeldung-nur-durch-den-waechter.md
 tests:
   - tests/unit/broker/test_befund_fs09_consumer_watch_rpc_abort.py::test_fs09_slow_basic_cancel_does_not_close_the_consume_channel
   - tests/unit/broker/test_befund_fs09_consumer_watch_rpc_abort.py::test_fs09_slow_basic_consume_does_not_close_the_consume_channel
@@ -29,5 +31,7 @@ tests:
 **Begründung.** Ein abgebrochenes RPC beantwortet aiormq mit `Channel.Close(504)`. Auf diesem Kanal liegen alle Consumer des Workers (E-019); alle unbestätigten Zustellungen kämen zurück, während ihre Handler noch laufen (FS-09). Die Notbremse schließt den Kanal erst, wenn der Broker so lange stumm war, dass er ohnehin verloren ist.
 
 **Bewusste Folgen.** Ein `basic.cancel`, das länger als das Drain-Ende braucht, ist kein Fehler; der Shutdown loggt `shutdown_step_timeout` (`step=cancel_consume`) und läuft weiter, ein späterer Fehler erscheint als `cancel_consume_partial_failure` mit `late=True`. Ein abgekoppelter Takt kann bis zur Notbremse weiterlaufen. Zustellungen, die bis zur Antwort des Brokers noch ankommen, gehören zum Drain (E-050).
+
+**Nachtrag 2026-10-30 (Plan 2026-10-29-1945, U8; aio-pika 10.2.1, aiormq 7.2.4): Muster auch für Kanal-Close, aio-pikas Fristen abgeschaltet.** (1) Dasselbe Muster gilt seit 0.15.3 für das Schließen von Kanälen (F4-30, KTD1): `close_without_abort` begrenzt nur das Warten, ein gesendetes `Channel.Close` wird nie abgebrochen, sonst schickt aiormq ein zweites `Channel.Close(504)`, und RabbitMQ schließt die ganze Verbindung. Das gilt auch für den Wegwerf-Kanal der Existenzprüfung des Wächters (E-083). (2) aio-pika 10.2 meldet einen vom Broker beendeten Consumer selbst neu an und ruft dabei `consume` und `basic_cancel` mit `timeout=5` auf dem gemeinsamen Consume-Kanal auf; eine gerissene Frist schlösse ihn mit 504, gegen diese Regel. Diese Wiederherstellung ist für swarmqs Kanäle abgeschaltet (`ReleasingRobustChannel`, E-089), aio-pikas 5-s-Fristen treffen swarmqs Consume-Kanal damit nicht. Fällt das Abschalten auf den Rückfall (WARNING `consumer_recovery_disable_unavailable`), gilt diese Regel für aio-pikas eigene RPCs nicht mehr. (3) Das eigene Abmelden des Wächters (`basic.cancel` vor der Neuanmeldung, nach einem Cancel des Brokers) und die „Zombie“-Prämisse der Settle-Regel bleiben: aiormq 7.2 beantwortet ein `basic.cancel` des Brokers erst mit `CancelOk`, wenn der Broker `accept_consumer_cancel_ok` meldet (ab RabbitMQ 4.3.7). Auf den Testbrokern 4.3.6 und 4.2.9 ist das nicht prüfbar; ab 4.3.7 könnten beide entfallen (Überdenken in E-089). Die Tests dieser Regel sind mit aiormq 7.2.4 grün, keine Assertion geändert.
 
 **Überdenken nur mit neuem Argument.** Keine offenen Einwände bekannt.

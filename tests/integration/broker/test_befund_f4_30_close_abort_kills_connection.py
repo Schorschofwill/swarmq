@@ -37,7 +37,6 @@ import pytest
 
 from swarmq.broker.rabbitmq import RabbitMQBroker, channel_close
 from swarmq.broker.rabbitmq import connection as connection_module
-from tests.support.known_leaks import aiormq_streamwriter_leak
 from tests.support.queues import delete_queue_family
 from tests.support.wait import wait_until
 
@@ -47,7 +46,6 @@ pytestmark = [pytest.mark.integration, pytest.mark.timeout(60), pytest.mark.excl
 _CLOSE_DEADLINE_S = 0.5
 
 
-@aiormq_streamwriter_leak  # TS-02: schließt der Broker die Verbindung, lässt aiormq den Writer offen
 @pytest.mark.befund("F4-30")
 async def test_a_discard_whose_close_misses_the_deadline_after_the_broker_answered_keeps_the_connection(
     rabbitmq_url: str, monkeypatch: pytest.MonkeyPatch

@@ -3,8 +3,8 @@
 # (uv export --no-default-groups --no-emit-project).
 -r requirements.txt
 -e ../..
-aio-pika==10.0.4
-aiormq==7.0.0
+aio-pika==10.2.1
+aiormq==7.2.4
 croniter==6.2.4
 idna==3.20
 msgpack==1.2.4

@@ -20,7 +20,6 @@ from collections.abc import AsyncIterator
 import pytest
 
 from swarmq.task import Task
-from tests.support.known_leaks import close_orphaned_streams_after_module  # noqa: F401 - autouse, TS-02
 from tests.support.services import (
     RABBITMQ_HOST,
     RABBITMQ_PORT,
