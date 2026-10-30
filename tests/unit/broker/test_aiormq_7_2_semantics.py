@@ -25,6 +25,9 @@ Test-Liste:
 #     ``AMQPConnectionError`` noch ``AMQPChannelError`` (KTD4)
 # [x] swarmqs ``_CHANNEL_TRANSIENT_ERRORS`` fängt ``InvalidFrameError`` (seit U5;
 #     in U3 xfail strict)
+# [x] ``TaskWrapper`` macht aus dem Abbruch des Aufrufers weiter den Fehler, mit
+#     dem der Kanal schließt (F4-28; aiormq #239 gibt nur den Grund an
+#     ``Task.cancel`` weiter, U8)
 """
 
 from __future__ import annotations
@@ -36,11 +39,12 @@ from typing import override
 import aiormq
 import pytest
 from aiormq.abc import ExceptionType
-from aiormq.base import Base
+from aiormq.base import Base, FutureStore
 from aiormq.exceptions import (
     AMQPChannelError,
     AMQPConnectionError,
     AMQPError,
+    ChannelNotFoundEntity,
     InvalidFrameError,
     ProtocolSyntaxError,
 )
@@ -191,3 +195,38 @@ def test_invalid_frame_error_is_a_protocol_error_neither_connection_nor_channel(
 
 def test_swarmq_treats_an_invalid_frame_as_a_transient_channel_error() -> None:
     assert issubclass(InvalidFrameError, _CHANNEL_TRANSIENT_ERRORS)
+
+
+async def test_the_task_wrapper_still_turns_the_callers_cancel_into_the_closing_error() -> None:
+    """F4-28 unter aiormq 7.2.4: Schließt der Kanal (``reject_all``) einen
+    laufenden RPC und trifft danach der Abbruch den Aufrufer, kommt beim
+    Aufrufer der Kanalfehler an, nicht ``CancelledError``; der Aufrufer
+    trägt den Abbruch weiter in ``cancelling()``. #239 hat daran nichts
+    geändert, deshalb bleibt die Prüfung in ``WorkerLifecycle.start``."""
+    store = FutureStore(asyncio.get_running_loop())
+    rpc_running = asyncio.Event()
+    rejected = asyncio.Event()
+
+    async def rpc() -> None:
+        rpc_running.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            # Der Kanal hat in den RPC-Task geworfen; der Task lebt noch, bis
+            # der Abbruch des Aufrufers ihn trifft.
+            rejected.set()
+            await asyncio.Event().wait()
+
+    async def caller() -> None:
+        await store.create_task(rpc())
+
+    waiting = asyncio.create_task(caller())
+    await rpc_running.wait()
+    rejecting = asyncio.ensure_future(store.reject_all(ChannelNotFoundEntity("closing")))
+    await rejected.wait()
+    waiting.cancel()
+
+    with pytest.raises(ChannelNotFoundEntity):
+        await waiting
+    assert waiting.cancelling() == 1
+    await rejecting

@@ -2,7 +2,7 @@
 title: Upgrade-Checkliste – private APIs von valkey-py, aiormq, aio-pika, pytest und asyncio, an denen swarmq hängt
 date: 2026-10-19
 category: docs/solutions/tooling-decisions
-module: backend/valkey/connection.py / tests/kosten/valkey/conftest.py / broker/rabbitmq/blocked.py / broker/rabbitmq/delivery.py / broker/rabbitmq/header_guard.py / broker/rabbitmq/robust_channels.py / broker/rabbitmq/consumer_watch.py / broker/rabbitmq/connection.py / client/schedule.py / logging_stdlib.py / logging_file.py / logging_queue.py / worker/compute/child.py / worker/compute/forkserver.py / tests/unit/test_slow_test_report.py
+module: backend/valkey/connection.py / tests/kosten/valkey/conftest.py / broker/rabbitmq/blocked.py / broker/rabbitmq/delivery.py / broker/rabbitmq/publish_phase.py / broker/rabbitmq/header_guard.py / broker/rabbitmq/robust_channels.py / broker/rabbitmq/underlay.py / worker/lifecycle.py / broker/rabbitmq/consumer_watch.py / broker/rabbitmq/connection.py / client/schedule.py / logging_stdlib.py / logging_file.py / logging_queue.py / worker/compute/child.py / worker/compute/forkserver.py / tests/unit/test_slow_test_report.py
 problem_type: tooling_decision
 component: dependencies
 severity: medium
@@ -10,9 +10,10 @@ applies_when:
   - valkey-py, aiormq, aio-pika, pytest oder Python werden angehoben (auch Patch-Versionen)
   - ein Plan will eine weitere private API einer Bibliothek nutzen
   - nach einem Abhängigkeits-Upgrade scheitern Tests zu Verbindungsaufbau, Blocked-Zustand, Kanal-Wiederherstellung, gelöschter konsumierter Queue, Abbruch-Markierung oder Slow-Report
+  - nach einem aiormq- oder aio-pika-Upgrade erscheinen die WARNINGs channel_observer_release_unavailable oder consumer_recovery_disable_unavailable, oder die Leckmessungen in test_channel_callbacks_flat.py steigen
   - nach einem Python-Upgrade scheitern Tests zu Logging-Listenern, Fork-Hooks oder dem Forkserver der Rechenkinder
 tags: [abhaengigkeiten, upgrade, valkey-py, aiormq, aio-pika, pytest, asyncio, logging, multiprocessing, private-api, checkliste]
-entscheidungen: [E-019, E-025, E-041, E-053, E-075, E-078, E-083]
+entscheidungen: [E-001, E-019, E-025, E-041, E-042, E-053, E-075, E-078, E-083, E-089]
 ---
 
 # Upgrade-Checkliste: private Bibliotheks-APIs
@@ -25,6 +26,15 @@ Art kommen hier dazu, mit Fundstelle, Prüfung und Rückfall.
 
 Stand: swarmq 0.14 (Branch `feat/0-14`), valkey-py 6.1.1, aiormq 7.0.0,
 aio-pika 10.0.1, pytest 9.1.1, Python 3.14.
+
+Stand 2026-10-30 (Plan 2026-10-29-1945, U8; Branch `chore/aiormq-7-2`): aiormq 7.2.4
+und aio-pika 10.2.1 (Grenzen `aiormq>=7.2.4,<7.3`, `aio-pika>=10.2.1,<10.3`). Die
+aiormq- und aio-pika-Einträge sind gegen diese Versionen geprüft; Zeilenangaben
+„in 7.2.4“ bzw. „in 10.2.1“ sind neu, ältere Angaben „in 7.0.0“/„in 10.0.1“ bleiben als
+Fundstelle der damaligen Prüfung stehen. Neu: Frame-Locals in `basic_publish`,
+`_raise_on_channel_close`, `closing` als Beobachter, `TaskWrapper`, Kanalöffnen ohne
+Beobachter-Leck (`underlay.py`) und Consumer-Wiederherstellung von aio-pika. Entfernt:
+der FS-08-Wächter mit der WARNING `publish_channel_closing_unreadable`.
 
 ## valkey-py
 
@@ -111,8 +121,10 @@ läuft. Tests wie oben.
 - **Rückfall:** fail-open (E-025). Ist das Attribut nicht lesbar, loggt swarmq einmal
   `publish_blocked_state_unreadable` und publiziert ungeprüft wie vor 0.12; das Close
   eines verworfenen Kanals läuft sofort wie vor 0.14.
+- **Stand 7.2.4:** unverändert (`__connection_unblocked` Z. 438, geleert Z. 720, gesetzt
+  Z. 726 und 729; `Connection.ready()` wartet weiter auf Verbindung und Freigabe, Z. 445–447).
 
-### `Connection.closing` (Future, seit 0.14, U6 und F4-21)
+### `Connection.closing` (Future, seit 0.14, U6 und F4-21; seit aiormq 7.2 ein Beobachter je Zugriff)
 
 - **Wo:** `blocked_waiters` liest `connection.transport.connection.closing`, beim
   Verwurf des Publish-Kanals über `blocked_close_waiters` (PF-19 a) und im Warten eines
@@ -130,30 +142,103 @@ läuft. Tests wie oben.
   frame for closed channel“. Ein wartender Publish wartet dann allein auf das Event wie
   bis 0.13, ohne eigene WARNING: Reißt die Verbindung im Alarm, endet er erst mit der
   Publish-Frist als `BrokerPublishBlocked` (F4-21 wieder offen).
+- **Stand 7.2.4 (aiormq #240):** `closing` ist eine Property von `aiormq.base.Base`
+  (Z. 124), die bei jedem Zugriff einen **neuen** Beobachter liefert. Der hängt einen
+  Callback an das innere Future `_closing` (Z. 118), bis er selbst endet; erst wenn
+  `_closing` erledigt ist, liefert `closing` das innere Future selbst. Wer `closing`
+  liest und nicht bis zum Ende der Verbindung wartet, muss seinen Beobachter darum
+  abbrechen, sonst bleibt je Lesen ein Callback an der Verbindung (Leck).
+  `wait_until_unblocked` in `blocked.py` bricht seinen Beobachter seit U5 nach jedem
+  Warten ab (KTD2). Ein abgebrochener Beobachter berührt `_closing` nicht.
 - **Prüfen:** `aiormq/connection.py`, Attribut `__connection_unblocked` (in 7.0.0
   Z. 433, gesetzt und geleert Z. 692–705), und `aiormq/base.py`, `closing` (Z. 96,
-  `_create_closing_future`).
+  `_create_closing_future`; in 7.2.4 Z. 118–124 und die Beobachter-Logik darunter).
 - **Tests:** `uv run just unit -k "publish_blocked or rabbitmq or befund_f4_21"`
   (`TestChannelCloseAfterUnblocked`, darunter der Fall „`closing` unlesbar“, und die
   vier F4-21-Tests mit Fake-Transport) und
   `uv run just integration -k "bz16 or blocked_cancel or pf19 or befund_f4_21"` gegen den
-  echten Broker.
+  echten Broker. Die Beobachter-Semantik halten
+  `tests/unit/broker/test_aiormq_7_2_semantics.py` (ohne Broker) und
+  `tests/integration/broker/test_channel_callbacks_flat.py` (Callbacks an `_closing`
+  über 10 000 Publishes und Wartezeiten flach) fest.
 
-### Kanal-`closing` über `get_underlay_channel()` (undokumentiert, seit 0.12.2, FS-08)
+### Kanal-`closing` über `get_underlay_channel()` (undokumentiert, 0.12.2 bis 0.15.x, FS-08) – entfernt
 
-- **Wo:** `_closing_of` in `src/swarmq/broker/rabbitmq/delivery.py` (Z. 123–139) holt
-  über das öffentliche `get_underlay_channel()` von aio-pika den aiormq-Kanal und liest
-  dessen `closing`. `_publish_against_closing` wartet auf den Publish **oder** dieses
-  Future: Schließt die Verbindung, während der Publish in der Kanal-Sperre wartet, endet
-  er sofort statt erst mit der Publish-Frist (FS-08).
-- **Annahmen:** Der aiormq-Kanal trägt `closing` als `asyncio.Future`
-  (`aiormq/base.py`, `_create_closing_future`), erledigt, sobald Kanal oder Verbindung
-  enden. `get_underlay_channel()` kehrt bei stehender Verbindung ohne Suspendieren
-  zurück (Basis synchron, robust auf gesetztem `connected`).
-- **Rückfall:** Ist `closing` kein Future, loggt swarmq einmal die WARNING
-  `publish_channel_closing_unreadable` und publiziert ohne Wächter; der FS-08-Hänger
-  (Warten in der Kanal-Sperre bis zur Publish-Frist) kehrt zurück.
-- **Tests:** `uv run just unit -k "fs08 or publish_channel_closing"`.
+- **Entfernt 2026-10-30 (Plan 2026-10-29-1945, U5, KTD2; Nachtrag E-042):** Der
+  FS-08-Wächter (`_closing_of`, `_publish_against_closing` in `delivery.py`) und seine
+  WARNING `publish_channel_closing_unreadable` sind weg. aiormq 7.2 prüft `is_closed` in
+  der Kanal-Sperre auch nach dem Erwerb (#240): Ein Publish, der beim Abriss in ihrer
+  Warteschlange steht, endet selbst mit `ChannelInvalidStateError`. Unter 7.2 hätte der
+  Wächter je Publish einen `closing`-Beobachter an der Verbindung gelassen (Eintrag
+  oben). swarmq liest beim Publish kein `closing` mehr.
+- **Prüfen bei einem aiormq-Upgrade:** ob die Sperre (`Channel.lock`, eine Property um
+  `__lock`) weiter vor und nach dem Erwerb `is_closed` prüft. Fällt die zweite Prüfung
+  weg, kehrt der FS-08-Hänger zurück (Warten in der Kanal-Sperre bis zur Publish-Frist,
+  dann `PublishIndeterminate`).
+- **Tests:** `uv run just unit tests/unit/broker/test_aiormq_7_2_semantics.py`
+  (`test_the_channel_lock_checks_is_closed_before_and_after_acquiring`) und
+  `uv run just integration tests/integration/broker/test_befund_fs08_lock_waiter_aiormq_7_2.py`
+  (der Wartende endet nach dem Proxy-Abriss sofort, nicht gesendet).
+
+### Frame-Locals `sent` und `drain_future` in `Channel.basic_publish` (undokumentiert, seit 0.12, B24; `sent` seit aiormq 7.2)
+
+- **Wo:** `publish_phase.py` (`sent_before_failure`, `enqueued_before_failure`, `_enqueued`)
+  sucht im Traceback einer gescheiterten Publish-Ausnahme den Rahmen von aiormqs
+  `basic_publish` (Funktionsname, Modul `aiormq*`) und liest dessen Locals. Davon hängt
+  die Einstufung ab: nicht gesendet (wiederholen), gesendet (`PublishIndeterminate`),
+  eigener Abbruch vor dem Einreihen (`PublishCancelledUnsent`); E-041, E-042, B24.
+- **Annahmen (in 7.2.4 Z. 939–971):** `basic_publish` läuft unter
+  `async with (self._raise_on_channel_close(), asyncio.timeout(...))` und darin unter
+  `async with self.lock`. Erst unter der Sperre werden `drain_future = None` und
+  `sent = False` gebunden; `sent = True` steht nach `await self.write_queue.put(...)`,
+  danach `await drain_future` und das Confirm. `sent` wahr heißt „in der `write_queue`“,
+  nicht „auf dem Socket“; das entscheidet weiter `drain_future` (erfüllt: geschrieben).
+  `sent` ungebunden (Ende in der Warteschlange der Sperre) oder falsch heißt „nicht
+  eingereiht“ (KTD3).
+- **Rückfall:** Fehlt `sent` in `co_varnames`, gilt der Publish als eingereiht; ist
+  `drain_future` kein Future, als gesendet. Unbestimmt ist nie falsch, kann aber
+  unnötige `PublishIndeterminate` erzeugen. Keine WARNING; die Tests unten werden rot.
+- **Prüfen:** `aiormq/channel.py`, `basic_publish`: Namen und Reihenfolge der Locals,
+  dass beide unter der Sperre gebunden werden, und dass `collect_orphaned_confirm`
+  weiter unnötig ist (aiormq holt abgelehnte Futures selbst ab, #253; `FutureStore.create_future`).
+- **Tests:** `uv run just unit -k "publish_phase or publish_connection_loss or aiormq_7_2_semantics"`
+  (`test_basic_publish_has_the_locals_sent_and_drain_future`,
+  `test_sent_is_set_after_the_frames_are_enqueued_and_bound_under_the_lock`) und
+  `uv run just integration tests/integration/broker/test_befund_b24_publish_connection_loss.py`.
+
+### `Channel._raise_on_channel_close` (privat, seit aiormq 7.2, Test-Doubles)
+
+- **Wo:** `basic_publish` läuft in diesem Contextmanager. `FakeTransport` in
+  `tests/support/aiormq_transport.py` ruft den echten Code aus aiormq mit sich selbst als
+  Kanal auf und trägt dafür `_closing` und `_close_exception` wie aiormq.
+- **Annahmen (in 7.2.4 Z. 879–901):** Hat der Kanal den laufenden Task selbst
+  abgebrochen (`_closing` erledigt mit `_close_exception`, `cancelling() == 1`, der Grund
+  als einziges Argument des `CancelledError`), nimmt aiormq den Abbruch zurück
+  (`uncancel`) und wirft den Grund; ein fremder Abbruch bleibt `CancelledError`. Im
+  Publish-Pfad von swarmq laufen Publishes nicht in aiormqs Consumer-Tasks; die
+  Rücknahme trifft dort nur Code, der direkt im Consumer-Callback publiziert.
+- **Rückfall:** keiner; benennt aiormq ihn um, scheitert `FakeTransport`, und die Unit-Tests
+  des Publish-Pfads werden rot.
+- **Tests:** `uv run just unit -k "aiormq_7_2_semantics or publish_connection_loss or publish_channel_closing"`.
+
+### `TaskWrapper` macht den Abbruch des Aufrufers zum Kanalfehler (Verhalten, seit 0.14.4, F4-28)
+
+- **Wo:** `_raise_if_cancel_was_swallowed` in `src/swarmq/worker/lifecycle.py`; dieselbe
+  Regel „nur ein Anstieg von `cancelling()` zählt“ in `delivery.settle` und im
+  Publish-Pfad (E-001, KTD9).
+- **Verhalten (in 7.2.4 `aiormq/abc.py` Z. 26–61, `base.py` `reject_all`):** Jeder RPC
+  läuft als eigener Task hinter einem `TaskWrapper`. Schließt der Kanal (`reject_all` →
+  `TaskWrapper.throw(exc)`) und trifft danach der Abbruch den Aufrufer, wirft das
+  Warten `exc` statt `CancelledError`; der Aufrufer trägt den Abbruch weiter in
+  `cancelling()`. aiormq #239 (in 7.2) reicht den Grund nur an `Task.cancel(msg)` weiter,
+  damit er im Traceback steht; am Ausgang für den Aufrufer ändert es nichts. Der Schutz
+  aus F4-28 bleibt nötig.
+- **Rückfall:** keiner nötig; liefert eine künftige Version `CancelledError`, ist die
+  Prüfung überflüssig, aber nicht falsch.
+- **Tests:** `uv run just unit tests/unit/broker/test_aiormq_7_2_semantics.py`
+  (`test_the_task_wrapper_still_turns_the_callers_cancel_into_the_closing_error`, gegen
+  aiormqs echten `FutureStore`) und
+  `uv run just unit tests/unit/worker/test_befund_f4_28_abbruch_im_start.py`.
 
 ### `Connection.connection_tune.frame_max` (undokumentiert, seit 0.12, BZ-17)
 
@@ -161,8 +246,8 @@ läuft. Tests wie oben.
   liest `connection.transport.connection.connection_tune.frame_max`; `guard_headers`
   begrenzt die Header jedes Publish auf die Hälfte davon.
 - **Annahmen:** aiormq legt den `Connection.Tune`-Frame des Handshakes unter
-  `connection_tune` ab (in 7.0.0 Z. 365, gesetzt Z. 587) und überschreibt `frame_max`
-  dort mit dem ausgehandelten Wert.
+  `connection_tune` ab (in 7.0.0 Z. 365, gesetzt Z. 587; in 7.2.4 Z. 367, gesetzt
+  Z. 637) und überschreibt `frame_max` dort mit dem ausgehandelten Wert.
 - **Rückfall:** Fehlt der Pfad (`AttributeError`) oder ist der Wert keine positive
   Zahl, gilt `DEFAULT_FRAME_MAX` (131072, RabbitMQ-Standard). Handelt ein Broker einen
   kleineren Wert aus, können zu große Header die Verbindung wieder schließen (BZ-17).
@@ -176,7 +261,11 @@ läuft. Tests wie oben.
   `tag in message.channel.consumers`, bevor ein Ack/Nack auf das Abmelden wartet.
 - **Annahmen:** `consumers` ist ein `dict` Tag → Callback am konkreten aiormq-`Channel`
   (in 7.0.0 Z. 99), aiormq trägt bei `basic.consume_ok` ein und entfernt bei
-  `basic.cancel` vom Broker (Z. 397). Am ABC von aiormq steht es nicht.
+  `basic.cancel` vom Broker (Z. 397). Am ABC von aiormq steht es nicht. In 7.2.4
+  unverändert (`consumers` Z. 117, Eintrag Z. 791, `_on_cancel_frame` Z. 596–603). Neu
+  in 7.2: `on_consumer_cancel_callbacks` (aio-pika hängt dort seine Wiederherstellung an,
+  siehe „Consumer-Wiederherstellung“ unten), und ein `CancelOk` an den Broker erst, wenn
+  er `accept_consumer_cancel_ok` meldet (ab RabbitMQ 4.3.7).
 - **Rückfall:** keiner. Fehlt das Attribut, scheitert jeder Wächter-Takt
   (`consumer_watch_tick_failed`) und jedes Settle eines beobachteten Tags; die Tests
   unten werden rot.
@@ -218,6 +307,14 @@ läuft. Tests wie oben.
   Abbruch ausräumt (`except BaseException` oder `finally`), ob `Channel.rpc` bei einem
   Abbruch weiter `Channel.Close` sendet und ob `Connection.ready()` weiter auf
   „unblocked“ wartet. Fällt eins davon weg, gilt die Einschätzung oben nicht mehr.
+- **Stand 7.2.4 (nur Quelltext gelesen, nicht gemessen):** `Channel.open` fängt jetzt
+  `BaseException` (`channel.py` Z. 396–409): Ein Abbruch, bevor `Channel.Open`
+  geschrieben ist, schließt den Kanal lokal und gibt die Nummer sofort frei
+  (`_close_locally`, WARNING „Closing channel … locally because RPC call … cancelled
+  before Channel.Open was sent“); danach sendet `__close_after_failure` wie bisher
+  `Channel.Close(504)`. Der Rest-Eintrag aus `probe_2a` entsteht damit nicht mehr; das
+  Abwarten in `queue_exists_on_throwaway` bleibt unschädlich. `Connection.ready()`
+  wartet weiter auf „unblocked“ (Z. 445–447).
 - **Tests:** `uv run just unit -k consumer_watch_missing_queue`
   (`test_a_check_aborted_while_the_channel_opens_closes_the_channel_once_it_is_open`).
 
@@ -250,7 +347,9 @@ läuft. Tests wie oben.
   dann über einen Reconnect nicht mehr.
 - **Prüfen:** `aio_pika/robust_connection.py`: `self.__channels` (in 10.0.1 Z. 67),
   `channel()` mit `self.__channels.add(channel)` (Z. 233–247), `_on_connected`
-  (Z. 107–137).
+  (Z. 107–137). In 10.2.1: `__channels` Z. 62, `channel()` Z. 248–262,
+  `_on_connected` Z. 106–147 (stellt jetzt in Runden wieder her und schiebt Kanäle mit
+  fehlender Entität nach hinten).
 
 ### Fehler beim Restore: `_on_connected` stellt auch geschlossene `RobustChannel` wieder her (aio-pika 10.0.1)
 
@@ -268,6 +367,13 @@ läuft. Tests wie oben.
 - **Prüfen bei einem aio-pika-Upgrade:** ob `close()` den Kanal jetzt aus dem `WeakSet`
   nimmt oder `restore()` einen geschlossenen Kanal überspringt. Dann wären Abmeldung und
   Wegwerf-Kanäle überflüssig, aber nicht falsch.
+- **Stand 10.2.1:** `RobustChannel.close()` setzt `_close_called` (Z. 151–157), und
+  `restore()` überspringt einen solchen Kanal (Z. 97–115). Ein per `close()`
+  geschlossener Kanal bleibt also über einen Reconnect zu. Nicht abgedeckt sind Kanäle,
+  deren `close()` noch nicht lief: der verworfene Publish-Kanal mit zurückgestelltem
+  Close im Alarm (E-025) und der Kanal aus einem abgebrochenen Öffnen (F4-24). Die
+  Abmeldung (`release_channel`) bleibt darum; die F4-20/F4-22/F4-24-Tests sind unter
+  10.2.1 grün (U6).
 
 ### `aio_pika.Channel` auf einer `RobustConnection` (öffentliches API, seit 0.14, F4-20)
 
@@ -278,7 +384,7 @@ läuft. Tests wie oben.
   (`_throwaway_channel_message_count`), Queue-Status (`_passive_declarations`) und die
   DLQ (`_dlq_queue`).
 - **Annahmen:** Der Konstruktor nimmt die Verbindung als erstes Argument
-  (`channel.py`, in 10.0.1 Z. 69), und ein so angelegter Kanal steht **nicht** im
+  (`channel.py`, in 10.0.1 Z. 69, in 10.2.1 Z. 75), und ein so angelegter Kanal steht **nicht** im
   `WeakSet`: Nur `RobustConnection.channel()` trägt ein. Ein vom Broker geschlossener
   Kanal (`NOT_FOUND`, 406) bleibt damit zu, und ein Reconnect legt keine seiner Queues
   neu an.
@@ -300,7 +406,7 @@ läuft. Tests wie oben.
 
 - **Wo:** `_restored_in_time`, `_retire_replaced_channel` und `_close_after_restore` in
   `broker/rabbitmq/connection.py`, aufgerufen aus `_ensure_channel_tracked`.
-- **Annahmen über den Ablauf in aio-pika 10.0.1:** `_on_connected` setzt zuerst
+- **Annahmen über den Ablauf in aio-pika 10.0.1 (in 10.2.1 gleich, F4-22-Tests grün):** `_on_connected` setzt zuerst
   `connected` und stellt danach die Kanäle aus einer Tupel-Kopie des `WeakSet` wieder
   her; ein schon abgemeldeter Kanal in dieser Kopie wird trotzdem geöffnet.
   `RobustChannel.ready()` wartet auf Verbindung und Restored-Event.
@@ -344,7 +450,10 @@ läuft. Tests wie oben.
   wie vor 0.14 alle 5 s an `NOT_FOUND`, bis der Worker neu startet (E-083).
 - **Prüfen:** `aio_pika/robust_channel.py`: `self._queues = defaultdict(set)` (Z. 67),
   `_on_open` (Z. 135–155), `declare_queue` (Z. 242–278); `aio_pika/robust_queue.py`:
-  `restore` und `cancel`.
+  `restore` und `cancel`. In 10.2.1: `_queues` Z. 78, `_on_open` Z. 164–188, Eintrag in
+  `declare_queue` Z. 406; `RobustQueue.restore` Z. 69, `cancel` entfernt den Tag Z. 234.
+  Neu in 10.2: Auch `_restore_missing_consumers` liest `_queues` (Probe-Kanal und
+  Anmeldung nach `basic.cancel`); für swarmqs Kanäle ist das abgeschaltet (E-089, unten).
 - **Tests:** `uv run just unit -k "robust_channels or consumer_watch_missing_queue"`
   (echter `RobustChannel` und `RobustQueue`: Abmelden, Zurücklegen, fail-open) und
   `uv run just integration tests/integration/broker/test_consumed_queue_deleted.py`
@@ -361,10 +470,79 @@ läuft. Tests wie oben.
   (`robust_queue.py`, in 10.0.1 Z. 141), `cancel` entfernt ihn (Z. 157), und
   `restore()` meldet nach einem Reconnect genau die Tags darin wieder an (Z. 67).
   aio-pika merkt ein `basic.cancel` des Brokers nicht; der tote Tag bleibt sonst stehen.
+  In 10.2.1: Eintrag Z. 193, Entfernen Z. 234, `restore` Z. 69. Seit 10.2 merkt aio-pika
+  ein `basic.cancel` doch (`_on_consumer_cancel`) und meldet den Tag selbst neu an; swarmq
+  schaltet das ab (nächster Eintrag), der Wächter bleibt allein zuständig.
 - **Rückfall:** keiner. Entfernte `cancel` den Tag nicht mehr, legte ein Restore den
   toten Consumer neben dem neu angemeldeten wieder an; der Integrationstest wird rot.
 - **Tests:** `uv run just unit -k consumer_watch` und
   `uv run just integration tests/integration/broker/test_consumer_timeout.py`.
+
+### Kanalöffnen ohne Beobachter-Leck: `Channel._open` und `UnderlayChannel` (privat, seit Plan 2026-10-29-1945, U6, KTD6)
+
+- **Verhalten in 10.2.1:** `UnderlayChannel.create` (`abc.py` Z. 587–601) hängt den
+  `close_callback` an `connection.closing` und `channel.closing`; seit aiormq 7.2 sind
+  das Beobachter (oben). `UnderlayChannel.close` (Z. 605–617) liest beide noch einmal, um
+  den Callback zu entfernen, und erzeugt dabei neue, leere Beobachter. Je geschlossenem
+  Kanal bleiben zwei Beobachter an `_closing` der Verbindung, der erste hält den ganzen
+  Kanal. Ein vom Broker geschlossener und von aio-pika wiederhergestellter
+  `RobustChannel` läuft nie durch `close` und lässt seinen Beobachter ebenso zurück.
+- **Wo:** `src/swarmq/broker/rabbitmq/underlay.py`. `_ReleasingUnderlay` hält seinen
+  Beobachter selbst und bricht ihn ab, sobald der aiormq-Kanal zu ist; `_open` ist eine
+  Kopie von `aio_pika.Channel._open` (10.2.1, `channel.py` Z. 183–207), nur mit
+  `_ReleasingUnderlay`. `ReleasingChannel` trägt die Wegwerf-Kanäle
+  (`open_throwaway_channel`, auf jeder aio-pika-Verbindung), `ReleasingRobustChannel`
+  Publish- und Consume-Kanal auf swarmqs eigenen Verbindungen (`CHANNEL_CLASS` der
+  `RobustConnection`-Unterklasse in `connection.py`), auch beim Wiederherstellen. Der
+  Publish-Kanal auf einer injizierten Verbindung öffnet über deren Kanalklasse und
+  leckt wie bei aio-pika.
+- **Fingerabdruck:** `_fits_aio_pika` vergleicht `aio_pika.Channel._open.__code__.co_names`
+  mit `_OPEN_NAMES` und die Felder des Dataclass `UnderlayChannel` mit
+  `_UNDERLAY_FIELDS` (`channel`, `close_callback`). Ohne aiormq-Verbindung
+  (Test-Doubles) öffnet aio-pikas eigenes `_open`.
+- **Rückfall:** Weicht der Fingerabdruck ab, öffnet der Kanal über aio-pikas `_open`,
+  einmal je Verbindung WARNING `channel_observer_release_unavailable`. Kein Absturz, aber
+  der Speicher wächst mit jedem Wegwerf- oder verworfenen Kanal (E-078).
+- **Prüfen bei einem aio-pika-Upgrade:** ob `UnderlayChannel.close` seine Beobachter
+  inzwischen selbst abbricht (dann wäre `underlay.py` überflüssig, aber nicht falsch);
+  sonst `_open` gegen die neue Vorlage abgleichen und erst danach `_OPEN_NAMES` und
+  `_UNDERLAY_FIELDS` nachführen, nicht umgekehrt.
+- **Tests:** `uv run just unit tests/unit/broker/test_underlay.py` (Fingerabdruck,
+  fail-open, Abbruch im Öffnen) und
+  `uv run just integration tests/integration/broker/test_channel_callbacks_flat.py`
+  (10 000 Wegwerf-Kanäle, 1 000 Verwürfe des Publish-Kanals, 100 vom Broker geschlossene
+  und wiederhergestellte Kanäle: Callbacks an `_closing` flach).
+
+### Consumer-Wiederherstellung nach `basic.cancel` (privat, neu in aio-pika 10.2, abgeschaltet seit U7, E-089)
+
+- **Verhalten in 10.2.1:** `RobustChannel._on_open` (Z. 164–188) hängt
+  `_on_consumer_cancel` an `on_consumer_cancel_callbacks` des aiormq-Kanals. Ein
+  `basic.cancel` des Brokers für einen bekannten Tag weckt über `_request_recovery` die
+  Verbindungsfabrik (`RobustConnection.__connection_factory`, Z. 149–207); bei lebender
+  Verbindung ruft sie `_restore_consumers` jedes `RobustChannel` (Z. 199–), das je Queue
+  einen Probe-Kanal öffnet (`timeout=5`), passiv deklariert und den Tag mit `timeout=5`
+  auf dem Consume-Kanal neu anmeldet. Gemessen (U3, `test_consumer_cancel_recovery.py`):
+  530 „reuse consumer tag“ auf RabbitMQ 4.3.6, Probe-Kanäle je `reconnect_interval`
+  gegen eine gelöschte Queue, Fristen auf dem Consume-Kanal (gegen E-053),
+  `recovery.cancel()` bricht ein `probe.close()` ab (504, wie F4-30).
+- **Wo:** `ReleasingRobustChannel` in `underlay.py` überschreibt `_on_consumer_cancel`
+  (tut nichts) und `_restore_consumers` (liefert `False`). Die Wiederherstellung nach
+  einem Kanal-Close (`_on_close`) und nach einem Reconnect (`_on_connected`) bleibt wie
+  in 10.0.
+- **Fingerabdruck:** `_consumer_recovery_entries_fit` prüft, ob `_on_consumer_cancel` in
+  `aio_pika.RobustChannel._on_open.__code__.co_names` steht und `_restore_consumers` in
+  den `co_names` von `RobustConnection._RobustConnection__connection_factory`.
+- **Rückfall:** Passt der Fingerabdruck nicht, meldet `_on_open` einmal je Verbindung
+  WARNING `consumer_recovery_disable_unavailable`; die Überschreibungen bleiben, aber
+  aio-pika kann über neue Einstiege selbst wieder anmelden (auf 4.3 mit dem alten Tag,
+  530 schließt die Verbindung).
+- **Prüfen bei einem aio-pika-Upgrade:** die beiden Namen oben, ob die Fabrik bei
+  lebender Verbindung noch andere Wege zur Anmeldung hat, und ob RabbitMQ ab 4.3.7
+  (`accept_consumer_cancel_ok`) die Zombie-Prämisse aufhebt (Überdenken in E-089).
+- **Tests:** `uv run just unit tests/unit/broker/test_underlay.py` (E-089-Tests) und
+  `uv run just integration tests/integration/broker/test_consumer_cancel_recovery.py`
+  (RabbitMQ 4.3.6 und 4.2.9: ein Consumer, kein 530, keine Probe-Kanäle),
+  `test_consumer_timeout.py`, `test_consumed_queue_deleted.py`.
 
 ## pytest
 
@@ -464,7 +642,7 @@ und `.clear()` und ein direkter Aufruf von `await connection._on_connected()`
 `tests/unit/broker/test_befund_f4_22_channel_replaced_in_restore_window.py`
 `_connected_broker`, `_drop`, `_reconnect` und die Tests mit `_HeldAiormq`).
 
-- **Annahmen:** `RobustConnection._on_connected` (in 10.0.1 Z. 107) setzt über
+- **Annahmen:** `RobustConnection._on_connected` (in 10.0.1 Z. 107, in 10.2.1 Z. 106) setzt über
   `Connection._on_connected` `connected` (`connection.py` Z. 137) und stellt danach die
   Kanäle wieder her; der Abriss besteht aus `transport = None` und `connected.clear()`.
   Die Tests ersetzen damit `connect()` und den Reconnect-Takt.
@@ -484,6 +662,12 @@ und `.clear()` und ein direkter Aufruf von `await connection._on_connected()`
 2. Die genannten Tests laufen lassen, dann `uv run just all` und für valkey-py,
    aiormq und aio-pika zusätzlich `SWARMQ_REQUIRE_CHAOS=1 uv run just chaos`. Bei einem
    Python-Upgrade auch die Einträge zu `logging` und `multiprocessing`.
-3. Bei einer Abweichung erst die betroffene Entscheidung lesen (E-019, E-025, E-041,
-   E-053, E-075, E-078, E-083), dann anpassen. Einen Test mit `entscheidung`-Marker nicht lockern.
+3. Bei einer Abweichung erst die betroffene Entscheidung lesen (E-001, E-019, E-025,
+   E-041, E-042, E-053, E-075, E-078, E-083, E-089), dann anpassen. Einen Test mit `entscheidung`-Marker nicht lockern.
 4. Diese Datei mit den neuen Versionen und Zeilen nachführen.
+5. Für aiormq und aio-pika in Integration, Chaos und Loadsuite auf die Rückfall-WARNINGs
+   achten (`publish_blocked_state_unreadable`, `robust_channel_release_unavailable`,
+   `robust_queue_release_unavailable`, `channel_observer_release_unavailable`,
+   `consumer_recovery_disable_unavailable`): Sie ersetzen rote Tests, wenn eine Stelle
+   still auf den Rückfall fällt. Danach die Leck-Ausnahmen in
+   `tests/support/known_leaks.py` probeweise entfernen (TS-01 bis TS-03).

@@ -36,7 +36,6 @@ from tests.integration.broker.test_pf19_close_after_unblocked import (
     _close_connection_at_broker,
     _wait_until_blocked,
 )
-from tests.support.known_leaks import aiormq_streamwriter_leak
 from tests.support.queues import delete_queue_family
 
 # exclusive: der Speicheralarm blockiert jeden Verleger des Brokers.
@@ -48,7 +47,6 @@ _PUBLISH_TIMEOUT_S = 20.0
 _CONFIRMED_WITHIN_S = 12.0
 
 
-@aiormq_streamwriter_leak  # TS-02: der Broker schließt die Verbindung, aiormq lässt den Writer offen
 @pytest.mark.befund("F4-21")
 @pytest.mark.entscheidung("E-025")
 async def test_a_publish_waiting_in_the_alarm_is_sent_after_the_reconnect(

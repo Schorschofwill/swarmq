@@ -637,6 +637,13 @@ current channel:
   `swarmq_consumer_reregistrations_total{queue}`. The worker consumes
   again within two intervals, without a restart, and no zombie stays
   at the broker.
+- Only the watch re-registers a consumer the broker cancelled.
+  aio-pika 10.2 brings its own recovery for this case; swarmq switches
+  it off on its own channels (E-089), because on 4.3 it reuses the old
+  tag, which closes the whole connection, and it runs its calls on the
+  consume channel with a 5 s deadline. If a later aio-pika release no
+  longer fits, swarmq logs the WARNING
+  `consumer_recovery_disable_unavailable` once per connection.
 
 On 4.3 an ack or nack for a delivery whose consumer the broker
 cancelled waits until the watch has sent its own cancel

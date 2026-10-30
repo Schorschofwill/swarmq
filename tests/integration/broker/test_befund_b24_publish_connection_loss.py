@@ -34,7 +34,6 @@ from swarmq.exceptions import PublishIndeterminate
 from tests.e2e.combinations._toxiproxy import ToxiproxyClient
 from tests.integration.broker.conftest import PROXY as _PROXY
 from tests.integration.broker.conftest import PROXY_PORT as _PROXY_PORT
-from tests.support.known_leaks import aiormq_streamwriter_leak
 from tests.support.queues import delete_queue_family
 from tests.support.services import rabbitmq_amqp_url
 from tests.support.wait import wait_until
@@ -64,8 +63,6 @@ async def _depth(queue: str) -> int:
         await connection.close()
 
 
-# TS-02: der abgeschaltete Proxy trennt die Verbindung (tests/support/known_leaks.py).
-@aiormq_streamwriter_leak
 async def test_connection_lost_while_waiting_for_the_confirm_is_indeterminate(
     hold_confirms: ToxiproxyClient,
 ) -> None:

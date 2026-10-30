@@ -39,7 +39,6 @@ from tests.integration.broker.test_pf19_close_after_unblocked import (
     _management,
     _open_aiormq_channels,
 )
-from tests.support.known_leaks import aiormq_streamwriter_leak
 from tests.support.queues import delete_queue_family
 from tests.support.wait import wait_until
 
@@ -84,7 +83,6 @@ async def _cut_at_broker(connection_name: str, cut: set[str]) -> None:
         (await http.delete(f"/connections/{quote(target, safe='')}", headers={"X-Reason": "f4-22"})).raise_for_status()
 
 
-@aiormq_streamwriter_leak  # TS-02: der Broker schließt die Verbindung, aiormq lässt den Writer offen
 @pytest.mark.befund("F4-22")
 @pytest.mark.entscheidung("E-078")
 @pytest.mark.usefixtures("no_collection")

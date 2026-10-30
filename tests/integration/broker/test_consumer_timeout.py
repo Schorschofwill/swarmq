@@ -1,8 +1,11 @@
 """Charakterisierung: Consumer-Timeout auf RabbitMQ 4.3.6 und 4.2.9 (Plan U5).
 
 Grün und ohne Produktionscode: Die Tests halten fest, wie die gepinnten
-Broker zusammen mit roh benutztem aio-pika (10.0.1) reagieren, wenn eine
-Nachricht länger unbestätigt bleibt als ``consumer-timeout``. Darauf bauen
+Broker zusammen mit roh benutztem aio-pika reagieren, wenn eine Nachricht
+länger unbestätigt bleibt als ``consumer-timeout``. Belegt mit aio-pika 10.0.1,
+seit Plan 2026-10-29-1945 mit 10.2.1. Roh heißt hier ohne swarmqs Kanalklasse:
+aio-pikas eigene Wiederanmeldung nach einem Cancel des Brokers (neu in 10.2)
+ist aktiv; was sie tut, hält ``test_consumer_cancel_recovery.py`` fest. Darauf bauen
 KTD3 (Consumer-Wächter) und KTD4 (Settle-Regeln) auf; ändert ein Broker- oder
 aio-pika-Upgrade dieses Verhalten, wird diese Datei rot.
 
@@ -209,7 +212,7 @@ async def test_43_timeout_cancels_consumer_and_late_ack_wakes_zombie(rabbitmq43,
     assert elapsed >= CONSUMER_TIMEOUT_MS / 1000 - 0.5
     assert not channel.is_closed
     assert await c.channel.get_underlay_channel() is channel
-    assert c.tag in c.queue._consumers  # aio-pika merkt nichts
+    assert c.tag in c.queue._consumers  # aio-pika behält den Tag (bis 10.0 merkte es den Cancel nicht)
 
     zombie = _spy_on_dead_tag(channel, c.tag)
     await first.ack()

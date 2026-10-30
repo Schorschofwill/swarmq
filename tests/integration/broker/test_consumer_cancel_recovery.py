@@ -97,7 +97,6 @@ from aiormq.exceptions import ConnectionChannelError, ConnectionNotAllowed
 
 from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.contracts import Delivery
-from tests.support.known_leaks import aiormq_streamwriter_leak
 from tests.support.queues import delete_queue_family
 from tests.support.services import RABBITMQ_42, RABBITMQ_MAIN, RabbitMQNode, require_rabbitmq
 from tests.support.wait import wait_until
@@ -284,7 +283,6 @@ async def raw_consumer_on() -> AsyncIterator[RawConsumerFactory]:
         yield _make
 
 
-@aiormq_streamwriter_leak  # TS-02: der Broker schließt die Verbindung
 @pytest.mark.timeout(40)
 async def test_43_aio_pika_reconsumes_the_timed_out_tag_and_the_broker_closes_the_connection(
     rabbitmq43: RabbitMQNode, raw_consumer_on: RawConsumerFactory, probes: list[aiormq.abc.AbstractChannel]
@@ -693,7 +691,6 @@ async def test_a_reconsume_that_runs_into_its_deadline_closes_the_consume_channe
     assert await wait_until(restored, timeout=EVENT_DEADLINE_S), "the channel restore consumes again"
 
 
-@aiormq_streamwriter_leak  # TS-02: der Broker schließt die Verbindung
 @pytest.mark.timeout(40)
 async def test_closing_the_consume_channel_during_the_probe_close_kills_the_connection_with_504(
     any_rabbitmq: RabbitMQNode,

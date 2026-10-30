@@ -36,7 +36,6 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.contracts.message import Delivery
 from swarmq.health import consumer_check
 from tests.integration.broker.test_pf19_close_after_unblocked import _management
-from tests.support.known_leaks import aiormq_streamwriter_leak
 from tests.support.queues import delete_queue_family
 from tests.support.wait import wait_until
 from tests.unit._log_capture import capture_swarmq_logs
@@ -183,7 +182,6 @@ def _aiormq(connection: Any) -> Any:
     return None if transport is None else transport.connection
 
 
-@aiormq_streamwriter_leak  # TS-02: der Broker schließt den Kanal bzw. die Verbindung
 @pytest.mark.entscheidung("E-083")
 async def test_a_deleted_queue_is_fenced_and_the_other_queue_keeps_consuming(rabbitmq_url: str) -> None:
     setup = _Setup(rabbitmq_url, "separate")
@@ -211,7 +209,6 @@ async def test_a_deleted_queue_is_fenced_and_the_other_queue_keeps_consuming(rab
             await setup.close()
 
 
-@aiormq_streamwriter_leak  # TS-02: der Broker schließt die Verbindung, aiormq lässt den Writer offen
 @pytest.mark.entscheidung("E-083")
 @pytest.mark.parametrize("mode", ["separate", "shared"])
 async def test_after_a_deleted_queue_a_reconnect_succeeds_without_a_not_found_loop(
@@ -244,7 +241,6 @@ async def test_after_a_deleted_queue_a_reconnect_succeeds_without_a_not_found_lo
             await setup.close()
 
 
-@aiormq_streamwriter_leak  # TS-02: der Broker schließt den Kanal
 @pytest.mark.entscheidung("E-083")
 async def test_a_recreated_queue_is_consumed_again(rabbitmq_url: str) -> None:
     setup = _Setup(rabbitmq_url, "separate")

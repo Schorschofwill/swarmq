@@ -37,7 +37,6 @@ from swarmq.broker.rabbitmq import RabbitMQBroker
 from swarmq.broker.rabbitmq.blocked import unblocked_event
 from swarmq.exceptions import PublishIndeterminate
 from tests.integration.broker.conftest import MemoryAlarm, wait_for_alarm
-from tests.support.known_leaks import aiormq_streamwriter_leak
 from tests.support.queues import delete_queue_family
 from tests.support.services import RABBITMQ_MAIN
 from tests.support.wait import wait_until
@@ -192,7 +191,6 @@ async def test_the_discarded_channel_closes_after_unblocked_without_aiormq_error
         await delete_queue_family(rabbitmq_url, queue)
 
 
-@aiormq_streamwriter_leak  # TS-02: der Broker schließt die Verbindung, aiormq lässt den Writer offen
 @pytest.mark.entscheidung("E-025")
 async def test_a_connection_ending_during_the_alarm_ends_the_waiting_close(
     rabbitmq_url: str, memory_alarm: MemoryAlarm

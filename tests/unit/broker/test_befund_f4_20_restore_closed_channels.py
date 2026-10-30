@@ -11,7 +11,9 @@ stark. Jeder Reconnect bringt so alle geschlossenen, noch nicht eingesammelten
 Kanäle zurück; ein wiederhergestellter Kanal mit passiv deklarierter, inzwischen
 gelöschter Queue lässt den Reconnect endlos an NOT_FOUND scheitern. Verletzt:
 ``close_channel_quietly`` (``close()`` verhindere das Wiederöffnen, Review MR 10,
-P0-1) und „kein Leck“ in E-025 (Nachtrag 2026-10-19) und E-078.
+P0-1) und „kein Leck“ in E-025 (Nachtrag 2026-10-19) und E-078. Seit aio-pika
+10.2 überspringt ``restore()`` einen Kanal, dessen ``close()`` lief; der
+Nachweis bleibt als Versionsschutz (E-078, Nachtrag 2026-10-30).
 
 Echtes aio-pika (``RobustConnection``, ``RobustChannel``, ``Channel``) über einem
 Fake der aiormq-Verbindung; kein Broker. Der Reconnect läuft wie in aio-pika:

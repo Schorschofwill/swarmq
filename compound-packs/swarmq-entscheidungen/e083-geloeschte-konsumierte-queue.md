@@ -20,6 +20,9 @@ quelle:
   - src/swarmq/broker/rabbitmq/connection.py (_consume_queue_exists)
   - src/swarmq/health.py (consumer_check, Parameter missing)
   - website/explanation/delivery-semantics.md (Deleting a consumed queue)
+  - docs/plans/2026-10-29-1945-chore-aiormq-7-2-anheben-plan.md (KTD7, U3, U7, U8)
+  - compound-packs/swarmq-entscheidungen/e089-consumer-wiederanmeldung-nur-durch-den-waechter.md
+  - tests/integration/broker/test_consumer_cancel_recovery.py::test_a_deleted_queue_gets_no_probe_and_the_watch_fences_it
 tests:
   - tests/unit/broker/test_consumer_watch_missing_queue.py::test_missing_queue_gets_no_consume_and_one_error
   - tests/unit/broker/test_consumer_watch_missing_queue.py::test_missing_queue_leaves_the_restore_list_of_the_channel
@@ -54,5 +57,7 @@ Ist `_queues` nicht lesbar (aio-pika geändert), gilt fail-open: einmal je Kanal
 - Zwischen Prüfung und `basic.consume` bleibt ein Fenster: Wird die Queue genau darin gelöscht, scheitert `basic.consume` wie vor 0.14.0. Ebenso, wenn die Queue gelöscht wird, während die Verbindung schon getrennt ist, oder ein Reconnect vor dem nächsten Takt kommt: aio-pikas Restore deklariert sie dann noch passiv und scheitert an NOT_FOUND, der Wächter kommt nicht dazwischen (er braucht eine bereite Verbindung). Dann hilft nur der Neustart. Kein Fehler.
 - `/ready` wird beim Fehlen sofort rot, nicht erst nach der Gnadenfrist; die Frist gilt nur für einen Consumer, der kurz fehlt und neu angemeldet wird.
 - Je Takt öffnet der Wächter für jede fehlende Queue einen Wegwerf-Kanal (passives Declare, dann Schließen).
+
+**Nachtrag 2026-10-30 (Plan 2026-10-29-1945, U8; aio-pika 10.2.1, aiormq 7.2.4): keine Probe-Kanäle nach einem Cancel des Brokers; Schließen ohne Abbruch.** (1) aio-pika 10.2 reagiert auf das `basic.cancel`, das RabbitMQ beim Löschen einer konsumierten Queue schickt, selbst: Es öffnete je `reconnect_interval` einen Probe-Kanal und deklarierte die Queue passiv, bis `release_queue` griff (U3). Neu angelegt hat es die Queue nicht. Für swarmqs Kanäle ist diese Wiederherstellung abgeschaltet (E-089); nach dem Löschen entstehen keine Probe-Kanäle, nur die Prüfung des Wächters je Takt (`test_a_deleted_queue_gets_no_probe_and_the_watch_fences_it`). (2) Unverändert bleibt die bewusste Folge „Reconnect vor dem nächsten Takt“: aio-pikas Restore nach einem Reconnect (`_on_connected` → `RobustChannel._on_open` → `RobustQueue.restore`) deklariert eine noch gelistete Queue passiv und scheitert an `NOT_FOUND`; diese Schleife bleibt, bis der Wächter die Queue freigibt oder der Worker neu startet. aio-pika 10.2.1 stellt Kanäle mit fehlender Entität zwar in Runden nach hinten, bricht ohne Fortschritt aber wie bisher den Reconnect ab. (3) Seit 0.15.3 (F4-30) wird das Schließen des Wegwerf-Kanals der Existenzprüfung nach `_RPC_TIMEOUT_S` nicht mehr abgebrochen, nur das Warten endet; ein Takt hängt weiter höchstens zweimal `_RPC_TIMEOUT_S`. (4) `_queues` heißt in 10.2.1 gleich; `robust_queue_release_unavailable` ist im Event-Katalog auf aio-pika 10.2.1 nachgeführt. Die Tests dieser Regel sind mit aio-pika 10.2.1 grün, keine Assertion geändert.
 
 **Überdenken nur mit neuem Argument.** Die Teilfrage „kein automatisches Herunterfahren“ hat Georg am 2026-10-20 bestätigt (PF-20). Eingetragen am 2026-10-19 (0.14.0).
