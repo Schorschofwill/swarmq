@@ -27,6 +27,7 @@ Testliste:
 # [x] Kanalöffnen scheitert einmal an geschlossener Verbindung -> zweiter Versuch, Publish gelingt
 # [x] Kanalöffnen scheitert bei jedem Versuch -> BrokerConnectionError nach dem Wiederholbudget
 # [x] Verbindung wird nicht bereit (Frist verstrichen) -> kein zweites Warten
+# [x] Broker geschlossen (keine Verbindung) -> kein zweiter Versuch
 """
 
 from __future__ import annotations
@@ -111,4 +112,17 @@ async def test_a_connection_that_never_became_ready_is_not_waited_for_again() ->
         await broker.publish("tasks", b"{}")
 
     assert broker._connection.ready.await_count == 1
+    broker._publish_channel_factory.assert_not_awaited()
+
+
+@pytest.mark.befund("F4-31")
+async def test_a_closed_broker_is_not_retried() -> None:
+    # Ohne Verbindung (nach ``close``) hilft kein weiterer Versuch.
+    broker = RabbitMQBroker("amqp://guest:guest@localhost/")
+    broker._publish_channel_factory = AsyncMock()
+
+    with pytest.raises(BrokerConnectionError) as raised:
+        await broker.publish("tasks", b"{}")
+
+    assert "failed after" not in str(raised.value)
     broker._publish_channel_factory.assert_not_awaited()

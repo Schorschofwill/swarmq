@@ -20,7 +20,6 @@ from __future__ import annotations
 import os
 
 import pytest
-from _pytest.nodeid import coerce_node_id
 
 EXCLUSIVE_ENV = "SWARMQ_TEST_EXCLUSIVE"
 _SERIAL_MARKERS = ("exclusive", "timing")
@@ -61,4 +60,8 @@ def pytest_collection_finish(session: pytest.Session) -> None:
         # TS-04: vor xdists eigenem Hook, der die IDs an den Scheduler schickt.
         grouped = getattr(item, "_nodeid", None)
         if isinstance(grouped, str) and grouped != item.nodeid:
+            # Erst hier: ``_pytest.nodeid`` gibt es ab pytest 9.2; davor ist
+            # ``_nodeid`` die Node-ID selbst, und dieser Zweig laeuft nie.
+            from _pytest.nodeid import coerce_node_id
+
             item._id = coerce_node_id(grouped)

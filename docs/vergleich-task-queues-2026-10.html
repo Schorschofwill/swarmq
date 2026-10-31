@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Python Task-Queues im Vergleich</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600&family=Public+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: schmale Lesespalte für Text, breite scrollbare Matrix mit fixierter Feature-Spalte */
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --fg: #1b2230;
+  --muted: #5d6676;
+  --line: #dde1e8;
+  --accent: #2f5d8a;
+  --yes: #1f7a4d;
+  --part: #a86a05;
+  --plug: #3b5fb8;
+  --no: #9a3b3b;
+  --unk: #6b6f78;
+  --yes-bg: #e3f3ea;
+  --part-bg: #fbefd7;
+  --plug-bg: #e4ebfa;
+  --no-bg: #f6e4e4;
+  --unk-bg: #eceef1;
+  --head-bg: #eef1f5;
+  --font-display: "Fraunces", Georgia, serif;
+  --font-body: "Public Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12161d; --surface: #191e27; --fg: #e4e8ef; --muted: #9aa3b2; --line: #2c3340;
+    --accent: #8db6e0; --yes: #6fd29d; --part: #f0bb5a; --plug: #9cb6f2; --no: #ef9a9a; --unk: #a5aab4;
+    --yes-bg: #173426; --part-bg: #3a2c10; --plug-bg: #1d2a48; --no-bg: #3a1e1e; --unk-bg: #262b33;
+    --head-bg: #1f2530; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12161d; --surface: #191e27; --fg: #e4e8ef; --muted: #9aa3b2; --line: #2c3340;
+  --accent: #8db6e0; --yes: #6fd29d; --part: #f0bb5a; --plug: #9cb6f2; --no: #ef9a9a; --unk: #a5aab4;
+  --yes-bg: #173426; --part-bg: #3a2c10; --plug-bg: #1d2a48; --no-bg: #3a1e1e; --unk-bg: #262b33;
+  --head-bg: #1f2530; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 15px; line-height: 1.55; padding-inline: 16px; padding-block: 32px 64px; }
+.wrap { max-width: 1280px; margin-inline: auto; display: flex; flex-direction: column; gap: 40px; }
+.prose { max-width: 70ch; }
+h1 { font-family: var(--font-display); font-weight: 600; font-size: clamp(28px, 4vw, 40px); line-height: 1.15; margin: 0 0 12px; text-wrap: balance; }
+h2 { font-family: var(--font-display); font-weight: 600; font-size: 24px; margin: 0 0 12px; text-wrap: balance; }
+h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0; font-weight: 600; }
+p { margin: 0 0 10px; }
+.lede { color: var(--muted); font-size: 16px; }
+.meta { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+a { color: var(--accent); }
+
+.controls { display: flex; flex-direction: column; gap: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+.ctl-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.ctl-row > span { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); min-width: 92px; }
+.chip { font: inherit; font-size: 13px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); cursor: pointer; }
+.chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--surface); }
+.chip:focus-visible, .toggle input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.toggle { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; cursor: pointer; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+
+.scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+table { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 13px; }
+th, td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: center; vertical-align: middle; }
+thead th { background: var(--head-bg); font-weight: 600; position: sticky; top: 0; z-index: 2; white-space: nowrap; }
+th.feat, td.feat { text-align: left; position: sticky; left: 0; background: var(--surface); z-index: 1; min-width: 210px; max-width: 260px; border-right: 1px solid var(--line); }
+thead th.feat { background: var(--head-bg); z-index: 3; }
+tr.group td { background: var(--head-bg); text-align: left; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; position: static; }
+tr.group td .stick { position: sticky; left: 10px; }
+tbody tr:not(.group):hover td { background: var(--bg); }
+tbody tr:not(.group):hover td.feat { background: var(--bg); }
+
+.st { display: inline-flex; align-items: center; justify-content: center; min-width: 54px; padding: 2px 6px; border-radius: 4px; font-family: var(--font-mono); font-size: 11.5px; font-weight: 500; white-space: nowrap; }
+.st.y { color: var(--yes); background: var(--yes-bg); }
+.st.p { color: var(--part); background: var(--part-bg); }
+.st.x { color: var(--plug); background: var(--plug-bg); }
+.st.n { color: var(--no); background: var(--no-bg); }
+.st.q { color: var(--unk); background: var(--unk-bg); }
+.st.has-note::after { content: "*"; margin-left: 2px; }
+.note { display: block; font-size: 11px; color: var(--muted); margin-top: 4px; line-height: 1.35; min-width: 110px; text-align: left; }
+body:not(.show-notes) .note { display: none; }
+td.cell { cursor: default; }
+
+.facts td { font-family: var(--font-mono); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.facts td.feat { font-family: var(--font-body); font-size: 13px; white-space: normal; }
+.facts td.wrapcell { white-space: normal; min-width: 120px; }
+
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 24px; }
+.grid2 > div { min-width: 0; }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 18px 20px; }
+ul { margin: 6px 0 0; padding-left: 20px; }
+li { margin-bottom: 6px; }
+dl.picks { display: grid; grid-template-columns: minmax(150px, max-content) 1fr; gap: 8px 18px; margin: 0; }
+dl.picks dt { font-weight: 600; }
+dl.picks dd { margin: 0; color: var(--muted); }
+@media (max-width: 560px) { dl.picks { grid-template-columns: 1fr; } dl.picks dd { margin-bottom: 8px; } }
+.callout { border-left: 3px solid var(--part); padding: 10px 14px; background: var(--part-bg); border-radius: 0 6px 6px 0; }
+.callout p:last-child { margin: 0; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+</head>
+<body>
+<div class="wrap">
+  <header class="prose">
+    <p class="meta">Fremd-Bibliotheken: Stand 9. Oktober 2026 · swarmq: 0.12.3, Stand 17. Oktober 2026</p>
+    <h1>Python Task-Queues im Vergleich</h1>
+    <p class="lede">Elf Bibliotheken, 38 Funktionen. Bewertet wird, was die jeweils aktuelle stabile Version im Kern mitbringt. Unveröffentlichte Stände (zum Beispiel RQ 3.0) zählen nicht.</p>
+  </header>
+
+  <section class="callout prose">
+    <p><strong>Wie diese Daten entstanden sind.</strong> Die zehn Fremd-Bibliotheken wurden in Doku, Quellcode, Changelogs und Issues geprüft. swarmq wurde im eigenen Repository geprüft. Für alle anderen gibt es Erfahrungen aus dem Produktivbetrieb Dritter. Bei swarmq beruhen die Häkchen nur auf eigenen Tests, produktiv nutzt es bisher nur der Autor.</p>
+    <p>„srq“ gibt es nur als verlassenes Projekt von 2014 (SimpleRedisQueue, nicht installierbar). Gemeint ist vermutlich RQ, SAQ oder streaq, alle drei sind enthalten.</p>
+  </section>
+
+  <section>
+    <h2>Reife und Grundlagen</h2>
+    <div class="scroll"><table class="facts" id="facts"></table></div>
+  </section>
+
+  <section style="display:flex;flex-direction:column;gap:14px">
+    <h2>Funktionsmatrix</h2>
+    <div class="controls">
+      <div class="ctl-row" id="cat-row"><span>Bereich</span></div>
+      <div class="ctl-row" id="lib-row"><span>Bibliotheken</span></div>
+      <div class="ctl-row"><span>Ansicht</span>
+        <label class="toggle"><input type="checkbox" id="notes-toggle" checked> Anmerkungen in den Zellen zeigen</label>
+      </div>
+    </div>
+    <div class="legend">
+      <span><b class="st y">Ja</b> im Kern</span>
+      <span><b class="st p">Teilw.</b> teilweise oder manuell</span>
+      <span><b class="st x">Plugin</b> nur über Zusatzpaket</span>
+      <span><b class="st n">Nein</b> nicht vorhanden</span>
+      <span><b class="st q">?</b> unklar</span>
+      <span>* mit Anmerkung</span>
+    </div>
+    <div class="scroll"><table id="matrix"></table></div>
+  </section>
+
+  <section class="grid2">
+    <div class="panel">
+      <h2>Was die Matrix verzerrt</h2>
+      <p>Wer Häkchen zählt, bevorzugt junge Projekte mit vielen Funktionen. Bei der Auswahl wiegen Reife, Community, Ökosystem und die nötige Infrastruktur oft schwerer. Dort liegen Celery, RQ, Dramatiq und Huey weit vorn.</p>
+      <h3 style="margin-top:16px">Wo swarmq klar schwächer ist</h3>
+      <ul>
+        <li>Kein Produktivbetrieb bei Dritten, ein Maintainer, keine Community.</li>
+        <li>Version 0.x und nur Python ab 3.14.</li>
+        <li>Braucht RabbitMQ <em>und</em> Valkey. Alle anderen kommen mit einem System aus.</li>
+        <li>Kein In-Memory-Test-Broker, kein Dashboard, keine Sync-Tasks, untypisierte Ergebnisse, kein Windows.</li>
+      </ul>
+      <h3 style="margin-top:16px">Wo swarmq mehr mitbringt</h3>
+      <p>Verteiltes Rate-Limit, Locks und Semaphoren pro Key, Soft- und Hard-Timeout, DLQ mit CLI, Autoscaling und HTTP-Health stecken bei keinem anderen Paket gemeinsam im Kern. Am nächsten kommen Celery mit Plugins und Huey (ohne async, ohne Ack).</p>
+    </div>
+    <div class="panel">
+      <h2>Faustregeln für die Wahl</h2>
+      <dl class="picks">
+        <dt>Größtes Ökosystem</dt><dd>Celery, mit <code>acks_late=True</code></dd>
+        <dt>Einfach, sync, Redis</dt><dd>RQ</dd>
+        <dt>Gute Defaults, sync</dt><dd>Dramatiq</dd>
+        <dt>Async, viele Broker</dt><dd>TaskIQ</dd>
+        <dt>Nur Postgres vorhanden</dt><dd>Procrastinate oder PgQueuer</dd>
+        <dt>Async mit Web-UI</dt><dd>streaq oder SAQ, beide jung und mit kleinem Team</dd>
+        <dt>Nicht für neue Projekte</dt><dd>arq, seit Oktober 2025 nur noch Wartung</dd>
+      </dl>
+    </div>
+  </section>
+
+  <section class="panel prose" style="max-width:none">
+    <h2>Angrenzende Werkzeuge</h2>
+    <p>Diese Projekte lösen verwandte Probleme, sind aber keine klassischen Task-Queues und fehlen deshalb in der Matrix.</p>
+    <ul>
+      <li><strong>Temporal, Hatchet, DBOS:</strong> Durable Execution und Workflow-Engines. Sie brauchen einen eigenen Server oder eine Plattform und sind stärker, wenn langlaufende Geschäftsprozesse im Mittelpunkt stehen.</li>
+      <li><strong>Django Tasks</strong> (<code>django.tasks</code>, ab Django 6.0): eine Standard-API ohne eigenen Worker. Backends kommen aus <code>django-tasks-db</code> oder <code>django-tasks-rq</code>.</li>
+      <li><strong>FastStream, Faust:</strong> Messaging- und Stream-Processing-Frameworks, keine Job-Queues.</li>
+      <li><strong>Neu seit 2025/26:</strong> Oban für Python (Port aus Elixir, Postgres, 0.6.6) und docket (Redis, 0.26.2). Beide sind noch klein.</li>
+    </ul>
+  </section>
+</div>
+
+<script>
+const LIBS = ["Celery","Dramatiq","RQ","Huey","arq","TaskIQ","SAQ","streaq","Procrastinate","PgQueuer","swarmq"];
+const LABEL = { y: "Ja", p: "Teilw.", x: "Plugin", n: "Nein", q: "?" };
+
+const FACTS = [
+  ["Version", ["5.6.3","2.2.1","2.12.0","3.4.0","0.28.0","0.13.0","0.26.4","7.2.0","3.10.0","1.5.0","0.12.3"]],
+  ["GitHub-Stars", ["28,9k","5,3k","10,7k","6,0k","3,0k","2,4k","0,9k","0,2k","1,4k","1,5k","–"]],
+  ["Maintainer", ["~2","~1","~1","1","1, nur Wartung","~2","~1","1","Team","~1","1"]],
+  ["Lizenz", ["BSD","LGPL-3","BSD-2","MIT","MIT","MIT","MIT","MIT","MIT","MIT","MIT"]],
+  ["Python", ["≥3.9","3.10+","3.10+","3.x","3.9+","3.10+","3.9–3.13","3.11+","3.10+","3.10+","≥3.14"]],
+  ["Infrastruktur", ["RabbitMQ, Redis, SQS","RabbitMQ, Redis","Redis/Valkey","Redis, Postgres, SQLite","Redis","viele über Plugins","Redis, Postgres","Redis Streams","Postgres","Postgres","RabbitMQ und Valkey"], true],
+  ["Produktiv bei Dritten", ["sehr breit","ja","breit","ja","ja","ja","ja","vereinzelt","ja","ja","nein"]],
+];
+
+// Reihenfolge der Codes: Celery, Dramatiq, RQ, Huey, arq, TaskIQ, SAQ, streaq, Procrastinate, PgQueuer, swarmq
+const ROWS = [
+  { cat: "Ausführung und Zuverlässigkeit", items: [
+    ["Async-Tasks im Worker", "n p p n y y y y y y y", {1:"über AsyncIO-Middleware, Worker-Thread blockiert",2:"neuer Event-Loop pro Job",3:"async nur clientseitig"}],
+    ["Sync-Tasks", "y y y y n y y y y n n", {4:"nur über run_in_executor",9:"seit 1.0 abgelehnt, asyncio.to_thread",10:"nur async def; im CPU-Modus darf der Rumpf blockieren"}],
+    ["At-least-once als Default", "n y p n y p p y p y y", {0:"Ack vor Ausführung; acks_late und task_reject_on_worker_lost nötig",2:"kein Ack; verwaister Job wird nur mit Retry neu eingereiht",3:"kein Ack, Task bei Crash verloren",4:"Wiederaufnahme erst nach in_progress-TTL",5:"brokerabhängig: Redis-ListQueue verliert Tasks",6:"mit Default retries=1 endet der Job als ABORTED",7:"Rückholung nach idle_timeout",8:"nach SIGKILL bleibt der Job in „doing“",9:"Heartbeat, Rückholung nach 30 s",10:"Quorum-Queues, Ack nach Ausführung; Ausführungsschutz überspringt doppelte Zustellungen"}],
+    ["Retries mit Backoff", "y y p p p y y p y y y", {2:"Intervall-Liste, kein Jitter",3:"Multiplikator, kein Jitter",4:"nur bei raise Retry",5:"SmartRetryMiddleware, opt-in",7:"nur bei StreaqRetry",8:"Default ohne Retry",9:"Default ohne Retry"}],
+    ["DLQ oder Failed-Registry mit Requeue", "n p y n n x p n p y y", {0:"nur manuell über RabbitMQ-DLX",1:"XQ-Queue, kein Requeue-Tool",2:"FailedJobRegistry",5:"taskiq-aio-pika, nur Poison-Messages",6:"Retry in der Web-UI",8:"Retry über CLI oder Django-Admin",9:"on_failure=hold, pgq requeue",10:"swarmq dlq list/inspect/retry/purge, Aufbewahrung per TTL"}],
+    ["Verzögerte Tasks", "y y y y y p y y y y y", {0:"ETA-Tasks liegen im Worker-RAM",5:"nur mit Scheduler-Prozess",9:"nur relativ"}],
+    ["Soft- und Hard-Timeout", "y p p p p p p p n n y", {0:"voll nur mit prefork",1:"ein Limit als Exception",2:"nur hart",3:"nur hart",4:"nur hart",5:"nur hart",6:"nur hart",7:"nur hart"}],
+    ["Ablauf (Expiry)", "y y y y y n n y n n y", {}],
+    ["Ergebnisse speichern", "y y y y y x y y n n y", {3:"beim Lesen gelöscht (Default)",5:"Backend per Plugin",8:"nur Status",9:"nur Status"}],
+    ["Ergebnis-Warten per Push", "p p p p n n n y n p y", {0:"Redis und rpc push, sonst Polling",1:"Redis blockierend",2:"XREAD BLOCK, nicht async",3:"optional notify_result",4:"Polling 0,5 s",5:"Polling 0,2 s",6:"Polling 0,5 s",9:"LISTEN/NOTIFY, nur Status",10:"Valkey Pub/Sub"}],
+    ["Kein Pickle als Default", "y y n n n y y n y y y", {9:"Payload sind rohe Bytes",10:"JSON (msgspec), Ergebnisse msgpack"}],
+  ]},
+  { cat: "Steuerung von Tasks", items: [
+    ["Cron eingebaut", "y x p y y y y y y y y", {0:"celery beat",1:"periodiq, dramatiq-crontab",2:"rq cron, Beta",5:"eigener Scheduler-Prozess"}],
+    ["Cron ohne Doppelausführung bei mehreren Instanzen", "x n q n y n y y y y y", {0:"celery-redbeat",2:"kein Lock gefunden",3:"nur ein Consumer darf planen",4:"Dedup über job_id",5:"laut Doku nur eine Instanz",10:"Leader-Election mit Failover, Warnung bei widersprüchlichen Definitionen"}],
+    ["Cron mit Zeitzone", "y q n p y p y y n n y", {2:"UTC; lokale Zeit erst ab 3.0",3:"UTC oder lokal, keine TZ pro Task",5:"cron_offset",8:"faktisch nur UTC",9:"faktisch nur UTC",10:"IANA-Zeitzone pro Task, feste DST-Regel"}],
+    ["Prioritäten", "y p p y n x p y y y y", {0:"brokerabhängig",1:"echte Priorität nur mit RabbitMQ",2:"nur Queue-Reihenfolge",3:"nur PriorityRedisHuey",5:"taskiq-aio-pika",6:"nur Postgres"}],
+    ["Verteiltes Rate-Limit", "n p n y n n n n n n y", {0:"nur pro Worker",1:"Limiter manuell im Code",2:"erst in 3.0 (unveröffentlicht)",3:"Fixed-Window, nicht atomar",10:"Sliding Window via Lua"}],
+    ["Locks oder Concurrency pro Key", "p p n p p n p p p p y", {0:"Cookbook-Rezept",1:"ConcurrentRateLimiter als Mutex",3:"lock_task-Mutex",4:"über _job_id",6:"group_key, nur Postgres",7:"pro Funktionsname",8:"lock= serialisiert pro Key",9:"pro Entrypoint",10:"Mutex und Semaphore mit Format-Keys"}],
+    ["Unique/Dedup", "x q y p y n y p y y y", {0:"celery-once, verwaist",2:"seit 2.8",3:"Rezept put_if_empty",7:"nur gleichzeitige Ausführung"}],
+    ["Workflows (chain, group, chord)", "y y p y n x n y n n y", {1:"keine Pipeline aus Groups",2:"depends_on, kein Chord",3:"kein DAG",5:"taskiq-pipelines, kein group/chord",7:"Abhängigkeitsgraph und Pipelines"}],
+    ["Abbruch laufender Tasks", "y x y p y n y y y y y", {1:"dramatiq-abort",3:"nur wartende Tasks",4:"allow_abort_jobs nötig",7:"Sync-Threads laufen weiter"}],
+    ["Fortschritt melden", "y n y p n y y n n n y", {3:"Rezept über KV-Storage"}],
+    ["Batch-Enqueue", "p n y p n n p y y y y", {0:"group sendet Einzelnachrichten",6:"intern Einzel-Enqueues"}],
+  ]},
+  { cat: "Entwicklung", items: [
+    ["Typisierte Argumente und Ergebnisse", "x y p n p y p y y p p", {0:"Stubs über celery-types",1:"ParamSpec seit 2.0",9:"Payload sind Bytes",10:"py.typed, get_result liefert Any"}],
+    ["In-Memory-Broker oder Eager-Modus für Tests", "y y y y p y p p y y n", {4:"Burst-Modus mit echtem Redis",6:"nur Burst-Modus",7:"Direktaufruf ohne Worker-Kontext",10:"nur run() direkt aufrufen"}],
+    ["Middleware-Kette", "p y p y p y p y y p y", {0:"Hooks an der Task-Klasse",2:"Callbacks",4:"nur Hooks",6:"nur Hooks",9:"Custom Executors"}],
+    ["Signals/Events", "y p n y p p p n n n y", {3:"13 Signale",10:"30 Lifecycle-Signale"}],
+    ["Dependency Injection", "n n n n n y n p p p y", {5:"TaskiqDepends",7:"typisierter lifespan-Kontext",10:"Dishka als Extra"}],
+    ["Broker frei wählbar", "y p n y n y p n n n n", {}],
+    ["Hot Reload", "n y n n y y p y n n y", {1:"nur UNIX",6:"über watchmedo"}],
+  ]},
+  { cat: "Betrieb", items: [
+    ["Mehrere Prozesse eingebaut", "y y p y n y y y n n y", {2:"Fork pro Job, worker-pool Beta"}],
+    ["Pool für CPU-Last", "y p p y n y n n n n y", {1:"Prozesse × Threads",2:"Fork pro Job",10:"Forkserver-Kindprozesse, nur POSIX"}],
+    ["Autoscaling", "p n n n n n n n n n y", {0:"nur innerhalb eines Workers",10:"nach Queue-Tiefe, plus Kontrollkanal"}],
+    ["Dashboard/Web-UI", "x x x p n x y y p y n", {0:"Flower",1:"dramatiq_dashboard, verwaist",2:"rq-dashboard",3:"Django-Admin",4:"Community-Paket verwaist",5:"taskiq-admin",8:"Django-Admin",9:"pgq web",10:"bewusst nicht im Kern; Prometheus und Grafana"}],
+    ["Prometheus-Metriken", "x y x p n y n n n y y", {0:"Flower oder celery-exporter",2:"rq-exporter",3:"Muster über Signals"}],
+    ["HTTP-Health-Endpoint", "n n n n p n y n p p y", {4:"Health-Key in Redis",8:"nur CLI",9:"nur im Web-Dashboard",10:"/health und /ready"}],
+    ["Windows", "p p p p p p q p p y n", {0:"offiziell nicht unterstützt",10:"nicht unterstützt und nicht getestet"}],
+  ]},
+];
+
+const el = (tag, attrs = {}, ...kids) => {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") e.className = v; else if (k === "text") e.textContent = v; else e.setAttribute(k, v);
+  }
+  kids.forEach(k => e.append(k));
+  return e;
+};
+
+let hidden = new Set();
+try { hidden = new Set(JSON.parse(localStorage.getItem("tq-hidden") || "[]")); } catch (e) {}
+let activeCat = "Alle";
+
+function renderFacts() {
+  const t = document.getElementById("facts");
+  t.replaceChildren();
+  const head = el("tr", {}, el("th", { class: "feat", text: "" }));
+  LIBS.forEach((l, i) => { if (!hidden.has(i)) head.append(el("th", { scope: "col", text: l })); });
+  t.append(el("thead", {}, head));
+  const body = el("tbody");
+  FACTS.forEach(([name, vals, wrap]) => {
+    const tr = el("tr", {}, el("td", { class: "feat", text: name }));
+    vals.forEach((v, i) => { if (!hidden.has(i)) tr.append(el("td", { class: wrap ? "wrapcell" : "", text: v })); });
+    body.append(tr);
+  });
+  t.append(body);
+}
+
+function renderMatrix() {
+  const t = document.getElementById("matrix");
+  t.replaceChildren();
+  const visible = LIBS.map((l, i) => i).filter(i => !hidden.has(i));
+  const head = el("tr", {}, el("th", { class: "feat", scope: "col", text: "Funktion" }));
+  visible.forEach(i => head.append(el("th", { scope: "col", text: LIBS[i] })));
+  t.append(el("thead", {}, head));
+  const body = el("tbody");
+  ROWS.forEach(group => {
+    if (activeCat !== "Alle" && activeCat !== group.cat) return;
+    body.append(el("tr", { class: "group" }, el("td", { colspan: String(visible.length + 1) }, el("span", { class: "stick", text: group.cat }))));
+    group.items.forEach(([name, codes, notes]) => {
+      const c = codes.split(" ");
+      const tr = el("tr", {}, el("td", { class: "feat", text: name }));
+      visible.forEach(i => {
+        const note = notes[i];
+        const badge = el("span", { class: "st " + c[i] + (note ? " has-note" : ""), text: LABEL[c[i]] });
+        const td = el("td", { class: "cell" }, badge);
+        if (note) { td.title = LIBS[i] + ": " + note; td.append(el("span", { class: "note", text: note })); }
+        tr.append(td);
+      });
+      body.append(tr);
+    });
+  });
+  t.append(body);
+}
+
+function renderControls() {
+  const catRow = document.getElementById("cat-row");
+  ["Alle", ...ROWS.map(r => r.cat)].forEach(cat => {
+    const b = el("button", { class: "chip", type: "button", id: "cat-" + cat.replace(/\W+/g, "-"), "aria-pressed": String(cat === activeCat), text: cat });
+    b.addEventListener("click", () => {
+      activeCat = cat;
+      catRow.querySelectorAll(".chip").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+      renderMatrix();
+    });
+    catRow.append(b);
+  });
+  const libRow = document.getElementById("lib-row");
+  LIBS.forEach((l, i) => {
+    const b = el("button", { class: "chip", type: "button", id: "lib-" + i, "aria-pressed": String(!hidden.has(i)), text: l });
+    b.addEventListener("click", () => {
+      if (hidden.has(i)) hidden.delete(i); else if (hidden.size < LIBS.length - 1) hidden.add(i);
+      b.setAttribute("aria-pressed", String(!hidden.has(i)));
+      try { localStorage.setItem("tq-hidden", JSON.stringify([...hidden])); } catch (e) {}
+      renderFacts(); renderMatrix();
+    });
+    libRow.append(b);
+  });
+  const nt = document.getElementById("notes-toggle");
+  document.body.classList.toggle("show-notes", nt.checked);
+  nt.addEventListener("change", () => document.body.classList.toggle("show-notes", nt.checked));
+}
+
+renderControls();
+renderFacts();
+renderMatrix();
+</script>
+</body>
+
+</html>
