@@ -2164,6 +2164,7 @@ class TestRateLimitBlackholeCombo:
 
     OP_TIMEOUT_S = 1.0
     BLACKHOLE_S = 6.0
+    RECEIVE_WAIT_S = 15.0
 
     @pytest.mark.chaos
     @pytest.mark.timeout(120)
@@ -2235,7 +2236,11 @@ class TestRateLimitBlackholeCombo:
                         # Empfang im Worker: Publish und Zustellung gehoeren
                         # nicht zum Gate und stehen im Speicheralarm des
                         # geteilten Test-Rabbits (E-025) still (V0160-K3).
-                        while time.monotonic() - started < self.BLACKHOLE_S:
+                        # Aus demselben Grund laeuft auch das Fenster ab dem
+                        # Empfang, hoechstens bis ``RECEIVE_WAIT_S`` ohne ihn.
+                        while time.monotonic() - (received_at or started) < self.BLACKHOLE_S and (
+                            received_at is not None or time.monotonic() - started < self.RECEIVE_WAIT_S
+                        ):
                             if received_at is None and _received(logs, tid):
                                 received_at = time.monotonic()
                             if received_at is not None and first_deferral_after is None and _rl_deferrals(logs):

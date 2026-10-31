@@ -192,11 +192,13 @@ def _alive(proc: psutil.Process) -> bool:
     """Ein beendeter Prozess, den init noch nicht abgeholt hat (Zombie), oder
     einer, der beim Lesen schon weg war, ueberlebt nichts (V0160-K4: in CI
     ``(924, '')``, tini raeumt ihn kurz darauf ab). Ein lebender Prozess mit
-    unlesbarer Kommandozeile zaehlt weiter."""
+    unlesbarer Kommandozeile oder unlesbarem Status zaehlt weiter."""
     try:
         return proc.status() != psutil.STATUS_ZOMBIE
     except psutil.NoSuchProcess:
         return False
+    except psutil.AccessDenied:
+        return True
 
 
 def _live_children(pid: int) -> list[psutil.Process]:
