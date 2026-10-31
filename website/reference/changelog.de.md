@@ -6,6 +6,10 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ## [Unreleased]
 
+## [0.16.1rc1] — 2026-10-31
+
+Release Candidate für 0.16.1 (Installation mit `pip install --pre`).
+
 ### Geändert
 
 - **`log_record_unformattable` hält die ursprüngliche Meldung lesbar.**
