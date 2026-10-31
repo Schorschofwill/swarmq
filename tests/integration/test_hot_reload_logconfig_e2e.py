@@ -183,9 +183,22 @@ def _assert_no_leftovers(supervisor_pid: int) -> None:
         except OSError:
             in_session = False
         cmdline = _cmdline(proc)
-        if in_session or probe.match(cmdline):
+        if (in_session or probe.match(cmdline)) and _alive(proc):
             leftovers.append((proc.pid, cmdline))
     assert not leftovers, leftovers
+
+
+def _alive(proc: psutil.Process) -> bool:
+    """Ein beendeter Prozess, den init noch nicht abgeholt hat (Zombie), oder
+    einer, der beim Lesen schon weg war, ueberlebt nichts (V0160-K4: in CI
+    ``(924, '')``, tini raeumt ihn kurz darauf ab). Ein lebender Prozess mit
+    unlesbarer Kommandozeile oder unlesbarem Status zaehlt weiter."""
+    try:
+        return proc.status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return False
+    except psutil.AccessDenied:
+        return True
 
 
 def _live_children(pid: int) -> list[psutil.Process]:

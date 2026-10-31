@@ -2164,6 +2164,7 @@ class TestRateLimitBlackholeCombo:
 
     OP_TIMEOUT_S = 1.0
     BLACKHOLE_S = 6.0
+    RECEIVE_WAIT_S = 15.0
 
     @pytest.mark.chaos
     @pytest.mark.timeout(120)
@@ -2197,6 +2198,9 @@ class TestRateLimitBlackholeCombo:
                 e for e in logs if e["event"] == "task_deferred_backend_unavailable" and e.get("gate") == "rate_limit"
             ]
 
+        def _received(logs: list[dict[str, Any]], tid: str) -> bool:
+            return any(e["event"] == "task_received" and e.get("task_id") == tid for e in logs)
+
         broker = RabbitMQBroker(rabbitmq_url)
         backend = ValkeyBackend(valkey_url)
         app = SwarmQ(broker, backend, queues=[queue])
@@ -2223,14 +2227,24 @@ class TestRateLimitBlackholeCombo:
                     try:
                         started = time.monotonic()
                         tid = await app.schedule(task_name, 7)
+                        received_at: float | None = None
                         first_deferral_after: float | None = None
                         # Bewusstes Beobachtungsfenster ueber die ganze
                         # Blackhole-Dauer (negative Pruefung: kein Lauf ohne
                         # Entscheidung); nebenbei wird der Zeitpunkt der
-                        # ersten Zurueckstellung abgelesen.
-                        while time.monotonic() - started < self.BLACKHOLE_S:
-                            if first_deferral_after is None and _rl_deferrals(logs):
-                                first_deferral_after = time.monotonic() - started
+                        # ersten Zurueckstellung abgelesen, gemessen ab dem
+                        # Empfang im Worker: Publish und Zustellung gehoeren
+                        # nicht zum Gate und stehen im Speicheralarm des
+                        # geteilten Test-Rabbits (E-025) still (V0160-K3).
+                        # Aus demselben Grund laeuft auch das Fenster ab dem
+                        # Empfang, hoechstens bis ``RECEIVE_WAIT_S`` ohne ihn.
+                        while time.monotonic() - (received_at or started) < self.BLACKHOLE_S and (
+                            received_at is not None or time.monotonic() - started < self.RECEIVE_WAIT_S
+                        ):
+                            if received_at is None and _received(logs, tid):
+                                received_at = time.monotonic()
+                            if received_at is not None and first_deferral_after is None and _rl_deferrals(logs):
+                                first_deferral_after = time.monotonic() - received_at
                             await asyncio.sleep(0.05)
                         assert not runs, "kein Lauf ohne Rate-Limit-Entscheidung"
                     finally:
@@ -2238,9 +2252,10 @@ class TestRateLimitBlackholeCombo:
                     await asyncio.wait_for(done.wait(), timeout=30.0)
                     result = await app.get_result(tid, timeout=15)
 
+        assert received_at is not None, "der Worker hat den Task waehrend des Blackholes nie empfangen"
         assert first_deferral_after is not None, "der haengende Check wurde nie zurueckgestellt"
         # Ohne Zeitlimit kaeme die erste Zurueckstellung erst nach dem
-        # Socket-Timeout (>= 10 s); mit Zeitlimit nach ~op_timeout.
+        # Socket-Timeout (>= 10 s); mit Zeitlimit nach ~op_timeout ab Empfang.
         assert first_deferral_after < self.OP_TIMEOUT_S + 2.5, first_deferral_after
         assert len(_rl_deferrals(logs)) >= 2, "waehrend des Blackholes mehrfach zurueckgestellt"
         assert result == 70
