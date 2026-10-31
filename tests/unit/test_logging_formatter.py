@@ -29,6 +29,8 @@ from __future__ import annotations
 #     bei werfendem ``str`` den Typnamen in spitzen Klammern (E-090).
 # 13. Dasselbe fuer Mapping-Argumente (``%(name)s``).
 # 14. Eine nicht darstellbare Vorlage ohne Argumente: Typname, ``args`` leer.
+# 15. ``args`` als Einzelwert statt Tupel (Filter, eigener LogRecord): ein
+#     Element, das Ersatz-Event scheitert nicht selbst.
 # 11. structlog-native Records aus der globalen Konfiguration von
 #     ``setup_logging`` erscheinen weiter genau einmal, ohne doppelte
 #     ``timestamp``/``level`` (B6).
@@ -225,6 +227,19 @@ def test_substitute_event_names_the_type_of_an_unprintable_template() -> None:
     assert data["event"] == "log_record_unformattable"
     assert data["msg"] == "<_RaisingRepr>"
     assert data["args"] == []
+
+
+@pytest.mark.entscheidung("E-090")
+@pytest.mark.parametrize(("args", "expected"), [(5, ["5"]), ("ab", ["ab"])])
+def test_substitute_event_takes_a_single_non_tuple_argument_as_one(args: object, expected: list[str]) -> None:
+    record = logging.makeLogRecord(
+        {"name": "thirdparty", "levelno": logging.WARNING, "levelname": "WARNING", "msg": "%s %s %r", "args": args}
+    )
+
+    data = json.loads(build_formatter(json=True, colors=False).format(record))
+
+    assert data["event"] == "log_record_unformattable"
+    assert data["args"] == expected
 
 
 @pytest.mark.parametrize("as_json", [True, False])

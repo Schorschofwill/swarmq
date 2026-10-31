@@ -11,7 +11,7 @@ import datetime as dt
 import logging
 import time
 from collections.abc import Mapping
-from typing import Any, override
+from typing import Any, cast, override
 
 import structlog
 
@@ -78,12 +78,17 @@ def _readable(value: object) -> str:
         return f"<{type(value).__name__}>"
 
 
-def _readable_args(args: tuple[object, ...] | Mapping[str, object] | None) -> list[str] | dict[str, str]:
+def _readable_args(args: object) -> list[str] | dict[str, str]:
     """Die Argumente eines Records einzeln lesbar: Tupel als Liste, ein
-    Mapping (``%(name)s``) als Mapping, fehlende als leere Liste."""
+    Mapping (``%(name)s``) als Mapping, fehlende als leere Liste. Ein
+    einzelner Wert, den ein Filter oder Aufrufer statt eines Tupels gesetzt
+    hat, wird ein Element; das Ersatz-Event darf selbst nie scheitern (R27)."""
     if isinstance(args, Mapping):
-        return {_readable(key): _readable(value) for key, value in args.items()}
-    return [] if args is None else [_readable(arg) for arg in args]
+        items = cast("Mapping[object, object]", args).items()
+        return {_readable(key): _readable(value) for key, value in items}
+    if isinstance(args, tuple):
+        return [_readable(arg) for arg in cast("tuple[object, ...]", args)]
+    return [] if args is None else [_readable(args)]
 
 
 def _add_record_timestamp(_: Any, __: str, event_dict: structlog.typing.EventDict) -> structlog.typing.EventDict:
