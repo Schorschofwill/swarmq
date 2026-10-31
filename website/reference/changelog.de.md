@@ -6,6 +6,17 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ## [Unreleased]
 
+### Behoben
+
+- **Ein Publish gab auf, wenn das Neuöffnen seines Kanals an einer
+  sterbenden Verbindung scheiterte.** Direkt nach dem Ende einer
+  Netzstörung konnte ein Publish das Neuöffnen des Kanals erreichen, während
+  die alte Verbindung noch schloss. aiormq lehnte den neuen Kanal ab, und
+  swarmq meldete sofort `BrokerConnectionError`, ohne zweiten Versuch,
+  obwohl nichts gesendet war. swarmq wiederholt das Öffnen jetzt innerhalb
+  des Wiederholbudgets des Publish (fünf Versuche mit Backoff), wie schon
+  bei einer Verbindung, die vor dem Schreiben des Frames abriss (F4-31).
+
 ## [0.16.0] — 2026-10-31
 
 0.16.0 ist 0.16.0rc1 unverändert. Die Änderungen stehen unter

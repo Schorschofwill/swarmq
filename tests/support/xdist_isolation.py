@@ -8,6 +8,11 @@ führt ihn danach allein mit ``only`` aus. Ebenso ``timing``: Tests mit engem
 Zeitbudget gegen die echte Uhr, die parallele Last sonst reißen lässt. Tests mit Toxiproxy (feste
 Proxy-Namen und -Ports) bekommen die xdist-Gruppe ``toxiproxy`` und laufen
 unter ``--dist loadgroup`` nacheinander auf einem Prozess.
+
+pytest-xdist 3.8 schreibt die Gruppe als Suffix nach ``item._nodeid``; seit
+pytest 9.2 bildet ``Item.nodeid`` die ID aus ``_id``, die Gruppe ginge
+verloren (TS-04). ``pytest_collection_finish`` reicht sie darum nach ``_id``
+weiter, bevor der xdist-Prozess die IDs an den Scheduler meldet.
 """
 
 from __future__ import annotations
@@ -47,3 +52,16 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     if drop:
         config.hook.pytest_deselected(items=drop)
         items[:] = keep
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_finish(session: pytest.Session) -> None:
+    for item in session.items:
+        # TS-04: vor xdists eigenem Hook, der die IDs an den Scheduler schickt.
+        grouped = getattr(item, "_nodeid", None)
+        if isinstance(grouped, str) and grouped != item.nodeid:
+            # Erst hier: ``_pytest.nodeid`` gibt es ab pytest 9.2; davor ist
+            # ``_nodeid`` die Node-ID selbst, und dieser Zweig laeuft nie.
+            from _pytest.nodeid import coerce_node_id
+
+            item._id = coerce_node_id(grouped)
