@@ -398,3 +398,14 @@ fundstelle = "src/swarmq/broker/rabbitmq/connection.py:_close_channel_detached"
 beschreibung = "Reißt die Frist ein laufendes channel.close() ab, schickt aiormq ein zweites Channel.Close(504) auf dieselbe Nummer; hat der Broker das erste schon beantwortet, schließt RabbitMQ die ganze Verbindung (CHANNEL_ERROR - expected 'channel.open'), auch mit aiormq 7.0.0"
 dringlichkeit = "normal"
 status = "offen"
+
+# Gegenprüfung 2026-10-31 als FEHLER bestätigt (Befund F4-31, offen).
+[[signal]]
+id = "S-011"
+quelle = "Chaos-Gate zu 0.16.0rc1, Seed 3287596344, 2026-10-30; Gegenprüfung 2026-10-31"
+saeule = "Zuverlässigkeit"
+modul = "broker"
+fundstelle = "src/swarmq/broker/rabbitmq/delivery.py:_publish_with_retry"
+beschreibung = "Scheitert das Neuöffnen des Publish-Kanals an der gerade sterbenden Verbindung (aiormq RuntimeError closed), endet der Publish ohne zweiten Versuch mit BrokerConnectionError, obwohl nichts gesendet war; _ensure_publish_channel liegt vor dem try der Wiederholschleife"
+dringlichkeit = "normal"
+status = "offen"
