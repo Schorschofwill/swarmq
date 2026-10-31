@@ -665,7 +665,7 @@ selection, not every event SwarmQ emits.
 | `log_records_dropped` | `swarmq.logging` | WARNING | Field `count`; from the listener thread, at most once per second and once more when it stops. |
 | `log_handler_errors` | `swarmq.logging` | WARNING | A handler, filter or formatter raised; field `count`; at most once per second and once more when the listener stops. |
 | `log_drain_timeout_exceeded` | `swarmq.logging` | WARNING | Not a log record: a line written directly to stderr when a flush exceeded `log_drain_timeout`, only if stderr does not block. Fields `count`, `timeout_s`. |
-| `log_record_unformattable` | the record's logger | the record's level | Field `error`. |
+| `log_record_unformattable` | the record's logger | the record's level | Fields `error`, `msg` (the unformatted template) and `args` (each argument as `str()`, or `<TypeName>` when that raises; a list, or a mapping for `%(name)s` templates). |
 | `task_retrying` | `swarmq.worker.retry` | INFO | Fields `retry_count`, `max_retries`, `delay_ms`. |
 | `task_sent_to_dlq` | `swarmq.worker.retry` | ERROR | The task was dead-lettered. Fields `error_type` (exception class; `WorkerHungError` when the delivery limit or the execution guard's orphan limit was reached, `RedeliveryLimitError` when only `x-acquired-count` reached the delivery limit, `LockWaitExceeded` when the wait for a task lock ended) and `error`. Logged only when the copy lies in the dead-letter queue or the message was routed there via the broker DLX; after a failed publish with redelivery only `dlq_publish_failed` appears. |
 | `task_rate_limited` | `swarmq.worker.gates.rate_limit` | INFO | Fields `retry_after_ms`, `remaining`, `rate_limit_count`. |
