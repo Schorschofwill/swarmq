@@ -102,6 +102,23 @@ async def settle(action: Awaitable[None], verb: str) -> None:
         raise BrokerConnectionError(f"{verb} failed, channel or connection lost: {exc}") from exc
 
 
+async def _backoff_unless_last(attempt: int) -> None:
+    """Backoff zwischen Publish-Versuchen. Nach dem letzten nicht: Es folgt
+    ohnehin die Ausnahme, gespart sind bis zu 800 ms."""
+    if attempt < _PUBLISH_MAX_ATTEMPTS - 1:
+        await asyncio.sleep(0.05 * (2**attempt))
+
+
+def _channel_open_failed(exc: BrokerConnectionError) -> bool:
+    """Ob ``_ensure_publish_channel`` am Oeffnen selbst scheiterte (F4-31).
+
+    Nur dann lohnt ein weiterer Versuch. Ohne Ursache ist der Broker
+    geschlossen; ein ``TimeoutError`` hat schon die volle Bereitschafts- oder
+    Oeffnungsfrist gewartet, eine Wiederholung vervielfachte sie."""
+    cause = exc.__cause__
+    return cause is not None and not isinstance(cause, TimeoutError)
+
+
 def _raise_if_sent(routing_key: str, exc: BaseException) -> None:
     """B24: Hatte aiormq die Nachricht schon gesendet und fehlt nur das
     Confirm, ist der Ausgang unbestimmt -- gleich, mit welcher Ausnahme die
@@ -357,7 +374,16 @@ class RabbitMQDelivery(RabbitMQDeclarations):
         beim Eintritt in ``_publish_with_retry`` (KTD9)."""
         last_exc: BaseException | None = None
         for attempt in range(_PUBLISH_MAX_ATTEMPTS):
-            pub = await self._ensure_publish_channel()
+            try:
+                pub = await self._ensure_publish_channel()
+            except BrokerConnectionError as exc:
+                # F4-31 (E-042): Scheiterte das Oeffnen an der sterbenden
+                # Verbindung, ist nichts gesendet; aio-pika verbindet neu.
+                if not _channel_open_failed(exc):
+                    raise
+                last_exc = exc
+                await _backoff_unless_last(attempt)
+                continue
             in_flight.append(pub)
             sent_before_attempt = len(maybe_sent)
             try:
@@ -379,8 +405,7 @@ class RabbitMQDelivery(RabbitMQDeclarations):
                 # redelivery retries the idempotent publish rather than the
                 # whole unit being marked permanently failed.
                 last_exc = exc
-                if attempt < _PUBLISH_MAX_ATTEMPTS - 1:
-                    await asyncio.sleep(0.05 * (2**attempt))
+                await _backoff_unless_last(attempt)
             except _CHANNEL_TRANSIENT_ERRORS as exc:
                 # Distinguish task-level cancellation from aio_pika's
                 # internal drain cancellation. If our own task is being
@@ -397,11 +422,7 @@ class RabbitMQDelivery(RabbitMQDeclarations):
                 # Weg wie beim Deadline-Bruch: Identitaetspruefung unter
                 # der Sperre, Schliessen nebenlaeufig.
                 await self._discard_publish_channel(pub)
-                # Skip the backoff sleep on the final attempt — we are
-                # about to raise anyway. Saves up to 800ms latency at
-                # exhaustion.
-                if attempt < _PUBLISH_MAX_ATTEMPTS - 1:
-                    await asyncio.sleep(0.05 * (2**attempt))
+                await _backoff_unless_last(attempt)
             except Exception as exc:
                 # Kein bekannter Kanalfehler (etwa ein pamqp-Framefehler, an
                 # dem aiormqs Reader endete): nach dem Senden ebenso unbestimmt.

@@ -1,5 +1,7 @@
-"""Nachweis TS-04: Die xdist-Gruppe ``toxiproxy`` legt die Toxiproxy-Tests
-nicht mehr auf einen Prozess; sie laufen parallel und stören sich.
+"""Nachweis TS-04 (behoben): Die xdist-Gruppe ``toxiproxy`` legte die Toxiproxy-Tests
+nicht mehr auf einen Prozess; sie liefen parallel und störten sich. Seit dem
+Fix reicht ``pytest_collection_finish`` in ``tests/support/xdist_isolation.py``
+die Gruppe nach ``_id`` weiter.
 
 Register: docs/befunde/teststrenge-2026-10.md (TS-04; Gegenprüfung
 2026-10-31).
@@ -20,7 +22,7 @@ Startet echte xdist-Prozesse und braucht deshalb über 100 ms (AGENTS.md:
 lieber langsam und genau); ohne Dienste, darum unter ``tests/unit``.
 
 Testliste:
-# [ ] sechs Tests mit Fixture ``toxiproxy`` unter ``-n 2 --dist loadgroup`` -> alle auf einem Prozess
+# [x] sechs Tests mit Fixture ``toxiproxy`` unter ``-n 2 --dist loadgroup`` -> alle auf einem Prozess
 """
 
 from __future__ import annotations
@@ -52,7 +54,6 @@ def test_proxied(toxiproxy, n):
 
 
 @pytest.mark.befund("TS-04")
-@pytest.mark.xfail(strict=True, reason="TS-04: xdist 3.8 setzt _nodeid, pytest 9.2 liest _id")
 def test_toxiproxy_users_run_on_one_xdist_worker(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
     out = pytester.path / "workers.txt"
     monkeypatch.setenv("TS04_OUT", str(out))
