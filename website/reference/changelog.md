@@ -6,6 +6,15 @@ All notable changes to SwarmQ. This project follows
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-10-31
+
+0.16.0 is 0.16.0rc1 unchanged. Read [0.16.0rc1](#0160rc1-2026-10-30) for
+the changes: swarmq requires aiormq 7.2 and aio-pika 10.2 and works around
+the parts of them that would leak memory or close connections. Accepted by
+the load-test suite at 0.16.0rc1 (conformance, four smokes, `stufe1-6h`, no
+loss, no drift). Nothing in swarmq's API changes. Install with
+`pip install 'swarmq==0.16.*'`; `--pre` is no longer needed.
+
 ## [0.16.0rc1] — 2026-10-30
 
 Release candidate for 0.16.0 (install with `pip install --pre`).
