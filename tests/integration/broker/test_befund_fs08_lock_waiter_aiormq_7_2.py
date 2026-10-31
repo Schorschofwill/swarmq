@@ -47,12 +47,11 @@ from tests.support.queues import delete_queue_family
 from tests.support.services import rabbitmq_amqp_url
 from tests.support.wait import wait_until
 
-# exclusive: Der Test schaltet den gemeinsamen Proxy ``rabbitmq`` ab. Die
-# xdist-Gruppe ``toxiproxy`` (tests/support/xdist_isolation.py) trennt das unter
-# pytest 9.2 und pytest-xdist 3.8 nicht: xdist hängt die Gruppe über
-# ``item._nodeid`` an, pytest liest die Node-ID inzwischen aus ``_id``; B24 lief
-# parallel auf einem anderen Prozess und verlor seine Verbindung.
-pytestmark = [pytest.mark.integration, pytest.mark.timeout(60), pytest.mark.exclusive]
+# Der Test schaltet den gemeinsamen Proxy ``rabbitmq`` ab; die xdist-Gruppe
+# ``toxiproxy`` (tests/support/xdist_isolation.py) hält die anderen Proxy-Tests
+# vom selben Zeitraum fern. Bis zum Fix von TS-04 griff sie unter pytest 9.2
+# nicht, der Test lief darum ``exclusive``.
+pytestmark = [pytest.mark.integration, pytest.mark.timeout(60)]
 
 # Ohne erreichbaren Broker endet jeder Publish an dieser Frist; vorher, auf
 # aiormq 7.0, hing der Wartende bis hierhin auf dem toten Kanal.

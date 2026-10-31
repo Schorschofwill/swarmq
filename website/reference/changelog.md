@@ -6,6 +6,17 @@ All notable changes to SwarmQ. This project follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A publish gave up when reopening its channel failed on a dying
+  connection.** Right after a network outage ended, a publish could reach
+  the channel reopen while the old connection was still closing. aiormq
+  refused the new channel, and swarmq raised `BrokerConnectionError` at
+  once, without a second attempt, although nothing had been sent. swarmq
+  now retries the reopen within the publish retry budget (five attempts
+  with backoff), as it already did for a connection lost before the frame
+  was written (F4-31).
+
 ## [0.16.0] — 2026-10-31
 
 0.16.0 is 0.16.0rc1 unchanged. Read [0.16.0rc1](#0160rc1-2026-10-30) for
