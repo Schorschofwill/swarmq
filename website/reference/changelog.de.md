@@ -6,6 +6,16 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ## [Unreleased]
 
+### Geändert
+
+- **`log_record_unformattable` hält die ursprüngliche Meldung lesbar.**
+  Lässt sich ein Record nicht formatieren, trägt das Ersatz-Event jetzt
+  auch `msg` (die unformatierte Vorlage) und `args` (jedes Argument als
+  `str()`, oder `<Typname>`, wenn das wirft). Bei jeder Broker-Trennung
+  loggt aio-pika `"Callback %r error: %s: %s"` mit einem Callback, dessen
+  `repr` scheitert; das Event zeigt jetzt trotzdem Ausnahmetyp und Text
+  (E-090).
+
 ### Behoben
 
 - **Ein Publish gab auf, wenn das Neuöffnen seines Kanals an einer

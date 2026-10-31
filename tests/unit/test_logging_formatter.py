@@ -25,6 +25,12 @@ from __future__ import annotations
 # 9. Die Factory ist per dictConfig-``"()"`` nutzbar.
 # 10. ``setup_logging`` rendert Records der Bibliotheks-Logger (U1) mit
 #     allen Feldern (ueber ``build_formatter``).
+# 12. Das Ersatz-Event traegt die Vorlage ``msg`` und je Argument ``str()``,
+#     bei werfendem ``str`` den Typnamen in spitzen Klammern (E-090).
+# 13. Dasselbe fuer Mapping-Argumente (``%(name)s``).
+# 14. Eine nicht darstellbare Vorlage ohne Argumente: Typname, ``args`` leer.
+# 15. ``args`` als Einzelwert statt Tupel (Filter, eigener LogRecord): ein
+#     Element, das Ersatz-Event scheitert nicht selbst.
 # 11. structlog-native Records aus der globalen Konfiguration von
 #     ``setup_logging`` erscheinen weiter genau einmal, ohne doppelte
 #     ``timestamp``/``level`` (B6).
@@ -169,6 +175,71 @@ def test_unformattable_foreign_record_renders_substitute_event() -> None:
     assert data["level"] == "warning"
     assert "repr exploded" in data["error"]
     assert data["timestamp"].endswith("Z")
+
+
+@pytest.mark.entscheidung("E-090")
+def test_substitute_event_keeps_template_and_readable_args() -> None:
+    """aio-pika loggt ``"Callback %r error: %s: %s"`` mit dem Callback, dem
+    Ausnahmetyp und dem Text; nur der Callback ist nicht darstellbar."""
+    record = logging.makeLogRecord(
+        {
+            "name": "aio_pika.tools",
+            "levelno": logging.ERROR,
+            "levelname": "ERROR",
+            "msg": "Callback %r error: %s: %s",
+            "args": (_RaisingRepr(), "ConnectionResetError", "peer reset"),
+        }
+    )
+
+    data = json.loads(build_formatter(json=True, colors=False).format(record))
+
+    assert data["event"] == "log_record_unformattable"
+    assert data["msg"] == "Callback %r error: %s: %s"
+    assert data["args"] == ["<_RaisingRepr>", "ConnectionResetError", "peer reset"]
+
+
+@pytest.mark.entscheidung("E-090")
+def test_substitute_event_keeps_mapping_args_by_name() -> None:
+    record = logging.makeLogRecord(
+        {
+            "name": "aio_pika.tools",
+            "levelno": logging.ERROR,
+            "levelname": "ERROR",
+            "msg": "%(cb)r failed with %(error)s",
+            "args": {"cb": _RaisingRepr(), "error": "boom"},
+        }
+    )
+
+    data = json.loads(build_formatter(json=True, colors=False).format(record))
+
+    assert data["event"] == "log_record_unformattable"
+    assert data["args"] == {"cb": "<_RaisingRepr>", "error": "boom"}
+
+
+@pytest.mark.entscheidung("E-090")
+def test_substitute_event_names_the_type_of_an_unprintable_template() -> None:
+    record = logging.makeLogRecord(
+        {"name": "thirdparty", "levelno": logging.WARNING, "levelname": "WARNING", "msg": _RaisingRepr(), "args": None}
+    )
+
+    data = json.loads(build_formatter(json=True, colors=False).format(record))
+
+    assert data["event"] == "log_record_unformattable"
+    assert data["msg"] == "<_RaisingRepr>"
+    assert data["args"] == []
+
+
+@pytest.mark.entscheidung("E-090")
+@pytest.mark.parametrize(("args", "expected"), [(5, ["5"]), ("ab", ["ab"])])
+def test_substitute_event_takes_a_single_non_tuple_argument_as_one(args: object, expected: list[str]) -> None:
+    record = logging.makeLogRecord(
+        {"name": "thirdparty", "levelno": logging.WARNING, "levelname": "WARNING", "msg": "%s %s %r", "args": args}
+    )
+
+    data = json.loads(build_formatter(json=True, colors=False).format(record))
+
+    assert data["event"] == "log_record_unformattable"
+    assert data["args"] == expected
 
 
 @pytest.mark.parametrize("as_json", [True, False])

@@ -10,7 +10,8 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import time
-from typing import Any, override
+from collections.abc import Mapping
+from typing import Any, cast, override
 
 import structlog
 
@@ -25,7 +26,9 @@ class _SafeProcessorFormatter(structlog.stdlib.ProcessorFormatter):
     Traceback auf stderr, mitten im Logstrom. Stattdessen rendert dieser
     Formatter ein Ersatz-Event ``log_record_unformattable`` mit
     ``logger``, ``level`` und ``error`` durch dieselbe Prozessorkette und
-    denselben Renderer wie jede andere Zeile.
+    denselben Renderer wie jede andere Zeile. Dazu traegt es die Vorlage
+    ``msg`` und die Argumente einzeln lesbar (E-090), damit die eigentliche
+    Meldung nicht verloren geht.
     """
 
     @override
@@ -48,6 +51,8 @@ class _SafeProcessorFormatter(structlog.stdlib.ProcessorFormatter):
             "event": "log_record_unformattable",
             "logger": record.name,
             "error": f"{type(exc).__name__}: {exc}",
+            "msg": _readable(record.msg),
+            "args": _readable_args(record.args),
         }
         for proc in self.foreign_pre_chain or ():
             ed = proc(logger, meth_name, ed)
@@ -63,6 +68,27 @@ class _SafeProcessorFormatter(structlog.stdlib.ProcessorFormatter):
         )
         substitute.__dict__.update(kwargs["extra"])
         return substitute
+
+
+def _readable(value: object) -> str:
+    """``str(value)``; wirft schon das, der Typname in spitzen Klammern (E-090)."""
+    try:
+        return str(value)
+    except Exception:  # noqa: BLE001 - jedes werfende __str__/__repr__ faellt auf den Typnamen zurueck
+        return f"<{type(value).__name__}>"
+
+
+def _readable_args(args: object) -> list[str] | dict[str, str]:
+    """Die Argumente eines Records einzeln lesbar: Tupel als Liste, ein
+    Mapping (``%(name)s``) als Mapping, fehlende als leere Liste. Ein
+    einzelner Wert, den ein Filter oder Aufrufer statt eines Tupels gesetzt
+    hat, wird ein Element; das Ersatz-Event darf selbst nie scheitern (R27)."""
+    if isinstance(args, Mapping):
+        items = cast("Mapping[object, object]", args).items()
+        return {_readable(key): _readable(value) for key, value in items}
+    if isinstance(args, tuple):
+        return [_readable(arg) for arg in cast("tuple[object, ...]", args)]
+    return [] if args is None else [_readable(args)]
 
 
 def _add_record_timestamp(_: Any, __: str, event_dict: structlog.typing.EventDict) -> structlog.typing.EventDict:
