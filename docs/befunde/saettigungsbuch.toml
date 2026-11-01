@@ -420,3 +420,33 @@ fundstelle = "src/swarmq/broker/rabbitmq/underlay.py:_open"
 beschreibung = "Schließt der Broker den Publish-Kanal zweimal innerhalb des basic_qos-Roundtrips der Wiederherstellung, gibt aio-pika die Wiederherstellung auf (in_restore_state); swarmq heilt erst über _restored_in_time nach 10 s, Publishes warten so lange hinter _channel_lock (kein Fehler, kein Verlust)"
 dringlichkeit = "normal"
 status = "offen"
+
+[[signal]]
+id = "S-013"
+quelle = "Loadsuite B43 (merkmal-scheduler-smoke-20261028T033745); Gegenprüfung 2026-11-01"
+saeule = "Zuverlässigkeit"
+modul = "worker"
+fundstelle = "src/swarmq/worker/pipeline.py:611-617"
+beschreibung = "Im Shutdown gibt Schritt 3b nicht gestartete Zustellungen ohne Pause zurück; bleibt der Consumer angemeldet, verbraucht die Schleife das Zustelllimit, gesunde Tasks landen als RedeliveryLimitError in der DLQ (FEHLER F4-32)"
+dringlichkeit = "normal"
+status = "offen"
+
+[[signal]]
+id = "S-014"
+quelle = "Loadsuite B44 (merkmal-gates-smoke-20261028T025522); Gegenprüfung 2026-11-01"
+saeule = "Zuverlässigkeit"
+modul = "worker"
+fundstelle = "src/swarmq/worker/gates/lock.py:lock_conflict_delay_ms"
+beschreibung = "Lock-Konflikt-Backoff ohne Streuung: gebündelte Wartende warten im Gleichtakt am 60-s-Deckel, der Lock steht zwischen den Wellen leer (LÜCKE PF-24)"
+dringlichkeit = "normal"
+status = "offen"
+
+[[signal]]
+id = "S-015"
+quelle = "Loadsuite B45 (merkmal-scheduler-smoke-20261028T064302); Gegenprüfung 2026-11-01"
+saeule = "Zuverlässigkeit"
+modul = "process_manager"
+fundstelle = "src/swarmq/process_manager/supervisor.py:590-597"
+beschreibung = "Exit 0 eines Worker-Kinds ohne --burst nach fremdem SIGTERM legt den Slot dauerhaft still (ENTSCHEIDUNG R20/KTD9, Entscheidung überdenken? V-B45); nach Container-Pause sofort worker_hung (LÜCKE PF-25)"
+dringlichkeit = "normal"
+status = "offen"
