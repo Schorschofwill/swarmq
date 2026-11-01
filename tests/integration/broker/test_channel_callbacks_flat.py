@@ -85,6 +85,11 @@ def _inner_closing(connection: aio_pika.abc.AbstractConnection | None) -> asynci
     return closing
 
 
+def restored_by_aio_pika(channel: aio_pika.RobustChannel, old: aiormq.abc.AbstractChannel) -> bool:
+    """Hat aio-pika den vom Broker geschlossenen Kanal *old* ersetzt?"""
+    return not channel.is_closed and channel._channel is not None and channel._channel.channel is not old
+
+
 @pytest.fixture
 async def broker(rabbitmq_url: str) -> AsyncIterator[tuple[RabbitMQBroker, str]]:
     queue = f"cbflat-{uuid.uuid4().hex[:8]}"
@@ -218,9 +223,7 @@ async def test_publish_channels_closed_by_the_broker_keep_the_callbacks_on_the_c
         await underlay.basic_ack(delivery_tag=2**31)  # Broker schließt den Kanal
         await asyncio.wait({underlay.closing}, timeout=5)
         assert await wait_until(
-            lambda u=underlay: (
-                not channel.is_closed and channel._channel is not None and channel._channel.channel is not u
-            ),  # type: ignore[misc]  # Lambda-Default bindet den Kanal
+            lambda u=underlay: restored_by_aio_pika(channel, u),  # type: ignore[misc]  # Lambda-Default bindet den Kanal
             timeout=5,
             interval=0.005,
         ), "precondition: aio-pika restores the channel"
