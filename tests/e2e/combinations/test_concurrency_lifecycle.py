@@ -59,9 +59,11 @@ import subprocess
 import time
 import uuid
 from typing import Any, override
+from unittest import mock
 
 import pytest
 
+import swarmq.app
 from swarmq.app import SwarmQ
 from swarmq.backend.valkey import ValkeyBackend
 from swarmq.broker.rabbitmq import RabbitMQBroker
@@ -130,10 +132,14 @@ async def _running_worker(
     scheduler_poll_interval: float = 0.1,
     scheduler_heartbeat_interval: float = 0.2,
     scheduler_lock_ttl: float = 1.5,
+    graceful_stop: bool = False,
 ):
     """Spin up an in-process SwarmQ worker.
 
-    Yields the worker app after WORKER_ONLINE fires.
+    Yields the worker app after WORKER_ONLINE fires. ``graceful_stop`` ends the
+    worker like SIGTERM (``_request_shutdown``) instead of cancelling it: only
+    the graceful path waits for lock releases still in flight (E-071); a
+    cancelled worker leaves such a lock to its TTL (V0161-K4).
     """
     worker_broker = RabbitMQBroker(rabbitmq_url)
     worker_backend = ValkeyBackend(valkey_url)
@@ -154,10 +160,23 @@ async def _running_worker(
     async def _online(**_: Any) -> None:
         online.set()
 
+    workers: list[Any] = []
+
+    class _CapturedWorker(swarmq.app.Worker):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            workers.append(self)
+
     worker_task = asyncio.create_task(worker_app.start_worker())
     try:
-        await asyncio.wait_for(online.wait(), timeout=WORKER_START_TIMEOUT_S)
+        # Nur für graceful_stop: den Worker fangen; er entsteht vor WORKER_ONLINE.
+        with mock.patch("swarmq.app.Worker", _CapturedWorker) if graceful_stop else contextlib.nullcontext():
+            await asyncio.wait_for(online.wait(), timeout=WORKER_START_TIMEOUT_S)
         yield worker_app
+        if graceful_stop:
+            (worker,) = workers
+            worker._request_shutdown()
+            await asyncio.wait_for(asyncio.shield(worker_task), timeout=shutdown_timeout + 5)
     finally:
         worker_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -812,7 +831,7 @@ class TestHotReloadInflightLockCombo:
 
         async with app:
             await broker.declare_queue(queue)
-            async with _running_worker(rabbitmq_url, valkey_url, queue):
+            async with _running_worker(rabbitmq_url, valkey_url, queue, graceful_stop=True):
                 tid = await app.schedule(task_name, 41)
                 await asyncio.wait_for(done.wait(), timeout=10.0)
                 result = await app.get_result(tid, timeout=5)

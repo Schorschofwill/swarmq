@@ -23,14 +23,18 @@ Test-Liste:
       neuer Lauf darf nicht in die noch laufende Löschung des alten geraten)
 - [x] RabbitMQNode: AMQP-URL und API-Pfad mit vhost; ``/`` bleibt ``/`` bzw. ``%2F``
 - [x] URLs über einen anderen Host/Port (Toxiproxy) behalten vhost und DB des Prozesses
-- [x] Löschen der Worker-vhosts teilt sich eine Frist über alle Broker: Der Sitzungsabbau
-      zählt zur pytest-timeout-Frist des letzten Tests (5 s bei ``timeout(5)``); zwei Broker
-      mit je 3 s sprengten sie unter Last (CI-Pipeline 441)
+- [x] Löschen der Worker-vhosts übernimmt ein abgelöster Prozess für alle Broker (TS-05): Ein
+      abgebrochenes ``DELETE`` bricht auch RabbitMQs Löschung ab, der Sitzungsabbau zählt aber zur
+      pytest-timeout-Frist des letzten Tests (5 s bei ``timeout(5)``, CI-Pipeline 441)
 - [x] scheitert das Anlegen bei einem späteren Broker, werden die schon angelegten vhosts gelöscht
+- [x] der abgelöste Löschprozess läuft ohne Coverage-Messung: Seine Daten entstünden erst nach
+      dem Hochladen der Messdaten oder mitten in ``coverage combine``
 """
 
 from __future__ import annotations
 
+import os
+import subprocess
 from unittest.mock import AsyncMock, Mock
 
 import httpx
@@ -221,42 +225,37 @@ class TestUrlsThroughProxy:
 
 
 class TestWorkerVhostCleanup:
-    def test_deleting_the_vhosts_of_all_brokers_shares_one_deadline(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        jetzt = [100.0]
-        geloescht: list[tuple[str, float]] = []
+    def test_the_vhosts_of_all_brokers_go_to_the_detached_deleter(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        anfragen: list[str] = []
+        abgegeben: list[list[services.RabbitMQNode]] = []
 
         def antworten(request: httpx.Request) -> httpx.Response:
-            if request.method == "DELETE":
-                geloescht.append((request.url.host, request.extensions["timeout"]["read"]))
-                jetzt[0] += 2.5  # langsamer Broker: das Löschen braucht 2,5 s
-            return httpx.Response(204)
+            anfragen.append(request.method)
+            return httpx.Response(201)
 
         echter_client = httpx.Client
         monkeypatch.setattr(
-            httpx,
-            "Client",
-            lambda **kwargs: echter_client(transport=httpx.MockTransport(antworten), **kwargs),
+            httpx, "Client", lambda **kwargs: echter_client(transport=httpx.MockTransport(antworten), **kwargs)
         )
+        monkeypatch.setattr(services, "delete_vhosts_detached", abgegeben.append)
         brokers = [
             services.RabbitMQNode("haupt", 5672, 15672, "swarmq-test-gw1"),
             services.RabbitMQNode("zweit", 5672, 15672, "swarmq-test-gw1"),
         ]
 
-        with services.worker_vhosts(brokers, budget=3.0, clock=lambda: jetzt[0]):
+        with services.worker_vhosts(brokers):
             pass
 
-        assert geloescht == [("haupt", 3.0), ("zweit", 0.5)]
+        assert abgegeben == [brokers]
+        assert "DELETE" not in anfragen, "the session teardown must not wait for (and abort) a DELETE itself"
 
     def test_a_failed_setup_on_a_later_broker_still_deletes_the_vhosts_already_created(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Liegengebliebene vhosts mit Quorum-Queues trieben den lokalen Test-Broker in den OOM."""
-        geloescht: list[str] = []
+        abgegeben: list[list[str]] = []
 
         def antworten(request: httpx.Request) -> httpx.Response:
-            if request.method == "DELETE":
-                geloescht.append(request.url.host)
-                return httpx.Response(204)
             return httpx.Response(500 if request.url.host == "zweit" else 201)
 
         echter_client = httpx.Client
@@ -268,7 +267,23 @@ class TestWorkerVhostCleanup:
             services.RabbitMQNode("zweit", 5672, 15672, "swarmq-test-gw1"),
         ]
 
+        monkeypatch.setattr(
+            services, "delete_vhosts_detached", lambda nodes: abgegeben.append([node.host for node in nodes])
+        )
+
         with pytest.raises(httpx.HTTPStatusError), services.worker_vhosts(brokers):
             pass
 
-        assert geloescht == ["haupt"]
+        assert abgegeben == [["haupt"]]
+
+    def test_the_detached_deleter_runs_without_coverage(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        gestartet: list[dict[str, str]] = []
+        monkeypatch.setenv("COVERAGE_PROCESS_CONFIG", "{}")
+        monkeypatch.setenv("COVERAGE_PROCESS_START", "pyproject.toml")
+        monkeypatch.setattr(subprocess, "run", lambda *_args, env, **_kwargs: gestartet.append(env))
+
+        services.delete_vhosts_detached([services.RabbitMQNode("haupt", 5672, 15672, "swarmq-test-gw1")])
+
+        (env,) = gestartet
+        assert not [name for name in env if name.startswith("COVERAGE_")]
+        assert env["PATH"] == os.environ["PATH"]

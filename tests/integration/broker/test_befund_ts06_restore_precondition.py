@@ -17,6 +17,9 @@ Erwartet: AGENTS.md, Qualitäts-Gate „Tests sind deterministisch“.
 
 Das verzögerte ``basic_qos`` stellt die Last der CI nach.
 
+Behoben: ``restored_by_aio_pika`` verlangt das gesetzte ``__restored``.
+Vorher scheiterte der Nachweis an der letzten Assertion, 4 von 4 Läufen.
+
 Testliste:
 # [x] Qos-RPC verzögert -> die Vorbedingung gilt erst, wenn aio-pika fertig ist
 """
@@ -56,7 +59,6 @@ async def broker(rabbitmq_url: str) -> AsyncIterator[tuple[RabbitMQBroker, str]]
 
 
 @pytest.mark.befund("TS-06")
-@pytest.mark.xfail(strict=True, reason="TS-06: die Vorbedingung gilt vor dem Ende der Wiederherstellung")
 async def test_the_restore_precondition_holds_only_once_aio_pika_finished_restoring(
     broker: tuple[RabbitMQBroker, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

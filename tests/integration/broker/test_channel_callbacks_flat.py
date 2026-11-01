@@ -86,8 +86,20 @@ def _inner_closing(connection: aio_pika.abc.AbstractConnection | None) -> asynci
 
 
 def restored_by_aio_pika(channel: aio_pika.RobustChannel, old: aiormq.abc.AbstractChannel) -> bool:
-    """Hat aio-pika den vom Broker geschlossenen Kanal *old* ersetzt?"""
-    return not channel.is_closed and channel._channel is not None and channel._channel.channel is not old
+    """Hat aio-pika den vom Broker geschlossenen Kanal *old* ersetzt und die
+    Wiederherstellung abgeschlossen?
+
+    ``_open`` setzt ``_channel`` schon vor ``_on_open`` (``basic_qos``); erst
+    danach ist ``__restored`` gesetzt. Wer den Kanal davor schließt, lässt
+    aio-pika die Wiederherstellung aufgeben (TS-06).
+    """
+    restored: asyncio.Event = channel._RobustChannel__restored  # type: ignore[attr-defined]  # aio-pika bietet nur ready() zum Warten
+    return (
+        restored.is_set()
+        and not channel.is_closed
+        and channel._channel is not None
+        and channel._channel.channel is not old
+    )
 
 
 @pytest.fixture

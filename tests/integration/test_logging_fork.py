@@ -63,10 +63,13 @@ import faulthandler, json, logging, os, signal, sys, warnings
 faulthandler.dump_traceback_later({_HANG_DEADLINE_S}, exit=True)
 warnings.simplefilter("ignore", DeprecationWarning)  # fork mit Threads (3.14)
 
+import swarmq.logging_fork
 from swarmq.logging import configure_logging, shutdown_logging
 from swarmq.logging_settings import LoggingSettings
 
 log_file, maxsize, burst, rounds = sys.argv[1], *map(int, sys.argv[2:5])
+if len(sys.argv) > 5:
+    swarmq.logging_fork.LOCK_BUDGET_S = float(sys.argv[5])
 queue_handler = {{"class": "logging.handlers.QueueHandler", "handlers": ["file"]}}
 if maxsize:
     queue_handler["queue"] = {{"()": "queue.Queue", "maxsize": maxsize}}
@@ -109,16 +112,19 @@ print(json.dumps(children))
 
 
 def _run(
-    tmp_path: Path, *, maxsize: int = 0, burst: int = 0, rounds: int = 1
+    tmp_path: Path, *, maxsize: int = 0, burst: int = 0, rounds: int = 1, lock_budget_s: float | None = None
 ) -> tuple[
     list[list[int]],
     list[str],
     str,
 ]:
-    """Fuehrt das Skript aus: Kinder mit Exit-Code, Zeilen der Datei, stderr."""
+    """Fuehrt das Skript aus: Kinder mit Exit-Code, Zeilen der Datei, stderr.
+
+    ``lock_budget_s`` ersetzt ``LOCK_BUDGET_S`` des ``before``-Hooks im Skript."""
     log_file = tmp_path / "out.log"
+    budget = [] if lock_budget_s is None else [str(lock_budget_s)]
     proc = subprocess.run(
-        [sys.executable, "-c", _SCRIPT, str(log_file), str(maxsize), str(burst), str(rounds)],
+        [sys.executable, "-c", _SCRIPT, str(log_file), str(maxsize), str(burst), str(rounds), *budget],
         cwd=_REPO,
         capture_output=True,
         text=True,
@@ -153,7 +159,11 @@ def test_a_bounded_queue_logs_no_error_in_the_child(tmp_path: Path) -> None:
 
 
 def test_forking_under_write_load_leaves_no_half_written_record(tmp_path: Path) -> None:
-    children, lines, stderr = _run(tmp_path, burst=1000, rounds=20)
+    """Geprueft wird, dass der Hook die Locks ueber den Fork haelt. Mit den
+    50 ms aus ``LOCK_BUDGET_S`` gibt er unter Last auf (entschiedenes
+    Restrisiko, KTD10; CI-Lauf 41231517138, V0161-K3); im Skript gilt
+    deshalb die Haengefrist als Budget."""
+    children, lines, stderr = _run(tmp_path, burst=1000, rounds=20, lock_budget_s=_HANG_DEADLINE_S)
 
     assert "reentrant call" not in stderr
     assert [code for _, code in children] == [0] * 20
