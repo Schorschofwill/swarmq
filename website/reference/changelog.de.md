@@ -6,6 +6,16 @@ Alle nennenswerten Änderungen an SwarmQ. Dieses Projekt folgt
 
 ## [Unreleased]
 
+## [0.16.1] — 2026-11-01
+
+0.16.1 ist 0.16.1rc1 unverändert. Die Änderungen stehen unter
+[0.16.1rc1](#0161rc1-2026-10-31): Ein Publish wiederholt den Versuch, wenn
+das Neuöffnen seines Kanals an einer sterbenden Verbindung scheitert, und
+`log_record_unformattable` trägt zusätzlich `msg` und `args`. Abgenommen von
+der Loadsuite an 0.16.1rc1 (Konformität, vier Smokes, `stufe1-1h`, kein
+Verlust, kein Drift). Installation mit `pip install 'swarmq==0.16.*'`;
+`--pre` ist nicht mehr nötig.
+
 ## [0.16.1rc1] — 2026-10-31
 
 Release Candidate für 0.16.1 (Installation mit `pip install --pre`).
