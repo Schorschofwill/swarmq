@@ -409,3 +409,14 @@ fundstelle = "src/swarmq/broker/rabbitmq/delivery.py:_publish_with_retry"
 beschreibung = "Scheitert das Neuöffnen des Publish-Kanals an der gerade sterbenden Verbindung (aiormq RuntimeError closed), endet der Publish ohne zweiten Versuch mit BrokerConnectionError, obwohl nichts gesendet war; _ensure_publish_channel liegt vor dem try der Wiederholschleife"
 dringlichkeit = "normal"
 status = "offen"
+
+# Gegenprüfung 2026-11-01 (TS-06): Produktionspfad derselben Ursache, LÜCKE PF-22.
+[[signal]]
+id = "S-012"
+quelle = "CI-Integrationsjobs 2026-10-31/11-01 (TS-06); Gegenprüfung 2026-11-01"
+saeule = "Zuverlässigkeit"
+modul = "broker"
+fundstelle = "src/swarmq/broker/rabbitmq/underlay.py:_open"
+beschreibung = "Schließt der Broker den Publish-Kanal zweimal innerhalb des basic_qos-Roundtrips der Wiederherstellung, gibt aio-pika die Wiederherstellung auf (in_restore_state); swarmq heilt erst über _restored_in_time nach 10 s, Publishes warten so lange hinter _channel_lock (kein Fehler, kein Verlust)"
+dringlichkeit = "normal"
+status = "offen"
