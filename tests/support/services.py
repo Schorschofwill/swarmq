@@ -22,8 +22,9 @@ import ipaddress
 import os
 import re
 import socket
-import time
-from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+import subprocess
+import sys
+from collections.abc import AsyncIterator, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -31,6 +32,8 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 import pytest
+
+from tests.support import vhost_deleter
 
 # Standards zeigen auf die swarmq-Testcontainer, nicht auf 5672/15672/6379:
 # Dort laufen örtlich fremde Stacks, und die Fixtures flushen Valkey.
@@ -291,26 +294,35 @@ def _queue_names(client: httpx.Client) -> set[str] | None:
     return {entry["name"] for entry in response.json()}
 
 
-# Gemeinsame Frist für das Löschen der Worker-vhosts aller Broker. Der
-# Sitzungsabbau zählt zur pytest-timeout-Frist des letzten Tests eines
-# xdist-Prozesses, und die ist bei ``timeout(5)`` nur 5 s. Unter Last braucht
-# RabbitMQ fürs Löschen einer vhost Sekunden; mit je 3 s für zwei Broker
-# nacheinander griff pytest-timeout vor dem ``suppress`` (CI-Pipeline 441).
-_VHOST_DELETE_BUDGET_S = 3.0
+def delete_vhosts_detached(nodes: list[RabbitMQNode]) -> None:
+    """Übergibt das Löschen der vhosts von *nodes* einem abgelösten Prozess (TS-05).
+
+    Ein abgebrochenes ``DELETE`` bricht auch RabbitMQs Löschung ab; der
+    Sitzungsabbau zählt aber zur pytest-timeout-Frist des letzten Tests eines
+    xdist-Prozesses (5 s bei ``timeout(5)``, CI-Pipeline 441). Die Shell legt
+    ``vhost_deleter.py`` in den Hintergrund und endet sofort; der Löschprozess
+    überlebt pytest und Strg-C. Er läuft ohne Coverage-Messung: Seine Daten
+    entstünden erst nach dem Hochladen der Messdaten in der CI.
+    """
+    if not nodes:
+        return
+    targets = [arg for node in nodes for arg in (node.management_url, node.vhost_api)]
+    subprocess.run(
+        ["/bin/sh", "-c", '"$0" "$@" </dev/null >/dev/null 2>&1 &', sys.executable, vhost_deleter.__file__, *targets],
+        check=True,
+        start_new_session=True,
+        env={name: value for name, value in os.environ.items() if not name.startswith("COVERAGE_")},
+    )
 
 
 @contextlib.contextmanager
-def worker_vhosts(
-    nodes: list[RabbitMQNode], *, budget: float = _VHOST_DELETE_BUDGET_S, clock: Callable[[], float] = time.monotonic
-) -> Iterator[None]:
+def worker_vhosts(nodes: list[RabbitMQNode]) -> Iterator[None]:
     """Legt ``node.vhost`` je Broker mit Rechten für guest an und löscht sie danach.
 
-    Gelöscht wird nacheinander innerhalb einer gemeinsamen Frist; ein Broker,
-    für den keine Zeit mehr bleibt, behält seine vhost (Aufräumen ist best effort,
-    die CI startet je Job frische Broker).
+    Gelöscht wird abgelöst (``delete_vhosts_detached``), für alle Broker gleichzeitig.
     """
     with contextlib.ExitStack() as stack:
-        clients: list[tuple[RabbitMQNode, httpx.Client]] = []
+        created: list[RabbitMQNode] = []
         try:
             for node in nodes:
                 client = stack.enter_context(
@@ -319,18 +331,12 @@ def worker_vhosts(
                 client.put(f"/vhosts/{node.vhost_api}").raise_for_status()
                 # Ab hier gibt es die vhost: Scheitert danach etwas, auch bei einem
                 # späteren Broker, wird sie trotzdem gelöscht.
-                clients.append((node, client))
+                created.append(node)
                 permissions = {"configure": ".*", "write": ".*", "read": ".*"}
                 client.put(f"/permissions/{node.vhost_api}/guest", json=permissions).raise_for_status()
             yield
         finally:
-            deadline = clock() + budget
-            for node, client in clients:
-                remaining = deadline - clock()
-                if remaining <= 0:
-                    break
-                with contextlib.suppress(httpx.HTTPError):  # Aufräumen ist best effort
-                    client.delete(f"/vhosts/{node.vhost_api}", timeout=remaining)
+            delete_vhosts_detached(created)
 
 
 @pytest.fixture(autouse=True, scope="session")

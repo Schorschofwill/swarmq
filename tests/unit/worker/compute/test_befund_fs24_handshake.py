@@ -113,10 +113,13 @@ async def test_cancel_during_handshake_logs_no_loop_error_and_counts_no_child_de
 
 @pytest.mark.befund("FS-24")
 async def test_failed_recycle_replacement_handshake_logs_no_loop_error(ctx, signals, loop_errors):
-    p = await _make_pool(ctx, slots=1, recycle_max_tasks=1, handshake_timeout_s=0.05)
+    # Die kurze Frist gilt nur dem Ersatzkind; das erste Kind bekäme sonst unter
+    # paralleler Last sein Ready nicht binnen 50 ms (V0161-K5).
+    p = await _make_pool(ctx, slots=1, recycle_max_tasks=1, handshake_timeout_s=5.0)
     t1 = asyncio.create_task(p.run(_job("a"), use_di=True))
     old = await _started(1)
     await _ready(p, old, 0)
+    p.handshake_timeout_s = 0.05
     old.channel.send(("result", _result("a", 0)))
     await t1
     await _started(2)  # Ersatzkind: bekommt kein Ready

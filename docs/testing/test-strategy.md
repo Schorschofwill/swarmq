@@ -364,7 +364,11 @@ Integration und e2e laufen per pytest-xdist auf mehreren Prozessen
 
 - RabbitMQ-vhost `swarmq-test-gwN-<lauf>` auf dem Haupt- und dem 4.2-Broker,
   zu Sitzungsbeginn über die Management-API angelegt und am Ende samt allen
-  Queues gelöscht. `<lauf>` sind die ersten 8 Zeichen der xdist-Laufkennung
+  Queues gelöscht. Das Löschen übernimmt ein abgelöster Prozess
+  (`tests/support/vhost_deleter.py`) für beide Broker gleichzeitig und ohne
+  kurze Frist: Ein abgebrochenes `DELETE` bricht auch RabbitMQs Löschung ab,
+  und der Sitzungsabbau zählt zur pytest-timeout-Frist des letzten Tests
+  (TS-05). Es kann deshalb in die nächste Sitzung hineinlaufen. `<lauf>` sind die ersten 8 Zeichen der xdist-Laufkennung
   (`PYTEST_XDIST_TESTRUNUID`): RabbitMQ löscht vhosts asynchron, ein
   folgender Lauf mit demselben Namen geriete sonst in die noch laufende
   Löschung;
